@@ -853,6 +853,103 @@ class WorkflowWorkerProtocolTest extends TestCase
         }
     }
 
+    public function test_local_activity_completion_uses_negotiated_nested_object_strictness(): void
+    {
+        Queue::fake();
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        foreach (['1.18', '1.19'] as $protocolVersion) {
+            $workerId = 'php-local-activity-extensions-'.$protocolVersion;
+            $workflowId = 'wf-local-activity-extensions-'.$protocolVersion;
+            $taskQueue = 'portable-affinity-extensions-'.$protocolVersion;
+            $headers = $this->workerHeaders(protocolVersion: $protocolVersion);
+            $start = $this->withHeaders($this->apiHeaders())->postJson('/api/workflows', [
+                'workflow_id' => $workflowId,
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => $taskQueue,
+                'input' => ['Ada'],
+            ])->assertCreated();
+
+            $this->withHeaders($headers)->postJson('/api/worker/register', [
+                'worker_id' => $workerId,
+                'task_queue' => $taskQueue,
+                'runtime' => 'php',
+                'supported_workflow_types' => ['tests.external-greeting-workflow'],
+                'capabilities' => ['local_activities'],
+                'capability_manifest' => array_replace($this->portableWorkerAffinityRefusalManifest(), [
+                    'local_activities' => [
+                        'supported' => true,
+                        'minimum_protocol_version' => '1.18',
+                        'implementation' => 'record_local_activity',
+                    ],
+                ]),
+            ])->assertCreated();
+
+            $poll = $this->withHeaders($headers)->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => $workerId,
+                'task_queue' => $taskQueue,
+            ])->assertOk();
+            $command = [
+                'type' => 'record_local_activity',
+                'activity_type' => 'charge-card',
+                'result' => Serializer::serialize('receipt-'.$protocolVersion),
+                'outcome' => 'completed',
+                'attempts' => [[
+                    'attempt_id' => 'worker-attempt-'.$protocolVersion,
+                    'attempt_number' => 1,
+                    'outcome' => 'completed',
+                    'duration_ms' => 10,
+                    'worker_extension' => ['build' => 'next'],
+                    'heartbeats' => [[
+                        'elapsed_ms' => 5,
+                        'heartbeat_extension' => true,
+                    ]],
+                ]],
+                'retry_policy' => [
+                    'max_attempts' => 1,
+                    'retry_extension' => 'future-policy',
+                ],
+            ];
+            $completion = $this->withHeaders($headers)
+                ->postJson('/api/worker/workflow-tasks/'.$poll->json('task.task_id').'/complete', [
+                    'lease_owner' => $workerId,
+                    'workflow_task_attempt' => $poll->json('task.workflow_task_attempt'),
+                    'commands' => [$command],
+                ]);
+
+            if ($protocolVersion === '1.18') {
+                $completion->assertOk()
+                    ->assertJsonPath('outcome', 'completed')
+                    ->assertJsonPath('run_status', 'waiting');
+                $execution = ActivityExecution::query()
+                    ->where('workflow_run_id', $start->json('run_id'))
+                    ->sole();
+                $attempt = ActivityAttempt::query()
+                    ->where('activity_execution_id', $execution->id)
+                    ->sole();
+                $this->assertSame('worker-attempt-1.18', $attempt->worker_attempt_id);
+                $this->assertNotNull($attempt->last_heartbeat_at);
+
+                continue;
+            }
+
+            $completion->assertUnprocessable()
+                ->assertJsonValidationErrors([
+                    'commands.0.attempts.0.worker_extension',
+                    'commands.0.attempts.0.heartbeats.0.heartbeat_extension',
+                    'commands.0.retry_policy.retry_extension',
+                ]);
+            $this->assertSame(
+                TaskStatus::Leased,
+                WorkflowTask::query()->findOrFail($poll->json('task.task_id'))->status,
+            );
+            $this->assertSame(0, ActivityExecution::query()
+                ->where('workflow_run_id', $start->json('run_id'))
+                ->count());
+        }
+    }
+
     public function test_sticky_claim_requires_exact_identity_and_persists_only_as_an_optimization(): void
     {
         Queue::fake();

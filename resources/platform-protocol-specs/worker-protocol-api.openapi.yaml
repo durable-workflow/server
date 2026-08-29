@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "16"
+  version: "17"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -144,6 +144,9 @@ x-durable-workflow-portable-worker-affinity-contract:
     supported_entry_must_match_flat_capability: true
   local_activities:
     command_type: record_local_activity
+    attempt_reports_required_from_protocol_version: "1.19"
+    retained_nested_object_unknown_fields: ignore
+    strict_nested_object_shape_from_protocol_version: "1.19"
     attempt_sequence: contiguous_one_based
     maximum_attempts: 100
     maximum_heartbeats_per_attempt: 1000
@@ -1506,6 +1509,7 @@ components:
                 type: array
                 minItems: 1
                 maxItems: 100
+                x-durable-workflow-minimum-protocol-version: "1.19"
                 x-durable-workflow-max-total-heartbeats: 1000
                 items: { $ref: "#/components/schemas/LocalActivityAttemptReport" }
               retry_policy: { $ref: "#/components/schemas/LocalActivityRetryPolicy" }
@@ -1532,6 +1536,7 @@ components:
     LocalActivityAttemptReport:
       type: object
       additionalProperties: false
+      x-durable-workflow-minimum-protocol-version: "1.19"
       required: [attempt_number, outcome]
       properties:
         attempt_id:
@@ -1555,6 +1560,7 @@ components:
     LocalActivityHeartbeatReport:
       type: object
       additionalProperties: false
+      x-durable-workflow-minimum-protocol-version: "1.19"
       required: [elapsed_ms]
       properties:
         details:
@@ -1565,6 +1571,7 @@ components:
     LocalActivityRetryPolicy:
       type: object
       additionalProperties: false
+      x-durable-workflow-minimum-protocol-version: "1.19"
       properties:
         max_attempts: { type: integer, minimum: 1, maximum: 100 }
         backoff_seconds:

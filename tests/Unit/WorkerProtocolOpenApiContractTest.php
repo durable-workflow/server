@@ -76,6 +76,15 @@ class WorkerProtocolOpenApiContractTest extends TestCase
             $contract['worker_capabilities'],
         );
         $this->assertSame('contiguous_one_based', $contract['local_activities']['attempt_sequence']);
+        $this->assertSame(
+            '1.19',
+            $contract['local_activities']['attempt_reports_required_from_protocol_version'],
+        );
+        $this->assertSame('ignore', $contract['local_activities']['retained_nested_object_unknown_fields']);
+        $this->assertSame(
+            '1.19',
+            $contract['local_activities']['strict_nested_object_shape_from_protocol_version'],
+        );
         $this->assertSame(100, $contract['local_activities']['maximum_attempts']);
         $this->assertSame(1000, $contract['local_activities']['maximum_total_heartbeats']);
         $this->assertSame('server', $contract['local_activities']['durable_attempt_id_authority']);
@@ -113,12 +122,19 @@ class WorkerProtocolOpenApiContractTest extends TestCase
         );
         $this->assertSame(100, $localActivityCommand['then']['properties']['attempts']['maxItems']);
         $this->assertSame(
+            '1.19',
+            $localActivityCommand['then']['properties']['attempts'][
+                'x-durable-workflow-minimum-protocol-version'
+            ],
+        );
+        $this->assertSame(
             '#/components/schemas/LocalActivityAttemptReport',
             $localActivityCommand['then']['properties']['attempts']['items']['$ref'],
         );
 
         $attempt = $this->spec['components']['schemas']['LocalActivityAttemptReport'];
         $this->assertSame(['attempt_number', 'outcome'], $attempt['required']);
+        $this->assertSame('1.19', $attempt['x-durable-workflow-minimum-protocol-version']);
         $this->assertSame(1000, $attempt['properties']['heartbeats']['maxItems']);
         $this->assertSame(
             [
@@ -126,6 +142,18 @@ class WorkerProtocolOpenApiContractTest extends TestCase
                 ['type' => 'object', 'additionalProperties' => true],
             ],
             $this->spec['components']['schemas']['LocalActivityHeartbeatReport']['properties']['details']['oneOf'],
+        );
+        $this->assertSame(
+            '1.19',
+            $this->spec['components']['schemas']['LocalActivityHeartbeatReport'][
+                'x-durable-workflow-minimum-protocol-version'
+            ],
+        );
+        $this->assertSame(
+            '1.19',
+            $this->spec['components']['schemas']['LocalActivityRetryPolicy'][
+                'x-durable-workflow-minimum-protocol-version'
+            ],
         );
 
         $registrationFailures = $this->spec['components']['responses']['WorkerRegistrationFailure']['content']['application/json']['schema']['anyOf'];
