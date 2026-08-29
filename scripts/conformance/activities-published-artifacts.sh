@@ -655,6 +655,7 @@ run_focused_activity_host_probe() {
 declare(strict_types=1);
 
 use App\Models\WorkflowNamespace;
+use App\Support\ActivitiesConformanceWorkerRegistration;
 use App\Support\ControlPlaneProtocol;
 use App\Support\WorkerProtocol;
 use DurableWorkflow\Client as PublishedPhpSdkClient;
@@ -1662,28 +1663,21 @@ function register_worker(
         ? 'durable-workflow-python/'.(getenv('DW_PYTHON_SDK_VERSION') ?: 'unknown')
         : 'durable-workflow/server:published-artifact';
 
-    request_json('POST', '/worker/register', [
-        'worker_id' => $workerId,
-        'task_queue' => $taskQueue,
-        'runtime' => $workerRuntime,
-        'sdk_version' => $sdkVersion,
-        'supported_workflow_types' => $workflowTypes,
-        'supported_activity_types' => $activityTypes,
-        'max_concurrent_workflow_tasks' => 1,
-        'max_concurrent_activity_tasks' => 1,
-        'task_slots' => [
-            'workflow_available' => $workflowTypes === [] ? 0 : 1,
-            'activity_available' => $activityTypes === [] ? 0 : 1,
-            'session_available' => 0,
-        ],
-        'process_metrics' => [
+    request_json('POST', '/worker/register', ActivitiesConformanceWorkerRegistration::payload(
+        $workerId,
+        $taskQueue,
+        $workerRuntime,
+        $sdkVersion,
+        $workflowTypes,
+        $activityTypes,
+        [
             'memory_bytes' => memory_get_usage(true),
             'process_uptime_seconds' => 0,
             'process_id' => getmypid() ?: 0,
             'host' => gethostname() ?: 'published-server-container',
             'process_started_at' => now_iso(),
         ],
-    ]);
+    ));
 }
 
 function python_activity_executor_script(): string
@@ -6585,6 +6579,50 @@ function stringValue(value) {
   return '';
 }
 
+function firstActionableHostProbeException(activityEvidence) {
+  const scenarios = Array.isArray(activityEvidence.scenario_results)
+    ? activityEvidence.scenario_results
+    : [];
+
+  for (const scenario of scenarios) {
+    if (!scenario || typeof scenario !== 'object' || Array.isArray(scenario)) {
+      continue;
+    }
+
+    const observedOutputs = nonEmptyObject(scenario.observed_outputs)
+      ? scenario.observed_outputs
+      : {};
+    const scenarioEvidence = nonEmptyObject(scenario.scenario_evidence)
+      ? scenario.scenario_evidence
+      : {};
+    for (const candidate of [scenario.failure, observedOutputs.failure, scenarioEvidence.failure]) {
+      const failure = stringValue(candidate);
+      if (failure) {
+        return failure;
+      }
+    }
+
+    const hostEvidence = activityHostEvidenceFor(scenario, observedOutputs);
+    for (const cells of [
+      observedOutputs.activity_cells,
+      scenarioEvidence.activity_cells,
+      hostEvidence && hostEvidence.activity_cells,
+    ]) {
+      if (!Array.isArray(cells)) {
+        continue;
+      }
+      for (const cell of cells) {
+        const failure = stringValue(cell && typeof cell === 'object' ? cell.failure : '');
+        if (failure) {
+          return failure;
+        }
+      }
+    }
+  }
+
+  return '';
+}
+
 function truthy(value) {
   if (value === true || value === 1) {
     return true;
@@ -8076,8 +8114,13 @@ function main() {
   const evidenceLoadFailure = stringValue(activityEvidence.load_error);
 
   const prerequisiteFailure = env('DW_ACTIVITIES_PREREQUISITE_FAILURE');
+  const hostProbeException = firstActionableHostProbeException(activityEvidence);
   const runnerBlocked = pinFailures.length > 0 || prerequisiteFailure !== '';
-  const blockedReason = [...pinFailures, ...(prerequisiteFailure ? [prerequisiteFailure] : [])].join('; ');
+  const blockedReason = [
+    ...pinFailures,
+    ...(hostProbeException ? [`focused activity host probe exception: ${hostProbeException}`] : []),
+    ...(prerequisiteFailure ? [prerequisiteFailure] : []),
+  ].join('; ');
   const missingEvidenceReason = activityEvidenceLoad.supplied
     ? evidenceLoadFailure
     : 'activity host evidence missing';
@@ -8358,6 +8401,13 @@ function main() {
     category: 'activity_runtime_contract',
     outcome,
     runner_blocked: runnerBlocked,
+    ...(runnerBlocked ? {
+      runner_blocked_evidence: {
+        first_actionable_host_probe_exception: hostProbeException || null,
+        prerequisite_failure: prerequisiteFailure || null,
+        pin_failures: pinFailures,
+      },
+    } : {}),
     started_at: STARTED_AT,
     finished_at: finishedAt,
     generated_at: finishedAt,
@@ -8425,6 +8475,9 @@ function main() {
     category: nativeResult.category,
     outcome: nativeResult.outcome,
     runner_blocked: nativeResult.runner_blocked,
+    runner_blocked_evidence: nativeResult.runner_blocked_evidence
+      ? boundedPortableCell(nativeResult.runner_blocked_evidence)
+      : null,
     started_at: nativeResult.started_at,
     finished_at: nativeResult.finished_at,
     generated_at: nativeResult.generated_at,
@@ -8525,6 +8578,9 @@ function main() {
       category: nativeResult.category,
       outcome: 'non_passing_runner_blocked',
       runner_blocked: true,
+      runner_blocked_evidence: nativeResult.runner_blocked_evidence
+        ? boundedPortableCell(nativeResult.runner_blocked_evidence)
+        : null,
       started_at: nativeResult.started_at,
       finished_at: nativeResult.finished_at,
       generated_at: nativeResult.generated_at,

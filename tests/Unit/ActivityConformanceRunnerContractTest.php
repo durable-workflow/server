@@ -93,6 +93,7 @@ class ActivityConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('RUNNER_REPO_ROOT', $source);
         $this->assertStringContainsString('LARAVEL_STORAGE_PATH', $source);
         $this->assertStringContainsString('VIEW_COMPILED_PATH', $source);
+        $this->assertStringContainsString('ActivitiesConformanceWorkerRegistration::payload(', $source);
 
         foreach ([
             'DW_SERVER_VERSION',
@@ -832,6 +833,38 @@ class ActivityConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString(
             'Composer could not install the exact candidate packages',
             $run['result']['scenario_results'][0]['linked_findings'][0]['observed_behavior'] ?? '',
+        );
+    }
+
+    public function test_runner_blocked_evidence_retains_the_first_host_probe_exception(): void
+    {
+        $evidence = $this->completeRunnerActivityEvidence();
+        $firstException = 'RuntimeException: POST /worker/register failed with HTTP 422: capability_manifest is required';
+        $evidence['scenario_results'][0]['observed_outputs']['activity_cells'] = [
+            [
+                'runtime' => 'workflow-php',
+                'status' => 'fail',
+                'failure' => $firstException,
+            ],
+        ];
+
+        $run = $this->runActivityRunnerWithEvidence(
+            $evidence,
+            null,
+            ['DW_ACTIVITIES_PREREQUISITE_FAILURE' => 'Workflow execution observation is missing'],
+        );
+
+        $this->assertSame(1, $run['exit'], $run['output']);
+        $this->assertSame('non_passing_runner_blocked', $run['result']['outcome']);
+        $this->assertSame(
+            $firstException,
+            $run['result']['runner_blocked_evidence']['first_actionable_host_probe_exception'] ?? null,
+        );
+        $observedBehavior = $run['result']['scenario_results'][0]['linked_findings'][0]['observed_behavior'] ?? '';
+        $this->assertStringContainsString($firstException, $observedBehavior);
+        $this->assertStringContainsString('Workflow execution observation is missing', $observedBehavior);
+        $this->assertTrue(
+            strpos($observedBehavior, $firstException) < strpos($observedBehavior, 'Workflow execution observation is missing'),
         );
     }
 

@@ -6,6 +6,7 @@ namespace Tests\Feature;
 
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
+use App\Support\ActivitiesConformanceWorkerRegistration;
 use App\Support\ServerPollingCache;
 use App\Support\WorkerCompatibilityHeartbeatRecorder;
 use App\Support\WorkerProtocol;
@@ -69,6 +70,49 @@ class WorkerControllerTest extends TestCase
         $this->assertSame('default', $worker->task_queue);
         $this->assertSame('python', $worker->runtime);
         $this->assertSame('active', $worker->status);
+    }
+
+    public function test_activities_harness_php_and_python_workers_register_against_current_protocol(): void
+    {
+        foreach (['php', 'python'] as $runtime) {
+            $workerId = "activities-conformance-{$runtime}";
+            $payload = ActivitiesConformanceWorkerRegistration::payload(
+                $workerId,
+                "activities-isolated-{$runtime}",
+                $runtime,
+                "synthetic-{$runtime}/test",
+                ['activities.conformance.workflow-embedded-result'],
+                ['activities.conformance.echo'],
+            );
+
+            $this->assertSame([], $payload['capabilities']);
+            $this->assertSame(
+                WorkerProtocol::PORTABLE_WORKER_AFFINITY_CAPABILITIES,
+                array_keys($payload['capability_manifest']),
+            );
+            foreach ($payload['capability_manifest'] as $entry) {
+                $this->assertFalse($entry['supported']);
+                $this->assertSame(
+                    WorkerProtocol::PORTABLE_WORKER_AFFINITY_MINIMUM_PROTOCOL_VERSION,
+                    $entry['minimum_protocol_version'],
+                );
+                $this->assertSame(
+                    ActivitiesConformanceWorkerRegistration::UNSUPPORTED_PORTABLE_AFFINITY_REASON,
+                    $entry['reason'],
+                );
+            }
+
+            $this->withHeaders($this->workerHeaders())
+                ->postJson('/api/worker/register', $payload)
+                ->assertCreated()
+                ->assertJsonPath('registered', true)
+                ->assertJsonPath('worker_id', $workerId)
+                ->assertJsonPath('runtime', $runtime);
+        }
+
+        $this->assertSame(2, WorkerRegistration::query()
+            ->whereIn('worker_id', ['activities-conformance-php', 'activities-conformance-python'])
+            ->count());
     }
 
     public function test_register_advertises_heartbeat_interval_seconds(): void
