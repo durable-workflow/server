@@ -1750,6 +1750,9 @@ def install_cli(run_root: Path, log_file: Path) -> tuple[str, dict[str, Any]]:
             "DURABLE_WORKFLOW_INSTALL_VERIFY_ATTESTATIONS": "0",
         }
     )
+    env["PATH"] = os.pathsep.join(
+        part for part in (str(bin_dir), env.get("PATH", "")) if part
+    )
     install = run_command(["sh", str(installer)], log_file=log_file, env=env, timeout=180)
     if install.returncode != 0:
         raise RuntimeError("official CLI installer failed")
@@ -1757,6 +1760,9 @@ def install_cli(run_root: Path, log_file: Path) -> tuple[str, dict[str, Any]]:
     binary = bin_dir / "dw"
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise RuntimeError("official CLI installer did not create an executable dw binary")
+    resolved_binary = shutil.which("dw", path=env["PATH"])
+    if resolved_binary is None or Path(resolved_binary).resolve() != binary.resolve():
+        raise RuntimeError("ordinary dw lookup did not resolve the exact installed CLI binary")
 
     return str(binary), installed_public_artifact_entry(
         "cli",
@@ -4340,7 +4346,189 @@ def workflow_public_snapshot(
                     workflow_command_count += len(commands)
             snapshot.setdefault("workflow_command_count", workflow_command_count)
 
+        debug = http_json(
+            base_url,
+            api_path("workflows", workflow_id, "runs", snapshot_run_id, "debug"),
+            method="GET",
+            token=token,
+            namespace=namespace,
+            timeout=30,
+        )
+        debug_body = debug.get("body") if isinstance(debug.get("body"), dict) else {}
+        pending_tasks = debug_body.get("pending_workflow_tasks")
+        if isinstance(pending_tasks, list):
+            ready_or_leased_tasks = [
+                {
+                    key: task[key]
+                    for key in (
+                        "task_id",
+                        "id",
+                        "type",
+                        "status",
+                        "transport_state",
+                        "lease_owner",
+                        "workflow_wait_kind",
+                        "workflow_resume_source_kind",
+                        "workflow_resume_source_id",
+                    )
+                    if key in task
+                }
+                for task in pending_tasks
+                if isinstance(task, dict)
+            ]
+            snapshot["ready_or_leased_workflow_tasks"] = ready_or_leased_tasks
+            snapshot["ready_or_leased_workflow_task_count"] = len(ready_or_leased_tasks)
+            snapshot["ready_or_leased_workflow_task_set_sha256"] = hashlib.sha256(
+                json.dumps(
+                    ready_or_leased_tasks,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest()
+
     return snapshot
+
+
+REJECTED_SIGNAL_AUDIT_OUTCOMES = {
+    "unknown_signal": "rejected_unknown_signal",
+    "invalid_signal_arguments": "rejected_invalid_arguments",
+}
+
+
+def rejected_signal_audit_spec(run_id: str, target_name: str, reason: str) -> dict[str, Any]:
+    return {
+        "type": "signal",
+        "target_scope": "instance",
+        "requested_run_id": None,
+        "resolved_run_id": run_id,
+        "target_name": target_name,
+        "status": "rejected",
+        "outcome": REJECTED_SIGNAL_AUDIT_OUTCOMES[reason],
+        "reason": reason,
+        "rejection_reason": reason,
+        "accepted_at": None,
+        "applied_at": None,
+        "rejected_at_recorded": True,
+    }
+
+
+def rejected_signal_audit_row(command: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": command.get("type"),
+        "target_scope": command.get("target_scope"),
+        "requested_run_id": command.get("requested_run_id"),
+        "resolved_run_id": command.get("resolved_run_id"),
+        "target_name": command.get("target_name"),
+        "status": command.get("status"),
+        "outcome": command.get("outcome"),
+        "reason": command.get("reason"),
+        "rejection_reason": command.get("rejection_reason"),
+        "accepted_at": command.get("accepted_at"),
+        "applied_at": command.get("applied_at"),
+        "rejected_at_recorded": (
+            isinstance(command.get("rejected_at"), str)
+            and command["rejected_at"].strip() != ""
+        ),
+    }
+
+
+def workflow_command_delta(
+    before: dict[str, Any],
+    after: dict[str, Any],
+) -> list[dict[str, Any]] | None:
+    before_commands = before.get("workflow_commands")
+    after_commands = after.get("workflow_commands")
+    if not isinstance(before_commands, list) or not isinstance(after_commands, list):
+        return None
+
+    before_ids = {
+        command.get("id")
+        for command in before_commands
+        if isinstance(command, dict) and isinstance(command.get("id"), str)
+    }
+    return [
+        command
+        for command in after_commands
+        if isinstance(command, dict)
+        and isinstance(command.get("id"), str)
+        and command.get("id") not in before_ids
+    ]
+
+
+def rejected_signal_audit_evidence(
+    before: dict[str, Any],
+    after: dict[str, Any],
+    expected_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    command_delta = workflow_command_delta(before, after)
+    observed_rows = (
+        [rejected_signal_audit_row(command) for command in command_delta]
+        if command_delta is not None
+        else []
+    )
+    exact_match = command_delta is not None and observed_rows == expected_rows
+    executable_or_ready_command_count = sum(
+        1
+        for row in observed_rows
+        if row.get("status") != "rejected"
+        or row.get("accepted_at") is not None
+        or row.get("applied_at") is not None
+    )
+
+    return {
+        "expected_rows": expected_rows,
+        "observed_rows": observed_rows,
+        "exact_match": exact_match,
+        "executable_or_ready_command_count": executable_or_ready_command_count,
+    }
+
+
+def ready_or_leased_workflow_tasks_unchanged(
+    before: dict[str, Any],
+    after: dict[str, Any],
+) -> bool:
+    before_count = before.get("ready_or_leased_workflow_task_count")
+    after_count = after.get("ready_or_leased_workflow_task_count")
+    before_digest = before.get("ready_or_leased_workflow_task_set_sha256")
+    after_digest = after.get("ready_or_leased_workflow_task_set_sha256")
+    return (
+        isinstance(before_count, int)
+        and not isinstance(before_count, bool)
+        and before_count == after_count
+        and isinstance(before_digest, str)
+        and before_digest != ""
+        and before_digest == after_digest
+    )
+
+
+def rejected_signal_handler_invocation_count(
+    before: dict[str, Any],
+    after: dict[str, Any],
+) -> int | None:
+    before_types = before.get("history_event_types")
+    after_types = after.get("history_event_types")
+    if not isinstance(before_types, list) or not isinstance(after_types, list):
+        return None
+    return after_types.count("SignalReceived") - before_types.count("SignalReceived")
+
+
+def workflow_state_unchanged(before: dict[str, Any], after: dict[str, Any]) -> bool:
+    if not isinstance(before.get("run_id"), str) or before.get("run_id") != after.get("run_id"):
+        return False
+    if not isinstance(before.get("status"), str) or before.get("status") != after.get("status"):
+        return False
+
+    return all(
+        before.get(key) == after.get(key)
+        for key in (
+            "result",
+            "output",
+            "completed_at",
+            "closed_at",
+            "last_history_sequence",
+            "history_sequence",
+        )
+    )
 
 
 REPLAY_TIMING_SCENARIO_TITLES = {
@@ -10452,6 +10640,13 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                 namespace=namespace,
                 timeout=30,
             )
+            history_and_commands_after_rejected_requests = workflow_public_snapshot(
+                base_url,
+                token,
+                namespace,
+                baseline_workflow_id,
+                baseline_run_id,
+            )
             known_query_after_unknown_errors = query_with_worker_result(
                 base_url,
                 token,
@@ -10612,6 +10807,17 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                 for field, sample in optional_unknown_outputs.items()
                 if sample is not MISSING
             }
+            expected_rejected_signal_audits = [
+                rejected_signal_audit_spec(baseline_run_id, "missing", "unknown_signal")
+            ]
+            if "cli_unknown_signal_sample" in optional_unknown_outputs:
+                expected_rejected_signal_audits.append(
+                    rejected_signal_audit_spec(baseline_run_id, "missing", "unknown_signal")
+                )
+            if "sdk_python_unknown_signal_sample" in optional_unknown_outputs:
+                expected_rejected_signal_audits.append(
+                    rejected_signal_audit_spec(baseline_run_id, "missing", "unknown_signal")
+                )
             history_and_commands_after_all_requests = workflow_public_snapshot(
                 base_url,
                 token,
@@ -10622,6 +10828,11 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             rejected_requests_and_recovery_appended_no_history = (
                 snapshot_count_unchanged(
                     history_and_commands_before_rejected_requests,
+                    history_and_commands_after_rejected_requests,
+                    "history_event_count",
+                )
+                and snapshot_count_unchanged(
+                    history_and_commands_before_rejected_requests,
                     history_and_commands_after_recovery_query,
                     "history_event_count",
                 )
@@ -10631,16 +10842,39 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                     "history_event_count",
                 )
             )
-            rejected_requests_and_recovery_emitted_no_workflow_commands = (
-                snapshot_count_unchanged(
+            rejected_audit_evidence = rejected_signal_audit_evidence(
+                history_and_commands_before_rejected_requests,
+                history_and_commands_after_all_requests,
+                expected_rejected_signal_audits,
+            )
+            rejected_requests_created_no_executable_or_ready_work = (
+                rejected_audit_evidence["exact_match"] is True
+                and rejected_audit_evidence["executable_or_ready_command_count"] == 0
+                and ready_or_leased_workflow_tasks_unchanged(
                     history_and_commands_before_rejected_requests,
-                    history_and_commands_after_recovery_query,
-                    "workflow_command_count",
+                    history_and_commands_after_rejected_requests,
                 )
-                and snapshot_count_unchanged(
+                and ready_or_leased_workflow_tasks_unchanged(
+                    history_and_commands_after_rejected_requests,
+                    history_and_commands_after_recovery_query,
+                )
+                and ready_or_leased_workflow_tasks_unchanged(
+                    history_and_commands_after_recovery_query,
+                    history_and_commands_after_all_requests,
+                )
+            )
+            rejected_handler_invocations = rejected_signal_handler_invocation_count(
+                history_and_commands_before_rejected_requests,
+                history_and_commands_after_all_requests,
+            )
+            rejected_requests_mutated_no_workflow_state = (
+                workflow_state_unchanged(
+                    history_and_commands_before_rejected_requests,
+                    history_and_commands_after_rejected_requests,
+                )
+                and workflow_state_unchanged(
                     history_and_commands_before_rejected_requests,
                     history_and_commands_after_all_requests,
-                    "workflow_command_count",
                 )
             )
 
@@ -10659,13 +10893,22 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                 "history_and_commands_before_rejected_requests": (
                     history_and_commands_before_rejected_requests
                 ),
+                "history_and_commands_after_rejected_requests": (
+                    history_and_commands_after_rejected_requests
+                ),
                 "history_and_commands_after_recovery_query": history_and_commands_after_recovery_query,
                 "history_and_commands_after_all_requests": history_and_commands_after_all_requests,
+                "rejected_signal_audit_rows": rejected_audit_evidence,
+                "rejected_signal_audit_rows_match_expected": rejected_audit_evidence["exact_match"],
                 "rejected_requests_and_recovery_appended_no_history": (
                     rejected_requests_and_recovery_appended_no_history
                 ),
-                "rejected_requests_and_recovery_emitted_no_workflow_commands": (
-                    rejected_requests_and_recovery_emitted_no_workflow_commands
+                "rejected_requests_created_no_executable_or_ready_work": (
+                    rejected_requests_created_no_executable_or_ready_work
+                ),
+                "rejected_signal_handler_invocation_count": rejected_handler_invocations,
+                "rejected_requests_mutated_no_workflow_state": (
+                    rejected_requests_mutated_no_workflow_state
                 ),
                 "workflow_id": baseline_workflow_id,
                 "run_id": baseline_run_id,
@@ -11405,6 +11648,13 @@ def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict
             namespace=namespace,
             timeout=30,
         )
+        history_and_commands_after_rejected_requests = workflow_public_snapshot(
+            base_url,
+            token,
+            namespace,
+            workflow_id,
+            run_id,
+        )
 
         holder: dict[str, Any] = {}
         responder_ready = threading.Event()
@@ -11677,6 +11927,11 @@ def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict
         rejected_requests_and_recovery_appended_no_history = (
             snapshot_count_unchanged(
                 history_and_commands_before_rejected_requests,
+                history_and_commands_after_rejected_requests,
+                "history_event_count",
+            )
+            and snapshot_count_unchanged(
+                history_and_commands_before_rejected_requests,
                 history_and_commands_after_recovery_query,
                 "history_event_count",
             )
@@ -11686,16 +11941,47 @@ def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict
                 "history_event_count",
             )
         )
-        rejected_requests_and_recovery_emitted_no_workflow_commands = (
-            snapshot_count_unchanged(
+        expected_rejected_signal_audits = [
+            rejected_signal_audit_spec(run_id, "increment", "invalid_signal_arguments"),
+            rejected_signal_audit_spec(run_id, "missing", "unknown_signal"),
+            rejected_signal_audit_spec(run_id, "increment", "invalid_signal_arguments"),
+            rejected_signal_audit_spec(run_id, "missing", "unknown_signal"),
+            rejected_signal_audit_spec(run_id, "increment", "invalid_signal_arguments"),
+            rejected_signal_audit_spec(run_id, "missing", "unknown_signal"),
+        ]
+        rejected_audit_evidence = rejected_signal_audit_evidence(
+            history_and_commands_before_rejected_requests,
+            history_and_commands_after_all_requests,
+            expected_rejected_signal_audits,
+        )
+        rejected_requests_created_no_executable_or_ready_work = (
+            rejected_audit_evidence["exact_match"] is True
+            and rejected_audit_evidence["executable_or_ready_command_count"] == 0
+            and ready_or_leased_workflow_tasks_unchanged(
                 history_and_commands_before_rejected_requests,
-                history_and_commands_after_recovery_query,
-                "workflow_command_count",
+                history_and_commands_after_rejected_requests,
             )
-            and snapshot_count_unchanged(
+            and ready_or_leased_workflow_tasks_unchanged(
+                history_and_commands_after_rejected_requests,
+                history_and_commands_after_recovery_query,
+            )
+            and ready_or_leased_workflow_tasks_unchanged(
+                history_and_commands_after_recovery_query,
+                history_and_commands_after_all_requests,
+            )
+        )
+        rejected_handler_invocations = rejected_signal_handler_invocation_count(
+            history_and_commands_before_rejected_requests,
+            history_and_commands_after_all_requests,
+        )
+        rejected_requests_mutated_no_workflow_state = (
+            workflow_state_unchanged(
+                history_and_commands_before_rejected_requests,
+                history_and_commands_after_rejected_requests,
+            )
+            and workflow_state_unchanged(
                 history_and_commands_before_rejected_requests,
                 history_and_commands_after_all_requests,
-                "workflow_command_count",
             )
         )
         query_state_mutations = 0 if post_error_result == committed_state else 1
@@ -11772,13 +12058,20 @@ def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict
             "known_query_after_unknown_result": post_error_result,
             "post_error_query_responder": post_error_query_responder,
             "history_and_commands_before_rejected_requests": history_and_commands_before_rejected_requests,
+            "history_and_commands_after_rejected_requests": history_and_commands_after_rejected_requests,
             "history_and_commands_after_recovery_query": history_and_commands_after_recovery_query,
             "history_and_commands_after_all_requests": history_and_commands_after_all_requests,
+            "rejected_signal_audit_rows": rejected_audit_evidence,
+            "rejected_signal_audit_rows_match_expected": rejected_audit_evidence["exact_match"],
             "rejected_requests_and_recovery_appended_no_history": (
                 rejected_requests_and_recovery_appended_no_history
             ),
-            "rejected_requests_and_recovery_emitted_no_workflow_commands": (
-                rejected_requests_and_recovery_emitted_no_workflow_commands
+            "rejected_requests_created_no_executable_or_ready_work": (
+                rejected_requests_created_no_executable_or_ready_work
+            ),
+            "rejected_signal_handler_invocation_count": rejected_handler_invocations,
+            "rejected_requests_mutated_no_workflow_state": (
+                rejected_requests_mutated_no_workflow_state
             ),
             "published_artifact_versions": versions,
             "artifact_sources": sources,
@@ -14664,12 +14957,26 @@ SCENARIO_REQUIRED_EVIDENCE: dict[str, list[str]] = {
         "post_error_query_responder",
         "history_and_commands_before_rejected_requests.history_event_count",
         "history_and_commands_before_rejected_requests.workflow_command_count",
+        "history_and_commands_before_rejected_requests.ready_or_leased_workflow_task_count",
+        "history_and_commands_before_rejected_requests.ready_or_leased_workflow_task_set_sha256",
+        "history_and_commands_after_rejected_requests.history_event_count",
+        "history_and_commands_after_rejected_requests.workflow_command_count",
+        "history_and_commands_after_rejected_requests.ready_or_leased_workflow_task_count",
+        "history_and_commands_after_rejected_requests.ready_or_leased_workflow_task_set_sha256",
         "history_and_commands_after_recovery_query.history_event_count",
         "history_and_commands_after_recovery_query.workflow_command_count",
+        "history_and_commands_after_recovery_query.ready_or_leased_workflow_task_count",
+        "history_and_commands_after_recovery_query.ready_or_leased_workflow_task_set_sha256",
         "history_and_commands_after_all_requests.history_event_count",
         "history_and_commands_after_all_requests.workflow_command_count",
+        "history_and_commands_after_all_requests.ready_or_leased_workflow_task_count",
+        "history_and_commands_after_all_requests.ready_or_leased_workflow_task_set_sha256",
+        "rejected_signal_audit_rows",
+        "rejected_signal_audit_rows_match_expected",
         "rejected_requests_and_recovery_appended_no_history",
-        "rejected_requests_and_recovery_emitted_no_workflow_commands",
+        "rejected_requests_created_no_executable_or_ready_work",
+        "rejected_signal_handler_invocation_count",
+        "rejected_requests_mutated_no_workflow_state",
     ],
     "malformed_signal_and_query_payloads": [
         "invalid_signal_arguments",
@@ -14809,7 +15116,9 @@ TRUTHY_REQUIRED_EVIDENCE = {
     "successful_and_failed_queries_appended_no_history",
     "successful_and_failed_queries_emitted_no_workflow_commands",
     "rejected_requests_and_recovery_appended_no_history",
-    "rejected_requests_and_recovery_emitted_no_workflow_commands",
+    "rejected_signal_audit_rows_match_expected",
+    "rejected_requests_created_no_executable_or_ready_work",
+    "rejected_requests_mutated_no_workflow_state",
     "cold_restart.durable_history_restored",
 }
 
@@ -15012,23 +15321,76 @@ def post_error_query_responder_satisfied(observed: dict[str, Any]) -> bool:
     )
 
 
+def rejected_signal_audit_rows_satisfied(observed: dict[str, Any]) -> bool:
+    audit = evidence_lookup(observed, "rejected_signal_audit_rows")
+    if not isinstance(audit, dict):
+        return False
+
+    expected_rows = audit.get("expected_rows")
+    observed_rows = audit.get("observed_rows")
+    run_id = evidence_lookup(observed, "run_id")
+    if (
+        not isinstance(run_id, str)
+        or not isinstance(expected_rows, list)
+        or not expected_rows
+        or expected_rows != observed_rows
+        or audit.get("exact_match") is not True
+        or integer_value(audit.get("executable_or_ready_command_count")) != 0
+    ):
+        return False
+
+    allowed_targets = {
+        ("missing", "unknown_signal", "rejected_unknown_signal"),
+        ("increment", "invalid_signal_arguments", "rejected_invalid_arguments"),
+    }
+    for row in expected_rows:
+        if not isinstance(row, dict):
+            return False
+        target = (row.get("target_name"), row.get("reason"), row.get("outcome"))
+        if (
+            row.get("type") != "signal"
+            or row.get("target_scope") != "instance"
+            or row.get("requested_run_id") is not None
+            or row.get("resolved_run_id") != run_id
+            or target not in allowed_targets
+            or row.get("status") != "rejected"
+            or row.get("rejection_reason") != row.get("reason")
+            or row.get("accepted_at") is not None
+            or row.get("applied_at") is not None
+            or row.get("rejected_at_recorded") is not True
+        ):
+            return False
+
+    return any(row.get("reason") == "unknown_signal" for row in expected_rows)
+
+
 def post_error_recovery_immutability_satisfied(observed: dict[str, Any]) -> bool:
     before = evidence_lookup(observed, "history_and_commands_before_rejected_requests")
+    after_rejected = evidence_lookup(observed, "history_and_commands_after_rejected_requests")
     after_recovery = evidence_lookup(observed, "history_and_commands_after_recovery_query")
     after_all = evidence_lookup(observed, "history_and_commands_after_all_requests")
 
     return (
         isinstance(before, dict)
+        and isinstance(after_rejected, dict)
         and isinstance(after_recovery, dict)
         and isinstance(after_all, dict)
-        and counts_unchanged(before, after_recovery)
-        and counts_unchanged(before, after_all)
+        and snapshot_count_unchanged(before, after_rejected, "history_event_count")
+        and snapshot_count_unchanged(before, after_recovery, "history_event_count")
+        and snapshot_count_unchanged(before, after_all, "history_event_count")
+        and ready_or_leased_workflow_tasks_unchanged(before, after_rejected)
+        and ready_or_leased_workflow_tasks_unchanged(after_rejected, after_recovery)
+        and ready_or_leased_workflow_tasks_unchanged(after_recovery, after_all)
+        and rejected_signal_audit_rows_satisfied(observed)
+        and evidence_true(evidence_lookup(observed, "rejected_signal_audit_rows_match_expected"))
         and evidence_true(
             evidence_lookup(observed, "rejected_requests_and_recovery_appended_no_history")
         )
         and evidence_true(
-            evidence_lookup(observed, "rejected_requests_and_recovery_emitted_no_workflow_commands")
+            evidence_lookup(observed, "rejected_requests_created_no_executable_or_ready_work")
         )
+        and integer_value(evidence_lookup(observed, "rejected_signal_handler_invocation_count")) == 0
+        and evidence_true(evidence_lookup(observed, "rejected_requests_mutated_no_workflow_state"))
     )
 
 
@@ -15691,12 +16053,26 @@ BASELINE_CURRENT_EVIDENCE_FIELDS = {
         "post_error_query_responder",
         "history_and_commands_before_rejected_requests.history_event_count",
         "history_and_commands_before_rejected_requests.workflow_command_count",
+        "history_and_commands_before_rejected_requests.ready_or_leased_workflow_task_count",
+        "history_and_commands_before_rejected_requests.ready_or_leased_workflow_task_set_sha256",
+        "history_and_commands_after_rejected_requests.history_event_count",
+        "history_and_commands_after_rejected_requests.workflow_command_count",
+        "history_and_commands_after_rejected_requests.ready_or_leased_workflow_task_count",
+        "history_and_commands_after_rejected_requests.ready_or_leased_workflow_task_set_sha256",
         "history_and_commands_after_recovery_query.history_event_count",
         "history_and_commands_after_recovery_query.workflow_command_count",
+        "history_and_commands_after_recovery_query.ready_or_leased_workflow_task_count",
+        "history_and_commands_after_recovery_query.ready_or_leased_workflow_task_set_sha256",
         "history_and_commands_after_all_requests.history_event_count",
         "history_and_commands_after_all_requests.workflow_command_count",
+        "history_and_commands_after_all_requests.ready_or_leased_workflow_task_count",
+        "history_and_commands_after_all_requests.ready_or_leased_workflow_task_set_sha256",
+        "rejected_signal_audit_rows",
+        "rejected_signal_audit_rows_match_expected",
         "rejected_requests_and_recovery_appended_no_history",
-        "rejected_requests_and_recovery_emitted_no_workflow_commands",
+        "rejected_requests_created_no_executable_or_ready_work",
+        "rejected_signal_handler_invocation_count",
+        "rejected_requests_mutated_no_workflow_state",
     ],
 }
 
@@ -16472,10 +16848,32 @@ def unknown_handler_behavior_failures(observed: dict[str, Any]) -> list[dict[str
             True,
             False,
         ))
-    if evidence_lookup(observed, "rejected_requests_and_recovery_emitted_no_workflow_commands") is False:
+    if evidence_lookup(observed, "rejected_signal_audit_rows_match_expected") is False:
         failures.append(behavior_failure(
-            "rejected_requests_or_recovery_emitted_workflow_commands",
-            "rejected_requests_and_recovery_emitted_no_workflow_commands",
+            "rejected_signal_audit_rows_differed_from_expected",
+            "rejected_signal_audit_rows_match_expected",
+            True,
+            False,
+        ))
+    if evidence_lookup(observed, "rejected_requests_created_no_executable_or_ready_work") is False:
+        failures.append(behavior_failure(
+            "rejected_request_created_executable_or_ready_work",
+            "rejected_requests_created_no_executable_or_ready_work",
+            True,
+            False,
+        ))
+    handler_invocations = evidence_lookup(observed, "rejected_signal_handler_invocation_count")
+    if handler_invocations is not MISSING and integer_value(handler_invocations) != 0:
+        failures.append(behavior_failure(
+            "rejected_signal_invoked_handler",
+            "rejected_signal_handler_invocation_count",
+            0,
+            handler_invocations,
+        ))
+    if evidence_lookup(observed, "rejected_requests_mutated_no_workflow_state") is False:
+        failures.append(behavior_failure(
+            "rejected_request_mutated_workflow_state",
+            "rejected_requests_mutated_no_workflow_state",
             True,
             False,
         ))

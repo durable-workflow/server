@@ -14,7 +14,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $manifest = SignalQueryRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.signal-query-runtime.contract', $manifest['schema']);
-        $this->assertSame(38, SignalQueryRuntimeContract::VERSION);
+        $this->assertSame(39, SignalQueryRuntimeContract::VERSION);
         $this->assertSame(SignalQueryRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.signal-query-runtime.result', $manifest['result_schema']);
         $this->assertSame('signal_query_runtime_contract', $manifest['fixture_category']);
@@ -458,7 +458,7 @@ PY);
         $resultGate = SignalQueryRuntimeContract::manifest()['result_gate'];
 
         $this->assertSame(SignalQueryRuntimeResultGate::SCHEMA, $resultGate['schema']);
-        $this->assertSame(29, SignalQueryRuntimeResultGate::VERSION);
+        $this->assertSame(30, SignalQueryRuntimeResultGate::VERSION);
         $this->assertSame(SignalQueryRuntimeResultGate::VERSION, $resultGate['version']);
         $this->assertSame(
             SignalQueryRuntimeContract::RESULT_SCHEMA,
@@ -801,12 +801,26 @@ PY);
                 'post_error_query_responder',
                 'history_and_commands_before_rejected_requests.history_event_count',
                 'history_and_commands_before_rejected_requests.workflow_command_count',
+                'history_and_commands_before_rejected_requests.ready_or_leased_workflow_task_count',
+                'history_and_commands_before_rejected_requests.ready_or_leased_workflow_task_set_sha256',
+                'history_and_commands_after_rejected_requests.history_event_count',
+                'history_and_commands_after_rejected_requests.workflow_command_count',
+                'history_and_commands_after_rejected_requests.ready_or_leased_workflow_task_count',
+                'history_and_commands_after_rejected_requests.ready_or_leased_workflow_task_set_sha256',
                 'history_and_commands_after_recovery_query.history_event_count',
                 'history_and_commands_after_recovery_query.workflow_command_count',
+                'history_and_commands_after_recovery_query.ready_or_leased_workflow_task_count',
+                'history_and_commands_after_recovery_query.ready_or_leased_workflow_task_set_sha256',
                 'history_and_commands_after_all_requests.history_event_count',
                 'history_and_commands_after_all_requests.workflow_command_count',
+                'history_and_commands_after_all_requests.ready_or_leased_workflow_task_count',
+                'history_and_commands_after_all_requests.ready_or_leased_workflow_task_set_sha256',
+                'rejected_signal_audit_rows',
+                'rejected_signal_audit_rows_match_expected',
                 'rejected_requests_and_recovery_appended_no_history',
-                'rejected_requests_and_recovery_emitted_no_workflow_commands',
+                'rejected_requests_created_no_executable_or_ready_work',
+                'rejected_signal_handler_invocation_count',
+                'rejected_requests_mutated_no_workflow_state',
             ],
             $hostRunner['evidence_shards']['unknown_handler_errors']['required_evidence_fields'],
         );
@@ -1202,6 +1216,58 @@ PY);
             $this->assertSame($result[$runtime]['identity'], $result[$runtime]['user'], $runtime);
             $this->assertTrue($result[$runtime]['mount'], $runtime);
         }
+    }
+
+    public function test_host_runner_installer_path_resolves_the_exact_private_cli_binary(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+artifact_versions = {"cli": "2.0.0-rc.36"}
+installer_bytes = b"""#!/bin/sh
+set -eu
+test "$VERSION" = "2.0.0-rc.36"
+mkdir -p "$DURABLE_WORKFLOW_INSTALL_DIR"
+printf '%s\n' '#!/bin/sh' 'exit 0' > "$DURABLE_WORKFLOW_INSTALL_DIR/dw"
+chmod +x "$DURABLE_WORKFLOW_INSTALL_DIR/dw"
+command -v dw > "$DURABLE_WORKFLOW_INSTALL_DIR/resolved.txt"
+"""
+
+class FakeInstallerResponse:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def read(self):
+        return installer_bytes
+
+original_urlopen = urllib.request.urlopen
+with tempfile.TemporaryDirectory() as temporary:
+    run_root = Path(temporary)
+    EXECUTED_DISTRIBUTION_IDENTITIES_PATH = run_root / "executed-distribution-identities.json"
+    urllib.request.urlopen = lambda *args, **kwargs: FakeInstallerResponse()
+    try:
+        binary, install_entry = install_cli(run_root, run_root / "install.log")
+    finally:
+        urllib.request.urlopen = original_urlopen
+
+    resolved = (run_root / "cli" / "bin" / "resolved.txt").read_text().strip()
+    identities = load_distribution_identities(EXECUTED_DISTRIBUTION_IDENTITIES_PATH)
+    print(json.dumps({
+        "binary": binary,
+        "resolved": resolved,
+        "status": install_entry["status"],
+        "version": install_entry["version"],
+        "source": install_entry["source"],
+        "locator": identities["cli"]["locator"],
+    }, sort_keys=True))
+PY);
+
+        $this->assertSame($result['binary'], $result['resolved']);
+        $this->assertSame('pass', $result['status']);
+        $this->assertSame('2.0.0-rc.36', $result['version']);
+        $this->assertSame('published_cli_release', $result['source']);
+        $this->assertSame('github-release:durable-workflow/cli@2.0.0-rc.36', $result['locator']);
     }
 
     public function test_host_runner_executes_the_exact_published_rust_matrix(): void
@@ -2765,6 +2831,11 @@ def fake_http_json(base_url, path, **kwargs):
                 "next_page_token": None,
             },
         }
+    if path == api_path("workflows", "wf-terminal", "runs", "run-terminal", "debug"):
+        return {
+            "status_code": 200,
+            "body": {"pending_workflow_tasks": []},
+        }
     raise AssertionError(f"unexpected path {path}")
 
 globals()["http_json"] = fake_http_json
@@ -2786,6 +2857,7 @@ PY);
             [
                 '/api/workflows/wf-terminal/runs/run-terminal',
                 '/api/workflows/wf-terminal/runs/run-terminal/history?page_size=1000',
+                '/api/workflows/wf-terminal/runs/run-terminal/debug',
             ],
             $result['paths'],
         );
@@ -2793,6 +2865,11 @@ PY);
         $this->assertSame(
             ['WorkflowStarted', 'WorkflowCompleted'],
             $result['snapshot']['history_event_types'],
+        );
+        $this->assertSame(0, $result['snapshot']['ready_or_leased_workflow_task_count']);
+        $this->assertSame(
+            '4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945',
+            $result['snapshot']['ready_or_leased_workflow_task_set_sha256'],
         );
     }
 
@@ -3266,6 +3343,47 @@ PY);
     public function test_host_runner_requires_exact_post_error_recovery_claim_and_immutable_history(): void
     {
         $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+run_id = "run-adversarial"
+start_command = {
+    "id": "command-start",
+    "type": "start",
+    "status": "applied",
+    "applied_at": "2026-07-12T11:59:00Z",
+}
+rejected_command = {
+    "id": "command-rejected-signal",
+    "type": "signal",
+    "target_scope": "instance",
+    "resolved_run_id": run_id,
+    "target_name": "missing",
+    "status": "rejected",
+    "outcome": "rejected_unknown_signal",
+    "reason": "unknown_signal",
+    "rejection_reason": "unknown_signal",
+    "rejected_at": "2026-07-12T12:00:00Z",
+}
+before_snapshot = {
+    "run_id": run_id,
+    "status": "waiting",
+    "history_event_count": 2,
+    "history_event_types": ["WorkflowStarted", "WorkflowTaskCompleted"],
+    "workflow_command_count": 1,
+    "workflow_commands": [start_command],
+    "ready_or_leased_workflow_tasks": [],
+    "ready_or_leased_workflow_task_count": 0,
+    "ready_or_leased_workflow_task_set_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+}
+after_rejected_snapshot = {
+    **before_snapshot,
+    "workflow_command_count": 2,
+    "workflow_commands": [start_command, rejected_command],
+}
+expected_audit_rows = [rejected_signal_audit_spec(run_id, "missing", "unknown_signal")]
+audit_evidence = rejected_signal_audit_evidence(
+    before_snapshot,
+    after_rejected_snapshot,
+    expected_audit_rows,
+)
 observed = {
     "workflow_id": "wf-adversarial",
     "run_id": "run-adversarial",
@@ -3279,20 +3397,16 @@ observed = {
     "known_query_after_unknown_errors": {"status_code": 200, "body": {"result": 0}},
     "known_query_after_unknown_expected": 0,
     "known_query_after_unknown_result": 0,
-    "history_and_commands_before_rejected_requests": {
-        "history_event_count": 2,
-        "workflow_command_count": 1,
-    },
-    "history_and_commands_after_recovery_query": {
-        "history_event_count": 2,
-        "workflow_command_count": 1,
-    },
-    "history_and_commands_after_all_requests": {
-        "history_event_count": 2,
-        "workflow_command_count": 1,
-    },
+    "history_and_commands_before_rejected_requests": before_snapshot,
+    "history_and_commands_after_rejected_requests": after_rejected_snapshot,
+    "history_and_commands_after_recovery_query": after_rejected_snapshot,
+    "history_and_commands_after_all_requests": after_rejected_snapshot,
+    "rejected_signal_audit_rows": audit_evidence,
+    "rejected_signal_audit_rows_match_expected": True,
     "rejected_requests_and_recovery_appended_no_history": True,
-    "rejected_requests_and_recovery_emitted_no_workflow_commands": True,
+    "rejected_requests_created_no_executable_or_ready_work": True,
+    "rejected_signal_handler_invocation_count": 0,
+    "rejected_requests_mutated_no_workflow_state": True,
     "post_error_query_responder": {
         "worker_id": "adversarial-worker",
         "task_queue": "adversarial-queue",
@@ -3324,6 +3438,10 @@ observed = {
 }
 
 accepted = has_required_evidence("unknown_signal_and_query_errors", observed)
+accepted_command_count_increase = (
+    observed["history_and_commands_after_all_requests"]["workflow_command_count"]
+    > observed["history_and_commands_before_rejected_requests"]["workflow_command_count"]
+)
 rejections = {}
 responder = observed["post_error_query_responder"]
 for field, bad_value in {
@@ -3348,17 +3466,30 @@ for field, bad_value in {
     rejections[f"claim.{field}"] = has_required_evidence("unknown_signal_and_query_errors", observed)
     claimed[field] = original
 
+audit_row = observed["rejected_signal_audit_rows"]["observed_rows"][0]
+for field, bad_value in {
+    "target_name": "different-signal",
+    "reason": "different-reason",
+    "status": "ready",
+}.items():
+    original = audit_row[field]
+    audit_row[field] = bad_value
+    rejections[f"audit.{field}"] = has_required_evidence("unknown_signal_and_query_errors", observed)
+    audit_row[field] = original
+
 observed["history_and_commands_after_recovery_query"]["history_event_count"] = 3
 history_mutation_rejected = has_required_evidence("unknown_signal_and_query_errors", observed)
 
 print(json.dumps({
     "accepted": accepted,
+    "accepted_command_count_increase": accepted_command_count_increase,
     "rejections": rejections,
     "history_mutation_rejected": history_mutation_rejected,
 }, sort_keys=True))
 PY);
 
         $this->assertTrue($result['accepted']);
+        $this->assertTrue($result['accepted_command_count_increase']);
         $this->assertNotEmpty($result['rejections']);
         foreach ($result['rejections'] as $accepted) {
             $this->assertFalse($accepted);
@@ -6360,12 +6491,26 @@ PY);
                 'post_error_query_responder',
                 'history_and_commands_before_rejected_requests.history_event_count',
                 'history_and_commands_before_rejected_requests.workflow_command_count',
+                'history_and_commands_before_rejected_requests.ready_or_leased_workflow_task_count',
+                'history_and_commands_before_rejected_requests.ready_or_leased_workflow_task_set_sha256',
+                'history_and_commands_after_rejected_requests.history_event_count',
+                'history_and_commands_after_rejected_requests.workflow_command_count',
+                'history_and_commands_after_rejected_requests.ready_or_leased_workflow_task_count',
+                'history_and_commands_after_rejected_requests.ready_or_leased_workflow_task_set_sha256',
                 'history_and_commands_after_recovery_query.history_event_count',
                 'history_and_commands_after_recovery_query.workflow_command_count',
+                'history_and_commands_after_recovery_query.ready_or_leased_workflow_task_count',
+                'history_and_commands_after_recovery_query.ready_or_leased_workflow_task_set_sha256',
                 'history_and_commands_after_all_requests.history_event_count',
                 'history_and_commands_after_all_requests.workflow_command_count',
+                'history_and_commands_after_all_requests.ready_or_leased_workflow_task_count',
+                'history_and_commands_after_all_requests.ready_or_leased_workflow_task_set_sha256',
+                'rejected_signal_audit_rows',
+                'rejected_signal_audit_rows_match_expected',
                 'rejected_requests_and_recovery_appended_no_history',
-                'rejected_requests_and_recovery_emitted_no_workflow_commands',
+                'rejected_requests_created_no_executable_or_ready_work',
+                'rejected_signal_handler_invocation_count',
+                'rejected_requests_mutated_no_workflow_state',
             ],
         ];
         $expectedTypes = [
@@ -8960,12 +9105,77 @@ PY);
 
     public function test_result_gate_accepts_a_complete_passing_matrix(): void
     {
-        $evaluation = SignalQueryRuntimeResultGate::evaluate($this->completeSignalQueryResult());
+        $result = $this->completeSignalQueryResult();
+        $unknown = $result['scenario_results']['unknown_signal_and_query_errors']['observed_outputs'];
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
 
         $this->assertSame('pass', $evaluation['status']);
         $this->assertSame([], $evaluation['missing_scenarios']);
         $this->assertSame([], $evaluation['non_pass_scenarios']);
         $this->assertSame([], $evaluation['gate_failures']);
+        $this->assertGreaterThan(
+            $unknown['history_and_commands_before_rejected_requests']['workflow_command_count'],
+            $unknown['history_and_commands_after_all_requests']['workflow_command_count'],
+        );
+    }
+
+    public function test_result_gate_rejects_inexact_audit_rows_tasks_and_handler_invocation(): void
+    {
+        foreach ([
+            'target_name' => 'different-signal',
+            'reason' => 'different-reason',
+            'status' => 'ready',
+        ] as $field => $badValue) {
+            $result = $this->completeSignalQueryResult();
+            $result['scenario_results']['unknown_signal_and_query_errors']['observed_outputs'][
+                'rejected_signal_audit_rows'
+            ]['observed_rows'][0][$field] = $badValue;
+
+            $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+
+            $this->assertSame('non_passing', $evaluation['status'], $field);
+            $this->assertContains(
+                'unexpected_rejected_signal_audit_rows',
+                array_column($evaluation['gate_failures'], 'code'),
+                $field,
+            );
+        }
+
+        $taskResult = $this->completeSignalQueryResult();
+        $taskResult['scenario_results']['unknown_signal_and_query_errors']['observed_outputs'][
+            'history_and_commands_after_rejected_requests'
+        ]['ready_or_leased_workflow_task_count'] = 1;
+        $taskResult['scenario_results']['unknown_signal_and_query_errors']['observed_outputs'][
+            'history_and_commands_after_rejected_requests'
+        ]['ready_or_leased_workflow_task_set_sha256'] = str_repeat('a', 64);
+        $taskEvaluation = SignalQueryRuntimeResultGate::evaluate($taskResult);
+        $this->assertContains(
+            'rejected_signal_created_ready_or_leased_workflow_task',
+            array_column($taskEvaluation['gate_failures'], 'code'),
+        );
+
+        $recoveryTaskResult = $this->completeSignalQueryResult();
+        $recoveryTaskResult['scenario_results']['unknown_signal_and_query_errors']['observed_outputs'][
+            'history_and_commands_after_recovery_query'
+        ]['ready_or_leased_workflow_task_count'] = 1;
+        $recoveryTaskResult['scenario_results']['unknown_signal_and_query_errors']['observed_outputs'][
+            'history_and_commands_after_recovery_query'
+        ]['ready_or_leased_workflow_task_set_sha256'] = str_repeat('b', 64);
+        $recoveryTaskEvaluation = SignalQueryRuntimeResultGate::evaluate($recoveryTaskResult);
+        $this->assertContains(
+            'rejected_signal_created_ready_or_leased_workflow_task',
+            array_column($recoveryTaskEvaluation['gate_failures'], 'code'),
+        );
+
+        $handlerResult = $this->completeSignalQueryResult();
+        $handlerResult['scenario_results']['unknown_signal_and_query_errors']['observed_outputs'][
+            'rejected_signal_handler_invocation_count'
+        ] = 1;
+        $handlerEvaluation = SignalQueryRuntimeResultGate::evaluate($handlerResult);
+        $this->assertContains(
+            'rejected_signal_invoked_handler',
+            array_column($handlerEvaluation['gate_failures'], 'code'),
+        );
     }
 
     public function test_result_gate_rejects_pass_when_scenario_artifact_versions_do_not_match_run_tuple(): void
@@ -10496,19 +10706,88 @@ PY);
             'known_query_after_unknown_result' => 8,
             'post_error_query_responder' => $this->postErrorQueryResponderEvidence(),
             'history_and_commands_before_rejected_requests' => [
+                'run_id' => 'run-unknown',
+                'status' => 'waiting',
                 'history_event_count' => 2,
+                'history_event_types' => ['WorkflowStarted', 'WorkflowTaskCompleted'],
                 'workflow_command_count' => 1,
+                'workflow_commands' => [[
+                    'id' => 'command-start',
+                    'type' => 'start',
+                    'status' => 'applied',
+                    'applied_at' => '2026-05-20T00:00:00Z',
+                ]],
+                'ready_or_leased_workflow_tasks' => [],
+                'ready_or_leased_workflow_task_count' => 0,
+                'ready_or_leased_workflow_task_set_sha256' => '4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945',
+            ],
+            'history_and_commands_after_rejected_requests' => [
+                'run_id' => 'run-unknown',
+                'status' => 'waiting',
+                'history_event_count' => 2,
+                'history_event_types' => ['WorkflowStarted', 'WorkflowTaskCompleted'],
+                'workflow_command_count' => 2,
+                'ready_or_leased_workflow_tasks' => [],
+                'ready_or_leased_workflow_task_count' => 0,
+                'ready_or_leased_workflow_task_set_sha256' => '4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945',
             ],
             'history_and_commands_after_recovery_query' => [
+                'run_id' => 'run-unknown',
+                'status' => 'waiting',
                 'history_event_count' => 2,
-                'workflow_command_count' => 1,
+                'history_event_types' => ['WorkflowStarted', 'WorkflowTaskCompleted'],
+                'workflow_command_count' => 2,
+                'ready_or_leased_workflow_tasks' => [],
+                'ready_or_leased_workflow_task_count' => 0,
+                'ready_or_leased_workflow_task_set_sha256' => '4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945',
             ],
             'history_and_commands_after_all_requests' => [
+                'run_id' => 'run-unknown',
+                'status' => 'waiting',
                 'history_event_count' => 2,
-                'workflow_command_count' => 1,
+                'history_event_types' => ['WorkflowStarted', 'WorkflowTaskCompleted'],
+                'workflow_command_count' => 4,
+                'ready_or_leased_workflow_tasks' => [],
+                'ready_or_leased_workflow_task_count' => 0,
+                'ready_or_leased_workflow_task_set_sha256' => '4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945',
             ],
+            'rejected_signal_audit_rows' => [
+                'expected_rows' => array_fill(0, 3, [
+                    'type' => 'signal',
+                    'target_scope' => 'instance',
+                    'requested_run_id' => null,
+                    'resolved_run_id' => 'run-unknown',
+                    'target_name' => 'missing',
+                    'status' => 'rejected',
+                    'outcome' => 'rejected_unknown_signal',
+                    'reason' => 'unknown_signal',
+                    'rejection_reason' => 'unknown_signal',
+                    'accepted_at' => null,
+                    'applied_at' => null,
+                    'rejected_at_recorded' => true,
+                ]),
+                'observed_rows' => array_fill(0, 3, [
+                    'type' => 'signal',
+                    'target_scope' => 'instance',
+                    'requested_run_id' => null,
+                    'resolved_run_id' => 'run-unknown',
+                    'target_name' => 'missing',
+                    'status' => 'rejected',
+                    'outcome' => 'rejected_unknown_signal',
+                    'reason' => 'unknown_signal',
+                    'rejection_reason' => 'unknown_signal',
+                    'accepted_at' => null,
+                    'applied_at' => null,
+                    'rejected_at_recorded' => true,
+                ]),
+                'exact_match' => true,
+                'executable_or_ready_command_count' => 0,
+            ],
+            'rejected_signal_audit_rows_match_expected' => true,
             'rejected_requests_and_recovery_appended_no_history' => true,
-            'rejected_requests_and_recovery_emitted_no_workflow_commands' => true,
+            'rejected_requests_created_no_executable_or_ready_work' => true,
+            'rejected_signal_handler_invocation_count' => 0,
+            'rejected_requests_mutated_no_workflow_state' => true,
         ];
         $scenarioResults['malformed_signal_and_query_payloads']['observed_outputs'] = [
             'invalid_signal_arguments' => [

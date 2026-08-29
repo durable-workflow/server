@@ -16,7 +16,7 @@ final class SignalQueryRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.contract';
 
-    public const VERSION = 38;
+    public const VERSION = 39;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.signal-query-runtime.result';
 
@@ -548,12 +548,26 @@ final class SignalQueryRuntimeContract
                         'post_error_query_responder',
                         'history_and_commands_before_rejected_requests.history_event_count',
                         'history_and_commands_before_rejected_requests.workflow_command_count',
+                        'history_and_commands_before_rejected_requests.ready_or_leased_workflow_task_count',
+                        'history_and_commands_before_rejected_requests.ready_or_leased_workflow_task_set_sha256',
+                        'history_and_commands_after_rejected_requests.history_event_count',
+                        'history_and_commands_after_rejected_requests.workflow_command_count',
+                        'history_and_commands_after_rejected_requests.ready_or_leased_workflow_task_count',
+                        'history_and_commands_after_rejected_requests.ready_or_leased_workflow_task_set_sha256',
                         'history_and_commands_after_recovery_query.history_event_count',
                         'history_and_commands_after_recovery_query.workflow_command_count',
+                        'history_and_commands_after_recovery_query.ready_or_leased_workflow_task_count',
+                        'history_and_commands_after_recovery_query.ready_or_leased_workflow_task_set_sha256',
                         'history_and_commands_after_all_requests.history_event_count',
                         'history_and_commands_after_all_requests.workflow_command_count',
+                        'history_and_commands_after_all_requests.ready_or_leased_workflow_task_count',
+                        'history_and_commands_after_all_requests.ready_or_leased_workflow_task_set_sha256',
+                        'rejected_signal_audit_rows',
+                        'rejected_signal_audit_rows_match_expected',
                         'rejected_requests_and_recovery_appended_no_history',
-                        'rejected_requests_and_recovery_emitted_no_workflow_commands',
+                        'rejected_requests_created_no_executable_or_ready_work',
+                        'rejected_signal_handler_invocation_count',
+                        'rejected_requests_mutated_no_workflow_state',
                     ],
                     'optional_public_client_error_samples' => [
                         'cli_unknown_signal_sample',
@@ -565,7 +579,7 @@ final class SignalQueryRuntimeContract
                         'sdk_python_missing_workflow_signal_sample',
                         'sdk_python_missing_workflow_query_sample',
                     ],
-                    'history_integrity' => 'no_handler_invocation_or_state_corruption',
+                    'history_integrity' => 'only_exact_rejected_signal_audit_rows_without_executable_work_handler_invocation_or_state_corruption',
                 ],
                 'malformed_signal_and_query_payloads' => [
                     'required_errors' => [
@@ -1070,12 +1084,26 @@ final class SignalQueryRuntimeContract
                             'post_error_query_responder',
                             'history_and_commands_before_rejected_requests.history_event_count',
                             'history_and_commands_before_rejected_requests.workflow_command_count',
+                            'history_and_commands_before_rejected_requests.ready_or_leased_workflow_task_count',
+                            'history_and_commands_before_rejected_requests.ready_or_leased_workflow_task_set_sha256',
+                            'history_and_commands_after_rejected_requests.history_event_count',
+                            'history_and_commands_after_rejected_requests.workflow_command_count',
+                            'history_and_commands_after_rejected_requests.ready_or_leased_workflow_task_count',
+                            'history_and_commands_after_rejected_requests.ready_or_leased_workflow_task_set_sha256',
                             'history_and_commands_after_recovery_query.history_event_count',
                             'history_and_commands_after_recovery_query.workflow_command_count',
+                            'history_and_commands_after_recovery_query.ready_or_leased_workflow_task_count',
+                            'history_and_commands_after_recovery_query.ready_or_leased_workflow_task_set_sha256',
                             'history_and_commands_after_all_requests.history_event_count',
                             'history_and_commands_after_all_requests.workflow_command_count',
+                            'history_and_commands_after_all_requests.ready_or_leased_workflow_task_count',
+                            'history_and_commands_after_all_requests.ready_or_leased_workflow_task_set_sha256',
+                            'rejected_signal_audit_rows',
+                            'rejected_signal_audit_rows_match_expected',
                             'rejected_requests_and_recovery_appended_no_history',
-                            'rejected_requests_and_recovery_emitted_no_workflow_commands',
+                            'rejected_requests_created_no_executable_or_ready_work',
+                            'rejected_signal_handler_invocation_count',
+                            'rejected_requests_mutated_no_workflow_state',
                         ],
                         'optional_evidence_fields' => [
                             'cli_unknown_signal_sample',

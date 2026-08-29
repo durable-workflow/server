@@ -10,7 +10,7 @@ final class SignalQueryRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.result-gate';
 
-    public const VERSION = 29;
+    public const VERSION = 30;
 
     private const EVIDENCE_SECTION_SCENARIOS = [
         'replay_timing' => [
@@ -55,6 +55,10 @@ final class SignalQueryRuntimeResultGate
         'failed_query_did_not_change_later_answer',
         'successful_and_failed_queries_appended_no_history',
         'successful_and_failed_queries_emitted_no_workflow_commands',
+        'rejected_signal_audit_rows_match_expected',
+        'rejected_requests_and_recovery_appended_no_history',
+        'rejected_requests_created_no_executable_or_ready_work',
+        'rejected_requests_mutated_no_workflow_state',
         'cold_restart.durable_history_restored',
     ];
 
@@ -1803,6 +1807,7 @@ final class SignalQueryRuntimeResultGate
                     ]),
                     ...self::statusCodeFailures($result, $scenarioResult, $scenarioId, $optionalStatusCodeRanges),
                     ...self::unknownHandlerReasonFailures($result, $scenarioResult, $scenarioId),
+                    ...self::unknownHandlerAuditFailures($result, $scenarioResult, $scenarioId),
                 );
             }
 
@@ -2694,6 +2699,146 @@ final class SignalQueryRuntimeResultGate
                 'evidence_key' => $evidenceKey,
                 'expected_exception' => $expectedException,
                 'actual_exception' => $actualException,
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param  array<string, mixed>  $result
+     * @param  array<string, mixed>  $scenarioResult
+     * @return array<int, array<string, mixed>>
+     */
+    private static function unknownHandlerAuditFailures(
+        array $result,
+        array $scenarioResult,
+        string $scenarioId,
+    ): array {
+        $failures = [];
+        $audit = self::evidenceValue($result, $scenarioResult, $scenarioId, 'rejected_signal_audit_rows');
+        $runId = self::stringValue(
+            self::evidenceValue($result, $scenarioResult, $scenarioId, 'run_id'),
+        );
+        $expectedRows = is_array($audit) && is_array($audit['expected_rows'] ?? null)
+            ? $audit['expected_rows']
+            : [];
+        $observedRows = is_array($audit) && is_array($audit['observed_rows'] ?? null)
+            ? $audit['observed_rows']
+            : [];
+        $allowedTargets = [
+            'missing|unknown_signal|rejected_unknown_signal',
+            'increment|invalid_signal_arguments|rejected_invalid_arguments',
+        ];
+        $rowsAreExactRejectedAudits = $runId !== ''
+            && $expectedRows !== []
+            && $expectedRows === $observedRows
+            && ($audit['exact_match'] ?? null) === true
+            && self::integerValue($audit['executable_or_ready_command_count'] ?? null) === 0;
+        $unknownSignalRowObserved = false;
+
+        foreach ($expectedRows as $row) {
+            if (! is_array($row)) {
+                $rowsAreExactRejectedAudits = false;
+
+                continue;
+            }
+
+            $reason = self::stringValue($row['reason'] ?? null);
+            $target = implode('|', [
+                self::stringValue($row['target_name'] ?? null),
+                $reason,
+                self::stringValue($row['outcome'] ?? null),
+            ]);
+            $unknownSignalRowObserved = $unknownSignalRowObserved || $reason === 'unknown_signal';
+            $rowsAreExactRejectedAudits = $rowsAreExactRejectedAudits
+                && ($row['type'] ?? null) === 'signal'
+                && ($row['target_scope'] ?? null) === 'instance'
+                && ($row['requested_run_id'] ?? null) === null
+                && ($row['resolved_run_id'] ?? null) === $runId
+                && in_array($target, $allowedTargets, true)
+                && ($row['status'] ?? null) === 'rejected'
+                && ($row['rejection_reason'] ?? null) === $reason
+                && ($row['accepted_at'] ?? null) === null
+                && ($row['applied_at'] ?? null) === null
+                && ($row['rejected_at_recorded'] ?? null) === true;
+        }
+
+        if (! $rowsAreExactRejectedAudits || ! $unknownSignalRowObserved) {
+            $failures[] = [
+                'code' => 'unexpected_rejected_signal_audit_rows',
+                'scenario_id' => $scenarioId,
+                'field' => 'rejected_signal_audit_rows',
+                'expected' => 'only exact rejected signal audit rows for the selected run',
+                'actual' => $audit,
+            ];
+        }
+
+        $before = self::evidenceValue(
+            $result,
+            $scenarioResult,
+            $scenarioId,
+            'history_and_commands_before_rejected_requests',
+        );
+        $afterRejected = self::evidenceValue(
+            $result,
+            $scenarioResult,
+            $scenarioId,
+            'history_and_commands_after_rejected_requests',
+        );
+        $afterRecovery = self::evidenceValue(
+            $result,
+            $scenarioResult,
+            $scenarioId,
+            'history_and_commands_after_recovery_query',
+        );
+        $afterAll = self::evidenceValue(
+            $result,
+            $scenarioResult,
+            $scenarioId,
+            'history_and_commands_after_all_requests',
+        );
+        $taskSetsUnchanged = is_array($before)
+            && is_array($afterRejected)
+            && is_array($afterRecovery)
+            && is_array($afterAll)
+            && self::integerValue($before['ready_or_leased_workflow_task_count'] ?? null)
+                === self::integerValue($afterRejected['ready_or_leased_workflow_task_count'] ?? null)
+            && self::stringValue($before['ready_or_leased_workflow_task_set_sha256'] ?? null) !== ''
+            && self::stringValue($before['ready_or_leased_workflow_task_set_sha256'] ?? null)
+                === self::stringValue($afterRejected['ready_or_leased_workflow_task_set_sha256'] ?? null)
+            && self::integerValue($afterRejected['ready_or_leased_workflow_task_count'] ?? null)
+                === self::integerValue($afterRecovery['ready_or_leased_workflow_task_count'] ?? null)
+            && self::stringValue($afterRejected['ready_or_leased_workflow_task_set_sha256'] ?? null)
+                === self::stringValue($afterRecovery['ready_or_leased_workflow_task_set_sha256'] ?? null)
+            && self::integerValue($afterRecovery['ready_or_leased_workflow_task_count'] ?? null)
+                === self::integerValue($afterAll['ready_or_leased_workflow_task_count'] ?? null)
+            && self::stringValue($afterRecovery['ready_or_leased_workflow_task_set_sha256'] ?? null) !== ''
+            && self::stringValue($afterRecovery['ready_or_leased_workflow_task_set_sha256'] ?? null)
+                === self::stringValue($afterAll['ready_or_leased_workflow_task_set_sha256'] ?? null);
+        if (! $taskSetsUnchanged) {
+            $failures[] = [
+                'code' => 'rejected_signal_created_ready_or_leased_workflow_task',
+                'scenario_id' => $scenarioId,
+                'field' => 'ready_or_leased_workflow_tasks',
+            ];
+        }
+
+        $handlerInvocationCount = self::integerValue(
+            self::evidenceValue(
+                $result,
+                $scenarioResult,
+                $scenarioId,
+                'rejected_signal_handler_invocation_count',
+            ),
+        );
+        if ($handlerInvocationCount !== 0) {
+            $failures[] = [
+                'code' => 'rejected_signal_invoked_handler',
+                'scenario_id' => $scenarioId,
+                'field' => 'rejected_signal_handler_invocation_count',
+                'expected' => 0,
+                'actual' => $handlerInvocationCount,
             ];
         }
 
