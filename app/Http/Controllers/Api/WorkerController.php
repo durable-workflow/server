@@ -1720,7 +1720,10 @@ class WorkerController
                             (string) $namespace,
                             $commands,
                         );
-                        $commands = WorkflowCommandNormalizer::normalize($commands);
+                        $commands = WorkflowCommandNormalizer::normalize(
+                            $commands,
+                            WorkerProtocol::requestVersion($request),
+                        );
                         $outcome = $bridge->complete($taskId, $commands);
                         $this->applyStickyCacheClaim(
                             $taskId,

@@ -132,6 +132,7 @@ final class WorkflowPackageApiFloor
         [WorkflowCommandNormalizer::class, 'MAX_LOCAL_ACTIVITY_ATTEMPTS'],
         [WorkflowCommandNormalizer::class, 'MAX_LOCAL_ACTIVITY_HEARTBEATS_PER_ATTEMPT'],
         [WorkflowCommandNormalizer::class, 'MAX_LOCAL_ACTIVITY_HEARTBEATS'],
+        [WorkerProtocolVersion::class, 'LOCAL_ACTIVITY_ATTEMPT_REPORTS_MINIMUM_PROTOCOL_VERSION'],
         [ExternalPayloadReference::class, 'SCHEMA'],
         [ExternalPayloads::class, 'STORED_REFERENCE_PREFIX'],
         [WorkflowSearchAttribute::class, 'MAX_KEYWORD_LENGTH'],
@@ -641,6 +642,15 @@ final class WorkflowPackageApiFloor
             'preflightParallelMetadata',
             [
                 ['commands', 'array', false, false, null],
+            ],
+            'array',
+            false,
+        ) && self::matchesStaticMethod(
+            WorkflowCommandNormalizer::class,
+            'normalize',
+            [
+                ['commands', 'array', false, false, null],
+                ['protocolVersion', 'string', true, true, null],
             ],
             'array',
             false,

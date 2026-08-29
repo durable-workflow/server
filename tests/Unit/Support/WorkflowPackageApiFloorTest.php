@@ -372,12 +372,18 @@ class WorkflowPackageApiFloorTest extends TestCase
         $this->assertSame(100, $reflection->getConstant('MAX_LOCAL_ACTIVITY_ATTEMPTS'));
         $this->assertSame(1000, $reflection->getConstant('MAX_LOCAL_ACTIVITY_HEARTBEATS_PER_ATTEMPT'));
         $this->assertSame(1000, $reflection->getConstant('MAX_LOCAL_ACTIVITY_HEARTBEATS'));
+        $this->assertSame(
+            '1.19',
+            (new ReflectionClass(WorkerProtocolVersion::class))
+                ->getConstant('LOCAL_ACTIVITY_ATTEMPT_REPORTS_MINIMUM_PROTOCOL_VERSION'),
+        );
 
         foreach ([
             'payloadEnvelopeFields',
             'acceptsPayloadEnvelope',
             'parallelMetadataValidationRules',
             'preflightParallelMetadata',
+            'normalize',
         ] as $methodName) {
             $method = $reflection->getMethod($methodName);
 
