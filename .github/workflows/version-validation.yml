@@ -78,7 +78,8 @@ jobs:
           install_dir="/tmp/dw-bin"
           installer_url="$(node scripts/ci/sync-cli-readme-release.mjs --print installer-url)"
           curl -fsSL "$installer_url" -o /tmp/dw-install.sh
-          DURABLE_WORKFLOW_INSTALL_DIR="$install_dir" sh /tmp/dw-install.sh
+          PATH="$install_dir${PATH:+:$PATH}" \
+            DURABLE_WORKFLOW_INSTALL_DIR="$install_dir" sh "/tmp/dw-install.sh"
           reported_version="$("$install_dir/dw" --version)"
           cli_version="${reported_version#dw }"
           cli_version="${cli_version%% *}"

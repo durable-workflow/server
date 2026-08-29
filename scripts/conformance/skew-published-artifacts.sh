@@ -451,7 +451,8 @@ if [[ -n "${DW_CLI_VERSION:-}" ]]; then
   if [[ -z "$cli_installer_url" ]]; then
     cli_status="runner_blocked"
     cli_reason="official CLI installer is not downloadable for release ${DW_CLI_VERSION}"
-  elif VERSION="$DW_CLI_VERSION" \
+  elif PATH="$run_root/cli/bin${PATH:+:$PATH}" \
+    VERSION="$DW_CLI_VERSION" \
     DURABLE_WORKFLOW_INSTALL_DIR="$run_root/cli/bin" \
     DURABLE_WORKFLOW_BIN_NAME=dw \
     sh "$run_root/cli/install.sh" >"$result_dir/cli-install.log" 2>&1 \

@@ -1424,7 +1424,8 @@ if ! python3 "$script_dir/distribution_identities.py" record-file \
 fi
 cp "$run_root/cli/install.sh" "$result_dir/dw-install.sh"
 chmod +x "$run_root/cli/install.sh" "$result_dir/dw-install.sh"
-if ! VERSION="$cli_version" \
+if ! PATH="$run_root/cli/bin${PATH:+:$PATH}" \
+  VERSION="$cli_version" \
   DURABLE_WORKFLOW_INSTALL_DIR="$run_root/cli/bin" \
   DURABLE_WORKFLOW_BIN_NAME=dw \
   sh "$run_root/cli/install.sh" > "$result_dir/cli-install.log" 2>&1; then

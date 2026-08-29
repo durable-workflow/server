@@ -5948,6 +5948,7 @@ async function installPublishedCliArtifact(artifactVersions, artifactSources) {
   const install = await execCommandCapture('sh', [installerPath], {
     env: {
       ...process.env,
+      PATH: [installDir, process.env.PATH ?? ''].filter(Boolean).join(path.delimiter),
       VERSION: cliVersion,
       DURABLE_WORKFLOW_INSTALL_DIR: installDir,
       DURABLE_WORKFLOW_INSTALL_VERIFY_ATTESTATIONS: '0',

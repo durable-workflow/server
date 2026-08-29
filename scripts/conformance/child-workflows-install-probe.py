@@ -123,6 +123,9 @@ try:
         "DURABLE_WORKFLOW_INSTALL_DIR": str(cli_bin_dir),
         "DURABLE_WORKFLOW_BIN_NAME": "dw",
     })
+    install_env["PATH"] = os.pathsep.join(
+        part for part in (str(cli_bin_dir), install_env.get("PATH", "")) if part
+    )
     install_code, install_output = run(["sh", str(installer)], env=install_env)
     dw = cli_bin_dir / "dw"
     version_code, version_output = run([str(dw), "--version"]) if dw.exists() else (127, "dw binary missing")

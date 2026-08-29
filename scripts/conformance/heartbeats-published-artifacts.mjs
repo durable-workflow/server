@@ -1319,6 +1319,7 @@ function installCli() {
   run('sh', [installer], {
     env: {
       ...process.env,
+      PATH: [binDir, process.env.PATH ?? ''].filter(Boolean).join(path.delimiter),
       VERSION: CLI_VERSION,
       DURABLE_WORKFLOW_INSTALL_DIR: binDir,
       DURABLE_WORKFLOW_INSTALL_VERIFY_ATTESTATIONS: '0',

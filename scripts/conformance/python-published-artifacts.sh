@@ -501,7 +501,8 @@ python3 "$script_dir/distribution_identities.py" record-file \
   "$distribution_identity_file" cli "$cli_version" "$run_root/cli/install.sh" \
   --artifact-name install.sh \
   || fail_blocked "official CLI installer bytes could not be identified"
-if ! VERSION="$cli_version" \
+if ! PATH="$run_root/cli/bin${PATH:+:$PATH}" \
+  VERSION="$cli_version" \
   DURABLE_WORKFLOW_INSTALL_DIR="$run_root/cli/bin" \
   DURABLE_WORKFLOW_BIN_NAME=dw \
   sh "$run_root/cli/install.sh" > "$result_dir/cli-install.log" 2>&1; then

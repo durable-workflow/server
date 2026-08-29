@@ -3581,7 +3581,8 @@ install_published_operator_cli() {
 
   printf '%s\n' "$cli_installer_url" > "$cli_root/installer-source.txt"
 
-  VERSION="$cli_version" \
+  PATH="$cli_root/bin${PATH:+:$PATH}" \
+    VERSION="$cli_version" \
     DURABLE_WORKFLOW_INSTALL_DIR="$cli_root/bin" \
     DURABLE_WORKFLOW_BIN_NAME=dw \
     sh "$cli_root/install.sh" >"$result_dir/operator-cli-install.log" 2>&1

@@ -315,7 +315,8 @@ prepare_published_activity_cli() {
   fi
 
   chmod +x "$installer"
-  if VERSION="$DW_CLI_VERSION" \
+  if PATH="$cli_root/bin${PATH:+:$PATH}" \
+    VERSION="$DW_CLI_VERSION" \
     DURABLE_WORKFLOW_INSTALL_DIR="$cli_root/bin" \
     DURABLE_WORKFLOW_BIN_NAME=dw \
     DURABLE_WORKFLOW_INSTALL_VERIFY_ATTESTATIONS=0 \

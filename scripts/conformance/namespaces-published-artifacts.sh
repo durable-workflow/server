@@ -495,7 +495,8 @@ if ! curl -fsSL --retry 3 -o "$run_root/cli/install.sh" "$cli_installer_url"; th
   blocked_result "official CLI installer is not downloadable for release $cli_version at $cli_installer_url" "$started_at"
   exit 1
 fi
-if ! VERSION="$cli_version" \
+if ! PATH="$run_root/cli/bin${PATH:+:$PATH}" \
+  VERSION="$cli_version" \
   DURABLE_WORKFLOW_INSTALL_DIR="$run_root/cli/bin" \
   DURABLE_WORKFLOW_BIN_NAME=dw \
   sh "$run_root/cli/install.sh" > "$result_dir/cli-install.log" 2>&1; then

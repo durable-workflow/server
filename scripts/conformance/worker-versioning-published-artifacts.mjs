@@ -2117,6 +2117,7 @@ async function resolvePublishedCliArtifact(artifactVersions, artifactSources) {
     cwd: installRoot,
     env: {
       ...process.env,
+      PATH: [installDir, process.env.PATH ?? ''].filter(Boolean).join(path.delimiter),
       VERSION: cliVersion,
       DURABLE_WORKFLOW_INSTALL_DIR: installDir,
       DURABLE_WORKFLOW_BIN_NAME: 'dw',
