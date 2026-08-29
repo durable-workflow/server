@@ -9,6 +9,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
+use Workflow\Serializers\Avro;
 use Workflow\Serializers\AvroBinaryValue;
 use Workflow\Serializers\AvroMapValue;
 use Workflow\Serializers\Serializer;
@@ -82,7 +83,7 @@ final class DirectConformanceWorkerProtocolTest extends TestCase
         ]);
         $completion = DirectConformanceWorkerProtocol::workflowTaskCompletion($task, [[
             'type' => 'complete_workflow',
-            'result' => DirectConformanceWorkerProtocol::avroEnvelope($expected),
+            'result' => Avro::envelope($expected),
         ]]);
 
         $this->withHeaders($this->workerHeaders())

@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace App\Support;
 
 use InvalidArgumentException;
-use Workflow\Serializers\Avro;
 
 /**
  * Current worker-protocol boundary for published conformance probes that do
@@ -158,7 +157,7 @@ final class DirectConformanceWorkerProtocol
             if (! is_array($command)) {
                 throw new InvalidArgumentException("Direct conformance commands.{$index} must be an object.");
             }
-            self::assertCommandPayloads($command, $index);
+            self::assertCommandValues($command, $index);
         }
 
         return [
@@ -168,59 +167,38 @@ final class DirectConformanceWorkerProtocol
         ];
     }
 
-    public static function avroValue(mixed $value): string
-    {
-        return Avro::serialize($value);
-    }
-
-    /** @return array{codec: string, blob: string} */
-    public static function avroEnvelope(mixed $value): array
-    {
-        return Avro::envelope($value);
-    }
-
-    private static function assertCommandPayloads(array $command, int $index): void
+    /** @param array<string, mixed> $command */
+    private static function assertCommandValues(array $command, int $index): void
     {
         $type = $command['type'] ?? null;
         self::assertNonEmpty($type, "commands.{$index}.type");
 
-        $payloadFields = match ($type) {
+        $fields = match ($type) {
             'complete_workflow', 'complete_update', 'record_side_effect' => ['result'],
             'continue_as_new', 'schedule_activity', 'start_child_workflow' => ['arguments'],
             default => [],
         };
-
-        foreach ($payloadFields as $field) {
+        foreach ($fields as $field) {
             if (array_key_exists($field, $command)) {
-                self::assertAvroPayload($command[$field], "commands.{$index}.{$field}");
+                self::assertNotJsonShapedString($command[$field], "commands.{$index}.{$field}");
             }
         }
 
         $exception = $command['exception'] ?? null;
         if (is_array($exception) && array_key_exists('details', $exception)) {
-            self::assertAvroPayload($exception['details'], "commands.{$index}.exception.details");
+            self::assertNotJsonShapedString($exception['details'], "commands.{$index}.exception.details");
         }
     }
 
-    private static function assertAvroPayload(mixed $payload, string $field): void
+    private static function assertNotJsonShapedString(mixed $value, string $field): void
     {
-        if (is_array($payload)) {
-            if (($payload['codec'] ?? null) !== 'avro' || ! is_string($payload['blob'] ?? null)) {
-                throw new InvalidArgumentException("Direct conformance {$field} must be an Avro envelope.");
-            }
-            $payload = $payload['blob'];
+        if (! is_string($value)) {
+            return;
         }
 
-        if (! is_string($payload) || $payload === '') {
-            throw new InvalidArgumentException("Direct conformance {$field} must contain a non-empty Avro Value frame.");
-        }
-
-        $metadata = Avro::payloadMetadata($payload);
-        if (($metadata['diagnostic'] ?? null) !== null || ($metadata['framing'] ?? null) !== 'single_object') {
-            $diagnostic = is_string($metadata['diagnostic'] ?? null)
-                ? $metadata['diagnostic']
-                : 'invalid_payload_framing';
-            throw new InvalidArgumentException("Direct conformance {$field} is not a fixed Avro Value frame: {$diagnostic}.");
+        $trimmed = ltrim($value);
+        if (preg_match('/\A(?:[\[{\"]|null\z|true\z|false\z)/', $trimmed) === 1) {
+            throw new InvalidArgumentException("Direct conformance {$field} contains json_bytes_labeled_avro.");
         }
     }
 

@@ -179,6 +179,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Facade;
 use Illuminate\Support\Facades\Schema;
+use Workflow\Serializers\Avro;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Attributes\Type;
@@ -1359,14 +1360,14 @@ function run_concurrent_timers_probe(): array
         $resumeCommands = $isLastTimer
             ? [[
                 'type' => 'complete_workflow',
-                'result' => DirectConformanceWorkerProtocol::avroValue([
+                'result' => Avro::serialize([
                     'probe' => 'concurrent_timers_distinct_deadlines',
                     'observed_resume_order' => $observedResumeOrder,
                 ]),
             ]]
             : [[
                 'type' => 'record_side_effect',
-                'result' => DirectConformanceWorkerProtocol::avroValue([
+                'result' => Avro::serialize([
                     'probe' => 'concurrent_timers_distinct_deadlines',
                     'timer_id' => $resumeTimerId,
                     'resume_index' => $index,

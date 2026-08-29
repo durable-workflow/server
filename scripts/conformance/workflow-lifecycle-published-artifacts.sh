@@ -1020,6 +1020,7 @@ use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
+use Workflow\Serializers\Avro;
 use Workflow\V2\Contracts\OperatorObservabilityRepository;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
@@ -2262,7 +2263,7 @@ function run_continue_as_new_probe(): array
             [
                 'type' => 'continue_as_new',
                 'workflow_type' => LIFECYCLE_WORKFLOW_TYPE,
-                'arguments' => DirectConformanceWorkerProtocol::avroValue(['Ada v2', $sideEffectKey]),
+                'arguments' => Avro::serialize(['Ada v2', $sideEffectKey]),
             ],
         ],
     ];

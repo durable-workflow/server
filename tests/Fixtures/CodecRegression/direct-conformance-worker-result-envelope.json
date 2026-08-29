@@ -1,0 +1,79 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.codec-regression/v1",
+  "id": "direct-conformance-worker-result-envelope",
+  "protocol": {
+    "codec": "avro",
+    "schema": "durable_workflow.protocol.Value",
+    "version": "1",
+    "fingerprint": "e2a33dff55802237"
+  },
+  "bindings": [
+    "php",
+    "python",
+    "rust"
+  ],
+  "value": {
+    "type": "map",
+    "entries": [
+      {
+        "key": "double",
+        "value": {
+          "type": "double",
+          "value": 7.0
+        }
+      },
+      {
+        "key": "long",
+        "value": {
+          "type": "long",
+          "value": 7
+        }
+      },
+      {
+        "key": "binary",
+        "value": {
+          "type": "bytes",
+          "base64": "AP8="
+        }
+      },
+      {
+        "key": "text",
+        "value": {
+          "type": "string",
+          "value": "AP8="
+        }
+      },
+      {
+        "key": "nested",
+        "value": {
+          "type": "map",
+          "entries": [
+            {
+              "key": "z",
+              "value": {
+                "type": "long",
+                "value": 1
+              }
+            },
+            {
+              "key": "a",
+              "value": {
+                "type": "long",
+                "value": 2
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "framing": {
+    "encoding": "avro-single-object",
+    "wire_base64": "wwHioz3/VYAiNw4KDGRvdWJsZQYAAAAAAAAcQAhsb25nBA4MYmluYXJ5CAQA/wh0ZXh0CghBUDg9DG5lc3RlZA4EAnoEAgJhBAQAAA=="
+  },
+  "failure_policy": {
+    "operation": "round_trip",
+    "error": null
+  }
+}

@@ -192,6 +192,7 @@ use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Artisan;
+use Workflow\Serializers\Avro;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
@@ -667,7 +668,7 @@ function complete_workflow_start_task(
     return complete_task($task, [
         [
             'type' => 'complete_workflow',
-            'result' => DirectConformanceWorkerProtocol::avroValue([
+            'result' => Avro::serialize([
                 'probe' => 'terminal-workflow-update-behavior',
             ]),
         ],
@@ -688,7 +689,7 @@ function complete_update_task(
         [
             'type' => 'complete_update',
             'update_id' => $updateId,
-            'result' => DirectConformanceWorkerProtocol::avroEnvelope($result),
+            'result' => Avro::envelope($result),
         ],
     ], $headers);
 }
@@ -3295,6 +3296,7 @@ use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Artisan;
+use Workflow\Serializers\Avro;
 
 const OPERATOR_WORKFLOW_TYPE = 'workflow-updates.probe';
 
@@ -3575,7 +3577,7 @@ if ($step === 'complete') {
         [
             'type' => 'complete_update',
             'update_id' => $updateId,
-            'result' => DirectConformanceWorkerProtocol::avroEnvelope([
+            'result' => Avro::envelope([
                 'approved' => true,
                 'source' => 'operator-diagnostics-cli-waterline',
             ]),

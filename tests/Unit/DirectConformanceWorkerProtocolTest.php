@@ -7,6 +7,7 @@ namespace Tests\Unit;
 use App\Support\DirectConformanceWorkerProtocol;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
+use Workflow\Serializers\Avro;
 use Workflow\Serializers\AvroBinaryValue;
 use Workflow\Serializers\AvroMapValue;
 use Workflow\Serializers\Serializer;
@@ -100,7 +101,7 @@ final class DirectConformanceWorkerProtocolTest extends TestCase
             'lease_owner' => 'probe-worker',
             'workflow_task_attempt' => 1,
         ];
-        $encoded = DirectConformanceWorkerProtocol::avroValue($value);
+        $encoded = Avro::serialize($value);
 
         $completion = DirectConformanceWorkerProtocol::workflowTaskCompletion($task, [[
             'type' => 'complete_workflow',
