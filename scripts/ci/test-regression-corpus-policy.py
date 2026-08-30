@@ -360,6 +360,36 @@ exercised_boundary(2)
         self.write_json("tests/Fixtures/AvroGolden/baseline.json", fixture)
         return self.validate()
 
+    def validate_framing_wire_migration(
+        self,
+        base_wire: str,
+        current_wire: str,
+        *,
+        framing_encoding: str | None = None,
+        semantic_value: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        fixture = self.codec_fixture("base-codec-case", "0", base_wire)
+        self.write_json("tests/Fixtures/CodecRegression/base.json", fixture)
+        self.git("add", "--all")
+        self.git(
+            "-c",
+            "user.name=Regression Corpus Test",
+            "-c",
+            "user.email=regression-corpus@example.invalid",
+            "commit",
+            "--quiet",
+            "--message=seed-legacy-primary-frame",
+        )
+        self.base_ref = self.git("rev-parse", "HEAD").stdout.strip()
+
+        fixture["framing"]["wire_base64"] = current_wire
+        if framing_encoding is not None:
+            fixture["framing"]["encoding"] = framing_encoding
+        if semantic_value is not None:
+            fixture["value"]["value"] = semantic_value
+        self.write_json("tests/Fixtures/CodecRegression/base.json", fixture)
+        return self.validate()
+
     def write_counterfactual(
         self,
         identity: str,
@@ -752,6 +782,51 @@ final class InstrumentedCodecBoundaryRuntimeTest extends TestCase
         result = self.validate_malformed_wire_migration("%%%", "JSUl")
 
         self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_framing_wire_migration_accepts_enumerated_legacy_repair(self) -> None:
+        base_wire, current_wire = next(
+            iter(CORPUS_VALIDATOR.LEGACY_FRAMING_WIRE_REPAIRS.items())
+        )
+
+        result = self.validate_framing_wire_migration(base_wire, current_wire)
+
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_framing_wire_migration_rejects_arbitrary_framing_changes(self) -> None:
+        base_wire, current_wire = next(
+            iter(CORPUS_VALIDATOR.LEGACY_FRAMING_WIRE_REPAIRS.items())
+        )
+
+        result = self.validate_framing_wire_migration(
+            base_wire,
+            current_wire,
+            framing_encoding="rewrapped",
+        )
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("immutable fixture file", result.stderr)
+
+    def test_framing_wire_migration_rejects_semantic_changes(self) -> None:
+        base_wire, current_wire = next(
+            iter(CORPUS_VALIDATOR.LEGACY_FRAMING_WIRE_REPAIRS.items())
+        )
+
+        result = self.validate_framing_wire_migration(
+            base_wire,
+            current_wire,
+            semantic_value="1",
+        )
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("immutable fixture file", result.stderr)
+
+    def test_framing_wire_migration_rejects_unlisted_wire_changes(self) -> None:
+        base_wire = next(iter(CORPUS_VALIDATOR.LEGACY_FRAMING_WIRE_REPAIRS))
+
+        result = self.validate_framing_wire_migration(base_wire, "AA==")
+
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("immutable fixture file", result.stderr)
 
     def test_consumer_ignored_protocol_metadata_cannot_create_evidence(self) -> None:
         duplicate = self.codec_fixture("metadata-only-rewrap", "0", "AA==")

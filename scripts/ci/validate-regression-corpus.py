@@ -258,6 +258,25 @@ ZERO_COMMIT = re.compile(r"^0+$")
 LEGACY_MALFORMED_WIRE_REPAIRS = {
     "%%%": "JSUl",
 }
+LEGACY_FRAMING_WIRE_REPAIRS = {
+    (
+        "wwHioz3/VYAiNwrWBWR3LWV4dGVybmFsLXBheWxvYWQ6djE6ZXlKamIyUmxZeUk2SW1GMmNtOGlM"
+        "Q0psZUhSbGNtNWhiRjl6ZEc5eVlXZGxJanA3SW1OdlpHVmpJam9pWVhaeWJ5SXNJbk5qYUdWdFlT"
+        "STZJbVIxY21GaWJHVXRkMjl5YTJac2IzY3Vkakl1WlhoMFpYSnVZV3d0Y0dGNWJHOWhaQzF5Wlda"
+        "bGNtVnVZMlV1ZGpFaUxDSnphR0V5TlRZaU9pSmhZV0ZoWVdGaFlXRmhZV0ZoWVdGaFlXRmhZV0Zo"
+        "WVdGaFlXRmhZV0ZoWVdGaFlXRmhZV0ZoWVdGaFlXRmhZV0ZoWVdGaFlXRmhZV0ZoWVdGaFlXRmhJ"
+        "aXdpYzJsNlpWOWllWFJsY3lJNk1USTRMQ0oxY21raU9pSm1hV3hsT2k4dkwzVnVZWFpoYVd4aFlt"
+        "eGxMMkp2YjNSemRISmhjQzF3Y205dlppNWhkbkp2SW4xOQ=="
+    ): (
+        "wwHioz3/VYAiNwrGBWR3LWV4dGVybmFsLXBheWxvYWQ6djE6ZXlKamIyUmxZeUk2SW1GMmNtOGlM"
+        "Q0psZUhSbGNtNWhiRjl6ZEc5eVlXZGxJanA3SW1OdlpHVmpJam9pWVhaeWJ5SXNJbk5qYUdWdFlT"
+        "STZJbVIxY21GaWJHVXRkMjl5YTJac2IzY3Vkakl1WlhoMFpYSnVZV3d0Y0dGNWJHOWhaQzF5Wlda"
+        "bGNtVnVZMlV1ZGpFaUxDSnphR0V5TlRZaU9pSmhZV0ZoWVdGaFlXRmhZV0ZoWVdGaFlXRmhZV0Zo"
+        "WVdGaFlXRmhZV0ZoWVdGaFlXRmhZV0ZoWVdGaFlXRmhZV0ZoWVdGaFlXRmhZV0ZoSWl3aWMybDZa"
+        "VjlpZVhSbGN5STZNVEk0TENKMWNta2lPaUptYVd4bE9pOHZMM1Z1WVhaaGFXeGhZbXhsTDJKdmIz"
+        "UnpkSEpoY0Mxd2NtOXZaaTVoZG5KdkluMTk="
+    ),
+}
 
 
 class CorpusError(RuntimeError):
@@ -388,7 +407,7 @@ def _canonical_wire_replacement(value: str) -> str | None:
 
 
 def _canonical_wire_migration(base_content: bytes, current_content: bytes) -> bool:
-    """Allow the one-way repair of legacy malformed-frame wire spellings."""
+    """Allow enumerated primary-frame repairs and malformed-frame canonicalization."""
 
     try:
         base_document = json.loads(base_content)
@@ -397,6 +416,26 @@ def _canonical_wire_migration(base_content: bytes, current_content: bytes) -> bo
         return False
     if not isinstance(base_document, dict) or not isinstance(current_document, dict):
         return False
+
+    base_framing = base_document.get("framing")
+    current_framing = current_document.get("framing")
+    if isinstance(base_framing, dict) and isinstance(current_framing, dict):
+        base_wire = base_framing.get("wire_base64")
+        current_wire = current_framing.get("wire_base64")
+        if base_wire != current_wire:
+            if (
+                not isinstance(base_wire, str)
+                or not isinstance(current_wire, str)
+                or LEGACY_FRAMING_WIRE_REPAIRS.get(base_wire) != current_wire
+            ):
+                return False
+            try:
+                _canonical_base64(current_wire, "current.framing.wire_base64")
+            except CorpusError:
+                return False
+            base_framing["wire_base64"] = current_wire
+            return base_document == current_document
+
     base_frames = base_document.get("malformed_frames")
     current_frames = current_document.get("malformed_frames")
     if not isinstance(base_frames, list) or not isinstance(current_frames, list):
