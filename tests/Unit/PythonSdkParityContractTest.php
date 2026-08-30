@@ -33,6 +33,10 @@ class PythonSdkParityContractTest extends TestCase
         $this->assertTrue($manifest['host_runner_contract']['must_execute_against_published_artifacts']);
         $this->assertTrue($manifest['host_runner_contract']['must_emit_complete_capability_table']);
         $this->assertTrue($manifest['host_runner_contract']['must_compose_with_installed_sdk_result_gate']);
+        $this->assertContains(
+            'scripts/conformance/python_external_payload_evidence.py',
+            $manifest['host_runner_contract']['support_files'],
+        );
         $this->assertSame(
             'non_passing',
             $manifest['coverage_gate']['smoke_subset_outcome'],
@@ -55,6 +59,7 @@ class PythonSdkParityContractTest extends TestCase
             'activity_backed_workflow_execution',
             'workflow_result_surface',
             'worker_restart_activity_and_signal_state',
+            'runtime_external_payload_round_trips',
             'protocol_trace_capture',
             'php_assumption_audit',
             'capability_table_complete',
@@ -69,6 +74,12 @@ class PythonSdkParityContractTest extends TestCase
             'python_sdk_installed_from_pypi',
             'worker_restart_replays_activity_state',
             'worker_restart_replays_signal_state',
+            'runtime_external_payload_inline_round_trip',
+            'runtime_external_payload_externalized_round_trip',
+            'runtime_external_payload_cross_language_round_trip',
+            'runtime_external_payload_standalone_server',
+            'runtime_external_payload_isolated_cloud',
+            'runtime_external_payload_provider_setup_absent',
             'protocol_traces_recorded',
             'php_assumptions_absent',
         ] as $capability) {
@@ -82,6 +93,20 @@ class PythonSdkParityContractTest extends TestCase
         $this->assertContains(
             'control-plane-protocol-traces',
             $manifest['host_runner_contract']['required_execution_scopes'],
+        );
+        $this->assertContains(
+            'runtime-mediated-external-payload-round-trips',
+            $manifest['host_runner_contract']['required_execution_scopes'],
+        );
+        $this->assertSame(
+            'DW_PYTHON_CONFORMANCE_CLOUD_EVIDENCE_JSON',
+            $manifest['host_runner_contract']['runtime_external_payload_contract']['isolated_cloud_handoff']['environment_variable'],
+        );
+        $this->assertTrue(
+            $manifest['host_runner_contract']['runtime_external_payload_contract']['isolated_cloud_handoff']['must_match_exact_artifact_tuple'],
+        );
+        $this->assertTrue(
+            $manifest['host_runner_contract']['runtime_external_payload_contract']['isolated_cloud_handoff']['standalone_inference_forbidden'],
         );
         $this->assertSame(
             'conformance_runner_coverage_gap',
@@ -100,6 +125,41 @@ class PythonSdkParityContractTest extends TestCase
         $this->assertStringContainsString('protocol_traces', $script);
         $this->assertStringContainsString('php_assumption_audit', $script);
         $this->assertStringContainsString('local_product_source_checkouts_used', $script);
+        $this->assertStringContainsString('runtime_external_payload_round_trips', $script);
+        $this->assertStringContainsString('DW_PYTHON_CONFORMANCE_CLOUD_EVIDENCE_JSON', $script);
+    }
+
+    public function test_runtime_external_payload_evidence_regression_fixture(): void
+    {
+        $python = trim((string) shell_exec('command -v python3 2>/dev/null'));
+        if ($python === '') {
+            $this->markTestSkipped('python3 is required to exercise the external payload evidence fixture.');
+        }
+
+        $pipes = [];
+        $process = proc_open(
+            [
+                $python,
+                '-m',
+                'unittest',
+                'tests/Unit/Support/python_external_payload_evidence_test.py',
+            ],
+            [
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w'],
+            ],
+            $pipes,
+            dirname(__DIR__, 2),
+        );
+        $this->assertIsResource($process);
+
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exitCode = proc_close($process);
+
+        $this->assertSame(0, $exitCode, $stdout.$stderr);
     }
 
     public function test_runner_uses_managed_stop_as_the_orderly_deregistration_boundary(): void

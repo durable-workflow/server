@@ -10,6 +10,10 @@ durableworkflow/server, the official dw install script, PyPI durable-workflow,
 and matching published workflow/waterline packages. The runner writes
 python-host-evidence.json, python-conformance-result.json, and
 python-conformance-evaluation.json into the result directory.
+
+DW_PYTHON_CONFORMANCE_CLOUD_EVIDENCE_JSON may point to passing isolated
+managed-namespace evidence for the exact resolved artifact tuple. Without that
+handoff, the standalone runtime scenario remains actionable not_covered evidence.
 USAGE
 }
 
@@ -66,6 +70,8 @@ distribution_identity_file="$result_dir/executed-distribution-identities.json"
 server_bind_host="${DW_PYTHON_CONFORMANCE_BIND_HOST:-127.0.0.1}"
 server_port="${DW_PYTHON_CONFORMANCE_SERVER_PORT:-}"
 server_base_url=""
+runtime_token="python-parity-token"
+namespace=""
 run_label="$(printf '%s' "$(basename "$run_root")" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_-' '-')"
 compose_project="dw-python-parity-${run_label}"
 started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -73,6 +79,17 @@ started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 cleanup() {
   local code=$?
 
+  if [[ -n "$namespace" \
+    && ! -f "$result_dir/namespace-cleanup-complete" \
+    && -x "$run_root/cli/bin/dw" \
+    && -n "$server_base_url" ]]; then
+    PATH="$run_root/cli/bin${PATH:+:$PATH}" \
+      "$run_root/cli/bin/dw" namespace:delete "$namespace" --json \
+      --server "$server_base_url" \
+      --token "$runtime_token" \
+      --namespace "$namespace" \
+      > "$result_dir/namespace-cleanup-trap.json" 2> "$result_dir/namespace-cleanup-trap.log" || true
+  fi
   if [[ -f "$run_root/compose.yml" ]]; then
     docker compose -p "$compose_project" -f "$run_root/compose.yml" down -v >/dev/null 2>&1 || true
   fi
@@ -86,7 +103,7 @@ trap cleanup EXIT
 
 write_blocked_result() {
   local reason="$1"
-  python3 - "$result_dir" "$reason" "$started_at" <<'PY'
+  python3 - "$result_dir" "$reason" "$started_at" "$script_dir" <<'PY'
 from __future__ import annotations
 
 import json
@@ -97,42 +114,17 @@ from pathlib import Path
 result_dir = Path(sys.argv[1])
 reason = sys.argv[2]
 started_at = sys.argv[3]
+sys.path.insert(0, sys.argv[4])
+from python_external_payload_evidence import REQUIRED_CAPABILITIES, REQUIRED_SCENARIOS
+
 now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-required_scenarios = [
-    "published_artifact_install_only",
-    "official_cli_install_start_result_path",
-    "cold_first_user_setup",
-    "python_worker_registration",
-    "activity_backed_workflow_execution",
-    "workflow_result_surface",
-    "worker_restart_activity_and_signal_state",
-    "protocol_trace_capture",
-    "php_assumption_audit",
-    "capability_table_complete",
-]
-required_capabilities = [
-    "server_up",
-    "official_cli_installed",
-    "cli_reaches_server",
-    "cli_starts_workflow",
-    "cli_reads_workflow_result",
-    "cold_first_user_setup",
-    "python_sdk_installed_from_pypi",
-    "python_worker_connects",
-    "python_worker_registers_workflows",
-    "python_worker_registers_activities",
-    "python_workflow_runs",
-    "python_activity_runs",
-    "workflow_result_returned",
-    "worker_restart_replays_activity_state",
-    "worker_restart_replays_signal_state",
-    "protocol_traces_recorded",
-    "php_assumptions_absent",
-]
 finding = {
     "type": "runner_gap",
     "owning_surface": "conformance_harness",
     "summary": reason,
+    "next_acceptance_criterion": (
+        "restore the missing runner prerequisite and rerun the published artifact tuple"
+    ),
 }
 result = {
     "schema": "durable-workflow.v2.python-sdk-parity.result",
@@ -155,7 +147,7 @@ result = {
             "observed_outputs": {"summary": reason},
             "linked_findings": [finding],
         }
-        for scenario in required_scenarios
+        for scenario in REQUIRED_SCENARIOS
     },
     "capability_table": [
         {
@@ -163,12 +155,12 @@ result = {
             "status": "runner_blocked",
             "evidence": {"runner_blocked_reason": reason},
         }
-        for capability in required_capabilities
+        for capability in REQUIRED_CAPABILITIES
     ],
     "protocol_traces": [],
     "php_assumption_audit": {"status": "runner_blocked", "checks": {}},
     "findings": [finding],
-    "finding_links": {scenario: [finding] for scenario in required_scenarios},
+    "finding_links": {scenario: [finding] for scenario in REQUIRED_SCENARIOS},
 }
 result_dir.mkdir(parents=True, exist_ok=True)
 (result_dir / "python-conformance-result.json").write_text(
@@ -661,12 +653,41 @@ then
   fail_blocked "published server image did not become ready"
 fi
 
+namespace="python-parity-${run_label}"
+if ! PATH="$run_root/cli/bin${PATH:+:$PATH}" \
+  "$run_root/cli/bin/dw" namespace:create "$namespace" \
+  --description="Python SDK parity conformance" \
+  --retention=7 \
+  --json \
+  --server "$server_base_url" \
+  --token "$runtime_token" \
+  --namespace default \
+  > "$result_dir/namespace-create.json" 2> "$result_dir/namespace-create.log"; then
+  fail_blocked "official CLI could not create the isolated Python conformance namespace"
+fi
+
+# The backing URI is deliberately confined to the server-side setup process.
+# It is neither exported as public evidence nor passed to the Python process.
+if ! PATH="$run_root/cli/bin${PATH:+:$PATH}" \
+  "$run_root/cli/bin/dw" namespace:set-storage-driver "$namespace" local \
+  --uri="file:///app/database/runtime-external-payloads/${namespace}" \
+  --threshold-bytes=256 \
+  --json \
+  --server "$server_base_url" \
+  --token "$runtime_token" \
+  --namespace "$namespace" \
+  > /dev/null 2>&1; then
+  fail_blocked "official CLI could not configure namespace-owned runtime external payload storage"
+fi
+
 cp "$script_dir/python_worker_stop_deregistration.py" "$run_root/python_worker_stop_deregistration.py"
+cp "$script_dir/python_external_payload_evidence.py" "$run_root/python_external_payload_evidence.py"
 
 cat > "$run_root/python-parity-runner.py" <<'PY'
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.metadata as metadata
 import json
 import os
@@ -678,8 +699,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import httpx
 from durable_workflow import Client, ServerError, Worker, activity, workflow
+from durable_workflow import serializer
 from durable_workflow.metrics import CLIENT_REQUESTS
+from python_external_payload_evidence import (
+    RUNTIME_EXTERNAL_PAYLOAD_CAPABILITIES,
+    cloud_evidence_handoff,
+    summarize_runtime_reference,
+)
 from python_worker_stop_deregistration import verify_stopped_worker_absent
 
 
@@ -781,6 +809,30 @@ class PythonParityWorkflow:
         }
 
 
+@activity.defn(name="python.runtime-payload.echo")
+def runtime_payload_echo(value: str) -> str:
+    return value
+
+
+@workflow.defn(name="python.runtime-payload.workflow")
+class PythonRuntimePayloadWorkflow:
+    def __init__(self) -> None:
+        self.resumed_by: str | None = None
+
+    @workflow.signal("resume")
+    def resume(self, by: str) -> None:
+        self.resumed_by = by
+
+    def run(self, ctx: Any, value: str) -> str:
+        activity_result = yield ctx.schedule_activity("python.runtime-payload.echo", [value])
+        yield ctx.wait_condition(
+            lambda: self.resumed_by is not None,
+            key="runtime-payload-resume",
+            timeout=60,
+        )
+        return activity_result
+
+
 def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -797,6 +849,194 @@ def parse_json_output(stdout: str) -> Any:
         if start >= 0 and end > start:
             return json.loads(text[start : end + 1])
         raise
+
+
+def encoded_payload(value: Any) -> bytes:
+    envelope = serializer.envelope(value)
+    blob = envelope.get("blob") if isinstance(envelope, dict) else None
+    if not isinstance(blob, str):
+        raise RuntimeError("published Python SDK did not encode an inline Avro payload envelope")
+    return blob.encode("utf-8")
+
+
+def canonical_sha256(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def runtime_reference_summaries(value: Any, path: tuple[str, ...] = ()) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    if isinstance(value, dict):
+        external = value.get("external_payload")
+        if external is not None:
+            if not isinstance(external, dict):
+                raise RuntimeError(f"runtime reference at {'.'.join(path)} is not an object")
+            summary = summarize_runtime_reference(external)
+            summary["path"] = ".".join((*path, "external_payload"))
+            summaries.append(summary)
+            return summaries
+        for key, item in value.items():
+            summaries.extend(runtime_reference_summaries(item, (*path, str(key))))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            summaries.extend(runtime_reference_summaries(item, (*path, str(index))))
+    return summaries
+
+
+def assert_provider_details_absent(value: Any, context: str) -> None:
+    rendered = json.dumps(value, sort_keys=True)
+    forbidden = ("file://", "s3://", "gs://", "azure://", '"external_storage"')
+    exposed = [needle for needle in forbidden if needle in rendered]
+    if exposed:
+        raise RuntimeError(f"{context} exposed provider-specific payload details: {exposed}")
+
+
+def assert_error_response(response: httpx.Response, reason: str, context: str) -> dict[str, Any]:
+    try:
+        body = response.json()
+    except ValueError as exc:
+        raise RuntimeError(f"{context} did not return JSON error evidence") from exc
+    if response.status_code != 422 or not isinstance(body, dict) or body.get("reason") != reason:
+        raise RuntimeError(
+            f"{context} did not reject with HTTP 422 {reason}: "
+            f"status={response.status_code} body={body!r}"
+        )
+    return {
+        "status": "pass",
+        "http_status": response.status_code,
+        "reason": reason,
+        "retryable": body.get("retryable"),
+    }
+
+
+async def raw_history_export(
+    raw_client: httpx.AsyncClient,
+    workflow_id: str,
+    run_id: str,
+) -> dict[str, Any]:
+    response = await raw_client.get(f"/api/workflows/{workflow_id}/runs/{run_id}/history/export")
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"raw history export failed for {workflow_id}/{run_id}: "
+            f"HTTP {response.status_code} {response.text[-1000:]}"
+        )
+    body = response.json()
+    if not isinstance(body, dict):
+        raise RuntimeError("raw history export did not return an object")
+    assert_provider_details_absent(body, "raw history export")
+    return body
+
+
+async def runtime_transport_counterfactuals(
+    raw_client: httpx.AsyncClient,
+    *,
+    suffix: str,
+    task_queue: str,
+) -> dict[str, Any]:
+    payload = encoded_payload(["counterfactual-runtime-payload-" + ("x" * 1024)])
+    sha256 = hashlib.sha256(payload).hexdigest()
+    upload = await raw_client.post(
+        "/api/external-payloads/v1",
+        content=payload,
+        headers={
+            "Content-Type": "application/octet-stream",
+            "X-Durable-Workflow-Payload-Codec": "avro",
+            "X-Durable-Workflow-Payload-Size": str(len(payload)),
+            "X-Durable-Workflow-Payload-SHA256": sha256,
+        },
+    )
+    if upload.status_code != 201:
+        raise RuntimeError(
+            f"runtime upload counterfactual setup failed: HTTP {upload.status_code} {upload.text[-1000:]}"
+        )
+    upload_body = upload.json()
+    reference = upload_body.get("reference") if isinstance(upload_body, dict) else None
+    if not isinstance(reference, dict):
+        raise RuntimeError("runtime upload did not return an opaque reference")
+    reference_summary = summarize_runtime_reference(reference, expected_bytes=payload)
+    assert_provider_details_absent(upload_body, "runtime upload response")
+
+    fetched = await raw_client.get(
+        f"/api/external-payloads/v1/{reference['reference_id']}",
+        headers={
+            "X-Durable-Workflow-Payload-Codec": "avro",
+            "X-Durable-Workflow-Payload-Size": str(len(payload)),
+            "X-Durable-Workflow-Payload-SHA256": sha256,
+        },
+    )
+    if fetched.status_code != 200 or fetched.content != payload:
+        raise RuntimeError(
+            f"runtime fetch did not return the uploaded bytes: HTTP {fetched.status_code}"
+        )
+    if hashlib.sha256(fetched.content).hexdigest() != sha256:
+        raise RuntimeError("runtime fetch bytes failed SHA-256 verification")
+    expected_fetch_headers = {
+        "X-Durable-Workflow-Payload-Codec": "avro",
+        "X-Durable-Workflow-Payload-Size": str(len(payload)),
+        "X-Durable-Workflow-Payload-SHA256": sha256,
+    }
+    mismatched_fetch_headers = {
+        header: {"expected": expected, "actual": fetched.headers.get(header)}
+        for header, expected in expected_fetch_headers.items()
+        if fetched.headers.get(header) != expected
+    }
+    if mismatched_fetch_headers:
+        raise RuntimeError(
+            "runtime fetch response metadata failed size/SHA-256 verification: "
+            f"{mismatched_fetch_headers}"
+        )
+
+    malformed = await raw_client.post(
+        "/api/workflows",
+        json={
+            "workflow_id": f"runtime-payload-malformed-{suffix}",
+            "workflow_type": "python.runtime-payload.workflow",
+            "task_queue": task_queue,
+            "input": {
+                "codec": "avro",
+                "external_payload": {"schema": "malformed"},
+            },
+        },
+    )
+    malformed_rejection = assert_error_response(
+        malformed,
+        "external_payload_unsupported",
+        "malformed runtime reference",
+    )
+
+    mismatched_reference = dict(reference)
+    mismatched_reference["sha256"] = "0" * 64 if sha256 != "0" * 64 else "1" * 64
+    mismatched = await raw_client.post(
+        "/api/workflows",
+        json={
+            "workflow_id": f"runtime-payload-integrity-{suffix}",
+            "workflow_type": "python.runtime-payload.workflow",
+            "task_queue": task_queue,
+            "input": {
+                "codec": "avro",
+                "external_payload": mismatched_reference,
+            },
+        },
+    )
+    mismatch_rejection = assert_error_response(
+        mismatched,
+        "external_payload_integrity_mismatch",
+        "integrity-mismatched runtime reference",
+    )
+
+    return {
+        "status": "pass",
+        "ordinary_runtime_credentials": True,
+        "uploaded_reference": reference_summary,
+        "fetch_verification": {
+            "status": "pass",
+            "size_bytes": len(fetched.content),
+            "sha256": hashlib.sha256(fetched.content).hexdigest(),
+        },
+        "malformed_reference_rejection": malformed_rejection,
+        "integrity_mismatch_rejection": mismatch_rejection,
+    }
 
 
 class CliRunner:
@@ -881,13 +1121,34 @@ async def run() -> None:
     dw_bin = Path(sys.argv[4])
     server_url = sys.argv[5].rstrip("/")
     started_at = sys.argv[6]
+    namespace = sys.argv[7]
+    created_namespace_path = Path(sys.argv[8])
+    cloud_evidence_path = sys.argv[9].strip() or None
     pins = load_json(pins_path)
     metadata_doc = load_json(metadata_path)
     token = "python-parity-token"
-    suffix = str(int(time.time()))
-    namespace = f"python-parity-{suffix}"
+    suffix = namespace.removeprefix("python-parity-")
     task_queue = f"python-parity-{suffix}"
     workflow_id = f"python-parity-{suffix}"
+    provider_environment_keys = sorted(
+        key
+        for key in os.environ
+        if any(
+            marker in key.upper()
+            for marker in (
+                "AWS_ACCESS_KEY",
+                "AWS_SECRET",
+                "AZURE_CLIENT_SECRET",
+                "GOOGLE_APPLICATION_CREDENTIALS",
+                "STORAGE_CREDENTIAL",
+            )
+        )
+    )
+    if provider_environment_keys:
+        raise RuntimeError(
+            "Python conformance process received backing-store credential variables: "
+            f"{provider_environment_keys}"
+        )
     trace_metrics = TraceMetrics(result_dir / "worker-protocol-traces.json")
     phases = PhaseEvidence(result_dir / "python-parity-phase-evidence.json")
     cli = CliRunner(dw_bin, server_url, token, namespace, result_dir / "cli-traces.json")
@@ -901,23 +1162,39 @@ async def run() -> None:
     phases.record("cli_health_check")
     cli.run(["server:health", "--output=json"], namespace=None, timeout=60)
     phases.record("cli_server_ready")
-    phases.record("namespace_creation")
-    created_namespace = cli.run(
-        [
-            "namespace:create",
-            namespace,
-            "--description=Python SDK parity conformance",
-            "--retention=7",
-            "--json",
-        ],
-        namespace="default",
-        timeout=60,
+    created_namespace = load_json(created_namespace_path)
+    phases.record(
+        "namespace_created",
+        namespace=namespace,
+        external_payload_storage_configured_by_server_setup=True,
+        python_process_provider_credentials_received=False,
+        python_process_provider_specific_references_received=False,
     )
-    phases.record("namespace_created", namespace=namespace)
 
     async with Client(server_url, token=token, namespace=namespace, timeout=5.0, metrics=trace_metrics) as client:
         phases.record("cluster_info")
-        await client.get_cluster_info()
+        cluster_info = await client.get_cluster_info()
+        if not isinstance(cluster_info, dict):
+            raise RuntimeError("cluster discovery did not return an object")
+        namespace_info = cluster_info.get("namespace")
+        storage_policy = (
+            namespace_info.get("external_payload_storage")
+            if isinstance(namespace_info, dict)
+            else None
+        )
+        if not isinstance(storage_policy, dict):
+            raise RuntimeError("cluster discovery omitted namespace runtime external payload policy")
+        assert_provider_details_absent(storage_policy, "cluster discovery namespace storage policy")
+        if (
+            storage_policy.get("configured") is not True
+            or storage_policy.get("enabled") is not True
+            or storage_policy.get("status") != "available"
+            or storage_policy.get("threshold_bytes") != 256
+        ):
+            raise RuntimeError(
+                "namespace runtime external payload policy is not available at the configured threshold: "
+                f"{storage_policy!r}"
+            )
         worker1_id = f"python-parity-worker-1-{suffix}"
         worker1 = Worker(
             client,
@@ -1009,6 +1286,295 @@ async def run() -> None:
         result_value = await client.get_result(handle, timeout=10.0)
         final_history = await client.get_history(workflow_id, run_id)
 
+        payload_task_queue = f"python-runtime-payload-{suffix}"
+        inline_workflow_id = f"python-runtime-payload-inline-{suffix}"
+        inline_value = "inline-runtime-payload"
+        phases.record("runtime_payload_inline_start", workflow_id=inline_workflow_id)
+        inline_handle = await client.start_workflow(
+            workflow_type="python.runtime-payload.workflow",
+            task_queue=payload_task_queue,
+            workflow_id=inline_workflow_id,
+            input=[inline_value],
+        )
+        if not inline_handle.run_id:
+            raise RuntimeError("inline runtime payload start did not return a run id")
+        inline_worker = Worker(
+            client,
+            task_queue=payload_task_queue,
+            workflows=[PythonRuntimePayloadWorkflow],
+            activities=[runtime_payload_echo],
+            worker_id=f"python-runtime-payload-inline-worker-{suffix}",
+            poll_timeout=1.0,
+            heartbeat_interval=2.0,
+            metrics=trace_metrics,
+        )
+        inline_worker_task = asyncio.create_task(inline_worker.run())
+        await wait_for_event(
+            client,
+            inline_workflow_id,
+            inline_handle.run_id,
+            "ActivityCompleted",
+        )
+        await client.signal_workflow(inline_workflow_id, "resume", args=["inline-worker"])
+        inline_result = await client.get_result(inline_handle, timeout=30.0)
+        await stop_worker(inline_worker, inline_worker_task)
+        if inline_result != inline_value:
+            raise RuntimeError(
+                f"inline runtime payload returned the wrong value: {inline_result!r}"
+            )
+        inline_history = await client.get_history(inline_workflow_id, inline_handle.run_id)
+        inline_history_events = inline_history.get("events", [])
+        if not isinstance(inline_history_events, list) or not inline_history_events:
+            raise RuntimeError("inline runtime payload history was empty")
+        phases.record(
+            "runtime_payload_inline_complete",
+            workflow_id=inline_workflow_id,
+            run_id=inline_handle.run_id,
+        )
+
+        external_workflow_id = f"python-runtime-payload-external-{suffix}"
+        external_value = "external-runtime-payload:" + ("x" * 16384)
+        external_payload_bytes = encoded_payload([external_value])
+        phases.record(
+            "runtime_payload_external_start",
+            workflow_id=external_workflow_id,
+            encoded_size_bytes=len(external_payload_bytes),
+            encoded_sha256=hashlib.sha256(external_payload_bytes).hexdigest(),
+        )
+        external_handle = await client.start_workflow(
+            workflow_type="python.runtime-payload.workflow",
+            task_queue=payload_task_queue,
+            workflow_id=external_workflow_id,
+            input=[external_value],
+        )
+        if not external_handle.run_id:
+            raise RuntimeError("externalized runtime payload start did not return a run id")
+        external_worker1_id = f"python-runtime-payload-worker-1-{suffix}"
+        external_worker1 = Worker(
+            client,
+            task_queue=payload_task_queue,
+            workflows=[PythonRuntimePayloadWorkflow],
+            activities=[runtime_payload_echo],
+            worker_id=external_worker1_id,
+            poll_timeout=1.0,
+            heartbeat_interval=2.0,
+            metrics=trace_metrics,
+        )
+        external_worker1_task = asyncio.create_task(external_worker1.run())
+        await wait_for_event(
+            client,
+            external_workflow_id,
+            external_handle.run_id,
+            "ActivityCompleted",
+        )
+        external_history_before_restart = await client.get_history(
+            external_workflow_id,
+            external_handle.run_id,
+        )
+        external_history_prefix = external_history_before_restart.get("events", [])
+        if not isinstance(external_history_prefix, list) or not external_history_prefix:
+            raise RuntimeError("externalized workflow history was empty before worker replacement")
+        external_history_prefix_sha256 = canonical_sha256(external_history_prefix)
+        await stop_worker(external_worker1, external_worker1_task)
+        external_worker1_absence = await verify_stopped_worker_absent(
+            client,
+            external_worker1_id,
+            server_error_type=ServerError,
+        )
+        await client.signal_workflow(
+            external_workflow_id,
+            "resume",
+            args=["replacement-worker"],
+        )
+
+        external_worker2_id = f"python-runtime-payload-worker-2-{suffix}"
+        async with Client(
+            server_url,
+            token=token,
+            namespace=namespace,
+            timeout=5.0,
+            metrics=trace_metrics,
+        ) as replacement_client:
+            external_worker2 = Worker(
+                replacement_client,
+                task_queue=payload_task_queue,
+                workflows=[PythonRuntimePayloadWorkflow],
+                activities=[runtime_payload_echo],
+                worker_id=external_worker2_id,
+                poll_timeout=1.0,
+                heartbeat_interval=2.0,
+                metrics=trace_metrics,
+            )
+            external_terminal = await external_worker2.run_until(
+                workflow_id=external_workflow_id,
+                timeout=90.0,
+                poll_interval=0.25,
+            )
+            await external_worker2.stop()
+        if external_terminal.status != "completed":
+            raise RuntimeError(
+                "replacement Python runtime-payload worker observed non-completed status: "
+                f"{external_terminal.status!r}"
+            )
+
+        external_result = await client.get_result(external_handle, timeout=30.0)
+        if external_result != external_value:
+            raise RuntimeError("externalized runtime payload did not round-trip exactly")
+        external_result_bytes = encoded_payload(external_result)
+        external_final_history = await client.get_history(
+            external_workflow_id,
+            external_handle.run_id,
+        )
+        external_final_events = external_final_history.get("events", [])
+        if (
+            not isinstance(external_final_events, list)
+            or external_final_events[: len(external_history_prefix)] != external_history_prefix
+        ):
+            raise RuntimeError("worker replacement did not retain the pre-restart history prefix")
+        if canonical_sha256(external_final_events[: len(external_history_prefix)]) != external_history_prefix_sha256:
+            raise RuntimeError("worker replacement changed retained history identity")
+
+        raw_headers = {
+            "Authorization": f"Bearer {token}",
+            "X-Namespace": namespace,
+            "X-Durable-Workflow-Control-Plane-Version": "2",
+            "Accept": "application/json",
+        }
+        async with httpx.AsyncClient(
+            base_url=server_url,
+            headers=raw_headers,
+            timeout=15.0,
+        ) as raw_client:
+            raw_inline_history = await raw_history_export(
+                raw_client,
+                inline_workflow_id,
+                inline_handle.run_id,
+            )
+            inline_references = runtime_reference_summaries(raw_inline_history)
+            if inline_references:
+                raise RuntimeError(
+                    "below-threshold runtime payload unexpectedly externalized: "
+                    f"{inline_references!r}"
+                )
+
+            raw_external_history = await raw_history_export(
+                raw_client,
+                external_workflow_id,
+                external_handle.run_id,
+            )
+            external_references = runtime_reference_summaries(raw_external_history)
+            if not external_references:
+                raise RuntimeError("forced runtime payload did not produce opaque history references")
+            required_reference_paths = (
+                "payloads.arguments",
+                "payloads.output",
+                "activities",
+            )
+            missing_reference_paths = [
+                required
+                for required in required_reference_paths
+                if not any(required in str(reference.get("path")) for reference in external_references)
+            ]
+            if missing_reference_paths:
+                raise RuntimeError(
+                    "forced runtime payload references did not span client/workflow/activity boundaries: "
+                    f"{missing_reference_paths}"
+                )
+            external_input_sha256 = hashlib.sha256(external_payload_bytes).hexdigest()
+            if not any(
+                reference.get("sha256") == external_input_sha256
+                and reference.get("size_bytes") == len(external_payload_bytes)
+                and "payloads.arguments" in str(reference.get("path"))
+                for reference in external_references
+            ):
+                raise RuntimeError(
+                    "raw externalized history did not retain the expected input size and SHA-256"
+                )
+            external_result_sha256 = hashlib.sha256(external_result_bytes).hexdigest()
+            if not any(
+                reference.get("sha256") == external_result_sha256
+                and reference.get("size_bytes") == len(external_result_bytes)
+                and "payloads.output" in str(reference.get("path"))
+                for reference in external_references
+            ):
+                raise RuntimeError(
+                    "raw externalized history did not retain the expected result size and SHA-256"
+                )
+
+            counterfactual_evidence = await runtime_transport_counterfactuals(
+                raw_client,
+                suffix=suffix,
+                task_queue=payload_task_queue,
+            )
+
+        external_payload_evidence = {
+            "inline_round_trip": {
+                "status": "pass",
+                "workflow_id": inline_workflow_id,
+                "run_id": inline_handle.run_id,
+                "result_sha256": hashlib.sha256(inline_result.encode("utf-8")).hexdigest(),
+                "external_reference_count": len(inline_references),
+                "history_sha256": canonical_sha256(inline_history_events),
+            },
+            "externalized_round_trip": {
+                "status": "pass",
+                "workflow_id": external_workflow_id,
+                "run_id": external_handle.run_id,
+                "logical_payload_size_bytes": len(external_value.encode("utf-8")),
+                "logical_payload_sha256": hashlib.sha256(external_value.encode("utf-8")).hexdigest(),
+                "encoded_input_size_bytes": len(external_payload_bytes),
+                "encoded_input_sha256": external_input_sha256,
+                "encoded_result_size_bytes": len(external_result_bytes),
+                "encoded_result_sha256": external_result_sha256,
+                "runtime_references": external_references,
+                "client_result_matches_input": True,
+            },
+            "cross_language_round_trip": {
+                "status": "pass",
+                "client_and_worker_runtime": "sdk-python",
+                "runtime_artifact": "durableworkflow/server",
+                "runtime_transport_owned_by_server": True,
+            },
+            "ordinary_runtime_credentials": {
+                "status": "pass",
+                "namespace_runtime_token_used": True,
+                "backing_store_credential_environment_keys": provider_environment_keys,
+            },
+            "provider_setup_absent": {
+                "status": "pass",
+                "python_process_backing_store_credentials_received": False,
+                "provider_specific_references_exposed": False,
+                "cluster_discovery_provider_details_exposed": False,
+            },
+            "worker_replacement": {
+                "status": "pass",
+                "initial_worker_id": external_worker1_id,
+                "replacement_worker_id": external_worker2_id,
+                "initial_worker_deregistration": external_worker1_absence,
+                "replacement_terminal_status": external_terminal.status,
+            },
+            "retained_history_replay_identity": {
+                "status": "pass",
+                "workflow_id": external_workflow_id,
+                "run_id": external_handle.run_id,
+                "retained_event_count": len(external_history_prefix),
+                "retained_history_prefix_sha256": external_history_prefix_sha256,
+            },
+            "counterfactuals": counterfactual_evidence,
+            "namespace_runtime_policy": {
+                "status": storage_policy.get("status"),
+                "threshold_bytes": storage_policy.get("threshold_bytes"),
+                "provider_details_exposed": False,
+            },
+        }
+        phases.record(
+            "runtime_payload_external_complete",
+            workflow_id=external_workflow_id,
+            run_id=external_handle.run_id,
+            reference_count=len(external_references),
+            retained_history_prefix_sha256=external_history_prefix_sha256,
+        )
+
     phases.record("cli_result_capture", run_id=run_id)
     cli_describe = cli.run(["workflow:describe", workflow_id, "--json"], namespace=namespace, timeout=60)
     cli_show_run = cli.run(["workflow:show-run", workflow_id, run_id, "--json"], namespace=namespace, timeout=60)
@@ -1063,6 +1629,43 @@ async def run() -> None:
         "after_signal_activity_result": observed_after_signal_result,
     }
     phases.record("replacement_work_completed_once", run_id=run_id, **replacement_recovery)
+    phases.record("namespace_cleanup", namespace=namespace)
+    namespace_cleanup = cli.run(
+        ["namespace:delete", namespace, "--json"],
+        namespace=namespace,
+        timeout=120,
+    )
+    deleted_counts = (
+        namespace_cleanup.get("deleted")
+        if isinstance(namespace_cleanup, dict)
+        else None
+    )
+    external_payloads_deleted = (
+        deleted_counts.get("external_payloads_deleted")
+        if isinstance(deleted_counts, dict)
+        else None
+    )
+    if (
+        isinstance(external_payloads_deleted, bool)
+        or not isinstance(external_payloads_deleted, int)
+        or external_payloads_deleted < 1
+    ):
+        raise RuntimeError(
+            "namespace cleanup did not report deleting runtime external payload state: "
+            f"{namespace_cleanup!r}"
+        )
+    result_dir.joinpath("namespace-cleanup-complete").write_text("complete\n", encoding="utf-8")
+    external_payload_evidence["cleanup"] = {
+        "status": "pass",
+        "namespace_deleted": namespace,
+        "external_payloads_deleted": external_payloads_deleted,
+        "deleted_counts": deleted_counts,
+    }
+    phases.record(
+        "namespace_cleanup_complete",
+        namespace=namespace,
+        external_payloads_deleted=external_payloads_deleted,
+    )
     phases.record("complete", run_id=run_id)
 
     protocol_traces = [*cli.traces, *trace_metrics.entries]
@@ -1080,6 +1683,7 @@ async def run() -> None:
         "workflow": pins["workflow"],
         "waterline": pins["waterline"],
     }
+    cloud_handoff = cloud_evidence_handoff(cloud_evidence_path, artifact_versions)
     artifact_sources = pins["artifact_sources"]
     finished_at = utc_now()
     php_audit_checks = {
@@ -1116,6 +1720,18 @@ async def run() -> None:
         "worker_restart_replays_signal_state": {
             "signal_state": result_value.get("signal_state") if isinstance(result_value, dict) else None,
         },
+        "runtime_external_payload_inline_round_trip": external_payload_evidence["inline_round_trip"],
+        "runtime_external_payload_externalized_round_trip": external_payload_evidence["externalized_round_trip"],
+        "runtime_external_payload_cross_language_round_trip": external_payload_evidence["cross_language_round_trip"],
+        "runtime_external_payload_standalone_server": {
+            "status": "pass",
+            "environment": "fresh_isolated_standalone_namespace",
+            "worker_replacement": external_payload_evidence["worker_replacement"],
+            "retained_history_replay_identity": external_payload_evidence["retained_history_replay_identity"],
+            "counterfactuals": external_payload_evidence["counterfactuals"],
+            "cleanup": external_payload_evidence["cleanup"],
+        },
+        "runtime_external_payload_provider_setup_absent": external_payload_evidence["provider_setup_absent"],
         "protocol_traces_recorded": {
             "control_plane_count": len(control_plane_traces),
             "worker_protocol_count": len(worker_protocol_traces),
@@ -1130,6 +1746,38 @@ async def run() -> None:
         }
         for capability, evidence in capability_evidence.items()
     }
+    capabilities["runtime_external_payload_isolated_cloud"] = cloud_handoff["capability"]
+    if not set(RUNTIME_EXTERNAL_PAYLOAD_CAPABILITIES).issubset(capabilities):
+        raise RuntimeError("runtime external payload capability evidence is incomplete")
+
+    runtime_payload_scenario = {
+        "scenario_id": "runtime_external_payload_round_trips",
+        "status": cloud_handoff["status"],
+        "standalone_server": {
+            "status": "pass",
+            "environment": "fresh_isolated_standalone_namespace",
+            "evidence": external_payload_evidence,
+        },
+        "isolated_cloud": cloud_handoff["isolated_cloud"],
+        "inline_round_trip": external_payload_evidence["inline_round_trip"],
+        "externalized_round_trip": external_payload_evidence["externalized_round_trip"],
+        "cross_language_round_trip": external_payload_evidence["cross_language_round_trip"],
+        "ordinary_runtime_credentials": external_payload_evidence["ordinary_runtime_credentials"],
+        "provider_setup_absent": external_payload_evidence["provider_setup_absent"],
+        "observed_outputs": {
+            "summary": (
+                "standalone runtime-mediated Python external payload execution passed; "
+                f"isolated Cloud exact-tuple handoff status is {cloud_handoff['status']}"
+            ),
+            "worker_replacement": external_payload_evidence["worker_replacement"],
+            "retained_history_replay_identity": external_payload_evidence["retained_history_replay_identity"],
+            "counterfactuals": external_payload_evidence["counterfactuals"],
+            "cleanup": external_payload_evidence["cleanup"],
+        },
+    }
+    if cloud_handoff["findings"]:
+        runtime_payload_scenario["linked_findings"] = cloud_handoff["findings"]
+
     host_evidence = {
         "schema": "durable-workflow.v2.python-sdk-parity.host-evidence",
         "version": 1,
@@ -1227,10 +1875,13 @@ async def run() -> None:
                 "replacement_recovery": replacement_recovery,
                 "observed_outputs": {"summary": "second Python worker replayed activity and signal state after restart"},
             },
+            "runtime_external_payload_round_trips": runtime_payload_scenario,
         },
         "capabilities": capabilities,
-        "findings": [],
-        "finding_links": [],
+        "findings": cloud_handoff["findings"],
+        "finding_links": {
+            "runtime_external_payload_round_trips": cloud_handoff["findings"],
+        } if cloud_handoff["findings"] else [],
         "run_metadata": metadata_doc,
         "history": final_history,
     }
@@ -1245,18 +1896,27 @@ if __name__ == "__main__":
 PY
 
 set +e
-python "$run_root/python-parity-runner.py" \
+env -i \
+  PATH="$run_root/.venv/bin:$run_root/cli/bin:/usr/local/bin:/usr/bin:/bin" \
+  VIRTUAL_ENV="$run_root/.venv" \
+  LANG=C.UTF-8 \
+  PYTHONPATH="$run_root" \
+  python "$run_root/python-parity-runner.py" \
   "$run_root/pins.json" \
   "$result_dir/run-metadata.json" \
   "$result_dir" \
   "$run_root/cli/bin/dw" \
   "$server_base_url" \
-  "$started_at" > "$result_dir/python-parity-runner.log" 2>&1
+  "$started_at" \
+  "$namespace" \
+  "$result_dir/namespace-create.json" \
+  "${DW_PYTHON_CONFORMANCE_CLOUD_EVIDENCE_JSON:-}" \
+  > "$result_dir/python-parity-runner.log" 2>&1
 runner_exit=$?
 set -e
 
 if [[ "$runner_exit" -ne 0 ]]; then
-  python - "$run_root/pins.json" "$result_dir/run-metadata.json" "$result_dir/python-host-evidence.json" "$started_at" <<'PY'
+  python - "$run_root/pins.json" "$result_dir/run-metadata.json" "$result_dir/python-host-evidence.json" "$started_at" "$run_root" <<'PY'
 from __future__ import annotations
 
 import json
@@ -1268,6 +1928,9 @@ pins = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 metadata = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
 out = Path(sys.argv[3])
 started_at = sys.argv[4]
+sys.path.insert(0, sys.argv[5])
+from python_external_payload_evidence import REQUIRED_CAPABILITIES, REQUIRED_SCENARIOS
+
 now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 result_dir = out.parent
 
@@ -1304,6 +1967,8 @@ elif failure_phase in {
     "initial_worker_absent",
 }:
     failure_scope = "server_routing"
+elif failure_phase.startswith("runtime_payload_"):
+    failure_scope = "runtime_external_payload"
 elif failure_phase in {"approval_signal", "approval_signal_accepted"}:
     failure_scope = "sdk_execution"
 else:
@@ -1357,37 +2022,10 @@ finding = {
     "failure_phase": failure_phase,
     "failure_scope": failure_scope,
     "log_file": "python-parity-runner.log",
+    "next_acceptance_criterion": (
+        "correct the failing published-artifact runtime phase and rerun the exact artifact tuple"
+    ),
 }
-required_scenarios = [
-    "official_cli_install_start_result_path",
-    "cold_first_user_setup",
-    "python_worker_registration",
-    "activity_backed_workflow_execution",
-    "workflow_result_surface",
-    "worker_restart_activity_and_signal_state",
-    "protocol_trace_capture",
-    "php_assumption_audit",
-    "capability_table_complete",
-]
-required_capabilities = [
-    "server_up",
-    "official_cli_installed",
-    "cli_reaches_server",
-    "cli_starts_workflow",
-    "cli_reads_workflow_result",
-    "cold_first_user_setup",
-    "python_sdk_installed_from_pypi",
-    "python_worker_connects",
-    "python_worker_registers_workflows",
-    "python_worker_registers_activities",
-    "python_workflow_runs",
-    "python_activity_runs",
-    "workflow_result_returned",
-    "worker_restart_replays_activity_state",
-    "worker_restart_replays_signal_state",
-    "protocol_traces_recorded",
-    "php_assumptions_absent",
-]
 host_evidence = {
     "schema": "durable-workflow.v2.python-sdk-parity.host-evidence",
     "version": 1,
@@ -1450,14 +2088,14 @@ host_evidence = {
             "observed_outputs": {"summary": finding["summary"]},
             "linked_findings": [finding],
         }
-        for scenario in required_scenarios
+        for scenario in REQUIRED_SCENARIOS
     },
     "capabilities": {
         capability: {
             "status": "fail",
             "evidence": {"linked_finding": finding},
         }
-        for capability in required_capabilities
+        for capability in REQUIRED_CAPABILITIES
     },
     "protocol_traces": protocol_traces,
     "control_plane_traces": cli_traces,
@@ -1472,7 +2110,7 @@ host_evidence = {
         },
     },
     "findings": [finding],
-    "finding_links": {scenario: [finding] for scenario in required_scenarios},
+    "finding_links": {scenario: [finding] for scenario in REQUIRED_SCENARIOS},
 }
 out.write_text(json.dumps(host_evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY

@@ -1192,7 +1192,9 @@ class ClusterInfoTest extends TestCase
         $this->assertContains('protocol_trace_capture', $contract['required_scenarios']);
         $this->assertContains('php_assumption_audit', $contract['required_scenarios']);
         $this->assertContains('capability_table_complete', $contract['required_scenarios']);
+        $this->assertContains('runtime_external_payload_round_trips', $contract['required_scenarios']);
         $this->assertContains('cli_reads_workflow_result', $contract['required_capabilities']);
+        $this->assertContains('runtime_external_payload_isolated_cloud', $contract['required_capabilities']);
         $this->assertContains('protocol_traces_recorded', $contract['required_capabilities']);
         $this->assertSame(
             'durable_workflow.python_conformance',
