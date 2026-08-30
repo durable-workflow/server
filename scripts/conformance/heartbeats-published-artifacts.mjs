@@ -653,7 +653,7 @@ $registration = $client->registerWorker(
     $taskQueue,
     ['${WORKFLOW_TYPE}'],
     [],
-    ['query_tasks', 'workflow_updates', 'durable_history_replay', 'graceful_shutdown'],
+    ['query_tasks', 'workflow_updates', 'durable_history_replay', 'graceful_shutdown', 'sticky_execution'],
     maxConcurrentWorkflowTasks: 2,
 );
 heartbeat_log([

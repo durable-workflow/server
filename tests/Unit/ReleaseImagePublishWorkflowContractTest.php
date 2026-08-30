@@ -942,8 +942,8 @@ SH);
 
     public function test_composer_metadata_identifies_the_exact_workflow_source(): void
     {
-        $expectedVersion = '2.0.0-rc.51';
-        $expectedCommit = '4f96b651dcacb6927e730828dfb7add17d13f6da';
+        $expectedVersion = '2.0.0-rc.52';
+        $expectedCommit = 'b98bd5640c9476b8b6d966a4a4f12243c3e9af08';
         $composer = json_decode($this->read('composer.json'), true, flags: JSON_THROW_ON_ERROR);
         $lock = json_decode($this->read('composer.lock'), true, flags: JSON_THROW_ON_ERROR);
 
@@ -3223,11 +3223,11 @@ SH;
             $outputs = file_get_contents($outputFile);
             $this->assertNotFalse($outputs);
             $this->assertStringContainsString("source=https://github.com/durable-workflow/workflow.git\n", $outputs);
-            $this->assertStringContainsString("ref=2.0.0-rc.51\n", $outputs);
-            $this->assertStringContainsString("tag=2.0.0-rc.51\n", $outputs);
-            $this->assertStringContainsString("commit=4f96b651dcacb6927e730828dfb7add17d13f6da\n", $outputs);
+            $this->assertStringContainsString("ref=2.0.0-rc.52\n", $outputs);
+            $this->assertStringContainsString("tag=2.0.0-rc.52\n", $outputs);
+            $this->assertStringContainsString("commit=b98bd5640c9476b8b6d966a4a4f12243c3e9af08\n", $outputs);
             $this->assertStringContainsString(
-                'Workflow package authority: 2.0.0-rc.51 at 4f96b651dcacb6927e730828dfb7add17d13f6da',
+                'Workflow package authority: 2.0.0-rc.52 at b98bd5640c9476b8b6d966a4a4f12243c3e9af08',
                 $result['stdout'],
             );
         } finally {
@@ -3243,15 +3243,15 @@ SH;
         try {
             $result = $this->runScript('scripts/ci/select-compatible-workflow-package-ref.sh', [
                 'WORKFLOW_PACKAGE_SOURCE' => 'https://github.com/durable-workflow/workflow.git',
-                'WORKFLOW_PACKAGE_REF' => '2.0.0-rc.51',
-                'WORKFLOW_PACKAGE_COMMIT' => '4f96b651dcacb6927e730828dfb7add17d13f6da',
+                'WORKFLOW_PACKAGE_REF' => '2.0.0-rc.52',
+                'WORKFLOW_PACKAGE_COMMIT' => 'b98bd5640c9476b8b6d966a4a4f12243c3e9af08',
                 'GITHUB_OUTPUT' => $outputFile,
             ]);
 
             $this->assertSame(0, $result['exitCode']);
             $outputs = file_get_contents($outputFile);
             $this->assertNotFalse($outputs);
-            $this->assertStringContainsString("tag=2.0.0-rc.51\n", $outputs);
+            $this->assertStringContainsString("tag=2.0.0-rc.52\n", $outputs);
         } finally {
             @unlink($outputFile);
         }
@@ -3266,7 +3266,7 @@ SH;
 
         $this->assertSame(1, $result['exitCode']);
         $this->assertStringContainsString(
-            'disagrees with the Composer Workflow package authority 2.0.0-rc.51',
+            'disagrees with the Composer Workflow package authority 2.0.0-rc.52',
             $result['stderr'],
         );
     }

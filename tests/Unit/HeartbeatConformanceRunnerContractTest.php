@@ -50,6 +50,41 @@ final class HeartbeatConformanceRunnerContractTest extends TestCase
         $this->assertStringNotContainsString("'poll' => ['task' => \$task]", $source);
     }
 
+    public function test_php_worker_advertises_sticky_execution_before_sdk_completion_path(): void
+    {
+        $source = $this->runnerSource();
+        $phpWorkerStart = strpos($source, 'function phpWorkerSource() {');
+        $phpWorkerEnd = strpos($source, 'function phpStalePollSource()', $phpWorkerStart);
+
+        $this->assertIsInt($phpWorkerStart);
+        $this->assertIsInt($phpWorkerEnd);
+
+        $phpWorkerSource = substr($source, $phpWorkerStart, $phpWorkerEnd - $phpWorkerStart);
+        $registration = strpos($phpWorkerSource, '$registration = $client->registerWorker(');
+        $worker = strpos($phpWorkerSource, '$worker = new Worker(');
+        $completionPath = strpos($phpWorkerSource, '$processed = $worker->tick(1);');
+
+        $this->assertIsInt($registration);
+        $this->assertIsInt($worker);
+        $this->assertIsInt($completionPath);
+        $this->assertLessThan($worker, $registration);
+        $this->assertLessThan($completionPath, $worker);
+
+        $matched = preg_match(
+            '/\\$client->registerWorker\\(\\s*\\$workerId,\\s*\\$taskQueue,\\s*\\[[^]]*],\\s*\\[],\\s*\\[(?<capabilities>[^]]*)],\\s*maxConcurrentWorkflowTasks:/s',
+            $phpWorkerSource,
+            $matches,
+        );
+        $this->assertSame(1, $matched, 'The generated PHP worker registration shape changed.');
+
+        preg_match_all("/'([^']+)'/", $matches['capabilities'], $advertisedCapabilities);
+        $this->assertContains(
+            'sticky_execution',
+            $advertisedCapabilities[1],
+            'The SDK completion path emits sticky-cache claims and must advertise sticky execution.',
+        );
+    }
+
     public function test_heartbeat_cadence_timestamp_attribution_regressions(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
