@@ -1929,7 +1929,11 @@ metadata = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
 out = Path(sys.argv[3])
 started_at = sys.argv[4]
 sys.path.insert(0, sys.argv[5])
-from python_external_payload_evidence import REQUIRED_CAPABILITIES, REQUIRED_SCENARIOS
+from python_external_payload_evidence import (
+    REQUIRED_CAPABILITIES,
+    REQUIRED_SCENARIOS,
+    failure_scenario_results,
+)
 
 now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 result_dir = out.parent
@@ -2076,20 +2080,7 @@ host_evidence = {
         "compose_project": "fresh per-run server volume",
     },
     "phase_evidence": phase_evidence,
-    "scenario_results": {
-        scenario: {
-            "scenario_id": scenario,
-            "status": "fail" if scenario in {
-                "official_cli_install_start_result_path",
-                "python_worker_registration",
-                "activity_backed_workflow_execution",
-                "workflow_result_surface",
-            } else "not_covered",
-            "observed_outputs": {"summary": finding["summary"]},
-            "linked_findings": [finding],
-        }
-        for scenario in REQUIRED_SCENARIOS
-    },
+    "scenario_results": failure_scenario_results(failure_scope, finding),
     "capabilities": {
         capability: {
             "status": "fail",

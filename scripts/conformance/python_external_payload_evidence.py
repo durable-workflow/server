@@ -60,6 +60,15 @@ REQUIRED_CAPABILITIES = (
     "php_assumptions_absent",
 )
 
+_BASELINE_FAILED_SCENARIOS = frozenset(
+    {
+        "official_cli_install_start_result_path",
+        "python_worker_registration",
+        "activity_backed_workflow_execution",
+        "workflow_result_surface",
+    }
+)
+
 CLOUD_REQUIRED_OBSERVATIONS = (
     "inline_round_trip",
     "externalized_round_trip",
@@ -161,6 +170,27 @@ def summarize_runtime_reference(
         "sha256": sha256,
         "opaque_reference": True,
         "provider_specific_reference_exposed": False,
+    }
+
+
+def failure_scenario_results(
+    failure_scope: str,
+    finding: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Classify attempted product cells as failures, not coverage gaps."""
+
+    failed_scenarios = set(_BASELINE_FAILED_SCENARIOS)
+    if failure_scope == "runtime_external_payload":
+        failed_scenarios.add(RUNTIME_EXTERNAL_PAYLOAD_SCENARIO)
+
+    return {
+        scenario: {
+            "scenario_id": scenario,
+            "status": "fail" if scenario in failed_scenarios else "not_covered",
+            "observed_outputs": {"summary": str(finding.get("summary") or "")},
+            "linked_findings": [dict(finding)],
+        }
+        for scenario in REQUIRED_SCENARIOS
     }
 
 

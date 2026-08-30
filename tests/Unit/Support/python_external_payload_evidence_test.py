@@ -13,6 +13,7 @@ from scripts.conformance.python_external_payload_evidence import (
     RUNTIME_EXTERNAL_PAYLOAD_CAPABILITIES,
     RUNTIME_EXTERNAL_PAYLOAD_REFERENCE_SCHEMA,
     cloud_evidence_handoff,
+    failure_scenario_results,
     summarize_runtime_reference,
 )
 
@@ -142,6 +143,25 @@ class PythonExternalPayloadEvidenceTest(unittest.TestCase):
             handoff["findings"][0]["type"],
         )
         self.assertIn("next_acceptance_criterion", handoff["findings"][0])
+
+    def test_attempted_runtime_external_payload_failure_is_not_a_coverage_gap(
+        self,
+    ) -> None:
+        finding = {"summary": "runtime external payload round trip failed"}
+
+        results = failure_scenario_results("runtime_external_payload", finding)
+
+        self.assertEqual(
+            "fail", results["runtime_external_payload_round_trips"]["status"]
+        )
+        self.assertEqual(
+            "not_covered",
+            results["worker_restart_activity_and_signal_state"]["status"],
+        )
+        self.assertEqual(
+            [finding],
+            results["runtime_external_payload_round_trips"]["linked_findings"],
+        )
 
     def test_wrong_tuple_and_sensitive_cloud_fields_fail_closed(self) -> None:
         evidence = passing_cloud_evidence()
