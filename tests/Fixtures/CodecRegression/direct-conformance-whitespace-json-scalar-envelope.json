@@ -1,0 +1,28 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.codec-regression/v1",
+  "id": "direct-conformance-whitespace-json-scalar-envelope",
+  "protocol": {
+    "codec": "avro",
+    "schema": "durable_workflow.protocol.Value",
+    "version": "1",
+    "fingerprint": "e2a33dff55802237"
+  },
+  "bindings": [
+    "php",
+    "python",
+    "rust"
+  ],
+  "value": {
+    "type": "string",
+    "value": "official-avro-string-after-json-scalar"
+  },
+  "framing": {
+    "encoding": "avro-single-object",
+    "wire_base64": "wwHioz3/VYAiNwpMb2ZmaWNpYWwtYXZyby1zdHJpbmctYWZ0ZXItanNvbi1zY2FsYXI="
+  },
+  "failure_policy": {
+    "operation": "round_trip",
+    "error": null
+  }
+}

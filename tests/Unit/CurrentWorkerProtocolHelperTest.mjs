@@ -45,13 +45,58 @@ test('direct registration always carries exact declarations and capability manif
   assert.throws(() => assertCurrentWorkerRegistration(mutated), /requires capability_manifest/);
 });
 
-test('direct completion reuses official Avro task arguments and rejects JSON mutation', () => {
+test('direct completion reuses official Avro task argument envelopes', () => {
   const result = avroResultFromTaskArguments(task);
   const completion = workflowTaskCompletionPayload(task, [{ type: 'complete_workflow', result }]);
   assert.deepEqual(completion.commands[0].result, task.arguments);
-
-  assert.throws(
-    () => workflowTaskCompletionPayload(task, [{ type: 'complete_workflow', result: '["raw-json"]' }]),
-    /JSON-shaped payload instead of Avro/,
-  );
 });
+
+test('direct completion reuses official Avro task argument strings', () => {
+  const stringTask = {
+    ...task,
+    arguments: task.arguments.blob,
+    payload_codec: 'avro',
+  };
+  const result = avroResultFromTaskArguments(stringTask);
+  const completion = workflowTaskCompletionPayload(stringTask, [{ type: 'complete_workflow', result }]);
+  assert.equal(completion.commands[0].result, task.arguments.blob);
+});
+
+const jsonDocumentStrings = {
+  null: ' \tnull\r\n',
+  true: ' true\t',
+  false: '\nfalse ',
+  integer: ' 7\r\n',
+  exponent: '\t-7.25e+3 ',
+  string: ' "raw-json"\n',
+  array: '\r["raw-json"] ',
+  object: ' {"status":"completed"}\t',
+};
+
+for (const [valueClass, payload] of Object.entries(jsonDocumentStrings)) {
+  test(`direct completion rejects complete JSON ${valueClass} document strings`, () => {
+    assert.throws(
+      () => workflowTaskCompletionPayload(task, [{ type: 'complete_workflow', result: payload }]),
+      /JSON-shaped payload instead of Avro/,
+    );
+  });
+}
+
+const rawJsonValues = {
+  null: null,
+  true: true,
+  false: false,
+  integer: 7,
+  number: 7.25,
+  array: ['raw-json'],
+  object: { status: 'completed' },
+};
+
+for (const [valueClass, payload] of Object.entries(rawJsonValues)) {
+  test(`direct completion rejects raw JSON ${valueClass} values`, () => {
+    assert.throws(
+      () => workflowTaskCompletionPayload(task, [{ type: 'complete_workflow', result: payload }]),
+      /must contain an Avro Value payload/,
+    );
+  });
+}

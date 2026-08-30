@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Support;
 
 use InvalidArgumentException;
+use JsonException;
 
 /**
  * Current worker-protocol boundary for published conformance probes that do
@@ -180,25 +181,60 @@ final class DirectConformanceWorkerProtocol
         };
         foreach ($fields as $field) {
             if (array_key_exists($field, $command)) {
-                self::assertNotJsonShapedString($command[$field], "commands.{$index}.{$field}");
+                self::assertAvroPayload($command[$field], "commands.{$index}.{$field}");
             }
         }
 
         $exception = $command['exception'] ?? null;
         if (is_array($exception) && array_key_exists('details', $exception)) {
-            self::assertNotJsonShapedString($exception['details'], "commands.{$index}.exception.details");
+            self::assertAvroPayload($exception['details'], "commands.{$index}.exception.details");
         }
     }
 
-    private static function assertNotJsonShapedString(mixed $value, string $field): void
+    private static function assertAvroPayload(mixed $payload, string $field): void
     {
-        if (! is_string($value)) {
+        if (self::isAvroEnvelope($payload)) {
+            self::assertNotJsonShapedString($payload['blob'], "{$field}.blob");
+
+            return;
+        }
+        if (is_string($payload) && $payload !== '') {
+            self::assertNotJsonShapedString($payload, $field);
+
             return;
         }
 
-        $trimmed = ltrim($value);
-        if (preg_match('/\A(?:[\[{\"]|null\z|true\z|false\z)/', $trimmed) === 1) {
+        throw new InvalidArgumentException("Direct conformance {$field} must contain an Avro Value payload.");
+    }
+
+    private static function isAvroEnvelope(mixed $value): bool
+    {
+        return is_array($value)
+            && ($value['codec'] ?? null) === 'avro'
+            && is_string($value['blob'] ?? null)
+            && $value['blob'] !== '';
+    }
+
+    private static function assertNotJsonShapedString(string $value, string $field): void
+    {
+        if (self::isJsonShapedString($value)) {
             throw new InvalidArgumentException("Direct conformance {$field} contains json_bytes_labeled_avro.");
+        }
+    }
+
+    private static function isJsonShapedString(string $value): bool
+    {
+        $trimmed = trim($value);
+        if (preg_match('/\A[\[{\"]/', $trimmed) === 1) {
+            return true;
+        }
+
+        try {
+            json_decode($trimmed, flags: JSON_THROW_ON_ERROR);
+
+            return true;
+        } catch (JsonException) {
+            return false;
         }
     }
 

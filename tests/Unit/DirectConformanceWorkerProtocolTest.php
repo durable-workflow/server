@@ -6,6 +6,7 @@ namespace Tests\Unit;
 
 use App\Support\DirectConformanceWorkerProtocol;
 use InvalidArgumentException;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Workflow\Serializers\Avro;
 use Workflow\Serializers\AvroBinaryValue;
@@ -68,7 +69,8 @@ final class DirectConformanceWorkerProtocolTest extends TestCase
         DirectConformanceWorkerProtocol::assertRegistrationPayload($payload);
     }
 
-    public function test_completion_mutation_with_json_shaped_result_fails_qualification(): void
+    #[DataProvider('jsonDocumentStringProvider')]
+    public function test_completion_mutation_with_complete_json_document_string_fails_qualification(string $payload): void
     {
         $task = [
             'task_id' => 'task-1',
@@ -80,8 +82,50 @@ final class DirectConformanceWorkerProtocolTest extends TestCase
         $this->expectExceptionMessage('json_bytes_labeled_avro');
         DirectConformanceWorkerProtocol::workflowTaskCompletion($task, [[
             'type' => 'complete_workflow',
-            'result' => '{"status":"completed"}',
+            'result' => $payload,
         ]]);
+    }
+
+    /** @return iterable<string, array{string}> */
+    public static function jsonDocumentStringProvider(): iterable
+    {
+        yield 'null' => [" \tnull\r\n"];
+        yield 'true' => [" true\t"];
+        yield 'false' => ["\nfalse "];
+        yield 'integer' => [" 7\r\n"];
+        yield 'exponent number' => ["\t-7.25e+3 "];
+        yield 'string' => [" \"raw-json\"\n"];
+        yield 'array' => ["\r[\"raw-json\"] "];
+        yield 'object' => [" {\"status\":\"completed\"}\t"];
+    }
+
+    #[DataProvider('rawJsonValueProvider')]
+    public function test_completion_mutation_with_non_string_json_value_fails_qualification(mixed $payload): void
+    {
+        $task = [
+            'task_id' => 'task-1',
+            'lease_owner' => 'probe-worker',
+            'workflow_task_attempt' => 1,
+        ];
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('must contain an Avro Value payload');
+        DirectConformanceWorkerProtocol::workflowTaskCompletion($task, [[
+            'type' => 'complete_workflow',
+            'result' => $payload,
+        ]]);
+    }
+
+    /** @return iterable<string, array{mixed}> */
+    public static function rawJsonValueProvider(): iterable
+    {
+        yield 'null' => [null];
+        yield 'true' => [true];
+        yield 'false' => [false];
+        yield 'integer' => [7];
+        yield 'float' => [7.25];
+        yield 'array' => [['raw-json']];
+        yield 'object-shaped array' => [['status' => 'completed']];
     }
 
     public function test_completion_preserves_fixed_avro_value_types_and_map_order(): void
@@ -118,6 +162,25 @@ final class DirectConformanceWorkerProtocolTest extends TestCase
         $this->assertSame("\x00\xFF", $decoded['binary']->bytes);
         $this->assertSame('AP8=', $decoded['text']);
         $this->assertSame(['z', 'a'], array_keys($decoded['nested']));
+    }
+
+    public function test_completion_accepts_fixed_avro_value_envelope(): void
+    {
+        $task = [
+            'task_id' => 'task-1',
+            'lease_owner' => 'probe-worker',
+            'workflow_task_attempt' => 1,
+        ];
+        $envelope = Avro::envelope(AvroMapValue::fromPairs([
+            ['status', 'completed'],
+        ]));
+
+        $completion = DirectConformanceWorkerProtocol::workflowTaskCompletion($task, [[
+            'type' => 'complete_workflow',
+            'result' => $envelope,
+        ]]);
+
+        $this->assertSame($envelope, $completion['commands'][0]['result']);
     }
 
     public function test_successful_setup_without_runtime_artifact_fails_validation(): void

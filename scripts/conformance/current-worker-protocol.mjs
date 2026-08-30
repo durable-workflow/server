@@ -167,8 +167,17 @@ function isAvroEnvelope(value) {
 }
 
 function assertNotJsonShaped(value, field) {
-  const trimmed = value.trimStart();
-  if (/^[\[{\"]/.test(trimmed) || ['null', 'true', 'false'].includes(trimmed)) {
+  const trimmed = value.trim();
+  let jsonShaped = /^[\[{\"]/.test(trimmed);
+  if (!jsonShaped) {
+    try {
+      JSON.parse(trimmed);
+      jsonShaped = true;
+    } catch {
+      jsonShaped = false;
+    }
+  }
+  if (jsonShaped) {
     throw new Error(`direct conformance ${field} contains a JSON-shaped payload instead of Avro`);
   }
 }
