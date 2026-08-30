@@ -1,0 +1,9 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/server-codec-counterfactual-schema.json",
+  "proof_schema": "durable-workflow.server-codec-counterfactual/v1",
+  "fixture": "tests/Fixtures/CodecRegression/payload-preflight-external-reference-bootstrap.json",
+  "test": "tests/Feature/CodecRegression/PayloadPreflightExternalReferenceBootstrapTest.php",
+  "boundaries": [
+    "app/Support/PayloadCodecDeploymentPreflight.php"
+  ]
+}

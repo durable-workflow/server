@@ -5,12 +5,16 @@ namespace Tests\Feature;
 use App\Support\PayloadCodecDeploymentPreflight;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
+use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Support\ExternalPayloadReference;
+use Workflow\V2\Support\ExternalPayloads;
 
 class AvroOnlyPayloadCodecTest extends TestCase
 {
@@ -206,6 +210,196 @@ class AvroOnlyPayloadCodecTest extends TestCase
             $this->assertStringContainsString('requires explicit payload_codec=avro', $exception->getMessage());
             $this->assertStringContainsString('Do not delete history', $exception->getMessage());
         }
+    }
+
+    public function test_deployment_preflight_accepts_canonical_avro_external_payload_references(): void
+    {
+        $run = $this->startRemoteWorkflow('preflight-external-avro-run');
+        $storedReference = ExternalPayloads::encodeStoredEnvelope([
+            'codec' => 'avro',
+            'external_storage' => [
+                'schema' => ExternalPayloadReference::SCHEMA,
+                'uri' => 'file:///retained-payloads/preflight-external-avro-run.bin',
+                'sha256' => str_repeat('a', 64),
+                'size_bytes' => 128,
+                'codec' => 'avro',
+            ],
+        ]);
+        $externalEnvelope = ExternalPayloads::storedEnvelope($storedReference);
+        $this->assertIsArray($externalEnvelope);
+
+        $run->forceFill(['arguments' => $storedReference])->save();
+        WorkflowCommand::query()
+            ->where('workflow_run_id', $run->id)
+            ->firstOrFail()
+            ->forceFill(['payload' => $storedReference])
+            ->save();
+        WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->firstOrFail()
+            ->forceFill(['payload' => [
+                'payload_codec' => 'avro',
+                'arguments' => $externalEnvelope,
+                'result' => $externalEnvelope,
+                'output' => $externalEnvelope,
+                'value' => $externalEnvelope,
+                'request_payload' => $externalEnvelope,
+                'response_payload' => $externalEnvelope,
+                'details' => $externalEnvelope,
+                'command' => [
+                    'payload_codec' => 'avro',
+                    'payload' => $externalEnvelope,
+                ],
+                'activity' => [
+                    'payload_codec' => 'avro',
+                    'arguments' => $externalEnvelope,
+                    'result' => $externalEnvelope,
+                    'exception' => $externalEnvelope,
+                ],
+                'exception' => [
+                    'details_payload_codec' => 'avro',
+                    'details' => $externalEnvelope,
+                ],
+            ]])
+            ->save();
+
+        $report = app(PayloadCodecDeploymentPreflight::class)->assertReady();
+
+        $this->assertIsArray($report['codec_counts']);
+        $this->assertDatabaseHas('workflow_runs', [
+            'id' => $run->id,
+            'arguments' => $storedReference,
+        ]);
+    }
+
+    /**
+     * @return iterable<string, array{string, string}>
+     */
+    public static function invalidExternalPayloadReferenceProvider(): iterable
+    {
+        $validExternalStorage = [
+            'schema' => ExternalPayloadReference::SCHEMA,
+            'uri' => 'file:///retained-payloads/counterfactual.bin',
+            'sha256' => str_repeat('b', 64),
+            'size_bytes' => 128,
+            'codec' => 'avro',
+        ];
+        $stored = static function (array $envelope): string {
+            $json = json_encode($envelope, JSON_UNESCAPED_SLASHES);
+
+            return ExternalPayloads::STORED_REFERENCE_PREFIX.base64_encode((string) $json);
+        };
+
+        yield 'malformed official prefix payload' => [
+            ExternalPayloads::STORED_REFERENCE_PREFIX.'***',
+            'not valid base64',
+        ];
+        yield 'unsupported prefix version' => [
+            'dw-external-payload:v2:'.base64_encode('{}'),
+            'invalid_base64',
+        ];
+        yield 'arbitrary JSON' => [
+            '{"codec":"avro"}',
+            'json_bytes_labeled_avro',
+        ];
+        yield 'missing external storage envelope' => [
+            $stored(['codec' => 'avro']),
+            'external_storage object',
+        ];
+        yield 'unsupported external reference schema' => [
+            $stored([
+                'codec' => 'avro',
+                'external_storage' => [...$validExternalStorage, 'schema' => 'unsupported'],
+            ]),
+            'Unsupported external payload reference schema',
+        ];
+        yield 'missing external reference identity' => [
+            $stored([
+                'codec' => 'avro',
+                'external_storage' => [...$validExternalStorage, 'uri' => ''],
+            ]),
+            'URI must be a non-empty string',
+        ];
+        yield 'missing external reference integrity digest' => [
+            $stored([
+                'codec' => 'avro',
+                'external_storage' => [...$validExternalStorage, 'sha256' => null],
+            ]),
+            'sha256 must be a hex digest',
+        ];
+        yield 'missing external reference size' => [
+            $stored([
+                'codec' => 'avro',
+                'external_storage' => [...$validExternalStorage, 'size_bytes' => null],
+            ]),
+            'size_bytes must be a non-negative integer',
+        ];
+        yield 'non Avro payload codec' => [
+            $stored([
+                'codec' => 'json',
+                'external_storage' => $validExternalStorage,
+            ]),
+            'unsupported_payload_codec',
+        ];
+        yield 'non Avro external storage codec' => [
+            $stored([
+                'codec' => 'avro',
+                'external_storage' => [...$validExternalStorage, 'codec' => 'json'],
+            ]),
+            'unsupported_payload_codec',
+        ];
+    }
+
+    #[DataProvider('invalidExternalPayloadReferenceProvider')]
+    public function test_deployment_preflight_rejects_malformed_external_payload_references(
+        string $storedReference,
+        string $expectedDiagnostic,
+    ): void {
+        $run = $this->startRemoteWorkflow('preflight-invalid-external-reference');
+        $run->forceFill(['arguments' => $storedReference])->save();
+
+        try {
+            app(PayloadCodecDeploymentPreflight::class)->assertReady();
+            $this->fail('Expected the malformed external payload reference to block bootstrap.');
+        } catch (RuntimeException $exception) {
+            $this->assertStringContainsString($expectedDiagnostic, $exception->getMessage());
+            $this->assertStringContainsString('Do not delete history', $exception->getMessage());
+        }
+
+        $this->assertDatabaseHas('workflow_runs', [
+            'id' => $run->id,
+            'arguments' => $storedReference,
+        ]);
+    }
+
+    public function test_deployment_preflight_rejects_malformed_external_envelopes_in_history(): void
+    {
+        $run = $this->startRemoteWorkflow('preflight-invalid-history-external-envelope');
+        $historyEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->firstOrFail();
+        $historyEvent->forceFill(['payload' => [
+            'payload_codec' => 'avro',
+            'result' => [
+                'codec' => 'avro',
+                'external_storage' => [
+                    'schema' => ExternalPayloadReference::SCHEMA,
+                    'uri' => 'file:///retained-payloads/malformed-history.bin',
+                    'size_bytes' => 128,
+                    'codec' => 'avro',
+                ],
+            ],
+        ]])->save();
+
+        try {
+            app(PayloadCodecDeploymentPreflight::class)->assertReady();
+            $this->fail('Expected the malformed history external payload envelope to block bootstrap.');
+        } catch (RuntimeException $exception) {
+            $this->assertStringContainsString('workflow_history_events', $exception->getMessage());
+            $this->assertStringContainsString('sha256 must be a hex digest', $exception->getMessage());
+        }
+
+        $this->assertDatabaseHas('workflow_history_events', ['id' => $historyEvent->id]);
     }
 
     public function test_deployment_preflight_scopes_codec_inventory_to_machine_owned_history_payloads(): void

@@ -4,8 +4,10 @@ namespace App\Support;
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use InvalidArgumentException;
 use RuntimeException;
 use Workflow\Serializers\Avro;
+use Workflow\V2\Support\ExternalPayloads;
 
 final class PayloadCodecDeploymentPreflight
 {
@@ -123,11 +125,12 @@ final class PayloadCodecDeploymentPreflight
                                     continue;
                                 }
 
-                                $inspectedFrames++;
-                                $diagnostic = Avro::payloadMetadata($payload)['diagnostic'];
-                                if ($diagnostic !== null) {
-                                    $failures[] = sprintf('%s[%s].%s: %s', $table, (string) $row->id, $payloadColumn, $diagnostic);
-                                }
+                                $this->inspectAvroPayload(
+                                    $payload,
+                                    sprintf('%s[%s].%s', $table, (string) $row->id, $payloadColumn),
+                                    $failures,
+                                    $inspectedFrames,
+                                );
                             }
                         }, 'id');
                 }
@@ -234,7 +237,7 @@ final class PayloadCodecDeploymentPreflight
             $payload = $container[$payloadField] ?? null;
             if (is_string($payload) && $payload !== '') {
                 if ($declaredCodec === 'avro') {
-                    $this->inspectAvroFrame($payload, $path.'.'.$payloadField, $failures, $inspectedFrames);
+                    $this->inspectAvroPayload($payload, $path.'.'.$payloadField, $failures, $inspectedFrames);
                 }
 
                 continue;
@@ -263,6 +266,12 @@ final class PayloadCodecDeploymentPreflight
             return;
         }
 
+        if (array_key_exists('external_storage', $envelope)) {
+            $this->inspectExternalPayloadEnvelope($envelope, $path, $failures);
+
+            return;
+        }
+
         $codec = array_key_exists('codec', $envelope)
             ? $this->inspectCodecDeclaration($envelope['codec'], $path.'.codec', $failures)
             : null;
@@ -271,13 +280,8 @@ final class PayloadCodecDeploymentPreflight
             if ($codec !== 'avro') {
                 $failures[] = sprintf('%s.blob: durable payload requires explicit payload_codec=avro', $path);
             } else {
-                $this->inspectAvroFrame($envelope['blob'], $path.'.blob', $failures, $inspectedFrames);
+                $this->inspectAvroPayload($envelope['blob'], $path.'.blob', $failures, $inspectedFrames);
             }
-        }
-
-        $externalStorage = $envelope['external_storage'] ?? null;
-        if (is_array($externalStorage) && array_key_exists('codec', $externalStorage)) {
-            $this->inspectCodecDeclaration($externalStorage['codec'], $path.'.external_storage.codec', $failures);
         }
     }
 
@@ -297,6 +301,66 @@ final class PayloadCodecDeploymentPreflight
         }
 
         return $codec;
+    }
+
+    /** @param list<string> $failures */
+    private function inspectAvroPayload(string $payload, string $path, array &$failures, int &$inspectedFrames): void
+    {
+        if (ExternalPayloads::isStoredReference($payload)) {
+            try {
+                $envelope = ExternalPayloads::storedEnvelope($payload);
+            } catch (InvalidArgumentException $exception) {
+                $failures[] = sprintf('%s: invalid_external_payload_reference: %s', $path, $exception->getMessage());
+
+                return;
+            }
+
+            if ($envelope === null) {
+                $failures[] = sprintf('%s: invalid_external_payload_reference', $path);
+
+                return;
+            }
+
+            $this->inspectExternalPayloadEnvelope($envelope, $path, $failures);
+
+            return;
+        }
+
+        $this->inspectAvroFrame($payload, $path, $failures, $inspectedFrames);
+    }
+
+    /**
+     * @param  array<string, mixed>  $envelope
+     * @param  list<string>  $failures
+     */
+    private function inspectExternalPayloadEnvelope(array $envelope, string $path, array &$failures): void
+    {
+        try {
+            $storedReference = ExternalPayloads::encodeStoredEnvelope($envelope);
+            $canonicalEnvelope = ExternalPayloads::storedEnvelope($storedReference);
+        } catch (InvalidArgumentException $exception) {
+            $failures[] = sprintf('%s: invalid_external_payload_reference: %s', $path, $exception->getMessage());
+
+            return;
+        }
+
+        if ($canonicalEnvelope === null) {
+            $failures[] = sprintf('%s: invalid_external_payload_reference', $path);
+
+            return;
+        }
+
+        if (($canonicalEnvelope['codec'] ?? null) !== 'avro') {
+            $failures[] = sprintf('%s.codec=%s', $path, (string) ($canonicalEnvelope['codec'] ?? ''));
+        }
+
+        if (($canonicalEnvelope['external_storage']['codec'] ?? null) !== 'avro') {
+            $failures[] = sprintf(
+                '%s.external_storage.codec=%s',
+                $path,
+                (string) ($canonicalEnvelope['external_storage']['codec'] ?? ''),
+            );
+        }
     }
 
     /** @param list<string> $failures */

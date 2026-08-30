@@ -1,0 +1,26 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.codec-regression/v1",
+  "id": "payload-preflight-external-reference-bootstrap",
+  "protocol": {
+    "codec": "avro",
+    "schema": "durable_workflow.protocol.Value",
+    "version": "1",
+    "fingerprint": "e2a33dff55802237"
+  },
+  "bindings": [
+    "php"
+  ],
+  "value": {
+    "type": "string",
+    "value": "dw-external-payload:v1:eyJjb2RlYyI6ImF2cm8iLCJleHRlcm5hbF9zdG9yYWdlIjp7ImNvZGVjIjoiYXZybyIsInNjaGVtYSI6ImR1cmFibGUtd29ya2Zsb3cudjIuZXh0ZXJuYWwtcGF5bG9hZC1yZWZlcmVuY2UudjEiLCJzaGEyNTYiOiJhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhIiwic2l6ZV9ieXRlcyI6MTI4LCJ1cmkiOiJmaWxlOi8vL3VuYXZhaWxhYmxlL2Jvb3RzdHJhcC1wcm9vZi5hdnJvIn19"
+  },
+  "framing": {
+    "encoding": "avro-single-object",
+    "wire_base64": "wwHioz3/VYAiNwrWBWR3LWV4dGVybmFsLXBheWxvYWQ6djE6ZXlKamIyUmxZeUk2SW1GMmNtOGlMQ0psZUhSbGNtNWhiRjl6ZEc5eVlXZGxJanA3SW1OdlpHVmpJam9pWVhaeWJ5SXNJbk5qYUdWdFlTSTZJbVIxY21GaWJHVXRkMjl5YTJac2IzY3Vkakl1WlhoMFpYSnVZV3d0Y0dGNWJHOWhaQzF5WldabGNtVnVZMlV1ZGpFaUxDSnphR0V5TlRZaU9pSmhZV0ZoWVdGaFlXRmhZV0ZoWVdGaFlXRmhZV0ZoWVdGaFlXRmhZV0ZoWVdGaFlXRmhZV0ZoWVdGaFlXRmhZV0ZoWVdGaFlXRmhZV0ZoWVdGaFlXRmhJaXdpYzJsNlpWOWllWFJsY3lJNk1USTRMQ0oxY21raU9pSm1hV3hsT2k4dkwzVnVZWFpoYVd4aFlteGxMMkp2YjNSemRISmhjQzF3Y205dlppNWhkbkp2SW4xOQ=="
+  },
+  "failure_policy": {
+    "operation": "round_trip",
+    "error": null
+  }
+}
