@@ -1,6 +1,6 @@
 # CI fixture: ingress + autoscaling enabled. Exercises optional templates.
 image:
-  tag: "2.0.0-rc.65"
+  tag: "2.0.0-rc.66"
 
 externalDatabase:
   connection: mysql

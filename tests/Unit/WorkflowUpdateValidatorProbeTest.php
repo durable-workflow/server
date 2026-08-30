@@ -7,7 +7,7 @@ use PHPUnit\Framework\TestCase;
 
 class WorkflowUpdateValidatorProbeTest extends TestCase
 {
-    public function test_validator_probe_runs_after_principal_probe_and_drains_persisted_multiplex_cursor(): void
+    public function test_route_cached_validator_probe_runs_approval_then_rejection_with_one_http_kernel(): void
     {
         $root = dirname(__DIR__, 2);
         $source = (string) file_get_contents(
@@ -30,6 +30,7 @@ class WorkflowUpdateValidatorProbeTest extends TestCase
         $testDir = $temporaryRoot.'/dw-validator-probe-'.bin2hex(random_bytes(6));
         $probe = $testDir.'/validator-probe.php';
         $database = $testDir.'/validator-probe.sqlite';
+        $routeCache = $testDir.'/routes.php';
         $result = $testDir.'/validator-results.json';
         mkdir($testDir, 0777, true);
 
@@ -46,9 +47,21 @@ PHP,
         );
 
         try {
+            $routeCacheCommand = sprintf(
+                '%s %s %s %s 2>&1',
+                'APP_ENV='.escapeshellarg('production'),
+                'APP_ROUTES_CACHE='.escapeshellarg($routeCache),
+                escapeshellarg(PHP_BINARY),
+                escapeshellarg($root.'/artisan').' route:cache',
+            );
+            exec($routeCacheCommand, $routeCacheOutput, $routeCacheStatus);
+            $this->assertSame(0, $routeCacheStatus, implode("\n", $routeCacheOutput));
+            $this->assertFileExists($routeCache, implode("\n", $routeCacheOutput));
+
             $command = sprintf(
-                '%s %s %s %s %s 2>&1',
-                'APP_ENV='.escapeshellarg('testing'),
+                '%s %s %s %s %s %s 2>&1',
+                'APP_ENV='.escapeshellarg('production'),
+                'APP_ROUTES_CACHE='.escapeshellarg($routeCache),
                 'DB_DATABASE='.escapeshellarg($database),
                 'RESULT_DIR='.escapeshellarg($testDir),
                 'RUNNER_REPO_ROOT='.escapeshellarg($root),

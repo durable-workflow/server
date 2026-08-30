@@ -444,8 +444,16 @@ function install_update_validation_worker_step(callable $workerStep): void
     ));
     // The focused probe reuses one HTTP kernel. Rebind the admission service
     // that actually owns validation, then force route controllers to resolve it.
-    foreach (app('router')->getRoutes() as $route) {
+    // Compiled route collections keep the request-matched routes in a separate
+    // name cache, while getRoutes() returns newly constructed route instances.
+    $routes = app('router')->getRoutes();
+    foreach ($routes->getRoutes() as $route) {
         $route->flushController();
+
+        $name = $route->getName();
+        if (is_string($name) && $name !== '') {
+            $routes->getByName($name)?->flushController();
+        }
     }
 }
 
