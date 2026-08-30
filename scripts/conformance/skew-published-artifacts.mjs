@@ -2930,7 +2930,7 @@ if ($operation === 'GET /api/cluster/info') {
             $workflowTaskAttempt,
             [[
                 'type' => 'complete_workflow',
-                'result' => null,
+                'result' => $client->payloadCodec()->envelope(null),
             ]],
         )),
         'POST /api/worker/workflow-tasks/{task}/fail' => skew_call(static fn (): array => $client->failWorkflowTask(

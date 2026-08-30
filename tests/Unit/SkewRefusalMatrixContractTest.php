@@ -1017,11 +1017,19 @@ $client->completeWorkflowTask(
             $workflowTaskAttempt,
             [[
                 'type' => 'complete_workflow',
-                'result' => null,
+                'result' => $client->payloadCodec()->envelope(null),
             ]],
 PHP,
             $runner,
-            'inside-window PHP worker complete probes must send a server-valid workflow completion command',
+            'inside-window PHP worker complete probes must encode workflow completion results through the SDK payload codec',
+        );
+        $this->assertStringNotContainsString(
+            <<<'PHP'
+                'type' => 'complete_workflow',
+                'result' => null,
+PHP,
+            $runner,
+            'inside-window PHP worker complete probes must not send raw command results',
         );
         $this->assertSame(
             2,
