@@ -2,6 +2,7 @@
 
 namespace Tests\Unit;
 
+use App\Support\ControlPlaneProtocol;
 use App\Support\SkewRefusalMatrixContract;
 use App\Support\SkewRefusalMatrixResultGate;
 use App\Support\WorkerProtocol;
@@ -64,6 +65,11 @@ final class SkewRefusalMatrixContractTest extends TestCase
         ] as $field) {
             $this->assertContains($field, $manifest['artifact_policy']['required_run_record_fields']);
         }
+
+        $this->assertSame('exact_current_tuple_only', $manifest['artifact_policy']['prerelease_interoperability']);
+        $this->assertFalse($manifest['artifact_policy']['historical_prerelease_packages_installed']);
+        $this->assertSame('semver_after_2.0.0', $manifest['artifact_policy']['stable_release_policy']);
+        $this->assertSame('GET /api/cluster/info', $manifest['protocol_authority']['source']);
     }
 
     public function test_scenario_manifest_source_path_is_published_and_matches_contract(): void
@@ -193,65 +199,37 @@ final class SkewRefusalMatrixContractTest extends TestCase
     public function test_skew_runner_pairing_protocol_window_tracks_server_protocol(): void
     {
         $runner = $this->read('scripts/conformance/skew-published-artifacts.mjs');
-        [$major, $minor] = array_map('intval', explode('.', WorkerProtocol::VERSION, 2));
-        $previousMinor = sprintf('%d.%d', $major, $minor - 1);
-        $nextMinor = sprintf('%d.%d', $major, $minor + 1);
+        $this->assertStringContainsString(
+            'deriveProtocolAuthority(clusterInfo.body)',
+            $runner,
+            'the exact published Server cluster manifest must initialize protocol authority',
+        );
+        $this->assertStringContainsString(
+            'pairingClassesForAuthority(protocolAuthority)',
+            $runner,
+            'every protocol pairing must derive from the observed Server authority',
+        );
+        $this->assertStringNotContainsString(
+            "const serverWorkerProtocolVersion = '1.17'",
+            $runner,
+            'the published skew runner must not retain a source-coded Server protocol baseline',
+        );
+        $this->assertStringNotContainsString(
+            '>=2.0.0-rc.1,<2.0.0',
+            $runner,
+            'skew diagnostics must not claim an RC-to-RC package compatibility window',
+        );
 
-        $this->assertGreaterThan(
-            0,
-            $minor,
-            'the skew runner backward row assumes the current server protocol has an older same-major minor to exercise',
+        $node = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($node === '') {
+            $this->markTestSkipped('node is required to exercise skew protocol authority derivation.');
+        }
+        exec(
+            escapeshellarg($node).' --test '.escapeshellarg(__DIR__.'/SkewProtocolAuthorityTest.mjs').' 2>&1',
+            $output,
+            $status,
         );
-        $this->assertMatchesRegularExpression(
-            "/const serverWorkerProtocolVersion = '".preg_quote(WorkerProtocol::VERSION, '/')."';/",
-            $runner,
-            'the skew runner compatible row must track the worker protocol advertised by the server',
-        );
-        $this->assertMatchesRegularExpression(
-            "/const backwardWorkerProtocolVersion = '".preg_quote($previousMinor, '/')."';/",
-            $runner,
-            'the backward worker-protocol row must be the previous same-major minor',
-        );
-        $this->assertMatchesRegularExpression(
-            "/const forwardWorkerProtocolVersion = '".preg_quote($nextMinor, '/')."';/",
-            $runner,
-            'the forward worker-protocol row must be the next same-major minor',
-        );
-        $this->assertStringContainsString(
-            'workerProtocolVersion: serverWorkerProtocolVersion',
-            $runner,
-            'compatible skew rows must exercise the current server worker protocol',
-        );
-        $this->assertStringContainsString(
-            'workerProtocolVersion: backwardWorkerProtocolVersion',
-            $runner,
-            'backward skew rows must exercise an older same-major worker protocol',
-        );
-        $this->assertStringContainsString(
-            'workerProtocolVersion: forwardWorkerProtocolVersion',
-            $runner,
-            'forward skew rows must exercise a newer same-major worker protocol',
-        );
-        $this->assertStringContainsString(
-            'workerProtocolCompatibilityWindow',
-            $runner,
-            'pairing classes must share one worker-protocol compatibility window string',
-        );
-        $this->assertStringContainsString(
-            'supported_version: stringValue(clusterInfo?.worker_protocol?.version) || serverWorkerProtocolVersion',
-            $runner,
-            'generated conformance evidence must fall back to the current server worker protocol',
-        );
-        $this->assertStringNotContainsString(
-            'same-major <= 1.8',
-            $runner,
-            'the published skew runner must not keep the stale 1.8 server compatibility window',
-        );
-        $this->assertStringNotContainsString(
-            'worker protocol 1.x minors <= 1.8',
-            $runner,
-            'the published skew runner must not emit stale 1.8 window text for backward or forward rows',
-        );
+        $this->assertSame(0, $status, implode("\n", $output));
     }
 
     public function test_blocking_classifications_and_smoke_gate_are_explicit(): void
@@ -279,6 +257,7 @@ final class SkewRefusalMatrixContractTest extends TestCase
         $this->assertTrue($gate['silent_success_is_blocking']);
         $this->assertTrue($gate['silent_failure_is_blocking']);
         $this->assertTrue($gate['corrupt_is_blocking']);
+        $this->assertTrue($gate['mutation_before_refusal_is_blocking']);
 
         $this->assertSame(SkewRefusalMatrixResultGate::SCHEMA, $manifest['result_gate']['schema']);
         $this->assertContains(
@@ -352,6 +331,7 @@ final class SkewRefusalMatrixContractTest extends TestCase
         $this->assertTrue($hostRunner['must_record_runner_blocked_false_for_product_evidence']);
         $this->assertTrue($hostRunner['must_emit_result_for_every_required_surface_pairing_operation_group']);
         $this->assertTrue($hostRunner['must_capture_request_response_for_every_skewed_operation']);
+        $this->assertTrue($hostRunner['must_compare_pre_and_post_refusal_state_for_mutation_bearing_operations']);
         $this->assertSame('non_passing_smoke_only', $hostRunner['smoke_summary_only_outcome']);
         $this->assertSame('not_covered', $hostRunner['unexecuted_required_cell_status']);
         $this->assertSame('conformance_runner_coverage_gap', $hostRunner['coverage_gap_finding_type']);
@@ -1033,6 +1013,8 @@ PHP,
             <<<'PHP'
 $client->completeWorkflowTask(
             $taskId,
+            $workerId,
+            $workflowTaskAttempt,
             [[
                 'type' => 'complete_workflow',
                 'result' => null,
@@ -1041,12 +1023,16 @@ PHP,
             $runner,
             'inside-window PHP worker complete probes must send a server-valid workflow completion command',
         );
-        $this->assertStringContainsString(
-            <<<'PHP'
+        $this->assertSame(
+            2,
+            substr_count(
+                $runner,
+                <<<'PHP'
+            $taskId,
+            $workerId,
             $workflowTaskAttempt,
-        )),
 PHP,
-            $runner,
+            ),
             'inside-window PHP worker complete/fail probes must pass the leased workflow task attempt',
         );
         $this->assertStringNotContainsString(
@@ -1079,7 +1065,7 @@ PHP,
             'Waterline stale render must classify as a blocking product finding',
         );
         $this->assertMatchesRegularExpression(
-            "/const productBlockingStatusPriority = \\[\\s*'corrupt',\\s*'silent_success',\\s*'silent_failure',\\s*\\];/s",
+            "/const productBlockingStatusPriority = \\[\\s*'mutation_before_refusal',\\s*'corrupt',\\s*'silent_success',\\s*'silent_failure',\\s*\\];/s",
             $runner,
             'product blocker statuses must outrank not_covered and runner_blocked when a pairing mixes product and coverage gaps',
         );
@@ -1413,8 +1399,8 @@ SH
 
     public function test_skew_runner_summarizes_compatible_cli_cell_from_inside_window_artifact_evidence(): void
     {
-        $compatibilityWindow = 'control-plane version 2; worker protocol same-major <= 1.13';
-        $nextStep = 'No compatibility remediation is required for this inside-window pair. If the cli command returns a domain error, use the captured response reason as the next operational step.';
+        $compatibilityWindow = $this->currentProtocolCompatibilityWindow();
+        $nextStep = 'Keep cli 0.1.82 pinned with Server 0.2.504; this exact tuple uses control-plane '.ControlPlaneProtocol::VERSION.' and worker protocol '.WorkerProtocol::VERSION.'.';
         $summary = $this->evaluateSkewPairingSummary([
             [
                 'surface' => 'cli',
@@ -1510,8 +1496,8 @@ SH
 
     public function test_skew_runner_summarizes_compatible_python_sdk_cell_from_typed_inside_window_artifact_evidence(): void
     {
-        $compatibilityWindow = 'control-plane version 2; worker protocol same-major <= 1.13';
-        $nextStep = 'No compatibility remediation is required for this inside-window pair. If the sdk-python command returns a domain error, use the captured response reason as the next operational step.';
+        $compatibilityWindow = $this->currentProtocolCompatibilityWindow();
+        $nextStep = 'Keep sdk-python 0.4.90 pinned with Server 0.2.505; this exact tuple uses control-plane '.ControlPlaneProtocol::VERSION.' and worker protocol '.WorkerProtocol::VERSION.'.';
         $summary = $this->evaluateSkewPairingSummary(
             [
                 [
@@ -1661,9 +1647,9 @@ SH
         $runner = $this->read('scripts/conformance/skew-published-artifacts.mjs');
 
         $this->assertStringContainsString(
-            "if (pairingClass === 'outside_window')",
+            "if (pairingClass === 'forward_skew' || pairingClass === 'outside_window')",
             $runner,
-            'outside-window cluster-info rows must not be allowed to pass silently',
+            'future and unsupported-major cluster-info rows must not be allowed to pass silently',
         );
         $this->assertStringContainsString(
             "return 'silent_success';",
@@ -1707,9 +1693,9 @@ SH
             'cells without a matched artifact request must be recorded as coverage gaps',
         );
         $this->assertStringContainsString(
-            'protocolEvidenceGap(operationGroup, pairing, wireRequest)',
+            'context.protocolAuthority',
             $runner,
-            'matched artifact requests must prove the row protocol version instead of inheriting the runner template',
+            'matched artifact requests must prove the row protocol version against the observed Server authority',
         );
         $this->assertStringContainsString(
             'request_headers: wireRequest.headers',
@@ -2251,7 +2237,11 @@ SH
 
         $evaluation = SkewRefusalMatrixResultGate::evaluate($result);
 
-        $this->assertSame('pass', $evaluation['status']);
+        $this->assertSame(
+            'pass',
+            $evaluation['status'],
+            json_encode($evaluation['gate_failures'], JSON_UNESCAPED_SLASHES),
+        );
         $this->assertSame([], $evaluation['non_pass_cells']);
         $this->assertSame([], $evaluation['gate_failures']);
 
@@ -2447,6 +2437,7 @@ SH
                 'cli' => '0.1.67',
                 'sdk-python' => '0.4.78',
                 'workflow' => '2.0.0-alpha.177',
+                'sdk-php' => '2.0.0-alpha.177',
                 'waterline' => '2.0.0-alpha.64',
             ],
             'started_at' => '2026-05-25T05:00:00Z',
@@ -2649,6 +2640,21 @@ SH
         @rmdir($path);
     }
 
+    private function currentProtocolCompatibilityWindow(): string
+    {
+        [$major, $minor] = array_map('intval', explode('.', WorkerProtocol::VERSION, 2));
+        $accepted = array_map(
+            static fn (int $acceptedMinor): string => sprintf('%d.%d', $major, $acceptedMinor),
+            range(0, $minor),
+        );
+
+        return sprintf(
+            'exact current tuple; control-plane %s requires an exact match; worker protocol accepts %s; prerelease package compatibility is not asserted',
+            ControlPlaneProtocol::VERSION,
+            implode(', ', $accepted),
+        );
+    }
+
     /**
      * @param array<string, string> $state
      * @return array<string, array{method: string, path: string}>
@@ -2732,14 +2738,34 @@ JS;
             ],
             'observedServerVersion' => '0.2.504',
         ];
+        [$workerMajor, $workerMinor] = array_map('intval', explode('.', WorkerProtocol::VERSION, 2));
+        $context['protocolAuthority'] ??= [
+            'source' => 'GET /api/cluster/info',
+            'prerelease_package_policy' => 'exact_current_tuple_only',
+            'control_plane' => [
+                'version' => ControlPlaneProtocol::VERSION,
+                'header' => ControlPlaneProtocol::HEADER,
+                'request_rule' => 'exact_match',
+            ],
+            'worker_protocol' => [
+                'version' => WorkerProtocol::VERSION,
+                'header' => WorkerProtocol::HEADER,
+                'request_rule' => 'same_major_and_minor_less_than_or_equal_to_advertised',
+                'accepted_versions' => array_map(
+                    static fn (int $minor): string => sprintf('%d.%d', $workerMajor, $minor),
+                    range(0, $workerMinor),
+                ),
+            ],
+        ];
 
         $script = <<<'JS'
 import { pathToFileURL } from 'node:url';
 
 const moduleUrl = pathToFileURL(process.argv[2]).href;
-const { summarizePairing } = await import(moduleUrl);
+const { pairingClassesForAuthority, summarizePairing } = await import(moduleUrl);
 const rows = JSON.parse(process.argv[3]);
 const context = JSON.parse(process.argv[4]);
+context.pairingClasses ??= pairingClassesForAuthority(context.protocolAuthority);
 const surface = process.argv[5];
 const pairingClass = process.argv[6];
 

@@ -65,9 +65,9 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'synthetic HTTP worker records must be identified in the result',
         );
         $this->assertStringContainsString(
-            "addNotCovered('cross_language_php_python_pinning'",
+            "addFail('cross_language_php_python_pinning'",
             $node,
-            'synthetic PHP/Python records must leave the cross-language cell non-passing',
+            'synthetic PHP/Python records must leave the attempted cross-language cell failed',
         );
         $this->assertStringContainsString(
             'published_artifact_worker_execution: false',
@@ -165,7 +165,6 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'server_state_summary',
             'block_server_readiness_prerequisite',
             'server_readiness_topology',
-            'runner_blocker',
             'server-namespace-setup.log',
             'server-url-candidates.txt',
             'server-url-resolved.txt',
@@ -291,6 +290,30 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         ] as $token) {
             $this->assertStringContainsString($token, $publishedWorkers);
         }
+    }
+
+    public function test_generated_python_worker_requires_portable_capability_manifest_before_evidence(): void
+    {
+        $publishedWorkers = $this->read('scripts/conformance/worker-versioning-published-workers.mjs');
+        $this->assertStringContainsString(
+            'from durable_workflow.client import PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST',
+            $publishedWorkers,
+        );
+        $this->assertStringContainsString(
+            'capability_manifest=PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST',
+            $publishedWorkers,
+        );
+
+        $node = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($node === '') {
+            $this->markTestSkipped('node is required to exercise the generated published Python worker.');
+        }
+        exec(
+            escapeshellarg($node).' --test '.escapeshellarg(__DIR__.'/WorkerVersioningPublishedPythonWorkerTest.mjs').' 2>&1',
+            $output,
+            $status,
+        );
+        $this->assertSame(0, $status, implode("\n", $output));
     }
 
     public function test_published_worker_shard_records_cross_language_before_supplemental_python_cells(): void
@@ -1188,6 +1211,7 @@ JS;
                     'DW_CLI_VERSION' => '0.1.80',
                     'DW_PYTHON_SDK_VERSION' => '0.4.88',
                     'DW_PHP_SDK_VERSION' => '0.1.204',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.177',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.96',
                     'DW_WV_SERVER_ARTIFACT_SOURCE' => 'published_server_url',
                 ],
@@ -1277,6 +1301,7 @@ JS;
                     'DW_CLI_VERSION' => '0.1.81',
                     'DW_PYTHON_SDK_VERSION' => '0.4.89',
                     'DW_PHP_SDK_VERSION' => '0.1.206',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.177',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.97',
                     'DW_WV_SERVER_ARTIFACT_SOURCE' => 'published_server_url',
                 ],
@@ -1481,6 +1506,7 @@ SH);
                     'DW_CLI_VERSION' => '0.1.81',
                     'DW_PYTHON_SDK_VERSION' => '0.4.89',
                     'DW_PHP_SDK_VERSION' => '0.1.206',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.177',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.97',
                 ],
             );
@@ -1708,6 +1734,7 @@ SH);
                     'DW_CLI_VERSION' => '0.1.81',
                     'DW_PYTHON_SDK_VERSION' => '0.4.89',
                     'DW_PHP_SDK_VERSION' => '0.1.206',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.177',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.97',
                 ],
             );
@@ -1819,6 +1846,7 @@ SH);
                     'DW_CLI_VERSION' => '0.1.80',
                     'DW_PYTHON_SDK_VERSION' => '0.4.88',
                     'DW_PHP_SDK_VERSION' => '0.1.217',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.177',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.96',
                     'DW_WV_SERVER_ARTIFACT_SOURCE' => 'published_server_url',
                 ],
@@ -1923,6 +1951,7 @@ SH);
                     'DW_CLI_VERSION' => '0.1.80',
                     'DW_PYTHON_SDK_VERSION' => '0.4.88',
                     'DW_PHP_SDK_VERSION' => '0.1.217',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.177',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.96',
                     'DW_WV_SERVER_ARTIFACT_SOURCE' => 'published_server_url',
                 ],
@@ -2033,7 +2062,7 @@ SH);
             'published replay counts must name the v1-pinned run they measured',
         );
         $this->assertStringContainsString(
-            'const cacheEvictionPasses = publishedWorkerScenarioPasses',
+            'const publishedCacheEvictionWorkerExecuted = publishedWorkerScenarioPasses',
             $node,
             'the cache-eviction cell must require published worker execution and zero incompatible delivery',
         );
@@ -2093,7 +2122,7 @@ SH);
             'the server protocol probe should not prove no-compatible behavior from one lucky empty poll',
         );
         $this->assertStringContainsString(
-            'isExplicitNoCompatibleSignal(publishedNoCompatibleSignal)',
+            'const publishedNoCompatiblePasses = noCompatiblePublishedEvidence.passes;',
             $node,
             'the no-compatible cell may pass only when zero incompatible delivery is paired with an explicit diagnostic',
         );

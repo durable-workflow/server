@@ -5,7 +5,7 @@ namespace App\Support;
 use Workflow\V2\Support\PlatformConformanceSuite;
 
 /**
- * Machine-readable contract for published-artifact version-skew refusal.
+ * Machine-readable contract for published-artifact protocol-skew refusal.
  *
  * The conformance host owns execution. This manifest gives that host one
  * server-published authority for the full matrix, the allowed outcomes, and
@@ -51,8 +51,11 @@ final class SkewRefusalMatrixContract
                 'runner_blocked',
             ],
             'artifact_policy' => [
-                'version_source' => 'latest_published_artifacts_at_run_time',
-                'version_requirement' => 'concrete_published_versions_pinned_at_run_time',
+                'version_source' => 'exact_current_published_tuple_at_run_time',
+                'version_requirement' => 'concrete_exact_current_published_versions_pinned_at_run_time',
+                'prerelease_interoperability' => 'exact_current_tuple_only',
+                'historical_prerelease_packages_installed' => false,
+                'stable_release_policy' => 'semver_after_2.0.0',
                 'placeholder_versions_rejected' => true,
                 'placeholder_version_examples' => [
                     'latest',
@@ -102,6 +105,7 @@ final class SkewRefusalMatrixContract
             'status_taxonomy' => [
                 'pass',
                 'loud_refuse',
+                'mutation_before_refusal',
                 'silent_success',
                 'silent_failure',
                 'corrupt',
@@ -111,27 +115,35 @@ final class SkewRefusalMatrixContract
             'pairing_classes' => [
                 'compatible' => [
                     'expected_statuses' => ['pass'],
-                    'description' => 'Both sides are inside the advertised compatibility window and the operation completes.',
+                    'description' => 'The exact current published tuple uses the Server-advertised control-plane and worker protocols and serves work.',
                 ],
                 'backward_skew' => [
                     'expected_statuses' => ['pass', 'loud_refuse'],
-                    'description' => 'The client or worker is older than the server. It may interoperate inside the window or refuse before sending an unsupported shape.',
+                    'description' => 'The exact current artifacts exercise a Server-advertised older worker protocol and a non-current control-plane shape without installing historical packages.',
                 ],
                 'forward_skew' => [
-                    'expected_statuses' => ['pass', 'loud_refuse'],
-                    'description' => 'The client or worker is newer than the server. It may interoperate inside the window or refuse before unsupported work is accepted.',
+                    'expected_statuses' => ['loud_refuse'],
+                    'description' => 'The exact current artifacts exercise future protocol shapes that must refuse before mutation, registration, lease, or dropped work.',
                 ],
                 'outside_window' => [
                     'expected_statuses' => ['loud_refuse'],
-                    'description' => 'The pair is outside the advertised compatibility window and must refuse before mutating state or dropping work.',
+                    'description' => 'The exact current artifacts exercise unsupported protocol majors that must refuse before mutation, registration, lease, dropped work, or stale render.',
                 ],
+            ],
+            'protocol_authority' => [
+                'source' => 'GET /api/cluster/info',
+                'control_plane_version_path' => 'control_plane.version',
+                'worker_protocol_version_path' => 'worker_protocol.version',
+                'worker_negotiation_path' => 'surface_stability_contract.surface_families.worker_protocol.negotiation',
+                'manifest_disagreement_outcome' => 'runner_blocked',
+                'scenario_labels_and_expectations_derive_from_authority' => true,
             ],
             'required_surfaces' => [
                 'cli' => [
                     'artifact' => 'cli',
                     'component' => 'CLI',
                     'owner' => 'durable-workflow/cli',
-                    'pairing_axis' => 'client_version_to_server_version',
+                    'pairing_axis' => 'protocol_shape_to_server_protocol_authority',
                     'required_pairing_classes' => self::requiredPairingClasses(),
                     'operation_groups' => [
                         'cluster_info_probe',
@@ -151,7 +163,7 @@ final class SkewRefusalMatrixContract
                     'artifact' => 'sdk-python',
                     'component' => 'Python SDK',
                     'owner' => 'durable-workflow/sdk-python',
-                    'pairing_axis' => 'client_version_to_server_version',
+                    'pairing_axis' => 'protocol_shape_to_server_protocol_authority',
                     'required_pairing_classes' => self::requiredPairingClasses(),
                     'operation_groups' => [
                         'cluster_info_probe',
@@ -172,7 +184,7 @@ final class SkewRefusalMatrixContract
                     'artifact' => 'sdk-php',
                     'component' => 'PHP SDK worker',
                     'owner' => 'durable-workflow/sdk',
-                    'pairing_axis' => 'worker_version_to_server_version',
+                    'pairing_axis' => 'protocol_shape_to_server_protocol_authority',
                     'required_pairing_classes' => self::requiredPairingClasses(),
                     'operation_groups' => [
                         'cluster_info_probe',
@@ -191,7 +203,7 @@ final class SkewRefusalMatrixContract
                     'artifact' => 'waterline',
                     'component' => 'Waterline',
                     'owner' => 'durable-workflow/waterline',
-                    'pairing_axis' => 'observer_version_to_server_version',
+                    'pairing_axis' => 'protocol_shape_to_server_protocol_authority',
                     'required_pairing_classes' => self::requiredPairingClasses(),
                     'operation_groups' => [
                         'cluster_info_probe',
@@ -323,6 +335,7 @@ final class SkewRefusalMatrixContract
                 'silent_success_is_blocking' => true,
                 'silent_failure_is_blocking' => true,
                 'corrupt_is_blocking' => true,
+                'mutation_before_refusal_is_blocking' => true,
                 'focused_findings_required_for_uncovered_cells' => true,
             ],
             'host_runner_contract' => [
@@ -343,6 +356,7 @@ final class SkewRefusalMatrixContract
                 'must_record_runner_blocked_false_for_product_evidence' => true,
                 'must_emit_result_for_every_required_surface_pairing_operation_group' => true,
                 'must_capture_request_response_for_every_skewed_operation' => true,
+                'must_compare_pre_and_post_refusal_state_for_mutation_bearing_operations' => true,
                 'smoke_summary_only_outcome' => 'non_passing_smoke_only',
                 'unexecuted_required_cell_status' => 'not_covered',
                 'coverage_gap_finding_type' => 'conformance_runner_coverage_gap',
@@ -443,6 +457,11 @@ final class SkewRefusalMatrixContract
                         'finding_source' => 'skew_refusal_matrix_contract.finding_policy',
                         'route_to' => 'emitting_side',
                     ],
+                    'mutation_before_refusal' => [
+                        'operation_status' => 'mutation_before_refusal',
+                        'finding_source' => 'skew_refusal_matrix_contract.finding_policy',
+                        'route_to' => 'server_protocol_boundary',
+                    ],
                     'worker_register_and_drop' => [
                         'worker_skew_classification' => 'register_and_drop',
                         'finding_type' => 'product_gap',
@@ -471,6 +490,12 @@ final class SkewRefusalMatrixContract
                     'severity' => 'blocker',
                     'route_to' => 'accepting_side',
                     'requires_wire_evidence' => true,
+                ],
+                'mutation_before_refusal' => [
+                    'severity' => 'blocker',
+                    'route_to' => 'server_protocol_boundary',
+                    'requires_wire_evidence' => true,
+                    'requires_pre_and_post_state_evidence' => true,
                 ],
                 'register_and_drop' => [
                     'severity' => 'blocker',

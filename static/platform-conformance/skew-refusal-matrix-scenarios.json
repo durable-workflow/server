@@ -3,8 +3,8 @@
   "version": 1,
   "category": "skew_refusal_matrix_contract",
   "suite_schema": "durable-workflow.v2.platform-conformance.suite",
-  "suite_version": 15,
-  "description": "Public scenario manifest for published-artifact version-skew refusal across CLI, Python SDK, PHP SDK worker, and Waterline surfaces.",
+  "suite_version": 47,
+  "description": "Public scenario manifest for protocol-skew refusal by the exact current CLI, Python SDK, PHP SDK worker, Waterline, and Server artifact tuple.",
   "fixture_type": "published_artifact_runtime_scenario_manifest",
   "result_schema": "durable-workflow.v2.skew-refusal-matrix.result",
   "result_statuses": [
@@ -16,6 +16,10 @@
   ],
   "artifact_policy": {
     "published_artifacts_only": true,
+    "exact_current_tuple_only": true,
+    "prerelease_interoperability": "exact_current_tuple_only",
+    "historical_prerelease_packages_installed": false,
+    "stable_release_policy": "semver_after_2.0.0",
     "requires_resolved_versions": true,
     "rejects_placeholder_versions": true,
     "implementation_tests_are_not_sources": true,
@@ -53,6 +57,8 @@
     "artifact_versions",
     "published_artifact_versions",
     "implementation_identity",
+    "protocol_authority",
+    "protocol_pairing_classes",
     "surface_results",
     "pairing_results",
     "operation_evidence",
@@ -255,6 +261,7 @@
     "must_record_runner_blocked_false_for_product_evidence": true,
     "must_emit_result_for_every_required_surface_pairing_operation_group": true,
     "must_capture_request_response_for_every_skewed_operation": true,
+    "must_compare_pre_and_post_refusal_state_for_mutation_bearing_operations": true,
     "smoke_summary_only_outcome": "non_passing_smoke_only",
     "unexecuted_required_cell_status": "not_covered",
     "coverage_gap_finding_type": "conformance_runner_coverage_gap",
@@ -309,7 +316,7 @@
       "sdk-php": {
         "scope": "sdk-php-skew-surface-shard",
         "artifact": "sdk-php",
-        "owner": "durable-workflow/workflow",
+        "owner": "durable-workflow/sdk",
         "must_cover_pairing_classes": [
           "compatible",
           "backward_skew",
@@ -378,6 +385,11 @@
         "finding_source": "skew_refusal_matrix_contract.finding_policy",
         "route_to": "emitting_side"
       },
+      "mutation_before_refusal": {
+        "operation_status": "mutation_before_refusal",
+        "finding_source": "skew_refusal_matrix_contract.finding_policy",
+        "route_to": "server_protocol_boundary"
+      },
       "worker_register_and_drop": {
         "worker_skew_classification": "register_and_drop",
         "finding_type": "product_gap",
@@ -412,7 +424,7 @@
     {
       "id": "cli_version_pair_matrix",
       "title": "CLI skew matrix",
-      "summary": "Exercise compatible, backward-skewed, forward-skewed, and outside-window CLI to server pairings across cluster info, workflow control-plane, and schedule operations.",
+      "summary": "Use the exact current CLI artifact to exercise Server-derived current and unsupported control-plane shapes across cluster info, workflow control-plane, and schedule operations.",
       "operations": [
         "GET /api/cluster/info through dw server:info",
         "POST /api/workflows through dw workflow start",
@@ -428,7 +440,7 @@
     {
       "id": "sdk_python_version_pair_matrix",
       "title": "Python SDK skew matrix",
-      "summary": "Exercise compatible, backward-skewed, forward-skewed, and outside-window Python SDK to server pairings across client and worker operations.",
+      "summary": "Use the exact current Python SDK artifact to exercise Server-derived current, supported worker, future, and unsupported-major protocol shapes.",
       "operations": [
         "GET /api/cluster/info through the Python SDK",
         "workflow start, signal, query, update, cancel, and terminate through the Python SDK",
@@ -444,7 +456,7 @@
     {
       "id": "workflow_worker_version_pair_matrix",
       "title": "PHP SDK worker skew matrix",
-      "summary": "Exercise PHP SDK worker registration, heartbeat, polling, complete, and fail calls against compatible and skewed server versions.",
+      "summary": "Use the exact current PHP SDK artifact to exercise Server-derived worker protocol registration, heartbeat, polling, completion, and failure shapes.",
       "operations": [
         "GET /api/cluster/info during PHP SDK worker bootstrap",
         "POST /api/worker/register",
@@ -462,7 +474,7 @@
     {
       "id": "waterline_version_pair_matrix",
       "title": "Waterline skew matrix",
-      "summary": "Exercise Waterline health, list, and detail rendering against compatible and skewed runtime versions.",
+      "summary": "Use the exact current Waterline artifact to exercise health, list, and detail rendering against Server-derived protocol shapes.",
       "operations": [
         "GET /api/cluster/info through the Waterline observer",
         "GET /waterline/api/v2/health",
@@ -478,16 +490,17 @@
     {
       "id": "future_version_boundary_matrix",
       "title": "Future-version boundary",
-      "summary": "Probe one step past the current compatibility window for client, worker, observer, and server surfaces.",
+      "summary": "Probe future and unsupported-major protocol shapes derived from the exact published Server authority.",
       "operations": [
-        "probe current compatibility window",
+        "probe exact current protocol authority",
         "probe future client boundary",
         "probe future worker boundary",
         "probe future observer boundary",
         "probe future server boundary"
       ],
       "pass_criteria": [
-        "inside-window forward skew interoperates or refuses according to the advertised compatibility statement",
+        "the exact current published tuple interoperates using the advertised protocols",
+        "a supported older worker protocol negotiates without installing historical prerelease packages",
         "outside-window forward skew refuses before mutation, registration, dropped work, or stale render",
         "the error context explains the supported version range"
       ]

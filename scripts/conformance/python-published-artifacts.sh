@@ -1635,6 +1635,10 @@ async def run() -> None:
         namespace=namespace,
         timeout=120,
     )
+    phases.record(
+        "namespace_cleanup_deletion_count_verification",
+        namespace=namespace,
+    )
     deleted_counts = (
         namespace_cleanup.get("deleted")
         if isinstance(namespace_cleanup, dict)
@@ -1932,6 +1936,7 @@ sys.path.insert(0, sys.argv[5])
 from python_external_payload_evidence import (
     REQUIRED_CAPABILITIES,
     REQUIRED_SCENARIOS,
+    failure_scope_for_phase,
     failure_scenario_results,
 )
 
@@ -1953,30 +1958,7 @@ phase_evidence = load_optional_json("python-parity-phase-evidence.json", {})
 if not isinstance(phase_evidence, dict):
     phase_evidence = {}
 failure_phase = str(phase_evidence.get("current_phase") or "runner_start")
-if failure_phase in {"runner_start", "runner_initialized"}:
-    failure_scope = "runner_setup"
-elif failure_phase in {
-    "cli_health_check",
-    "cli_server_ready",
-    "namespace_creation",
-    "namespace_created",
-    "cluster_info",
-    "initial_worker_start",
-    "initial_worker_started",
-    "workflow_start",
-    "workflow_started",
-    "initial_worker_stop",
-    "initial_worker_stopped",
-    "initial_worker_absence_verification",
-    "initial_worker_absent",
-}:
-    failure_scope = "server_routing"
-elif failure_phase.startswith("runtime_payload_"):
-    failure_scope = "runtime_external_payload"
-elif failure_phase in {"approval_signal", "approval_signal_accepted"}:
-    failure_scope = "sdk_execution"
-else:
-    failure_scope = "workflow_state"
+failure_scope = failure_scope_for_phase(failure_phase)
 
 cli_traces = load_optional_json("cli-traces.json", [])
 if not isinstance(cli_traces, list):

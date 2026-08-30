@@ -194,6 +194,36 @@ def failure_scenario_results(
     }
 
 
+def failure_scope_for_phase(failure_phase: str) -> str:
+    """Route an attempted phase to the product scenario that owns its failure."""
+
+    phase = str(failure_phase or "runner_start")
+    if phase in {"runner_start", "runner_initialized"}:
+        return "runner_setup"
+    if phase in {
+        "cli_health_check",
+        "cli_server_ready",
+        "namespace_creation",
+        "namespace_created",
+        "cluster_info",
+        "initial_worker_start",
+        "initial_worker_started",
+        "workflow_start",
+        "workflow_started",
+        "initial_worker_stop",
+        "initial_worker_stopped",
+        "initial_worker_absence_verification",
+        "initial_worker_absent",
+    }:
+        return "server_routing"
+    if phase.startswith("runtime_payload_") or phase.startswith("namespace_cleanup"):
+        return "runtime_external_payload"
+    if phase in {"approval_signal", "approval_signal_accepted"}:
+        return "sdk_execution"
+
+    return "workflow_state"
+
+
 def cloud_evidence_handoff(
     evidence_path: str | Path | None,
     artifact_versions: Mapping[str, str],

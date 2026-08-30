@@ -13,6 +13,7 @@ from scripts.conformance.python_external_payload_evidence import (
     RUNTIME_EXTERNAL_PAYLOAD_CAPABILITIES,
     RUNTIME_EXTERNAL_PAYLOAD_REFERENCE_SCHEMA,
     cloud_evidence_handoff,
+    failure_scope_for_phase,
     failure_scenario_results,
     summarize_runtime_reference,
 )
@@ -162,6 +163,28 @@ class PythonExternalPayloadEvidenceTest(unittest.TestCase):
             [finding],
             results["runtime_external_payload_round_trips"]["linked_findings"],
         )
+
+    def test_namespace_cleanup_failure_is_an_attempted_runtime_payload_failure(
+        self,
+    ) -> None:
+        finding = {"summary": "namespace deletion count was incomplete"}
+
+        for phase in (
+            "namespace_cleanup",
+            "namespace_cleanup_deletion_count_verification",
+        ):
+            failure_scope = failure_scope_for_phase(phase)
+            results = failure_scenario_results(failure_scope, finding)
+
+            self.assertEqual("runtime_external_payload", failure_scope)
+            self.assertEqual(
+                "fail",
+                results["runtime_external_payload_round_trips"]["status"],
+            )
+            self.assertNotEqual(
+                "not_covered",
+                results["runtime_external_payload_round_trips"]["status"],
+            )
 
     def test_wrong_tuple_and_sensitive_cloud_fields_fail_closed(self) -> None:
         evidence = passing_cloud_evidence()

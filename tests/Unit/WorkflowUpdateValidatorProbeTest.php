@@ -80,6 +80,22 @@ PHP,
                 $this->assertSame('pass', $scenarios[$scenarioId]['status'], $scenarioId);
             }
 
+            $approval = $scenarios['update_validator_approval_boundary']['observed_outputs'];
+            $this->assertSame('approved', $approval['validation_task_terminal_state']['status']);
+            $this->assertSame(1, $approval['validation_task_terminal_state']['attempt_count']);
+            $this->assertSame(
+                $approval['validation_task']['lease_owner'],
+                $approval['validation_task_terminal_state']['lease_owner'],
+            );
+
+            $rejection = $scenarios['update_validator_rejection_boundary']['observed_outputs'];
+            $this->assertSame('rejected', $rejection['validation_task_terminal_state']['status']);
+            $this->assertSame(1, $rejection['validation_task_terminal_state']['attempt_count']);
+            $this->assertSame(
+                $rejection['validation_task']['lease_owner'],
+                $rejection['validation_task_terminal_state']['lease_owner'],
+            );
+
             $replacement = $scenarios['update_validator_worker_replacement']['observed_outputs'];
             $this->assertSame(
                 $replacement['first_delivery']['update_validation_task_id'],
@@ -118,5 +134,20 @@ PHP,
                 rmdir($testDir);
             }
         }
+    }
+
+    public function test_operator_contract_explicitly_declares_no_update_validators(): void
+    {
+        $source = (string) file_get_contents(
+            dirname(__DIR__, 2).'/scripts/conformance/workflow-updates-published-artifacts.sh',
+        );
+        $start = strpos($source, 'function operator_workflow_command_contract(): array');
+        $end = strpos($source, 'function operator_register_worker(', $start === false ? 0 : $start);
+
+        $this->assertNotFalse($start);
+        $this->assertNotFalse($end);
+        $contractFunction = substr($source, (int) $start, (int) $end - (int) $start);
+
+        $this->assertStringContainsString("'update_validators' => []", $contractFunction);
     }
 }

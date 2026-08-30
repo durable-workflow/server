@@ -179,14 +179,17 @@ declare(strict_types=1);
 use App\Models\WorkflowNamespace;
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowUpdateValidationTask;
+use App\Support\ControlPlaneMutationRetrier;
 use App\Support\ControlPlaneProtocol;
 use App\Support\DirectConformanceWorkerProtocol;
+use App\Support\ExternalWorkflowUpdateAdmission;
 use App\Support\LongPollSignalStore;
 use App\Support\LongPollWaitSlotStore;
 use App\Support\LongPoller;
 use App\Support\WorkerProtocol;
 use App\Support\WorkflowQueryTaskBroker;
 use App\Support\ServerWorkflowControlPlane;
+use App\Support\ValidatedExternalWorkflowUpdateAdmission;
 use App\Support\WorkflowUpdateValidationTaskBroker;
 use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
@@ -426,16 +429,21 @@ function install_update_validation_worker_step(callable $workerStep): void
         }
     };
     $poller->workerStep = $workerStep;
-    app()->instance(WorkflowUpdateValidationTaskBroker::class, new WorkflowUpdateValidationTaskBroker(
+    $controlPlane = app(ServerWorkflowControlPlane::class);
+    $broker = new WorkflowUpdateValidationTaskBroker(
         $poller,
         $signals,
         app(WorkflowQueryTaskBroker::class),
-        app(ServerWorkflowControlPlane::class),
+        $controlPlane,
+    );
+    app()->instance(WorkflowUpdateValidationTaskBroker::class, $broker);
+    app()->instance(ExternalWorkflowUpdateAdmission::class, new ValidatedExternalWorkflowUpdateAdmission(
+        app(ControlPlaneMutationRetrier::class),
+        $broker,
+        $controlPlane,
     ));
-    // The focused probe reuses one HTTP kernel, so later scenarios must resolve
-    // controllers and control-plane services against the newly installed broker.
-    app()->forgetInstance(\Workflow\V2\Support\DefaultWorkflowControlPlane::class);
-    app()->forgetInstance(\Workflow\V2\Contracts\WorkflowControlPlane::class);
+    // The focused probe reuses one HTTP kernel. Rebind the admission service
+    // that actually owns validation, then force route controllers to resolve it.
     foreach (app('router')->getRoutes() as $route) {
         $route->flushController();
     }
@@ -625,6 +633,31 @@ function poll_update_validation_task(
     }
 
     throw new RuntimeException('Multiplexed validator poll did not reach validation after draining workflow work.');
+}
+
+function validation_task_state(?array $leasedTask): array
+{
+    $taskId = $leasedTask['update_validation_task_id'] ?? null;
+    if (! is_string($taskId) || $taskId === '') {
+        return [];
+    }
+
+    $task = WorkflowUpdateValidationTask::query()->find($taskId);
+    if (! $task instanceof WorkflowUpdateValidationTask) {
+        return [];
+    }
+
+    return [
+        'update_validation_task_id' => $task->id,
+        'status' => $task->status,
+        'attempt_count' => $task->attempt_count,
+        'lease_owner' => $task->lease_owner,
+        'lease_expires_at' => $task->lease_expires_at?->toAtomString(),
+        'approved_at' => $task->approved_at?->toAtomString(),
+        'rejected_at' => $task->rejected_at?->toAtomString(),
+        'failed_at' => $task->failed_at?->toAtomString(),
+        'timed_out_at' => $task->timed_out_at?->toAtomString(),
+    ];
 }
 
 function complete_task(array $task, array $commands, array $headers = []): array
@@ -1517,10 +1550,12 @@ function run_update_validator_probe(string $suffix): array
         'request_id' => $approvalRequestId,
         'wait_for' => 'accepted',
     ], [409, 422, 504]);
+    $approvalTaskState = validation_task_state($approvalTask);
     $approvalHistory = history_events($approvalWorkflowId, $approvalRunId);
     $approvalObserved = [
         'declared_update_validators' => ['approve'],
         'validation_task' => $approvalTask,
+        'validation_task_terminal_state' => $approvalTaskState,
         'accepted_state_absent_before_approval' => $acceptedAbsentBeforeApproval,
         'handler_not_invoked_during_validation' => $acceptedAbsentBeforeApproval,
         'multiplexed_workflow_tasks_drained' => $approvalDrainedWorkflowTasks,
@@ -1530,6 +1565,11 @@ function run_update_validator_probe(string $suffix): array
     ];
     $approvalPassed = $acceptedAbsentBeforeApproval
         && is_array($approvalTask)
+        && ($approvalTask['lease_owner'] ?? null) === $approvalWorker
+        && ($approvalTask['update_validation_attempt'] ?? null) === 1
+        && ($approvalTaskState['status'] ?? null) === WorkflowUpdateValidationTask::STATUS_APPROVED
+        && ($approvalTaskState['attempt_count'] ?? null) === 1
+        && ($approvalTaskState['lease_owner'] ?? null) === $approvalWorker
         && ($approvalResponse['body']['outcome'] ?? null) === 'approved'
         && $accepted['status_code'] === 202
         && ($accepted['body']['update_id'] ?? null) === ($approvalTask['update_validation_task_id'] ?? null)
@@ -1628,6 +1668,7 @@ function run_update_validator_probe(string $suffix): array
         'input' => [false, 'validator-rejected'],
         'request_id' => $rejectionRequestId,
     ], [422]);
+    $rejectionTaskState = validation_task_state($rejectionTask);
     $rejectionHistory = history_events($rejectionWorkflowId, $rejectionRunId);
     $rejectedAcceptedCount = count(array_filter(
         $rejectionHistory,
@@ -1635,6 +1676,7 @@ function run_update_validator_probe(string $suffix): array
     ));
     $rejectionObserved = [
         'validation_task' => $rejectionTask,
+        'validation_task_terminal_state' => $rejectionTaskState,
         'validator_rejection' => $validatorRejection,
         'multiplexed_workflow_tasks_drained' => $rejectionDrainedWorkflowTasks,
         'typed_update_response' => $rejected,
@@ -1643,6 +1685,13 @@ function run_update_validator_probe(string $suffix): array
         'handler_not_invoked' => $rejectedAcceptedCount === 0,
     ];
     $rejectionPassed = $rejected['status_code'] === 422
+        && is_array($rejectionTask)
+        && ($rejectionTask['lease_owner'] ?? null) === $rejectionWorker
+        && ($rejectionTask['update_validation_attempt'] ?? null) === 1
+        && ($rejectionTaskState['status'] ?? null) === WorkflowUpdateValidationTask::STATUS_REJECTED
+        && ($rejectionTaskState['attempt_count'] ?? null) === 1
+        && ($rejectionTaskState['lease_owner'] ?? null) === $rejectionWorker
+        && ($validatorRejection['body']['outcome'] ?? null) === 'rejected'
         && ($rejected['body']['reason'] ?? null) === 'update_validator_rejected'
         && ($rejected['body']['update_status'] ?? null) === 'rejected'
         && $rejectedAcceptedCount === 0
@@ -3439,6 +3488,7 @@ function operator_workflow_command_contract(): array
                 'parameters' => [operator_parameter('reason', 0, 'string')],
             ],
         ],
+        'update_validators' => [],
     ];
 }
 

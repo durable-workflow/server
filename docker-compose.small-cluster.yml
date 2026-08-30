@@ -12,7 +12,7 @@ x-server-build: &server-build
 x-server-environment: &server-environment
   APP_NAME: "Durable Workflow Server"
   APP_ENV: testing
-  APP_VERSION: ${APP_VERSION:-2.0.0-rc.62}
+  APP_VERSION: ${APP_VERSION:-2.0.0-rc.63}
   APP_DEBUG: "false"
   DW_SERVER_KEY: ${DW_SERVER_KEY:-base64:5Zt4nUhlCm3DD0nLXZJQdHiwPfb56yGo9gNV/g3jYbY=}
   DB_CONNECTION: ${DW_SMALL_CLUSTER_DB:-mysql}

@@ -157,6 +157,7 @@ final class SkewRefusalMatrixResultGate
                 'runner_blocked',
             ],
             'blocking_statuses' => [
+                'mutation_before_refusal',
                 'silent_success',
                 'silent_failure',
                 'corrupt',
@@ -1741,6 +1742,7 @@ final class SkewRefusalMatrixResultGate
     private static function blockingStatuses(): array
     {
         return [
+            'mutation_before_refusal',
             'silent_success',
             'silent_failure',
             'corrupt',

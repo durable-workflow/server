@@ -1857,7 +1857,7 @@ function isMainModule() {
   return process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname);
 }
 
-function pythonWorkerScript() {
+export function pythonWorkerScript() {
   return String.raw`import asyncio
 import json
 import os
@@ -1867,6 +1867,7 @@ import urllib.error
 import urllib.request
 
 from durable_workflow import Client, serializer
+from durable_workflow.client import PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST
 from durable_workflow.errors import ServerError
 
 
@@ -1898,6 +1899,7 @@ async def main():
                     supported_workflow_types=[payload["workflow_type"]],
                     workflow_definition_fingerprints={payload["workflow_type"]: payload["fingerprint"]},
                     supported_activity_types=payload["supported_activity_types"],
+                    capability_manifest=PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
                     max_concurrent_workflow_tasks=10,
                     max_concurrent_activity_tasks=10,
                     runtime="python",

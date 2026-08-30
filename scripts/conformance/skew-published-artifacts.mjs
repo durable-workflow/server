@@ -166,37 +166,262 @@ const surfaces = {
   },
 };
 
-const serverWorkerProtocolVersion = '1.17';
-const backwardWorkerProtocolVersion = '1.16';
-const forwardWorkerProtocolVersion = '1.18';
-const workerProtocolCompatibilityWindow = `server supports control-plane 2 and worker protocol 1.x minors <= ${serverWorkerProtocolVersion}`;
+const pairingClassNames = [
+  'compatible',
+  'backward_skew',
+  'forward_skew',
+  'outside_window',
+];
 
-const pairingClasses = {
-  compatible: {
-    controlPlaneVersion: '2',
-    workerProtocolVersion: serverWorkerProtocolVersion,
-    expected: 'inside-window interop',
-    compatibilityWindow: `control-plane version 2; worker protocol same-major <= ${serverWorkerProtocolVersion}`,
-  },
-  backward_skew: {
-    controlPlaneVersion: '1',
-    workerProtocolVersion: backwardWorkerProtocolVersion,
-    expected: 'inside-window interop or loud refusal before unsupported shape',
-    compatibilityWindow: workerProtocolCompatibilityWindow,
-  },
-  forward_skew: {
-    controlPlaneVersion: '3',
-    workerProtocolVersion: forwardWorkerProtocolVersion,
-    expected: 'inside-window interop or loud refusal before unsupported shape',
-    compatibilityWindow: workerProtocolCompatibilityWindow,
-  },
-  outside_window: {
-    controlPlaneVersion: '999',
-    workerProtocolVersion: '2.0',
-    expected: 'loud refusal before mutation, registration, dropped work, or stale render',
-    compatibilityWindow: `outside supported control-plane 2 and worker protocol same-major <= ${serverWorkerProtocolVersion} window`,
-  },
-};
+const portableWorkerAffinityCapabilities = [
+  'local_activities',
+  'worker_sessions',
+  'sticky_execution',
+];
+
+export function deriveProtocolAuthority(clusterInfo) {
+  const controlPlaneVersion = requiredManifestVersion(
+    clusterInfo?.control_plane?.version,
+    'control_plane.version',
+    /^\d+$/,
+  );
+  const workerProtocolVersion = requiredManifestVersion(
+    clusterInfo?.worker_protocol?.version,
+    'worker_protocol.version',
+    /^\d+\.\d+$/,
+  );
+  const compatibilityControlPlaneVersion = stringValue(
+    clusterInfo?.client_compatibility?.required_protocols?.control_plane?.version,
+  );
+  const compatibilityWorkerProtocolVersion = stringValue(
+    clusterInfo?.client_compatibility?.required_protocols?.worker_protocol?.version,
+  );
+  assertMatchingManifestVersion(
+    controlPlaneVersion,
+    compatibilityControlPlaneVersion,
+    'control-plane',
+  );
+  assertMatchingManifestVersion(
+    workerProtocolVersion,
+    compatibilityWorkerProtocolVersion,
+    'worker protocol',
+  );
+
+  const negotiation = clusterInfo
+    ?.surface_stability_contract
+    ?.surface_families
+    ?.worker_protocol
+    ?.negotiation;
+  if (!negotiation || typeof negotiation !== 'object' || Array.isArray(negotiation)) {
+    throw new Error('published Server cluster manifest omitted worker protocol negotiation authority');
+  }
+  const advertisedWorkerProtocolVersion = requiredManifestVersion(
+    negotiation.default_advertised_version,
+    'surface_stability_contract.surface_families.worker_protocol.negotiation.default_advertised_version',
+    /^\d+\.\d+$/,
+  );
+  assertMatchingManifestVersion(
+    workerProtocolVersion,
+    advertisedWorkerProtocolVersion,
+    'worker protocol negotiation',
+  );
+  if (stringValue(negotiation.request_header_rule) !== 'same_major_and_minor_less_than_or_equal_to_advertised') {
+    throw new Error('published Server cluster manifest advertised an unsupported worker protocol negotiation rule');
+  }
+
+  const acceptedWorkerProtocolVersions = Array.isArray(negotiation.accepted_request_versions_by_default)
+    ? negotiation.accepted_request_versions_by_default.map((version, index) => requiredManifestVersion(
+      version,
+      `surface_stability_contract.surface_families.worker_protocol.negotiation.accepted_request_versions_by_default.${index}`,
+      /^\d+\.\d+$/,
+    ))
+    : [];
+  const currentWorkerProtocol = parseProtocolVersion(workerProtocolVersion);
+  if (acceptedWorkerProtocolVersions.length === 0
+    || acceptedWorkerProtocolVersions.some((version) => {
+      const accepted = parseProtocolVersion(version);
+
+      return accepted === null
+        || accepted.major !== currentWorkerProtocol.major
+        || accepted.minor > currentWorkerProtocol.minor;
+    })) {
+    throw new Error('published Server cluster manifest advertised an invalid worker protocol negotiation range');
+  }
+  if (!acceptedWorkerProtocolVersions.includes(workerProtocolVersion)) {
+    throw new Error('published Server cluster manifest worker protocol negotiation omits its advertised version');
+  }
+
+  const portableWorkerAffinityMinimum = requiredManifestVersion(
+    clusterInfo?.worker_protocol?.server_capabilities?.local_activities?.minimum_worker_protocol_version,
+    'worker_protocol.server_capabilities.local_activities.minimum_worker_protocol_version',
+    /^\d+\.\d+$/,
+  );
+  const stickyExecutionMinimum = requiredManifestVersion(
+    clusterInfo?.worker_protocol?.server_capabilities?.sticky_execution?.minimum_worker_protocol_version,
+    'worker_protocol.server_capabilities.sticky_execution.minimum_worker_protocol_version',
+    /^\d+\.\d+$/,
+  );
+  assertMatchingManifestVersion(
+    portableWorkerAffinityMinimum,
+    stickyExecutionMinimum,
+    'portable worker affinity',
+  );
+  if (!acceptedWorkerProtocolVersions.includes(portableWorkerAffinityMinimum)) {
+    throw new Error('published Server cluster manifest portable worker affinity floor is outside its worker protocol negotiation range');
+  }
+
+  const controlPlaneHeader = stringValue(clusterInfo?.control_plane?.header)
+    || stringValue(clusterInfo?.client_compatibility?.required_protocols?.control_plane?.header);
+  const workerProtocolHeader = stringValue(clusterInfo?.worker_protocol?.header)
+    || stringValue(clusterInfo?.client_compatibility?.required_protocols?.worker_protocol?.header);
+  if (!controlPlaneHeader || !workerProtocolHeader) {
+    throw new Error('published Server cluster manifest omitted protocol request header authority');
+  }
+
+  return {
+    source: 'GET /api/cluster/info',
+    prerelease_package_policy: 'exact_current_tuple_only',
+    control_plane: {
+      version: controlPlaneVersion,
+      header: controlPlaneHeader,
+      request_rule: 'exact_match',
+    },
+    worker_protocol: {
+      version: workerProtocolVersion,
+      header: workerProtocolHeader,
+      request_rule: 'same_major_and_minor_less_than_or_equal_to_advertised',
+      accepted_versions: acceptedWorkerProtocolVersions,
+      portable_worker_affinity: {
+        minimum_protocol_version: portableWorkerAffinityMinimum,
+        capabilities: portableWorkerAffinityCapabilities,
+      },
+    },
+  };
+}
+
+export function rawWorkerTaskFixtureRegistrationPayload({
+  workerId,
+  taskQueue,
+  runtime,
+  protocolAuthority,
+}) {
+  const affinity = protocolAuthority?.worker_protocol?.portable_worker_affinity;
+  const minimumProtocolVersion = requiredManifestVersion(
+    affinity?.minimum_protocol_version,
+    'worker_protocol.portable_worker_affinity.minimum_protocol_version',
+    /^\d+\.\d+$/,
+  );
+  const capabilities = Array.isArray(affinity?.capabilities)
+    ? affinity.capabilities
+    : [];
+  if (capabilities.length !== portableWorkerAffinityCapabilities.length
+    || portableWorkerAffinityCapabilities.some((capability) => !capabilities.includes(capability))) {
+    throw new Error('published Server protocol authority omitted the portable worker affinity capability set');
+  }
+
+  return {
+    worker_id: workerId,
+    task_queue: taskQueue,
+    runtime,
+    supported_workflow_types: ['skew_conformance_workflow'],
+    supported_activity_types: [],
+    capability_manifest: Object.fromEntries(capabilities.map((capability) => [capability, {
+      supported: false,
+      minimum_protocol_version: minimumProtocolVersion,
+      reason: 'skew_fixture_uses_cold_durable_replay',
+    }])),
+  };
+}
+
+export function pairingClassesForAuthority(protocolAuthority) {
+  const controlPlane = parseControlPlaneVersion(protocolAuthority?.control_plane?.version);
+  const workerProtocol = parseProtocolVersion(protocolAuthority?.worker_protocol?.version);
+  if (controlPlane === null || workerProtocol === null) {
+    throw new Error('skew protocol authority contains malformed current protocol versions');
+  }
+
+  const acceptedWorkerProtocolVersions = (Array.isArray(protocolAuthority?.worker_protocol?.accepted_versions)
+    ? protocolAuthority.worker_protocol.accepted_versions
+    : [])
+    .map((version) => ({ version: stringValue(version), parsed: parseProtocolVersion(version) }))
+    .filter(({ parsed }) => parsed !== null
+      && parsed.major === workerProtocol.major
+      && parsed.minor < workerProtocol.minor)
+    .sort((left, right) => right.parsed.minor - left.parsed.minor);
+  const supportedOlderWorkerProtocol = acceptedWorkerProtocolVersions[0]?.version;
+  if (!supportedOlderWorkerProtocol) {
+    throw new Error('published Server protocol authority has no supported older worker protocol for negotiation coverage');
+  }
+
+  const futureControlPlaneVersion = String(controlPlane + 1);
+  const unsupportedControlPlaneMajor = String(controlPlane + 2);
+  const futureWorkerProtocolVersion = `${workerProtocol.major}.${workerProtocol.minor + 1}`;
+  const unsupportedWorkerProtocolMajor = `${workerProtocol.major + 1}.0`;
+  const currentWorkerProtocolVersion = protocolAuthority.worker_protocol.version;
+  const currentControlPlaneVersion = protocolAuthority.control_plane.version;
+  const protocolPolicy = [
+    `control-plane ${currentControlPlaneVersion} requires an exact match`,
+    `worker protocol accepts ${protocolAuthority.worker_protocol.accepted_versions.join(', ')}`,
+    'prerelease package compatibility is not asserted',
+  ].join('; ');
+
+  return {
+    compatible: {
+      label: `exact-current_control-plane-${currentControlPlaneVersion}_worker-${currentWorkerProtocolVersion}`,
+      controlPlaneVersion: currentControlPlaneVersion,
+      workerProtocolVersion: currentWorkerProtocolVersion,
+      expected: 'the exact published artifact tuple registers and serves using the Server-advertised protocols',
+      compatibilityWindow: `exact current tuple; ${protocolPolicy}`,
+      protocolSupport: 'exact_current',
+    },
+    backward_skew: {
+      label: `supported-worker-negotiation-${supportedOlderWorkerProtocol}_control-plane-refusal-${controlPlane - 1}`,
+      controlPlaneVersion: String(controlPlane - 1),
+      workerProtocolVersion: supportedOlderWorkerProtocol,
+      expected: 'the supported older worker protocol serves while the non-current control-plane shape refuses before mutation',
+      compatibilityWindow: `protocol negotiation only; ${protocolPolicy}`,
+      protocolSupport: 'supported_worker_protocol_only',
+    },
+    forward_skew: {
+      label: `future-protocol_control-plane-${futureControlPlaneVersion}_worker-${futureWorkerProtocolVersion}`,
+      controlPlaneVersion: futureControlPlaneVersion,
+      workerProtocolVersion: futureWorkerProtocolVersion,
+      expected: 'future protocol shapes refuse before mutation, registration, lease, or dropped work',
+      compatibilityWindow: `unsupported future protocol shape; ${protocolPolicy}`,
+      protocolSupport: 'unsupported_future',
+    },
+    outside_window: {
+      label: `unsupported-major_control-plane-${unsupportedControlPlaneMajor}_worker-${unsupportedWorkerProtocolMajor}`,
+      controlPlaneVersion: unsupportedControlPlaneMajor,
+      workerProtocolVersion: unsupportedWorkerProtocolMajor,
+      expected: 'unsupported protocol majors refuse before mutation, registration, lease, dropped work, or stale render',
+      compatibilityWindow: `unsupported protocol major; ${protocolPolicy}`,
+      protocolSupport: 'unsupported_major',
+    },
+  };
+}
+
+function requiredManifestVersion(value, pathName, pattern) {
+  const version = stringValue(value);
+  if (!pattern.test(version)) {
+    throw new Error(`published Server cluster manifest omitted or malformed ${pathName}`);
+  }
+
+  return version;
+}
+
+function assertMatchingManifestVersion(current, candidate, authorityName) {
+  if (!candidate) {
+    throw new Error(`published Server client compatibility manifest omitted ${authorityName} authority`);
+  }
+  if (current !== candidate) {
+    throw new Error(`published Server cluster manifests disagree on ${authorityName}: ${current} versus ${candidate}`);
+  }
+}
+
+function parseControlPlaneVersion(value) {
+  return /^\d+$/.test(String(value ?? '')) ? Number.parseInt(value, 10) : null;
+}
 
 const workflowWorkerDependentRequests = new Set([
   'POST /api/workflows/{workflowId}/query/{queryName}',
@@ -214,6 +439,23 @@ const workerTaskFixtureRequests = new Set([
   'POST /api/worker/workflow-tasks/poll',
   'POST /api/worker/workflow-tasks/{task}/complete',
   'POST /api/worker/workflow-tasks/{task}/fail',
+]);
+
+const mutationBearingRequests = new Set([
+  'POST /api/workflows',
+  'POST /api/workflows/{workflowId}/signal/{signalName}',
+  'POST /api/workflows/{workflowId}/update/{updateName}',
+  'POST /api/workflows/{workflowId}/runs/{runId}/signal/{signalName}',
+  'POST /api/workflows/{workflowId}/runs/{runId}/update/{updateName}',
+  'POST /api/workflows/{workflowId}/cancel',
+  'POST /api/workflows/{workflowId}/terminate',
+  'POST /api/worker/register',
+  'POST /api/worker/heartbeat',
+  'POST /api/worker/workflow-tasks/poll',
+  'POST /api/worker/workflow-tasks/{task}/complete',
+  'POST /api/worker/workflow-tasks/{task}/fail',
+  'POST /api/schedules',
+  'POST /api/schedules/{id}/trigger',
 ]);
 
 if (isMainModule()) {
@@ -298,6 +540,8 @@ async function main() {
     return;
   }
 
+  const protocolAuthority = deriveProtocolAuthority(clusterInfo.body);
+  const pairingClasses = pairingClassesForAuthority(protocolAuthority);
   const protocolManifestVersions = extractProtocolManifestVersions(clusterInfo.body);
 
   const context = {
@@ -305,6 +549,8 @@ async function main() {
     baseHeaders,
     namespace,
     observedServerVersion,
+    pairingClasses,
+    protocolAuthority,
     protocolManifestVersions,
     serverUrl,
     runId: `skew-${Date.now().toString(36)}`,
@@ -324,14 +570,15 @@ async function main() {
       component: surface.component,
       artifact_version: artifactVersions[surface.artifact],
       artifact_install: artifactInstallSummary(surfaceName),
-      required_pairing_classes: Object.keys(pairingClasses),
+      required_pairing_classes: pairingClassNames,
+      protocol_authority: protocolAuthority,
       operation_groups: surface.operationGroups,
       status: 'pass',
     };
     pairingResults[surfaceName] = {};
     operationEvidence[surfaceName] = {};
 
-    for (const pairingClass of Object.keys(pairingClasses)) {
+    for (const pairingClass of pairingClassNames) {
       operationEvidence[surfaceName][pairingClass] = {};
       const rowsForPairing = [];
 
@@ -372,8 +619,13 @@ async function main() {
 
   const finishedAt = timestamp();
   const outcome = findings.length === 0 ? 'pass' : 'fail';
-  const compatibilityWindows = compatibilityWindowReport(clusterInfo.body);
-  const futureVersionBoundary = futureBoundaryReport(pairingResults, operationEvidence);
+  const compatibilityWindows = compatibilityWindowReport(protocolAuthority);
+  const futureVersionBoundary = futureBoundaryReport(
+    pairingResults,
+    operationEvidence,
+    protocolAuthority,
+    pairingClasses,
+  );
 
   const pins = {
     schema: 'durable-workflow.v2.skew-refusal-matrix.pins',
@@ -381,6 +633,7 @@ async function main() {
     artifact_versions: artifactVersions,
     published_artifact_versions: artifactVersions,
     artifact_sources: artifactSources(),
+    protocol_authority: protocolAuthority,
     local_product_source_checkouts_used: false,
   };
 
@@ -398,6 +651,8 @@ async function main() {
     artifact_versions: artifactVersions,
     published_artifact_versions: artifactVersions,
     resolved_artifact_versions: artifactVersions,
+    protocol_authority: protocolAuthority,
+    protocol_pairing_classes: pairingClasses,
     implementation_identity: {
       runner_repository: 'server',
       runner_path: 'scripts/conformance/skew-published-artifacts.sh',
@@ -425,6 +680,8 @@ async function main() {
     artifact_sources: artifactSources(),
     local_product_source_checkouts_used: false,
     implementation_identity: metadata.implementation_identity,
+    protocol_authority: protocolAuthority,
+    protocol_pairing_classes: pairingClasses,
     surface_results: surfaceResults,
     pairing_results: pairingResults,
     operation_evidence: operationEvidence,
@@ -465,7 +722,7 @@ async function probeOperation({
   context,
   clusterInfo,
 }) {
-  const pairing = pairingClasses[pairingClass];
+  const pairing = context.pairingClasses[pairingClass];
   const state = pairingState(context, surfaceName, pairingClass);
   let { method, path: requestPath } = materializeRequest(
     requestTemplate,
@@ -473,7 +730,7 @@ async function probeOperation({
     state,
   );
   const surfaceVersion = context.artifactVersions[surface.artifact];
-  const nextStep = compatibilityNextStep(surfaceName, pairingClass);
+  const nextStep = compatibilityNextStep(surfaceName, pairingClass, context);
 
   const availability = invocationAvailability(surfaceName);
   if (!availability.available) {
@@ -526,6 +783,7 @@ async function probeOperation({
     pairingClass,
     operationGroup,
     requestTemplate,
+    context,
     state,
   });
   if (workerTaskGap) {
@@ -545,6 +803,15 @@ async function probeOperation({
       coverageGapScope: optionalGap?.coverage_gap_scope,
     });
   }
+
+  const refusalMutationProbe = await beginRefusalMutationProbe({
+    surfaceName,
+    pairingClass,
+    operationGroup,
+    requestTemplate,
+    context,
+    state,
+  });
 
   const invocation = await invokeSurfaceOperation({
     surfaceName,
@@ -583,7 +850,16 @@ async function probeOperation({
   const wireResponse = normalizedCaptureResponse(matchedCapture);
   const evidenceRequest = invocation.evidence_request ?? wireRequest;
   const response = invocation.response;
-  const protocolGap = protocolEvidenceGap(operationGroup, pairing, wireRequest);
+  const refusalMutationEvidence = await completeRefusalMutationProbe(
+    refusalMutationProbe,
+    context,
+  );
+  const protocolGap = protocolEvidenceGap(
+    operationGroup,
+    pairing,
+    wireRequest,
+    context.protocolAuthority,
+  );
   const optionalProtocolGap = protocolGap
     ? compatibleOptionalCoverageGap(surfaceName, pairingClass, operationGroup, requestTemplate)
     : null;
@@ -594,7 +870,9 @@ async function probeOperation({
       surfaceName,
       pairingClass,
       operationGroup,
+      requestTemplate,
       response,
+      refusalMutationEvidence,
     });
   const captureId = [
     surfaceName,
@@ -611,6 +889,7 @@ async function probeOperation({
     artifact_versions: context.artifactVersions,
     client_or_worker_version: surfaceVersion,
     server_version: context.observedServerVersion,
+    ...protocolScenarioFields(pairing),
     compatibility_window: pairing.compatibilityWindow,
     next_step: nextStep,
     request: wireRequest,
@@ -618,6 +897,9 @@ async function probeOperation({
     artifact_invocation: invocation.artifact_invocation,
     proxy_captures: invocation.proxy_captures,
   };
+  if (refusalMutationEvidence) {
+    capture.refusal_state_evidence = refusalMutationEvidence;
+  }
   if (surfaceName === 'sdk-php') {
     capture.worker_version = surfaceVersion;
     capture.sdk_php_package_version = surfaceVersion;
@@ -629,6 +911,7 @@ async function probeOperation({
     evidence = {
       surface: surfaceName,
       pairing_class: pairingClass,
+      ...protocolScenarioFields(pairing),
       operation_group: operationGroup,
       request: `${evidenceRequest.method} ${evidenceRequest.path}`,
       status,
@@ -649,6 +932,7 @@ async function probeOperation({
     evidence = {
       surface: surfaceName,
       pairing_class: pairingClass,
+      ...protocolScenarioFields(pairing),
       operation_group: operationGroup,
       request: `${evidenceRequest.method} ${evidenceRequest.path}`,
       response_status: response.status,
@@ -669,6 +953,7 @@ async function probeOperation({
     evidence = {
       surface: surfaceName,
       pairing_class: pairingClass,
+      ...protocolScenarioFields(pairing),
       operation_group: operationGroup,
       request_method: evidenceRequest.method,
       request_path: evidenceRequest.path,
@@ -701,9 +986,13 @@ async function probeOperation({
     capture.guard_proxy_capture = invocation.guard_proxy_capture.id;
   }
 
-  if (status === 'loud_refuse') {
+  if (isProtocolRefusal(response)) {
     evidence.refusal_requirements_met = refusalRequirements[surfaceName];
     evidence.refusal_context = loudRefusalContext(surfaceName, surfaceVersion, context, pairing, response);
+  }
+
+  if (refusalMutationEvidence) {
+    evidence.refusal_state_evidence = refusalMutationEvidence;
   }
 
   const interopClassification = compatibleControlPlaneInteropClassification({
@@ -753,7 +1042,12 @@ async function probeOperation({
     evidence.worker_version = surfaceVersion;
     evidence.sdk_php_package_version = surfaceVersion;
     evidence.worker_protocol_version = pairing.workerProtocolVersion;
-    evidence.worker_skew_classification = workerClassification(pairingClass, response, operationGroup);
+    evidence.worker_skew_classification = workerClassification(
+      pairingClass,
+      response,
+      operationGroup,
+      refusalMutationEvidence,
+    );
   }
 
   if (surfaceName === 'waterline' && status !== 'not_covered' && status !== 'runner_blocked') {
@@ -780,8 +1074,8 @@ function notCoveredProbe({
   coverageGapScope = '',
 }) {
   const surfaceVersion = context.artifactVersions[surface.artifact];
-  const pairing = pairingClasses[pairingClass];
-  const nextStep = compatibilityNextStep(surfaceName, pairingClass);
+  const pairing = context.pairingClasses[pairingClass];
+  const nextStep = compatibilityNextStep(surfaceName, pairingClass, context);
   const captureId = [
     surfaceName,
     pairingClass,
@@ -811,6 +1105,7 @@ function notCoveredProbe({
     artifact_versions: context.artifactVersions,
     client_or_worker_version: surfaceVersion,
     server_version: context.observedServerVersion,
+    ...protocolScenarioFields(pairing),
     compatibility_window: pairing.compatibilityWindow,
     next_step: nextStep,
     request: {
@@ -846,6 +1141,7 @@ function notCoveredProbe({
     evidence = {
       surface: surfaceName,
       pairing_class: pairingClass,
+      ...protocolScenarioFields(pairing),
       operation_group: operationGroup,
       request: `${method} ${requestPath}`,
       status,
@@ -864,6 +1160,7 @@ function notCoveredProbe({
     evidence = {
       surface: surfaceName,
       pairing_class: pairingClass,
+      ...protocolScenarioFields(pairing),
       operation_group: operationGroup,
       request: `${method} ${requestPath}`,
       response_status: 0,
@@ -887,6 +1184,7 @@ function notCoveredProbe({
     evidence = {
       surface: surfaceName,
       pairing_class: pairingClass,
+      ...protocolScenarioFields(pairing),
       operation_group: operationGroup,
       request_method: method,
       request_path: requestPath,
@@ -1120,6 +1418,7 @@ function workerTaskCompletionGap({
   pairingClass,
   operationGroup,
   requestTemplate,
+  context,
   state,
 }) {
   if (
@@ -1130,7 +1429,7 @@ function workerTaskCompletionGap({
     return null;
   }
 
-  if (!requiresPublishedWorkerTaskId(pairingClass)) {
+  if (!requiresPublishedWorkerTaskId(pairingClass, context)) {
     return null;
   }
 
@@ -1143,15 +1442,15 @@ function workerTaskCompletionGap({
   };
 }
 
-function requiresPublishedWorkerTaskId(pairingClass) {
-  const pairing = pairingClasses[pairingClass];
+function requiresPublishedWorkerTaskId(pairingClass, context) {
+  const pairing = context.pairingClasses[pairingClass];
   if (!pairing) {
     return true;
   }
 
   return workerProtocolCompatible(
     pairing.workerProtocolVersion,
-    pairingClasses.compatible.workerProtocolVersion,
+    context.pairingClasses.compatible.workerProtocolVersion,
   );
 }
 
@@ -1177,12 +1476,12 @@ function parseProtocolVersion(value) {
   };
 }
 
-function taskIdForPublishedWorkerProbe(state, pairingClass) {
+function taskIdForPublishedWorkerProbe(state, pairingClass, context) {
   if (state.taskId) {
     return state.taskId;
   }
 
-  return requiresPublishedWorkerTaskId(pairingClass)
+  return requiresPublishedWorkerTaskId(pairingClass, context)
     ? ''
     : 'poll-task-id-required';
 }
@@ -1237,7 +1536,6 @@ async function prepareWorkerTaskFixture({
 }) {
   if (
     !workerTaskFixtureRequests.has(requestTemplate)
-    || !requiresPublishedWorkerTaskId(pairingClass)
     || (surfaceName !== 'sdk-python' && surfaceName !== 'sdk-php')
   ) {
     return null;
@@ -1257,7 +1555,7 @@ async function prepareWorkerTaskFixture({
 
   const workerId = state.workerId;
   const taskQueue = 'skew-conformance';
-  const workerHeaders = fixtureWorkerHeaders(context, pairingClass);
+  const workerHeaders = fixtureWorkerHeaders(context, 'compatible');
 
   let registerResponse;
   try {
@@ -1266,13 +1564,12 @@ async function prepareWorkerTaskFixture({
       'POST',
       '/api/worker/register',
       workerHeaders,
-      {
-        worker_id: workerId,
-        task_queue: taskQueue,
+      rawWorkerTaskFixtureRegistrationPayload({
+        workerId,
+        taskQueue,
         runtime: workerRuntimeForSurface(surfaceName),
-        supported_workflow_types: ['skew_conformance_workflow'],
-        supported_activity_types: [],
-      },
+        protocolAuthority: context.protocolAuthority,
+      }),
     );
   } catch (error) {
     return {
@@ -1587,21 +1884,225 @@ async function prepareScheduleFixture({
 function fixtureHeaders(context) {
   return {
     ...context.baseHeaders,
-    'X-Durable-Workflow-Control-Plane-Version': pairingClasses.compatible.controlPlaneVersion,
-    'X-Durable-Workflow-Protocol-Version': pairingClasses.compatible.workerProtocolVersion,
+    [context.protocolAuthority.control_plane.header]: context.pairingClasses.compatible.controlPlaneVersion,
+    [context.protocolAuthority.worker_protocol.header]: context.pairingClasses.compatible.workerProtocolVersion,
   };
 }
 
 function fixtureWorkerHeaders(context, pairingClass) {
   return {
     ...context.baseHeaders,
-    'X-Durable-Workflow-Protocol-Version': pairingClasses[pairingClass]?.workerProtocolVersion
-      ?? pairingClasses.compatible.workerProtocolVersion,
+    [context.protocolAuthority.worker_protocol.header]: context.pairingClasses[pairingClass]?.workerProtocolVersion
+      ?? context.pairingClasses.compatible.workerProtocolVersion,
   };
 }
 
 function workerRuntimeForSurface(surfaceName) {
   return surfaceName === 'sdk-python' ? 'python' : 'php';
+}
+
+async function beginRefusalMutationProbe({
+  surfaceName,
+  pairingClass,
+  operationGroup,
+  requestTemplate,
+  context,
+  state,
+}) {
+  if (!requiresRefusalMutationEvidence(pairingClass, operationGroup, requestTemplate)) {
+    return null;
+  }
+
+  const target = refusalMutationProbeTarget(operationGroup, requestTemplate, state);
+  if (target === null) {
+    return {
+      schema: 'durable-workflow.v2.skew-refusal-matrix.refusal-state-evidence',
+      required: true,
+      surface: surfaceName,
+      pairing_class: pairingClass,
+      operation_group: operationGroup,
+      operation: requestTemplate,
+      target: null,
+      before: {
+        observed: false,
+        reason: 'no post-refusal state probe is defined for this mutation-bearing operation',
+      },
+    };
+  }
+
+  return {
+    schema: 'durable-workflow.v2.skew-refusal-matrix.refusal-state-evidence',
+    required: true,
+    surface: surfaceName,
+    pairing_class: pairingClass,
+    operation_group: operationGroup,
+    operation: requestTemplate,
+    target,
+    before: await captureRefusalMutationState(context, target),
+  };
+}
+
+async function completeRefusalMutationProbe(probe, context) {
+  if (probe === null) {
+    return null;
+  }
+
+  if (probe.target === null) {
+    return {
+      ...probe,
+      after: {
+        observed: false,
+        reason: 'post-refusal state could not be observed without a probe target',
+      },
+      unchanged: false,
+      mutation_detected: false,
+      outcome: 'not_covered',
+    };
+  }
+
+  const after = await captureRefusalMutationState(context, probe.target);
+  const comparison = compareRefusalMutationStates(probe.before, after);
+
+  return {
+    ...probe,
+    after,
+    ...comparison,
+  };
+}
+
+function requiresRefusalMutationEvidence(pairingClass, operationGroup, requestTemplate) {
+  if (!mutationBearingRequests.has(requestTemplate) || pairingClass === 'compatible') {
+    return false;
+  }
+
+  if (operationGroup === 'worker_lifecycle') {
+    return pairingClass === 'forward_skew' || pairingClass === 'outside_window';
+  }
+
+  return true;
+}
+
+function refusalMutationProbeTarget(operationGroup, requestTemplate, state) {
+  if (operationGroup === 'workflow_control_plane') {
+    const workflowId = encodeURIComponent(state.workflowId);
+    if (requestTemplate !== 'POST /api/workflows' && state.runId) {
+      return {
+        method: 'GET',
+        path: `/api/workflows/${workflowId}/runs/${encodeURIComponent(state.runId)}/history`,
+        resource: 'workflow_history',
+      };
+    }
+
+    return {
+      method: 'GET',
+      path: `/api/workflows/${workflowId}`,
+      resource: 'workflow',
+    };
+  }
+
+  if (operationGroup === 'worker_lifecycle') {
+    if (workerTaskFixtureRequests.has(requestTemplate)) {
+      return {
+        method: 'GET',
+        path: '/api/task-queues/skew-conformance',
+        resource: 'workflow_task_lease_state',
+      };
+    }
+
+    return {
+      method: 'GET',
+      path: `/api/workers/${encodeURIComponent(state.workerId)}`,
+      resource: 'worker_registration',
+    };
+  }
+
+  if (operationGroup === 'schedule_control_plane') {
+    return {
+      method: 'GET',
+      path: `/api/schedules/${encodeURIComponent(state.scheduleId)}`,
+      resource: 'schedule',
+    };
+  }
+
+  return null;
+}
+
+async function captureRefusalMutationState(context, target) {
+  try {
+    const response = await requestJson(
+      context.serverUrl,
+      target.method,
+      target.path,
+      fixtureHeaders(context),
+    );
+
+    return {
+      observed: true,
+      status: response.status,
+      body: refusalMutationStateBody(target.resource, response.body),
+    };
+  } catch (error) {
+    return {
+      observed: false,
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+export function refusalMutationStateBody(resource, body) {
+  if (resource !== 'workflow_task_lease_state' || !body || typeof body !== 'object') {
+    return body;
+  }
+
+  const workflowTaskStats = body?.stats?.workflow_tasks ?? {};
+  const leases = Array.isArray(body.current_leases) ? body.current_leases : [];
+
+  return {
+    ready_count: integerValue(workflowTaskStats.ready_count) ?? 0,
+    leased_count: integerValue(workflowTaskStats.leased_count) ?? 0,
+    expired_lease_count: integerValue(workflowTaskStats.expired_lease_count) ?? 0,
+    current_leases: leases.map((lease) => ({
+      task_id: firstStringValue(lease?.task_id, lease?.taskId, lease?.id),
+      workflow_id: firstStringValue(lease?.workflow_id, lease?.workflowId),
+      lease_owner: firstStringValue(lease?.lease_owner, lease?.leaseOwner),
+      status: stringValue(lease?.status),
+    })),
+  };
+}
+
+function refusalMutationStateComparable(snapshot) {
+  return snapshot?.observed === true
+    && (snapshot.status === 200 || snapshot.status === 404);
+}
+
+export function compareRefusalMutationStates(before, after) {
+  const comparable = refusalMutationStateComparable(before)
+    && refusalMutationStateComparable(after);
+  const unchanged = comparable
+    && before.status === after.status
+    && JSON.stringify(canonicalJsonValue(before.body)) === JSON.stringify(canonicalJsonValue(after.body));
+
+  return {
+    unchanged,
+    mutation_detected: comparable && !unchanged,
+    outcome: comparable ? (unchanged ? 'pass' : 'fail') : 'not_covered',
+  };
+}
+
+function canonicalJsonValue(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => canonicalJsonValue(item));
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, canonicalJsonValue(value[key])]),
+    );
+  }
+
+  return value;
 }
 
 function workflowRunIdFromBody(body) {
@@ -1719,7 +2220,7 @@ async function invokeCliOperation({
 }) {
   const executable = invocationAvailability(surfaceName).executable;
   const args = cliArgsFor(requestTemplate, context, pairingClass);
-  const pairing = pairingClasses[pairingClass];
+  const pairing = context.pairingClasses[pairingClass];
 
   return runArtifactWithProxy({
     surfaceName,
@@ -1825,7 +2326,7 @@ async function invokePythonSdkOperation({
 }) {
   const python = invocationAvailability(surfaceName).python;
   const script = ensurePythonProbeScript();
-  const pairing = pairingClasses[pairingClass];
+  const pairing = context.pairingClasses[pairingClass];
   const state = pairingState(context, 'sdk-python', pairingClass);
   const payload = {
     operation: requestTemplate,
@@ -1835,7 +2336,7 @@ async function invokePythonSdkOperation({
     run_id: state.runId || `run-${context.runId}`,
     schedule_id: state.scheduleId,
     worker_id: state.workerId,
-    task_id: taskIdForPublishedWorkerProbe(state, pairingClass),
+    task_id: taskIdForPublishedWorkerProbe(state, pairingClass, context),
     workflow_task_attempt: state.workflowTaskAttempt ?? 1,
   };
 
@@ -1870,17 +2371,19 @@ async function invokeWorkflowWorkerOperation({
 }) {
   const availability = invocationAvailability(surfaceName);
   const script = ensureWorkflowWorkerProbeScript();
-  const pairing = pairingClasses[pairingClass];
+  const pairing = context.pairingClasses[pairingClass];
   const state = pairingState(context, 'sdk-php', pairingClass);
   const payload = {
     operation: requestTemplate,
     base_url: '__DW_SKEW_PROXY_URL__',
     namespace: context.namespace,
+    control_plane_header: context.protocolAuthority.control_plane.header,
     control_plane_version: pairing.controlPlaneVersion,
+    worker_protocol_header: context.protocolAuthority.worker_protocol.header,
     worker_protocol_version: pairing.workerProtocolVersion,
     worker_id: state.workerId,
     task_queue: 'skew-conformance',
-    task_id: taskIdForPublishedWorkerProbe(state, pairingClass),
+    task_id: taskIdForPublishedWorkerProbe(state, pairingClass, context),
     workflow_task_attempt: state.workflowTaskAttempt ?? 1,
   };
   return runPhpArtifactWithProxyFallback({
@@ -1913,7 +2416,7 @@ async function invokeWaterlineOperation({
 }) {
   const availability = invocationAvailability(surfaceName);
   const script = ensureWaterlineProbeScript();
-  const pairing = pairingClasses[pairingClass];
+  const pairing = context.pairingClasses[pairingClass];
   const state = pairingState(context, 'waterline', pairingClass);
   const payload = {
     operation: requestTemplate,
@@ -2082,10 +2585,19 @@ function phpDockerInvocation(availability, script, payload, strategy = { kind: '
 function ensurePythonProbeScript() {
   const scriptPath = path.join(runRoot, 'python-sdk-skew-probe.py');
   if (fs.existsSync(scriptPath)) {
+    assertPythonSdkProbeCapabilityManifest(fs.readFileSync(scriptPath, 'utf8'));
     return scriptPath;
   }
 
-  fs.writeFileSync(scriptPath, `from __future__ import annotations
+  const source = pythonSdkProbeSource();
+  assertPythonSdkProbeCapabilityManifest(source);
+  fs.writeFileSync(scriptPath, source);
+
+  return scriptPath;
+}
+
+export function pythonSdkProbeSource() {
+  return `from __future__ import annotations
 
 import asyncio
 import dataclasses
@@ -2095,7 +2607,7 @@ import sys
 from typing import Any
 
 from durable_workflow import Client
-from durable_workflow.client import ScheduleAction, ScheduleSpec
+from durable_workflow.client import PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST, ScheduleAction, ScheduleSpec
 
 
 def public(value: Any) -> Any:
@@ -2187,6 +2699,7 @@ async def run(payload: dict[str, Any]) -> dict[str, Any]:
                 task_queue="skew-conformance",
                 supported_workflow_types=["skew_conformance_workflow"],
                 supported_activity_types=[],
+                capability_manifest=PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
             )
         elif op == "POST /api/worker/heartbeat":
             result = await client.heartbeat_worker(worker_id=worker_id)
@@ -2243,9 +2756,23 @@ async def run(payload: dict[str, Any]) -> dict[str, Any]:
 
 if __name__ == "__main__":
     print(json.dumps(asyncio.run(run(json.loads(sys.argv[1]))), sort_keys=True))
-`);
+`;
+}
 
-  return scriptPath;
+export function assertPythonSdkProbeCapabilityManifest(source) {
+  const registrations = source.match(/\bclient\.register_worker\s*\(/g) ?? [];
+  const manifests = source.match(
+    /\bcapability_manifest\s*=\s*PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST\b/g,
+  ) ?? [];
+  const importsManifest = /from durable_workflow\.client import [^\n]*\bPORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST\b/.test(source);
+
+  if (registrations.length === 0
+    || manifests.length !== registrations.length
+    || !importsManifest) {
+    throw new Error(
+      'Python SDK skew probe must supply PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST to every register_worker call',
+    );
+  }
 }
 
 function ensureWorkflowWorkerProbeScript() {
@@ -2263,17 +2790,19 @@ final class SkewVersionTransport implements \DurableWorkflow\Transport\Transport
 {
     public function __construct(
         private readonly \DurableWorkflow\Transport\Transport $inner,
+        private readonly string $controlPlaneHeader,
         private readonly string $controlPlaneVersion,
+        private readonly string $workerProtocolHeader,
         private readonly string $workerProtocolVersion,
     ) {
     }
 
     public function send(string $method, string $uri, array $headers, ?array $body = null): ?array
     {
-        if (array_key_exists('X-Durable-Workflow-Protocol-Version', $headers)) {
-            $headers['X-Durable-Workflow-Protocol-Version'] = $this->workerProtocolVersion;
+        if (array_key_exists($this->workerProtocolHeader, $headers)) {
+            $headers[$this->workerProtocolHeader] = $this->workerProtocolVersion;
         } else {
-            $headers['X-Durable-Workflow-Control-Plane-Version'] = $this->controlPlaneVersion;
+            $headers[$this->controlPlaneHeader] = $this->controlPlaneVersion;
         }
 
         return $this->inner->send($method, $uri, $headers, $body);
@@ -2344,15 +2873,22 @@ $operation = (string) ($payload['operation'] ?? '');
 $baseUrl = (string) ($payload['base_url'] ?? '');
 $namespace = (string) ($payload['namespace'] ?? 'default');
 $token = (string) (getenv('DW_SKEW_AUTH_TOKEN') ?: 'dev-token');
+$controlPlaneHeader = (string) ($payload['control_plane_header'] ?? '');
 $controlPlaneVersion = (string) ($payload['control_plane_version'] ?? \DurableWorkflow\Version::CONTROL_PLANE_PROTOCOL);
+$workerProtocolHeader = (string) ($payload['worker_protocol_header'] ?? '');
 $workerProtocolVersion = (string) ($payload['worker_protocol_version'] ?? \DurableWorkflow\Version::WORKER_PROTOCOL);
+if ($controlPlaneHeader === '' || $workerProtocolHeader === '') {
+    throw new RuntimeException('Skew probe requires protocol header names from the published Server cluster manifest.');
+}
 $workerId = (string) ($payload['worker_id'] ?? 'worker-skew-conformance');
 $taskQueue = (string) ($payload['task_queue'] ?? 'skew-conformance');
 $taskId = (string) ($payload['task_id'] ?? '');
 $workflowTaskAttempt = (int) ($payload['workflow_task_attempt'] ?? 1);
 $transport = new SkewVersionTransport(
     new \DurableWorkflow\Transport\Psr18Transport(),
+    $controlPlaneHeader,
     $controlPlaneVersion,
+    $workerProtocolHeader,
     $workerProtocolVersion,
 );
 $client = new \DurableWorkflow\Client(
@@ -2561,7 +3097,12 @@ async function runArtifactWithProxy({
     })
     : null;
   const guardCapture = artifactRefusal && exactCapture === null
-    ? selectCompatibilityGuardCapture(proxyResult.captures, pairing, operationGroup)
+    ? selectCompatibilityGuardCapture(
+      proxyResult.captures,
+      pairing,
+      operationGroup,
+      context.protocolAuthority,
+    )
     : null;
   const matchedCapture = exactCapture ?? guardCapture;
   const guardCaptureUsed = exactCapture === null && guardCapture !== null;
@@ -2749,8 +3290,8 @@ function artifactOutputPayloads(stdoutJson) {
   ].filter((payload) => payload && typeof payload === 'object' && !Array.isArray(payload));
 }
 
-function selectCompatibilityGuardCapture(captures, pairing, operationGroup) {
-  const expectation = protocolExpectationForOperation(operationGroup, pairing);
+function selectCompatibilityGuardCapture(captures, pairing, operationGroup, protocolAuthority) {
+  const expectation = protocolExpectationForOperation(operationGroup, pairing, protocolAuthority);
   const matchingHeader = captures.filter((capture) => headerValue(
     capture?.request?.headers ?? {},
     expectation.header,
@@ -3017,8 +3558,8 @@ function normalizedCaptureResponse(capture) {
   };
 }
 
-function protocolEvidenceGap(operationGroup, pairing, wireRequest) {
-  const expectation = protocolExpectationForOperation(operationGroup, pairing);
+function protocolEvidenceGap(operationGroup, pairing, wireRequest, protocolAuthority) {
+  const expectation = protocolExpectationForOperation(operationGroup, pairing, protocolAuthority);
   if (!expectation) {
     return null;
   }
@@ -3039,16 +3580,16 @@ function protocolEvidenceGap(operationGroup, pairing, wireRequest) {
   };
 }
 
-function protocolExpectationForOperation(operationGroup, pairing) {
+function protocolExpectationForOperation(operationGroup, pairing, protocolAuthority) {
   if (operationGroup === 'worker_lifecycle') {
     return {
-      header: 'X-Durable-Workflow-Protocol-Version',
+      header: protocolAuthority.worker_protocol.header,
       expected: pairing.workerProtocolVersion,
     };
   }
 
   return {
-    header: 'X-Durable-Workflow-Control-Plane-Version',
+    header: protocolAuthority.control_plane.header,
     expected: pairing.controlPlaneVersion,
   };
 }
@@ -3297,17 +3838,49 @@ function knownSecretValues() {
   ].filter((value) => typeof value === 'string' && value.length >= 3)));
 }
 
-function classifyEvidenceStatus({ surfaceName, pairingClass, operationGroup, response }) {
-  if (operationGroup === 'cluster_info_probe') {
-    if (isProtocolRefusal(response)) {
-      return 'loud_refuse';
+function protocolScenarioFields(pairing) {
+  return {
+    pairing_label: pairing.label,
+    protocol_expectation: pairing.expected,
+    protocol_support: pairing.protocolSupport,
+    protocol_versions: {
+      control_plane: pairing.controlPlaneVersion,
+      worker_protocol: pairing.workerProtocolVersion,
+    },
+  };
+}
+
+export function classifyEvidenceStatus({
+  surfaceName,
+  pairingClass,
+  operationGroup,
+  requestTemplate = '',
+  response,
+  refusalMutationEvidence = null,
+}) {
+  if (isProtocolRefusal(response)) {
+    if (refusalMutationEvidence?.required === true) {
+      if (refusalMutationEvidence.outcome === 'fail'
+        && refusalMutationEvidence.mutation_detected === true) {
+        return 'mutation_before_refusal';
+      }
+
+      if (refusalMutationEvidence.outcome !== 'pass') {
+        return 'not_covered';
+      }
+    } else if (requiresRefusalMutationEvidence(pairingClass, operationGroup, requestTemplate)) {
+      return 'not_covered';
     }
 
+    return 'loud_refuse';
+  }
+
+  if (operationGroup === 'cluster_info_probe') {
     if (response.status >= 400 || response.status === 0) {
       return 'silent_failure';
     }
 
-    if (pairingClass === 'outside_window') {
+    if (pairingClass === 'forward_skew' || pairingClass === 'outside_window') {
       return 'silent_success';
     }
 
@@ -3329,10 +3902,6 @@ function classifyEvidenceStatus({ surfaceName, pairingClass, operationGroup, res
     }
 
     return pairingClass === 'compatible' ? 'pass' : 'loud_refuse';
-  }
-
-  if (isProtocolRefusal(response)) {
-    return 'loud_refuse';
   }
 
   if (compatibleControlPlaneInteropClassification({
@@ -3408,6 +3977,7 @@ function compatibleControlPlaneInteropClassification({
 export function summarizePairing(surfaceName, pairingClass, rows, context) {
   const statuses = Array.from(new Set(rows.map((row) => row.status).filter(Boolean)));
   const productBlockingStatusPriority = [
+    'mutation_before_refusal',
     'corrupt',
     'silent_success',
     'silent_failure',
@@ -3429,16 +3999,17 @@ export function summarizePairing(surfaceName, pairingClass, rows, context) {
   }
 
   const surface = surfaces[surfaceName];
-  const pairing = pairingClasses[pairingClass];
+  const pairing = context.pairingClasses[pairingClass];
   const result = {
     surface: surfaceName,
     pairing_class: pairingClass,
+    ...protocolScenarioFields(pairing),
     status,
     observed_result: status,
     client_or_worker_version: context.artifactVersions[surface.artifact],
     server_version: context.observedServerVersion,
     compatibility_window: pairing.compatibilityWindow,
-    next_step: compatibilityNextStep(surfaceName, pairingClass),
+    next_step: compatibilityNextStep(surfaceName, pairingClass, context),
     observed_operation_statuses: statuses,
   };
   if (compatibleInteropEvidence) {
@@ -3488,11 +4059,11 @@ function compatibleInteropEvidenceForCell(surfaceName, pairingClass, rows, conte
   }
 
   const surface = surfaces[surfaceName];
-  const pairing = pairingClasses[pairingClass];
+  const pairing = context.pairingClasses[pairingClass];
   const clientVersion = stringValue(context.artifactVersions?.[surface.artifact]);
   const serverVersion = stringValue(context.observedServerVersion);
   const compatibilityWindow = pairing.compatibilityWindow;
-  const nextStep = compatibilityNextStep(surfaceName, pairingClass);
+  const nextStep = compatibilityNextStep(surfaceName, pairingClass, context);
   const interopOperationGroups = surfaceName === 'sdk-python'
     ? ['workflow_control_plane', 'schedule_control_plane', 'worker_lifecycle']
     : ['workflow_control_plane', 'schedule_control_plane'];
@@ -3524,6 +4095,7 @@ function compatibleInteropEvidenceForCell(surfaceName, pairingClass, rows, conte
   const evidence = {
     surface: surfaceName,
     pairing_class: pairingClass,
+    ...protocolScenarioFields(pairing),
     operation_group: stringValue(row.operation_group),
     observed_result: 'pass',
     client_or_worker_version: clientVersion,
@@ -3565,7 +4137,7 @@ function evidenceRequestLabel(row) {
 }
 
 function findingForPairing(surfaceName, pairingClass, pairing, rows, context) {
-  const blockingStatuses = ['silent_success', 'silent_failure', 'corrupt', 'register_and_drop', 'stale_render', 'not_covered', 'runner_blocked'];
+  const blockingStatuses = ['mutation_before_refusal', 'silent_success', 'silent_failure', 'corrupt', 'register_and_drop', 'stale_render', 'not_covered', 'runner_blocked'];
   const classificationStatus = pairing.worker_skew_classification === 'register_and_drop'
     ? 'register_and_drop'
     : pairing.waterline_skew_classification === 'stale_render'
@@ -3592,16 +4164,17 @@ function findingForPairing(surfaceName, pairingClass, pairing, rows, context) {
       : findingStatus === 'runner_blocked'
         ? 'runner_gap'
         : 'product_gap',
-    severity: ['register_and_drop', 'stale_render', 'silent_success', 'silent_failure', 'corrupt'].includes(findingStatus)
+    severity: ['mutation_before_refusal', 'register_and_drop', 'stale_render', 'silent_success', 'silent_failure', 'corrupt'].includes(findingStatus)
       ? 'blocker'
       : 'tracking',
     surface: surfaceName,
     owning_surface: ownerForFinding(surfaceName, findingStatus),
     artifact_versions: context.artifactVersions,
     pairing_class: pairingClass,
+    ...protocolScenarioFields(context.pairingClasses[pairingClass]),
     operation_group: 'pairing_matrix',
     observed_behavior: findingStatus,
-    expected_behavior: pairingClasses[pairingClass].expected,
+    expected_behavior: context.pairingClasses[pairingClass].expected,
     request_response_evidence: firstCapture,
     next_acceptance_criterion: nextAcceptanceForFinding(surfaceName, findingStatus),
     link: `https://durable-workflow.github.io/conformance/findings/${key}`,
@@ -3617,6 +4190,10 @@ function ownerForFinding(surfaceName, status) {
     return 'worker_and_server_boundary';
   }
 
+  if (status === 'mutation_before_refusal') {
+    return 'server_protocol_boundary';
+  }
+
   if (status === 'stale_render') {
     return 'durable-workflow/waterline';
   }
@@ -3627,6 +4204,10 @@ function ownerForFinding(surfaceName, status) {
 }
 
 function nextAcceptanceForFinding(surfaceName, status) {
+  if (status === 'mutation_before_refusal') {
+    return 'Unsupported protocol shapes must refuse before changing the observed workflow, schedule, worker-registration, or lease state.';
+  }
+
   if (status === 'register_and_drop') {
     return 'Worker skew must register_refused or register_and_serve; it must never register and then drop tasks silently.';
   }
@@ -3642,11 +4223,21 @@ function nextAcceptanceForFinding(surfaceName, status) {
   return `${surfaceName} skew evidence must name both versions, the compatibility window, and the next step.`;
 }
 
-function workerClassification(pairingClass, response, operationGroup = '') {
+export function workerClassification(
+  pairingClass,
+  response,
+  operationGroup = '',
+  refusalMutationEvidence = null,
+) {
   if (operationGroup === 'cluster_info_probe') {
     return pairingClass === 'compatible' || pairingClass === 'backward_skew'
       ? 'register_and_serve'
       : 'register_refused';
+  }
+
+  if (isProtocolRefusal(response)
+    && refusalMutationEvidence?.mutation_detected === true) {
+    return 'register_and_drop';
   }
 
   if (isProtocolRefusal(response)) {
@@ -3746,14 +4337,19 @@ function waterlineCoverageGapReason(operationGroup, status, response) {
   return '';
 }
 
-function loudRefusalContext(surfaceName, surfaceVersion, context, pairing, response) {
+export function loudRefusalContext(surfaceName, surfaceVersion, context, pairing, response) {
   const result = {
     surface: surfaceName,
     surface_version: surfaceVersion,
+    observed_client_or_worker_version: surfaceVersion,
     server_version: context.observedServerVersion,
+    requested_control_plane_version: pairing.controlPlaneVersion,
+    requested_worker_protocol_version: pairing.workerProtocolVersion,
+    supported_control_plane_version: context.protocolAuthority.control_plane.version,
+    supported_worker_protocol_version: context.protocolAuthority.worker_protocol.version,
     compatibility_window: pairing.compatibilityWindow,
     protocol_or_manifest: surfaceName === 'sdk-php' ? 'worker_protocol' : 'control_plane',
-    next_step: compatibilityNextStep(surfaceName, 'outside_window'),
+    next_step: compatibilityNextStep(surfaceName, 'outside_window', context),
     response_reason: response?.body?.reason ?? response?.reason ?? null,
   };
   if (surfaceName === 'sdk-php') {
@@ -3765,15 +4361,17 @@ function loudRefusalContext(surfaceName, surfaceVersion, context, pairing, respo
   return result;
 }
 
-function compatibilityNextStep(surfaceName, pairingClass) {
+function compatibilityNextStep(surfaceName, pairingClass, context) {
+  const surface = surfaces[surfaceName];
+  const surfaceVersion = stringValue(context.artifactVersions?.[surface?.artifact]);
+  const serverVersion = stringValue(context.observedServerVersion);
+  const controlPlaneVersion = context.protocolAuthority.control_plane.version;
+  const workerProtocolVersion = context.protocolAuthority.worker_protocol.version;
   if (pairingClass === 'compatible') {
-    return [
-      'No compatibility remediation is required for this inside-window pair.',
-      `If the ${surfaceName} command returns a domain error, use the captured response reason as the next operational step.`,
-    ].join(' ');
+    return `Keep ${surfaceName} ${surfaceVersion} pinned with Server ${serverVersion}; this exact tuple uses control-plane ${controlPlaneVersion} and worker protocol ${workerProtocolVersion}.`;
   }
 
-  return 'Upgrade the older side, pin the client to the advertised range, or connect to a server that supports the requested protocol.';
+  return `Use control-plane ${controlPlaneVersion} and worker protocol ${workerProtocolVersion}; pin ${surfaceName} ${surfaceVersion} with Server ${serverVersion}, or upgrade to artifacts that advertise those protocol versions.`;
 }
 
 function isProtocolRefusal(response) {
@@ -3848,33 +4446,38 @@ function extractProtocolManifestVersions(clusterInfo) {
   };
 }
 
-function compatibilityWindowReport(clusterInfo) {
+function compatibilityWindowReport(protocolAuthority) {
   return {
-    advertised: clusterInfo?.client_compatibility ?? null,
+    authority_source: protocolAuthority.source,
+    prerelease_package_policy: protocolAuthority.prerelease_package_policy,
     control_plane: {
-      supported_version: stringValue(clusterInfo?.control_plane?.version) || '2',
-      enforced_header: stringValue(clusterInfo?.control_plane?.header) || 'X-Durable-Workflow-Control-Plane-Version',
+      supported_version: protocolAuthority.control_plane.version,
+      enforced_header: protocolAuthority.control_plane.header,
       window: 'exact control-plane version match required',
     },
     worker_protocol: {
-      supported_version: stringValue(clusterInfo?.worker_protocol?.version) || serverWorkerProtocolVersion,
-      enforced_header: stringValue(clusterInfo?.worker_protocol?.header) || 'X-Durable-Workflow-Protocol-Version',
-      window: 'same major and client minor <= server minor',
+      supported_version: protocolAuthority.worker_protocol.version,
+      enforced_header: protocolAuthority.worker_protocol.header,
+      accepted_versions: protocolAuthority.worker_protocol.accepted_versions,
+      window: protocolAuthority.worker_protocol.request_rule,
     },
   };
 }
 
-function futureBoundaryReport(pairingResults, operationEvidence) {
+function futureBoundaryReport(pairingResults, operationEvidence, protocolAuthority, pairingClasses) {
   return {
+    protocol_authority: protocolAuthority,
     client: {
       surface: 'cli',
       pairing_class: 'forward_skew',
+      ...protocolScenarioFields(pairingClasses.forward_skew),
       outcome: pairingResults.cli.forward_skew.status,
       evidence_cells: Object.keys(operationEvidence.cli.forward_skew),
     },
     worker: {
       surface: 'sdk-php',
       pairing_class: 'forward_skew',
+      ...protocolScenarioFields(pairingClasses.forward_skew),
       outcome: pairingResults['sdk-php'].forward_skew.status,
       classification: pairingResults['sdk-php'].forward_skew.worker_skew_classification,
       evidence_cells: Object.keys(operationEvidence['sdk-php'].forward_skew),
@@ -3882,6 +4485,7 @@ function futureBoundaryReport(pairingResults, operationEvidence) {
     observer: {
       surface: 'waterline',
       pairing_class: 'forward_skew',
+      ...protocolScenarioFields(pairingClasses.forward_skew),
       outcome: pairingResults.waterline.forward_skew.status,
       classification: pairingResults.waterline.forward_skew.waterline_skew_classification,
       evidence_cells: Object.keys(operationEvidence.waterline.forward_skew),
@@ -3889,6 +4493,7 @@ function futureBoundaryReport(pairingResults, operationEvidence) {
     server: {
       surface: 'server',
       pairing_class: 'outside_window',
+      ...protocolScenarioFields(pairingClasses.outside_window),
       outcome: pairingResults.cli.outside_window.status,
       evidence_cells: Object.keys(operationEvidence.cli.outside_window),
     },
