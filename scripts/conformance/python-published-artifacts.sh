@@ -56,6 +56,7 @@ run_root="$(cd "$run_root" && pwd)"
 mkdir -p \
   "$run_root/logs" \
   "$run_root/cli/bin" \
+  "$run_root/cli/config" \
   "$run_root/artifacts/workflow" \
   "$run_root/artifacts/waterline"
 
@@ -1903,6 +1904,7 @@ set +e
 env -i \
   PATH="$run_root/.venv/bin:$run_root/cli/bin:/usr/local/bin:/usr/bin:/bin" \
   VIRTUAL_ENV="$run_root/.venv" \
+  DW_CONFIG_HOME="$run_root/cli/config" \
   LANG=C.UTF-8 \
   PYTHONPATH="$run_root" \
   python "$run_root/python-parity-runner.py" \

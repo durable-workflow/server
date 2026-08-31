@@ -127,6 +127,8 @@ class PythonSdkParityContractTest extends TestCase
         $this->assertStringContainsString('local_product_source_checkouts_used', $script);
         $this->assertStringContainsString('runtime_external_payload_round_trips', $script);
         $this->assertStringContainsString('DW_PYTHON_CONFORMANCE_CLOUD_EVIDENCE_JSON', $script);
+        $this->assertStringContainsString('"$run_root/cli/config"', $script);
+        $this->assertStringContainsString('DW_CONFIG_HOME="$run_root/cli/config"', $script);
     }
 
     public function test_runtime_external_payload_evidence_regression_fixture(): void
