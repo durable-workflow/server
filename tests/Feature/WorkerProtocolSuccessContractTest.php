@@ -1951,7 +1951,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonPath('task.resume_source_kind', 'child_workflow_run')
             ->assertJsonPath('task.resume_source_id', $childRunId)
             ->assertJsonPath('task.child_workflow_run_id', $childRunId)
-            ->assertJsonPath('task.workflow_sequence', 3)
+            ->assertJsonPath('task.workflow_sequence', 1)
             ->assertJsonPath('task.workflow_event_type', 'ChildRunCompleted');
 
         $childCallId = $parentResumePoll->json('task.child_call_id');

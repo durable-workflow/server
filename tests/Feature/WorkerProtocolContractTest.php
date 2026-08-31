@@ -203,9 +203,9 @@ class WorkerProtocolContractTest extends TestCase
 
         foreach (range(0, 2) as $index) {
             $entries[] = [
-                'parallel_group_id' => 'parallel-calls:3:3',
+                'parallel_group_id' => 'parallel-calls:1:3',
                 'parallel_group_kind' => 'mixed',
-                'parallel_group_base_sequence' => 3,
+                'parallel_group_base_sequence' => 1,
                 'parallel_group_size' => 3,
                 'parallel_group_index' => $index,
             ];
