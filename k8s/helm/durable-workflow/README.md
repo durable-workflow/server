@@ -48,7 +48,7 @@ Redis — that is intentional, not a bug.
 ```bash
 helm install durable-workflow \
   oci://ghcr.io/durable-workflow/charts/durable-workflow \
-  --version 0.1.62 \
+  --version 0.1.63 \
   --namespace durable-workflow --create-namespace \
   -f my-values.yaml
 ```
@@ -59,7 +59,7 @@ helm install durable-workflow \
 helm repo add durable-workflow https://durable-workflow.github.io/charts/
 helm repo update
 helm install durable-workflow durable-workflow/durable-workflow \
-  --version 0.1.62 \
+  --version 0.1.63 \
   --namespace durable-workflow --create-namespace \
   -f my-values.yaml
 ```

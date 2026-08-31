@@ -1464,6 +1464,62 @@ class MigrationConformanceRunnerContractTest extends TestCase
         );
     }
 
+    public function test_runner_parses_large_worker_responses_before_bounding_command_diagnostics(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise large focused worker responses.');
+        }
+
+        $artifactVersions = $this->artifactVersions();
+        $artifactSources = $this->artifactSources();
+        $plan = $this->focusedWorkerRegistrationPlan($artifactVersions);
+        $worker = $plan['new_v2_worker_registration_after_upgrade'];
+        $largeCapabilityCatalog = str_repeat('current-worker-protocol-capability;', 800);
+        $registrationResponse = [
+            'http_status' => 201,
+            'body' => [
+                'registered' => true,
+                'worker_id' => $worker['worker_id'],
+                'namespace' => $worker['namespace'],
+                'task_queue' => $worker['task_queue'],
+                'protocol_version' => '1.13',
+                'server_capabilities' => [
+                    'poll_status' => true,
+                    'capability_catalog' => $largeCapabilityCatalog,
+                ],
+            ],
+        ];
+        $plan['new_v2_worker_registration_after_upgrade']['registration_request']['command'] =
+            'printf "%s\\n" ' . escapeshellarg(json_encode($registrationResponse, JSON_THROW_ON_ERROR));
+
+        $result = $this->runRunnerEvidence(
+            $nodeBinary,
+            [],
+            'dw-migration-focused-worker-large-response-',
+            $this->publicGuideAuditArtifactEnvironment($artifactVersions, $artifactSources) + [
+                'DW_MIGRATION_FOUNDATION_PLAN_JSON' => json_encode($plan, JSON_THROW_ON_ERROR),
+                'DW_MIGRATION_RUN_FOUNDATION_PLAN' => '1',
+            ],
+        );
+
+        $scenario = $result['scenario_results']['new_v2_worker_registration_after_upgrade'];
+        $registration = $scenario['observed_outputs']['request_response_evidence']['registration'];
+        $this->assertSame('non_passing', $result['outcome']);
+        $this->assertFalse($result['runner_blocked']);
+        $this->assertSame('pass', $scenario['status']);
+        $this->assertSame(
+            $largeCapabilityCatalog,
+            $registration['response']['body']['server_capabilities']['capability_catalog'],
+        );
+        $this->assertGreaterThan(20000, $registration['stdout_character_count']);
+        $this->assertTrue($registration['stdout_truncated']);
+        $this->assertLessThanOrEqual(4096, strlen($registration['stdout']));
+        $this->assertSame('', $registration['stderr']);
+        $this->assertSame(0, $registration['stderr_character_count']);
+        $this->assertFalse($registration['stderr_truncated']);
+    }
+
     public function test_runner_routes_focused_worker_poll_product_failure_with_exact_evidence(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
@@ -1552,6 +1608,14 @@ class MigrationConformanceRunnerContractTest extends TestCase
             'runner_infrastructure failure',
             $result['scenario_results']['new_v2_worker_registration_after_upgrade']['observed_outputs']['blocked_reason'],
         );
+        $scenario = $result['scenario_results']['new_v2_worker_registration_after_upgrade'];
+        $poll = $scenario['observed_outputs']['request_response_evidence']['poll'];
+        $this->assertSame('', $poll['stdout']);
+        $this->assertSame(0, $poll['stdout_character_count']);
+        $this->assertFalse($poll['stdout_truncated']);
+        $this->assertStringContainsString('not found', $poll['stderr']);
+        $this->assertGreaterThan(0, $poll['stderr_character_count']);
+        $this->assertFalse($poll['stderr_truncated']);
     }
 
     public function test_runner_rejects_plan_supplied_worker_responses_without_command_output(): void
@@ -1588,6 +1652,17 @@ class MigrationConformanceRunnerContractTest extends TestCase
             'did not emit a JSON response on stdout',
             $result['scenario_results']['new_v2_worker_registration_after_upgrade']['observed_outputs']['blocked_reason'],
         );
+        $scenario = $result['scenario_results']['new_v2_worker_registration_after_upgrade'];
+        $registration = $scenario['observed_outputs']['request_response_evidence']['registration'];
+        $this->assertNull($registration['response']);
+        $this->assertSame('missing_command_stdout_json', $registration['response_source']);
+        $this->assertFalse($registration['response_observed_from_command_stdout']);
+        $this->assertSame('', $registration['stdout']);
+        $this->assertSame(0, $registration['stdout_character_count']);
+        $this->assertFalse($registration['stdout_truncated']);
+        $this->assertSame('', $registration['stderr']);
+        $this->assertSame(0, $registration['stderr_character_count']);
+        $this->assertFalse($registration['stderr_truncated']);
     }
 
     public function test_runner_rejects_unsuccessful_worker_http_statuses_as_product_failures(): void

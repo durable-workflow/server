@@ -12,6 +12,10 @@ const ARTIFACT_SCHEMA = 'durable-workflow.v2.migration-runtime.published-artifac
 const WORKFLOW_V1_PRIMARY_PACKAGE = 'durable-workflow/workflow';
 const WORKFLOW_V1_LEGACY_PACKAGE = 'laravel-workflow/laravel-workflow';
 const FOCUSED_WORKER_PROJECTION_STALE_AFTER_SECONDS = 300;
+const COMMAND_DIAGNOSTIC_CHARACTER_LIMIT = 4096;
+// Parse command responses from the complete capture while keeping persisted diagnostics bounded.
+const RAW_COMMAND_STDOUT = Symbol('rawCommandStdout');
+const RAW_COMMAND_STDERR = Symbol('rawCommandStderr');
 
 const repoRoot = process.env.DW_MIGRATION_REPO_ROOT
   ?? path.resolve(path.dirname(new URL(import.meta.url).pathname), '../..');
@@ -602,6 +606,7 @@ async function main() {
       finishedAt,
       resolvedArtifactVersions,
       artifactSources,
+      foundationPlanEvidence,
     ));
     return;
   }
@@ -3369,10 +3374,11 @@ function hasSuppliedFullMigrationEvidence(evidence) {
   return false;
 }
 
-function blockedResult(reason, startedAt, finishedAt, artifactVersions, artifactSources) {
+function blockedResult(reason, startedAt, finishedAt, artifactVersions, artifactSources, blockedEvidence = null) {
   const scenarioResults = {};
   const findingLinks = {};
   const findings = [];
+  const workerRegistrationDiagnostics = blockedWorkerRegistrationDiagnostics(blockedEvidence);
 
   for (const scenarioId of effectiveRequiredScenarios()) {
     const finding = {
@@ -3390,6 +3396,7 @@ function blockedResult(reason, startedAt, finishedAt, artifactVersions, artifact
       scenario_id: scenarioId,
       status: 'runner_blocked',
       observed_outputs: {
+        ...(scenarioId === 'new_v2_worker_registration_after_upgrade' ? workerRegistrationDiagnostics : {}),
         blocked_reason: reason,
         required_fields: requiredFieldsFor(scenarioId),
       },
@@ -3430,6 +3437,54 @@ function blockedResult(reason, startedAt, finishedAt, artifactVersions, artifact
     rollback_observations: notCoveredObservation('rollback_observations', reason),
     version_skew_observations: notCoveredObservation('version_skew_observations', reason),
     storage_connection_smoke: notCoveredObservation('storage_connection_smoke', reason),
+  };
+}
+
+function blockedWorkerRegistrationDiagnostics(evidence) {
+  const scenario = objectValue(
+    scenarioResultsById(objectValue(evidence)).new_v2_worker_registration_after_upgrade,
+  );
+  const observedOutputs = objectValue(
+    scenario.observed_outputs ?? scenario.observedOutputs,
+  );
+  const operations = objectValue(observedOutputs.request_response_evidence);
+  if (Object.keys(operations).length === 0) {
+    return {};
+  }
+
+  const allowedFields = [
+    'endpoint',
+    'command',
+    'request',
+    'response',
+    'response_source',
+    'response_observed_from_command_stdout',
+    'http_status',
+    'exit_code',
+    'started_at',
+    'finished_at',
+    'stdout',
+    'stdout_character_count',
+    'stdout_truncated',
+    'stderr',
+    'stderr_character_count',
+    'stderr_truncated',
+  ];
+  const requestResponseEvidence = Object.fromEntries(
+    Object.entries(operations).map(([operation, value]) => {
+      const observation = objectValue(value);
+
+      return [operation, Object.fromEntries(
+        allowedFields
+          .filter((field) => Object.hasOwn(observation, field))
+          .map((field) => [field, observation[field]]),
+      )];
+    }),
+  );
+
+  return {
+    request_response_evidence: requestResponseEvidence,
+    runner_failures: arrayValue(observedOutputs.runner_failures),
   };
 }
 
@@ -6494,18 +6549,29 @@ function buildFoundationV2WorkerRegistrationEvidence(source, evidenceSource, def
   const status = runnerBlocked || productFailures.length > 0 ? 'fail' : 'pass';
   const finishedAt = timestamp();
   const requestResponseEvidence = Object.fromEntries(
-    Object.entries(operations).map(([operation, observation]) => [operation, {
-      endpoint: observation.endpoint,
-      command: observation.command,
-      request: observation.request,
-      response: observation.response,
-      response_source: observation.response_source,
-      response_observed_from_command_stdout: observation.response_observed_from_command_stdout,
-      http_status: observation.http_status,
-      exit_code: observation.exit_code,
-      started_at: observation.started_at,
-      finished_at: observation.finished_at,
-    }]),
+    Object.entries(operations).map(([operation, observation]) => {
+      const stdout = commandStreamDiagnostic(observation, 'stdout');
+      const stderr = commandStreamDiagnostic(observation, 'stderr');
+
+      return [operation, {
+        endpoint: observation.endpoint,
+        command: observation.command,
+        request: observation.request,
+        response: observation.response,
+        response_source: observation.response_source,
+        response_observed_from_command_stdout: observation.response_observed_from_command_stdout,
+        http_status: observation.http_status,
+        exit_code: observation.exit_code,
+        started_at: observation.started_at,
+        finished_at: observation.finished_at,
+        stdout: stdout.output,
+        stdout_character_count: stdout.character_count,
+        stdout_truncated: stdout.truncated,
+        stderr: stderr.output,
+        stderr_character_count: stderr.character_count,
+        stderr_truncated: stderr.truncated,
+      }];
+    }),
   );
   const exitCodes = Object.fromEntries(
     Object.entries(operations).map(([operation, observation]) => [operation, observation.exit_code]),
@@ -6587,7 +6653,8 @@ function executeWorkerRegistrationOperation(rawOperation, operation, defaultEndp
   }
 
   const executed = objectValue(executeCommandDescriptor(descriptor, defaults));
-  const parsedStdout = parseJsonCommandOutput(executed.stdout);
+  const rawStdout = rawCommandStream(executed, 'stdout');
+  const parsedStdout = parseJsonCommandOutput(rawStdout);
   const response = parsedStdout;
   const request = firstDefinedValue(executed, [
     'request',
@@ -6596,7 +6663,7 @@ function executeWorkerRegistrationOperation(rawOperation, operation, defaultEndp
     'payload',
     'body',
   ]) ?? {};
-  const httpStatus = workerOperationHttpStatus(executed.stdout, response);
+  const httpStatus = workerOperationHttpStatus(rawStdout, response);
 
   return {
     ...executed,
@@ -7348,8 +7415,12 @@ function executeCommandDescriptor(rawDescriptor, defaults) {
       ? descriptor.expectedExitCode
       : 0;
   const status = result.error || signal !== null || exitCode !== expectedExitCode ? 'fail' : 'pass';
-  const stderr = outputString(result.stderr);
-  const stdout = outputString(result.stdout);
+  const rawStdout = stringValue(result.stdout);
+  const rawStderr = [stringValue(result.stderr), result.error ? errorMessage(result.error) : '']
+    .filter(Boolean)
+    .join('\n');
+  const stderr = outputString(rawStderr);
+  const stdout = outputString(rawStdout);
 
   return {
     ...metadata,
@@ -7363,9 +7434,11 @@ function executeCommandDescriptor(rawDescriptor, defaults) {
     expected_exit_code: expectedExitCode,
     status,
     stdout,
-    stderr: result.error ? [stderr, errorMessage(result.error)].filter(Boolean).join('\n') : stderr,
+    stderr,
     timed_out: result.error?.code === 'ETIMEDOUT',
     signal,
+    [RAW_COMMAND_STDOUT]: rawStdout,
+    [RAW_COMMAND_STDERR]: rawStderr,
   };
 }
 
@@ -7426,6 +7499,32 @@ function containsFoundationCommandFailure(value) {
 function outputString(value) {
   const text = stringValue(value);
   return text.length > 20000 ? `${text.slice(0, 20000)}\n[truncated]` : text;
+}
+
+function rawCommandStream(command, stream) {
+  const symbol = stream === 'stderr' ? RAW_COMMAND_STDERR : RAW_COMMAND_STDOUT;
+  const raw = objectValue(command)[symbol];
+
+  return typeof raw === 'string' ? raw : stringValue(objectValue(command)[stream]);
+}
+
+function commandStreamDiagnostic(command, stream) {
+  const output = rawCommandStream(command, stream);
+  if (output.length <= COMMAND_DIAGNOSTIC_CHARACTER_LIMIT) {
+    return {
+      output,
+      character_count: output.length,
+      truncated: false,
+    };
+  }
+
+  const marker = '[truncated]\n';
+
+  return {
+    output: marker + output.slice(-(COMMAND_DIAGNOSTIC_CHARACTER_LIMIT - marker.length)),
+    character_count: output.length,
+    truncated: true,
+  };
 }
 
 function objectOfStrings(value) {
