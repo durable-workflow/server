@@ -49,14 +49,14 @@ services:
     command: ["server-bootstrap"]
     environment:
       <<: *runtime-environment
-      APP_VERSION: ${APP_VERSION:-2.0.0-rc.70}
+      APP_VERSION: ${APP_VERSION:-2.0.0-rc.71}
 
   successor:
     image: ${DW_MEMO_SUCCESSOR_IMAGE:-durable-workflow/server-memo-rolling:local}
     ports: !override []
     environment:
       <<: *runtime-environment
-      APP_VERSION: ${APP_VERSION:-2.0.0-rc.70}
+      APP_VERSION: ${APP_VERSION:-2.0.0-rc.71}
       DW_SERVER_ID: memo-successor
       DW_SERVER_TOPOLOGY_SHAPE: standalone_server
       DW_SERVER_PROCESS_CLASS: server_http_node
