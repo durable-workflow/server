@@ -249,12 +249,14 @@ if ! require_command python3; then
   exit 1
 fi
 
-for command_name in docker curl; do
+for command_name in docker curl id; do
   if ! require_command "$command_name"; then
     blocked_result "required command not found: $command_name" "$started_at"
     exit 1
   fi
 done
+
+host_uid_gid="$(id -u):$(id -g)"
 
 cat > "$run_root/resolve-pins.py" <<'PY'
 from __future__ import annotations
@@ -810,6 +812,7 @@ PY
   if [[ -n "$server_container_id" ]]; then
     set +e
     docker run --rm \
+      --user "$host_uid_gid" \
       --network "container:${server_container_id}" \
       -v "$sdk_php_probe_dir:/result" \
       -e DW_PHP_SDK_VERSION="$sdk_php_version" \
@@ -964,7 +967,8 @@ PY
   }
 
   set +e
-  docker run --rm -v "$waterline_app:/app" -w /app composer:2 \
+  docker run --rm --user "$host_uid_gid" -e HOME=/tmp -e COMPOSER_HOME=/tmp/composer \
+    -v "$waterline_app:/app" -w /app composer:2 \
     composer create-project laravel/laravel . --no-interaction --no-progress \
     > "$result_dir/waterline-create-project.log" 2>&1
   waterline_create_status=$?
@@ -979,7 +983,8 @@ PY
     : > "$waterline_app/database/database.sqlite"
 
     set +e
-    docker run --rm -v "$waterline_app:/app" -w /app composer:2 \
+    docker run --rm --user "$host_uid_gid" -e HOME=/tmp -e COMPOSER_HOME=/tmp/composer \
+      -v "$waterline_app:/app" -w /app composer:2 \
       composer require --no-interaction --no-progress \
         "durable-workflow/waterline:${waterline_version}@beta" \
         "durable-workflow/workflow:${workflow_php_version}@beta" \
@@ -992,6 +997,7 @@ PY
   if [[ "$waterline_require_status" -eq 0 ]]; then
     set +e
     docker run --rm \
+      --user "$host_uid_gid" \
       -v "$waterline_app:/app" \
       -w /app \
       -e DB_CONNECTION=sqlite \
@@ -1007,6 +1013,7 @@ PY
   if [[ "$waterline_key_status" -eq 0 ]]; then
     set +e
     docker run --rm \
+      --user "$host_uid_gid" \
       -v "$waterline_app:/app" \
       -w /app \
       -e DB_CONNECTION=sqlite \
@@ -1022,6 +1029,7 @@ PY
   if [[ "$waterline_migrate_status" -eq 0 ]]; then
     set +e
     docker run --rm \
+      --user "$host_uid_gid" \
       -v "$waterline_app:/app" \
       -v "$result_dir:/result" \
       -w /app \

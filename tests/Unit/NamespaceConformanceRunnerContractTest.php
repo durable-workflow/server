@@ -9,6 +9,15 @@ use Workflow\V2\Support\PlatformConformanceSuite;
 
 class NamespaceConformanceRunnerContractTest extends TestCase
 {
+    public function test_mutating_bind_mount_containers_use_the_invoking_user(): void
+    {
+        $source = $this->read('scripts/conformance/namespaces-published-artifacts.sh');
+
+        $this->assertStringContainsString('for command_name in docker curl id;', $source);
+        $this->assertStringContainsString('host_uid_gid="$(id -u):$(id -g)"', $source);
+        $this->assertSame(6, substr_count($source, '--user "$host_uid_gid"'));
+    }
+
     public function test_runner_handoff_names_full_namespace_surface(): void
     {
         $source = $this->read('scripts/conformance/namespaces-published-artifacts.sh');
