@@ -267,10 +267,21 @@ function cw_require_child_event(array $history, string $eventType, string $child
     throw new RuntimeException(sprintf('%s did not reference child run %s', $eventType, $childRunId));
 }
 
+/** @return array<string, array{supported: bool, minimum_protocol_version: string, reason: string}> */
+function cw_capability_manifest(): array
+{
+    return array_fill_keys(WorkerProtocol::PORTABLE_WORKER_AFFINITY_CAPABILITIES, [
+        'supported' => false,
+        'minimum_protocol_version' => WorkerProtocol::PORTABLE_WORKER_AFFINITY_MINIMUM_PROTOCOL_VERSION,
+        'reason' => 'not_implemented',
+    ]);
+}
+
 /** @param list<string> $types */
 function cw_register(string $workerId, string $queue, string $runtime, array $types): void
 {
     cw_request('POST', '/worker/register', [
+        'capability_manifest' => cw_capability_manifest(),
         'worker_id' => $workerId,
         'task_queue' => $queue,
         'runtime' => $runtime === 'workflow-php' ? 'php' : 'python',
