@@ -2321,12 +2321,18 @@ class WorkerController
             $attributes = is_array($command['attributes'] ?? null) ? $command['attributes'] : [];
             $attributeTypes = is_array($command['attribute_types'] ?? null) ? $command['attribute_types'] : [];
 
-            if (($payload['attributes'] ?? null) !== $attributes) {
+            if (
+                ! is_array($payload['attributes'] ?? null)
+                || ! self::searchAttributeMapsMatch($payload['attributes'], $attributes)
+            ) {
                 throw new \RuntimeException('Typed search-attribute history does not match its completed command.');
             }
 
             if (array_key_exists('attribute_types', $payload)) {
-                if ($payload['attribute_types'] !== $attributeTypes) {
+                if (
+                    ! is_array($payload['attribute_types'])
+                    || ! self::searchAttributeMapsMatch($payload['attribute_types'], $attributeTypes)
+                ) {
                     throw new \RuntimeException('Typed search-attribute history contains conflicting type identity.');
                 }
 
@@ -2336,6 +2342,18 @@ class WorkerController
             $payload['attribute_types'] = $attributeTypes;
             $event->forceFill(['payload' => $payload])->save();
         }
+    }
+
+    /**
+     * @param  array<string, mixed>  $recorded
+     * @param  array<string, mixed>  $completed
+     */
+    private static function searchAttributeMapsMatch(array $recorded, array $completed): bool
+    {
+        ksort($recorded);
+        ksort($completed);
+
+        return $recorded === $completed;
     }
 
     /**
