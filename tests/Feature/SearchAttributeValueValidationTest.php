@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Http\Controllers\Api\WorkerController;
 use App\Models\SearchAttributeDefinition;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
@@ -210,6 +211,25 @@ class SearchAttributeValueValidationTest extends TestCase
             ],
             $event->payload['attribute_types'] ?? null,
         );
+    }
+
+    public function test_persisted_search_attribute_map_identity_ignores_key_order_but_preserves_value_identity(): void
+    {
+        $method = new \ReflectionMethod(WorkerController::class, 'searchAttributeMapsMatch');
+
+        $this->assertTrue($method->invoke(null, [
+            'tags' => ['php', 'upserted'],
+            'priority_tier' => 'platinum',
+        ], [
+            'priority_tier' => 'platinum',
+            'tags' => ['php', 'upserted'],
+        ]));
+        $this->assertFalse($method->invoke(null, ['value' => 7], ['value' => 7.0]));
+        $this->assertFalse($method->invoke(
+            null,
+            ['tags' => ['php', 'upserted']],
+            ['tags' => ['upserted', 'php']],
+        ));
     }
 
     public function test_worker_search_attribute_update_rejects_unknown_declared_type(): void
