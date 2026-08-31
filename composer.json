@@ -6,7 +6,7 @@
     "require": {
         "php": "^8.2",
         "apache/avro": "^1.12",
-        "durable-workflow/workflow": "2.0.0-rc.53",
+        "durable-workflow/workflow": "2.0.0-rc.55",
         "laravel/framework": "^13.0",
         "laravel/tinker": "^3.0"
     },
@@ -47,7 +47,7 @@
     },
     "extra": {
         "durable-workflow": {
-            "product-train": "2.0.0-rc.68"
+            "product-train": "2.0.0-rc.69"
         },
         "laravel": {
             "dont-discover": []
