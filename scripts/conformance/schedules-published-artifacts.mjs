@@ -8666,6 +8666,7 @@ import time
 from typing import Any
 
 from durable_workflow import Client, ScheduleAction, ScheduleSpec, serializer
+from durable_workflow.client import PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST
 from durable_workflow.errors import InvalidArgument, ScheduleListError, ScheduleNotFound, ServerError
 
 
@@ -9130,6 +9131,7 @@ async def main() -> None:
                 workflow_type: f"schedules-conformance:{workflow_type}:python-lifecycle"
             },
             supported_activity_types=[],
+            capability_manifest=PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
             max_concurrent_workflow_tasks=10,
             max_concurrent_activity_tasks=10,
             runtime="python",
@@ -9251,6 +9253,7 @@ import sys
 import time
 
 from durable_workflow import Client, ScheduleAction, ScheduleSpec, serializer
+from durable_workflow.client import PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST
 
 
 def process_metrics():
@@ -9292,6 +9295,7 @@ async def run_action(client, payload, output_path):
                 payload["workflow_type"]: f"schedules-conformance:{payload['workflow_type']}:python"
             },
             supported_activity_types=payload.get("supported_activity_types") or [],
+            capability_manifest=PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
             max_concurrent_workflow_tasks=10,
             max_concurrent_activity_tasks=10,
             runtime="python",

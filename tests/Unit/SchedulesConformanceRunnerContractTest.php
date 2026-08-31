@@ -9,6 +9,33 @@ use PHPUnit\Framework\TestCase;
 
 final class SchedulesConformanceRunnerContractTest extends TestCase
 {
+    public function test_python_workers_register_with_the_required_portable_capability_manifest(): void
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $runner = (string) file_get_contents($repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs');
+        $lifecycleStart = strpos($runner, 'function schedulesPythonLifecycleScript()');
+        $workerStart = strpos($runner, 'function schedulesPythonWorkerScript()', $lifecycleStart ?: 0);
+        $workerEnd = strpos($runner, 'function schedulesPhpWorkerScript()', $workerStart ?: 0);
+
+        $this->assertIsInt($lifecycleStart);
+        $this->assertIsInt($workerStart);
+        $this->assertIsInt($workerEnd);
+
+        foreach ([
+            substr($runner, $lifecycleStart, $workerStart - $lifecycleStart),
+            substr($runner, $workerStart, $workerEnd - $workerStart),
+        ] as $pythonWorker) {
+            $this->assertStringContainsString(
+                'from durable_workflow.client import PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST',
+                $pythonWorker,
+            );
+            $this->assertStringContainsString(
+                'capability_manifest=PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST',
+                $pythonWorker,
+            );
+        }
+    }
+
     public function test_python_lifecycle_shard_uses_payload_envelope_for_manual_completion(): void
     {
         $repoRoot = dirname(__DIR__, 2);
