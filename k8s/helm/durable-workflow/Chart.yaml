@@ -5,11 +5,11 @@ type: application
 # The chart's own semver version. Bumped on every chart release; treated as
 # independent of the server image version (appVersion). Breaking-change rules
 # for this version live in docs/helm-upgrading.md alongside the chart.
-version: 0.1.63
+version: 0.1.64
 # The immutable Durable Workflow Server identity this chart release packages.
 # The onboarding default in values.yaml is generated from the separately
 # qualified compatibility authority; appVersion remains release metadata.
-appVersion: "2.0.0-rc.67"
+appVersion: "2.0.0-rc.68"
 kubeVersion: ">=1.27.0-0"
 home: https://durable-workflow.github.io/docs/2.0/deployment
 sources:
@@ -30,12 +30,14 @@ annotations:
   # exact commit that most recently changed the packaged chart.
   org.opencontainers.image.source: https://github.com/durable-workflow/server
   dev.durable-workflow.source-revision: "unreleased"
-  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:2.0.0-rc.67"
+  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:2.0.0-rc.68"
   artifacthub.io/license: MIT
   artifacthub.io/category: integration-delivery
   # Free-form changelog used by Artifact Hub. Keep the most recent chart-version
   # entry first; do not rewrite past entries.
   artifacthub.io/changes: |
+    - kind: fixed
+      description: Pin the packaged Workflow engine to 2.0.0-rc.53 in Server 2.0.0-rc.68.
     - kind: fixed
       description: Preserve complete focused migration worker command responses while bounding persisted diagnostics in Server 2.0.0-rc.67.
     - kind: fixed

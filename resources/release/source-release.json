@@ -1,9 +1,9 @@
 {
   "schema": "durable-workflow.server.source-release/v1",
   "server": {
-    "version": "2.0.0-rc.67"
+    "version": "2.0.0-rc.68"
   },
   "helm_chart": {
-    "version": "0.1.63"
+    "version": "0.1.64"
   }
 }
