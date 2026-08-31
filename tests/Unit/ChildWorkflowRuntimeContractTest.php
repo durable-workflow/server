@@ -356,6 +356,14 @@ class ChildWorkflowRuntimeContractTest extends TestCase
         $this->assertStringContainsString('WorkflowFiberRunner::forClass(', $runtimeProbe);
         $this->assertStringContainsString('cw_failure_cell(', $runtimeProbe);
         $this->assertStringContainsString(
+            "'capability_manifest' => cw_capability_manifest(),",
+            $runtimeProbe,
+        );
+        $this->assertStringContainsString(
+            'WorkerProtocol::PORTABLE_WORKER_AFFINITY_CAPABILITIES',
+            $runtimeProbe,
+        );
+        $this->assertStringContainsString(
             '$parentRuntimeResult = $parentResume[\'observation\'][\'runtime_result\'] ?? null;',
             $runtimeProbe,
         );
