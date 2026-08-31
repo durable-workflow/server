@@ -1633,6 +1633,3 @@ repository. Installation and API guidance are available from the
 [Rust SDK documentation](https://rust.durable-workflow.com/).
 
 MIT
-## Public Boundary Checks
-
-This is a public repository. Do not add private tracker names, workspace-only absolute paths, or loop/lane metadata to files or new commit metadata. Run `scripts/check-public-boundary.sh` before publishing changes; CI runs the same scan on pushes and pull requests.
