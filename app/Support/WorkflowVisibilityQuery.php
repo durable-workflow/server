@@ -40,13 +40,13 @@ class WorkflowVisibilityQuery
             ->pluck('type', 'name')
             ->all();
 
-        $builder->where(function (Builder $visibilityQuery) use ($comparisonGroups, $definitions): void {
+        $builder->where(function (Builder $visibilityQuery) use ($comparisonGroups, $definitions, $namespace): void {
             foreach ($comparisonGroups as $index => $comparisons) {
                 $method = $index === 0 ? 'where' : 'orWhere';
 
-                $visibilityQuery->{$method}(function (Builder $groupQuery) use ($comparisons, $definitions): void {
+                $visibilityQuery->{$method}(function (Builder $groupQuery) use ($comparisons, $definitions, $namespace): void {
                     foreach ($comparisons as $comparison) {
-                        $this->applyComparison($groupQuery, $comparison, $definitions);
+                        $this->applyComparison($groupQuery, $comparison, $definitions, $namespace);
                     }
                 });
             }
@@ -100,11 +100,15 @@ class WorkflowVisibilityQuery
     }
 
     /**
-     * @param array{field: string, operator: string, literal: mixed, bare?: bool} $comparison
-     * @param array<string, string> $definitions
+     * @param  array{field: string, operator: string, literal: mixed, bare?: bool}  $comparison
+     * @param  array<string, string>  $definitions
      */
-    private function applyComparison(Builder $builder, array $comparison, array $definitions): void
-    {
+    private function applyComparison(
+        Builder $builder,
+        array $comparison,
+        array $definitions,
+        string $namespace,
+    ): void {
         $field = $comparison['field'];
 
         if ($field === 'Status' || $field === 'ExecutionStatus') {
@@ -120,9 +124,13 @@ class WorkflowVisibilityQuery
         }
 
         if (! isset($definitions[$field])) {
-            $builder->whereRaw('1 = 0');
-
-            return;
+            throw ValidationException::withMessages([
+                'query' => [sprintf(
+                    'Search attribute [%s] is not defined in namespace [%s].',
+                    $field,
+                    $namespace,
+                )],
+            ]);
         }
 
         $this->applySearchAttributeComparison($builder, $field, (string) $definitions[$field], $comparison);
@@ -182,7 +190,7 @@ class WorkflowVisibilityQuery
     }
 
     /**
-     * @param array{field: string, operator: string, literal: mixed, bare?: bool} $comparison
+     * @param  array{field: string, operator: string, literal: mixed, bare?: bool}  $comparison
      * @return array{field: string, operator: string, literal: mixed, bare?: bool}
      */
     private function invertComparison(array $comparison): array
@@ -449,7 +457,7 @@ class WorkflowVisibilityQuery
     }
 
     /**
-     * @param array{field: string, operator: string, literal: mixed, bare?: bool} $comparison
+     * @param  array{field: string, operator: string, literal: mixed, bare?: bool}  $comparison
      */
     private function applyStatusComparison(Builder $builder, array $comparison): void
     {
@@ -463,8 +471,8 @@ class WorkflowVisibilityQuery
     }
 
     /**
-     * @param array{column: string, type: string} $column
-     * @param array{field: string, operator: string, literal: mixed, bare?: bool} $comparison
+     * @param  array{column: string, type: string}  $column
+     * @param  array{field: string, operator: string, literal: mixed, bare?: bool}  $comparison
      */
     private function applyColumnComparison(Builder $builder, array $column, array $comparison): void
     {
@@ -484,8 +492,8 @@ class WorkflowVisibilityQuery
     }
 
     /**
-     * @param array{column: string, type: string} $column
-     * @param array{field: string, operator: string, literal: mixed, bare?: bool} $comparison
+     * @param  array{column: string, type: string}  $column
+     * @param  array{field: string, operator: string, literal: mixed, bare?: bool}  $comparison
      */
     private function applyColumnInComparison(Builder $builder, array $column, array $comparison): void
     {
@@ -497,7 +505,7 @@ class WorkflowVisibilityQuery
     }
 
     /**
-     * @param array{field: string, operator: string, literal: mixed, bare?: bool} $comparison
+     * @param  array{field: string, operator: string, literal: mixed, bare?: bool}  $comparison
      */
     private function applySearchAttributeComparison(
         Builder $builder,
@@ -558,7 +566,7 @@ class WorkflowVisibilityQuery
     }
 
     /**
-     * @param list<mixed> $values
+     * @param  list<mixed>  $values
      */
     private function applySearchAttributeInComparison($query, string $type, string $operator, array $values): void
     {
@@ -584,7 +592,7 @@ class WorkflowVisibilityQuery
     }
 
     /**
-     * @param list<mixed> $values
+     * @param  list<mixed>  $values
      */
     private function applyKeywordListInComparison($query, array $values, bool $not): void
     {
@@ -604,7 +612,7 @@ class WorkflowVisibilityQuery
     }
 
     /**
-     * @param list<mixed> $values
+     * @param  list<mixed>  $values
      */
     private function applyTextInComparison($query, array $values, bool $not): void
     {
@@ -622,7 +630,7 @@ class WorkflowVisibilityQuery
     }
 
     /**
-     * @param list<mixed> $values
+     * @param  list<mixed>  $values
      */
     private function applyDoubleInComparison($query, array $values, bool $not): void
     {

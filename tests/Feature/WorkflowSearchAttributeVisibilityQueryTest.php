@@ -195,8 +195,22 @@ class WorkflowSearchAttributeVisibilityQueryTest extends TestCase
             ->assertJsonPath('errors.query.0', '[order_total_cents] must be compared with an integer literal.');
     }
 
+    public function test_workflow_list_query_rejects_undefined_search_attribute(): void
+    {
+        $response = $this->getJson(
+            '/api/workflows?'.http_build_query(['query' => 'unknown_attr = "missing"']),
+            $this->apiHeaders(),
+        );
+
+        $response->assertStatus(422)
+            ->assertJsonPath(
+                'errors.query.0',
+                'Search attribute [unknown_attr] is not defined in namespace [default].',
+            );
+    }
+
     /**
-     * @param array<string, scalar|list<string>|null> $searchAttributes
+     * @param  array<string, scalar|list<string>|null>  $searchAttributes
      */
     private function startWorkflow(string $namespace, string $workflowId, array $searchAttributes): void
     {
