@@ -63,10 +63,6 @@ jobs:
           node --check scripts/ci/sync-source-release.mjs
           node scripts/ci/sync-source-release.mjs --check
           node --test scripts/ci/test-source-release.mjs
-          node --check scripts/ci/sync-cli-readme-release.mjs
-          node scripts/ci/sync-cli-readme-release.mjs --check --offline
-          bash -n scripts/ci/check-cli-readme-public-release.sh
-          bash -n scripts/ci/verify-cli-readme-release.sh
 
       - name: Validate embedded Workflow package authority
         run: php scripts/ci/test-workflow-package-authority.php

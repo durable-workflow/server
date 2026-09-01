@@ -1,4 +1,6 @@
-Durable Workflow Capacity Benchmark Suite 1.4.0
+# Durable Workflow Capacity Benchmark Suite
+
+Suite version: `1.4.0`
 
 This directory is immutable evidence input. A changed workload, artifact tuple,
 metric contract, or operating-point rule requires a new suite version instead
@@ -11,7 +13,7 @@ Validate the suite, schemas, infrastructure profile, and regression corpus:
 External tools can discover every versioned capacity JSON Schema, together
 with its SHA-256 digest, from the canonical HTTPS manifest:
 
-  https://durable-workflow.github.io/schemas/capacity-benchmark/v1/manifest.json
+<https://durable-workflow.github.io/schemas/capacity-benchmark/v1/manifest.json>
 
 The schema `$id` URLs in that manifest are the public retrieval contract.
 
