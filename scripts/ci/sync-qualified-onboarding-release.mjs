@@ -9,13 +9,14 @@ const publicAuthorityUrl = 'https://durable-workflow.com/public-artifact-compati
 const publicAuthoritySchema = 'durable-workflow.docs.public-artifact-compatibility-evidence';
 const localRecordSchema = 'durable-workflow.server.qualified-onboarding-release/v1';
 const prereleasePattern = String.raw`\d+\.\d+\.\d+-(?:alpha|beta|rc)\.\d+`;
+const serverReleasePattern = String.raw`\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?`;
 
 const generatedSurfaces = [
   {
     path: 'docker-compose.published.yml',
     replacements: [
       {
-        pattern: new RegExp(`DW_SERVER_TAG:-${prereleasePattern}`, 'g'),
+        pattern: new RegExp(`DW_SERVER_TAG:-${serverReleasePattern}`, 'g'),
         replacement: ({version}) => `DW_SERVER_TAG:-${version}`,
         count: 2,
       },
@@ -25,7 +26,7 @@ const generatedSurfaces = [
     path: 'docker-compose.dedicated-matching.yml',
     replacements: [
       {
-        pattern: new RegExp(`DW_SERVER_TAG:-${prereleasePattern}`, 'g'),
+        pattern: new RegExp(`DW_SERVER_TAG:-${serverReleasePattern}`, 'g'),
         replacement: ({version}) => `DW_SERVER_TAG:-${version}`,
         count: 2,
       },
@@ -40,7 +41,7 @@ const generatedSurfaces = [
     path,
     replacements: [
       {
-        pattern: new RegExp(`durableworkflow/server:${prereleasePattern}`, 'g'),
+        pattern: new RegExp(`durableworkflow/server:${serverReleasePattern}`, 'g'),
         replacement: ({version}) => `durableworkflow/server:${version}`,
         count: 1,
       },
@@ -50,7 +51,7 @@ const generatedSurfaces = [
     path: 'k8s/secret.yaml',
     replacements: [
       {
-        pattern: new RegExp(`APP_VERSION: "${prereleasePattern}"`, 'g'),
+        pattern: new RegExp(`APP_VERSION: "${serverReleasePattern}"`, 'g'),
         replacement: ({version}) => `APP_VERSION: "${version}"`,
         count: 1,
       },
@@ -60,12 +61,12 @@ const generatedSurfaces = [
     path: 'k8s/README.md',
     replacements: [
       {
-        pattern: new RegExp(`durableworkflow/server:${prereleasePattern}`, 'g'),
+        pattern: new RegExp(`durableworkflow/server:${serverReleasePattern}`, 'g'),
         replacement: ({version}) => `durableworkflow/server:${version}`,
         count: 4,
       },
       {
-        pattern: new RegExp(`ghcr\\.io/durable-workflow/server:${prereleasePattern}`, 'g'),
+        pattern: new RegExp(`ghcr\\.io/durable-workflow/server:${serverReleasePattern}`, 'g'),
         replacement: ({version}) => `ghcr.io/durable-workflow/server:${version}`,
         count: 1,
       },
@@ -75,7 +76,7 @@ const generatedSurfaces = [
     path: 'scripts/k8s-kind-smoke.sh',
     replacements: [
       {
-        pattern: new RegExp(`manifest_image="durableworkflow/server:${prereleasePattern}"`, 'g'),
+        pattern: new RegExp(`manifest_image="durableworkflow/server:${serverReleasePattern}"`, 'g'),
         replacement: ({version}) => `manifest_image="durableworkflow/server:${version}"`,
         count: 1,
       },
@@ -91,7 +92,7 @@ const generatedSurfaces = [
     path,
     replacements: [
       {
-        pattern: new RegExp(`tag: "${prereleasePattern}"`, 'g'),
+        pattern: new RegExp(`tag: "${serverReleasePattern}"`, 'g'),
         replacement: ({version}) => `tag: "${version}"`,
         count: 1,
       },
@@ -136,9 +137,9 @@ function assertObject(value, label) {
   return value;
 }
 
-function exactPrerelease(version, label) {
-  if (typeof version !== 'string' || !new RegExp(`^${prereleasePattern}$`).test(version)) {
-    fail(`${label} must be an exact prerelease SemVer`);
+function exactRelease(version, label) {
+  if (typeof version !== 'string' || !new RegExp(`^${serverReleasePattern}$`).test(version)) {
+    fail(`${label} must be an exact release SemVer`);
   }
   return version;
 }
@@ -163,7 +164,7 @@ function normalizedArtifactVersions(value, label) {
   if (Object.keys(versions).sort().join('\n') !== [...required].sort().join('\n')) {
     fail(`${label} must contain exactly ${required.join(', ')}`);
   }
-  return Object.fromEntries(required.map((artifact) => [artifact, exactPrerelease(versions[artifact], `${label}.${artifact}`)]));
+  return Object.fromEntries(required.map((artifact) => [artifact, exactRelease(versions[artifact], `${label}.${artifact}`)]));
 }
 
 function normalizedAuthorityReference(value, label) {
@@ -363,7 +364,7 @@ async function sourceIdentity() {
     fail('source release manifest uses an unsupported schema');
   }
   return {
-    version: exactPrerelease(
+    version: exactRelease(
       release?.server?.version,
       'source release manifest server.version',
     ),
@@ -386,6 +387,10 @@ function recordsMatch(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function onboardingVersion(qualifiedVersion, sourceVersion) {
+  return sourceVersion.includes('-') ? qualifiedVersion : sourceVersion;
+}
+
 function usage() {
   process.stderr.write('Usage: node scripts/ci/sync-qualified-onboarding-release.mjs (--check [--offline] | --write [--source <file>] | --print <version|image|manifest-sha256|source-commit>)\n');
 }
@@ -395,24 +400,28 @@ async function main() {
   if (args[0] === '--write' && (args.length === 1 || (args.length === 3 && args[1] === '--source'))) {
     const record = await expectedPublicRecord(args[2]);
     await writeFile(recordPath, `${JSON.stringify(record, null, 2)}\n`);
-    const changed = await synchronizeSurfaces({version: record.server.version}, true);
-    await assertSourceIdentitySurfaces(await sourceIdentity());
-    process.stdout.write(`Generated ${changed} onboarding surface(s) from qualified Server ${record.server.version}.\n`);
+    const source = await sourceIdentity();
+    const selectedVersion = onboardingVersion(record.server.version, source.version);
+    const changed = await synchronizeSurfaces({version: selectedVersion}, true);
+    await assertSourceIdentitySurfaces(source);
+    process.stdout.write(`Generated ${changed} onboarding surface(s) for Server ${selectedVersion}.\n`);
     return;
   }
 
   const local = await readJson(recordPath, 'checked-in qualified onboarding release');
   const {record, version} = validateLocalRecord(local);
   if (args[0] === '--check' && (args.length === 1 || (args.length === 2 && args[1] === '--offline'))) {
-    await synchronizeSurfaces({version}, false);
-    await assertSourceIdentitySurfaces(await sourceIdentity());
+    const source = await sourceIdentity();
+    const selectedVersion = onboardingVersion(version, source.version);
+    await synchronizeSurfaces({version: selectedVersion}, false);
+    await assertSourceIdentitySurfaces(source);
     if (args[1] !== '--offline') {
       const published = await expectedPublicRecord();
       if (!recordsMatch(record, published)) {
         fail(`checked-in qualified onboarding release ${version} is stale against the public compatibility authority`);
       }
     }
-    process.stdout.write(`Compose, Kubernetes, and Helm onboarding select qualified Server ${version}.\n`);
+    process.stdout.write(`Compose, Kubernetes, and Helm onboarding select Server ${selectedVersion}.\n`);
     return;
   }
 
