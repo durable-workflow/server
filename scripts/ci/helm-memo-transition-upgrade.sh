@@ -304,7 +304,7 @@ expect_blocked 'active custom tag without an established capability' "${successo
 
 set_running_state "${official_rc46}" 1 false
 expect_blocked 'envelope-only target tag' '2.0.0-rc.48'
-expect_allowed 'official stable 2.0.0 target tag' '2.0.0'
+expect_allowed 'current official target tag' "${successor_tag}"
 expect_blocked 'digest target without a capability declaration' \
     "${successor_tag}" 'sha256:2222222222222222222222222222222222222222222222222222222222222222'
 expect_allowed 'digest target with a verified dual-v1 capability' \

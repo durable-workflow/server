@@ -88,7 +88,7 @@ resolved by an explicit capability declaration or an existing workload marker.
 {{- define "durable-workflow.memoPayloadStorageForImage" -}}
 {{- $image := toString . -}}
 {{- $normalized := regexReplaceAll "^index\\.docker\\.io/" $image "docker.io/" -}}
-{{- if eq $normalized "docker.io/durableworkflow/server:2.0.0" -}}
+{{- if eq $normalized "docker.io/durableworkflow/server:2.0.1" -}}
 dual-v1
 {{- else if regexMatch "^docker\\.io/durableworkflow/server:2\\.0\\.0-rc\\.[0-9]+$" $normalized -}}
 {{- $releaseCandidate := atoi (regexFind "[0-9]+$" $normalized) -}}
