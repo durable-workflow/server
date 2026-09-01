@@ -289,19 +289,6 @@ const consumers = [
       );
     },
   },
-  {
-    path: 'k8s/helm/durable-workflow/README.md',
-    render(source, release) {
-      return replaceExactly(
-        source,
-        new RegExp(`(--version\\s+)${stableVersion}(\\s+\\\\)`, 'g'),
-        (_match, prefix, suffix) => `${prefix}${release.chartVersion}${suffix}`,
-        2,
-        this.path,
-        'generated chart install version',
-      );
-    },
-  },
   ...[
     'k8s/helm/durable-workflow/values.yaml',
     'k8s/helm/durable-workflow/README.md',
