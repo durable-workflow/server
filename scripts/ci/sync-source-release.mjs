@@ -179,6 +179,87 @@ const consumers = [
       );
     },
   })),
+  ...[
+    ['docker-compose.published.yml', 2],
+    ['docker-compose.dedicated-matching.yml', 2],
+  ].map(([path, count]) => ({
+    path,
+    render(source, release) {
+      return replaceExactly(
+        source,
+        new RegExp(`(DW_SERVER_TAG:-)${serverVersion}`, 'g'),
+        (_match, prefix) => `${prefix}${release.serverVersion}`,
+        count,
+        path,
+        'published Server image default',
+      );
+    },
+  })),
+  ...[
+    'k8s/migration-job.yaml',
+    'k8s/scheduler-cronjob.yaml',
+    'k8s/server-deployment.yaml',
+    'k8s/worker-deployment.yaml',
+  ].map((path) => ({
+    path,
+    render(source, release) {
+      return replaceExactly(
+        source,
+        new RegExp(`(durableworkflow/server:)${serverVersion}`, 'g'),
+        (_match, prefix) => `${prefix}${release.serverVersion}`,
+        1,
+        path,
+        'Kubernetes Server image',
+      );
+    },
+  })),
+  {
+    path: 'k8s/secret.yaml',
+    render(source, release) {
+      return replaceExactly(
+        source,
+        new RegExp(`(APP_VERSION:\\s*["'])${serverVersion}(["'])`),
+        (_match, prefix, suffix) => `${prefix}${release.serverVersion}${suffix}`,
+        1,
+        this.path,
+        'Kubernetes application version',
+      );
+    },
+  },
+  {
+    path: 'k8s/README.md',
+    render(source, release) {
+      let rendered = replaceExactly(
+        source,
+        new RegExp(`(durableworkflow/server:)${serverVersion}`, 'g'),
+        (_match, prefix) => `${prefix}${release.serverVersion}`,
+        4,
+        this.path,
+        'documented Docker Hub Server image',
+      );
+      return replaceExactly(
+        rendered,
+        new RegExp(`(ghcr\\.io/durable-workflow/server:)${serverVersion}`),
+        (_match, prefix) => `${prefix}${release.serverVersion}`,
+        1,
+        this.path,
+        'documented GHCR Server image',
+      );
+    },
+  },
+  {
+    path: 'scripts/k8s-kind-smoke.sh',
+    render(source, release) {
+      return replaceExactly(
+        source,
+        new RegExp(`(manifest_image="durableworkflow/server:)${serverVersion}(")`),
+        (_match, prefix, suffix) => `${prefix}${release.serverVersion}${suffix}`,
+        1,
+        this.path,
+        'kind smoke manifest image',
+      );
+    },
+  },
   {
     path: 'k8s/helm/durable-workflow/Chart.yaml',
     render(source, release) {
@@ -222,6 +303,11 @@ const consumers = [
     },
   },
   ...[
+    'k8s/helm/durable-workflow/values.yaml',
+    'k8s/helm/durable-workflow/README.md',
+    'k8s/helm/examples/values-dev.yaml',
+    'k8s/helm/examples/values-external-secrets-operator.yaml',
+    'k8s/helm/examples/values-production-existing-secrets.yaml',
     'k8s/helm/durable-workflow/ci/existing-secrets-values.yaml',
     'k8s/helm/durable-workflow/ci/inline-secrets-values.yaml',
     'k8s/helm/durable-workflow/ci/ingress-and-hpa-values.yaml',
@@ -238,6 +324,19 @@ const consumers = [
       );
     },
   })),
+  {
+    path: 'k8s/helm/durable-workflow/templates/_helpers.tpl',
+    render(source, release) {
+      return replaceExactly(
+        source,
+        new RegExp(`(docker\\.io/durableworkflow/server:)${serverVersion}`),
+        (_match, prefix) => `${prefix}${release.serverVersion}`,
+        1,
+        this.path,
+        'recognized official Server image',
+      );
+    },
+  },
 ];
 
 export const generatedConsumerPaths = Object.freeze(consumers.map(({path}) => path));
@@ -247,7 +346,9 @@ export async function renderSourceRelease(repositoryRoot, release) {
   const errors = [];
   for (const consumer of consumers) {
     try {
-      const source = await readFile(resolve(repositoryRoot, consumer.path), 'utf8');
+      const source = rendered.has(consumer.path)
+        ? rendered.get(consumer.path)
+        : await readFile(resolve(repositoryRoot, consumer.path), 'utf8');
       rendered.set(consumer.path, consumer.render(source, release, rendered));
     } catch (error) {
       errors.push(error.message);

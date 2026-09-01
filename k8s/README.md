@@ -9,9 +9,8 @@ Both paths share the same external-persistence contract, the same singleton
 scheduler invariant, and the same `/api/ready`-based readiness contract.
 Pick one or the other per environment, not both.
 
-The default image is generated from the last passing qualified reproducibility
-[tuple](https://durable-workflow.com/public-artifact-compatibility-evidence.json)
-and pinned to its qualified Docker Hub release tag:
+The checked-in manifests are synchronized with the repository's stable source
+release and pin its Docker Hub tag:
 
 ```text
 durableworkflow/server:2.0.0
