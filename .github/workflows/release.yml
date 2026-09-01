@@ -1,6 +1,6 @@
 name: Release
 
-run-name: Release ${{ inputs.tag || github.ref_name }} at ${{ inputs.release_commit || github.sha }} for ${{ inputs.release_plan || 'direct' }}
+run-name: Release ${{ inputs.tag || github.ref_name }} at ${{ inputs.release_commit || github.sha }}
 
 on:
   push:
@@ -12,13 +12,8 @@ on:
         description: 'Existing immutable release tag (for example 0.0.1-test)'
         required: true
       release_commit:
-        description: 'Exact source commit declared by the immutable release plan'
+        description: 'Full source commit for the existing immutable release tag'
         required: true
-      release_plan:
-        description: 'Immutable release-plan tag initiating this recovery run'
-        required: false
-        default: 'direct'
-
 permissions:
   contents: read
 

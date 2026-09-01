@@ -19,22 +19,22 @@ class OpenApiDocumentEvolutionTest extends TestCase
         $parsed = Yaml::parse($workflow);
         $this->assertIsArray($parsed);
 
-        $structuralSteps = $parsed['jobs']['structural']['steps'] ?? null;
-        $this->assertIsArray($structuralSteps);
-        $structuralStep = array_values(array_filter(
-            $structuralSteps,
+        $preflightSteps = $parsed['jobs']['preflight']['steps'] ?? null;
+        $this->assertIsArray($preflightSteps);
+        $preflightStep = array_values(array_filter(
+            $preflightSteps,
             static fn (mixed $step): bool => is_array($step)
                 && ($step['name'] ?? null) === 'Require versioned worker OpenAPI evolution',
         ));
 
-        $this->assertCount(1, $structuralStep);
+        $this->assertCount(1, $preflightStep);
         $this->assertSame(
             '${{ github.event_name == \'pull_request\' && github.event.pull_request.base.sha || github.event_name == \'push\' && github.event.before || inputs.corpus_base_ref }}',
-            $structuralStep[0]['env']['OPENAPI_BASE_REF'] ?? null,
+            $preflightStep[0]['env']['OPENAPI_BASE_REF'] ?? null,
         );
         $this->assertSame(
             'php scripts/ci/check-worker-openapi-evolution.php "$OPENAPI_BASE_REF"',
-            $structuralStep[0]['run'] ?? null,
+            $preflightStep[0]['run'] ?? null,
         );
 
         $featureSteps = $parsed['jobs']['feature']['steps'] ?? null;

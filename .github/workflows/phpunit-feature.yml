@@ -46,8 +46,8 @@ jobs:
           --target server
           --workflow-directory .github/workflows
 
-  structural:
-    name: Candidate structure
+  preflight:
+    name: Repository contracts
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -58,7 +58,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Validate release recovery tooling
+      - name: Validate release metadata and CI scripts
         run: |
           node --check scripts/ci/sync-source-release.mjs
           node scripts/ci/sync-source-release.mjs --check
@@ -67,22 +67,6 @@ jobs:
           node scripts/ci/sync-cli-readme-release.mjs --check --offline
           bash -n scripts/ci/check-cli-readme-public-release.sh
           bash -n scripts/ci/verify-cli-readme-release.sh
-          python -m py_compile \
-            scripts/ci/component-release-recovery.py \
-            scripts/ci/release_recovery_consumer_conformance.py \
-            scripts/ci/test-component-release-recovery.py
-          arguments=()
-          if [ -n "$CONFORMANCE_BASE_REF" ]; then
-            arguments+=(--previous-ref "$CONFORMANCE_BASE_REF")
-          fi
-          python scripts/ci/release_recovery_consumer_conformance.py \
-            --contract scripts/ci/release-recovery-consumer-contract.json \
-            --adapter scripts/ci/release-recovery-consumer-adapter.json \
-            "${arguments[@]}"
-          python scripts/ci/test-component-release-recovery.py \
-            ConsumerContractIdentityRegressionTest
-        env:
-          CONFORMANCE_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
 
       - name: Validate embedded Workflow package authority
         run: php scripts/ci/test-workflow-package-authority.php
@@ -119,7 +103,7 @@ jobs:
   feature:
     name: PHPUnit feature suite
     needs: action-policy
-    if: ${{ always() && github.server_url == 'https://github.com' }}
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
@@ -196,24 +180,18 @@ jobs:
 
   qualification:
     name: Feature source qualification
-    needs: [structural, feature]
+    needs: [preflight, feature]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 2
 
     steps:
-      - name: Require the intended qualification route
+      - name: Require repository contracts and feature tests
         env:
-          ACTIONS_SERVER_URL: ${{ github.server_url }}
-          STRUCTURAL_RESULT: ${{ needs.structural.result }}
+          PREFLIGHT_RESULT: ${{ needs.preflight.result }}
           FEATURE_RESULT: ${{ needs.feature.result }}
         run: |
           set -euo pipefail
-          test "$STRUCTURAL_RESULT" = success
-          if [[ "$ACTIONS_SERVER_URL" == "https://github.com" ]]; then
-            test "$FEATURE_RESULT" = success
-            echo "Complete GitHub feature and Nexus contract qualification succeeded."
-          else
-            test "$FEATURE_RESULT" = skipped
-            echo "Focused candidate structure qualification succeeded."
-          fi
+          test "$PREFLIGHT_RESULT" = success
+          test "$FEATURE_RESULT" = success
+          echo "Server repository contracts and feature tests succeeded."
