@@ -21,7 +21,7 @@ final class OnboardingVersionPinsTest extends TestCase
         );
     }
 
-    public function test_compose_kubernetes_and_helm_defaults_are_generated_from_the_qualified_record(): void
+    public function test_compose_kubernetes_and_helm_defaults_are_generated_from_the_selected_release(): void
     {
         $process = new Process([
             'node',
@@ -33,7 +33,7 @@ final class OnboardingVersionPinsTest extends TestCase
 
         self::assertSame(0, $process->getExitCode(), $process->getErrorOutput());
         self::assertMatchesRegularExpression(
-            '/^Compose, Kubernetes, and Helm onboarding select qualified Server \S+\.\n$/',
+            '/^Compose, Kubernetes, and Helm onboarding select Server \S+\.\n$/',
             $process->getOutput(),
         );
     }

@@ -10,7 +10,7 @@ class KubernetesManifestContractTest extends TestCase
 {
     public function test_public_manifests_use_pinned_published_server_images(): void
     {
-        $serverImage = $this->qualifiedServerImage();
+        $serverImage = $this->onboardingServerImage();
 
         foreach ($this->kubernetesYamlFiles() as $path) {
             $source = $this->read($path);
@@ -96,7 +96,7 @@ class KubernetesManifestContractTest extends TestCase
 
         preg_match('/^manifest_image="([^"]+)"$/m', $source, $matches);
 
-        $this->assertSame($this->qualifiedServerImage(), $matches[1] ?? null);
+        $this->assertSame($this->onboardingServerImage(), $matches[1] ?? null);
         $this->assertStringContainsString('sed -i "s#${manifest_image}#${image}#g"', $source);
         $this->assertStringContainsString('grep -R -Fq "${manifest_image}" "${rendered_dir}"', $source);
         $this->assertStringContainsString('grep -R -Fq "${image}" "${rendered_dir}"', $source);
@@ -126,16 +126,25 @@ class KubernetesManifestContractTest extends TestCase
         return $source;
     }
 
-    private function qualifiedServerImage(): string
+    private function onboardingServerImage(): string
     {
-        $record = json_decode(
+        $qualified = json_decode(
             $this->read('resources/release/qualified-onboarding-release.json'),
             true,
             flags: JSON_THROW_ON_ERROR,
         );
-        $image = $record['server']['image']['reference'] ?? null;
-        $this->assertIsString($image);
+        $source = json_decode(
+            $this->read('resources/release/source-release.json'),
+            true,
+            flags: JSON_THROW_ON_ERROR,
+        );
+        $sourceVersion = $source['server']['version'] ?? null;
+        $qualifiedVersion = $qualified['server']['version'] ?? null;
+        $this->assertIsString($sourceVersion);
+        $this->assertIsString($qualifiedVersion);
 
-        return $image;
+        $version = str_contains($sourceVersion, '-') ? $qualifiedVersion : $sourceVersion;
+
+        return 'durableworkflow/server:'.$version;
     }
 }
