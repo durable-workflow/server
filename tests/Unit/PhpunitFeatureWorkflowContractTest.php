@@ -41,7 +41,7 @@ class PhpunitFeatureWorkflowContractTest extends TestCase
             'pull_request:',
             'workflow_dispatch:',
             'name: PHPUnit feature suite',
-            "if: \${{ always() && github.server_url == 'https://github.com' }}",
+            'if: ${{ always() }}',
             'vendor/bin/phpunit tests/Feature',
             'tests/Unit/NexusContractTest.php',
             'tests/Unit/PhpunitFeatureWorkflowContractTest.php',
@@ -152,30 +152,28 @@ class PhpunitFeatureWorkflowContractTest extends TestCase
         $this->assertLessThan($validatorOffset, $phpunitOffset);
     }
 
-    public function test_local_candidates_use_a_bounded_structural_gate(): void
+    public function test_preflight_validates_release_metadata_and_corpus_tools(): void
     {
         foreach ([
-            'structural:',
-            'name: Candidate structure',
+            'preflight:',
+            'name: Repository contracts',
             'timeout-minutes: 5',
-            'python -m py_compile',
-            'scripts/ci/test-component-release-recovery.py',
+            'node scripts/ci/sync-source-release.mjs --check',
+            'python scripts/ci/test-regression-corpus-policy.py',
         ] as $needle) {
             $this->assertStringContainsString($needle, $this->workflow);
         }
     }
 
-    public function test_final_gate_fails_safe_for_complete_and_structural_routes(): void
+    public function test_final_gate_requires_preflight_and_feature_suite(): void
     {
         foreach ([
             'qualification:',
             'name: Feature source qualification',
-            'needs: [structural, feature]',
+            'needs: [preflight, feature]',
             'if: ${{ always() }}',
-            'test "$STRUCTURAL_RESULT" = success',
-            '[[ "$ACTIONS_SERVER_URL" == "https://github.com" ]]',
+            'test "$PREFLIGHT_RESULT" = success',
             'test "$FEATURE_RESULT" = success',
-            'test "$FEATURE_RESULT" = skipped',
         ] as $needle) {
             $this->assertStringContainsString($needle, $this->workflow);
         }

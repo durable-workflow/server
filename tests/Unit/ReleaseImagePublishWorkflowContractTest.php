@@ -460,14 +460,13 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertStringNotContainsString('Select compatible workflow package version', $workflow);
     }
 
-    public function test_release_recovery_retains_the_planned_commit_at_each_publication_boundary(): void
+    public function test_manual_release_rerun_retains_the_requested_commit_at_each_publication_boundary(): void
     {
         $workflow = $this->read('.github/workflows/release.yml');
-        $recovery = $this->read('.github/workflows/release-plan-recovery.yml');
 
         foreach ([
             'release_commit:',
-            "description: 'Exact source commit declared by the immutable release plan'",
+            "description: 'Full source commit for the existing immutable release tag'",
             'REQUESTED_COMMIT: ${{ github.event_name == \'workflow_dispatch\' && inputs.release_commit || \'\' }}',
             'Verify immutable release tag at publication boundary',
             '&& inputs.release_commit || steps.release_source.outputs.commit }}',
@@ -486,84 +485,6 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertIsInt($releaseOffset);
         $this->assertLessThan($buildOffset, $tagGuardOffset);
         $this->assertLessThan($releaseOffset, $buildOffset);
-
-        $this->assertSame(2, substr_count($recovery, 'scripts/ci/verify-release-tag-source.sh'));
-        $this->assertStringContainsString('gh workflow run release.yml --ref main', $recovery);
-        $this->assertStringNotContainsString('gh workflow run release.yml --ref "$RELEASE_TAG"', $recovery);
-        $this->assertStringContainsString('-f tag="$RELEASE_TAG"', $recovery);
-        $this->assertStringContainsString('-f release_commit="$RELEASE_COMMIT"', $recovery);
-
-        $createOffset = strpos($recovery, 'Create the exact source tag');
-        $firstGuardOffset = strpos($recovery, 'scripts/ci/verify-release-tag-source.sh', $createOffset);
-        $startOffset = strpos($recovery, 'Start or resume repository-owned publication');
-        $secondGuardOffset = strpos($recovery, 'scripts/ci/verify-release-tag-source.sh', $startOffset);
-        $dispatchOffset = strpos($recovery, 'gh workflow run release.yml');
-
-        $this->assertIsInt($createOffset);
-        $this->assertIsInt($firstGuardOffset);
-        $this->assertIsInt($startOffset);
-        $this->assertIsInt($secondGuardOffset);
-        $this->assertIsInt($dispatchOffset);
-        $this->assertLessThan($firstGuardOffset, $createOffset);
-        $this->assertLessThan($startOffset, $firstGuardOffset);
-        $this->assertLessThan($secondGuardOffset, $startOffset);
-        $this->assertLessThan($dispatchOffset, $secondGuardOffset);
-    }
-
-    public function test_release_recovery_only_grants_write_credentials_after_discovery_selects_publish(): void
-    {
-        $workflow = Yaml::parseFile($this->repoRoot.'/.github/workflows/release-plan-recovery.yml');
-        $this->assertIsArray($workflow);
-        $this->assertSame(['discover', 'publish'], array_keys($workflow['jobs']));
-
-        $discover = $workflow['jobs']['discover'];
-        $publish = $workflow['jobs']['publish'];
-
-        $this->assertSame(
-            ['attestations' => 'read', 'contents' => 'read'],
-            $discover['permissions'],
-        );
-        $this->assertSame(
-            [
-                'action' => '${{ steps.recovery.outputs.action }}',
-                'plan' => '${{ steps.recovery.outputs.plan }}',
-                'plan_tag' => '${{ steps.recovery.outputs.plan_tag }}',
-                'version' => '${{ steps.recovery.outputs.version }}',
-                'commit' => '${{ steps.recovery.outputs.commit }}',
-            ],
-            $discover['outputs'],
-        );
-        $this->assertSame('discover', $publish['needs']);
-        $this->assertSame(
-            "github.ref == 'refs/heads/main' && needs.discover.outputs.action == 'publish'",
-            preg_replace('/\s+/', ' ', trim($publish['if'])),
-        );
-        $this->assertSame(
-            ['actions' => 'write', 'contents' => 'write'],
-            $publish['permissions'],
-        );
-
-        $discoverCommands = implode(
-            "\n",
-            array_column($discover['steps'], 'run'),
-        );
-        $this->assertStringNotContainsString('gh api --method POST', $discoverCommands);
-        $this->assertStringNotContainsString('gh workflow run', $discoverCommands);
-        $this->assertStringNotContainsString('gh run rerun', $discoverCommands);
-
-        $discoverCheckout = $discover['steps'][0];
-        $this->assertSame(false, $discoverCheckout['with']['persist-credentials']);
-
-        $publicationTokenSteps = 0;
-        foreach ($publish['steps'] as $step) {
-            if (! isset($step['env']['GH_TOKEN'])) {
-                continue;
-            }
-
-            $publicationTokenSteps++;
-            $this->assertSame('${{ github.token }}', $step['env']['GH_TOKEN']);
-        }
-        $this->assertSame(2, $publicationTokenSteps);
     }
 
     public function test_release_publisher_retries_an_initial_transient_view_before_creating_an_absent_release(): void
@@ -814,7 +735,7 @@ SH);
         }
     }
 
-    public function test_release_recovery_uses_protected_tooling_with_the_immutable_source_tree(): void
+    public function test_release_uses_protected_tooling_with_the_immutable_source_tree(): void
     {
         $workflow = Yaml::parseFile($this->repoRoot.'/.github/workflows/release.yml');
         $steps = [];
