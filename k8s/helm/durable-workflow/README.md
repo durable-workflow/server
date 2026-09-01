@@ -1,7 +1,5 @@
 # Durable Workflow Helm Chart
 
-[![Chart](https://img.shields.io/badge/chart-durable--workflow-blue)](https://durable-workflow.github.io/charts/)
-
 This chart deploys a self-hosted Durable Workflow standalone server, worker
 pool, scheduler/maintenance runner, and bootstrap job onto Kubernetes. It is
 the self-serve Helm path for the deployment matrix at
@@ -20,9 +18,7 @@ those guarantees are flagged in `values.yaml`.
 * Chart version: see `Chart.yaml` (semver — independent of the Server image
   version, which is `appVersion`).
 * Chart distribution: published as an OCI artifact at
-  `oci://ghcr.io/durable-workflow/charts/durable-workflow` and as a classic
-  HTTPS index at `https://durable-workflow.github.io/charts/`. Both reference
-  the same packaged release; pick whichever your release pipeline supports.
+  `oci://ghcr.io/durable-workflow/charts/durable-workflow`.
 * Stability: **beta** — the externals-first contract, singleton scheduler
   invariant, secret layout, and resource naming are committed to. Any breaking
   change to those will bump the chart's MAJOR version and ship migration steps
@@ -48,21 +44,12 @@ Redis — that is intentional, not a bug.
 ```bash
 helm install durable-workflow \
   oci://ghcr.io/durable-workflow/charts/durable-workflow \
-  --version 0.1.69 \
   --namespace durable-workflow --create-namespace \
   -f my-values.yaml
 ```
 
-### From the HTTPS chart repo
-
-```bash
-helm repo add durable-workflow https://durable-workflow.github.io/charts/
-helm repo update
-helm install durable-workflow durable-workflow/durable-workflow \
-  --version 0.1.69 \
-  --namespace durable-workflow --create-namespace \
-  -f my-values.yaml
-```
+Add `--version <validated-chart-version>` for reproducible production
+installs. Chart releases and upgrade notes live with this chart source.
 
 ### From a local checkout (for development)
 
