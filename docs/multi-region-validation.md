@@ -8,7 +8,7 @@ enforces. Active/active and automatic regional failover remain outside the
 self-serve boundary.
 
 This document is the server-side view of the workflow library contract in
-[`durable-workflow/workflow#docs/deployment/multi-region.md`](https://github.com/durable-workflow/workflow/blob/v2/docs/deployment/multi-region.md).
+[`durable-workflow/workflow#docs/deployment/multi-region.md`](https://github.com/durable-workflow/workflow/blob/main/docs/deployment/multi-region.md).
 The library contract names the engine guarantees; this document names the
 operator contract for the standalone server image and Compose recipes.
 

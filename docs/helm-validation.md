@@ -2,7 +2,7 @@
 
 This note records the operator-side contract for the self-serve Helm path.
 It is the server-side view of the engine contract in
-[`durable-workflow/workflow#docs/deployment/helm.md`](https://github.com/durable-workflow/workflow/blob/v2/docs/deployment/helm.md):
+[`durable-workflow/workflow#docs/deployment/helm.md`](https://github.com/durable-workflow/workflow/blob/main/docs/deployment/helm.md):
 the library doc names what the chart can promise without weakening any
 existing engine guarantee; this doc names the operator topology, validation
 harness, distribution path, and recovery-packet evidence required to claim

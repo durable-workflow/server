@@ -6,7 +6,7 @@ the self-serve Helm path for the deployment matrix at
 <https://durable-workflow.github.io/docs/2.0/deployment>.
 
 The chart is engine-aware: the templates encode the engine invariants from
-[workflow/docs/deployment/multi-node-requirements.md](https://github.com/durable-workflow/workflow/blob/v2/docs/deployment/multi-node-requirements.md)
+[workflow/docs/deployment/multi-node-requirements.md](https://github.com/durable-workflow/workflow/blob/main/docs/deployment/multi-node-requirements.md)
 and the failover guarantees from
 [server/docs/ha-failover-validation.md](../../docs/ha-failover-validation.md)
 (singleton scheduler, readiness on `/api/ready`, externals-first persistence,

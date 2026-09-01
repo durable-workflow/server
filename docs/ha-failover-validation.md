@@ -10,7 +10,7 @@ standby promotion, etc.), API-node loss, worker loss, and
 scheduler/maintenance runner restart.
 
 It is the server-side view of the engine contract in
-[`durable-workflow/workflow#docs/deployment/ha-failover.md`](https://github.com/durable-workflow/workflow/blob/v2/docs/deployment/ha-failover.md).
+[`durable-workflow/workflow#docs/deployment/ha-failover.md`](https://github.com/durable-workflow/workflow/blob/main/docs/deployment/ha-failover.md).
 The library contract names what the engine guarantees during each event
 class; this document names the operator topology, validation harness, and
 recovery-packet evidence required to claim the self-serve HA contract on the
@@ -62,7 +62,7 @@ without changing the engine:
   Redis but every consumer has a documented degraded-mode fallback to the
   durable substrate. A Redis failover is a latency event, never a
   correctness event. The
-  [scheduler correctness contract](https://github.com/durable-workflow/workflow/blob/v2/docs/architecture/scheduler-correctness.md)
+  [scheduler correctness contract](https://github.com/durable-workflow/workflow/blob/main/docs/architecture/scheduler-correctness.md)
   is the engine source of truth for that.
 - **The scheduler/maintenance runner is a singleton, but its outage is
   bounded.** Schedule fires, activity-timeout enforcement, and history
@@ -215,12 +215,12 @@ restored:
    in its orchestrator and that no second runner has been started.
 6. Resume external traffic and watch task throughput resume from the
    metrics surface in
-   [Multi-Node Requirements](https://github.com/durable-workflow/workflow/blob/v2/docs/deployment/multi-node-requirements.md).
+   [Multi-Node Requirements](https://github.com/durable-workflow/workflow/blob/main/docs/deployment/multi-node-requirements.md).
 
 ## Failover Behavior by Event
 
 The engine contract in
-[`workflow#docs/deployment/ha-failover.md`](https://github.com/durable-workflow/workflow/blob/v2/docs/deployment/ha-failover.md)
+[`workflow#docs/deployment/ha-failover.md`](https://github.com/durable-workflow/workflow/blob/main/docs/deployment/ha-failover.md)
 names the engine guarantees. The operator contract on the standalone
 server is:
 
