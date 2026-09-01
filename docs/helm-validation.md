@@ -26,9 +26,8 @@ The first public Helm shape:
 - Encodes the engine invariants (singleton scheduler, readiness on
   `/api/ready`, externals-first persistence, bootstrap-before-workloads
   ordering) as defaults that cannot be silently subverted via values.
-- Distributes versioned chart releases via OCI
-  (`oci://ghcr.io/durable-workflow/charts/durable-workflow`) and an HTTPS
-  index hosted on the docs site (`https://durable-workflow.github.io/charts/`).
+- Distributes versioned chart releases via OCI at
+  `oci://ghcr.io/durable-workflow/charts/durable-workflow`.
 - Has chart CI: `helm lint`, `helm template` against multiple values
   fixtures, `kubeconform` against every Kubernetes version in the support
   matrix, and `chart-testing` (`ct lint-and-install`) against a kind
@@ -106,7 +105,7 @@ calls out as table-stakes for a serious Helm path:
 
 ## Validation harness
 
-`./.github/workflows/helm-chart-validation.yml` runs on every PR that
+`.github/workflows/helm-chart-checks.yml` runs on every PR that
 touches `k8s/helm/**` or the chart smoke script. The harness has two jobs:
 
 1. **`lint-and-template`** — runs `helm lint` over the chart and over
@@ -141,23 +140,17 @@ fixtures green, and the kind smoke must end with a clean uninstall.
 
 ## Distribution
 
-Releases are cut from `Chart.yaml.version`. Each release publishes:
-
-* an OCI artifact at `oci://ghcr.io/durable-workflow/charts/durable-workflow`
-  with the chart's version as the OCI tag;
-* an HTTPS index update at `https://durable-workflow.github.io/charts/`
-  with the packaged tarball + `index.yaml` entry.
+Releases are cut from `Chart.yaml.version`. Each release publishes an OCI
+artifact at `oci://ghcr.io/durable-workflow/charts/durable-workflow` with the
+chart's version as the OCI tag.
 
 `scripts/ci/helm_chart_release.py` records the chart version, appVersion,
 chart-source revision, package digest, default image reference, and resolved
 image digest. The Server chart-release workflow rejects changed package
 content under an existing chart version and proves anonymous OCI installation.
-The docs-site deployment mirrors that pulled package byte for byte, generates
-the HTTPS index, and fails unless clean clients install the same digest from
-both channels.
 
 The "install/upgrade from released charts, not only from a checkout" line
-on the deployment guide is satisfied by both distribution paths; the
+on the deployment guide is satisfied by the OCI distribution path; the
 checkout install (`helm install ./k8s/helm/durable-workflow/`) remains
 supported for chart development and air-gapped review.
 

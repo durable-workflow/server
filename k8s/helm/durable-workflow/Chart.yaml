@@ -5,7 +5,7 @@ type: application
 # The chart's own semver version. Bumped on every chart release; treated as
 # independent of the server image version (appVersion). Breaking-change rules
 # for this version live in docs/helm-upgrading.md alongside the chart.
-version: 0.1.69
+version: 0.1.70
 # The immutable Durable Workflow Server identity this chart release packages.
 # The onboarding default in values.yaml and appVersion are generated from the
 # checked-in source release record.
@@ -33,124 +33,7 @@ annotations:
   dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:2.0.0"
   artifacthub.io/license: MIT
   artifacthub.io/category: integration-delivery
-  # Free-form changelog used by Artifact Hub. Keep the most recent chart-version
-  # entry first; do not rewrite past entries.
+  # Free-form changelog for the current chart release shown by Artifact Hub.
   artifacthub.io/changes: |
-    - kind: fixed
-      description: Reject visibility queries that reference undefined custom search attributes in Server 2.0.0-rc.71.
-    - kind: fixed
-      description: Preserve typed search-attribute identity across MySQL JSON object key reordering in Server 2.0.0-rc.70.
-    - kind: fixed
-      description: Ship the durable signal-resume parallel-sequence repair with Workflow 2.0.0-rc.55 in Server 2.0.0-rc.69.
-    - kind: fixed
-      description: Pin the packaged Workflow engine to 2.0.0-rc.53 in Server 2.0.0-rc.68.
-    - kind: fixed
-      description: Preserve complete focused migration worker command responses while bounding persisted diagnostics in Server 2.0.0-rc.67.
-    - kind: fixed
-      description: Reset cached workflow update probe controllers between sequential validator callbacks in Server 2.0.0-rc.66.
-    - kind: fixed
-      description: Encode generated PHP skew completion results through the Avro payload codec in Server 2.0.0-rc.65.
-    - kind: fixed
-      description: Align published skew conformance with exact-current protocol authority and require refusal before mutation in Server 2.0.0-rc.63.
-    - kind: fixed
-      description: Advertise sticky execution for the published PHP heartbeat worker in Server 2.0.0-rc.61.
-    - kind: fixed
-      description: Reject raw JSON values at direct conformance payload boundaries in Server 2.0.0-rc.60.
-    - kind: fixed
-      description: Align direct conformance probes with the current Avro worker protocol in Server 2.0.0-rc.59.
-    - kind: fixed
-      description: Keep published activities worker registration aligned with the current portable-affinity protocol in Server 2.0.0-rc.58.
-    - kind: fixed
-      description: Make every published conformance CLI installer resolve its private executable through PATH in Server 2.0.0-rc.57.
-    - kind: fixed
-      description: Fix published signals/queries CLI path resolution and rejected-command audit semantics in Server 2.0.0-rc.56.
-    - kind: fixed
-      description: Publish negotiated local-activity field gates and retained-object rolling-upgrade behavior with Workflow 2.0.0-rc.51 in Server 2.0.0-rc.55.
-    - kind: fixed
-      description: Align portable local-activity command negotiation and persisted history with Workflow 2.0.0-rc.50 in Server 2.0.0-rc.54.
-    - kind: fixed
-      description: Publish worker protocol 1.19 negotiation and fresh HTTP and stream protocol document identities in Server 2.0.0-rc.53.
-    - kind: fixed
-      description: Align HTTP and stream protocol negotiation and accept list- and map-shaped local-activity heartbeat details in Server 2.0.0-rc.52.
-    - kind: added
-      description: Publish worker protocol 1.18 capability manifests and portable local-activity, worker-session, and sticky-execution boundaries in Server 2.0.0-rc.51.
-    - kind: fixed
-      description: Preserve structured workflow-task failure identity and restrict external-payload translation to declared runtime payload boundaries in Server 2.0.0-rc.51.
-    - kind: fixed
-      description: Preserve memo projections in workflow run listings after continue-as-new in Server 2.0.0-rc.51.
-    - kind: fixed
-      description: Validate parallel workflow commands through the package-owned command grammar in Server 2.0.0-rc.51.
-    - kind: fixed
-      description: Require incompatible memo-transition pods and scheduler executions to be terminal or deleted before bootstrap.
-    - kind: fixed
-      description: Bind memo-transition safety checks to running and target Server image storage capabilities.
-    - kind: fixed
-      description: Enforce workflow metadata capabilities and protocol 1.17 condition-wait occurrence identity boundaries in Server 2.0.0-rc.50.
-    - kind: fixed
-      description: Recover interrupted rc.47/rc.48 MySQL memo rewrites with fail-closed, prefix-bounded operator recovery in Server 2.0.0-rc.50.
-    - kind: fixed
-      description: Make workflow memo storage rolling-compatible with the raw-JSON predecessor and restart-safe across interrupted backfills in Server 2.0.0-rc.49.
-    - kind: fixed
-      description: Separate deterministic capacity schema source qualification from fail-closed public publication auditing in Server 2.0.0-rc.48.
-    - kind: added
-      description: Add portable workflow memo updates and advertise worker protocol 1.16 in Server 2.0.0-rc.47.
-    - kind: fixed
-      description: Preserve declared workflow search-attribute types across the worker command boundary in Server 2.0.0-rc.46.
-    - kind: fixed
-      description: Bound message-stream payload and terminal state retention in Server 2.0.0-rc.45.
-    - kind: fixed
-      description: Reclaim expired and incomplete runtime external-payload uploads in Server 2.0.0-rc.44.
-    - kind: security
-      description: Keep external payload storage behind the authenticated runtime boundary in Server 2.0.0-rc.43.
-    - kind: added
-      description: Add portable durable message streams and worker protocol 1.15 in Server 2.0.0-rc.42.
-    - kind: fixed
-      description: Ship Fiber-backed straight-line PHP conformance workers for current service-mode validation in Server 2.0.0-rc.41.
-    - kind: added
-      description: Add replay-safe workflow-command emission for run-scoped Workflow Streams in Server 2.0.0-rc.40.
-    - kind: added
-      description: Accept and persist deterministic service-workflow parallel group metadata in Server 2.0.0-rc.39.
-    - kind: fixed
-      description: Publish the capacity schema inventory and qualification contract for canonical public routes in Server 2.0.0-rc.38.
-    - kind: fixed
-      description: Publish worker OpenAPI document version 9 for the cached-poll conflict response union in Server 2.0.0-rc.37.
-    - kind: fixed
-      description: Add a focused published-artifact PHP CLI signal diagnostic with bounded post-attempt state evidence for Server 2.0.0-rc.36.
-    - kind: security
-      description: Exclude compound credential fields from retained portable signals/queries conformance text evidence for Server 2.0.0-rc.35.
-    - kind: fixed
-      description: Retain bounded failed-client routing diagnostics in portable signals/queries conformance evidence for Server 2.0.0-rc.34.
-    - kind: fixed
-      description: Advance the chart Server identity to 2.0.0-rc.33 with Fiber-backed PHP workflow consumers.
-    - kind: fixed
-      description: Advance the chart Server identity to 2.0.0-rc.32 with structured release-image provenance verification.
-    - kind: added
-      description: Advance the chart Server identity to 2.0.0-rc.31 with namespace capacity-evidence support.
-    - kind: fixed
-      description: Bind the embedded Workflow package to the Server Composer authority for 2.0.0-rc.31.
-    - kind: fixed
-      description: Route the default Server image through the passing public compatibility authority.
-    - kind: fixed
-      description: Advance the chart Server identity to 2.0.0-rc.30 with Avro-only payload enforcement and deployment preflight.
-    - kind: fixed
-      description: Advance the default Server image to 2.0.0-rc.29 with isolated workflow-update conformance authentication phases.
-    - kind: added
-      description: Advance the default Server image to 2.0.0-rc.28 with the versioned capacity benchmark suite.
-    - kind: fixed
-      description: Advance the default Server image to 2.0.0-rc.28 with deterministic source qualification for the Helm chart.
-    - kind: fixed
-      description: Advance the default Server image to 2.0.0-rc.27 with corrected Python lifecycle discovery conformance and retained diagnostics.
-    - kind: fixed
-      description: Advance the default Server image to 2.0.0-rc.25 with schema-valid fail-closed cached-poll conflicts.
-    - kind: fixed
-      description: Advance the default Server image to 2.0.0-rc.24 with validator conformance that honors multiplex fairness.
-    - kind: fixed
-      description: Advance the default Server image to 2.0.0-rc.23 with corrected Python worker shutdown conformance.
-    - kind: fixed
-      description: Advance the default Server image to 2.0.0-rc.21 with isolated activities conformance task queues.
-    - kind: security
-      description: Advance the default Server image to 2.0.0-rc.19 with the remediated Markdown dependency.
-    - kind: security
-      description: Advance the default Server image to 2.0.0-rc.18 with the remediated HTTP client dependency.
-    - kind: added
-      description: Initial self-serve Helm chart for Durable Workflow server, worker, scheduler/maintenance runner, and bootstrap job.
+    - kind: changed
+      description: Publish Server 2.0.0 and use OCI as the chart distribution channel.

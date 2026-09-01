@@ -171,15 +171,6 @@ def validate_source(chart_path: Path = DEFAULT_CHART_PATH) -> dict[str, Any]:
         )
     if SOURCE_REVISION_ANNOTATION not in metadata["annotations"]:
         raise ReleaseError(f"Chart.yaml is missing {SOURCE_REVISION_ANNOTATION}")
-    readme = (chart_path / "README.md").read_text()
-    documented_versions = re.findall(r"--version\s+([0-9]+\.[0-9]+\.[0-9]+)\s", readme)
-    if len(documented_versions) < 2 or any(
-        version != metadata["version"] for version in documented_versions
-    ):
-        raise ReleaseError(
-            "the OCI and HTTPS install commands in the chart README must use "
-            f"chart version {metadata['version']}"
-        )
     source_release = source_release_metadata()
     if metadata["version"] != source_release["chart_version"]:
         raise ReleaseError(
@@ -597,10 +588,6 @@ def verify_oci(
                 "repository": oci_repository,
                 "package_digest": expected_digest,
                 "anonymous_install": "pass",
-            },
-            "https": {
-                "repository": "https://durable-workflow.github.io/charts/",
-                "status": "awaiting-docs-deployment",
             },
         },
     }
