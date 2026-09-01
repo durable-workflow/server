@@ -5,10 +5,10 @@ type: application
 # The chart's own semver version. Bumped on every chart release; treated as
 # independent of the server image version (appVersion). Breaking-change rules
 # for this version live in docs/helm-upgrading.md alongside the chart.
-version: 0.1.68
+version: 0.1.69
 # The immutable Durable Workflow Server identity this chart release packages.
-# The onboarding default in values.yaml is generated from the separately
-# qualified compatibility authority; appVersion remains release metadata.
+# The onboarding default in values.yaml and appVersion are generated from the
+# checked-in source release record.
 appVersion: "2.0.0"
 kubeVersion: ">=1.27.0-0"
 home: https://durable-workflow.github.io/docs/2.0/deployment

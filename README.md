@@ -11,16 +11,11 @@ repository or starting MySQL/Redis. The image defaults to SQLite, database
 queues, and file cache; mount `/app/database` so the bootstrap command and API
 server share the same SQLite file.
 
-The command resolves the Server member of the last qualified reproducible
-tuple from the public compatibility-evidence record.
+The `2` image tag tracks the current stable Server release. Pin an immutable
+version tag or digest for production change control.
 
 ```bash
-export DW_SERVER_VERSION="$(
-  curl -fsSL https://durable-workflow.com/public-artifact-compatibility-evidence.json |
-  awk '/"qualified_artifact_versions"[[:space:]]*:/ { found=1; next } found && /"server"[[:space:]]*:/ { value=$0; sub(/^.*"server"[[:space:]]*:[[:space:]]*"/, "", value); sub(/".*$/, "", value); print value; exit }'
-)"
-test -n "$DW_SERVER_VERSION"
-export DW_SERVER_IMAGE="durableworkflow/server:$DW_SERVER_VERSION"
+export DW_SERVER_IMAGE="durableworkflow/server:2"
 export DW_AUTH_TOKEN=dev-token
 docker volume create durable-workflow-sqlite
 

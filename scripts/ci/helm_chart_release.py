@@ -19,9 +19,6 @@ from typing import Any
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CHART_PATH = REPOSITORY_ROOT / "k8s/helm/durable-workflow"
-DEFAULT_QUALIFIED_RELEASE_PATH = (
-    REPOSITORY_ROOT / "resources/release/qualified-onboarding-release.json"
-)
 DEFAULT_SOURCE_RELEASE_PATH = REPOSITORY_ROOT / "resources/release/source-release.json"
 DEFAULT_OCI_REPOSITORY = "oci://ghcr.io/durable-workflow/charts/durable-workflow"
 SOURCE_REVISION_ANNOTATION = "dev.durable-workflow.source-revision"
@@ -130,26 +127,6 @@ def chart_metadata(chart_path: Path = DEFAULT_CHART_PATH) -> dict[str, Any]:
     }
 
 
-def qualified_server_version(
-    record_path: Path = DEFAULT_QUALIFIED_RELEASE_PATH,
-) -> str:
-    try:
-        record = json.loads(record_path.read_text())
-        version = record["server"]["version"]
-        tuple_version = record["qualified_artifact_versions"]["server"]
-    except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
-        raise ReleaseError(
-            f"qualified onboarding release is invalid: {error}"
-        ) from error
-    if not isinstance(version, str) or SEMVER_PATTERN.fullmatch(version) is None:
-        raise ReleaseError("qualified onboarding Server version is not SemVer")
-    if tuple_version != version:
-        raise ReleaseError(
-            "qualified onboarding Server version must match its artifact tuple"
-        )
-    return version
-
-
 def source_release_metadata(
     record_path: Path = DEFAULT_SOURCE_RELEASE_PATH,
 ) -> dict[str, str]:
@@ -170,12 +147,7 @@ def source_release_metadata(
 
 
 def onboarding_server_version() -> str:
-    source_version = source_release_metadata()["server_version"]
-    return (
-        qualified_server_version()
-        if "-" in source_version
-        else source_version
-    )
+    return source_release_metadata()["server_version"]
 
 
 def validate_source(chart_path: Path = DEFAULT_CHART_PATH) -> dict[str, Any]:
