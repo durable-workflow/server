@@ -19,10 +19,12 @@ function runGenerator(root, mode) {
   });
 }
 
-function nextPrerelease(version) {
+function nextServerRelease(version) {
   const match = /^(.*-(?:alpha|beta|rc)\.)(\d+)$/.exec(version);
-  assert.ok(match, `Server version ${version} must be a numbered prerelease`);
-  return `${match[1]}${Number(match[2]) + 1}`;
+  if (match) {
+    return `${match[1]}${Number(match[2]) + 1}`;
+  }
+  return nextPatch(version);
 }
 
 function nextPatch(version) {
@@ -72,11 +74,45 @@ test('legacy recovery resolves a bounded Composer source identity through the ge
 
     await writeFile(
       join(temporaryRoot, 'composer.json'),
+      '{"extra":{"durable-workflow":{"product-train":"2.0.0"}}}\n',
+    );
+    const stable = runGenerator(temporaryRoot, ['--print-legacy-server-version']);
+    assert.equal(stable.status, 0, stable.stderr);
+    assert.equal(stable.stdout, '2.0.0\n');
+
+    await writeFile(
+      join(temporaryRoot, 'composer.json'),
       '{"extra":{"durable-workflow":{"product-train":"latest"}}}\n',
     );
     const invalid = runGenerator(temporaryRoot, ['--print-legacy-server-version']);
     assert.equal(invalid.status, 1);
     assert.match(invalid.stderr, /product-train must be an exact SemVer value/);
+  } finally {
+    await rm(temporaryRoot, {recursive: true, force: true});
+  }
+});
+
+test('a stable server source identity fans out through current release consumers', async () => {
+  const temporaryRoot = await mkdtemp(join(tmpdir(), 'server-stable-source-release-'));
+  try {
+    await copyRepositoryFiles(temporaryRoot);
+    const manifestPath = join(temporaryRoot, 'resources/release/source-release.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    manifest.server.version = '2.0.0';
+    manifest.helm_chart.version = nextPatch(manifest.helm_chart.version);
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+    const write = runGenerator(temporaryRoot, ['--write']);
+    assert.equal(write.status, 0, write.stderr);
+    const check = runGenerator(temporaryRoot, ['--check']);
+    assert.equal(check.status, 0, check.stderr);
+
+    const chart = await readFile(
+      join(temporaryRoot, 'k8s/helm/durable-workflow/Chart.yaml'),
+      'utf8',
+    );
+    assert.match(chart, /^appVersion: "2\.0\.0"$/m);
+    assert.match(chart, /docker\.io\/durableworkflow\/server:2\.0\.0/);
   } finally {
     await rm(temporaryRoot, {recursive: true, force: true});
   }
@@ -90,7 +126,7 @@ test('a simulated next release fans out without rewriting history or retaining s
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
     const previousServer = manifest.server.version;
     const previousChart = manifest.helm_chart.version;
-    const nextServer = nextPrerelease(previousServer);
+    const nextServer = nextServerRelease(previousServer);
     const nextChart = nextPatch(previousChart);
     manifest.server.version = nextServer;
     manifest.helm_chart.version = nextChart;
@@ -164,11 +200,13 @@ test('a simulated next release fans out without rewriting history or retaining s
         stale.push(path);
       }
     }
-    assert.deepEqual(
-      stale,
-      [],
-      `prior-current Server identity remains outside immutable history: ${stale.join(', ')}`,
-    );
+    if (previousServer.includes('-')) {
+      assert.deepEqual(
+        stale,
+        [],
+        `prior-current Server identity remains outside immutable history: ${stale.join(', ')}`,
+      );
+    }
 
     const smallComposePath = join(temporaryRoot, 'docker-compose.small-cluster.yml');
     await writeFile(

@@ -169,17 +169,26 @@ def source_release_metadata(
     return {"server_version": server_version, "chart_version": chart_version}
 
 
+def onboarding_server_version() -> str:
+    source_version = source_release_metadata()["server_version"]
+    return (
+        qualified_server_version()
+        if "-" in source_version
+        else source_version
+    )
+
+
 def validate_source(chart_path: Path = DEFAULT_CHART_PATH) -> dict[str, Any]:
     metadata = chart_metadata(chart_path)
     if SEMVER_PATTERN.fullmatch(metadata["version"]) is None:
         raise ReleaseError(f"chart version is not SemVer: {metadata['version']}")
     if SEMVER_PATTERN.fullmatch(metadata["app_version"]) is None:
         raise ReleaseError(f"chart appVersion is not SemVer: {metadata['app_version']}")
-    qualified_version = qualified_server_version()
-    if metadata["image_tag"] != qualified_version:
+    onboarding_version = onboarding_server_version()
+    if metadata["image_tag"] != onboarding_version:
         raise ReleaseError(
-            "the default image tag must equal the qualified onboarding Server version; "
-            f"got {metadata['image_tag']} and {qualified_version}"
+            "the default image tag must equal the selected onboarding Server version; "
+            f"got {metadata['image_tag']} and {onboarding_version}"
         )
     annotated_image = metadata["annotations"].get(IMAGE_REFERENCE_ANNOTATION)
     release_image = metadata["release_image_reference"]

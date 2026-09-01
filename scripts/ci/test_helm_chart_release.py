@@ -456,7 +456,7 @@ esac
         self.assertEqual(metadata["app_version"], source_release["server_version"])
         self.assertEqual(
             metadata["image_reference"],
-            f"docker.io/durableworkflow/server:{RELEASE.qualified_server_version()}",
+            f"docker.io/durableworkflow/server:{RELEASE.onboarding_server_version()}",
         )
         self.assertEqual(
             metadata["release_image_reference"],
@@ -488,7 +488,7 @@ esac
             ):
                 RELEASE.validate_source(chart)
 
-    def test_changed_default_image_requires_qualified_onboarding_version(self) -> None:
+    def test_changed_default_image_requires_selected_onboarding_version(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             chart = Path(temporary)
             chart.joinpath("Chart.yaml").write_text(
@@ -497,15 +497,15 @@ esac
             chart.joinpath("README.md").write_text(
                 RELEASE.DEFAULT_CHART_PATH.joinpath("README.md").read_text()
             )
-            qualified = RELEASE.qualified_server_version()
+            selected = RELEASE.onboarding_server_version()
             chart.joinpath("values.yaml").write_text(
                 RELEASE.DEFAULT_CHART_PATH.joinpath("values.yaml")
                 .read_text()
-                .replace(f'tag: "{qualified}"', 'tag: "9.9.9"')
+                .replace(f'tag: "{selected}"', 'tag: "9.9.9"')
             )
             with self.assertRaisesRegex(
                 RELEASE.ReleaseError,
-                "default image tag must equal the qualified onboarding Server version",
+                "default image tag must equal the selected onboarding Server version",
             ):
                 RELEASE.validate_source(chart)
 

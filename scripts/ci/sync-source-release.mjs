@@ -10,6 +10,7 @@ const defaultRepositoryRoot = resolve(fileURLToPath(new URL('../..', import.meta
 const schema = 'durable-workflow.server.source-release/v1';
 const prerelease = String.raw`(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)-(?:alpha|beta|rc)\.(?:0|[1-9]\d*)`;
 const stableVersion = String.raw`(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)`;
+const serverVersion = String.raw`(?:${stableVersion}|${prerelease})`;
 const remediation = 'node scripts/ci/sync-source-release.mjs --write';
 
 function fail(message) {
@@ -46,7 +47,7 @@ export async function sourceRelease(repositoryRoot = defaultRepositoryRoot) {
   return {
     serverVersion: exact(
       object(record.server, 'source release server').version,
-      prerelease,
+      serverVersion,
       'source release server.version',
     ),
     chartVersion: exact(
@@ -71,7 +72,7 @@ export async function legacyServerVersion(repositoryRoot = defaultRepositoryRoot
       object(composer.extra, 'legacy source composer extra')['durable-workflow'],
       'legacy source composer durable-workflow extra',
     )['product-train'],
-    prerelease,
+    serverVersion,
     'legacy source composer product-train',
   );
 }
@@ -139,7 +140,7 @@ const consumers = [
     render(source, release) {
       return replaceExactly(
         source,
-        new RegExp(`("durable-workflow"\\s*:\\s*\\{\\s*"product-train"\\s*:\\s*")${prerelease}(")`),
+        new RegExp(`("durable-workflow"\\s*:\\s*\\{\\s*"product-train"\\s*:\\s*")${serverVersion}(")`),
         (_match, prefix, suffix) => `${prefix}${release.serverVersion}${suffix}`,
         1,
         this.path,
@@ -170,7 +171,7 @@ const consumers = [
     render(source, release) {
       return replaceExactly(
         source,
-        new RegExp(`(APP_VERSION:\\s*["']?\\$\\{APP_VERSION:-)${prerelease}(\\}["']?)`, 'g'),
+        new RegExp(`(APP_VERSION:\\s*["']?\\$\\{APP_VERSION:-)${serverVersion}(\\}["']?)`, 'g'),
         (_match, prefix, suffix) => `${prefix}${release.serverVersion}${suffix}`,
         count,
         path,
@@ -191,7 +192,7 @@ const consumers = [
       );
       rendered = replaceExactly(
         rendered,
-        new RegExp(`^(appVersion:\\s*["'])${prerelease}(["']\\s*)$`, 'm'),
+        new RegExp(`^(appVersion:\\s*["'])${serverVersion}(["']\\s*)$`, 'm'),
         (_match, prefix, suffix) => `${prefix}${release.serverVersion}${suffix}`,
         1,
         this.path,
@@ -199,7 +200,7 @@ const consumers = [
       );
       return replaceExactly(
         rendered,
-        new RegExp(`^(  dev\\.durable-workflow\\.image-reference:\\s*["']docker\\.io/durableworkflow/server:)${prerelease}(["']\\s*)$`, 'm'),
+        new RegExp(`^(  dev\\.durable-workflow\\.image-reference:\\s*["']docker\\.io/durableworkflow/server:)${serverVersion}(["']\\s*)$`, 'm'),
         (_match, prefix, suffix) => `${prefix}${release.serverVersion}${suffix}`,
         1,
         this.path,
@@ -229,7 +230,7 @@ const consumers = [
     render(source, release) {
       return replaceExactly(
         source,
-        new RegExp(`^(  tag:\\s*["'])${prerelease}(["']\\s*)$`, 'm'),
+        new RegExp(`^(  tag:\\s*["'])${serverVersion}(["']\\s*)$`, 'm'),
         (_match, prefix, suffix) => `${prefix}${release.serverVersion}${suffix}`,
         1,
         path,

@@ -33,8 +33,8 @@ final class SourceRelease
         $candidate = $release['server']['version'] ?? null;
         if (($release['schema'] ?? null) !== self::SCHEMA
             || ! is_string($candidate)
-            || preg_match('/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-(alpha|beta|rc)\.(0|[1-9]\d*)$/', $candidate) !== 1) {
-            throw new RuntimeException("Source release manifest {$path} does not declare a valid Server prerelease.");
+            || preg_match('/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(alpha|beta|rc)\.(0|[1-9]\d*))?$/', $candidate) !== 1) {
+            throw new RuntimeException("Source release manifest {$path} does not declare a valid Server release.");
         }
 
         return $version = $candidate;
