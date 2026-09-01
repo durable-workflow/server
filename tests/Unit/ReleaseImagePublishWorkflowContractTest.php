@@ -597,7 +597,6 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
 
         $checkout = $steps['Check out trusted default-branch verification tooling'];
         $verify = $steps['Verify requested immutable release artifacts'];
-        $docs = $steps['Classify live docs release readiness'];
         $evidence = $steps['Retain bounded verification evidence'];
 
         $this->assertSame('${{ github.sha }}', $checkout['with']['ref']);
@@ -605,10 +604,10 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertSame('${{ inputs.release_tag }}', $verify['env']['RELEASE_TAG']);
         $this->assertSame('${{ inputs.release_commit }}', $verify['env']['RELEASE_COMMIT']);
         $this->assertSame('scripts/ci/verify-published-release-recovery.sh', $verify['run']);
-        $this->assertSame('${{ inputs.release_tag }}', $docs['env']['DOCS_RELEASE_AUDIT_SOURCE_REF']);
-        $this->assertSame('${{ inputs.release_commit }}', $docs['env']['DOCS_RELEASE_AUDIT_SOURCE_SHA']);
         $this->assertSame('14', (string) $evidence['with']['retention-days']);
         $this->assertSame('error', $evidence['with']['if-no-files-found']);
+        $this->assertStringNotContainsString('docs-release-audit', $source);
+        $this->assertStringNotContainsString('check-docs-release-audit.sh', $source);
 
         $verifier = $this->read('scripts/ci/verify-published-release-recovery.sh');
         $this->assertSame(2, substr_count($verifier, 'scripts/ci/verify-release-tag-source.sh'));
@@ -1335,86 +1334,17 @@ SH);
         $this->assertSame($releaseDockerfileArgs, $workflowArgs[1]);
     }
 
-    public function test_release_workflow_records_docs_audit_evidence_after_public_release(): void
+    public function test_release_workflows_do_not_depend_on_the_live_docs_site(): void
     {
-        $workflow = $this->read('.github/workflows/release.yml');
-        $auditor = $this->read('scripts/ci/check-docs-release-audit.sh');
-
         foreach ([
-            'Classify live docs release readiness after public release',
-            "steps.exact.outputs.exact_publish_outcome == 'success'",
-            "steps.protocol_catalog.outputs.protocol_catalog_conformance_outcome == 'success'",
-            'DOCS_RELEASE_AUDIT_ARTIFACT: server',
-            'DOCS_RELEASE_AUDIT_VERSION: ${{ steps.release_publish.outputs.tag || github.event.inputs.tag || github.ref_name }}',
-            'DOCS_RELEASE_AUDIT_EVIDENCE: docs-release-audit-evidence.json',
-            'DOCS_RELEASE_AUDIT_HANDOFF: docs-release-audit-handoff.json',
-            'scripts/ci/check-docs-release-audit.sh',
-            'docs-release-audit-evidence.json',
-            'docs-release-audit-handoff.json',
-        ] as $needle) {
-            $this->assertStringContainsString($needle, $workflow);
+            '.github/workflows/release.yml',
+            '.github/workflows/published-release-recovery.yml',
+        ] as $path) {
+            $workflow = $this->read($path);
+            $this->assertStringNotContainsString('docs-release-audit', $workflow);
+            $this->assertStringNotContainsString('check-docs-release-audit.sh', $workflow);
+            $this->assertStringNotContainsString('Classify live docs release readiness', $workflow);
         }
-
-        $jobsPosition = strpos($workflow, "jobs:\n");
-        $readPosition = strpos($workflow, 'contents: read');
-        $writePosition = strpos($workflow, 'contents: write');
-        $this->assertIsInt($jobsPosition);
-        $this->assertIsInt($readPosition);
-        $this->assertIsInt($writePosition);
-        $this->assertLessThan($jobsPosition, $readPosition);
-        $this->assertGreaterThan($jobsPosition, $writePosition);
-        $this->assertStringContainsString('contents: write', $workflow);
-        $this->assertStringContainsString('durable-workflow.release.docs-release-audit-evidence', $auditor);
-        $this->assertStringContainsString('durable-workflow.release.docs-artifact-tuple-handoff', $auditor);
-        $this->assertStringContainsString('DOCS_RELEASE_AUDIT_HANDOFF', $auditor);
-        $this->assertStringContainsString(
-            "const docsRefreshRequestSchema = 'durable-workflow.docs.refresh-request'",
-            $auditor,
-        );
-        $this->assertStringContainsString('const docsRefreshRequestSchemaVersion = 1;', $auditor);
-        $this->assertStringContainsString("repository: 'durable-workflow.github.io'", $auditor);
-        $this->assertStringContainsString("const refreshCommand = 'npm run refresh:public-artifact-versions';", $auditor);
-        $this->assertStringContainsString('refresh_files: refreshFiles', $auditor);
-        $this->assertStringContainsString("'static/quickstart-execution-contract.json'", $auditor);
-        $this->assertStringContainsString('const refreshFileList = refreshFiles.join(\', \');', $auditor);
-        $this->assertStringContainsString("'artifact_distribution_surfaces.sdk-php'", $auditor);
-        $this->assertStringContainsString("package: 'durable-workflow/sdk'", $auditor);
-        $this->assertStringNotContainsString('scripts/public-artifact-versions.json plus docs/compatibility.md', $auditor);
-        $this->assertStringContainsString('docs_artifact_tuple_handoff: handoff', $auditor);
-        $this->assertStringContainsString('observed_artifact_versions: versions', $auditor);
-        $this->assertStringContainsString("writeEvidence('downstream_pending'", $auditor);
-        $this->assertStringContainsString("release_readiness: 'docs_tuple_refresh_required'", $auditor);
-        $this->assertStringContainsString("failure_kind: 'unreachable_audit'", $auditor);
-        $this->assertStringContainsString('const minimumAuditSchemaVersion = 4;', $auditor);
-        $this->assertStringContainsString('route-and-public-artifact-inventory-v', $auditor);
-        $this->assertStringContainsString('artifact_version_source.source_url must resolve', $auditor);
-        $this->assertStringContainsString('entry.artifact_route !== entry.path', $auditor);
-        $this->assertStringContainsString("classification: 'ready'", $auditor);
-        $this->assertStringContainsString("classification: 'handoff'", $auditor);
-        $this->assertStringContainsString("'mixed_artifact_tuple'", $auditor);
-        $this->assertStringContainsString("'default_version_policy'", $auditor);
-        $this->assertStringContainsString("'live_docs_version_not_behind_publication'", $auditor);
-        $this->assertStringNotContainsString('content-derived-release-status-v2', $auditor);
-        $this->assertStringNotContainsString('non_clean_page_verdicts', $auditor);
-
-        $buildOffset = strpos($workflow, 'Build and push exact image tags');
-        $exactOffset = strpos($workflow, 'Verify exact image publication');
-        $writeEvidenceOffset = strpos($workflow, 'Write release image publish evidence');
-        $sourceReleaseOffset = strpos($workflow, 'Create the source GitHub Release');
-        $docsAuditOffset = strpos($workflow, 'Classify live docs release readiness after public release');
-        $uploadOffset = strpos($workflow, 'Upload release image publish evidence');
-
-        $this->assertIsInt($buildOffset);
-        $this->assertIsInt($exactOffset);
-        $this->assertIsInt($writeEvidenceOffset);
-        $this->assertIsInt($sourceReleaseOffset);
-        $this->assertIsInt($docsAuditOffset);
-        $this->assertIsInt($uploadOffset);
-        $this->assertLessThan($exactOffset, $buildOffset);
-        $this->assertLessThan($writeEvidenceOffset, $exactOffset);
-        $this->assertLessThan($sourceReleaseOffset, $writeEvidenceOffset);
-        $this->assertLessThan($docsAuditOffset, $sourceReleaseOffset);
-        $this->assertLessThan($uploadOffset, $docsAuditOffset);
     }
 
     public function test_release_workflow_verifies_public_catalog_convergence_before_advertising_the_image(): void
@@ -1464,15 +1394,12 @@ SH);
         $exactOffset = strpos($workflow, 'Verify exact image publication');
         $catalogOffset = strpos($workflow, 'Verify published protocol catalog convergence');
         $rollingOffset = strpos($workflow, 'Resolve rolling image aliases');
-        $docsAuditOffset = strpos($workflow, 'Classify live docs release readiness after public release');
 
         $this->assertIsInt($exactOffset);
         $this->assertIsInt($catalogOffset);
         $this->assertIsInt($rollingOffset);
-        $this->assertIsInt($docsAuditOffset);
         $this->assertLessThan($catalogOffset, $exactOffset);
         $this->assertLessThan($rollingOffset, $catalogOffset);
-        $this->assertLessThan($docsAuditOffset, $catalogOffset);
     }
 
     public function test_release_protocol_catalog_runner_bootstraps_before_discovery_with_shared_storage(): void
