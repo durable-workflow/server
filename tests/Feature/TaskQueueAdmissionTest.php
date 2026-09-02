@@ -3,7 +3,11 @@
 namespace Tests\Feature;
 
 use App\Support\NamespaceWorkflowScope;
+use App\Support\ServerPollingCache;
 use App\Support\TaskQueueAdmission;
+use Illuminate\Contracts\Cache\Factory as CacheFactory;
+use Illuminate\Contracts\Cache\Repository as CacheRepository;
+use Illuminate\Filesystem\Filesystem;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
@@ -16,6 +20,81 @@ class TaskQueueAdmissionTest extends TestCase
 {
     use RefreshDatabase;
     use ServerTestHelpers;
+
+    public function test_unlimited_admission_still_dispatches_when_the_polling_cache_is_unavailable(): void
+    {
+        config([
+            'server.admission.workflow_tasks.max_active_leases_per_queue' => null,
+            'server.admission.workflow_tasks.max_active_leases_per_namespace' => null,
+            'server.admission.workflow_tasks.max_dispatches_per_minute' => null,
+            'server.admission.workflow_tasks.max_dispatches_per_minute_per_namespace' => null,
+            'server.admission.queue_overrides' => [],
+        ]);
+
+        $admission = new TaskQueueAdmission($this->unavailablePollingCache());
+        $callbackCalled = false;
+
+        $result = $admission->withLeaseAdmission(
+            'default',
+            'unlimited-queue',
+            TaskQueueAdmission::WORKFLOW_TASKS,
+            function () use (&$callbackCalled): string {
+                $callbackCalled = true;
+
+                return 'leased';
+            },
+        );
+
+        $this->assertTrue($callbackCalled);
+        $this->assertSame('leased', $result);
+    }
+
+    public function test_configured_admission_fails_closed_when_the_polling_cache_is_unavailable(): void
+    {
+        config([
+            'server.admission.workflow_tasks.max_dispatches_per_minute_per_namespace' => 10,
+            'server.admission.queue_overrides' => [],
+        ]);
+
+        $admission = new TaskQueueAdmission($this->unavailablePollingCache());
+        $callbackCalled = false;
+
+        $result = $admission->withLeaseAdmission(
+            'tenant-a',
+            'shared-queue',
+            TaskQueueAdmission::WORKFLOW_TASKS,
+            function () use (&$callbackCalled): string {
+                $callbackCalled = true;
+
+                return 'leased';
+            },
+        );
+
+        $this->assertFalse($callbackCalled);
+        $this->assertNull($result);
+        $this->assertSame(
+            'unavailable',
+            $admission->budget('tenant-a', 'shared-queue', TaskQueueAdmission::WORKFLOW_TASKS)['status'],
+        );
+    }
+
+    public function test_configured_admission_does_not_hide_task_claim_failures(): void
+    {
+        config([
+            'server.admission.workflow_tasks.max_dispatches_per_minute_per_namespace' => 10,
+            'server.admission.queue_overrides' => [],
+        ]);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('task claim failed');
+
+        app(TaskQueueAdmission::class)->withLeaseAdmission(
+            'tenant-a',
+            'shared-queue',
+            TaskQueueAdmission::WORKFLOW_TASKS,
+            static fn (): never => throw new \RuntimeException('task claim failed'),
+        );
+    }
 
     public function test_unlimited_admission_budget_does_not_query_the_growing_task_table(): void
     {
@@ -554,5 +633,18 @@ class TaskQueueAdmissionTest extends TestCase
             ->assertJsonPath('admission.activity_tasks.server_max_dispatches_per_minute', 1)
             ->assertJsonPath('admission.activity_tasks.server_dispatch_count_this_minute', 1)
             ->assertJsonPath('admission.activity_tasks.server_remaining_dispatch_capacity', 0);
+    }
+
+    private function unavailablePollingCache(): ServerPollingCache
+    {
+        $repository = \Mockery::mock(CacheRepository::class);
+        $repository->shouldReceive('get')
+            ->with('server:polling-cache:availability-probe')
+            ->andThrow(new \RuntimeException('cache unavailable'));
+
+        $factory = \Mockery::mock(CacheFactory::class);
+        $factory->shouldReceive('store')->andReturn($repository);
+
+        return new ServerPollingCache($factory, new Filesystem);
     }
 }

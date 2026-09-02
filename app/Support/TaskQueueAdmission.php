@@ -28,14 +28,22 @@ final class TaskQueueAdmission
      */
     public function withLeaseAdmission(string $namespace, string $taskQueue, string $taskKind, Closure $callback): mixed
     {
-        if (! $this->cache->available()) {
+        if (! $this->hasConfiguredLimit($namespace, $taskQueue, $taskKind)) {
             return $callback();
+        }
+
+        if (! $this->cache->available()) {
+            $this->logUnavailable($namespace, $taskQueue, $taskKind, 'polling_cache_unavailable');
+
+            return null;
         }
 
         try {
             $budget = $this->budget($namespace, $taskQueue, $taskKind);
-        } catch (Throwable) {
-            return $callback();
+        } catch (Throwable $exception) {
+            $this->logUnavailable($namespace, $taskQueue, $taskKind, 'budget_evaluation_failed', $exception);
+
+            return null;
         }
 
         if ($budget['lock_required'] !== true) {
@@ -52,11 +60,13 @@ final class TaskQueueAdmission
             return null;
         }
 
+        $callbackStarted = false;
+
         try {
             return $this->cache->store()
                 ->getStore()
                 ->lock($this->lockKey($namespace, $taskQueue, $taskKind, $budget), $this->lockTtlSeconds())
-                ->block($this->lockWaitSeconds(), function () use ($namespace, $taskQueue, $taskKind, $callback) {
+                ->block($this->lockWaitSeconds(), function () use ($namespace, $taskQueue, $taskKind, $callback, &$callbackStarted) {
                     $fresh = $this->budget($namespace, $taskQueue, $taskKind);
 
                     if (
@@ -94,6 +104,7 @@ final class TaskQueueAdmission
                         return null;
                     }
 
+                    $callbackStarted = true;
                     $result = $callback();
 
                     if ($result !== null && $this->hasDispatchBudget($fresh)) {
@@ -108,6 +119,14 @@ final class TaskQueueAdmission
                 'task_queue' => $taskQueue,
                 'task_kind' => $taskKind,
             ]);
+
+            return null;
+        } catch (Throwable $exception) {
+            if ($callbackStarted) {
+                throw $exception;
+            }
+
+            $this->logUnavailable($namespace, $taskQueue, $taskKind, 'admission_lock_failed', $exception);
 
             return null;
         }
@@ -146,8 +165,7 @@ final class TaskQueueAdmission
         string $taskQueue,
         string $taskKind,
         bool $includeUnboundedCounts = false,
-    ): array
-    {
+    ): array {
         $limit = $this->maxActiveLeasesPerQueue($namespace, $taskQueue, $taskKind);
         $namespaceLimit = $this->maxActiveLeasesPerNamespace($namespace, $taskQueue, $taskKind);
         $dispatchLimit = $this->maxDispatchesPerMinute($namespace, $taskQueue, $taskKind);
@@ -156,6 +174,22 @@ final class TaskQueueAdmission
         $budgetGroupDispatchLimit = $budgetGroup['value'] === null
             ? ['value' => null, 'source' => 'server.admission.queue_overrides']
             : $this->maxDispatchesPerMinutePerBudgetGroup($namespace, $taskQueue, $taskKind);
+        $lockRequired = $limit['value'] !== null
+            || $namespaceLimit['value'] !== null
+            || $dispatchLimit['value'] !== null
+            || $namespaceDispatchLimit['value'] !== null
+            || $budgetGroupDispatchLimit['value'] !== null;
+
+        if ($lockRequired && ! $this->cache->available()) {
+            return $this->unavailableBudget(
+                $limit,
+                $namespaceLimit,
+                $dispatchLimit,
+                $namespaceDispatchLimit,
+                $budgetGroup,
+                $budgetGroupDispatchLimit,
+            );
+        }
 
         // Keep the default unlimited path free of storage reads. Pollers call
         // budget() before every claim probe (and again when reporting an empty
@@ -208,11 +242,7 @@ final class TaskQueueAdmission
             'remaining_budget_group_dispatch_capacity' => $budgetGroupDispatchLimit['value'] === null
                 ? null
                 : max(0, $budgetGroupDispatchLimit['value'] - $budgetGroupDispatchCount),
-            'lock_required' => $limit['value'] !== null
-                || $namespaceLimit['value'] !== null
-                || $dispatchLimit['value'] !== null
-                || $namespaceDispatchLimit['value'] !== null
-                || $budgetGroupDispatchLimit['value'] !== null,
+            'lock_required' => $lockRequired,
             'lock_supported' => $lockSupported,
             'status' => $this->status(
                 $limit['value'],
@@ -498,6 +528,83 @@ final class TaskQueueAdmission
         $value = (int) $value;
 
         return $value > 0 ? $value : null;
+    }
+
+    private function hasConfiguredLimit(string $namespace, string $taskQueue, string $taskKind): bool
+    {
+        $budgetGroup = $this->dispatchBudgetGroup($namespace, $taskQueue, $taskKind);
+
+        return $this->maxActiveLeasesPerQueue($namespace, $taskQueue, $taskKind)['value'] !== null
+            || $this->maxActiveLeasesPerNamespace($namespace, $taskQueue, $taskKind)['value'] !== null
+            || $this->maxDispatchesPerMinute($namespace, $taskQueue, $taskKind)['value'] !== null
+            || $this->maxDispatchesPerMinutePerNamespace($namespace, $taskQueue, $taskKind)['value'] !== null
+            || (
+                $budgetGroup['value'] !== null
+                && $this->maxDispatchesPerMinutePerBudgetGroup($namespace, $taskQueue, $taskKind)['value'] !== null
+            );
+    }
+
+    /**
+     * @param  array{value: int|null, source: string}  $limit
+     * @param  array{value: int|null, source: string}  $namespaceLimit
+     * @param  array{value: int|null, source: string}  $dispatchLimit
+     * @param  array{value: int|null, source: string}  $namespaceDispatchLimit
+     * @param  array{value: string|null, source: string}  $budgetGroup
+     * @param  array{value: int|null, source: string}  $budgetGroupDispatchLimit
+     * @return array<string, mixed>
+     */
+    private function unavailableBudget(
+        array $limit,
+        array $namespaceLimit,
+        array $dispatchLimit,
+        array $namespaceDispatchLimit,
+        array $budgetGroup,
+        array $budgetGroupDispatchLimit,
+    ): array {
+        return [
+            'budget_source' => $this->budgetSource(
+                $limit,
+                $namespaceLimit,
+                $dispatchLimit,
+                $namespaceDispatchLimit,
+                $budgetGroupDispatchLimit,
+            ),
+            'max_active_leases_per_queue' => $limit['value'],
+            'active_lease_count' => 0,
+            'remaining_active_lease_capacity' => null,
+            'max_active_leases_per_namespace' => $namespaceLimit['value'],
+            'namespace_active_lease_count' => 0,
+            'remaining_namespace_active_lease_capacity' => null,
+            'max_dispatches_per_minute' => $dispatchLimit['value'],
+            'dispatch_count_this_minute' => 0,
+            'remaining_dispatch_capacity' => null,
+            'max_dispatches_per_minute_per_namespace' => $namespaceDispatchLimit['value'],
+            'namespace_dispatch_count_this_minute' => 0,
+            'remaining_namespace_dispatch_capacity' => null,
+            'dispatch_budget_group' => $budgetGroup['value'],
+            'max_dispatches_per_minute_per_budget_group' => $budgetGroupDispatchLimit['value'],
+            'budget_group_dispatch_count_this_minute' => 0,
+            'remaining_budget_group_dispatch_capacity' => null,
+            'lock_required' => true,
+            'lock_supported' => false,
+            'status' => 'unavailable',
+        ];
+    }
+
+    private function logUnavailable(
+        string $namespace,
+        string $taskQueue,
+        string $taskKind,
+        string $reason,
+        ?Throwable $exception = null,
+    ): void {
+        Log::warning('Task queue admission authority is unavailable; task dispatch remains closed.', [
+            'namespace' => $namespace,
+            'task_queue' => $taskQueue,
+            'task_kind' => $taskKind,
+            'reason' => $reason,
+            'exception' => $exception === null ? null : $exception::class,
+        ]);
     }
 
     /**
