@@ -1035,10 +1035,18 @@ class ClusterInfoCompatibilityTest extends TestCase
                 'client_compatibility.required_protocols.worker_protocol.external_task_result_contract.version',
                 1,
             )
-            ->assertJsonPath('client_compatibility.clients.cli.supported_versions', '>=2.0.0-rc.1,<2.0.0')
-            ->assertJsonPath('client_compatibility.clients.sdk-php.supported_versions', '>=2.0.0-rc.1,<2.0.0')
-            ->assertJsonPath('client_compatibility.clients.sdk-python.supported_versions', '>=2.0.0-rc.1,<2.0.0')
-            ->assertJsonPath('client_compatibility.clients.sdk-rust.supported_versions', '>=2.0.0-rc.1,<2.0.0');
+            ->assertJsonPath('client_compatibility.clients.cli.supported_versions', '>=2.0.0,<3.0.0')
+            ->assertJsonPath('client_compatibility.clients.sdk-php.supported_versions', '>=2.0.0,<3.0.0')
+            ->assertJsonPath('client_compatibility.clients.sdk-python.supported_versions', '>=2.0.0,<3.0.0')
+            ->assertJsonPath('client_compatibility.clients.sdk-rust.supported_versions', '>=2.0.0,<3.0.0');
+
+        foreach ($response->json('supported_sdk_versions') as $supportedVersions) {
+            $this->assertStringNotContainsString(
+                '-rc.',
+                $supportedVersions,
+                'stable Server compatibility must not retain prerelease package ranges',
+            );
+        }
 
         $this->assertSame(
             $response->json('supported_sdk_versions.cli'),
