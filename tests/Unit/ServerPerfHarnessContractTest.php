@@ -843,7 +843,8 @@ class ServerPerfHarnessContractTest extends TestCase
         }
 
         foreach ([
-            'durableworkflow/server:2.0.3',
+            'DW_ISOLATION_SERVER_VERSION',
+            'durableworkflow/server:$SERVER_VERSION',
             'durable-workflow==$SDK_VERSION',
             'DW_NAMESPACE_ADMISSION_OVERRIDES',
             'DW_NAMESPACE_DURABLE_OVERRIDES',

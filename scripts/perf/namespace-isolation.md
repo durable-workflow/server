@@ -65,6 +65,7 @@ The default exact tuple and cell are:
 Useful overrides:
 
 ```bash
+DW_ISOLATION_SERVER_VERSION=2.0.3 \
 DW_ISOLATION_SERVER_IMAGE=durableworkflow/server:2.0.3 \
 DW_ISOLATION_PYTHON_SDK_VERSION=2.0.0 \
 DW_ISOLATION_DURATION_SECONDS=120 \

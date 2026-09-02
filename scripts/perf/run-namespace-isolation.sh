@@ -5,7 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUN_ID="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-$(date +%s)"
 PROJECT="${DW_ISOLATION_COMPOSE_PROJECT:-dw-namespace-isolation-${RUN_ID}}"
 ARTIFACT_DIR="${DW_ISOLATION_ARTIFACT_DIR:-$ROOT_DIR/build/namespace-isolation}"
-SERVER_IMAGE="${DW_ISOLATION_SERVER_IMAGE:-durableworkflow/server:2.0.3}"
+SERVER_VERSION="${DW_ISOLATION_SERVER_VERSION:-2.0.3}"
+SERVER_IMAGE="${DW_ISOLATION_SERVER_IMAGE:-durableworkflow/server:$SERVER_VERSION}"
 SDK_VERSION="${DW_ISOLATION_PYTHON_SDK_VERSION:-2.0.0}"
 TOKEN="${DW_ISOLATION_TOKEN:-namespace-isolation-token}"
 SERVER_CPUS="${DW_ISOLATION_SERVER_CPUS:-1.0}"
@@ -45,7 +46,7 @@ services:
     environment: &server-env
       APP_ENV: local
       APP_DEBUG: "false"
-      APP_VERSION: "2.0.3"
+      APP_VERSION: "$SERVER_VERSION"
       DW_SERVER_KEY: "base64:dGVzdGluZy1rZXktMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMg=="
       DB_CONNECTION: mysql
       DB_HOST: mysql
