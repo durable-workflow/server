@@ -570,6 +570,36 @@ return [
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_UPLOAD_EXPIRY',
         ],
+        'DW_EXTERNAL_PAYLOAD_MAX_BYTES_PER_NAMESPACE' => [
+            'description' => 'Optional cumulative external-payload byte cap for each namespace. Ready and in-progress objects count toward the cap; unset means unlimited.',
+            'default' => '(unset)',
+            'since' => '2.0.3',
+            'legacy' => 'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_MAX_BYTES_PER_NAMESPACE',
+        ],
+        'DW_EXTERNAL_PAYLOAD_MAX_OBJECTS_PER_NAMESPACE' => [
+            'description' => 'Optional external-payload object-count cap for each namespace. Ready and in-progress objects count toward the cap; unset means unlimited.',
+            'default' => '(unset)',
+            'since' => '2.0.3',
+            'legacy' => 'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_MAX_OBJECTS_PER_NAMESPACE',
+        ],
+        'DW_EXTERNAL_PAYLOAD_HARD_MAX_BYTES_PER_NAMESPACE' => [
+            'description' => 'Non-bypassable cumulative external-payload byte ceiling for each namespace, including namespace overrides.',
+            'default' => '(unset)',
+            'since' => '2.0.3',
+            'legacy' => 'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_HARD_MAX_BYTES_PER_NAMESPACE',
+        ],
+        'DW_EXTERNAL_PAYLOAD_HARD_MAX_OBJECTS_PER_NAMESPACE' => [
+            'description' => 'Non-bypassable external-payload object-count ceiling for each namespace, including namespace overrides.',
+            'default' => '(unset)',
+            'since' => '2.0.3',
+            'legacy' => 'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_HARD_MAX_OBJECTS_PER_NAMESPACE',
+        ],
+        'DW_EXTERNAL_PAYLOAD_NAMESPACE_OVERRIDES' => [
+            'description' => 'JSON object keyed by namespace with optional max_bytes and max_objects external-payload quota overrides.',
+            'default' => '{}',
+            'since' => '2.0.3',
+            'legacy' => 'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_NAMESPACE_OVERRIDES',
+        ],
         'DW_MAX_MEMO_BYTES' => [
             'description' => 'Maximum serialized bytes for a workflow memo.',
             'default' => '262144',

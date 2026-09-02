@@ -12,6 +12,7 @@ use App\Support\NamespaceRequestAdmission;
 use App\Support\ProjectionDriftMetrics;
 use App\Support\RuntimeExternalPayloadCleanup;
 use App\Support\RuntimeExternalPayloadCleanupMetrics;
+use App\Support\RuntimeExternalPayloadQuota;
 use App\Support\TaskQueueBuildIdRolloutSnapshot;
 use App\Support\WorkerSessionRegistry;
 use App\Support\WorkflowTaskFailureMetrics;
@@ -31,6 +32,7 @@ class SystemController
         private readonly MatchingRole $matchingRole,
         private readonly NamespaceCapacityEvidence $capacityEvidence,
         private readonly NamespaceRequestAdmission $namespaceRequestAdmission,
+        private readonly RuntimeExternalPayloadQuota $externalPayloadQuota,
         private readonly WorkerSessionRegistry $workerSessions,
     ) {}
 
@@ -109,6 +111,7 @@ class SystemController
         $workflowTaskFailures = WorkflowTaskFailureMetrics::snapshot($namespace);
         $projectionDrift = ProjectionDriftMetrics::snapshot();
         $requestAdmission = $this->namespaceRequestAdmission->metrics($namespace);
+        $externalPayloadQuota = $this->externalPayloadQuota->metrics($namespace);
 
         return ControlPlaneProtocol::json([
             'generated_at' => now()->toJSON(),
@@ -117,12 +120,14 @@ class SystemController
                 WorkflowTaskFailureMetrics::METRIC_NAME => $workflowTaskFailures,
                 ProjectionDriftMetrics::METRIC_NAME => $projectionDrift,
                 NamespaceRequestAdmission::METRIC_NAME => $requestAdmission,
+                RuntimeExternalPayloadQuota::METRIC_NAME => $externalPayloadQuota,
             ],
             'cardinality' => [
                 'metric_label_sets' => [
                     WorkflowTaskFailureMetrics::METRIC_NAME => $workflowTaskFailures['label_cardinality_policy'],
                     ProjectionDriftMetrics::METRIC_NAME => $projectionDrift['label_cardinality_policy'],
                     NamespaceRequestAdmission::METRIC_NAME => $requestAdmission['label_cardinality_policy'],
+                    RuntimeExternalPayloadQuota::METRIC_NAME => $externalPayloadQuota['label_cardinality_policy'],
                 ],
             ],
         ]);

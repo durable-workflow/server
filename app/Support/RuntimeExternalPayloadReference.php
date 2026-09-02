@@ -118,6 +118,9 @@ final class RuntimeExternalPayloadReference
                 'external_payload_oversized' => ['status' => 413, 'retryable' => false],
                 'external_payload_unsupported' => ['statuses' => [415, 422], 'retryable' => false],
                 'external_payload_integrity_mismatch' => ['status' => 422, 'retryable' => false],
+                'external_payload_namespace_bytes_exhausted' => ['status' => 429, 'retryable' => true],
+                'external_payload_namespace_objects_exhausted' => ['status' => 429, 'retryable' => true],
+                'external_payload_namespace_quota_unavailable' => ['status' => 503, 'retryable' => true],
             ],
             'audit_events' => [
                 'external_payload.uploaded',

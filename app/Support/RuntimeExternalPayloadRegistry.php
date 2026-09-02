@@ -13,6 +13,7 @@ class RuntimeExternalPayloadRegistry
 {
     public function __construct(
         private readonly RuntimeExternalPayloadObjectLock $objectLock,
+        private readonly RuntimeExternalPayloadQuota $quota,
     ) {}
 
     /**
@@ -560,6 +561,8 @@ class RuntimeExternalPayloadRegistry
                 $uploadStatus,
             );
         }
+
+        $this->quota->admitCreate($namespace, $sizeBytes);
 
         return RuntimeExternalPayload::query()->create([
             'id' => 'ep_'.Str::ulid(),
