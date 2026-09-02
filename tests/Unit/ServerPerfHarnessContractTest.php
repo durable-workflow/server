@@ -159,6 +159,8 @@ class ServerPerfHarnessContractTest extends TestCase
             'event_name',
             'RUNNER_NAME',
             'RUNNER_ENVIRONMENT',
+            'DW_PERF_RUNNER_ENVIRONMENT',
+            'DW_PERF_REDIS_CACHE_DB',
             'evidence_trust_profile',
             'github_actions_provenance_present',
             'trusted_long_soak_v1',
@@ -302,11 +304,11 @@ class ServerPerfHarnessContractTest extends TestCase
         $source = file_get_contents(dirname(__DIR__, 2).'/scripts/perf/server_soak.py');
         $this->assertNotFalse($source, 'scripts/perf/server_soak.py must be readable');
 
-        $this->assertStringContainsString('def redis_sampling_script()', $source);
-        $this->assertStringContainsString('redis-cli --scan --pattern \'*server:*\'', $source);
+        $this->assertStringContainsString('def redis_sampling_script(cache_database: int)', $source);
+        $this->assertStringContainsString('redis-cli -n \"$cache_database\" --scan --pattern \'*server:*\'', $source);
         $this->assertStringContainsString('fnmatch.fnmatchcase(key, pattern)', $source);
         $this->assertStringContainsString(
-            'compose_command(project, "exec", "-T", "redis", "sh", "-lc", redis_sampling_script())',
+            'compose_command(project, "exec", "-T", "redis", "sh", "-lc", redis_sampling_script(cache_database))',
             $source,
             'Redis sampling should use one container exec and one server-key scan, then classify per-policy counts locally.',
         );
@@ -476,7 +478,7 @@ class ServerPerfHarnessContractTest extends TestCase
         );
 
         $this->assertMatchesRegularExpression(
-            '/name:\s+Ephemeral Vultr polling cache soak.*?RUNNER_ENVIRONMENT:\s+"self-hosted"/s',
+            '/name:\s+Ephemeral Vultr polling cache soak.*?DW_PERF_RUNNER_ENVIRONMENT:\s+"self-hosted"/s',
             $soakWorkflow,
             'Disposable-host long soaks must record self-hosted execution provenance.',
         );
@@ -563,7 +565,7 @@ class ServerPerfHarnessContractTest extends TestCase
             'Disposable-host long soaks must fail rather than publish ineligible evidence.',
         );
         $this->assertStringContainsString(
-            'RUNNER_ENVIRONMENT: "self-hosted"',
+            'DW_PERF_RUNNER_ENVIRONMENT: "self-hosted"',
             $soakWorkflow,
             'Disposable-host long soaks must identify the actual execution environment.',
         );
@@ -686,7 +688,8 @@ class ServerPerfHarnessContractTest extends TestCase
             'VULTR_API_KEY: ${{ secrets.VULTR_PERF_API_KEY }}',
             'VULTR_PERF_PLAN: "vhp-2c-4gb-amd"',
             'DW_PERF_REQUIRE_TRUSTED_EVIDENCE: "true"',
-            'RUNNER_ENVIRONMENT: "self-hosted"',
+            'DW_PERF_REDIS_CACHE_DB: "1"',
+            'DW_PERF_RUNNER_ENVIRONMENT: "self-hosted"',
             'run: scripts/perf/run-vultr-soak.sh',
         ] as $needle) {
             $this->assertStringContainsString(
@@ -709,6 +712,8 @@ class ServerPerfHarnessContractTest extends TestCase
         $this->assertStringContainsString('ufw allow from $controller_ip to any port 22 proto tcp', $source);
         $this->assertStringContainsString("printf 'export DW_PERF_SERVER_BIND=%q", $source);
         $this->assertStringContainsString("printf 'export DW_PERF_SERVER_PORT=%q", $source);
+        $this->assertStringContainsString('DW_PERF_REDIS_CACHE_DB \\', $source);
+        $this->assertStringContainsString('DW_PERF_RUNNER_ENVIRONMENT', $source);
         $this->assertStringContainsString('DURATION_SECONDS < 3600 || DURATION_SECONDS > 14400', $source);
         $this->assertStringNotContainsString('VULTR_API_KEY \\', $source);
     }

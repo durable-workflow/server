@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 
 import importlib.util
+import os
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -67,6 +69,33 @@ class WorkflowGrowthResultGateTest(unittest.TestCase):
         self.assertFalse(any("workflow growth target incomplete" in failure for failure in failures))
         self.assertIn("workflow_start recorded 1 request errors", failures)
         self.assertTrue(any("workflow_start availability fell below 1.0" in failure for failure in failures))
+
+
+class RuntimeEvidenceConfigurationTest(unittest.TestCase):
+    def test_redis_sampling_targets_the_configured_cache_database(self) -> None:
+        with patch.dict(os.environ, {"DW_PERF_REDIS_CACHE_DB": "3"}):
+            self.assertEqual(3, server_soak.redis_cache_database())
+
+        script = server_soak.redis_sampling_script(3)
+        self.assertIn('redis-cli -n "$cache_database" DBSIZE', script)
+        self.assertIn('redis-cli -n "$cache_database" --scan', script)
+
+    def test_redis_cache_database_rejects_invalid_values(self) -> None:
+        for value in ("-1", "16", "cache"):
+            with self.subTest(value=value):
+                with patch.dict(os.environ, {"DW_PERF_REDIS_CACHE_DB": value}):
+                    with self.assertRaises(ValueError):
+                        server_soak.redis_cache_database()
+
+    def test_remote_execution_environment_overrides_github_runner_metadata(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "RUNNER_ENVIRONMENT": "github-hosted",
+                "DW_PERF_RUNNER_ENVIRONMENT": "self-hosted",
+            },
+        ):
+            self.assertEqual("self-hosted", server_soak.runner_environment())
 
 
 if __name__ == "__main__":

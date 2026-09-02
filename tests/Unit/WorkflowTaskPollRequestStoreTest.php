@@ -145,6 +145,35 @@ class WorkflowTaskPollRequestStoreTest extends TestCase
         }
     }
 
+    public function test_pending_task_kind_bindings_expire_after_the_poll_window(): void
+    {
+        config(['server.polling.timeout' => 1]);
+
+        $store = app(WorkflowTaskPollRequestStore::class);
+        $store->bindTaskKinds(
+            'default',
+            'external-workflows',
+            null,
+            'worker-a',
+            'poll-task-kinds-ttl',
+            ['workflow'],
+        );
+
+        $this->travel(7)->seconds();
+
+        $this->assertSame(
+            ['update_validation'],
+            $store->bindTaskKinds(
+                'default',
+                'external-workflows',
+                null,
+                'worker-a',
+                'poll-task-kinds-ttl',
+                ['update_validation'],
+            ),
+        );
+    }
+
     public function test_duplicate_waits_remain_idempotent_when_empty_poll_wait_slots_are_exhausted(): void
     {
         config([
@@ -266,10 +295,29 @@ class WorkflowTaskPollRequestStoreTest extends TestCase
 
         $this->travel(7)->seconds();
 
+        $this->assertSame(
+            ['update_validation'],
+            $store->bindTaskKinds(
+                'default',
+                'external-workflows',
+                null,
+                'worker-a',
+                'poll-empty-result',
+                ['update_validation'],
+            ),
+        );
+
         $this->assertSame([
             'resolved' => false,
             'task' => null,
             'poll_status' => null,
-        ], $store->result('default', 'external-workflows', null, 'worker-a', 'poll-empty-result'));
+        ], $store->result(
+            'default',
+            'external-workflows',
+            null,
+            'worker-a',
+            'poll-empty-result',
+            ['update_validation'],
+        ));
     }
 }

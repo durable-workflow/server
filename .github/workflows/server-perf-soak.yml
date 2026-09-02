@@ -50,6 +50,7 @@ jobs:
           DW_PERF_CONCURRENCY: ${{ github.event_name == 'workflow_dispatch' && inputs.concurrency || '24' }}
           DW_PERF_NAMESPACES: "8"
           DW_PERF_TASK_QUEUES: "16"
+          DW_PERF_REDIS_CACHE_DB: "1"
           DW_PERF_MAX_SERVER_MEMORY_MB: "1024"
           DW_PERF_MAX_POLLING_KEYS: "2048"
           DW_PERF_MAX_FINAL_POLLING_KEYS: "0"
@@ -62,7 +63,7 @@ jobs:
           DW_PERF_REMOTE_WRITE_PASSWORD: ${{ secrets.DW_PERF_REMOTE_WRITE_PASSWORD }}
           DW_PERF_COMPOSE_PROJECT: server-perf-soak-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
           DW_PERF_REQUIRE_TRUSTED_EVIDENCE: "true"
-          RUNNER_ENVIRONMENT: "self-hosted"
+          DW_PERF_RUNNER_ENVIRONMENT: "self-hosted"
         run: scripts/perf/run-vultr-soak.sh
 
       - name: Upload perf artifacts
