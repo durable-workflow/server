@@ -25,6 +25,7 @@ use App\Http\Controllers\Api\WorkflowController;
 use App\Http\Controllers\Api\WorkflowStreamController;
 use App\Http\Middleware\Authenticate;
 use App\Http\Middleware\ControlPlaneVersionResolver;
+use App\Http\Middleware\EnforceNamespaceRequestAdmission;
 use App\Http\Middleware\NamespaceResolver;
 use App\Http\Middleware\RequireRole;
 use App\Http\Middleware\RequireTopologyRoles;
@@ -82,6 +83,7 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
     $httpWorker = RequireTopologyRoles::class.':api_ingress,control_plane';
     $workflowBootstrap = RequireWorkflowBootstrapReady::class;
     $wpv = WorkerProtocolVersionResolver::class;
+    $namespaceAdmission = EnforceNamespaceRequestAdmission::class;
 
     // ── System ───────────────────────────────────────────────────────
     Route::get('/cluster/info', [HealthController::class, 'clusterInfo'])->middleware([$authenticated, $ns]);
@@ -95,27 +97,27 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
     });
 
     // ── Namespaces ───────────────────────────────────────────────────
-    Route::prefix('namespaces')->group(function () use ($admin, $operator, $ns, $cpv, $httpControl) {
-        Route::get('/', [NamespaceController::class, 'index'])->middleware([$operator, $cpv, $httpControl, $ns]);
-        Route::post('/', [NamespaceController::class, 'store'])->middleware([$admin, $cpv, $httpControl, $ns]);
-        Route::get('/{namespace}', [NamespaceController::class, 'show'])->middleware([$operator, $cpv, $httpControl, $ns]);
-        Route::put('/{namespace}', [NamespaceController::class, 'update'])->middleware([$admin, $cpv, $httpControl, $ns]);
-        Route::delete('/{namespace}', [NamespaceController::class, 'destroy'])->middleware([$admin, $cpv, $httpControl, $ns]);
-        Route::put('/{namespace}/external-storage', [NamespaceController::class, 'updateExternalStorage'])->middleware([$admin, $cpv, $httpControl, $ns]);
+    Route::prefix('namespaces')->group(function () use ($admin, $operator, $ns, $cpv, $httpControl, $namespaceAdmission) {
+        Route::get('/', [NamespaceController::class, 'index'])->middleware([$operator, $cpv, $httpControl, $ns, $namespaceAdmission]);
+        Route::post('/', [NamespaceController::class, 'store'])->middleware([$admin, $cpv, $httpControl, $ns, $namespaceAdmission]);
+        Route::get('/{namespace}', [NamespaceController::class, 'show'])->middleware([$operator, $cpv, $httpControl, $ns, $namespaceAdmission]);
+        Route::put('/{namespace}', [NamespaceController::class, 'update'])->middleware([$admin, $cpv, $httpControl, $ns, $namespaceAdmission]);
+        Route::delete('/{namespace}', [NamespaceController::class, 'destroy'])->middleware([$admin, $cpv, $httpControl, $ns, $namespaceAdmission]);
+        Route::put('/{namespace}/external-storage', [NamespaceController::class, 'updateExternalStorage'])->middleware([$admin, $cpv, $httpControl, $ns, $namespaceAdmission]);
     });
 
     // ── External Payload Storage ───────────────────────────────────
-    Route::prefix('storage')->middleware([$admin, $cpv, $httpControl, $ns])->group(function () {
+    Route::prefix('storage')->middleware([$admin, $cpv, $httpControl, $ns, $namespaceAdmission])->group(function () {
         Route::post('/test', [StorageController::class, 'test']);
     });
 
     // ── Workflows ────────────────────────────────────────────────────
-    Route::prefix('workflows')->middleware([$admin, $cpv, $httpControl, $workflowBootstrap, $ns])->group(function () {
+    Route::prefix('workflows')->middleware([$admin, $cpv, $httpControl, $workflowBootstrap, $ns, $namespaceAdmission])->group(function () {
         Route::post('/import/embedded-v2', [EmbeddedV2ImportController::class, 'store']);
         Route::post('/import/waterline-v1', [LegacyV1ProjectionController::class, 'store']);
     });
 
-    Route::prefix('workflows')->middleware([$operator, $cpv, $httpControl, $workflowBootstrap, $ns])->group(function () {
+    Route::prefix('workflows')->middleware([$operator, $cpv, $httpControl, $workflowBootstrap, $ns, $namespaceAdmission])->group(function () {
         Route::get('/', [WorkflowController::class, 'index']);
         Route::post('/', [WorkflowController::class, 'start']);
         Route::get('/{workflowId}', [WorkflowController::class, 'show']);
@@ -147,7 +149,7 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
         Route::post('/{workflowId}/runs/{runId}/streams/{streamName}/close', [WorkflowStreamController::class, 'close']);
     });
 
-    Route::prefix('workflows')->middleware([$operator, $cpv, $httpControl, $ns])->group(function () {
+    Route::prefix('workflows')->middleware([$operator, $cpv, $httpControl, $ns, $namespaceAdmission])->group(function () {
         Route::get('/{workflowId}/debug', [WorkflowController::class, 'debug']);
         Route::get('/{workflowId}/runs', [WorkflowController::class, 'runs']);
         Route::get('/{workflowId}/runs/{runId}', [WorkflowController::class, 'showRun']);
@@ -184,14 +186,14 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
     // anchors retry, deadline, history, and cancellation accounting, so the
     // execution surfaces as a first-class top-level row on the run summary,
     // history, and listing APIs without authoring a wrapper Workflow.
-    Route::prefix('activities')->middleware([$operator, $cpv, $httpControl, $workflowBootstrap, $ns])->group(function () {
+    Route::prefix('activities')->middleware([$operator, $cpv, $httpControl, $workflowBootstrap, $ns, $namespaceAdmission])->group(function () {
         Route::get('/', [ActivityController::class, 'index']);
         Route::post('/', [ActivityController::class, 'start']);
         Route::get('/{activityId}', [ActivityController::class, 'show']);
     });
 
     // ── Bridge Adapters ──────────────────────────────────────────────
-    Route::prefix('bridge-adapters')->middleware([$operator, $cpv, $httpControl, $workflowBootstrap, $ns])->group(function () {
+    Route::prefix('bridge-adapters')->middleware([$operator, $cpv, $httpControl, $workflowBootstrap, $ns, $namespaceAdmission])->group(function () {
         Route::post('/webhook/{adapter}', [BridgeAdapterController::class, 'webhook']);
     });
 
@@ -235,20 +237,20 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
     });
 
     // ── Workers (Management) ──────────────────────────────────────────
-    Route::prefix('workers')->group(function () use ($admin, $operator, $ns, $cpv, $httpControl) {
-        Route::get('/', [WorkerManagementController::class, 'index'])->middleware([$operator, $cpv, $httpControl, $ns]);
-        Route::get('/{workerId}', [WorkerManagementController::class, 'show'])->middleware([$operator, $cpv, $httpControl, $ns]);
-        Route::delete('/{workerId}', [WorkerManagementController::class, 'destroy'])->middleware([$admin, $cpv, $httpControl, $ns]);
+    Route::prefix('workers')->group(function () use ($admin, $operator, $ns, $cpv, $httpControl, $namespaceAdmission) {
+        Route::get('/', [WorkerManagementController::class, 'index'])->middleware([$operator, $cpv, $httpControl, $ns, $namespaceAdmission]);
+        Route::get('/{workerId}', [WorkerManagementController::class, 'show'])->middleware([$operator, $cpv, $httpControl, $ns, $namespaceAdmission]);
+        Route::delete('/{workerId}', [WorkerManagementController::class, 'destroy'])->middleware([$admin, $cpv, $httpControl, $ns, $namespaceAdmission]);
     });
 
     // ── Worker Sessions (Management) ────────────────────────────────
-    Route::prefix('worker-sessions')->middleware([$operator, $cpv, $httpControl, $ns])->group(function () {
+    Route::prefix('worker-sessions')->middleware([$operator, $cpv, $httpControl, $ns, $namespaceAdmission])->group(function () {
         Route::get('/', [WorkerSessionController::class, 'index']);
         Route::get('/{sessionId}', [WorkerSessionController::class, 'show']);
     });
 
     // ── Task Queues ──────────────────────────────────────────────────
-    Route::prefix('task-queues')->middleware([$operator, $cpv, $httpControl, $ns])->group(function () {
+    Route::prefix('task-queues')->middleware([$operator, $cpv, $httpControl, $ns, $namespaceAdmission])->group(function () {
         Route::get('/', [TaskQueueController::class, 'index']);
         Route::get('/{taskQueue}/build-ids', [TaskQueueController::class, 'buildIds']);
         Route::post('/{taskQueue}/build-ids/promote', [TaskQueueController::class, 'promoteBuildId']);
@@ -269,7 +271,7 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
     // DeploymentBlockage list with a 409. The legacy
     // /api/task-queues/{taskQueue}/build-ids/{drain|resume} routes
     // continue to work unchanged; this surface layers on top.
-    Route::prefix('deployments')->middleware([$operator, $cpv, $httpControl, $ns])->group(function () {
+    Route::prefix('deployments')->middleware([$operator, $cpv, $httpControl, $ns, $namespaceAdmission])->group(function () {
         Route::get('/', [DeploymentController::class, 'index']);
 
         // Lifecycle actions are registered before the catch-all show
@@ -286,14 +288,14 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
     });
 
     // ── Schedules ────────────────────────────────────────────────────
-    Route::prefix('schedules')->group(function () use ($operator, $cpv, $httpControl, $workflowBootstrap, $ns) {
-        Route::middleware([$operator, $cpv, $httpControl, $ns])->group(function () {
+    Route::prefix('schedules')->group(function () use ($operator, $cpv, $httpControl, $workflowBootstrap, $ns, $namespaceAdmission) {
+        Route::middleware([$operator, $cpv, $httpControl, $ns, $namespaceAdmission])->group(function () {
             Route::get('/', [ScheduleController::class, 'index']);
             Route::get('/{scheduleId}', [ScheduleController::class, 'show']);
             Route::get('/{scheduleId}/history', [ScheduleController::class, 'history']);
         });
 
-        Route::middleware([$operator, $cpv, $httpControl, $workflowBootstrap, $ns])->group(function () {
+        Route::middleware([$operator, $cpv, $httpControl, $workflowBootstrap, $ns, $namespaceAdmission])->group(function () {
             Route::post('/', [ScheduleController::class, 'store']);
             Route::put('/{scheduleId}', [ScheduleController::class, 'update']);
             Route::delete('/{scheduleId}', [ScheduleController::class, 'destroy']);
@@ -305,7 +307,7 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
     });
 
     // ── Search Attributes ────────────────────────────────────────────
-    Route::prefix('search-attributes')->middleware([$operator, $cpv, $httpControl, $ns])->group(function () {
+    Route::prefix('search-attributes')->middleware([$operator, $cpv, $httpControl, $ns, $namespaceAdmission])->group(function () {
         Route::get('/', [SearchAttributeController::class, 'index']);
         Route::post('/', [SearchAttributeController::class, 'store']);
         Route::delete('/{name}', [SearchAttributeController::class, 'destroy']);
@@ -317,7 +319,7 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
     // operator-gated because they are runtime call surfaces, not registry
     // mutations — the same role that drives ordinary workflow signals and
     // queries should be able to dispatch service operations.
-    Route::prefix('service-endpoints')->middleware([$admin, $cpv, $httpControl, $ns])->group(function () {
+    Route::prefix('service-endpoints')->middleware([$admin, $cpv, $httpControl, $ns, $namespaceAdmission])->group(function () {
         Route::get('/', [ServiceCatalogController::class, 'endpointIndex']);
         Route::post('/', [ServiceCatalogController::class, 'endpointStore']);
         Route::get('/{endpointName}', [ServiceCatalogController::class, 'endpointShow']);
@@ -339,7 +341,7 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
 
     // Service-call read surface stays available during rollout/schema drift
     // for observability of already-recorded durable calls.
-    Route::prefix('service-endpoints')->middleware([$operator, $cpv, $httpControl, $ns])->group(function () {
+    Route::prefix('service-endpoints')->middleware([$operator, $cpv, $httpControl, $ns, $namespaceAdmission])->group(function () {
         Route::get(
             '/{endpointName}/services/{serviceName}/operations/{operationName}/service-calls/{serviceCallId}',
             [ServiceCatalogController::class, 'serviceCallShow'],
@@ -350,7 +352,7 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
     // The workflowBootstrap gate is included because dispatch may end up
     // creating a workflow, signal, update, or activity row, and those
     // surfaces refuse traffic during schema rollout.
-    Route::prefix('service-endpoints')->middleware([$operator, $cpv, $httpControl, $workflowBootstrap, $ns])->group(function () {
+    Route::prefix('service-endpoints')->middleware([$operator, $cpv, $httpControl, $workflowBootstrap, $ns, $namespaceAdmission])->group(function () {
         Route::post(
             '/{endpointName}/services/{serviceName}/operations/{operationName}/execute',
             [ServiceCatalogController::class, 'executeOperation'],
@@ -362,6 +364,9 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
     });
 
     // ── System / Operations ─────────────────────────────────────────
+    // Keep admin-only diagnostics and remediation outside tenant request
+    // admission so an exhausted namespace cannot hide its counters or block
+    // an operator from repairing it.
     Route::prefix('system')->middleware([$admin, $cpv, $httpControl, $ns])->group(function () {
         Route::get('/health', [SystemController::class, 'health']);
         Route::match(['get', 'post'], '/metrics', [SystemController::class, 'metrics']);

@@ -6,6 +6,7 @@ use App\Support\ActivityTaskPollRequestStore;
 use App\Support\HistoryRetentionEnforcer;
 use App\Support\LongPollSignalStore;
 use App\Support\LongPollWaitSlotStore;
+use App\Support\NamespaceRequestAdmission;
 use App\Support\ProjectionDriftMetrics;
 use App\Support\QueryTaskPollRequestStore;
 use App\Support\ServerPollingCache;
@@ -204,6 +205,21 @@ return [
             'eviction' => 'Counters expire automatically after the two-minute rolling bucket window.',
         ],
 
+        'namespace_request_admission' => [
+            'owner' => NamespaceRequestAdmission::class,
+            'prefix' => 'server:namespace-request-admission:',
+            'dimensions' => [
+                'key_kind',
+                'namespace_hash',
+                'minute_bucket_or_slot_index',
+                'rejection_reason',
+            ],
+            'ttl' => 'Rate and rejection counters live 2 minutes. Admission locks use server.namespace_admission.lock_ttl_seconds, default 5 seconds. Concurrent request slots use server.namespace_admission.request_lease_ttl_seconds, default 120 seconds and hard-clamped to 3600 seconds.',
+            'bound' => 'Each configured namespace retains at most one rate counter and lock per active minute bucket, at most its effective concurrent-request limit in fixed slot keys, and one counter plus one log-suppression key per fixed rejection reason and active minute bucket.',
+            'admission' => 'Keys are created only for namespaces with configured request limits or when recording one of the three fixed admission rejection reasons. Namespace identifiers are hashed and no namespace index is retained.',
+            'eviction' => 'Request slots are released when requests finish; all locks, counters, slots, and log-suppression keys also expire by TTL after process loss.',
+        ],
+
         'workflow_task_expired_lease_recovery' => [
             'owner' => WorkflowTaskPoller::class,
             'prefix' => 'server:workflow-task-expired-lease-recovery:',
@@ -281,6 +297,18 @@ return [
             'cardinality' => 'table series are fixed to the server projection inventory: run_summaries, run_waits, run_timeline_entries, run_timer_entries, and run_lineage_entries.',
             'selection' => 'all projection tables in the fixed inventory.',
             'suppression' => 'No suppression path is needed because the table inventory is finite.',
+        ],
+
+        NamespaceRequestAdmission::METRIC_NAME => [
+            'owner' => NamespaceRequestAdmission::class,
+            'surface' => 'GET /api/system/metrics',
+            'dimensions' => [
+                'namespace' => 'request_scope_not_label',
+                'reason' => 'finite_three_reason_inventory',
+            ],
+            'cardinality' => 'The request namespace is the query scope rather than a label; rejection reasons are fixed to rate exhausted, concurrency exhausted, and admission unavailable.',
+            'selection' => 'current minute for the requested namespace.',
+            'suppression' => 'No suppression is needed because each response contains exactly three fixed reason counters.',
         ],
 
         'dw_workflow_runs_total' => [
