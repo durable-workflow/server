@@ -598,6 +598,7 @@ class WorkflowUpdateValidationTaskTest extends TestCase
                 ?callable $nextProbeAt = null,
                 bool $reserveWorkerWaitSlot = false,
                 string $waitSlotPool = 'worker',
+                ?string $waitSlotNamespace = null,
             ): mixed {
                 $value = $probe();
 

@@ -501,6 +501,7 @@ final class ActivityTaskPoller
                 return $nextProbeAt;
             },
             reserveWorkerWaitSlot: true,
+            waitSlotNamespace: $namespace,
         );
 
         if (in_array(

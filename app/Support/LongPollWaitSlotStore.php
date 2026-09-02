@@ -6,22 +6,38 @@ use Throwable;
 
 final class LongPollWaitSlotStore
 {
+    private const ABSOLUTE_MAX_NAMESPACE_WAITS = 1024;
+
     private const CACHE_PREFIX = 'server:long-poll-wait-slot:';
+
     private const WORKER_POOL = 'worker';
+
     private const QUERY_TASK_POOL = 'query-task';
 
     public function __construct(
         private readonly ServerPollingCache $cache,
     ) {}
 
-    public function tryAcquire(int $timeoutSeconds): ?LongPollWaitSlot
+    public function tryAcquire(int $timeoutSeconds, ?string $namespace = null): ?LongPollWaitSlot
     {
-        return $this->tryAcquireFromPool($timeoutSeconds, $this->maxConcurrentWaits(), self::WORKER_POOL);
+        return $this->tryAcquireFromPool(
+            $timeoutSeconds,
+            $this->maxConcurrentWaits(),
+            self::WORKER_POOL,
+            $namespace,
+            $this->maxConcurrentWaitsPerNamespace(),
+        );
     }
 
-    public function tryAcquireQueryTaskPoll(int $timeoutSeconds): ?LongPollWaitSlot
+    public function tryAcquireQueryTaskPoll(int $timeoutSeconds, ?string $namespace = null): ?LongPollWaitSlot
     {
-        return $this->tryAcquireFromPool($timeoutSeconds, $this->maxConcurrentQueryTaskPollWaits(), self::QUERY_TASK_POOL);
+        return $this->tryAcquireFromPool(
+            $timeoutSeconds,
+            $this->maxConcurrentQueryTaskPollWaits(),
+            self::QUERY_TASK_POOL,
+            $namespace,
+            $this->maxConcurrentQueryTaskPollWaitsPerNamespace(),
+        );
     }
 
     public function maxConcurrentWaits(): ?int
@@ -65,39 +81,107 @@ final class LongPollWaitSlotStore
         return min($this->defaultQueryTaskPollWaits($availableWorkers), $available);
     }
 
-    private function tryAcquireFromPool(int $timeoutSeconds, ?int $maxConcurrentWaits, string $pool): ?LongPollWaitSlot
+    public function maxConcurrentWaitsPerNamespace(): ?int
     {
+        return $this->namespaceLimit(
+            config('server.polling.max_concurrent_waits_per_namespace'),
+            $this->maxConcurrentWaits(),
+        );
+    }
+
+    public function maxConcurrentQueryTaskPollWaitsPerNamespace(): ?int
+    {
+        return $this->namespaceLimit(
+            config('server.query_tasks.max_concurrent_poll_waits_per_namespace'),
+            $this->maxConcurrentQueryTaskPollWaits(),
+        );
+    }
+
+    private function tryAcquireFromPool(
+        int $timeoutSeconds,
+        ?int $maxConcurrentWaits,
+        string $pool,
+        ?string $namespace,
+        ?int $maxConcurrentWaitsPerNamespace,
+    ): ?LongPollWaitSlot {
         if ($pool !== self::WORKER_POOL && $pool !== self::QUERY_TASK_POOL) {
             return null;
         }
 
-        if ($maxConcurrentWaits === null) {
+        if ($maxConcurrentWaits === null && $maxConcurrentWaitsPerNamespace === null) {
             return LongPollWaitSlot::unlimited();
         }
 
-        if (! $this->cache->available()) {
-            return LongPollWaitSlot::unlimited();
-        }
-
-        if ($maxConcurrentWaits <= 0) {
+        if (($maxConcurrentWaits !== null && $maxConcurrentWaits <= 0)
+            || ($maxConcurrentWaitsPerNamespace !== null && $maxConcurrentWaitsPerNamespace <= 0)) {
             return null;
         }
 
-        $owner = bin2hex(random_bytes(16));
+        $namespace = $namespace !== null ? trim($namespace) : null;
+
+        if ($maxConcurrentWaitsPerNamespace !== null && ($namespace === null || $namespace === '')) {
+            return null;
+        }
+
+        if (! $this->cache->available()) {
+            return $maxConcurrentWaitsPerNamespace === null
+                ? LongPollWaitSlot::unlimited()
+                : null;
+        }
+
         $expiresAt = now()->addSeconds(max(1, $timeoutSeconds + 5));
+        $namespaceSlot = LongPollWaitSlot::unlimited();
+
+        try {
+            if ($maxConcurrentWaitsPerNamespace !== null) {
+                $namespaceSlot = $this->acquireSlot(
+                    $maxConcurrentWaitsPerNamespace,
+                    $pool,
+                    $expiresAt,
+                    $namespace,
+                );
+
+                if ($namespaceSlot === null) {
+                    return null;
+                }
+            }
+
+            $globalSlot = $maxConcurrentWaits === null
+                ? LongPollWaitSlot::unlimited()
+                : $this->acquireSlot($maxConcurrentWaits, $pool, $expiresAt);
+
+            if ($globalSlot === null) {
+                $namespaceSlot->release();
+
+                return null;
+            }
+
+            return LongPollWaitSlot::combine($namespaceSlot, $globalSlot);
+        } catch (Throwable) {
+            $namespaceSlot->release();
+
+            // A local HTTP-worker reservation cannot provide cross-node
+            // correctness. Preserve the historical fail-open behavior only
+            // when namespace isolation has not been configured.
+            return $maxConcurrentWaitsPerNamespace === null
+                ? LongPollWaitSlot::unlimited()
+                : null;
+        }
+    }
+
+    private function acquireSlot(
+        int $maxConcurrentWaits,
+        string $pool,
+        \DateTimeInterface $expiresAt,
+        ?string $namespace = null,
+    ): ?LongPollWaitSlot {
+        $owner = bin2hex(random_bytes(16));
 
         for ($slot = 0; $slot < $maxConcurrentWaits; $slot++) {
-            $key = $this->slotKey($slot, $pool);
+            $key = $this->slotKey($slot, $pool, $namespace);
 
-            try {
-                if ($this->cache->store()->add($key, $owner, $expiresAt)) {
-                    return LongPollWaitSlot::acquired($this->cache, $key, $owner);
-                }
-            } catch (Throwable) {
-                // A local HTTP-worker reservation cannot provide cross-node
-                // correctness. During cache loss, keep bounded DB polling
-                // available and rely on the HTTP server's own worker limit.
-                return LongPollWaitSlot::unlimited();
+            if ($this->cache->store()->add($key, $owner, $expiresAt)) {
+                return LongPollWaitSlot::acquired($this->cache, $key, $owner);
             }
         }
 
@@ -124,6 +208,26 @@ final class LongPollWaitSlotStore
         }
 
         return null;
+    }
+
+    private function namespaceLimit(mixed $configured, ?int $globalLimit): ?int
+    {
+        if ($configured === null || $configured === '') {
+            return null;
+        }
+
+        $limit = filter_var($configured, FILTER_VALIDATE_INT, [
+            'options' => [
+                'min_range' => 0,
+                'max_range' => self::ABSOLUTE_MAX_NAMESPACE_WAITS,
+            ],
+        ]);
+
+        if ($limit === false) {
+            return 0;
+        }
+
+        return $globalLimit === null ? $limit : min($limit, $globalLimit);
     }
 
     private function queryTaskPollWaitReservation(int $availableWorkers): int
@@ -198,12 +302,15 @@ final class LongPollWaitSlotStore
         return min($phpServerWorkers - 1, max(2, intdiv($phpServerWorkers, 2) + 1));
     }
 
-    private function slotKey(int $slot, string $pool): string
+    private function slotKey(int $slot, string $pool, ?string $namespace = null): string
     {
         $prefix = self::CACHE_PREFIX.sha1((string) config('server.server_id', gethostname()));
+        $prefix = $pool === self::WORKER_POOL ? $prefix : $prefix.':'.$pool;
 
-        return $pool === self::WORKER_POOL
-            ? $prefix.':'.$slot
-            : $prefix.':'.$pool.':'.$slot;
+        if ($namespace !== null) {
+            $prefix .= ':namespace:'.hash('sha256', $namespace);
+        }
+
+        return $prefix.':'.$slot;
     }
 }

@@ -927,6 +927,7 @@ final class WorkflowQueryTaskBroker
             wakeChannels: $this->signals->queryTaskPollChannels($namespace, $taskQueue),
             reserveWorkerWaitSlot: true,
             waitSlotPool: 'query-task',
+            waitSlotNamespace: $namespace,
         );
 
         if ($result === null && $workflowBlockStatus === 'workflow_task_leased') {

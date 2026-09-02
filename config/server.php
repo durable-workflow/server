@@ -243,6 +243,11 @@ return [
             'WORKFLOW_SERVER_WORKER_LONG_POLL_MAX_CONCURRENT',
             null,
         ),
+        'max_concurrent_waits_per_namespace' => EnvAuditor::env(
+            'DW_WORKER_LONG_POLL_MAX_CONCURRENT_PER_NAMESPACE',
+            'WORKFLOW_SERVER_WORKER_LONG_POLL_MAX_CONCURRENT_PER_NAMESPACE',
+            null,
+        ),
         'reserved_http_workers' => EnvAuditor::env(
             'DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS',
             'WORKFLOW_SERVER_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS',
@@ -490,6 +495,11 @@ return [
         'max_concurrent_poll_waits' => EnvAuditor::env(
             'DW_QUERY_TASK_POLL_MAX_CONCURRENT',
             'WORKFLOW_SERVER_QUERY_TASK_POLL_MAX_CONCURRENT',
+            null,
+        ),
+        'max_concurrent_poll_waits_per_namespace' => EnvAuditor::env(
+            'DW_QUERY_TASK_POLL_MAX_CONCURRENT_PER_NAMESPACE',
+            'WORKFLOW_SERVER_QUERY_TASK_POLL_MAX_CONCURRENT_PER_NAMESPACE',
             null,
         ),
     ],

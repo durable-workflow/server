@@ -3,7 +3,12 @@
 namespace Tests\Unit;
 
 use App\Support\LongPollWaitSlotStore;
+use App\Support\ServerPollingCache;
+use Illuminate\Contracts\Cache\Factory as CacheFactory;
+use Illuminate\Filesystem\Filesystem;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Mockery;
+use RuntimeException;
 use Tests\TestCase;
 
 class LongPollWaitSlotStoreTest extends TestCase
@@ -17,8 +22,10 @@ class LongPollWaitSlotStoreTest extends TestCase
         config([
             'cache.default' => 'array',
             'server.polling.max_concurrent_waits' => 2,
+            'server.polling.max_concurrent_waits_per_namespace' => null,
             'server.polling.reserved_http_workers' => null,
             'server.query_tasks.max_concurrent_poll_waits' => null,
+            'server.query_tasks.max_concurrent_poll_waits_per_namespace' => null,
         ]);
     }
 
@@ -43,6 +50,82 @@ class LongPollWaitSlotStoreTest extends TestCase
 
         $second->release();
         $replacement->release();
+    }
+
+    public function test_namespace_cap_keeps_a_worker_wait_slot_available_to_another_namespace(): void
+    {
+        config([
+            'server.polling.max_concurrent_waits' => 2,
+            'server.polling.max_concurrent_waits_per_namespace' => 1,
+        ]);
+
+        /** @var LongPollWaitSlotStore $slots */
+        $slots = app(LongPollWaitSlotStore::class);
+
+        $tenantA = $slots->tryAcquire(30, 'tenant-a');
+        $extraTenantA = $slots->tryAcquire(30, 'tenant-a');
+        $tenantB = $slots->tryAcquire(30, 'tenant-b');
+
+        $this->assertNotNull($tenantA);
+        $this->assertNull($extraTenantA);
+        $this->assertNotNull($tenantB);
+
+        $tenantA->release();
+        $replacementTenantA = $slots->tryAcquire(30, 'tenant-a');
+        $this->assertNotNull($replacementTenantA);
+
+        $tenantB->release();
+        $replacementTenantA->release();
+    }
+
+    public function test_namespace_cap_is_independent_for_query_task_waits(): void
+    {
+        config([
+            'server.query_tasks.max_concurrent_poll_waits' => 2,
+            'server.query_tasks.max_concurrent_poll_waits_per_namespace' => 1,
+        ]);
+
+        /** @var LongPollWaitSlotStore $slots */
+        $slots = app(LongPollWaitSlotStore::class);
+
+        $tenantA = $slots->tryAcquireQueryTaskPoll(30, 'tenant-a');
+        $extraTenantA = $slots->tryAcquireQueryTaskPoll(30, 'tenant-a');
+        $tenantB = $slots->tryAcquireQueryTaskPoll(30, 'tenant-b');
+
+        $this->assertNotNull($tenantA);
+        $this->assertNull($extraTenantA);
+        $this->assertNotNull($tenantB);
+
+        $tenantA->release();
+        $tenantB->release();
+    }
+
+    public function test_configured_namespace_cap_fails_closed_without_shared_cache_authority(): void
+    {
+        config([
+            'server.polling.max_concurrent_waits' => 2,
+            'server.polling.max_concurrent_waits_per_namespace' => 1,
+        ]);
+
+        $factory = Mockery::mock(CacheFactory::class);
+        $factory->shouldReceive('store')->andThrow(new RuntimeException('cache unavailable'));
+        $slots = new LongPollWaitSlotStore(new ServerPollingCache($factory, new Filesystem));
+
+        $this->assertNull($slots->tryAcquire(30, 'tenant-a'));
+    }
+
+    public function test_invalid_namespace_cap_fails_closed_instead_of_becoming_unlimited(): void
+    {
+        config([
+            'server.polling.max_concurrent_waits' => 2,
+            'server.polling.max_concurrent_waits_per_namespace' => 'invalid',
+        ]);
+
+        /** @var LongPollWaitSlotStore $slots */
+        $slots = app(LongPollWaitSlotStore::class);
+
+        $this->assertSame(0, $slots->maxConcurrentWaitsPerNamespace());
+        $this->assertNull($slots->tryAcquire(30, 'tenant-a'));
     }
 
     public function test_it_derives_capacity_from_php_cli_server_workers(): void

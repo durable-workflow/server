@@ -821,6 +821,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                 ?callable $nextProbeAt = null,
                 bool $reserveWorkerWaitSlot = false,
                 string $waitSlotPool = 'worker',
+                ?string $waitSlotNamespace = null,
             ): mixed {
                 $value = $probe();
 
@@ -1045,6 +1046,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                 ?callable $nextProbeAt = null,
                 bool $reserveWorkerWaitSlot = false,
                 string $waitSlotPool = 'worker',
+                ?string $waitSlotNamespace = null,
             ): mixed {
                 $value = $probe();
 
@@ -1223,6 +1225,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                 ?callable $nextProbeAt = null,
                 bool $reserveWorkerWaitSlot = false,
                 string $waitSlotPool = 'worker',
+                ?string $waitSlotNamespace = null,
             ): mixed {
                 if (is_callable($this->beforeProbe)) {
                     ($this->beforeProbe)();
@@ -1532,6 +1535,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                 ?callable $nextProbeAt = null,
                 bool $reserveWorkerWaitSlot = false,
                 string $waitSlotPool = 'worker',
+                ?string $waitSlotNamespace = null,
             ): mixed {
                 while (true) {
                     $value = $probe();
@@ -2003,6 +2007,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                     ?callable $nextProbeAt = null,
                     bool $reserveWorkerWaitSlot = false,
                     string $waitSlotPool = 'worker',
+                    ?string $waitSlotNamespace = null,
                 ): mixed {
                     $value = $probe();
 
@@ -2337,6 +2342,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                 ?callable $nextProbeAt = null,
                 bool $reserveWorkerWaitSlot = false,
                 string $waitSlotPool = 'worker',
+                ?string $waitSlotNamespace = null,
             ): mixed {
                 $value = $probe();
 
@@ -3144,6 +3150,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                 ?callable $nextProbeAt = null,
                 bool $reserveWorkerWaitSlot = false,
                 string $waitSlotPool = 'worker',
+                ?string $waitSlotNamespace = null,
             ): mixed {
                 $this->timeoutSeconds = $timeoutSeconds;
 

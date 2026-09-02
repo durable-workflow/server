@@ -260,6 +260,12 @@ return [
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_WORKER_LONG_POLL_MAX_CONCURRENT',
         ],
+        'DW_WORKER_LONG_POLL_MAX_CONCURRENT_PER_NAMESPACE' => [
+            'description' => 'Optional per-node cap for concurrent held workflow/activity long-poll waits from one namespace. The effective cap cannot exceed the global worker wait cap. Configured namespace isolation fails closed when shared cache authority is unavailable.',
+            'default' => '(unset)',
+            'since' => '2.0.3',
+            'legacy' => 'WORKFLOW_SERVER_WORKER_LONG_POLL_MAX_CONCURRENT_PER_NAMESPACE',
+        ],
         'DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS' => [
             'description' => 'Optional number of PHP CLI server workers reserved for health and control-plane requests when deriving the workflow/activity long-poll wait cap. Unset derives a reserve from PHP_CLI_SERVER_WORKERS, keeping more than half of declared standalone CLI server workers outside held long-poll waits.',
             'default' => '(unset; derived from PHP_CLI_SERVER_WORKERS)',
@@ -460,6 +466,12 @@ return [
             'default' => '(unset; derived for PHP_CLI_SERVER_WORKERS)',
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_QUERY_TASK_POLL_MAX_CONCURRENT',
+        ],
+        'DW_QUERY_TASK_POLL_MAX_CONCURRENT_PER_NAMESPACE' => [
+            'description' => 'Optional per-node cap for concurrent held query-task long-poll waits from one namespace. The effective cap cannot exceed the global query-task wait cap. Configured namespace isolation fails closed when shared cache authority is unavailable.',
+            'default' => '(unset)',
+            'since' => '2.0.3',
+            'legacy' => 'WORKFLOW_SERVER_QUERY_TASK_POLL_MAX_CONCURRENT_PER_NAMESPACE',
         ],
 
         // --- Lease / timeout defaults ----------------------------------

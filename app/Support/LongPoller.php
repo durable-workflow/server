@@ -23,6 +23,7 @@ class LongPoller
         ?callable $nextProbeAt = null,
         bool $reserveWorkerWaitSlot = false,
         string $waitSlotPool = 'worker',
+        ?string $waitSlotNamespace = null,
     ): mixed {
         $timeoutSeconds ??= max(0, (int) config('server.polling.timeout', 30));
         $intervalMilliseconds ??= max(1, (int) config('server.polling.interval_ms', 1000));
@@ -58,8 +59,8 @@ class LongPoller
 
         if ($reserveWorkerWaitSlot) {
             $waitSlot = $waitSlotPool === 'query-task'
-                ? $this->waitSlots->tryAcquireQueryTaskPoll($timeoutSeconds)
-                : $this->waitSlots->tryAcquire($timeoutSeconds);
+                ? $this->waitSlots->tryAcquireQueryTaskPoll($timeoutSeconds, $waitSlotNamespace)
+                : $this->waitSlots->tryAcquire($timeoutSeconds, $waitSlotNamespace);
 
             if ($waitSlot === null) {
                 throw new LongPollCapacityExhaustedException($waitSlotPool);

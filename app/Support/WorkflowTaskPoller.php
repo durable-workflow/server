@@ -549,6 +549,7 @@ final class WorkflowTaskPoller
                 return $nextProbeAt;
             },
             reserveWorkerWaitSlot: true,
+            waitSlotNamespace: $namespace,
         );
 
         if (in_array(
