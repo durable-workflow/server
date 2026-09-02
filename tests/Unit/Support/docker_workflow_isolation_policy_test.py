@@ -175,6 +175,31 @@ class DockerWorkflowIsolationPolicyTest(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertIn("Docker resource scope is missing GITHUB_JOB", result.stderr)
 
+    def test_remote_controller_stops_transitive_docker_resource_attribution(self) -> None:
+        result = self.run_policy(
+            """
+            name: Docker
+            on: workflow_dispatch
+            jobs:
+              soak:
+                steps:
+                  - run: scripts/controller.sh
+            """,
+            {
+                "scripts/controller.sh": """
+                    #!/usr/bin/env bash
+                    # docker-workflow-isolation: transitive-scripts-run-remotely
+                    ssh perf@example.test 'scripts/soak.sh'
+                """,
+                "scripts/soak.sh": """
+                    #!/usr/bin/env bash
+                    docker compose -p fixed up -d
+                """,
+            },
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+
     def test_rejects_fixed_published_host_ports(self) -> None:
         result = self.run_policy(
             """

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# docker-workflow-isolation: transitive-scripts-run-remotely
 set -Eeuo pipefail
 
 API_BASE="${VULTR_API_BASE:-https://api.vultr.com/v2}"

@@ -60,7 +60,7 @@ jobs:
           DW_PERF_REMOTE_WRITE_URL: ${{ vars.DW_PERF_REMOTE_WRITE_URL }}
           DW_PERF_REMOTE_WRITE_USERNAME: ${{ vars.DW_PERF_REMOTE_WRITE_USERNAME }}
           DW_PERF_REMOTE_WRITE_PASSWORD: ${{ secrets.DW_PERF_REMOTE_WRITE_PASSWORD }}
-          DW_PERF_COMPOSE_PROJECT: server-perf-soak-${{ github.run_id }}-${{ github.run_attempt }}
+          DW_PERF_COMPOSE_PROJECT: server-perf-soak-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
           DW_PERF_REQUIRE_TRUSTED_EVIDENCE: "true"
           RUNNER_ENVIRONMENT: "self-hosted"
         run: scripts/perf/run-vultr-soak.sh
