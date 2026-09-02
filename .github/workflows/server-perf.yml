@@ -23,6 +23,7 @@ on:
       - "app/Support/RemoteScheduleStarter.php"
       - "app/Support/ServerPollingCache.php"
       - "app/Support/TaskQueueAdmission.php"
+      - "app/Support/NamespaceRequestAdmission.php"
       - "app/Support/WorkerPollClaimGate.php"
       - "app/Support/WorkflowQueryTaskBroker.php"
       - "app/Support/WorkflowTaskFailureMetrics.php"
@@ -74,6 +75,7 @@ on:
       - "app/Support/RemoteScheduleStarter.php"
       - "app/Support/ServerPollingCache.php"
       - "app/Support/TaskQueueAdmission.php"
+      - "app/Support/NamespaceRequestAdmission.php"
       - "app/Support/WorkerPollClaimGate.php"
       - "app/Support/WorkflowQueryTaskBroker.php"
       - "app/Support/WorkflowTaskFailureMetrics.php"
@@ -246,8 +248,8 @@ jobs:
           DW_PERF_MAX_FINAL_POLLING_KEYS: "0"
           DW_PERF_MAX_SERVER_CACHE_KEYS: "4096"
           DW_PERF_MIN_SAMPLE_COVERAGE: "0.75"
-          DW_PERF_MAX_SERVER_CACHE_KEYS_BY_POLICY: '{"polling_cache_availability_probe":0,"workflow_task_poll_requests":2048,"activity_task_poll_requests":512,"query_task_poll_requests":512,"sqlite_worker_poll_claim_gate":1,"long_poll_signals":2048,"long_poll_wait_slots":64,"workflow_query_tasks":64,"task_queue_admission_locks":128,"task_queue_dispatch_counters":128,"workflow_task_expired_lease_recovery":128,"history_retention_inline":64,"worker_compatibility_heartbeat":64,"readiness_probe":16}'
-          DW_PERF_MAX_FINAL_SERVER_CACHE_KEYS_BY_POLICY: '{"polling_cache_availability_probe":0,"workflow_task_poll_requests":0,"activity_task_poll_requests":0,"query_task_poll_requests":0,"sqlite_worker_poll_claim_gate":0,"long_poll_signals":0,"long_poll_wait_slots":0,"workflow_query_tasks":0,"task_queue_admission_locks":0,"task_queue_dispatch_counters":0,"workflow_task_expired_lease_recovery":0,"history_retention_inline":0,"worker_compatibility_heartbeat":0,"readiness_probe":0}'
+          DW_PERF_MAX_SERVER_CACHE_KEYS_BY_POLICY: '{"polling_cache_availability_probe":0,"workflow_task_poll_requests":2048,"activity_task_poll_requests":512,"query_task_poll_requests":512,"sqlite_worker_poll_claim_gate":1,"long_poll_signals":2048,"long_poll_wait_slots":64,"workflow_query_tasks":64,"task_queue_admission_locks":128,"task_queue_dispatch_counters":128,"namespace_request_admission":128,"workflow_task_expired_lease_recovery":128,"history_retention_inline":64,"worker_compatibility_heartbeat":64,"readiness_probe":16}'
+          DW_PERF_MAX_FINAL_SERVER_CACHE_KEYS_BY_POLICY: '{"polling_cache_availability_probe":0,"workflow_task_poll_requests":0,"activity_task_poll_requests":0,"query_task_poll_requests":0,"sqlite_worker_poll_claim_gate":0,"long_poll_signals":0,"long_poll_wait_slots":0,"workflow_query_tasks":0,"task_queue_admission_locks":0,"task_queue_dispatch_counters":0,"namespace_request_admission":0,"workflow_task_expired_lease_recovery":0,"history_retention_inline":0,"worker_compatibility_heartbeat":0,"readiness_probe":0}'
           DW_PERF_COMPOSE_PROJECT: server-perf-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
           RUNNER_ENVIRONMENT: "github-hosted"
         if: ${{ always() && success() }}

@@ -338,6 +338,36 @@ return [
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_TASK_QUEUE_ADMISSION_OVERRIDES',
         ],
+        'DW_NAMESPACE_MAX_REQUESTS_PER_MINUTE' => [
+            'description' => 'Optional per-minute control-plane request cap for each namespace. Unset means unlimited.',
+            'default' => '(unset)',
+            'since' => '2.0.3',
+            'legacy' => 'WORKFLOW_SERVER_NAMESPACE_MAX_REQUESTS_PER_MINUTE',
+        ],
+        'DW_NAMESPACE_MAX_CONCURRENT_REQUESTS' => [
+            'description' => 'Optional concurrent control-plane request cap for each namespace. Unset means unlimited.',
+            'default' => '(unset)',
+            'since' => '2.0.3',
+            'legacy' => 'WORKFLOW_SERVER_NAMESPACE_MAX_CONCURRENT_REQUESTS',
+        ],
+        'DW_NAMESPACE_HARD_MAX_REQUESTS_PER_MINUTE' => [
+            'description' => 'Non-bypassable ceiling for namespace control-plane requests per minute, including namespace overrides.',
+            'default' => '(unset)',
+            'since' => '2.0.3',
+            'legacy' => 'WORKFLOW_SERVER_NAMESPACE_HARD_MAX_REQUESTS_PER_MINUTE',
+        ],
+        'DW_NAMESPACE_HARD_MAX_CONCURRENT_REQUESTS' => [
+            'description' => 'Non-bypassable ceiling for concurrent namespace control-plane requests, including namespace overrides.',
+            'default' => '(unset)',
+            'since' => '2.0.3',
+            'legacy' => 'WORKFLOW_SERVER_NAMESPACE_HARD_MAX_CONCURRENT_REQUESTS',
+        ],
+        'DW_NAMESPACE_ADMISSION_OVERRIDES' => [
+            'description' => 'JSON object keyed by namespace with optional request-rate and concurrent-request overrides.',
+            'default' => '{}',
+            'since' => '2.0.3',
+            'legacy' => 'WORKFLOW_SERVER_NAMESPACE_ADMISSION_OVERRIDES',
+        ],
         'DW_DUE_TIMER_RECOVERY_SCAN_LIMIT' => [
             'description' => 'Maximum due service-mode timer tasks to recover per worker poll pass.',
             'default' => '5',

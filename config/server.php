@@ -347,6 +347,52 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Namespace Request Admission
+    |--------------------------------------------------------------------------
+    |
+    | Control-plane requests can be bounded independently per namespace. Null
+    | defaults are explicitly unlimited. Namespace overrides may lower or
+    | raise defaults, but configured hard limits and implementation ceilings
+    | remain non-bypassable.
+    |
+    */
+
+    'namespace_admission' => [
+        'max_requests_per_minute' => EnvAuditor::env(
+            'DW_NAMESPACE_MAX_REQUESTS_PER_MINUTE',
+            'WORKFLOW_SERVER_NAMESPACE_MAX_REQUESTS_PER_MINUTE',
+            null,
+        ),
+        'max_concurrent_requests' => EnvAuditor::env(
+            'DW_NAMESPACE_MAX_CONCURRENT_REQUESTS',
+            'WORKFLOW_SERVER_NAMESPACE_MAX_CONCURRENT_REQUESTS',
+            null,
+        ),
+        'hard_max_requests_per_minute' => EnvAuditor::env(
+            'DW_NAMESPACE_HARD_MAX_REQUESTS_PER_MINUTE',
+            'WORKFLOW_SERVER_NAMESPACE_HARD_MAX_REQUESTS_PER_MINUTE',
+            null,
+        ),
+        'hard_max_concurrent_requests' => EnvAuditor::env(
+            'DW_NAMESPACE_HARD_MAX_CONCURRENT_REQUESTS',
+            'WORKFLOW_SERVER_NAMESPACE_HARD_MAX_CONCURRENT_REQUESTS',
+            null,
+        ),
+        'overrides' => json_decode(
+            (string) EnvAuditor::env(
+                'DW_NAMESPACE_ADMISSION_OVERRIDES',
+                'WORKFLOW_SERVER_NAMESPACE_ADMISSION_OVERRIDES',
+                '{}',
+            ),
+            true,
+        ) ?: [],
+        'lock_ttl_seconds' => 5,
+        'lock_wait_seconds' => 1,
+        'request_lease_ttl_seconds' => 120,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Worker Protocol
     |--------------------------------------------------------------------------
     |

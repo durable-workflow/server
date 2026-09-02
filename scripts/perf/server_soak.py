@@ -39,6 +39,7 @@ SERVER_CACHE_KEY_PATTERNS = {
     "workflow_query_tasks": "*server:workflow-query-task:*",
     "task_queue_admission_locks": "*server:task-queue-admission:*",
     "task_queue_dispatch_counters": "*server:task-queue-dispatch:*",
+    "namespace_request_admission": "*server:namespace-request-admission:*",
     "workflow_task_expired_lease_recovery": "*server:workflow-task-expired-lease-recovery:*",
     "history_retention_inline": "*server:history-retention-inline:*",
     "worker_compatibility_heartbeat": "*server:worker-compatibility-heartbeat:*",
