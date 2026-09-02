@@ -13,6 +13,7 @@ use App\Support\QueryTaskPollRequestStore;
 use App\Support\RuntimeExternalPayloadQuota;
 use App\Support\ServerPollingCache;
 use App\Support\ServerReadiness;
+use App\Support\SharedServiceBoundaryPolicy;
 use App\Support\TaskQueueAdmission;
 use App\Support\WorkerCompatibilityHeartbeatRecorder;
 use App\Support\WorkerPollClaimGate;
@@ -221,6 +222,21 @@ return [
             'bound' => 'Each configured namespace retains at most one rate counter and lock per active minute bucket, at most its effective concurrent-request limit in fixed slot keys, and one counter plus one log-suppression key per fixed rejection reason and active minute bucket.',
             'admission' => 'Keys are created only for namespaces with configured request limits or when recording one of the three fixed admission rejection reasons. Namespace identifiers are hashed and no namespace index is retained.',
             'eviction' => 'Request slots are released when requests finish; all locks, counters, slots, and log-suppression keys also expire by TTL after process loss.',
+        ],
+
+        'shared_service_boundary_admission' => [
+            'owner' => SharedServiceBoundaryPolicy::class,
+            'prefix' => 'server:service-boundary:',
+            'dimensions' => [
+                'key_kind',
+                'caller_namespace_hash',
+                'service_boundary_hash',
+                'minute_bucket',
+            ],
+            'ttl' => 'Rate counters live 2 minutes. Admission locks live 5 seconds. In-flight counters live server.service_boundary.shared_admission.concurrency_lease_ttl_seconds seconds, default 86400 and hard-clamped to 604800 seconds.',
+            'bound' => 'Configured caller-namespace budgets retain one namespace rate key per active minute and one namespace in-flight key. Configured operation budgets retain one rate key per invoked service boundary and active minute plus one in-flight key per invoked boundary. All user-derived dimensions are hashed and no index is retained.',
+            'admission' => 'No keys are written when all service-boundary admission limits are unset. Configured budgets require shared cache with atomic locks and fail closed when that authority is unavailable. Hard ceilings cap operation policies and caller-namespace overrides.',
+            'eviction' => 'Handler completion releases its object-scoped reservation idempotently. Process loss and unfinished asynchronous calls are bounded by the finite concurrency lease TTL; rate counters and locks expire automatically.',
         ],
 
         'namespace_durable_state_quota_rejections' => [

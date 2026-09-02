@@ -772,6 +772,39 @@ return [
                 ),
             ],
         ],
+        'shared_admission' => [
+            'max_requests_per_minute_per_namespace' => EnvAuditor::env(
+                'DW_SERVICE_BOUNDARY_NAMESPACE_RATE_LIMIT_PER_MINUTE',
+                'WORKFLOW_SERVER_SERVICE_BOUNDARY_NAMESPACE_RATE_LIMIT_PER_MINUTE',
+                null,
+            ),
+            'max_in_flight_per_namespace' => EnvAuditor::env(
+                'DW_SERVICE_BOUNDARY_NAMESPACE_MAX_IN_FLIGHT',
+                'WORKFLOW_SERVER_SERVICE_BOUNDARY_NAMESPACE_MAX_IN_FLIGHT',
+                null,
+            ),
+            'hard_max_requests_per_minute' => EnvAuditor::env(
+                'DW_SERVICE_BOUNDARY_HARD_RATE_LIMIT_PER_MINUTE',
+                'WORKFLOW_SERVER_SERVICE_BOUNDARY_HARD_RATE_LIMIT_PER_MINUTE',
+                null,
+            ),
+            'hard_max_in_flight' => EnvAuditor::env(
+                'DW_SERVICE_BOUNDARY_HARD_MAX_IN_FLIGHT',
+                'WORKFLOW_SERVER_SERVICE_BOUNDARY_HARD_MAX_IN_FLIGHT',
+                null,
+            ),
+            'namespace_overrides' => json_decode(
+                (string) EnvAuditor::env(
+                    'DW_SERVICE_BOUNDARY_NAMESPACE_OVERRIDES',
+                    'WORKFLOW_SERVER_SERVICE_BOUNDARY_NAMESPACE_OVERRIDES',
+                    '{}',
+                ),
+                true,
+                flags: JSON_THROW_ON_ERROR,
+            ),
+            'concurrency_lease_ttl_seconds' => 86400,
+            'retry_after_seconds' => 1,
+        ],
     ],
 
     'limits' => [

@@ -3,6 +3,7 @@
 namespace App\Support;
 
 use App\Auth\Principal;
+use Throwable;
 use Workflow\V2\Contracts\ServiceBoundaryPolicy;
 use Workflow\V2\Enums\ServiceCallBindingKind;
 use Workflow\V2\Enums\ServiceCallOperationMode;
@@ -29,10 +30,9 @@ use Workflow\V2\Support\ServiceCallPrincipal;
  * Operators querying for a caller's recent activity see the same row
  * shape regardless of outcome; only the durable outcome fields differ.
  *
- * Concurrency tracking uses the policy's in-process counter; the
- * default implementation `release()`s the counter when a handler
- * reports back. Operators that need cross-process counters can bind a
- * custom policy.
+ * The server's default policy coordinates configured rate and concurrency
+ * budgets through shared cache. `release()` frees a concurrency reservation
+ * when a handler reports back.
  *
  * Privacy boundary: the gate never inspects payload material. Payload
  * privacy stays under the existing codec / data-converter trust
@@ -43,8 +43,7 @@ final class ServiceCallBoundary
     public function __construct(
         private readonly ServiceBoundaryPolicy $policy,
         private readonly ServiceBoundaryAuditRecorder $recorder,
-    ) {
-    }
+    ) {}
 
     /**
      * Evaluate a service-call admission request, persist the audit row,
@@ -53,7 +52,16 @@ final class ServiceCallBoundary
     public function admit(ServiceBoundaryRequest $request): ServiceCallAdmission
     {
         $decision = $this->policy->evaluate($request);
-        $call = $this->recorder->record($request, $decision);
+
+        try {
+            $call = $this->recorder->record($request, $decision);
+        } catch (Throwable $throwable) {
+            if ($decision->isAllowed()) {
+                $this->release($request);
+            }
+
+            throw $throwable;
+        }
 
         return new ServiceCallAdmission($decision, $call, $request);
     }
@@ -106,7 +114,15 @@ final class ServiceCallBoundary
             retryPolicy: $retryPolicy,
         );
         $decision = $this->decisionFor($request, $operation);
-        $call = $this->recorder->record($request, $decision);
+        try {
+            $call = $this->recorder->record($request, $decision);
+        } catch (Throwable $throwable) {
+            if ($decision->isAllowed()) {
+                $this->release($request);
+            }
+
+            throw $throwable;
+        }
 
         return new ServiceCallAdmission($decision, $call, $request);
     }
@@ -182,7 +198,7 @@ final class ServiceCallBoundary
      */
     public function release(ServiceBoundaryRequest $request): void
     {
-        if ($this->policy instanceof DefaultServiceBoundaryPolicy) {
+        if (is_callable([$this->policy, 'release'])) {
             $this->policy->release($request);
         }
     }
@@ -199,13 +215,13 @@ final class ServiceCallBoundary
     }
 
     /**
-     * @param array<string, mixed> $endpointBoundaryPolicy
-     * @param array<string, mixed> $serviceBoundaryPolicy
-     * @param array<string, mixed> $operationBoundaryPolicy
-     * @param array<string, mixed>|null $deadlinePolicy
-     * @param array<string, mixed>|null $idempotencyPolicy
-     * @param array<string, mixed>|null $cancellationPolicy
-     * @param array<string, mixed>|null $retryPolicy
+     * @param  array<string, mixed>  $endpointBoundaryPolicy
+     * @param  array<string, mixed>  $serviceBoundaryPolicy
+     * @param  array<string, mixed>  $operationBoundaryPolicy
+     * @param  array<string, mixed>|null  $deadlinePolicy
+     * @param  array<string, mixed>|null  $idempotencyPolicy
+     * @param  array<string, mixed>|null  $cancellationPolicy
+     * @param  array<string, mixed>|null  $retryPolicy
      */
     private function requestFor(
         Principal $principal,
@@ -355,7 +371,7 @@ final class ServiceCallBoundary
     }
 
     /**
-     * @param array<string, mixed> $policy
+     * @param  array<string, mixed>  $policy
      * @return array<string, mixed>
      */
     private static function withoutAdmissionControls(array $policy): array
