@@ -1134,8 +1134,8 @@ def evidence_trust_profile(
         reasons.append("GitHub Actions repository is not durable-workflow/server")
     if str(provenance.get("ref") or "").strip() != "refs/heads/main":
         reasons.append("GitHub Actions ref is not refs/heads/main")
-    if str(provenance.get("workflow") or "").strip() != "Server Perf":
-        reasons.append("GitHub Actions workflow is not Server Perf")
+    if str(provenance.get("workflow") or "").strip() != "Server Perf Soak":
+        reasons.append("GitHub Actions workflow is not Server Perf Soak")
     if str(provenance.get("event_name") or "").strip() not in ("schedule", "workflow_dispatch"):
         reasons.append("GitHub Actions event is not schedule or workflow_dispatch")
     if not bool(provenance.get("github_sha_matches_checked_out")):

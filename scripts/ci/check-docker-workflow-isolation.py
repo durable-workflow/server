@@ -18,6 +18,9 @@ WORKFLOW_SCOPE_PARTS = (
     "${{ github.job }}",
 )
 SCRIPT_SCOPE_PARTS = ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB")
+REMOTE_SCRIPT_BOUNDARY = (
+    "docker-workflow-isolation: transitive-scripts-run-remotely"
+)
 SHELL_COMMAND_PREFIX = r"""
     (?:^|[;&|({])\s*(?:-\s+)?(?:run:\s*)?
     (?:
@@ -2232,6 +2235,12 @@ def collect_script_tree(
 
     source = script.read_text(encoding="utf-8")
     sources = [(script, source)]
+
+    # A controller may execute a referenced repository script over SSH on an
+    # isolated host. Inspect the controller itself, but do not attribute the
+    # remote script's Docker resources to the local Actions job.
+    if REMOTE_SCRIPT_BOUNDARY in source:
+        return sources
 
     for reference in LOCAL_SCRIPT_REFERENCE.findall(source):
         referenced_path = (

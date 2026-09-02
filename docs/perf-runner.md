@@ -5,29 +5,34 @@ memory growth and polling-cache cleanup.
 
 ## Runner Shape
 
-The workflow has two modes:
+The public workflows have two modes:
 
 - a short smoke job on GitHub-hosted runners for pull requests and pushes
-- a longer soak job on a trusted self-hosted runner for scheduled and manual runs
+- a longer soak job executed over SSH on a newly provisioned Vultr instance for scheduled and manual runs
 
-Register any self-hosted soak runner with these labels:
-
-- `self-hosted`
-- `linux`
-- `x64`
-- `perf-soak`
-- `server-perf`
-
-The long soak workflow targets all five labels. Do not attach these labels to general-purpose runners that may execute untrusted pull request code.
-
-Install a current GitHub Actions runner package. The workflow uses current
-Node-based actions and should run on a maintained runner version.
+The GitHub-hosted controller creates one `vhp-2c-4gb-amd` instance, waits for
+cloud-init, checks out the exact Actions SHA, runs the existing Compose-backed
+harness, retrieves its artifacts, and deletes the instance. The host is not
+registered as a GitHub runner and is not reused between jobs.
 
 ## GitHub Configuration
 
 Required for the soak job:
 
-- A self-hosted runner with the labels above.
+- GitHub Environment `perf-soak`
+- Environment secret `VULTR_PERF_API_KEY`, belonging to a dedicated Vultr
+  service user with only `compute.instance.Create`,
+  `compute.instance.Read`, and `compute.instance.Delete`
+- Environment variable `VULTR_PERF_REGION`
+- Repository variable `DW_PERF_SOAK_ENABLED=true` to enable the daily schedule
+
+The broad account credential must not be used. The controller credential stays
+on the GitHub-hosted job and is not copied to the instance. Each run generates
+a new SSH key, permits SSH only from the controller's current public IPv4
+address, and binds the benchmark Server port to loopback.
+GitHub-hosted runner egress addresses are dynamic, so the Vultr service user's
+IPv4 API allowlist permits GitHub-hosted sources; its narrow IAM policy and the
+default-branch GitHub Environment restriction are the authorization boundary.
 
 Optional for Prometheus `remote_write` export:
 
@@ -56,9 +61,9 @@ The harness starts the production Docker Compose stack with isolated ports and a
 - fails if cache keys, memory ceiling, request errors, or long-run memory slope exceed the configured budgets.
 
 The short smoke job runs on GitHub-hosted runners and proves the harness plus
-cache-key drain path. The long soak runs on the labeled self-hosted runner and
-enforces the memory slope budget after the run is long enough to make that
-signal meaningful.
+cache-key drain path. The long soak runs on the disposable host and enforces
+the memory slope budget after the run is long enough to make that signal
+meaningful.
 
 Workflow-growth coverage is rate-independent. `DW_PERF_WORKFLOW_RUNS` sets the
 nominal cardinality and `DW_PERF_MIN_WORKFLOW_COMPLETION_RATIO` sets the minimum
@@ -70,8 +75,8 @@ load timeout still fail the run. `summary.json` records the target, minimum
 successful starts, attempted and successful starts, observed completion ratio,
 and final workflow-row count under `workflow_growth`.
 
-Both workflow modes pass explicit runner provenance into the artifact. Short
-smokes set `RUNNER_ENVIRONMENT=github-hosted`; long soaks set
+Both workflow modes pass explicit execution provenance into the artifact. Short
+smokes set `RUNNER_ENVIRONMENT=github-hosted`; disposable-host long soaks set
 `RUNNER_ENVIRONMENT=self-hosted`, which is required before `summary.json` can be
 classified as trusted long-soak evidence. The self-hosted job also sets
 `DW_PERF_REQUIRE_TRUSTED_EVIDENCE=true`, so it fails if the run completes but the
@@ -96,7 +101,7 @@ SHA-256 digest of `config/dw-bounded-growth.php`. Trusted long-soak evidence
 also requires `tracked_working_tree_clean=true` and GitHub Actions provenance
 (`GITHUB_REPOSITORY`, `GITHUB_REF`, `GITHUB_SHA`, `GITHUB_WORKFLOW`,
 `GITHUB_EVENT_NAME`, `GITHUB_RUN_ID`, and `GITHUB_RUN_ATTEMPT`) from the
-`Server Perf` workflow in `durable-workflow/server` on `refs/heads/main`. The
+`Server Perf Soak` workflow in `durable-workflow/server` on `refs/heads/main`. The
 trusted profile is limited to scheduled and manual dispatch long-soak events,
 and requires a checked-out source commit matching `GITHUB_SHA`, so artifacts
 from uncommitted source, policy edits, feature branches, forks, unrelated
@@ -126,7 +131,7 @@ DW_PERF_MAX_FINAL_SERVER_CACHE_KEYS_BY_POLICY='{"workflow_task_poll_requests":0,
 
 ## Safety Rules
 
-- Do not run the self-hosted soak job for pull requests from forks.
-- Keep the runner dedicated to trusted workflows.
-- Keep Docker cleanup in the job even on failure.
+- Do not expose the Vultr secret to pull-request workflows.
+- Keep the GitHub Environment restricted to the default branch.
+- Keep instance deletion in the controller's exit trap.
 - Do not commit remote-write credentials, runner registration tokens, or generated Prometheus configs.
