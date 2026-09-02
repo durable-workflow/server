@@ -4,17 +4,30 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Models\WorkflowDurableStream;
+use App\Models\WorkflowDurableStreamItem;
+use App\Models\WorkflowInboundStream;
+use App\Models\WorkflowInboundStreamItem;
+use App\Support\NamespaceDurableStateException;
 use App\Support\NamespaceDurableStateQuota;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Testing\TestResponse;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\ExternalGreetingWorkflow;
+use Tests\Fixtures\InteractiveCommandWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Enums\TimerStatus;
+use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowSchedule;
 use Workflow\V2\Models\WorkflowScheduleHistoryEvent;
+use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimer;
 
 final class NamespaceDurableStateQuotaTest extends TestCase
 {
@@ -30,6 +43,7 @@ final class NamespaceDurableStateQuotaTest extends TestCase
         $this->createNamespace('tenant-b');
         $this->configureWorkflowTypes([
             'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+            'tests.interactive-command-workflow' => InteractiveCommandWorkflow::class,
         ]);
     }
 
@@ -241,6 +255,249 @@ final class NamespaceDurableStateQuotaTest extends TestCase
         $this->registerWorkerThroughApi('tenant-b', 'worker-one')->assertCreated();
     }
 
+    public function test_pending_workflow_task_limit_rolls_back_a_start_without_blocking_another_namespace(): void
+    {
+        config(['server.namespace_durable_state.overrides' => [
+            'default' => ['max_pending_workflow_tasks' => 1],
+        ]]);
+
+        $this->startWorkflow('default', 'task-capacity-one')->assertCreated();
+
+        $this->startWorkflow('default', 'task-capacity-two')
+            ->assertStatus(429)
+            ->assertHeader('Retry-After', '60')
+            ->assertJsonPath('reason', 'namespace_pending_workflow_tasks_exhausted')
+            ->assertJsonPath('resource', NamespaceDurableStateQuota::PENDING_WORKFLOW_TASKS)
+            ->assertJsonPath('retryable', true);
+
+        $this->assertFalse(WorkflowInstance::query()->whereKey('task-capacity-two')->exists());
+        $this->assertSame(1, WorkflowTask::query()->where('namespace', 'default')->count());
+
+        $this->startWorkflow('tenant-b', 'tenant-b-task-capacity')->assertCreated();
+    }
+
+    public function test_pending_workflow_task_limit_allows_net_neutral_task_replacement(): void
+    {
+        config(['server.namespace_durable_state.overrides' => [
+            'default' => ['max_pending_workflow_tasks' => 1],
+        ]]);
+
+        $runId = (string) $this->startWorkflow('default', 'task-replacement')
+            ->assertCreated()
+            ->json('run_id');
+
+        $this->runReadyWorkflowTask($runId);
+
+        $this->assertSame(1, WorkflowTask::query()
+            ->where('namespace', 'default')
+            ->where('status', 'ready')
+            ->count());
+        $this->assertDatabaseHas('workflow_tasks', [
+            'workflow_run_id' => $runId,
+            'task_type' => 'activity',
+            'status' => 'ready',
+        ]);
+    }
+
+    public function test_command_and_history_limits_derive_namespace_and_roll_back_signals(): void
+    {
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'command-history-capacity',
+                'workflow_type' => 'tests.interactive-command-workflow',
+                'task_queue' => 'default',
+            ])
+            ->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+        $commandCount = WorkflowCommand::query()
+            ->where('workflow_instance_id', 'command-history-capacity')
+            ->count();
+        $historyCount = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->count();
+
+        config(['server.namespace_durable_state.overrides' => [
+            'default' => ['max_workflow_commands' => $commandCount],
+        ]]);
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/command-history-capacity/signal/advance', [
+                'input' => ['Ada'],
+                'request_id' => 'command-capacity-signal',
+            ])
+            ->assertStatus(429)
+            ->assertJsonPath('reason', 'namespace_workflow_commands_exhausted');
+
+        $this->assertSame($commandCount, WorkflowCommand::query()
+            ->where('workflow_instance_id', 'command-history-capacity')
+            ->count());
+        $this->assertSame($historyCount, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->count());
+
+        config(['server.namespace_durable_state.overrides' => [
+            'default' => ['max_workflow_history_events' => $historyCount],
+        ]]);
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/command-history-capacity/signal/advance', [
+                'input' => ['Grace'],
+                'request_id' => 'history-capacity-signal',
+            ])
+            ->assertStatus(429)
+            ->assertJsonPath('reason', 'namespace_workflow_history_events_exhausted');
+
+        $this->assertSame($commandCount, WorkflowCommand::query()
+            ->where('workflow_instance_id', 'command-history-capacity')
+            ->count());
+        $this->assertSame($historyCount, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->count());
+
+        $this->withHeaders($this->apiHeaders('tenant-b'))
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'tenant-b-command-history',
+                'workflow_type' => 'tests.interactive-command-workflow',
+                'task_queue' => 'default',
+            ])
+            ->assertCreated();
+
+        $this->withHeaders($this->apiHeaders('tenant-b'))
+            ->postJson('/api/workflows/tenant-b-command-history/signal/advance', [
+                'input' => ['Katherine'],
+                'request_id' => 'tenant-b-signal',
+            ])
+            ->assertAccepted();
+    }
+
+    public function test_timer_and_wait_limits_cover_lifetime_and_active_rows(): void
+    {
+        $defaultRunId = (string) $this->startWorkflow('default', 'timer-wait-default')
+            ->assertCreated()
+            ->json('run_id');
+        $tenantRunId = (string) $this->startWorkflow('tenant-b', 'timer-wait-tenant')
+            ->assertCreated()
+            ->json('run_id');
+
+        config(['server.namespace_durable_state.overrides' => [
+            'default' => ['max_workflow_timers' => 0],
+        ]]);
+        $this->assertQuotaRejection(
+            'namespace_workflow_timers_exhausted',
+            fn () => $this->createTimer($defaultRunId, 1),
+        );
+
+        config(['server.namespace_durable_state.overrides' => [
+            'default' => ['max_pending_workflow_timers' => 0],
+        ]]);
+        $this->assertQuotaRejection(
+            'namespace_pending_workflow_timers_exhausted',
+            fn () => $this->createTimer($defaultRunId, 2),
+        );
+
+        config(['server.namespace_durable_state.overrides' => [
+            'default' => ['max_workflow_run_waits' => 0],
+        ]]);
+        $this->assertQuotaRejection(
+            'namespace_workflow_run_waits_exhausted',
+            fn () => $this->createWait('timer-wait-default', $defaultRunId, 'lifetime-wait'),
+        );
+
+        config(['server.namespace_durable_state.overrides' => [
+            'default' => ['max_open_workflow_run_waits' => 0],
+        ]]);
+        $this->assertQuotaRejection(
+            'namespace_open_workflow_run_waits_exhausted',
+            fn () => $this->createWait('timer-wait-default', $defaultRunId, 'open-wait'),
+        );
+
+        $this->createTimer($tenantRunId, 1);
+        $this->createWait('timer-wait-tenant', $tenantRunId, 'tenant-wait');
+
+        $this->assertSame(0, WorkflowTimer::query()->where('workflow_run_id', $defaultRunId)->count());
+        $this->assertSame(0, WorkflowRunWait::query()->where('workflow_run_id', $defaultRunId)->count());
+        $this->assertSame(1, WorkflowTimer::query()->where('workflow_run_id', $tenantRunId)->count());
+        $this->assertSame(1, WorkflowRunWait::query()->where('workflow_run_id', $tenantRunId)->count());
+    }
+
+    public function test_stream_limits_combine_inbound_and_outbound_growth(): void
+    {
+        $outbound = DB::transaction(fn () => WorkflowDurableStream::query()->create([
+            'namespace' => 'default',
+            'workflow_instance_id' => 'stream-owner',
+            'workflow_run_id' => 'stream-run',
+            'stream_name' => 'outbound',
+            'status' => WorkflowDurableStream::STATUS_OPEN,
+        ]));
+        $inbound = DB::transaction(fn () => WorkflowInboundStream::query()->create([
+            'namespace' => 'default',
+            'workflow_instance_id' => 'stream-owner',
+            'stream_name' => 'inbound',
+        ]));
+
+        config(['server.namespace_durable_state.overrides' => [
+            'default' => ['max_workflow_streams' => 2],
+        ]]);
+        $this->assertQuotaRejection(
+            'namespace_workflow_streams_exhausted',
+            fn () => WorkflowInboundStream::query()->create([
+                'namespace' => 'default',
+                'workflow_instance_id' => 'stream-owner',
+                'stream_name' => 'second-inbound',
+            ]),
+        );
+
+        config(['server.namespace_durable_state.overrides' => []]);
+        DB::transaction(fn () => WorkflowDurableStreamItem::query()->create([
+            'stream_id' => $outbound->id,
+            'namespace' => 'default',
+            'workflow_run_id' => 'stream-run',
+            'stream_name' => 'outbound',
+            'offset' => 0,
+            'emitted_at' => now(),
+        ]));
+
+        config(['server.namespace_durable_state.overrides' => [
+            'default' => ['max_workflow_stream_items' => 1],
+        ]]);
+        $this->assertQuotaRejection(
+            'namespace_workflow_stream_items_exhausted',
+            fn () => WorkflowInboundStreamItem::query()->create([
+                'stream_id' => $inbound->id,
+                'namespace' => 'default',
+                'workflow_instance_id' => 'stream-owner',
+                'stream_name' => 'inbound',
+                'message_id' => 'message-one',
+                'position' => 1,
+                'payload_codec' => 'avro',
+                'payload_blob' => 'payload',
+                'payload_hash' => hash('sha256', 'payload'),
+            ]),
+        );
+
+        $tenantStream = DB::transaction(fn () => WorkflowInboundStream::query()->create([
+            'namespace' => 'tenant-b',
+            'workflow_instance_id' => 'tenant-stream-owner',
+            'stream_name' => 'inbound',
+        ]));
+        DB::transaction(fn () => WorkflowInboundStreamItem::query()->create([
+            'stream_id' => $tenantStream->id,
+            'namespace' => 'tenant-b',
+            'workflow_instance_id' => 'tenant-stream-owner',
+            'stream_name' => 'inbound',
+            'message_id' => 'tenant-message-one',
+            'position' => 1,
+            'payload_codec' => 'avro',
+            'payload_blob' => 'payload',
+            'payload_hash' => hash('sha256', 'payload'),
+        ]));
+
+        $this->assertSame(1, WorkflowDurableStreamItem::query()->where('namespace', 'default')->count());
+        $this->assertSame(0, WorkflowInboundStreamItem::query()->where('namespace', 'default')->count());
+        $this->assertSame(1, WorkflowInboundStreamItem::query()->where('namespace', 'tenant-b')->count());
+    }
+
     public function test_override_cannot_exceed_hard_limit_and_metrics_report_usage(): void
     {
         config([
@@ -260,6 +517,8 @@ final class NamespaceDurableStateQuotaTest extends TestCase
 
         $this->startWorkflow('default', 'metrics-one')->assertCreated();
 
+        $historyCount = WorkflowHistoryEvent::query()->count();
+
         $this->withHeaders($this->apiHeaders())
             ->getJson('/api/system/metrics')
             ->assertOk()
@@ -274,6 +533,22 @@ final class NamespaceDurableStateQuotaTest extends TestCase
             ->assertJsonPath(
                 'metrics.'.NamespaceDurableStateQuota::METRIC_NAME.'.remaining.workflow_runs',
                 1,
+            )
+            ->assertJsonPath(
+                'metrics.'.NamespaceDurableStateQuota::METRIC_NAME.'.usage.workflow_history_events',
+                $historyCount,
+            )
+            ->assertJsonPath(
+                'metrics.'.NamespaceDurableStateQuota::METRIC_NAME.'.usage.workflow_tasks',
+                1,
+            )
+            ->assertJsonPath(
+                'metrics.'.NamespaceDurableStateQuota::METRIC_NAME.'.usage.pending_workflow_tasks',
+                1,
+            )
+            ->assertJsonPath(
+                'metrics.'.NamespaceDurableStateQuota::METRIC_NAME.'.usage.workflow_streams',
+                0,
             );
     }
 
@@ -365,5 +640,41 @@ final class NamespaceDurableStateQuotaTest extends TestCase
                 'runtime' => 'php',
                 'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
             ]);
+    }
+
+    private function createTimer(string $runId, int $sequence): WorkflowTimer
+    {
+        return DB::transaction(fn () => WorkflowTimer::query()->create([
+            'workflow_run_id' => $runId,
+            'sequence' => $sequence,
+            'status' => TimerStatus::Pending->value,
+            'delay_seconds' => 60,
+            'fire_at' => now()->addMinute(),
+        ]));
+    }
+
+    private function createWait(string $workflowId, string $runId, string $waitId): WorkflowRunWait
+    {
+        return DB::transaction(fn () => WorkflowRunWait::query()->create([
+            'id' => $runId.'-'.$waitId,
+            'workflow_run_id' => $runId,
+            'workflow_instance_id' => $workflowId,
+            'wait_id' => $waitId,
+            'position' => 1,
+            'kind' => 'signal',
+            'status' => 'open',
+            'opened_at' => now(),
+        ]));
+    }
+
+    /** @param callable(): mixed $mutation */
+    private function assertQuotaRejection(string $reason, callable $mutation): void
+    {
+        try {
+            DB::transaction($mutation);
+            $this->fail("Expected namespace durable-state rejection [{$reason}].");
+        } catch (NamespaceDurableStateException $exception) {
+            $this->assertSame($reason, $exception->reason);
+        }
     }
 }
