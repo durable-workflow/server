@@ -810,6 +810,52 @@ class ServerPerfHarnessContractTest extends TestCase
         }
     }
 
+    public function test_namespace_isolation_experiment_retains_its_adversarial_contract(): void
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $driver = file_get_contents($repoRoot.'/scripts/perf/namespace_isolation.py');
+        $runner = file_get_contents($repoRoot.'/scripts/perf/run-namespace-isolation.sh');
+
+        $this->assertNotFalse($driver);
+        $this->assertNotFalse($runner);
+
+        foreach ([
+            'workflow_start_history',
+            'workflow_start_timer',
+            'workflow_start_child',
+            'workflow_start_external',
+            'standalone_activity',
+            'create_schedule',
+            'execute_nexus_operation',
+            'describe_task_queue',
+            '"queue_samples": queue_samples',
+            '"operator_metrics": metric_snapshots',
+            '"/system/metrics"',
+            'await disruption(args.compose_project, "redis"',
+            'await disruption(args.compose_project, "server"',
+            'no deterministic noisy-namespace throttling was observed',
+            'control namespace completed fewer than five workflows',
+            'a namespace failed the post-pressure recovery probe',
+            'queue-depth diagnostics were not captured for both namespaces',
+            'no noisy-namespace budget rejection was visible in operator metrics',
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $driver);
+        }
+
+        foreach ([
+            'durableworkflow/server:2.0.3',
+            'durable-workflow==$SDK_VERSION',
+            'DW_NAMESPACE_ADMISSION_OVERRIDES',
+            'DW_NAMESPACE_DURABLE_OVERRIDES',
+            'DW_WORKER_LONG_POLL_MAX_CONCURRENT',
+            'DW_EXTERNAL_PAYLOAD_MAX_BYTES_PER_NAMESPACE',
+            'DW_SERVICE_BOUNDARY_NAMESPACE_RATE_LIMIT_PER_MINUTE',
+            'docker compose -p "$PROJECT" -f "$COMPOSE_FILE" down -v --remove-orphans',
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $runner);
+        }
+    }
+
     /**
      * @return array<string, string>
      */

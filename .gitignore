@@ -8,6 +8,7 @@
 /benchmarks/capacity/v1/bindings/python/.deps/
 /benchmarks/capacity/v1/bindings/rust/target/
 /build/perf
+/build/namespace-isolation
 __pycache__/
 *.py[cod]
 .env
