@@ -290,8 +290,9 @@ ssh "${ssh_options[@]}" "$SSH_USER@$INSTANCE_IP" \
 soak_status=$?
 set -e
 
-mkdir -p build
-if ! scp "${ssh_options[@]}" -r "$SSH_USER@$INSTANCE_IP:server/build/perf" build/; then
+mkdir -p build/perf
+if ! ssh "${ssh_options[@]}" "$SSH_USER@$INSTANCE_IP" \
+  'tar -C "$HOME/server/build/perf" -czf - .' | tar -C build/perf -xzf -; then
   log "WARNING: perf artifacts could not be copied from instance $INSTANCE_ID"
   if [[ "$soak_status" -eq 0 ]]; then
     soak_status=1
