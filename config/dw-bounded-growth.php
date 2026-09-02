@@ -140,11 +140,12 @@ return [
             'dimensions' => [
                 'server_id_hash',
                 'pool',
+                'optional_namespace_hash',
                 'slot_index',
             ],
             'ttl' => 'server.polling.timeout + 5 seconds, with a runtime minimum of 1 second.',
-            'bound' => 'At most server.polling.max_concurrent_waits workflow/activity wait keys per server node when set; otherwise PHP_CLI_SERVER_WORKERS minus the configured or derived server.polling.reserved_http_workers, the derived query-task poll wait budget, and an additional API worker reserve in the standalone CLI server image. When server.polling.reserved_http_workers is unset, the standalone CLI server derives a reserve that keeps more than half of declared PHP_CLI_SERVER_WORKERS outside held long-poll waits. Query-task poll wait keys are capped by server.query_tasks.max_concurrent_poll_waits when set, otherwise one derived slot when PHP_CLI_SERVER_WORKERS leaves capacity.',
-            'admission' => 'Empty workflow, activity, and query-task worker long-poll waits must acquire a slot before sleeping. Query-task polls use a separate pool so live workflow queries are not starved by idle workflow/activity waits. If all slots for a pool are occupied, guarded worker polls return a protocol-compatible HTTP 200 empty response after the advertised Retry-After cooldown. The bounded cooldown prevents published workers from terminating on an HTTP error or immediately repolling while avoiding another full long-poll wait. Pending tasks are claimed by the initial probe before any idle wait slot or backpressure response is required.',
+            'bound' => 'At most server.polling.max_concurrent_waits workflow/activity wait keys per server node when set; otherwise PHP_CLI_SERVER_WORKERS minus the configured or derived HTTP and query-task reserves. Optional per-namespace worker and query-task caps add at most one namespace key for each held global slot, and each effective namespace cap is clamped to its global pool cap.',
+            'admission' => 'Empty workflow, activity, and query-task worker long-poll waits must acquire a global slot before sleeping and, when configured, a namespace slot. Namespace caps prevent one namespace from occupying the whole pool and fail closed if shared cache authority is unavailable. Query-task polls use a separate pool, and pending tasks are claimed before a poll needs an idle wait slot.',
             'eviction' => 'Slots are released when the poll returns; TTL clears stale holders after process death.',
         ],
 

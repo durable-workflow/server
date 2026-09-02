@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\WorkerRegistration;
+use App\Support\LongPollWaitSlotStore;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Feature\Concerns\ServerTestHelpers;
@@ -104,6 +105,50 @@ class WorkerPollBackpressureTest extends TestCase
 
         $this->assertSame('backpressure-queue', $worker->task_queue);
         $this->assertSame('active', $worker->status);
+    }
+
+    public function test_namespace_wait_exhaustion_does_not_consume_another_namespaces_slot(): void
+    {
+        config([
+            'server.polling.max_concurrent_waits' => 2,
+            'server.polling.max_concurrent_waits_per_namespace' => 1,
+        ]);
+        $this->createNamespace('tenant-b');
+        $this->registerWorker(
+            workerId: 'tenant-b-worker',
+            taskQueue: 'backpressure-queue',
+            namespace: 'tenant-b',
+            supportedWorkflowTypes: ['BackpressureWorkflow'],
+        );
+
+        /** @var LongPollWaitSlotStore $waitSlots */
+        $waitSlots = app(LongPollWaitSlotStore::class);
+        $heldDefaultSlot = $waitSlots->tryAcquire(2, 'default');
+        $this->assertNotNull($heldDefaultSlot);
+
+        try {
+            $this->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'backpressured-worker',
+                'task_queue' => 'backpressure-queue',
+                'poll_request_id' => 'default-namespace-capacity',
+                'timeout_seconds' => 1,
+            ], $this->workerHeaders())
+                ->assertOk()
+                ->assertJsonPath('reason', 'long_poll_capacity_exhausted');
+
+            $this->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'tenant-b-worker',
+                'task_queue' => 'backpressure-queue',
+                'poll_request_id' => 'tenant-b-available-capacity',
+                'timeout_seconds' => 1,
+            ], $this->workerHeaders('tenant-b'))
+                ->assertOk()
+                ->assertJsonPath('task', null)
+                ->assertJsonPath('poll_status', 'empty')
+                ->assertJsonMissingPath('reason');
+        } finally {
+            $heldDefaultSlot->release();
+        }
     }
 
     /**

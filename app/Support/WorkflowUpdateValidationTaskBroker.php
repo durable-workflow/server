@@ -150,6 +150,7 @@ final class WorkflowUpdateValidationTaskBroker
             wakeChannels: $this->signals->updateValidationTaskPollChannels($namespace, $worker->task_queue),
             reserveWorkerWaitSlot: true,
             waitSlotPool: 'query-task',
+            waitSlotNamespace: $namespace,
         );
 
         return is_array($task) ? $task : null;

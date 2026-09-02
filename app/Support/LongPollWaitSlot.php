@@ -4,36 +4,46 @@ namespace App\Support;
 
 final class LongPollWaitSlot
 {
+    /**
+     * @param  list<array{cache: ServerPollingCache, key: string, owner: string}>  $reservations
+     */
     private function __construct(
-        private readonly ?ServerPollingCache $cache,
-        private readonly ?string $key,
-        private readonly ?string $owner,
+        private readonly array $reservations,
     ) {}
 
     public static function unlimited(): self
     {
-        return new self(null, null, null);
+        return new self([]);
     }
 
     public static function acquired(ServerPollingCache $cache, string $key, string $owner): self
     {
-        return new self($cache, $key, $owner);
+        return new self([compact('cache', 'key', 'owner')]);
+    }
+
+    public static function combine(self ...$slots): self
+    {
+        $reservations = [];
+
+        foreach ($slots as $slot) {
+            array_push($reservations, ...$slot->reservations);
+        }
+
+        return new self($reservations);
     }
 
     public function release(): void
     {
-        if ($this->cache === null || $this->key === null || $this->owner === null) {
-            return;
-        }
+        foreach (array_reverse($this->reservations) as $reservation) {
+            try {
+                $store = $reservation['cache']->store();
 
-        try {
-            $store = $this->cache->store();
-
-            if ($store->get($this->key) === $this->owner) {
-                $store->forget($this->key);
+                if ($store->get($reservation['key']) === $reservation['owner']) {
+                    $store->forget($reservation['key']);
+                }
+            } catch (\Throwable) {
+                continue;
             }
-        } catch (\Throwable) {
-            return;
         }
     }
 }
