@@ -251,6 +251,7 @@ for name in \
   DW_PERF_CONCURRENCY \
   DW_PERF_NAMESPACES \
   DW_PERF_TASK_QUEUES \
+  DW_PERF_REDIS_CACHE_DB \
   DW_PERF_MAX_SERVER_MEMORY_MB \
   DW_PERF_MAX_POLLING_KEYS \
   DW_PERF_MAX_FINAL_POLLING_KEYS \
@@ -274,7 +275,7 @@ for name in \
   RUNNER_NAME \
   RUNNER_OS \
   RUNNER_ARCH \
-  RUNNER_ENVIRONMENT
+  DW_PERF_RUNNER_ENVIRONMENT
 do
   printf 'export %s=%q\n' "$name" "${!name-}" >> "$remote_env"
 done

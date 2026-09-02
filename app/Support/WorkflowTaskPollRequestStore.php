@@ -142,13 +142,20 @@ class WorkflowTaskPollRequestStore
         string $pollStatus,
         array $taskKinds = ['workflow'],
     ): void {
-        $this->bindTaskKinds(
+        $taskKinds = $this->bindTaskKinds(
             $namespace,
             $taskQueue,
             $buildId,
             $leaseOwner,
             $pollRequestId,
             $taskKinds,
+        );
+
+        $resultTtlSeconds = $this->resultTtlSeconds($task);
+        $this->store()->put(
+            $this->bindingKey($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId),
+            ['task_kinds' => $taskKinds],
+            now()->addSeconds($resultTtlSeconds),
         );
 
         $this->store()->put(
@@ -158,7 +165,7 @@ class WorkflowTaskPollRequestStore
                 'task' => $task,
                 'poll_status' => $this->normalizePollStatus($pollStatus, $task),
             ],
-            now()->addSeconds($this->resultTtlSeconds($task)),
+            now()->addSeconds($resultTtlSeconds),
         );
 
         $this->forgetPending($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId);
@@ -262,7 +269,7 @@ class WorkflowTaskPollRequestStore
 
     private function bindingTtlSeconds(): int
     {
-        return 3600;
+        return $this->pendingTtlSeconds();
     }
 
     private function waitTimeoutMilliseconds(): int

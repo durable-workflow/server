@@ -54,6 +54,22 @@ def env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in ("1", "true", "yes", "on")
 
 
+def redis_cache_database() -> int:
+    raw = os.environ.get("DW_PERF_REDIS_CACHE_DB", "1").strip()
+    if not re.fullmatch(r"\d+", raw):
+        raise ValueError("DW_PERF_REDIS_CACHE_DB must be an integer from 0 through 15")
+
+    database = int(raw)
+    if database > 15:
+        raise ValueError("DW_PERF_REDIS_CACHE_DB must be an integer from 0 through 15")
+
+    return database
+
+
+def runner_environment() -> str:
+    return os.environ.get("DW_PERF_RUNNER_ENVIRONMENT") or os.environ.get("RUNNER_ENVIRONMENT", "")
+
+
 class Metrics:
     def __init__(self) -> None:
         self.lock = threading.Lock()
@@ -135,7 +151,7 @@ class Metrics:
                         f'dw_perf_redis_server_keys_by_policy{{policy="{policy_id}"}} {count}'
                         for policy_id, count in sorted(self.latest["redis_server_keys_by_policy"].items())
                     ],
-                    "# HELP dw_perf_redis_db_keys Redis DBSIZE count.",
+                    "# HELP dw_perf_redis_db_keys Redis cache database DBSIZE count.",
                     "# TYPE dw_perf_redis_db_keys gauge",
                     f"dw_perf_redis_db_keys {self.latest['redis_db_keys']}",
                     "# HELP dw_perf_assertion_failed Whether the harness failed an assertion.",
@@ -593,12 +609,15 @@ def docker_stats(project: str) -> dict[str, int]:
 
 
 def redis_info(project: str) -> dict[str, int]:
+    cache_database = redis_cache_database()
     used_memory = 0
     db_keys = 0
     server_keys = 0
     server_keys_by_policy = {policy_id: 0 for policy_id in SERVER_CACHE_KEY_PATTERNS}
 
-    result = run_command(compose_command(project, "exec", "-T", "redis", "sh", "-lc", redis_sampling_script()))
+    result = run_command(
+        compose_command(project, "exec", "-T", "redis", "sh", "-lc", redis_sampling_script(cache_database))
+    )
     redis_ok = result.returncode == 0
     seen_used_memory = False
     seen_dbsize = False
@@ -631,6 +650,7 @@ def redis_info(project: str) -> dict[str, int]:
 
     return {
         "redis_sample_ok": 1 if redis_ok else 0,
+        "redis_cache_database": cache_database,
         "redis_used_memory_bytes": used_memory,
         "redis_db_keys": db_keys,
         "redis_polling_keys": server_keys_by_policy["workflow_task_poll_requests"],
@@ -639,15 +659,16 @@ def redis_info(project: str) -> dict[str, int]:
     }
 
 
-def redis_sampling_script() -> str:
+def redis_sampling_script(cache_database: int) -> str:
     return "\n".join(
         [
             "set -e",
             "used_memory=$(redis-cli INFO memory | sed -n 's/^used_memory://p' | tr -d '\\r' | head -n 1)",
-            "dbsize=$(redis-cli DBSIZE)",
+            f"cache_database={cache_database}",
+            "dbsize=$(redis-cli -n \"$cache_database\" DBSIZE)",
             "printf '__used_memory__=%s\\n' \"$used_memory\"",
             "printf '__dbsize__=%s\\n' \"$dbsize\"",
-            "redis-cli --scan --pattern '*server:*' | sed 's/^/__server_key__=/'",
+            "redis-cli -n \"$cache_database\" --scan --pattern '*server:*' | sed 's/^/__server_key__=/'",
         ]
     )
 
@@ -1093,7 +1114,7 @@ def evidence_provenance(base_url: str, compose_project: str) -> dict[str, Any]:
         "runner_name": os.environ.get("RUNNER_NAME", ""),
         "runner_os": os.environ.get("RUNNER_OS", ""),
         "runner_arch": os.environ.get("RUNNER_ARCH", ""),
-        "runner_environment": os.environ.get("RUNNER_ENVIRONMENT", ""),
+        "runner_environment": runner_environment(),
         "compose_project": compose_project,
         "base_url": base_url,
         "bounded_growth_policy_sha256": file_sha256(policy_path),
@@ -1454,6 +1475,7 @@ def main() -> int:
             "max_server_cache_keys": max_server_cache_keys,
             "max_server_cache_keys_by_policy": max_server_cache_keys_by_policy,
             "max_redis_db_keys": max_redis_db_keys,
+            "redis_cache_database": int(final_sample.get("redis_cache_database") or 0),
             "final_polling_keys": final_polling_keys,
             "final_polling_pattern_keys": final_pattern_polling_keys,
             "final_server_cache_keys": final_server_cache_keys,
