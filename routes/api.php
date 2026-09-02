@@ -26,6 +26,7 @@ use App\Http\Controllers\Api\WorkflowStreamController;
 use App\Http\Middleware\Authenticate;
 use App\Http\Middleware\ControlPlaneVersionResolver;
 use App\Http\Middleware\EnforceNamespaceRequestAdmission;
+use App\Http\Middleware\EnforceStandaloneActivityHostQuota;
 use App\Http\Middleware\NamespaceResolver;
 use App\Http\Middleware\RequireRole;
 use App\Http\Middleware\RequireTopologyRoles;
@@ -188,7 +189,7 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
     // history, and listing APIs without authoring a wrapper Workflow.
     Route::prefix('activities')->middleware([$operator, $cpv, $httpControl, $workflowBootstrap, $ns, $namespaceAdmission])->group(function () {
         Route::get('/', [ActivityController::class, 'index']);
-        Route::post('/', [ActivityController::class, 'start']);
+        Route::post('/', [ActivityController::class, 'start'])->middleware(EnforceStandaloneActivityHostQuota::class);
         Route::get('/{activityId}', [ActivityController::class, 'show']);
     });
 
