@@ -12,6 +12,7 @@ use App\Support\HistoryRetentionEnforcer;
 use App\Support\LongPollCapacityExhaustedException;
 use App\Support\MessageStreamsContract;
 use App\Support\MessageStreamService;
+use App\Support\NamespaceDurableStateQuota;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\PayloadCodecContract;
@@ -151,6 +152,7 @@ class WorkerController
         private readonly WorkerCompatibilityHeartbeatRecorder $compatibilityHeartbeats,
         private readonly WorkerProtocolMutationRetrier $storageMutations,
         private readonly MessageStreamService $messageStreams,
+        private readonly NamespaceDurableStateQuota $durableStateQuota,
     ) {}
 
     /**
@@ -324,79 +326,83 @@ class WorkerController
         $releaseLeasesForRegistration = $this->shouldReleaseLeasesForWorkerRegistration($existing, $processMetrics);
 
         try {
-            $registration = $this->storageMutations->run(function () use (
-                $namespace,
-                $workerId,
-                $validated,
-                $workflowDefinitionFingerprints,
-                $workflowCommandContracts,
-                $maxWorkflowTasks,
-                $maxActivityTasks,
-                $maxWorkerSessions,
-                $taskSlots,
-                $processMetrics,
-                $registrationStatus,
-                $releaseLeasesForRegistration,
-                $workerCapabilities,
-                $capabilityManifest,
-            ): WorkerRegistration {
-                $registration = WorkerRegistration::updateOrCreate(
-                    [
-                        'worker_id' => $workerId,
-                        'namespace' => $namespace,
-                    ],
-                    [
-                        'task_queue' => $validated['task_queue'],
-                        'runtime' => $validated['runtime'],
-                        'sdk_version' => $validated['sdk_version'] ?? null,
-                        'build_id' => $validated['build_id'] ?? null,
-                        'supported_workflow_types' => $validated['supported_workflow_types'] ?? [],
-                        'workflow_definition_fingerprints' => $workflowDefinitionFingerprints,
-                        'workflow_command_contracts' => $workflowCommandContracts,
-                        'supported_activity_types' => $validated['supported_activity_types'] ?? [],
-                        'capabilities' => $workerCapabilities,
-                        'capability_manifest' => $capabilityManifest,
-                        'max_concurrent_workflow_tasks' => $maxWorkflowTasks,
-                        'max_concurrent_activity_tasks' => $maxActivityTasks,
-                        'max_concurrent_worker_sessions' => $maxWorkerSessions,
-                        'available_workflow_slots' => $this->boundedSlotCount(
-                            $taskSlots['workflow_available'] ?? null,
-                            $maxWorkflowTasks,
-                        ),
-                        'available_activity_slots' => $this->boundedSlotCount(
-                            $taskSlots['activity_available'] ?? null,
-                            $maxActivityTasks,
-                        ),
-                        'available_session_slots' => $this->boundedSlotCount(
-                            $taskSlots['session_available'] ?? null,
-                            $maxWorkerSessions,
-                        ),
-                        'process_metrics' => $processMetrics,
-                        'heartbeat_interval_seconds' => $validated['heartbeat_interval_seconds'] ?? null,
-                        'last_heartbeat_at' => now(),
-                        'status' => $registrationStatus,
-                    ]
-                );
+            $registration = $this->durableStateQuota->mutate(
+                (string) $namespace,
+                [NamespaceDurableStateQuota::WORKER_REGISTRATIONS],
+                fn (): WorkerRegistration => $this->storageMutations->run(function () use (
+                    $namespace,
+                    $workerId,
+                    $validated,
+                    $workflowDefinitionFingerprints,
+                    $workflowCommandContracts,
+                    $maxWorkflowTasks,
+                    $maxActivityTasks,
+                    $maxWorkerSessions,
+                    $taskSlots,
+                    $processMetrics,
+                    $registrationStatus,
+                    $releaseLeasesForRegistration,
+                    $workerCapabilities,
+                    $capabilityManifest,
+                ): WorkerRegistration {
+                    $registration = WorkerRegistration::updateOrCreate(
+                        [
+                            'worker_id' => $workerId,
+                            'namespace' => $namespace,
+                        ],
+                        [
+                            'task_queue' => $validated['task_queue'],
+                            'runtime' => $validated['runtime'],
+                            'sdk_version' => $validated['sdk_version'] ?? null,
+                            'build_id' => $validated['build_id'] ?? null,
+                            'supported_workflow_types' => $validated['supported_workflow_types'] ?? [],
+                            'workflow_definition_fingerprints' => $workflowDefinitionFingerprints,
+                            'workflow_command_contracts' => $workflowCommandContracts,
+                            'supported_activity_types' => $validated['supported_activity_types'] ?? [],
+                            'capabilities' => $workerCapabilities,
+                            'capability_manifest' => $capabilityManifest,
+                            'max_concurrent_workflow_tasks' => $maxWorkflowTasks,
+                            'max_concurrent_activity_tasks' => $maxActivityTasks,
+                            'max_concurrent_worker_sessions' => $maxWorkerSessions,
+                            'available_workflow_slots' => $this->boundedSlotCount(
+                                $taskSlots['workflow_available'] ?? null,
+                                $maxWorkflowTasks,
+                            ),
+                            'available_activity_slots' => $this->boundedSlotCount(
+                                $taskSlots['activity_available'] ?? null,
+                                $maxActivityTasks,
+                            ),
+                            'available_session_slots' => $this->boundedSlotCount(
+                                $taskSlots['session_available'] ?? null,
+                                $maxWorkerSessions,
+                            ),
+                            'process_metrics' => $processMetrics,
+                            'heartbeat_interval_seconds' => $validated['heartbeat_interval_seconds'] ?? null,
+                            'last_heartbeat_at' => now(),
+                            'status' => $registrationStatus,
+                        ]
+                    );
 
-                if ($releaseLeasesForRegistration) {
-                    $this->releaseLeasedWorkflowTasksForReplacedWorker($namespace, $workerId);
-                    $this->releaseLeasedActivityTasksForReplacedWorker($namespace, $workerId);
-                }
+                    if ($releaseLeasesForRegistration) {
+                        $this->releaseLeasedWorkflowTasksForReplacedWorker($namespace, $workerId);
+                        $this->releaseLeasedActivityTasksForReplacedWorker($namespace, $workerId);
+                    }
 
-                $this->compatibilityHeartbeats->record(
-                    namespace: $namespace,
-                    workerId: $workerId,
-                    taskQueue: $validated['task_queue'],
-                    buildId: $validated['build_id'] ?? null,
-                    force: true,
-                );
+                    $this->compatibilityHeartbeats->record(
+                        namespace: $namespace,
+                        workerId: $workerId,
+                        taskQueue: $validated['task_queue'],
+                        buildId: $validated['build_id'] ?? null,
+                        force: true,
+                    );
 
-                if (is_string($namespace)) {
-                    $this->queryTasks->wakeTaskQueue($namespace, $registration->task_queue);
-                }
+                    if (is_string($namespace)) {
+                        $this->queryTasks->wakeTaskQueue($namespace, $registration->task_queue);
+                    }
 
-                return $registration;
-            });
+                    return $registration;
+                }),
+            );
         } catch (\Throwable $exception) {
             if (! BackendLockPressure::is($exception)) {
                 throw $exception;
@@ -1673,6 +1679,14 @@ class WorkerController
                         $messageStreamCursors,
                         $messageStreamWaits,
                     ): array|JsonResponse {
+                        $quotaSnapshot = $this->durableStateQuota->snapshotForMutation(
+                            (string) $namespace,
+                            [
+                                NamespaceDurableStateQuota::WORKFLOW_INSTANCES,
+                                NamespaceDurableStateQuota::WORKFLOW_RUNS,
+                                NamespaceDurableStateQuota::OPEN_WORKFLOW_RUNS,
+                            ],
+                        );
                         $leaseWorker = WorkerRegistration::query()
                             ->where('namespace', $namespace)
                             ->where('worker_id', $validated['lease_owner'])
@@ -1744,6 +1758,7 @@ class WorkerController
                             $messageStreamWaits,
                             $outcome,
                         );
+                        $this->durableStateQuota->assertNoIncreasePastLimit($quotaSnapshot);
 
                         return $outcome;
                     });

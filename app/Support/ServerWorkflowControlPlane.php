@@ -24,11 +24,26 @@ final class ServerWorkflowControlPlane implements RuntimeSignalControlPlane, Wor
         private readonly WorkflowQueryTaskBroker $queryTasks,
         private readonly ControlPlaneMutationRetrier $mutations,
         private readonly ControlPlaneFailureDiagnostics $failureDiagnostics,
+        private readonly NamespaceDurableStateQuota $durableStateQuota,
     ) {}
 
     public function start(string $workflowType, ?string $instanceId = null, array $options = []): array
     {
-        return $this->inner->start($workflowType, $instanceId, $options);
+        $namespace = $this->namespace($options);
+
+        if ($namespace === null) {
+            return $this->inner->start($workflowType, $instanceId, $options);
+        }
+
+        return $this->durableStateQuota->mutate(
+            $namespace,
+            [
+                NamespaceDurableStateQuota::WORKFLOW_INSTANCES,
+                NamespaceDurableStateQuota::WORKFLOW_RUNS,
+                NamespaceDurableStateQuota::OPEN_WORKFLOW_RUNS,
+            ],
+            fn (): array => $this->inner->start($workflowType, $instanceId, $options),
+        );
     }
 
     public function signal(string $instanceId, string $name, array $options = []): array

@@ -2,12 +2,14 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Support\AvroPayloadEnvelopeResolver;
 use App\Support\ControlPlaneProtocol;
 use App\Support\ExternalPayloadEnvelopeService;
 use App\Support\ExternalPayloadStorageUnavailable;
+use App\Support\NamespaceDurableStateQuota;
 use App\Support\NamespaceExternalPayloadStorage;
-use App\Support\PayloadCodecContract;
 use App\Support\NamespaceWorkflowScope;
+use App\Support\PayloadCodecContract;
 use App\Support\TaskQueueRoutingGate;
 use App\Support\WorkflowCommandContextFactory;
 use Carbon\CarbonInterface;
@@ -23,7 +25,6 @@ use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\StandaloneActivity\StandaloneActivityHostType;
 use Workflow\V2\Support\ExternalPayloads;
-use App\Support\AvroPayloadEnvelopeResolver;
 use Workflow\V2\Support\RunActivityView;
 use Workflow\V2\Support\StandaloneActivityStartService;
 
@@ -45,6 +46,7 @@ class ActivityController
         private readonly WorkflowCommandContextFactory $commandContexts,
         private readonly NamespaceExternalPayloadStorage $externalPayloadStorage,
         private readonly ExternalPayloadEnvelopeService $payloadEnvelopes,
+        private readonly NamespaceDurableStateQuota $durableStateQuota,
     ) {}
 
     public function start(Request $request): JsonResponse
@@ -150,22 +152,30 @@ class ActivityController
                 $arguments = ExternalPayloads::externalizeForNamespace($arguments, $payloadCodec, $namespace);
             }
 
-            $start = $this->startService->start([
-                'namespace' => $namespace,
-                'activity_id' => $activityId,
-                'activity_type' => $validated['activity_type'],
-                'activity_class' => $validated['activity_class'] ?? null,
-                'task_queue' => $taskQueue,
-                'arguments' => $arguments,
-                'payload_codec' => $payloadCodec,
-                'business_key' => $validated['business_key'] ?? null,
-                'retry_policy' => $validated['retry_policy'] ?? null,
-                'start_to_close_timeout_seconds' => $validated['start_to_close_timeout_seconds'] ?? null,
-                'schedule_to_start_timeout_seconds' => $validated['schedule_to_start_timeout_seconds'] ?? null,
-                'schedule_to_close_timeout_seconds' => $validated['schedule_to_close_timeout_seconds'] ?? null,
-                'heartbeat_timeout_seconds' => $validated['heartbeat_timeout_seconds'] ?? null,
-                'command_context' => $commandContext,
-            ]);
+            $start = $this->durableStateQuota->mutate(
+                (string) $namespace,
+                [
+                    NamespaceDurableStateQuota::WORKFLOW_INSTANCES,
+                    NamespaceDurableStateQuota::WORKFLOW_RUNS,
+                    NamespaceDurableStateQuota::OPEN_WORKFLOW_RUNS,
+                ],
+                fn (): array => $this->startService->start([
+                    'namespace' => $namespace,
+                    'activity_id' => $activityId,
+                    'activity_type' => $validated['activity_type'],
+                    'activity_class' => $validated['activity_class'] ?? null,
+                    'task_queue' => $taskQueue,
+                    'arguments' => $arguments,
+                    'payload_codec' => $payloadCodec,
+                    'business_key' => $validated['business_key'] ?? null,
+                    'retry_policy' => $validated['retry_policy'] ?? null,
+                    'start_to_close_timeout_seconds' => $validated['start_to_close_timeout_seconds'] ?? null,
+                    'schedule_to_start_timeout_seconds' => $validated['schedule_to_start_timeout_seconds'] ?? null,
+                    'schedule_to_close_timeout_seconds' => $validated['schedule_to_close_timeout_seconds'] ?? null,
+                    'heartbeat_timeout_seconds' => $validated['heartbeat_timeout_seconds'] ?? null,
+                    'command_context' => $commandContext,
+                ]),
+            );
         } catch (ExternalPayloadStorageUnavailable $exception) {
             return ControlPlaneProtocol::jsonForRequest(
                 $request,
@@ -339,7 +349,6 @@ class ActivityController
     }
 
     /**
-     * @param object $summary
      * @return array<string, mixed>
      */
     private function formatActivityListEntry(object $summary): array
@@ -416,7 +425,7 @@ class ActivityController
     }
 
     /**
-     * @param array<string, mixed> $activityView
+     * @param  array<string, mixed>  $activityView
      * @return list<array<string, mixed>>
      */
     private function formatAttempts(array $activityView, ?ActivityExecution $execution): array
@@ -430,7 +439,7 @@ class ActivityController
     }
 
     /**
-     * @param array<string, mixed> $attempt
+     * @param  array<string, mixed>  $attempt
      * @return array<string, mixed>
      */
     private function formatAttempt(array $attempt, ?ActivityExecution $execution): array
@@ -468,7 +477,7 @@ class ActivityController
     }
 
     /**
-     * @param list<array<string, mixed>> $attempts
+     * @param  list<array<string, mixed>>  $attempts
      * @return array<string, mixed>|null
      */
     private function currentAttempt(array $attempts, ?ActivityExecution $execution): ?array

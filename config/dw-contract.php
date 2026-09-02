@@ -374,6 +374,24 @@ return [
             'since' => '2.0.3',
             'legacy' => 'WORKFLOW_SERVER_NAMESPACE_ADMISSION_OVERRIDES',
         ],
+        'DW_NAMESPACE_DURABLE_LIMITS' => [
+            'description' => 'JSON object of default per-namespace durable row limits: max_workflow_instances, max_workflow_runs, max_open_workflow_runs, max_schedules, max_schedule_history_events, and max_worker_registrations. An empty object is unlimited.',
+            'default' => '{}',
+            'since' => '2.0.3',
+            'legacy' => 'WORKFLOW_SERVER_NAMESPACE_DURABLE_LIMITS',
+        ],
+        'DW_NAMESPACE_DURABLE_HARD_LIMITS' => [
+            'description' => 'JSON object of non-bypassable ceilings for the namespace durable row limit fields, including per-namespace overrides. An empty object adds no operator hard ceilings.',
+            'default' => '{}',
+            'since' => '2.0.3',
+            'legacy' => 'WORKFLOW_SERVER_NAMESPACE_DURABLE_HARD_LIMITS',
+        ],
+        'DW_NAMESPACE_DURABLE_OVERRIDES' => [
+            'description' => 'JSON object keyed by namespace with optional namespace durable row limit overrides. Hard limits remain authoritative.',
+            'default' => '{}',
+            'since' => '2.0.3',
+            'legacy' => 'WORKFLOW_SERVER_NAMESPACE_DURABLE_OVERRIDES',
+        ],
         'DW_DUE_TIMER_RECOVERY_SCAN_LIMIT' => [
             'description' => 'Maximum due service-mode timer tasks to recover per worker poll pass.',
             'default' => '5',
