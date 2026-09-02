@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "1c156ae1a4f723e61e782de6fe41b790",
+    "content-hash": "9eec1cee595983587c9e39b8d694f9ef",
     "packages": [
         {
             "name": "apache/avro",
@@ -504,16 +504,16 @@
         },
         {
             "name": "durable-workflow/workflow",
-            "version": "2.0.0",
+            "version": "2.0.3",
             "source": {
                 "type": "git",
                 "url": "https://github.com/durable-workflow/workflow.git",
-                "reference": "746edb32aef314d3d0e5db62c305c7b4b3c1f3e9"
+                "reference": "9e351efdd3eff38d2305eec248c90392846cec35"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/durable-workflow/workflow/zipball/746edb32aef314d3d0e5db62c305c7b4b3c1f3e9",
-                "reference": "746edb32aef314d3d0e5db62c305c7b4b3c1f3e9",
+                "url": "https://api.github.com/repos/durable-workflow/workflow/zipball/9e351efdd3eff38d2305eec248c90392846cec35",
+                "reference": "9e351efdd3eff38d2305eec248c90392846cec35",
                 "shasum": ""
             },
             "require": {
@@ -542,8 +542,11 @@
                         "Workflow\\Providers\\WorkflowServiceProvider"
                     ]
                 },
+                "branch-alias": {
+                    "dev-main": "2.0.x-dev"
+                },
                 "durable-workflow": {
-                    "product-train": "2.0.0",
+                    "product-train": "2.0.3",
                     "laravel-embedded-upgrade-contract": "resources/laravel-embedded-upgrade-contract.json",
                     "laravel-dependency-security-policy": "resources/laravel-dependency-security-policy.json"
                 }
@@ -570,9 +573,9 @@
             "description": "Embedded durable workflow runtime and orchestration engine for Laravel applications.",
             "support": {
                 "issues": "https://github.com/durable-workflow/workflow/issues",
-                "source": "https://github.com/durable-workflow/workflow/tree/2.0.0"
+                "source": "https://github.com/durable-workflow/workflow/tree/2.0.3"
             },
-            "time": "2026-09-01T00:07:11+00:00"
+            "time": "2026-09-02T19:15:12+00:00"
         },
         {
             "name": "egulias/email-validator",
