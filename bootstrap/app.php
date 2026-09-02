@@ -7,6 +7,7 @@ use App\Support\BackendLockPressure;
 use App\Support\ControlPlaneFailureDiagnostics;
 use App\Support\ControlPlaneOperation;
 use App\Support\ControlPlaneProtocol;
+use App\Support\NamespaceDurableStateException;
 use App\Support\RuntimeExternalPayloadAudit;
 use App\Support\RuntimeExternalPayloadException;
 use App\Support\WorkerProtocol;
@@ -39,6 +40,30 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {
+        $exceptions->render(function (NamespaceDurableStateException $exception, Request $request) {
+            $payload = array_filter([
+                'schema' => 'durable-workflow.v2.namespace-durable-state-error.v1',
+                'reason' => $exception->reason,
+                'message' => $exception->getMessage(),
+                'retryable' => $exception->retryable,
+                'status' => $exception->status,
+                'resource' => $exception->resource,
+                'current_value' => $exception->currentValue,
+                'configured_limit' => $exception->configuredLimit,
+                'retry_after_seconds' => $exception->retryAfterSeconds,
+            ], static fn (mixed $value): bool => $value !== null);
+
+            $response = WorkerProtocol::isWorkerPlaneRequest($request)
+                ? WorkerProtocol::json($payload, $exception->status)
+                : ControlPlaneProtocol::jsonForRequest($request, $payload, $exception->status);
+
+            if ($exception->retryAfterSeconds !== null) {
+                $response->headers->set('Retry-After', (string) $exception->retryAfterSeconds);
+            }
+
+            return $response;
+        });
+
         $exceptions->render(function (RuntimeExternalPayloadException $exception, Request $request) {
             app(RuntimeExternalPayloadAudit::class)->record($request, 'external_payload.rejected', [
                 'reason' => $exception->reason,

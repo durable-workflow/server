@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Support\AvroPayloadEnvelopeResolver;
 use App\Support\ControlPlaneProtocol;
+use App\Support\NamespaceDurableStateException;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\ScheduleVisibilityQuery;
 use App\Support\ScheduleVisibilityQueryException;
@@ -346,7 +347,7 @@ class ScheduleController
             ? ScheduleOverlapPolicy::tryFrom($validated['overlap_policy'])
             : null;
 
-        ScheduleManager::update(
+        DB::transaction(fn (): WorkflowSchedule => ScheduleManager::update(
             schedule: $schedule,
             overlapPolicy: $overlapPolicy,
             jitterSeconds: isset($validated['jitter_seconds']) ? (int) $validated['jitter_seconds'] : null,
@@ -361,7 +362,7 @@ class ScheduleController
                 : null,
             maxRuns: isset($validated['max_runs']) ? (int) $validated['max_runs'] : null,
             context: $this->commandContexts->make($request, $scheduleId, 'schedule.update'),
-        );
+        ));
 
         return ControlPlaneProtocol::json([
             'schedule_id' => $scheduleId,
@@ -408,11 +409,11 @@ class ScheduleController
             'note' => ['nullable', 'string', 'max:1000'],
         ]);
 
-        ScheduleManager::pause(
+        DB::transaction(fn (): WorkflowSchedule => ScheduleManager::pause(
             $schedule,
             $validated['note'] ?? null,
             $this->commandContexts->make($request, $scheduleId, 'schedule.pause'),
-        );
+        ));
 
         return ControlPlaneProtocol::json([
             'schedule_id' => $scheduleId,
@@ -436,16 +437,18 @@ class ScheduleController
             'note' => ['nullable', 'string', 'max:1000'],
         ]);
 
-        ScheduleManager::resume(
-            $schedule,
-            $this->commandContexts->make($request, $scheduleId, 'schedule.resume'),
-        );
+        DB::transaction(function () use ($request, $scheduleId, $schedule, $validated): void {
+            ScheduleManager::resume(
+                $schedule,
+                $this->commandContexts->make($request, $scheduleId, 'schedule.resume'),
+            );
 
-        if (array_key_exists('note', $validated) && $validated['note'] !== null) {
-            $schedule->refresh();
-            $schedule->note = $validated['note'];
-            $schedule->save();
-        }
+            if (array_key_exists('note', $validated) && $validated['note'] !== null) {
+                $schedule->refresh();
+                $schedule->note = $validated['note'];
+                $schedule->save();
+            }
+        });
 
         return ControlPlaneProtocol::json([
             'schedule_id' => $scheduleId,
@@ -479,6 +482,8 @@ class ScheduleController
                 $overlap,
                 $this->commandContexts->make($request, $scheduleId, 'schedule.trigger'),
             );
+        } catch (NamespaceDurableStateException $exception) {
+            throw $exception;
         } catch (\Throwable $e) {
             return ControlPlaneProtocol::json([
                 'schedule_id' => $scheduleId,
@@ -677,9 +682,6 @@ class ScheduleController
         return $value;
     }
 
-    /**
-     * @return WorkflowSchedule|JsonResponse
-     */
     private function findOrFail(Request $request, string $scheduleId): WorkflowSchedule|JsonResponse
     {
         $namespace = $request->attributes->get('namespace');
@@ -712,7 +714,7 @@ class ScheduleController
      *     page_size?: int|null,
      *     next_page_token?: string|null
      * } $filters
-     * @param list<array{field: string, column: string|null, type: string, literal: bool|float|int|string}> $predicates
+     * @param  list<array{field: string, column: string|null, type: string, literal: bool|float|int|string}>  $predicates
      */
     private function scheduleListQuery(string $namespace, array $filters, array $predicates): Builder
     {
@@ -741,7 +743,7 @@ class ScheduleController
      *     page_size?: int|null,
      *     next_page_token?: string|null
      * } $filters
-     * @param list<array{field: string, column: string|null, type: string, literal: bool|float|int|string}> $predicates
+     * @param  list<array{field: string, column: string|null, type: string, literal: bool|float|int|string}>  $predicates
      */
     private function scheduleFilterFingerprint(array $filters, array $predicates): string
     {
@@ -756,8 +758,7 @@ class ScheduleController
         string $namespace,
         string $filterFingerprint,
         WorkflowSchedule $schedule,
-    ): string
-    {
+    ): string {
         $payload = [
             'version' => 1,
             'namespace' => $namespace,
@@ -834,7 +835,7 @@ class ScheduleController
     }
 
     /**
-     * @param array{created_at: string, schedule_id: string} $cursor
+     * @param  array{created_at: string, schedule_id: string}  $cursor
      */
     private function scheduleCursorIsCurrent(Builder $query, array $cursor): bool
     {
@@ -886,7 +887,7 @@ class ScheduleController
     }
 
     /**
-     * @param array{created_at: string, schedule_id: string} $cursor
+     * @param  array{created_at: string, schedule_id: string}  $cursor
      * @return array{created_at: string, schedule_id: string}
      */
     private function publicScheduleCursor(array $cursor): array
@@ -902,8 +903,8 @@ class ScheduleController
     }
 
     /**
-     * @param array<string, list<string>>|null $errors
-     * @param array{created_at: string, schedule_id: string}|null $lastSafeCursor
+     * @param  array<string, list<string>>|null  $errors
+     * @param  array{created_at: string, schedule_id: string}|null  $lastSafeCursor
      */
     private function scheduleListError(
         Request $request,
@@ -913,8 +914,7 @@ class ScheduleController
         string $message,
         ?array $errors = null,
         ?array $lastSafeCursor = null,
-    ): JsonResponse
-    {
+    ): JsonResponse {
         $errors ??= [$field => [$message]];
 
         return ControlPlaneProtocol::jsonForRequest($request, [

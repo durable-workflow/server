@@ -6,6 +6,7 @@ use App\Support\ActivityTaskPollRequestStore;
 use App\Support\HistoryRetentionEnforcer;
 use App\Support\LongPollSignalStore;
 use App\Support\LongPollWaitSlotStore;
+use App\Support\NamespaceDurableStateQuota;
 use App\Support\NamespaceRequestAdmission;
 use App\Support\ProjectionDriftMetrics;
 use App\Support\QueryTaskPollRequestStore;
@@ -222,6 +223,21 @@ return [
             'eviction' => 'Request slots are released when requests finish; all locks, counters, slots, and log-suppression keys also expire by TTL after process loss.',
         ],
 
+        'namespace_durable_state_quota_rejections' => [
+            'owner' => NamespaceDurableStateQuota::class,
+            'prefix' => 'server:namespace-durable-state:',
+            'dimensions' => [
+                'key_kind',
+                'namespace_hash',
+                'minute_bucket',
+                'rejection_reason',
+            ],
+            'ttl' => '2 minutes.',
+            'bound' => 'At most one counter and one log-suppression key per namespace and fixed durable-state rejection reason in each active minute bucket.',
+            'admission' => 'Counters are best-effort telemetry written only after database-authoritative durable row exhaustion or quota-availability rejection.',
+            'eviction' => 'Cache TTL only. Durable database rows remain the quota source of truth.',
+        ],
+
         'runtime_external_payload_quota_rejections' => [
             'owner' => RuntimeExternalPayloadQuota::class,
             'prefix' => 'server:external-payload-quota:',
@@ -326,6 +342,18 @@ return [
             'cardinality' => 'The request namespace is the query scope rather than a label; rejection reasons are fixed to rate exhausted, concurrency exhausted, and admission unavailable.',
             'selection' => 'current minute for the requested namespace.',
             'suppression' => 'No suppression is needed because each response contains exactly three fixed reason counters.',
+        ],
+
+        NamespaceDurableStateQuota::METRIC_NAME => [
+            'owner' => NamespaceDurableStateQuota::class,
+            'surface' => 'GET /api/system/metrics',
+            'dimensions' => [
+                'namespace' => 'request_scope_not_label',
+                'reason' => 'finite_seven_reason_inventory',
+            ],
+            'cardinality' => 'The request namespace is the query scope rather than a label; usage fields are fixed to six durable resource kinds and rejection counters use six exhaustion reasons plus quota unavailability.',
+            'selection' => 'Current durable row usage and current-minute rejection counters for the requested namespace.',
+            'suppression' => 'No suppression is needed because each response contains a fixed resource and reason inventory.',
         ],
 
         RuntimeExternalPayloadQuota::METRIC_NAME => [

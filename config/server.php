@@ -398,6 +398,46 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Namespace Durable State
+    |--------------------------------------------------------------------------
+    |
+    | Durable row counts can be bounded independently per namespace. Empty
+    | objects are explicitly unlimited for backwards compatibility. Namespace
+    | overrides may raise or lower defaults, but hard limits remain
+    | non-bypassable. A configured limit is enforced against database state
+    | while holding the namespace row lock.
+    |
+    */
+
+    'namespace_durable_state' => [
+        'limits' => json_decode(
+            (string) EnvAuditor::env(
+                'DW_NAMESPACE_DURABLE_LIMITS',
+                'WORKFLOW_SERVER_NAMESPACE_DURABLE_LIMITS',
+                '{}',
+            ),
+            true,
+        ),
+        'hard_limits' => json_decode(
+            (string) EnvAuditor::env(
+                'DW_NAMESPACE_DURABLE_HARD_LIMITS',
+                'WORKFLOW_SERVER_NAMESPACE_DURABLE_HARD_LIMITS',
+                '{}',
+            ),
+            true,
+        ),
+        'overrides' => json_decode(
+            (string) EnvAuditor::env(
+                'DW_NAMESPACE_DURABLE_OVERRIDES',
+                'WORKFLOW_SERVER_NAMESPACE_DURABLE_OVERRIDES',
+                '{}',
+            ),
+            true,
+        ),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Worker Protocol
     |--------------------------------------------------------------------------
     |

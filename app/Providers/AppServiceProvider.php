@@ -5,6 +5,8 @@ namespace App\Providers;
 use App\Auth\ConfiguredAuthProvider;
 use App\Contracts\AuthProvider;
 use App\Contracts\RuntimeSignalControlPlane;
+use App\Models\WorkerRegistration;
+use App\Observers\NamespaceDurableStateObserver;
 use App\Observers\WorkflowHistoryEventObserver;
 use App\Observers\WorkflowTaskObserver;
 use App\Observers\WorkflowUpdateValidationObserver;
@@ -26,6 +28,10 @@ use Workflow\V2\Contracts\ServiceBoundaryPolicy;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowSchedule;
+use Workflow\V2\Models\WorkflowScheduleHistoryEvent;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\DefaultServiceBoundaryPolicy;
@@ -162,5 +168,10 @@ class AppServiceProvider extends ServiceProvider
         WorkflowTask::observe(WorkflowTaskObserver::class);
         WorkflowHistoryEvent::observe(WorkflowHistoryEventObserver::class);
         WorkflowUpdate::observe(WorkflowUpdateValidationObserver::class);
+        WorkflowInstance::observe(NamespaceDurableStateObserver::class);
+        WorkflowRun::observe(NamespaceDurableStateObserver::class);
+        WorkflowSchedule::observe(NamespaceDurableStateObserver::class);
+        WorkflowScheduleHistoryEvent::observe(NamespaceDurableStateObserver::class);
+        WorkerRegistration::observe(NamespaceDurableStateObserver::class);
     }
 }
