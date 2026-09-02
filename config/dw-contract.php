@@ -711,6 +711,36 @@ return [
             'since' => '2.1.0',
             'legacy' => 'WORKFLOW_SERVER_SERVICE_BOUNDARY_MAX_IN_FLIGHT',
         ],
+        'DW_SERVICE_BOUNDARY_NAMESPACE_RATE_LIMIT_PER_MINUTE' => [
+            'description' => 'Optional shared per-minute service-call limit aggregated across each caller namespace.',
+            'default' => null,
+            'since' => '2.1.0',
+            'legacy' => 'WORKFLOW_SERVER_SERVICE_BOUNDARY_NAMESPACE_RATE_LIMIT_PER_MINUTE',
+        ],
+        'DW_SERVICE_BOUNDARY_NAMESPACE_MAX_IN_FLIGHT' => [
+            'description' => 'Optional shared in-flight service-call limit aggregated across each caller namespace.',
+            'default' => null,
+            'since' => '2.1.0',
+            'legacy' => 'WORKFLOW_SERVER_SERVICE_BOUNDARY_NAMESPACE_MAX_IN_FLIGHT',
+        ],
+        'DW_SERVICE_BOUNDARY_HARD_RATE_LIMIT_PER_MINUTE' => [
+            'description' => 'Non-bypassable per-minute ceiling for service-call boundary and caller-namespace policies.',
+            'default' => null,
+            'since' => '2.1.0',
+            'legacy' => 'WORKFLOW_SERVER_SERVICE_BOUNDARY_HARD_RATE_LIMIT_PER_MINUTE',
+        ],
+        'DW_SERVICE_BOUNDARY_HARD_MAX_IN_FLIGHT' => [
+            'description' => 'Non-bypassable in-flight ceiling for service-call boundary and caller-namespace policies.',
+            'default' => null,
+            'since' => '2.1.0',
+            'legacy' => 'WORKFLOW_SERVER_SERVICE_BOUNDARY_HARD_MAX_IN_FLIGHT',
+        ],
+        'DW_SERVICE_BOUNDARY_NAMESPACE_OVERRIDES' => [
+            'description' => 'JSON object of caller-namespace service-call rate and in-flight overrides; hard ceilings still apply.',
+            'default' => '{}',
+            'since' => '2.1.0',
+            'legacy' => 'WORKFLOW_SERVER_SERVICE_BOUNDARY_NAMESPACE_OVERRIDES',
+        ],
 
         // --- Docker bootstrap ------------------------------------------
 

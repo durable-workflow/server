@@ -19,8 +19,7 @@ final class ServiceCallAdmission
         public readonly ServiceBoundaryDecision $decision,
         public readonly WorkflowServiceCall $call,
         public readonly ServiceBoundaryRequest $request,
-    ) {
-    }
+    ) {}
 
     public function accepted(): bool
     {
@@ -42,6 +41,10 @@ final class ServiceCallAdmission
     {
         if ($this->accepted()) {
             return 202;
+        }
+
+        if ($this->decision->reason === 'service_boundary_admission_unavailable') {
+            return 503;
         }
 
         return match ($this->decision->outcome->value) {

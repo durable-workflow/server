@@ -13,9 +13,11 @@ use App\Observers\WorkflowUpdateValidationObserver;
 use App\Support\ExternalWorkflowUpdateAdmission;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\RemoteScheduleStarter;
+use App\Support\ServerPollingCache;
 use App\Support\ServerWorkflowControlPlane;
 use App\Support\ServiceCallBoundary;
 use App\Support\ServiceModeBusDispatcher;
+use App\Support\SharedServiceBoundaryPolicy;
 use App\Support\ValidatedExternalWorkflowUpdateAdmission;
 use App\Support\WorkflowMemoRollingCompatibility;
 use App\Support\WorkflowPackageApiFloor;
@@ -34,7 +36,6 @@ use Workflow\V2\Models\WorkflowSchedule;
 use Workflow\V2\Models\WorkflowScheduleHistoryEvent;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowUpdate;
-use Workflow\V2\Support\DefaultServiceBoundaryPolicy;
 use Workflow\V2\Support\DefaultServiceControlPlane;
 use Workflow\V2\Support\DefaultWorkflowControlPlane;
 use Workflow\V2\Support\ServiceBoundaryAuditRecorder;
@@ -91,14 +92,18 @@ class AppServiceProvider extends ServiceProvider
         // package's defaults; merge them so operators can tune
         // namespace, rate, concurrency, and circuit-break policy from
         // the server image's environment without forking the workflow
-        // package config.
+        // package config. Configured admission budgets use shared cache so
+        // every API process observes the same counters.
         $this->app->singleton(ServiceBoundaryPolicy::class, function ($app): ServiceBoundaryPolicy {
             $rules = array_replace_recursive(
                 (array) config('workflows.v2.service_boundary.rules', []),
                 (array) config('server.service_boundary.rules', []),
             );
 
-            return new DefaultServiceBoundaryPolicy($rules);
+            return new SharedServiceBoundaryPolicy(
+                $app->make(ServerPollingCache::class),
+                $rules,
+            );
         });
 
         $this->app->singleton(
