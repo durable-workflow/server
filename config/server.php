@@ -447,6 +447,34 @@ return [
             'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_UPLOAD_EXPIRY',
             3600,
         ),
+        'max_bytes_per_namespace' => EnvAuditor::env(
+            'DW_EXTERNAL_PAYLOAD_MAX_BYTES_PER_NAMESPACE',
+            'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_MAX_BYTES_PER_NAMESPACE',
+            null,
+        ),
+        'max_objects_per_namespace' => EnvAuditor::env(
+            'DW_EXTERNAL_PAYLOAD_MAX_OBJECTS_PER_NAMESPACE',
+            'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_MAX_OBJECTS_PER_NAMESPACE',
+            null,
+        ),
+        'hard_max_bytes_per_namespace' => EnvAuditor::env(
+            'DW_EXTERNAL_PAYLOAD_HARD_MAX_BYTES_PER_NAMESPACE',
+            'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_HARD_MAX_BYTES_PER_NAMESPACE',
+            null,
+        ),
+        'hard_max_objects_per_namespace' => EnvAuditor::env(
+            'DW_EXTERNAL_PAYLOAD_HARD_MAX_OBJECTS_PER_NAMESPACE',
+            'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_HARD_MAX_OBJECTS_PER_NAMESPACE',
+            null,
+        ),
+        'namespace_overrides' => json_decode(
+            (string) EnvAuditor::env(
+                'DW_EXTERNAL_PAYLOAD_NAMESPACE_OVERRIDES',
+                'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_NAMESPACE_OVERRIDES',
+                '{}',
+            ),
+            true,
+        ),
     ],
 
     /*

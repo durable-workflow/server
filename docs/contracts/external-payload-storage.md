@@ -113,6 +113,14 @@ The transport returns a stable
 - `external_payload_oversized` (413, non-retryable)
 - `external_payload_unsupported` (415 or 422, non-retryable)
 - `external_payload_integrity_mismatch` (422, non-retryable)
+- `external_payload_namespace_bytes_exhausted` (429, retryable)
+- `external_payload_namespace_objects_exhausted` (429, retryable)
+- `external_payload_namespace_quota_unavailable` (503, retryable)
+
+Namespace quota rejections include `Retry-After` and
+`retry_after_seconds`. Cumulative usage includes both in-progress and ready
+objects. Duplicate registration of the same stable object identity does not
+consume the byte or object budget again.
 
 Reference validation and fetch happen before a workflow/activity completion or
 control-plane mutation reaches its state transaction. A rejected reference

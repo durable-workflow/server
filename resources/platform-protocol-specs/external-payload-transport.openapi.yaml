@@ -54,6 +54,7 @@ paths:
         "413": { $ref: "#/components/responses/Oversized" }
         "415": { $ref: "#/components/responses/Unsupported" }
         "422": { $ref: "#/components/responses/InvalidReference" }
+        "429": { $ref: "#/components/responses/NamespaceQuotaExceeded" }
         "503": { $ref: "#/components/responses/Unavailable" }
   /external-payloads/v1/{referenceId}:
     get:
@@ -178,9 +179,13 @@ components:
             - external_payload_oversized
             - external_payload_unsupported
             - external_payload_integrity_mismatch
+            - external_payload_namespace_bytes_exhausted
+            - external_payload_namespace_objects_exhausted
+            - external_payload_namespace_quota_unavailable
         message: { type: string, minLength: 1 }
         retryable: { type: boolean }
         status: { type: integer }
+        retry_after_seconds: { type: integer, minimum: 1 }
   responses:
     Unauthorized:
       description: Credential is missing or not authorized for this runtime operation.
@@ -242,8 +247,30 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/RuntimeExternalPayloadError" }
+    NamespaceQuotaExceeded:
+      description: The namespace has exhausted its configured cumulative external-payload byte or object capacity.
+      headers:
+        Retry-After:
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/RuntimeExternalPayloadError"
+              - type: object
+                required: [retry_after_seconds]
+                properties:
+                  reason:
+                    enum:
+                      - external_payload_namespace_bytes_exhausted
+                      - external_payload_namespace_objects_exhausted
+                  retryable: { const: true }
+                  retry_after_seconds: { type: integer, minimum: 1 }
     Unavailable:
       description: Runtime backing storage is temporarily unavailable before state commit.
+      headers:
+        Retry-After:
+          schema: { type: integer, minimum: 1 }
       content:
         application/json:
           schema:
@@ -251,5 +278,8 @@ components:
               - $ref: "#/components/schemas/RuntimeExternalPayloadError"
               - type: object
                 properties:
-                  reason: { const: external_payload_unavailable }
+                  reason:
+                    enum:
+                      - external_payload_unavailable
+                      - external_payload_namespace_quota_unavailable
                   retryable: { const: true }

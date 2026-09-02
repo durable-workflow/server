@@ -40,6 +40,7 @@ SERVER_CACHE_KEY_PATTERNS = {
     "task_queue_admission_locks": "*server:task-queue-admission:*",
     "task_queue_dispatch_counters": "*server:task-queue-dispatch:*",
     "namespace_request_admission": "*server:namespace-request-admission:*",
+    "runtime_external_payload_quota_rejections": "*server:external-payload-quota:*",
     "workflow_task_expired_lease_recovery": "*server:workflow-task-expired-lease-recovery:*",
     "history_retention_inline": "*server:history-retention-inline:*",
     "worker_compatibility_heartbeat": "*server:worker-compatibility-heartbeat:*",

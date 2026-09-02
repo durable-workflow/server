@@ -54,9 +54,19 @@ return Application::configure(basePath: dirname(__DIR__))
                 'status' => $exception->status,
             ];
 
-            return WorkerProtocol::isWorkerPlaneRequest($request)
+            if ($exception->retryAfterSeconds !== null) {
+                $payload['retry_after_seconds'] = $exception->retryAfterSeconds;
+            }
+
+            $response = WorkerProtocol::isWorkerPlaneRequest($request)
                 ? WorkerProtocol::json($payload, $exception->status)
                 : ControlPlaneProtocol::jsonForRequest($request, $payload, $exception->status);
+
+            if ($exception->retryAfterSeconds !== null) {
+                $response->headers->set('Retry-After', (string) $exception->retryAfterSeconds);
+            }
+
+            return $response;
         });
 
         $exceptions->render(function (WorkflowOutputCodecUnavailableException $exception, Request $request) {

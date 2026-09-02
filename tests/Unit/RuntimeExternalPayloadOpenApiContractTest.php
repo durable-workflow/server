@@ -46,6 +46,18 @@ class RuntimeExternalPayloadOpenApiContractTest extends TestCase
             'external_payload_oversized',
             'external_payload_unsupported',
             'external_payload_integrity_mismatch',
+            'external_payload_namespace_bytes_exhausted',
+            'external_payload_namespace_objects_exhausted',
+            'external_payload_namespace_quota_unavailable',
         ], $reasons);
+
+        $this->assertSame(
+            '#/components/responses/NamespaceQuotaExceeded',
+            $spec['paths']['/external-payloads/v1']['post']['responses']['429']['$ref'] ?? null,
+        );
+        $this->assertSame(
+            1,
+            $spec['components']['schemas']['RuntimeExternalPayloadError']['properties']['retry_after_seconds']['minimum'] ?? null,
+        );
     }
 }

@@ -9,6 +9,7 @@ use App\Support\LongPollWaitSlotStore;
 use App\Support\NamespaceRequestAdmission;
 use App\Support\ProjectionDriftMetrics;
 use App\Support\QueryTaskPollRequestStore;
+use App\Support\RuntimeExternalPayloadQuota;
 use App\Support\ServerPollingCache;
 use App\Support\ServerReadiness;
 use App\Support\TaskQueueAdmission;
@@ -221,6 +222,21 @@ return [
             'eviction' => 'Request slots are released when requests finish; all locks, counters, slots, and log-suppression keys also expire by TTL after process loss.',
         ],
 
+        'runtime_external_payload_quota_rejections' => [
+            'owner' => RuntimeExternalPayloadQuota::class,
+            'prefix' => 'server:external-payload-quota:',
+            'dimensions' => [
+                'key_kind',
+                'namespace_hash',
+                'minute_bucket',
+                'rejection_reason',
+            ],
+            'ttl' => '2 minutes.',
+            'bound' => 'At most one counter and one log-suppression key per namespace and fixed quota rejection reason in each active minute bucket.',
+            'admission' => 'Counters are best-effort telemetry written only after database-authoritative namespace byte, object-count, or quota-availability rejection.',
+            'eviction' => 'Cache TTL only. Durable payload rows remain the quota source of truth.',
+        ],
+
         'workflow_task_expired_lease_recovery' => [
             'owner' => WorkflowTaskPoller::class,
             'prefix' => 'server:workflow-task-expired-lease-recovery:',
@@ -309,6 +325,18 @@ return [
             ],
             'cardinality' => 'The request namespace is the query scope rather than a label; rejection reasons are fixed to rate exhausted, concurrency exhausted, and admission unavailable.',
             'selection' => 'current minute for the requested namespace.',
+            'suppression' => 'No suppression is needed because each response contains exactly three fixed reason counters.',
+        ],
+
+        RuntimeExternalPayloadQuota::METRIC_NAME => [
+            'owner' => RuntimeExternalPayloadQuota::class,
+            'surface' => 'GET /api/system/metrics',
+            'dimensions' => [
+                'namespace' => 'request_scope_not_label',
+                'reason' => 'finite_three_reason_inventory',
+            ],
+            'cardinality' => 'The request namespace is the query scope rather than a label; rejection reasons are fixed to byte exhaustion, object exhaustion, and quota unavailability.',
+            'selection' => 'Current durable usage and current-minute rejection counters for the requested namespace.',
             'suppression' => 'No suppression is needed because each response contains exactly three fixed reason counters.',
         ],
 

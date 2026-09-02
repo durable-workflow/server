@@ -5,7 +5,10 @@ namespace Tests\Feature;
 use App\Models\RuntimeExternalPayload;
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
+use App\Support\RuntimeExternalPayloadException;
+use App\Support\RuntimeExternalPayloadQuota;
 use App\Support\RuntimeExternalPayloadReference;
+use App\Support\RuntimeExternalPayloadRegistry;
 use App\Support\WorkerProtocol;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -37,6 +40,11 @@ class RuntimeExternalPayloadTransportTest extends TestCase
             'cache.default' => 'file',
             'server.external_payload_transport.max_payload_bytes' => 4096,
             'server.external_payload_transport.abandoned_upload_expiry_seconds' => 60,
+            'server.external_payload_transport.max_bytes_per_namespace' => null,
+            'server.external_payload_transport.max_objects_per_namespace' => null,
+            'server.external_payload_transport.hard_max_bytes_per_namespace' => null,
+            'server.external_payload_transport.hard_max_objects_per_namespace' => null,
+            'server.external_payload_transport.namespace_overrides' => [],
             'workflows.v2.types.workflows' => [
                 'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
             ],
@@ -218,6 +226,135 @@ class RuntimeExternalPayloadTransportTest extends TestCase
             'HTTP_X_DURABLE_WORKFLOW_PAYLOAD_SHA256' => hash('sha256', 'payload'),
         ], 'payload')->assertStatus(422)
             ->assertJsonPath('reason', 'external_payload_unsupported');
+
+        $this->assertDatabaseCount('runtime_external_payloads', 0);
+    }
+
+    public function test_namespace_byte_quota_contains_uploads_without_affecting_another_namespace(): void
+    {
+        config(['server.external_payload_transport.max_bytes_per_namespace' => 10]);
+
+        $first = $this->upload('123456');
+        $first->assertCreated();
+        $this->upload('123456')
+            ->assertCreated()
+            ->assertJsonPath('reference.reference_id', $first->json('reference.reference_id'));
+
+        $this->upload('12345')
+            ->assertStatus(429)
+            ->assertHeader('Retry-After', '60')
+            ->assertJsonPath('reason', 'external_payload_namespace_bytes_exhausted')
+            ->assertJsonPath('retryable', true)
+            ->assertJsonPath('retry_after_seconds', 60);
+
+        $this->upload('12345', 'other')->assertCreated();
+
+        $this->assertSame(1, RuntimeExternalPayload::query()->where('namespace', 'default')->count());
+        $this->assertSame(1, RuntimeExternalPayload::query()->where('namespace', 'other')->count());
+
+        $this->withHeaders($this->controlHeaders())
+            ->getJson('/api/system/metrics')
+            ->assertOk()
+            ->assertJsonPath('metrics.'.RuntimeExternalPayloadQuota::METRIC_NAME.'.max_bytes', 10)
+            ->assertJsonPath('metrics.'.RuntimeExternalPayloadQuota::METRIC_NAME.'.used_bytes', 6)
+            ->assertJsonPath('metrics.'.RuntimeExternalPayloadQuota::METRIC_NAME.'.used_objects', 1)
+            ->assertJsonPath('metrics.'.RuntimeExternalPayloadQuota::METRIC_NAME.'.remaining_bytes', 4)
+            ->assertJsonPath(
+                'metrics.'.RuntimeExternalPayloadQuota::METRIC_NAME.'.rejections_by_reason.external_payload_namespace_bytes_exhausted',
+                1,
+            );
+    }
+
+    public function test_namespace_object_quota_recovers_when_registered_state_is_removed(): void
+    {
+        config(['server.external_payload_transport.max_objects_per_namespace' => 1]);
+
+        $this->upload('first')->assertCreated();
+        $this->upload('second')
+            ->assertStatus(429)
+            ->assertJsonPath('reason', 'external_payload_namespace_objects_exhausted')
+            ->assertJsonPath('retryable', true);
+
+        RuntimeExternalPayload::query()->where('namespace', 'default')->delete();
+
+        $this->upload('second')->assertCreated();
+    }
+
+    public function test_namespace_override_cannot_exceed_hard_payload_quota(): void
+    {
+        config([
+            'server.external_payload_transport.max_bytes_per_namespace' => 4,
+            'server.external_payload_transport.hard_max_bytes_per_namespace' => 8,
+            'server.external_payload_transport.namespace_overrides' => [
+                'default' => ['max_bytes' => 100],
+            ],
+        ]);
+
+        $this->upload('12345678')->assertCreated();
+        $this->upload('x')
+            ->assertStatus(429)
+            ->assertJsonPath('reason', 'external_payload_namespace_bytes_exhausted');
+
+        $this->assertSame(8, app(RuntimeExternalPayloadQuota::class)->limits('default')['max_bytes']);
+    }
+
+    public function test_invalid_namespace_payload_quota_fails_closed(): void
+    {
+        config(['server.external_payload_transport.max_objects_per_namespace' => 'invalid']);
+
+        $this->upload('payload')
+            ->assertStatus(503)
+            ->assertHeader('Retry-After', '60')
+            ->assertJsonPath('reason', 'external_payload_namespace_quota_unavailable')
+            ->assertJsonPath('retryable', true);
+
+        $this->assertDatabaseCount('runtime_external_payloads', 0);
+    }
+
+    public function test_invalid_namespace_payload_override_document_fails_closed(): void
+    {
+        config(['server.external_payload_transport.namespace_overrides' => null]);
+
+        $this->upload('payload')
+            ->assertStatus(503)
+            ->assertJsonPath('reason', 'external_payload_namespace_quota_unavailable');
+
+        $this->assertDatabaseCount('runtime_external_payloads', 0);
+    }
+
+    public function test_invalid_namespace_payload_override_entry_fails_closed(): void
+    {
+        config([
+            'server.external_payload_transport.namespace_overrides' => [
+                'default' => 'invalid',
+            ],
+        ]);
+
+        $this->upload('payload')
+            ->assertStatus(503)
+            ->assertJsonPath('reason', 'external_payload_namespace_quota_unavailable');
+
+        $this->assertDatabaseCount('runtime_external_payloads', 0);
+    }
+
+    public function test_retained_payload_registration_cannot_bypass_namespace_quota(): void
+    {
+        config(['server.external_payload_transport.max_objects_per_namespace' => 0]);
+
+        try {
+            app(RuntimeExternalPayloadRegistry::class)->trackRetained(
+                'default',
+                'file:///quota-bypass',
+                'avro',
+                hash('sha256', 'payload'),
+                strlen('payload'),
+            );
+            $this->fail('Expected retained payload registration to be rejected.');
+        } catch (RuntimeExternalPayloadException $exception) {
+            $this->assertSame('external_payload_namespace_objects_exhausted', $exception->reason);
+            $this->assertSame(429, $exception->status);
+            $this->assertTrue($exception->retryable);
+        }
 
         $this->assertDatabaseCount('runtime_external_payloads', 0);
     }

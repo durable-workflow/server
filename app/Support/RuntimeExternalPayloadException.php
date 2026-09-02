@@ -12,6 +12,7 @@ class RuntimeExternalPayloadException extends Exception
         public readonly bool $retryable,
         string $message,
         ?\Throwable $previous = null,
+        public readonly ?int $retryAfterSeconds = null,
     ) {
         parent::__construct($message, 0, $previous);
     }
