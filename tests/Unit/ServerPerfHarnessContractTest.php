@@ -174,7 +174,7 @@ class ServerPerfHarnessContractTest extends TestCase
             'GitHub Actions provenance is incomplete',
             'GitHub Actions repository is not durable-workflow/server',
             'GitHub Actions ref is not refs/heads/main',
-            'GitHub Actions workflow is not Server Perf',
+            'GitHub Actions workflow is not Server Perf Soak',
             'GitHub Actions event is not schedule or workflow_dispatch',
             'checked_out_sha',
             'github_sha_matches_checked_out',
@@ -476,9 +476,9 @@ class ServerPerfHarnessContractTest extends TestCase
         );
 
         $this->assertMatchesRegularExpression(
-            '/name:\s+GitHub-hosted polling cache soak.*?RUNNER_ENVIRONMENT:\s+"github-hosted"/s',
+            '/name:\s+Ephemeral Vultr polling cache soak.*?RUNNER_ENVIRONMENT:\s+"self-hosted"/s',
             $soakWorkflow,
-            'Public long soaks must record github-hosted runner provenance.',
+            'Disposable-host long soaks must record self-hosted execution provenance.',
         );
     }
 
@@ -530,11 +530,8 @@ class ServerPerfHarnessContractTest extends TestCase
             $workflow,
             'Pull-request perf workflow must not create the long-soak status.',
         );
-        $this->assertStringNotContainsString(
-            'self-hosted',
-            $soakWorkflow,
-            'Public GitHub Actions workflows must not request self-hosted runners.',
-        );
+        $this->assertStringContainsString('runs-on: ubuntu-latest', $soakWorkflow);
+        $this->assertStringContainsString('run: scripts/perf/run-vultr-soak.sh', $soakWorkflow);
 
         $parsedSoakWorkflow = Yaml::parse($soakWorkflow);
         $this->assertIsArray($parsedSoakWorkflow);
@@ -553,22 +550,22 @@ class ServerPerfHarnessContractTest extends TestCase
         );
     }
 
-    public function test_public_perf_soak_remains_untrusted_evidence(): void
+    public function test_ephemeral_perf_soak_requires_trusted_evidence(): void
     {
         $workflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/server-perf.yml');
         $this->assertNotFalse($workflow, '.github/workflows/server-perf.yml must be readable');
         $soakWorkflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/server-perf-soak.yml');
         $this->assertNotFalse($soakWorkflow, '.github/workflows/server-perf-soak.yml must be readable');
 
-        $this->assertStringNotContainsString(
+        $this->assertStringContainsString(
             'DW_PERF_REQUIRE_TRUSTED_EVIDENCE: "true"',
             $soakWorkflow,
-            'Public GitHub-hosted long soaks should remain useful but ineligible artifacts.',
+            'Disposable-host long soaks must fail rather than publish ineligible evidence.',
         );
-        $this->assertStringNotContainsString(
-            'self-hosted',
+        $this->assertStringContainsString(
+            'RUNNER_ENVIRONMENT: "self-hosted"',
             $soakWorkflow,
-            'Public GitHub-hosted long soaks must not request self-hosted runner labels.',
+            'Disposable-host long soaks must identify the actual execution environment.',
         );
 
         $this->assertMatchesRegularExpression(
@@ -594,7 +591,7 @@ class ServerPerfHarnessContractTest extends TestCase
 
         $this->assertSame(2, substr_count($workflows, 'uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'));
         $this->assertSame(0, substr_count($workflows, 'uses: actions/upload-artifact@v4'));
-        $this->assertSame(3, substr_count($workflows, "github.server_url == 'https://github.com'"));
+        $this->assertSame(2, substr_count($workflows, "github.server_url == 'https://github.com'"));
         $this->assertSame(0, substr_count($workflows, "github.server_url != 'https://github.com'"));
     }
 
@@ -657,7 +654,9 @@ class ServerPerfHarnessContractTest extends TestCase
         $this->assertNotFalse($source, 'scripts/perf/run-server-soak.sh must be readable');
 
         $this->assertStringContainsString('SERVER_PORT="${DW_PERF_SERVER_PORT:-}"', $source);
+        $this->assertStringContainsString('SERVER_BIND="${DW_PERF_SERVER_BIND:-}"', $source);
         $this->assertStringContainsString('SERVER_PORT_MAPPING="8080"', $source);
+        $this->assertStringContainsString('SERVER_PORT_MAPPING="${SERVER_BIND}:${SERVER_PORT}:8080"', $source);
         $this->assertStringContainsString('SERVER_PORT_MAPPING="${SERVER_PORT}:8080"', $source);
         $this->assertStringContainsString('- "${SERVER_PORT_MAPPING}"', $source);
         $this->assertStringContainsString('port server 8080', $source);
@@ -665,7 +664,7 @@ class ServerPerfHarnessContractTest extends TestCase
         $this->assertStringContainsString('METRICS_PORT="${DW_PERF_METRICS_PORT:-$(choose_free_port)}"', $source);
     }
 
-    public function test_server_perf_workflow_can_run_public_long_soak_without_self_hosted_runner(): void
+    public function test_server_perf_workflow_runs_long_soak_on_disposable_vultr_host(): void
     {
         $workflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/server-perf-soak.yml');
         $this->assertNotFalse($workflow, '.github/workflows/server-perf-soak.yml must be readable');
@@ -683,7 +682,12 @@ class ServerPerfHarnessContractTest extends TestCase
             "github.event_name == 'workflow_dispatch'",
             "github.event_name == 'schedule' && vars.DW_PERF_SOAK_ENABLED == 'true'",
             'runs-on: ubuntu-latest',
-            'RUNNER_ENVIRONMENT: "github-hosted"',
+            'environment: perf-soak',
+            'VULTR_API_KEY: ${{ secrets.VULTR_PERF_API_KEY }}',
+            'VULTR_PERF_PLAN: "vhp-2c-4gb-amd"',
+            'DW_PERF_REQUIRE_TRUSTED_EVIDENCE: "true"',
+            'RUNNER_ENVIRONMENT: "self-hosted"',
+            'run: scripts/perf/run-vultr-soak.sh',
         ] as $needle) {
             $this->assertStringContainsString(
                 $needle,
@@ -692,8 +696,21 @@ class ServerPerfHarnessContractTest extends TestCase
             );
         }
 
-        $this->assertStringNotContainsString('self-hosted', $workflow);
-        $this->assertStringNotContainsString('DW_PERF_REQUIRE_TRUSTED_EVIDENCE: "true"', $workflow);
+    }
+
+    public function test_vultr_soak_controller_keeps_credentials_off_the_host_and_always_deletes_it(): void
+    {
+        $source = file_get_contents(dirname(__DIR__, 2).'/scripts/perf/run-vultr-soak.sh');
+        $this->assertNotFalse($source, 'scripts/perf/run-vultr-soak.sh must be readable');
+
+        $this->assertStringContainsString('trap cleanup EXIT INT TERM', $source);
+        $this->assertStringContainsString('api DELETE "/instances/$INSTANCE_ID"', $source);
+        $this->assertStringContainsString('VULTR_API_KEY is required', $source);
+        $this->assertStringContainsString('ufw allow from $controller_ip to any port 22 proto tcp', $source);
+        $this->assertStringContainsString("printf 'export DW_PERF_SERVER_BIND=%q", $source);
+        $this->assertStringContainsString("printf 'export DW_PERF_SERVER_PORT=%q", $source);
+        $this->assertStringContainsString('DURATION_SECONDS < 3600 || DURATION_SECONDS > 14400', $source);
+        $this->assertStringNotContainsString('VULTR_API_KEY \\', $source);
     }
 
     public function test_ci_perf_trigger_paths_cover_bounded_growth_runtime_surfaces(): void

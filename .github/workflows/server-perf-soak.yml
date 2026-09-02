@@ -23,26 +23,29 @@ permissions:
   contents: read
 
 concurrency:
-  group: server-perf-soak-${{ github.event_name }}-${{ github.ref }}
+  group: server-perf-soak
   cancel-in-progress: false
 
 jobs:
   soak:
-    name: GitHub-hosted polling cache soak
+    name: Ephemeral Vultr polling cache soak
     runs-on: ubuntu-latest
-    # Keep the scheduled long soak opt-in because it is intentionally
-    # resource-heavy. Manual dispatch remains available to maintainers.
+    environment: perf-soak
     if: |
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
       || (github.event_name == 'schedule' && vars.DW_PERF_SOAK_ENABLED == 'true')
-    timeout-minutes: 390
+    timeout-minutes: 360
 
     steps:
       - name: Checkout server
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
 
-      - name: Run long perf soak
+      - name: Run long perf soak on a disposable host
         env:
+          VULTR_API_KEY: ${{ secrets.VULTR_PERF_API_KEY }}
+          VULTR_PERF_REGION: ${{ vars.VULTR_PERF_REGION }}
+          VULTR_PERF_PLAN: "vhp-2c-4gb-amd"
+          VULTR_PERF_OS_ID: "2284"
           DW_PERF_DURATION_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.duration_seconds || '7200' }}
           DW_PERF_CONCURRENCY: ${{ github.event_name == 'workflow_dispatch' && inputs.concurrency || '24' }}
           DW_PERF_NAMESPACES: "8"
@@ -57,22 +60,13 @@ jobs:
           DW_PERF_REMOTE_WRITE_URL: ${{ vars.DW_PERF_REMOTE_WRITE_URL }}
           DW_PERF_REMOTE_WRITE_USERNAME: ${{ vars.DW_PERF_REMOTE_WRITE_USERNAME }}
           DW_PERF_REMOTE_WRITE_PASSWORD: ${{ secrets.DW_PERF_REMOTE_WRITE_PASSWORD }}
-          DW_PERF_COMPOSE_PROJECT: server-perf-soak-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
-          RUNNER_ENVIRONMENT: "github-hosted"
-        if: ${{ always() && success() }}
-        run: scripts/perf/run-server-soak.sh
-
-      - name: Clean up perf Docker resources
-        if: always()
-        env:
-          DW_PERF_COMPOSE_PROJECT: server-perf-soak-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
-        run: |
-          docker rm -f "${DW_PERF_COMPOSE_PROJECT}-prometheus" >/dev/null 2>&1 || true
-          docker compose -p "$DW_PERF_COMPOSE_PROJECT" -f docker-compose.yml \
-            down -v --remove-orphans >/dev/null 2>&1 || true
+          DW_PERF_COMPOSE_PROJECT: server-perf-soak-${{ github.run_id }}-${{ github.run_attempt }}
+          DW_PERF_REQUIRE_TRUSTED_EVIDENCE: "true"
+          RUNNER_ENVIRONMENT: "self-hosted"
+        run: scripts/perf/run-vultr-soak.sh
 
       - name: Upload perf artifacts
-        if: always() && github.server_url == 'https://github.com'
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: server-perf-soak

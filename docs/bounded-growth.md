@@ -176,24 +176,23 @@ bounded cache family produced growth instead of only reporting a total
 alerting.
 
 `summary.json` also includes `evidence.trust` with the
-`trusted_long_soak_v1` profile. Short CI smokes and the public GitHub Actions
-long soak can still pass, but they are classified as ineligible for trusted
-evidence unless they run for at least one hour, use compose-backed resource
-sampling, run on an explicitly authorized long-soak runner with
+`trusted_long_soak_v1` profile. Short CI smokes remain ineligible for trusted
+evidence. The scheduled and manually dispatched long soak qualifies only when
+it runs for at least one hour, uses compose-backed resource sampling, executes
+on the disposable long-soak host with
 `RUNNER_ENVIRONMENT=self-hosted` provenance, include GitHub Actions provenance
 (`GITHUB_REPOSITORY`, `GITHUB_REF`, `GITHUB_SHA`, `GITHUB_WORKFLOW`,
 `GITHUB_EVENT_NAME`, `GITHUB_RUN_ID`, and `GITHUB_RUN_ATTEMPT`), come from the
-`Server Perf` workflow in `durable-workflow/server` on `refs/heads/main`, use a
+`Server Perf Soak` workflow in `durable-workflow/server` on `refs/heads/main`, use a
 scheduled or manual dispatch event, have a clean tracked working tree, have
 `GITHUB_SHA` match the checked-out source commit, meet sample coverage, include
 complete per-policy maximum and final cache threshold maps for every declared
 cache policy, and have no bounded-growth assertion failures. A local run,
-pull-request smoke, unrelated workflow, feature-branch workflow, or hosted
-public soak can still produce useful artifacts, but it cannot satisfy the
+pull-request smoke, unrelated workflow, or feature-branch workflow can still
+produce useful artifacts, but it cannot satisfy the
 trusted long-soak evidence profile just by setting runner environment metadata.
-The CI smoke and public long-soak workflows set `RUNNER_ENVIRONMENT=github-hosted`
-so those artifacts are traceable without granting public repository workflows
-access to self-hosted runner labels.
+The CI smoke sets `RUNNER_ENVIRONMENT=github-hosted`; the long-soak controller
+sets `RUNNER_ENVIRONMENT=self-hosted` only for execution on its disposable host.
 
 Per-policy limits can be enforced with JSON maps keyed by policy ID:
 `DW_PERF_MAX_SERVER_CACHE_KEYS_BY_POLICY` for maximum observed keys and
