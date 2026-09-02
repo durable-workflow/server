@@ -3,6 +3,10 @@
 namespace App\Support;
 
 use App\Models\WorkerRegistration;
+use App\Models\WorkflowDurableStream;
+use App\Models\WorkflowDurableStreamItem;
+use App\Models\WorkflowInboundStream;
+use App\Models\WorkflowInboundStreamItem;
 use App\Models\WorkflowNamespace;
 use Closure;
 use Illuminate\Support\Facades\DB;
@@ -10,10 +14,17 @@ use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
 use Throwable;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TimerStatus;
+use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowSchedule;
 use Workflow\V2\Models\WorkflowScheduleHistoryEvent;
+use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimer;
 
 final class NamespaceDurableStateQuota
 {
@@ -31,6 +42,26 @@ final class NamespaceDurableStateQuota
 
     public const WORKER_REGISTRATIONS = 'worker_registrations';
 
+    public const WORKFLOW_HISTORY_EVENTS = 'workflow_history_events';
+
+    public const WORKFLOW_TASKS = 'workflow_tasks';
+
+    public const PENDING_WORKFLOW_TASKS = 'pending_workflow_tasks';
+
+    public const WORKFLOW_TIMERS = 'workflow_timers';
+
+    public const PENDING_WORKFLOW_TIMERS = 'pending_workflow_timers';
+
+    public const WORKFLOW_RUN_WAITS = 'workflow_run_waits';
+
+    public const OPEN_WORKFLOW_RUN_WAITS = 'open_workflow_run_waits';
+
+    public const WORKFLOW_COMMANDS = 'workflow_commands';
+
+    public const WORKFLOW_STREAMS = 'workflow_streams';
+
+    public const WORKFLOW_STREAM_ITEMS = 'workflow_stream_items';
+
     /** @var array<string, string> */
     private const LIMIT_FIELDS = [
         self::WORKFLOW_INSTANCES => 'max_workflow_instances',
@@ -39,6 +70,16 @@ final class NamespaceDurableStateQuota
         self::SCHEDULES => 'max_schedules',
         self::SCHEDULE_HISTORY_EVENTS => 'max_schedule_history_events',
         self::WORKER_REGISTRATIONS => 'max_worker_registrations',
+        self::WORKFLOW_HISTORY_EVENTS => 'max_workflow_history_events',
+        self::WORKFLOW_TASKS => 'max_workflow_tasks',
+        self::PENDING_WORKFLOW_TASKS => 'max_pending_workflow_tasks',
+        self::WORKFLOW_TIMERS => 'max_workflow_timers',
+        self::PENDING_WORKFLOW_TIMERS => 'max_pending_workflow_timers',
+        self::WORKFLOW_RUN_WAITS => 'max_workflow_run_waits',
+        self::OPEN_WORKFLOW_RUN_WAITS => 'max_open_workflow_run_waits',
+        self::WORKFLOW_COMMANDS => 'max_workflow_commands',
+        self::WORKFLOW_STREAMS => 'max_workflow_streams',
+        self::WORKFLOW_STREAM_ITEMS => 'max_workflow_stream_items',
     ];
 
     /** @var array<string, int> */
@@ -49,6 +90,16 @@ final class NamespaceDurableStateQuota
         self::SCHEDULES => 10_000_000,
         self::SCHEDULE_HISTORY_EVENTS => 1_000_000_000,
         self::WORKER_REGISTRATIONS => 10_000_000,
+        self::WORKFLOW_HISTORY_EVENTS => 1_000_000_000,
+        self::WORKFLOW_TASKS => 1_000_000_000,
+        self::PENDING_WORKFLOW_TASKS => 100_000_000,
+        self::WORKFLOW_TIMERS => 1_000_000_000,
+        self::PENDING_WORKFLOW_TIMERS => 100_000_000,
+        self::WORKFLOW_RUN_WAITS => 1_000_000_000,
+        self::OPEN_WORKFLOW_RUN_WAITS => 100_000_000,
+        self::WORKFLOW_COMMANDS => 1_000_000_000,
+        self::WORKFLOW_STREAMS => 100_000_000,
+        self::WORKFLOW_STREAM_ITEMS => 1_000_000_000,
     ];
 
     /** @var array<string, bool> */
@@ -59,6 +110,16 @@ final class NamespaceDurableStateQuota
         self::SCHEDULES => false,
         self::SCHEDULE_HISTORY_EVENTS => false,
         self::WORKER_REGISTRATIONS => true,
+        self::WORKFLOW_HISTORY_EVENTS => false,
+        self::WORKFLOW_TASKS => false,
+        self::PENDING_WORKFLOW_TASKS => true,
+        self::WORKFLOW_TIMERS => false,
+        self::PENDING_WORKFLOW_TIMERS => true,
+        self::WORKFLOW_RUN_WAITS => false,
+        self::OPEN_WORKFLOW_RUN_WAITS => true,
+        self::WORKFLOW_COMMANDS => false,
+        self::WORKFLOW_STREAMS => true,
+        self::WORKFLOW_STREAM_ITEMS => true,
     ];
 
     private const UNAVAILABLE_REASON = 'namespace_durable_state_quota_unavailable';
@@ -66,6 +127,38 @@ final class NamespaceDurableStateQuota
     public function __construct(
         private readonly ServerPollingCache $cache,
     ) {}
+
+    /** @param list<string> $resources */
+    public function mayConstrain(array $resources): bool
+    {
+        try {
+            $fields = array_map(
+                static fn (string $resource): string => self::LIMIT_FIELDS[$resource],
+                $this->normalizeResources($resources),
+            );
+            $defaults = $this->validatedConfiguredObject('limits');
+            $hardLimits = $this->validatedConfiguredObject('hard_limits');
+            $overrides = $this->configuredOverrides();
+        } catch (NamespaceDurableStateException $exception) {
+            throw $exception;
+        } catch (Throwable $exception) {
+            throw $this->unavailable((string) config('server.default_namespace', 'default'), $exception);
+        }
+
+        foreach ($fields as $field) {
+            if (($defaults[$field] ?? null) !== null || ($hardLimits[$field] ?? null) !== null) {
+                return true;
+            }
+
+            foreach ($overrides as $override) {
+                if (($override[$field] ?? null) !== null) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
 
     /** @param list<string> $resources */
     public function constrains(string $namespace, array $resources): bool
@@ -310,7 +403,7 @@ final class NamespaceDurableStateQuota
             'measurement_status' => $measurementStatus,
             'label_cardinality_policy' => [
                 'namespace' => 'request_scope_not_label',
-                'reason' => 'finite_seven_reason_inventory',
+                'reason' => 'finite_reason_inventory',
             ],
         ];
     }
@@ -319,15 +412,15 @@ final class NamespaceDurableStateQuota
     public function resourceLimits(string $namespace): array
     {
         $namespace = $this->normalizeNamespace($namespace);
-        $defaults = $this->configuredObject('limits');
-        $hardLimits = $this->configuredObject('hard_limits');
+        $defaults = $this->validatedConfiguredObject('limits');
+        $hardLimits = $this->validatedConfiguredObject('hard_limits');
         $overrides = $this->configuredOverrides();
         $namespaceOverride = $overrides[$namespace] ?? [];
 
         $resolved = [];
         foreach (self::LIMIT_FIELDS as $resource => $field) {
-            $default = $this->limitValue($defaults[$field] ?? null, "server.namespace_durable_state.limits.{$field}");
-            $hard = $this->limitValue($hardLimits[$field] ?? null, "server.namespace_durable_state.hard_limits.{$field}");
+            $default = $defaults[$field] ?? null;
+            $hard = $hardLimits[$field] ?? null;
             $override = array_key_exists($field, $namespaceOverride)
                 ? $this->limitValue(
                     $namespaceOverride[$field],
@@ -378,11 +471,78 @@ final class NamespaceDurableStateQuota
                 self::WORKER_REGISTRATIONS => (int) WorkerRegistration::query()
                     ->where('namespace', $namespace)
                     ->count(),
+                self::WORKFLOW_HISTORY_EVENTS => (int) WorkflowHistoryEvent::query()
+                    ->whereIn('workflow_run_id', $this->runIdsForNamespace($namespace))
+                    ->count(),
+                self::WORKFLOW_TASKS => (int) WorkflowTask::query()
+                    ->where('namespace', $namespace)
+                    ->count(),
+                self::PENDING_WORKFLOW_TASKS => (int) WorkflowTask::query()
+                    ->where('namespace', $namespace)
+                    ->where('status', TaskStatus::Ready->value)
+                    ->count(),
+                self::WORKFLOW_TIMERS => (int) WorkflowTimer::query()
+                    ->whereIn('workflow_run_id', $this->runIdsForNamespace($namespace))
+                    ->count(),
+                self::PENDING_WORKFLOW_TIMERS => (int) WorkflowTimer::query()
+                    ->whereIn('workflow_run_id', $this->runIdsForNamespace($namespace))
+                    ->where('status', TimerStatus::Pending->value)
+                    ->count(),
+                self::WORKFLOW_RUN_WAITS => (int) WorkflowRunWait::query()
+                    ->whereIn('workflow_instance_id', $this->instanceIdsForNamespace($namespace))
+                    ->count(),
+                self::OPEN_WORKFLOW_RUN_WAITS => (int) WorkflowRunWait::query()
+                    ->whereIn('workflow_instance_id', $this->instanceIdsForNamespace($namespace))
+                    ->where('status', 'open')
+                    ->count(),
+                self::WORKFLOW_COMMANDS => (int) WorkflowCommand::query()
+                    ->whereIn('workflow_instance_id', $this->instanceIdsForNamespace($namespace))
+                    ->count(),
+                self::WORKFLOW_STREAMS => (int) WorkflowDurableStream::query()
+                    ->where('namespace', $namespace)
+                    ->count() + (int) WorkflowInboundStream::query()
+                    ->where('namespace', $namespace)
+                    ->count(),
+                self::WORKFLOW_STREAM_ITEMS => (int) WorkflowDurableStreamItem::query()
+                    ->where('namespace', $namespace)
+                    ->count() + (int) WorkflowInboundStreamItem::query()
+                    ->where('namespace', $namespace)
+                    ->count(),
                 default => throw new InvalidArgumentException("Unknown namespace durable-state resource [{$resource}]."),
             };
         }
 
         return $usage;
+    }
+
+    private function runIdsForNamespace(string $namespace)
+    {
+        return WorkflowRun::query()
+            ->select('id')
+            ->where('namespace', $namespace);
+    }
+
+    private function instanceIdsForNamespace(string $namespace)
+    {
+        return WorkflowInstance::query()
+            ->select('id')
+            ->where('namespace', $namespace);
+    }
+
+    /** @return array<string, int|null> */
+    private function validatedConfiguredObject(string $name): array
+    {
+        $configured = $this->configuredObject($name);
+        $validated = [];
+
+        foreach ($configured as $field => $value) {
+            $validated[$field] = $this->limitValue(
+                $value,
+                "server.namespace_durable_state.{$name}.{$field}",
+            );
+        }
+
+        return $validated;
     }
 
     /** @return array<string, mixed> */

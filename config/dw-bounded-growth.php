@@ -365,9 +365,9 @@ return [
             'surface' => 'GET /api/system/metrics',
             'dimensions' => [
                 'namespace' => 'request_scope_not_label',
-                'reason' => 'finite_seven_reason_inventory',
+                'reason' => 'finite_reason_inventory',
             ],
-            'cardinality' => 'The request namespace is the query scope rather than a label; usage fields are fixed to six durable resource kinds and rejection counters use six exhaustion reasons plus quota unavailability.',
+            'cardinality' => 'The request namespace is the query scope rather than a label; usage and rejection fields come from the fixed durable resource inventory plus quota unavailability.',
             'selection' => 'Current durable row usage and current-minute rejection counters for the requested namespace.',
             'suppression' => 'No suppression is needed because each response contains a fixed resource and reason inventory.',
         ],

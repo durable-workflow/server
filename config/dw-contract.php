@@ -375,7 +375,7 @@ return [
             'legacy' => 'WORKFLOW_SERVER_NAMESPACE_ADMISSION_OVERRIDES',
         ],
         'DW_NAMESPACE_DURABLE_LIMITS' => [
-            'description' => 'JSON object of default per-namespace durable row limits: max_workflow_instances, max_workflow_runs, max_open_workflow_runs, max_schedules, max_schedule_history_events, and max_worker_registrations. An empty object is unlimited.',
+            'description' => 'JSON object of default per-namespace durable row limits across workflow instances, runs, history, tasks, timers, waits, commands, schedules, workers, and streams. Lifetime and pending/open limits are independent; pending workflow tasks count queued ready rows because active leases have separate admission limits. An empty object is unlimited.',
             'default' => '{}',
             'since' => '2.0.3',
             'legacy' => 'WORKFLOW_SERVER_NAMESPACE_DURABLE_LIMITS',

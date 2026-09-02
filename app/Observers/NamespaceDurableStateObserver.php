@@ -3,13 +3,25 @@
 namespace App\Observers;
 
 use App\Models\WorkerRegistration;
+use App\Models\WorkflowDurableStream;
+use App\Models\WorkflowDurableStreamItem;
+use App\Models\WorkflowInboundStream;
+use App\Models\WorkflowInboundStreamItem;
 use App\Support\NamespaceDurableStateQuota;
 use Illuminate\Database\Eloquent\Model;
+use InvalidArgumentException;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TimerStatus;
+use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowSchedule;
 use Workflow\V2\Models\WorkflowScheduleHistoryEvent;
+use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimer;
 
 final class NamespaceDurableStateObserver
 {
@@ -21,16 +33,11 @@ final class NamespaceDurableStateObserver
     {
         $resources = $this->resourcesFor($model);
 
-        if ($resources === []) {
+        if ($resources === [] || ! $this->quota->mayConstrain($resources)) {
             return;
         }
 
-        $namespace = $model->getAttribute('namespace');
-        $namespace = is_string($namespace) && trim($namespace) !== ''
-            ? $namespace
-            : (string) config('server.default_namespace', 'default');
-
-        $this->quota->admitCreate($namespace, $resources);
+        $this->quota->admitCreate($this->namespaceFor($model), $resources);
     }
 
     /** @return list<string> */
@@ -66,6 +73,104 @@ final class NamespaceDurableStateObserver
             return [NamespaceDurableStateQuota::WORKER_REGISTRATIONS];
         }
 
+        if ($model instanceof WorkflowHistoryEvent) {
+            return [NamespaceDurableStateQuota::WORKFLOW_HISTORY_EVENTS];
+        }
+
+        if ($model instanceof WorkflowTask) {
+            $resources = [NamespaceDurableStateQuota::WORKFLOW_TASKS];
+            $status = $model->getAttribute('status');
+            $taskStatus = $status instanceof TaskStatus
+                ? $status
+                : (is_string($status) ? TaskStatus::tryFrom($status) : null);
+
+            if ($taskStatus === null || $taskStatus === TaskStatus::Ready) {
+                $resources[] = NamespaceDurableStateQuota::PENDING_WORKFLOW_TASKS;
+            }
+
+            return $resources;
+        }
+
+        if ($model instanceof WorkflowTimer) {
+            $resources = [NamespaceDurableStateQuota::WORKFLOW_TIMERS];
+            $status = $model->getAttribute('status');
+            $timerStatus = $status instanceof TimerStatus
+                ? $status
+                : (is_string($status) ? TimerStatus::tryFrom($status) : null);
+
+            if ($timerStatus === null || $timerStatus === TimerStatus::Pending) {
+                $resources[] = NamespaceDurableStateQuota::PENDING_WORKFLOW_TIMERS;
+            }
+
+            return $resources;
+        }
+
+        if ($model instanceof WorkflowRunWait) {
+            $resources = [NamespaceDurableStateQuota::WORKFLOW_RUN_WAITS];
+
+            if (($model->getAttribute('status') ?? 'open') === 'open') {
+                $resources[] = NamespaceDurableStateQuota::OPEN_WORKFLOW_RUN_WAITS;
+            }
+
+            return $resources;
+        }
+
+        if ($model instanceof WorkflowCommand) {
+            return [NamespaceDurableStateQuota::WORKFLOW_COMMANDS];
+        }
+
+        if ($model instanceof WorkflowDurableStream || $model instanceof WorkflowInboundStream) {
+            return [NamespaceDurableStateQuota::WORKFLOW_STREAMS];
+        }
+
+        if ($model instanceof WorkflowDurableStreamItem || $model instanceof WorkflowInboundStreamItem) {
+            return [NamespaceDurableStateQuota::WORKFLOW_STREAM_ITEMS];
+        }
+
         return [];
+    }
+
+    private function namespaceFor(Model $model): string
+    {
+        $namespace = $model->getAttribute('namespace');
+
+        if (is_string($namespace) && trim($namespace) !== '') {
+            return $namespace;
+        }
+
+        $runId = $model->getAttribute('workflow_run_id');
+
+        if (is_string($runId) && $runId !== '') {
+            $namespace = WorkflowRun::query()->whereKey($runId)->value('namespace');
+
+            if (is_string($namespace) && $namespace !== '') {
+                return $namespace;
+            }
+        }
+
+        $instanceId = $model->getAttribute('workflow_instance_id');
+
+        if (is_string($instanceId) && $instanceId !== '') {
+            $namespace = WorkflowInstance::query()->whereKey($instanceId)->value('namespace');
+
+            if (is_string($namespace) && $namespace !== '') {
+                return $namespace;
+            }
+        }
+
+        $scheduleId = $model->getAttribute('workflow_schedule_id');
+
+        if (is_string($scheduleId) && $scheduleId !== '') {
+            $namespace = WorkflowSchedule::query()->whereKey($scheduleId)->value('namespace');
+
+            if (is_string($namespace) && $namespace !== '') {
+                return $namespace;
+            }
+        }
+
+        throw new InvalidArgumentException(sprintf(
+            'Namespace durable-state quota could not resolve ownership for [%s].',
+            $model::class,
+        ));
     }
 }

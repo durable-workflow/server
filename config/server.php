@@ -401,11 +401,12 @@ return [
     | Namespace Durable State
     |--------------------------------------------------------------------------
     |
-    | Durable row counts can be bounded independently per namespace. Empty
-    | objects are explicitly unlimited for backwards compatibility. Namespace
-    | overrides may raise or lower defaults, but hard limits remain
-    | non-bypassable. A configured limit is enforced against database state
-    | while holding the namespace row lock.
+    | Durable row counts can be bounded independently per namespace. Pending
+    | task limits count queued ready rows; active leases are bounded separately
+    | by task-queue admission. Empty objects are explicitly unlimited for
+    | backwards compatibility. Namespace overrides may raise or lower defaults,
+    | but hard limits remain non-bypassable. A configured limit is enforced
+    | against database state while holding the namespace row lock.
     |
     */
 
