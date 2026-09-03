@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "17"
+  version: "18"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -309,6 +309,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/WorkflowTaskPollResponse"
         "400": { $ref: "#/components/responses/WorkerError" }
+        "429": { $ref: "#/components/responses/WorkerPollBackpressure" }
         "409": { $ref: "#/components/responses/WorkflowTaskPollConflict" }
         "422": { $ref: "#/components/responses/WorkerError" }
   /worker/workflow-tasks/{taskId}/history:
@@ -396,6 +397,7 @@ paths:
                   - $ref: "#/components/schemas/EmptyPoll"
         "400": { $ref: "#/components/responses/WorkerError" }
         "409": { $ref: "#/components/responses/WorkerError" }
+        "429": { $ref: "#/components/responses/WorkerPollBackpressure" }
         "422": { $ref: "#/components/responses/WorkerError" }
   /worker/update-validation-tasks/{taskId}/approve:
     post:
@@ -443,6 +445,7 @@ paths:
             schema: { $ref: "#/components/schemas/PollRequest" }
       responses:
         "200": { $ref: "#/components/responses/WorkerEnvelope" }
+        "429": { $ref: "#/components/responses/WorkerPollBackpressure" }
   /worker/query-tasks/{queryTaskId}/complete:
     post:
       operationId: completeQueryTask
@@ -500,6 +503,7 @@ paths:
                   - $ref: "#/components/schemas/ActivityTaskClaim"
                   - $ref: "#/components/schemas/EmptyPoll"
                   - $ref: "#/components/schemas/DrainingPoll"
+        "429": { $ref: "#/components/responses/WorkerPollBackpressure" }
   /worker/activity-tasks/{taskId}/heartbeat:
     post:
       operationId: heartbeatActivityTask
@@ -594,6 +598,16 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/WorkerError" }
+    WorkerPollBackpressure:
+      description: The node has no capacity for another held long poll; retry after the advertised delay.
+      headers:
+        X-Durable-Workflow-Protocol-Version:
+          schema: { $ref: "#/components/schemas/AdvertisedWorkerProtocolVersion" }
+        Retry-After:
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/WorkerPollBackpressure" }
     WorkerRegistrationEnvelope:
       description: Accepted worker registration and its authoritative capabilities.
       headers:
@@ -722,6 +736,21 @@ components:
         reason: { type: [string, "null"] }
         remediation: { type: [string, "null"] }
         server_capabilities: { $ref: "#/components/schemas/WorkerServerCapabilities" }
+    WorkerPollBackpressure:
+      allOf:
+        - $ref: "#/components/schemas/WorkerError"
+        - type: object
+          required: [task, poll_status, error, reason, namespace, task_queue, task_kind, wait_pool, retry_after_seconds, retryable]
+          properties:
+            task: { type: "null" }
+            poll_status: { type: string, const: long_poll_capacity_exhausted }
+            reason: { type: string, const: long_poll_capacity_exhausted }
+            namespace: { type: string, minLength: 1 }
+            task_queue: { type: string, minLength: 1 }
+            task_kind: { type: string, enum: [workflow_task, activity_task, query_task, update_validation_task] }
+            wait_pool: { type: string, enum: [worker, query] }
+            retry_after_seconds: { type: integer, minimum: 1 }
+            retryable: { type: boolean, const: true }
     WorkerRegistrationEnvelope:
       allOf:
         - $ref: "#/components/schemas/WorkerEnvelope"

@@ -75,7 +75,7 @@ class WorkerPollBackpressureTest extends TestCase
         ], 'query_task', 'query-task');
     }
 
-    public function test_backpressure_response_enforces_the_advertised_cooldown(): void
+    public function test_backpressure_response_returns_immediately_with_a_typed_retry_contract(): void
     {
         $startedAt = microtime(true);
 
@@ -86,17 +86,18 @@ class WorkerPollBackpressureTest extends TestCase
                 'poll_request_id' => "bounded-workflow-backpressure-{$attempt}",
                 'timeout_seconds' => 1,
             ], $this->workerHeaders())
-                ->assertOk()
+                ->assertStatus(429)
                 ->assertHeader('Retry-After', '1')
                 ->assertJsonPath('task', null)
-                ->assertJsonPath('poll_status', 'empty')
-                ->assertJsonPath('reason', 'long_poll_capacity_exhausted');
+                ->assertJsonPath('poll_status', 'long_poll_capacity_exhausted')
+                ->assertJsonPath('reason', 'long_poll_capacity_exhausted')
+                ->assertJsonPath('retryable', true);
         }
 
-        $this->assertGreaterThanOrEqual(
-            1.9,
+        $this->assertLessThan(
+            1.0,
             microtime(true) - $startedAt,
-            'Compatibility backpressure must bound clients that immediately repoll after an empty response.',
+            'Backpressure must release the PHP request worker instead of sleeping through the retry window.',
         );
         $worker = WorkerRegistration::query()
             ->where('namespace', 'default')
@@ -133,7 +134,7 @@ class WorkerPollBackpressureTest extends TestCase
                 'poll_request_id' => 'default-namespace-capacity',
                 'timeout_seconds' => 1,
             ], $this->workerHeaders())
-                ->assertOk()
+                ->assertStatus(429)
                 ->assertJsonPath('reason', 'long_poll_capacity_exhausted');
 
             $this->postJson('/api/worker/workflow-tasks/poll', [
@@ -161,15 +162,16 @@ class WorkerPollBackpressureTest extends TestCase
         string $waitPool,
     ): void {
         $this->postJson($path, $payload, $this->workerHeaders())
-            ->assertOk()
+            ->assertStatus(429)
             ->assertHeader('Retry-After', '1')
             ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
             ->assertJsonPath('task', null)
-            ->assertJsonPath('poll_status', 'empty')
+            ->assertJsonPath('poll_status', 'long_poll_capacity_exhausted')
             ->assertJsonPath('reason', 'long_poll_capacity_exhausted')
             ->assertJsonPath('task_kind', $taskKind)
             ->assertJsonPath('wait_pool', $waitPool)
-            ->assertJsonPath('retry_after_seconds', 1);
+            ->assertJsonPath('retry_after_seconds', 1)
+            ->assertJsonPath('retryable', true);
     }
 
     private function setWorkerRuntime(string $runtime): void

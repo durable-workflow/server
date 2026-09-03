@@ -67,6 +67,35 @@ class WorkerProtocolOpenApiContractTest extends TestCase
         );
     }
 
+    public function test_worker_poll_routes_publish_typed_backpressure(): void
+    {
+        foreach ([
+            '/worker/workflow-tasks/poll',
+            '/worker/update-validation-tasks/poll',
+            '/worker/query-tasks/poll',
+            '/worker/activity-tasks/poll',
+        ] as $path) {
+            $this->assertSame(
+                '#/components/responses/WorkerPollBackpressure',
+                $this->spec['paths'][$path]['post']['responses']['429']['$ref'] ?? null,
+                "{$path} must publish its transient long-poll refusal.",
+            );
+        }
+
+        $schema = $this->spec['components']['schemas']['WorkerPollBackpressure'];
+        $contract = $schema['allOf'][1];
+        $this->assertContains('retryable', $contract['required']);
+        $this->assertSame(true, $contract['properties']['retryable']['const']);
+        $this->assertSame(
+            'long_poll_capacity_exhausted',
+            $contract['properties']['reason']['const'],
+        );
+        $this->assertSame(
+            ['workflow_task', 'activity_task', 'query_task', 'update_validation_task'],
+            $contract['properties']['task_kind']['enum'],
+        );
+    }
+
     public function test_portable_worker_affinity_is_machine_described_at_protocol_1_18(): void
     {
         $contract = $this->spec['x-durable-workflow-portable-worker-affinity-contract'];

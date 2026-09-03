@@ -34,7 +34,7 @@ RESULT_SCHEMA = "durable-workflow.capacity-benchmark-result/v1"
 CORPUS_SCHEMA = "durable-workflow.capacity-benchmark-regression-corpus/v1"
 ADAPTER_SCHEMA = "durable-workflow.capacity-benchmark-adapter/v1"
 COLLECTOR_SCHEMA = "durable-workflow.capacity-benchmark-collector/v1"
-SUITE_VERSION = "1.6.0"
+SUITE_VERSION = "1.7.0"
 
 REQUIRED_CELL_IDS = {
     "simple-start-complete",

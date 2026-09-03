@@ -21,9 +21,7 @@ assert spec is not None and spec.loader is not None
 capacity_suite = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(capacity_suite)
 
-PUBLICATION_MODULE_PATH = (
-    ROOT / "scripts/benchmark/capacity_schema_publication.py"
-)
+PUBLICATION_MODULE_PATH = ROOT / "scripts/benchmark/capacity_schema_publication.py"
 publication_spec = importlib.util.spec_from_file_location(
     "capacity_schema_publication", PUBLICATION_MODULE_PATH
 )
@@ -197,9 +195,7 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         summary = capacity_suite._component_summary(observations)
         self.assertIn("runtime-ingress", summary)
         self.assertGreater(summary["runtime-ingress"]["peak_cpu_utilization"], 0)
-        self.assertGreater(
-            summary["runtime-ingress"]["peak_memory_utilization"], 0
-        )
+        self.assertGreater(summary["runtime-ingress"]["peak_memory_utilization"], 0)
 
         profile["components"]["runtime-ingress"]["memory_bytes"] = 0
         with self.assertRaisesRegex(
@@ -251,7 +247,7 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         )
         self.assertEqual(
             {
-                "prefix": ["WorkflowStarted"],
+                "prefix": ["StartAccepted", "WorkflowStarted"],
                 "repeat": [
                     "ActivityScheduled",
                     "ActivityStarted",
@@ -262,7 +258,7 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
             },
             cell["workload"]["history"]["ordered_history_event_pattern"],
         )
-        self.assertEqual(5, cell["workload"]["history"]["target_event_count"])
+        self.assertEqual(6, cell["workload"]["history"]["target_event_count"])
         self.assertEqual(
             {
                 "concurrent_open_workflows": 100,
@@ -285,6 +281,51 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         self.assertEqual(
             ["php", "python", "rust"],
             [binding["language"] for binding in cell["bindings"]],
+        )
+
+    def test_every_history_contract_counts_start_accepted(self) -> None:
+        expected_counts = {
+            "simple-start-complete": 3,
+            "one-activity": 6,
+            "multiple-activities": 18,
+            "timer": 5,
+            "signal": 12,
+            "child-workflow-fanout": 63,
+            "replay-heavy-history": 503,
+            "query-inspection": 6,
+        }
+
+        for cell in self.suite["cells"]:
+            if cell["id"] == "mixed":
+                continue
+            history = cell["workload"]["history"]
+            with self.subTest(cell=cell["id"]):
+                self.assertEqual(
+                    expected_counts[cell["id"]], history["target_event_count"]
+                )
+                self.assertTrue(
+                    any(
+                        evidence["source"] == "history_events"
+                        and evidence["match"] == {"type": "StartAccepted"}
+                        and evidence["count"] == 1
+                        for evidence in history["evidence"]
+                        if evidence.get("scope", "root") == "root"
+                    )
+                )
+
+        child_history = next(
+            cell["workload"]["history"]
+            for cell in self.suite["cells"]
+            if cell["id"] == "child-workflow-fanout"
+        )
+        self.assertTrue(
+            any(
+                evidence.get("scope") == "children"
+                and evidence["source"] == "history_events"
+                and evidence["match"] == {"type": "StartAccepted"}
+                and evidence["count"] == 10
+                for evidence in child_history["evidence"]
+            )
         )
 
     def test_dependency_free_adapter_descriptions_match_checked_in_contracts(
@@ -426,6 +467,7 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         )
         history = multiple["workload"]["history"]
         events = [
+            "StartAccepted",
             "WorkflowStarted",
             *(
                 event
@@ -561,11 +603,19 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         ):
             command = runner._entrypoint(adapter, "worker", environment)
         self.assertEqual(
-            ["docker", "exec", "--interactive", "--workdir", "/capacity"],
-            command[:5],
+            ["docker", "exec", "--workdir", "/capacity"],
+            command[:4],
         )
         self.assertIn("resolved-python-container", command)
         self.assertEqual(["python3", "capacity_adapter.py", "worker"], command[-3:])
+        self.assertNotIn("--interactive", command)
+        self.assertIn("capacity-worker", command)
+        self.assertTrue(
+            any(
+                value.startswith("/tmp/durable-workflow-capacity-worker-")
+                for value in command
+            )
+        )
         self.assertTrue(
             any(
                 value == "DURABLE_WORKFLOW_TASK_QUEUE=capacity-smoke"
@@ -573,6 +623,100 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
             )
         )
         self.assertFalse(any("UNRELATED_SECRET" in value for value in command))
+
+        with mock.patch.dict(
+            capacity_matrix.os.environ,
+            {
+                "CAPACITY_ADAPTER_CONTAINER_PYTHON": "resolved-python-container",
+                "CAPACITY_ADAPTER_WORKDIR_PYTHON": "/capacity",
+            },
+            clear=False,
+        ):
+            client = runner._entrypoint(adapter, "client", environment)
+            cleanup = runner._container_worker_cleanup_command(adapter, environment)
+        self.assertIn("--interactive", client)
+        self.assertEqual(["python3", "capacity_adapter.py", "client"], client[-3:])
+        self.assertIsNotNone(cleanup)
+        assert cleanup is not None
+        self.assertEqual(["docker", "exec", "resolved-python-container"], cleanup[:3])
+        self.assertIn("/proc/$pid/stat", cleanup[5])
+        self.assertIn("expected_start", cleanup[5])
+        self.assertEqual(
+            runner._container_worker_pid_file(adapter, environment),
+            cleanup[-1],
+        )
+
+    def test_worker_process_runs_container_cleanup_after_client_exit(self) -> None:
+        process = mock.Mock()
+        process.poll.return_value = 0
+        cleanup = ["docker", "exec", "adapter", "true"]
+        worker = capacity_matrix.WorkerProcess(process, "test worker", cleanup)
+        completed = mock.Mock(returncode=0, stderr="")
+        with mock.patch.object(
+            capacity_matrix.subprocess, "run", return_value=completed
+        ) as run:
+            worker.close()
+        run.assert_called_once_with(
+            cleanup,
+            check=False,
+            text=True,
+            stdout=capacity_matrix.subprocess.DEVNULL,
+            stderr=capacity_matrix.subprocess.PIPE,
+            timeout=20,
+        )
+
+    def test_control_plane_identifies_capacity_suite_requests(self) -> None:
+        response = mock.MagicMock()
+        response.read.return_value = b"{}"
+        response.__enter__.return_value = response
+        with (
+            mock.patch.dict(
+                capacity_matrix.os.environ,
+                {"DURABLE_WORKFLOW_CLIENT_TOKEN": "test-token"},
+                clear=False,
+            ),
+            mock.patch.object(
+                capacity_matrix.urlrequest,
+                "urlopen",
+                return_value=response,
+            ) as urlopen,
+        ):
+            control_plane = capacity_matrix.ControlPlane(
+                "https://runtime.example.test",
+                "default",
+            )
+            self.assertEqual({}, control_plane.get("/api/task-queues/test"))
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(
+            "Durable-Workflow-Capacity-Suite/1.7",
+            request.get_header("User-agent"),
+        )
+
+    def test_each_cell_run_has_isolated_queue_and_workflow_identities(self) -> None:
+        runner = capacity_matrix.CellRunner.__new__(capacity_matrix.CellRunner)
+        runner.sequence = 0
+        runner.execution_scope = "run-a"
+        runner.binding = "php"
+        runner.cell = {"id": "one-activity"}
+        runner.execution = {"deterministic_seed": 20260811}
+        runner.task_queue_prefix = "capacity-v1"
+
+        first, sequence = runner._new_identity(1)
+        first_queue = runner._task_queue(1)
+        runner.sequence = 0
+        runner.execution_scope = "run-b"
+        second, repeated_sequence = runner._new_identity(1)
+        second_queue = runner._task_queue(1)
+
+        self.assertEqual(1, sequence)
+        self.assertEqual(sequence, repeated_sequence)
+        self.assertIn("run-a", first)
+        self.assertIn("run-b", second)
+        self.assertNotEqual(first, second)
+        self.assertIn("run-a", first_queue)
+        self.assertIn("run-b", second_queue)
+        self.assertNotEqual(first_queue, second_queue)
 
     def test_local_launcher_passes_every_resolved_identity_automatically(
         self,

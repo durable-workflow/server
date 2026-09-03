@@ -261,7 +261,7 @@ return [
             'legacy' => 'WORKFLOW_SERVER_WAKE_SIGNAL_TTL_SECONDS',
         ],
         'DW_WORKER_LONG_POLL_MAX_CONCURRENT' => [
-            'description' => 'Optional cap for concurrent held workflow/activity worker long-poll waits on this server node. Polls above the cap receive a protocol-compatible HTTP 200 empty response after the advertised Retry-After cooldown and their immediate task probe. Query-task polls use their own wait budget so live workflow queries are not starved by idle workflow/activity waits. Unset derives from PHP_CLI_SERVER_WORKERS minus the configured or derived HTTP worker reserve, the derived query-task poll wait budget, and an additional API worker reserve when the standalone CLI server declares a worker count.',
+            'description' => 'Optional cap for concurrent held workflow/activity worker long-poll waits on this server node. Polls above the cap receive an immediate typed HTTP 429 response with an advertised Retry-After delay after their immediate task probe. Query-task polls use their own wait budget so live workflow queries are not starved by idle workflow/activity waits. Unset derives from PHP_CLI_SERVER_WORKERS minus the configured or derived HTTP worker reserve, the derived query-task poll wait budget, and an additional API worker reserve when the standalone CLI server declares a worker count.',
             'default' => '(unset; derived for PHP_CLI_SERVER_WORKERS)',
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_WORKER_LONG_POLL_MAX_CONCURRENT',
@@ -486,7 +486,7 @@ return [
             'legacy' => 'WORKFLOW_SERVER_QUERY_TASK_MAX_PENDING_PER_QUEUE',
         ],
         'DW_QUERY_TASK_POLL_MAX_CONCURRENT' => [
-            'description' => 'Optional cap for concurrent held idle query-task worker long-poll waits on this server node. Polls above the cap receive a protocol-compatible HTTP 200 empty response after the advertised Retry-After cooldown and their immediate task probe. Pending query tasks can still be claimed immediately before a poll waits. Unset derives one held query-task poll when PHP_CLI_SERVER_WORKERS leaves capacity after reserved HTTP workers, API-reserved workers, and workflow/activity waits.',
+            'description' => 'Optional cap for concurrent held idle query-task worker long-poll waits on this server node. Polls above the cap receive an immediate typed HTTP 429 response with an advertised Retry-After delay after their immediate task probe. Pending query tasks can still be claimed immediately before a poll waits. Unset derives one held query-task poll when PHP_CLI_SERVER_WORKERS leaves capacity after reserved HTTP workers, API-reserved workers, and workflow/activity waits.',
             'default' => '(unset; derived for PHP_CLI_SERVER_WORKERS)',
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_QUERY_TASK_POLL_MAX_CONCURRENT',

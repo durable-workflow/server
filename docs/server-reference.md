@@ -1255,12 +1255,11 @@ acquire a short-lived wait slot before sleeping; once the node-local slot cap
 is reached, additional idle polls receive `Retry-After: 1` instead of entering
 a tight empty-poll loop or holding another PHP server worker for the full poll
 timeout. Published Python, Rust, PHP, and other supported workers receive a
-protocol-compatible HTTP 200 empty response with the
-`long_poll_capacity_exhausted` reason and retry header. The server holds that
-compatibility response for the advertised one-second cooldown because existing
-worker poll APIs do not all expose retry headers to their loops. This keeps
-workers alive and bounds immediate empty repolling without admitting another
-full long-poll wait. Idle query-task
+typed HTTP 429 response with the `long_poll_capacity_exhausted` reason,
+`retryable: true`, and an advertised one-second retry delay. Supported workers
+treat the refusal as transient and back off before polling again. Returning the
+refusal immediately keeps workers alive, bounds empty repolling, and releases
+the Apache request worker instead of sleeping through the retry window. Idle query-task
 polls use a separate wait-slot budget, set to one slot on the default
 standalone image, so workflow/activity polls cannot starve live workflow queries
 across the PHP and Python worker queues, and query-task polls cannot consume the

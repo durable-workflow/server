@@ -18,6 +18,7 @@ import math
 import os
 from pathlib import Path
 import random
+import secrets
 from select import select
 import signal
 import subprocess
@@ -214,9 +215,15 @@ class JsonLineProcess:
 
 
 class WorkerProcess:
-    def __init__(self, process: subprocess.Popen[str], label: str):
+    def __init__(
+        self,
+        process: subprocess.Popen[str],
+        label: str,
+        cleanup_command: list[str] | None = None,
+    ):
         self.process = process
         self.label = label
+        self.cleanup_command = cleanup_command
 
     def assert_running(self) -> None:
         status = self.process.poll()
@@ -229,17 +236,36 @@ class WorkerProcess:
         )
 
     def close(self) -> None:
-        if self.process.poll() is not None:
-            return
+        cleanup_failure = ""
+        if self.cleanup_command is not None:
+            try:
+                completed = subprocess.run(
+                    self.cleanup_command,
+                    check=False,
+                    text=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    timeout=20,
+                )
+                if completed.returncode != 0:
+                    cleanup_failure = completed.stderr[-500:].strip()
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                cleanup_failure = str(exc)
         try:
-            os.killpg(self.process.pid, signal.SIGTERM)
-            self.process.wait(timeout=15)
+            if self.process.poll() is None:
+                os.killpg(self.process.pid, signal.SIGTERM)
+                self.process.wait(timeout=15)
         except (OSError, subprocess.TimeoutExpired):
             try:
                 os.killpg(self.process.pid, signal.SIGKILL)
                 self.process.wait(timeout=5)
             except (OSError, subprocess.TimeoutExpired):
                 pass
+        if cleanup_failure:
+            raise MatrixError(
+                f"{self.label} container cleanup failed"
+                + (f": {cleanup_failure}" if cleanup_failure else "")
+            )
 
 
 class ControlPlane:
@@ -254,6 +280,7 @@ class ControlPlane:
     def get(self, path: str) -> dict[str, Any]:
         headers = {
             "Accept": "application/json",
+            "User-Agent": "Durable-Workflow-Capacity-Suite/1.7",
             "X-Namespace": self.namespace,
             "X-Durable-Workflow-Control-Plane-Version": "2",
         }
@@ -745,6 +772,7 @@ class CellRunner:
         self.runtime_url = runtime_url
         self.namespace = namespace
         self.task_queue_prefix = task_queue_prefix
+        self.execution_scope = secrets.token_hex(6)
         self.sample_interval = sample_interval
         self.minimum_delivery_ratio = minimum_delivery_ratio
         self.control_plane = ControlPlane(runtime_url, namespace)
@@ -791,14 +819,85 @@ class CellRunner:
         ).strip()
         if not workdir.startswith("/"):
             raise MatrixError(f"{binding} adapter container workdir must be absolute")
-        remote = ["docker", "exec", "--interactive", "--workdir", workdir]
+        remote = ["docker", "exec"]
+        if mode != "worker":
+            remote.append("--interactive")
+        remote.extend(["--workdir", workdir])
         forwarded = environment or os.environ
         for name, value in sorted(forwarded.items()):
             if name.startswith("DURABLE_WORKFLOW_"):
                 remote.extend(["--env", f"{name}={value}"])
         remote.append(container)
-        remote.extend(command)
+        if mode == "worker":
+            remote.extend(
+                [
+                    "sh",
+                    "-c",
+                    (
+                        'pidfile="$1"; shift; umask 077; '
+                        'start="$(awk \'{print $22}\' "/proc/$$/stat")"; '
+                        'printf "%s %s\\n" "$$" "$start" >"$pidfile"; exec "$@"'
+                    ),
+                    "capacity-worker",
+                    self._container_worker_pid_file(descriptor, environment),
+                    *command,
+                ]
+            )
+        else:
+            remote.extend(command)
         return remote
+
+    @staticmethod
+    def _container_worker_pid_file(
+        descriptor: dict[str, Any], environment: dict[str, str]
+    ) -> str:
+        binding = str(descriptor.get("binding") or "adapter")
+        identity = "\0".join(
+            (
+                binding,
+                environment.get("DURABLE_WORKFLOW_TASK_QUEUE", ""),
+                environment.get("DURABLE_WORKFLOW_WORKER_PROCESS_INDEX", "0"),
+            )
+        )
+        digest = hashlib.sha256(identity.encode()).hexdigest()[:24]
+        return f"/tmp/durable-workflow-capacity-worker-{digest}.pid"
+
+    def _container_worker_cleanup_command(
+        self,
+        descriptor: dict[str, Any],
+        environment: dict[str, str],
+    ) -> list[str] | None:
+        binding = descriptor.get("binding")
+        if not isinstance(binding, str):
+            return None
+        suffix = binding.upper().replace("-", "_")
+        container = os.environ.get(f"CAPACITY_ADAPTER_CONTAINER_{suffix}", "").strip()
+        if not container:
+            return None
+        pidfile = self._container_worker_pid_file(descriptor, environment)
+        script = (
+            'pidfile="$1"; '
+            'if [ ! -f "$pidfile" ]; then exit 0; fi; '
+            'read -r pid expected_start <"$pidfile"; '
+            'if [ -r "/proc/$pid/stat" ]; then '
+            'actual_start="$(awk \'{print $22}\' "/proc/$pid/stat")"; '
+            '[ "$actual_start" = "$expected_start" ] || exit 41; '
+            'kill -TERM "$pid"; attempts=0; '
+            'while kill -0 "$pid" 2>/dev/null && [ "$attempts" -lt 150 ]; do '
+            "sleep 0.1; attempts=$((attempts + 1)); done; "
+            'if kill -0 "$pid" 2>/dev/null; then kill -KILL "$pid"; fi; '
+            'fi; rm -f "$pidfile"'
+        )
+        return [
+            "docker",
+            "exec",
+            container,
+            "sh",
+            "-c",
+            script,
+            "capacity-worker-cleanup",
+            pidfile,
+        ]
 
     def _start_processes(self, task_queue: str) -> None:
         environment = self._environment(task_queue)
@@ -811,11 +910,12 @@ class CellRunner:
         for index in range(process_count):
             worker_environment = environment.copy()
             worker_environment["DURABLE_WORKFLOW_WORKER_PROCESS_INDEX"] = str(index)
+            worker_command = self._entrypoint(
+                self.matrix_cell.adapter, "worker", worker_environment
+            )
             try:
                 process = subprocess.Popen(
-                    self._entrypoint(
-                        self.matrix_cell.adapter, "worker", worker_environment
-                    ),
+                    worker_command,
                     cwd=self.matrix_cell.adapter_root,
                     env=worker_environment,
                     stdin=subprocess.DEVNULL,
@@ -827,7 +927,13 @@ class CellRunner:
             except OSError as exc:
                 raise MatrixError(f"cannot start {self.binding} worker: {exc}") from exc
             self.workers.append(
-                WorkerProcess(process, f"{self.binding} worker {index}")
+                WorkerProcess(
+                    process,
+                    f"{self.binding} worker {index}",
+                    self._container_worker_cleanup_command(
+                        self.matrix_cell.adapter, worker_environment
+                    ),
+                )
             )
         for index in range(int(self.execution["client_concurrency"])):
             self.clients.append(
@@ -918,10 +1024,16 @@ class CellRunner:
         sequence = self.sequence
         cell = str(self.cell["id"]).replace("_", "-")
         workflow_id = (
-            f"capacity-v1-{self.binding}-{cell}-{load_step}-"
+            f"capacity-v1-{self.execution_scope}-{self.binding}-{cell}-{load_step}-"
             f"{self.execution['deterministic_seed']}-{sequence}"
         )
         return workflow_id, sequence
+
+    def _task_queue(self, load_step: int) -> str:
+        return (
+            f"{self.task_queue_prefix}-{self.execution_scope}-"
+            f"{self.binding}-{self.cell['id']}-{load_step}"
+        )
 
     def _workflow_lifecycle(
         self,
@@ -1446,9 +1558,7 @@ class CellRunner:
         return observations
 
     def run_load_step(self, load_step: int) -> list[dict[str, Any]]:
-        task_queue = (
-            f"{self.task_queue_prefix}-{self.binding}-{self.cell['id']}-{load_step}"
-        )
+        task_queue = self._task_queue(load_step)
         maximum_threads = (
             int(self.execution["concurrent_open_workflows"])
             + int(self.execution["client_concurrency"])
@@ -1479,8 +1589,14 @@ class CellRunner:
                 self.collector.close()
             for client in self.clients:
                 client.close()
+            cleanup_failures = []
             for worker in self.workers:
-                worker.close()
+                try:
+                    worker.close()
+                except MatrixError as exc:
+                    cleanup_failures.append(str(exc))
+            if cleanup_failures:
+                raise MatrixError("; ".join(cleanup_failures))
 
 
 def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
