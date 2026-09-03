@@ -18,7 +18,7 @@
       "additionalProperties": false,
       "required": ["suite_version", "deterministic_seed", "concurrent_open_workflows", "client_concurrency", "worker_concurrency", "warmup_seconds", "duration_seconds", "offered_load", "termination"],
       "properties": {
-        "suite_version": {"const": "1.4.0"},
+        "suite_version": {"type": "string", "pattern": "^1\\.[0-9]+\\.[0-9]+$"},
         "deterministic_seed": {"type": "integer", "minimum": 0},
         "concurrent_open_workflows": {"type": "integer", "minimum": 1},
         "client_concurrency": {"type": "integer", "minimum": 1},

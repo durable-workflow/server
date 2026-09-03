@@ -6,6 +6,7 @@ declare(strict_types=1);
 use DurableWorkflow\Client;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\ActivityContext;
+use DurableWorkflow\Worker\ParallelWorkflowCommand;
 use DurableWorkflow\Worker\PollResponse;
 use DurableWorkflow\Worker\QueryContext;
 use DurableWorkflow\Worker\WorkflowCommand;
@@ -155,21 +156,21 @@ function capacityCheckedActivityResult(mixed $value, array $contract): string
     return capacityRequireUtf8Size($value, (int) $contract['activity_result_bytes'], 'Activity result');
 }
 
-function capacityOneActivityWorkflow(WorkflowContext $context, array $request): Generator
+function capacityOneActivityWorkflow(WorkflowContext $context, array $request): string
 {
     $contract = capacityPayloadContract($request);
-    $result = yield $context->activity('capacity.v1.echo', [capacityInitialActivityInput($request)]);
+    $result = $context->activity('capacity.v1.echo', [capacityInitialActivityInput($request)]);
 
     return capacityCheckedActivityResult($result, $contract);
 }
 
-function capacityHashWorkflow(WorkflowContext $context, array $request): Generator
+function capacityHashWorkflow(WorkflowContext $context, array $request): string
 {
     $contract = capacityPayloadContract($request);
     $digest = capacityInitialActivityInput($request);
     for ($index = 0; $index < 5; $index++) {
         $digest = capacityCheckedActivityResult(
-            yield $context->activity('capacity.v1.hash', [$digest]),
+            $context->activity('capacity.v1.hash', [$digest]),
             $contract,
         );
         if ($index < 4) {
@@ -180,19 +181,13 @@ function capacityHashWorkflow(WorkflowContext $context, array $request): Generat
     return $digest;
 }
 
-function capacitySignalWorkflow(WorkflowContext $context): Generator
+function capacitySignalWorkflow(WorkflowContext $context): int
 {
-    while (true) {
-        $signals = $context->signals('capacity.v1.append');
-        if (count($signals) >= 4) {
-            break;
-        }
-        yield new WorkflowCommand(
-            'open_signal_wait',
-            'signal_wait',
-            ['signal_name' => 'capacity.v1.append'],
-        );
-    }
+    $context->waitCondition(
+        static fn (): bool => count($context->signals('capacity.v1.append')) >= 4,
+        'capacity.v1.four-ordered-signals',
+    );
+    $signals = $context->signals('capacity.v1.append');
 
     $sequences = array_map(
         static fn (array $arguments): int => (int) ($arguments[0] ?? -1),
@@ -205,62 +200,66 @@ function capacitySignalWorkflow(WorkflowContext $context): Generator
     return count($signals);
 }
 
-function capacityReplayWorkflow(WorkflowContext $context): Generator
+function capacityReplayWorkflow(WorkflowContext $context): int
 {
     for ($index = 0; $index < 500; $index++) {
-        yield $context->sideEffect(static fn (): int => $index);
+        $context->sideEffect(static fn (): int => $index);
     }
 
     return 500;
 }
 
-function capacityQueryWorkflow(WorkflowContext $context): Generator
+function capacityQueryWorkflow(WorkflowContext $context): int
 {
-    while ($context->signals('capacity.v1.finish') === []) {
-        yield new WorkflowCommand(
-            'open_signal_wait',
-            'signal_wait',
-            ['signal_name' => 'capacity.v1.finish'],
-        );
-    }
+    $context->waitCondition(
+        static fn (): bool => $context->signals('capacity.v1.finish') !== [],
+        'capacity.v1.finish-query-workflow',
+    );
 
     return 0;
 }
 
-function capacityChildFanoutWorkflow(WorkflowContext $context, array $request): Generator
+function capacityChildFanoutWorkflow(WorkflowContext $context, array $request): int
 {
     $taskQueue = is_string($request['task_queue'] ?? null) ? trim($request['task_queue']) : '';
     if ($taskQueue === '') {
         throw new InvalidArgumentException('Child fanout workload omitted its task queue.');
     }
 
-    $sum = 0;
+    $children = [];
     for ($index = 0; $index < 10; $index++) {
-        $sum += (int) (yield $context->childWorkflow(
+        $children[] = static fn (): mixed => $context->childWorkflow(
             'capacity.v1.child_leaf',
             [$index],
             ['queue' => $taskQueue],
-        ));
+        );
     }
 
-    return $sum;
+    return array_sum(array_map('intval', $context->all($children)));
 }
 
-function capacityMixedWorkflow(WorkflowContext $context, array $request): Generator
+function capacityMixedWorkflow(WorkflowContext $context, array $request): mixed
 {
     $shape = is_string($request['shape'] ?? null) ? $request['shape'] : '';
 
     return match ($shape) {
         'simple-start-complete' => capacityResultBlob($request),
-        'one-activity' => yield from capacityOneActivityWorkflow($context, $request),
-        'multiple-activities' => yield from capacityHashWorkflow($context, $request),
-        'timer' => yield $context->sleep(1),
-        'signal' => yield from capacitySignalWorkflow($context),
-        'child-workflow-fanout' => yield from capacityChildFanoutWorkflow($context, $request),
-        'replay-heavy-history' => yield from capacityReplayWorkflow($context),
-        'query-inspection' => yield from capacityQueryWorkflow($context),
+        'one-activity' => capacityOneActivityWorkflow($context, $request),
+        'multiple-activities' => capacityHashWorkflow($context, $request),
+        'timer' => capacityTimerWorkflow($context),
+        'signal' => capacitySignalWorkflow($context),
+        'child-workflow-fanout' => capacityChildFanoutWorkflow($context, $request),
+        'replay-heavy-history' => capacityReplayWorkflow($context),
+        'query-inspection' => capacityQueryWorkflow($context),
         default => throw new RuntimeException("Unsupported mixed workload shape: {$shape}"),
     };
+}
+
+function capacityTimerWorkflow(WorkflowContext $context): string
+{
+    $context->sleep(1);
+
+    return 'capacity.timer';
 }
 
 function capacityConfiguredWorker(): Worker
@@ -282,11 +281,7 @@ function capacityConfiguredWorker(): Worker
         ->registerWorkflow('capacity.v1.multiple_activities', capacityHashWorkflow(...))
         ->registerWorkflow(
             'capacity.v1.timer',
-            static function (WorkflowContext $context): Generator {
-                yield $context->sleep(1);
-
-                return 'capacity.timer';
-            },
+            capacityTimerWorkflow(...),
         )
         ->registerWorkflow('capacity.v1.signal', capacitySignalWorkflow(...))
         ->declareSignal(
@@ -664,22 +659,32 @@ if ($mode === 'worker') {
     ) {
         throw new RuntimeException('Fanout must emit ten distinct child starts in one workflow task.');
     }
-    $mixedFanout = capacityMixedWorkflow(
-        new WorkflowContext('capacity-check', 'capacity-check', [], $client->payloadCodec()),
-        ['shape' => 'child-workflow-fanout', 'task_queue' => 'capacity-check'],
-    );
-    for ($index = 0; $index < 10; $index++) {
-        $command = $index === 0 ? $mixedFanout->current() : $mixedFanout->send($index - 1);
-        if (! $command instanceof WorkflowCommand
-            || $command->type !== 'start_child_workflow'
+    $execution = new Fiber(static function () use ($client): int {
+        $fiber = Fiber::getCurrent();
+        if ($fiber === null) {
+            throw new RuntimeException('Mixed fanout check must run inside a workflow Fiber.');
+        }
+
+        return capacityMixedWorkflow(
+            new WorkflowContext('capacity-check', 'capacity-check', [], $client->payloadCodec(), execution: $fiber),
+            ['shape' => 'child-workflow-fanout', 'task_queue' => 'capacity-check'],
+        );
+    });
+    $mixedFanout = $execution->start();
+    if (! $mixedFanout instanceof ParallelWorkflowCommand || $mixedFanout->leafCount() !== 10) {
+        throw new RuntimeException('Mixed fanout must suspend one ten-child durable group.');
+    }
+    foreach ($mixedFanout->leafDescriptors(1) as $index => $descriptor) {
+        $command = $descriptor['operation']->command;
+        if ($command->type !== 'start_child_workflow'
             || ($command->attributes['workflow_type'] ?? null) !== 'capacity.v1.child_leaf'
             || ($command->attributes['arguments_value'] ?? null) !== [$index]
         ) {
             throw new RuntimeException('Mixed fanout must start ten direct child leaves on its own workflow history.');
         }
     }
-    $mixedFanout->send(9);
-    if ($mixedFanout->valid() || $mixedFanout->getReturn() !== 45) {
+    $execution->resume(range(0, 9));
+    if (! $execution->isTerminated() || $execution->getReturn() !== 45) {
         throw new RuntimeException('Mixed fanout must await and sum all ten direct child results.');
     }
     echo 'capacity PHP adapter definitions are valid'.PHP_EOL;

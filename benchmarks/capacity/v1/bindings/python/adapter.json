@@ -1,14 +1,14 @@
 {
   "$schema": "../../schemas/adapter.schema.json",
   "schema": "durable-workflow.capacity-benchmark-adapter/v1",
-  "suite_version": "1.4.0",
+  "suite_version": "1.5.0",
   "binding": "python",
   "artifact_key": "sdk_python",
   "artifact": {
     "registry": "pypi.org",
     "name": "durable-workflow",
-    "version": "2.0.0rc25",
-    "reference": "durable-workflow==2.0.0rc25"
+    "version": "2.0.1",
+    "reference": "durable-workflow==2.0.1"
   },
   "entrypoint": ["python3", "capacity_adapter.py"],
   "source_files": ["capacity_adapter.py", "requirements.txt", "requirements.lock"],

@@ -1,6 +1,6 @@
 {
   "schema": "durable-workflow.capacity-workload-conformance-fixtures/v1",
-  "suite_version": "1.4.0",
+  "suite_version": "1.5.0",
   "deterministic_seed": 104761,
   "bindings": ["php", "python", "rust"],
   "payload_cases": [

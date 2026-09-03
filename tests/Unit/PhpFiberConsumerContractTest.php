@@ -34,21 +34,30 @@ final class PhpFiberConsumerContractTest extends TestCase
     public static function serviceModePhpSourceProvider(): iterable
     {
         $repoRoot = dirname(__DIR__, 2);
-        $conformanceRoot = $repoRoot.'/scripts/conformance';
-        $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($conformanceRoot));
+        $roots = [
+            $repoRoot.'/scripts/conformance',
+            $repoRoot.'/benchmarks/capacity/v1/bindings/php',
+        ];
 
-        /** @var SplFileInfo $file */
-        foreach ($iterator as $file) {
-            if (! $file->isFile() || ! in_array($file->getExtension(), ['php', 'sh', 'mjs'], true)) {
-                continue;
-            }
-            $source = (string) file_get_contents($file->getPathname());
-            if (! str_contains($source, 'WorkflowContext')) {
-                continue;
-            }
+        foreach ($roots as $root) {
+            $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root));
 
-            $relativePath = str_replace($repoRoot.'/', '', $file->getPathname());
-            yield $relativePath => [$file->getPathname()];
+            /** @var SplFileInfo $file */
+            foreach ($iterator as $file) {
+                if (! $file->isFile() || ! in_array($file->getExtension(), ['php', 'sh', 'mjs'], true)) {
+                    continue;
+                }
+                if (str_contains($file->getPathname(), DIRECTORY_SEPARATOR.'vendor'.DIRECTORY_SEPARATOR)) {
+                    continue;
+                }
+                $source = (string) file_get_contents($file->getPathname());
+                if (! str_contains($source, 'WorkflowContext')) {
+                    continue;
+                }
+
+                $relativePath = str_replace($repoRoot.'/', '', $file->getPathname());
+                yield $relativePath => [$file->getPathname()];
+            }
         }
     }
 }

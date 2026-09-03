@@ -1,7 +1,7 @@
 {
   "$schema": "schemas/suite.schema.json",
   "schema": "durable-workflow.capacity-benchmark-suite/v1",
-  "suite_version": "1.4.0",
+  "suite_version": "1.5.0",
   "status": "engineering_evidence_not_release_gate",
   "description": "Versioned, reproducible Durable Workflow capacity workloads. Throughput evidence does not substitute for correctness conformance.",
   "schemas": {
@@ -16,32 +16,32 @@
     "server": {
       "registry": "docker.io",
       "name": "durableworkflow/server",
-      "version": "2.0.0-rc.25",
-      "reference": "docker.io/durableworkflow/server:2.0.0-rc.25"
+      "version": "2.0.3",
+      "reference": "docker.io/durableworkflow/server:2.0.3"
     },
     "workflow_php": {
       "registry": "packagist.org",
       "name": "durable-workflow/workflow",
-      "version": "2.0.0-rc.14",
-      "reference": "durable-workflow/workflow:2.0.0-rc.14"
+      "version": "2.0.3",
+      "reference": "durable-workflow/workflow:2.0.3"
     },
     "sdk_php": {
       "registry": "packagist.org",
       "name": "durable-workflow/sdk",
-      "version": "2.0.0-rc.14",
-      "reference": "durable-workflow/sdk:2.0.0-rc.14"
+      "version": "2.0.0",
+      "reference": "durable-workflow/sdk:2.0.0"
     },
     "sdk_python": {
       "registry": "pypi.org",
       "name": "durable-workflow",
-      "version": "2.0.0rc25",
-      "reference": "durable-workflow==2.0.0rc25"
+      "version": "2.0.1",
+      "reference": "durable-workflow==2.0.1"
     },
     "sdk_rust": {
       "registry": "crates.io",
       "name": "durable-workflow",
-      "version": "2.0.0-rc.11",
-      "reference": "durable-workflow@2.0.0-rc.11"
+      "version": "2.0.0",
+      "reference": "durable-workflow@2.0.0"
     }
   },
   "protocols": {
@@ -200,11 +200,11 @@
       "id": "simple-start-complete",
       "description": "Start a workflow, execute one workflow task, and return the input payload.",
       "artifacts": {
-        "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.0.0-rc.25", "reference": "docker.io/durableworkflow/server:2.0.0-rc.25"},
-        "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.0-rc.14", "reference": "durable-workflow/workflow:2.0.0-rc.14"},
-        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.0-rc.14", "reference": "durable-workflow/sdk:2.0.0-rc.14"},
-        "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.0rc25", "reference": "durable-workflow==2.0.0rc25"},
-        "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0-rc.11", "reference": "durable-workflow@2.0.0-rc.11"}
+        "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.0.3", "reference": "docker.io/durableworkflow/server:2.0.3"},
+        "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.3", "reference": "durable-workflow/workflow:2.0.3"},
+        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.0", "reference": "durable-workflow/sdk:2.0.0"},
+        "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.1", "reference": "durable-workflow==2.0.1"},
+        "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0", "reference": "durable-workflow@2.0.0"}
       },
       "workload": {
         "workflow": {"type": "capacity.v1.simple", "steps": ["accept_input", "return_input"]},
@@ -226,11 +226,11 @@
       "id": "one-activity",
       "description": "Schedule one no-op activity and complete after its fixed-size result.",
       "artifacts": {
-        "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.0.0-rc.25", "reference": "docker.io/durableworkflow/server:2.0.0-rc.25"},
-        "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.0-rc.14", "reference": "durable-workflow/workflow:2.0.0-rc.14"},
-        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.0-rc.14", "reference": "durable-workflow/sdk:2.0.0-rc.14"},
-        "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.0rc25", "reference": "durable-workflow==2.0.0rc25"},
-        "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0-rc.11", "reference": "durable-workflow@2.0.0-rc.11"}
+        "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.0.3", "reference": "docker.io/durableworkflow/server:2.0.3"},
+        "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.3", "reference": "durable-workflow/workflow:2.0.3"},
+        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.0", "reference": "durable-workflow/sdk:2.0.0"},
+        "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.1", "reference": "durable-workflow==2.0.1"},
+        "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0", "reference": "durable-workflow@2.0.0"}
       },
       "workload": {
         "workflow": {"type": "capacity.v1.one_activity", "steps": ["schedule_activity_capacity_v1_echo", "await_activity", "return_activity_result"]},
@@ -252,11 +252,11 @@
       "id": "multiple-activities",
       "description": "Run five deterministic activities sequentially with fixed payloads.",
       "artifacts": {
-        "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.0.0-rc.25", "reference": "docker.io/durableworkflow/server:2.0.0-rc.25"},
-        "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.0-rc.14", "reference": "durable-workflow/workflow:2.0.0-rc.14"},
-        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.0-rc.14", "reference": "durable-workflow/sdk:2.0.0-rc.14"},
-        "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.0rc25", "reference": "durable-workflow==2.0.0rc25"},
-        "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0-rc.11", "reference": "durable-workflow@2.0.0-rc.11"}
+        "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.0.3", "reference": "docker.io/durableworkflow/server:2.0.3"},
+        "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.3", "reference": "durable-workflow/workflow:2.0.3"},
+        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.0", "reference": "durable-workflow/sdk:2.0.0"},
+        "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.1", "reference": "durable-workflow==2.0.1"},
+        "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0", "reference": "durable-workflow@2.0.0"}
       },
       "workload": {
         "workflow": {"type": "capacity.v1.multiple_activities", "steps": ["repeat_five_times_schedule_capacity_v1_hash_and_await", "return_final_digest"]},
@@ -278,11 +278,11 @@
       "id": "timer",
       "description": "Start, persist one one-second durable timer, resume, and complete.",
       "artifacts": {
-        "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.0.0-rc.25", "reference": "docker.io/durableworkflow/server:2.0.0-rc.25"},
-        "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.0-rc.14", "reference": "durable-workflow/workflow:2.0.0-rc.14"},
-        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.0-rc.14", "reference": "durable-workflow/sdk:2.0.0-rc.14"},
-        "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.0rc25", "reference": "durable-workflow==2.0.0rc25"},
-        "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0-rc.11", "reference": "durable-workflow@2.0.0-rc.11"}
+        "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.0.3", "reference": "docker.io/durableworkflow/server:2.0.3"},
+        "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.3", "reference": "durable-workflow/workflow:2.0.3"},
+        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.0", "reference": "durable-workflow/sdk:2.0.0"},
+        "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.1", "reference": "durable-workflow==2.0.1"},
+        "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0", "reference": "durable-workflow@2.0.0"}
       },
       "workload": {
         "workflow": {"type": "capacity.v1.timer", "steps": ["create_timer_1000ms", "await_timer", "return_constant"]},
@@ -304,11 +304,11 @@
       "id": "signal",
       "description": "Hold an open workflow until four ordered fixed-size signals arrive.",
       "artifacts": {
-        "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.0.0-rc.25", "reference": "docker.io/durableworkflow/server:2.0.0-rc.25"},
-        "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.0-rc.14", "reference": "durable-workflow/workflow:2.0.0-rc.14"},
-        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.0-rc.14", "reference": "durable-workflow/sdk:2.0.0-rc.14"},
-        "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.0rc25", "reference": "durable-workflow==2.0.0rc25"},
-        "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0-rc.11", "reference": "durable-workflow@2.0.0-rc.11"}
+        "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.0.3", "reference": "docker.io/durableworkflow/server:2.0.3"},
+        "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.3", "reference": "durable-workflow/workflow:2.0.3"},
+        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.0", "reference": "durable-workflow/sdk:2.0.0"},
+        "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.1", "reference": "durable-workflow==2.0.1"},
+        "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0", "reference": "durable-workflow@2.0.0"}
       },
       "workload": {
         "workflow": {"type": "capacity.v1.signal", "steps": ["wait_for_four_capacity_v1_append_signals", "assert_sequences_zero_through_three", "return_signal_count"]},
@@ -330,11 +330,11 @@
       "id": "child-workflow-fanout",
       "description": "Fan out ten child workflows, await all results, and complete the parent.",
       "artifacts": {
-        "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.0.0-rc.25", "reference": "docker.io/durableworkflow/server:2.0.0-rc.25"},
-        "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.0-rc.14", "reference": "durable-workflow/workflow:2.0.0-rc.14"},
-        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.0-rc.14", "reference": "durable-workflow/sdk:2.0.0-rc.14"},
-        "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.0rc25", "reference": "durable-workflow==2.0.0rc25"},
-        "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0-rc.11", "reference": "durable-workflow@2.0.0-rc.11"}
+        "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.0.3", "reference": "docker.io/durableworkflow/server:2.0.3"},
+        "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.3", "reference": "durable-workflow/workflow:2.0.3"},
+        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.0", "reference": "durable-workflow/sdk:2.0.0"},
+        "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.1", "reference": "durable-workflow==2.0.1"},
+        "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0", "reference": "durable-workflow@2.0.0"}
       },
       "workload": {
         "workflow": {"type": "capacity.v1.child_parent", "steps": ["start_ten_capacity_v1_child_workflows", "await_all_children", "sum_child_results"], "child_type": "capacity.v1.child_leaf", "child_steps": ["return_input_index"]},
@@ -356,11 +356,11 @@
       "id": "replay-heavy-history",
       "description": "Replay a long deterministic marker history before adding one completion event.",
       "artifacts": {
-        "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.0.0-rc.25", "reference": "docker.io/durableworkflow/server:2.0.0-rc.25"},
-        "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.0-rc.14", "reference": "durable-workflow/workflow:2.0.0-rc.14"},
-        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.0-rc.14", "reference": "durable-workflow/sdk:2.0.0-rc.14"},
-        "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.0rc25", "reference": "durable-workflow==2.0.0rc25"},
-        "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0-rc.11", "reference": "durable-workflow@2.0.0-rc.11"}
+        "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.0.3", "reference": "docker.io/durableworkflow/server:2.0.3"},
+        "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.3", "reference": "durable-workflow/workflow:2.0.3"},
+        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.0", "reference": "durable-workflow/sdk:2.0.0"},
+        "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.1", "reference": "durable-workflow==2.0.1"},
+        "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0", "reference": "durable-workflow@2.0.0"}
       },
       "workload": {
         "workflow": {"type": "capacity.v1.replay_heavy", "steps": ["record_500_deterministic_markers", "yield_after_each_marker", "replay_full_history", "return_marker_count"]},
@@ -382,11 +382,11 @@
       "id": "query-inspection",
       "description": "Keep the declared query cohort open for the complete measurement window and issue five deterministic read-only inspections per second per load unit.",
       "artifacts": {
-        "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.0.0-rc.25", "reference": "docker.io/durableworkflow/server:2.0.0-rc.25"},
-        "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.0-rc.14", "reference": "durable-workflow/workflow:2.0.0-rc.14"},
-        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.0-rc.14", "reference": "durable-workflow/sdk:2.0.0-rc.14"},
-        "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.0rc25", "reference": "durable-workflow==2.0.0rc25"},
-        "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0-rc.11", "reference": "durable-workflow@2.0.0-rc.11"}
+        "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.0.3", "reference": "docker.io/durableworkflow/server:2.0.3"},
+        "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.3", "reference": "durable-workflow/workflow:2.0.3"},
+        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.0", "reference": "durable-workflow/sdk:2.0.0"},
+        "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.1", "reference": "durable-workflow==2.0.1"},
+        "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0", "reference": "durable-workflow@2.0.0"}
       },
       "workload": {
         "workflow": {"type": "capacity.v1.queryable_counter", "steps": ["initialize_counter_zero", "wait_for_finish_signal", "return_counter"], "query": {"type": "capacity.v1.inspect_counter", "behavior": "return_counter_without_mutation"}},
@@ -408,11 +408,11 @@
       "id": "mixed",
       "description": "Reserve the declared long-lived query share and deterministically interleave the remaining representative shapes by their fixed relative proportions.",
       "artifacts": {
-        "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.0.0-rc.25", "reference": "docker.io/durableworkflow/server:2.0.0-rc.25"},
-        "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.0-rc.14", "reference": "durable-workflow/workflow:2.0.0-rc.14"},
-        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.0-rc.14", "reference": "durable-workflow/sdk:2.0.0-rc.14"},
-        "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.0rc25", "reference": "durable-workflow==2.0.0rc25"},
-        "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0-rc.11", "reference": "durable-workflow@2.0.0-rc.11"}
+        "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.0.3", "reference": "docker.io/durableworkflow/server:2.0.3"},
+        "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.3", "reference": "durable-workflow/workflow:2.0.3"},
+        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.0", "reference": "durable-workflow/sdk:2.0.0"},
+        "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.1", "reference": "durable-workflow==2.0.1"},
+        "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0", "reference": "durable-workflow@2.0.0"}
       },
       "workload": {
         "workflow": {"type": "capacity.v1.mixed_selector", "steps": ["select_shape_from_seeded_weighted_sequence", "execute_selected_shape", "record_selected_shape"]},

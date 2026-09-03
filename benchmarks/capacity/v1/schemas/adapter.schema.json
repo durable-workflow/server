@@ -19,7 +19,7 @@
   "properties": {
     "$schema": {"type": "string"},
     "schema": {"const": "durable-workflow.capacity-benchmark-adapter/v1"},
-    "suite_version": {"const": "1.4.0"},
+    "suite_version": {"type": "string", "pattern": "^1\\.[0-9]+\\.[0-9]+$"},
     "binding": {"enum": ["php", "python", "rust"]},
     "artifact_key": {"enum": ["sdk_php", "sdk_python", "sdk_rust"]},
     "artifact": {"type": "object"},

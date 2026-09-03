@@ -1,15 +1,15 @@
 {
   "schema": "durable-workflow.capacity-benchmark-schema-publication/v1",
-  "suite_version": "1.4.0",
+  "suite_version": "1.5.0",
   "canonical_url": "https://durable-workflow.github.io/schemas/capacity-benchmark/v1/manifest.json",
   "schemas": {
     "adapter": {
       "$id": "https://durable-workflow.github.io/schemas/capacity-benchmark-adapter/v1.json",
-      "sha256": "45edf1ed8bc223739ea2dd9d211510e54a1bb5153ff52ae5b3732313ab5f7b0c"
+      "sha256": "3914afea472242b29db685e298340f1a71fa00ad12a9acafcc47c4ba9ec22a8a"
     },
     "collector": {
       "$id": "https://durable-workflow.github.io/schemas/capacity-benchmark-collector/v1.json",
-      "sha256": "91e7bec19528d1f6c4628781d6a1f8fc8aea2a36f2d2749a1f7019b3c7d3f926"
+      "sha256": "cddfe12dbce503f6e0fce0095bb021aa94e79976a51bba0cf69041fd60d38009"
     },
     "infrastructure": {
       "$id": "https://durable-workflow.github.io/schemas/capacity-benchmark-infrastructure/v1.json",
@@ -17,7 +17,7 @@
     },
     "observation": {
       "$id": "https://durable-workflow.github.io/schemas/capacity-benchmark-observation/v1.json",
-      "sha256": "1e503577ed82b2eeaa861a2c7b274f678180aae44c4a2f31191bae65fd38b1c0"
+      "sha256": "fc6fa68cd616d46a1e39a5eeb18c7e5b05d5d03a2fcc72973b2eebdfcdb44b8b"
     },
     "result": {
       "$id": "https://durable-workflow.github.io/schemas/capacity-benchmark-result/v1.json",
@@ -25,7 +25,7 @@
     },
     "suite": {
       "$id": "https://durable-workflow.github.io/schemas/capacity-benchmark-suite/v1.json",
-      "sha256": "2c9f1a77732bf1db7acf619b80d35aae56a14d4a3b24fa1487d219e0590cf90e"
+      "sha256": "478be42d4635b8defdbfcf81973bd2ba7ec6daad39c7dae0e24ec44c2efdf4fe"
     }
   }
 }
