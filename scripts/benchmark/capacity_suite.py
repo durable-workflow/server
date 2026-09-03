@@ -35,6 +35,7 @@ CORPUS_SCHEMA = "durable-workflow.capacity-benchmark-regression-corpus/v1"
 ADAPTER_SCHEMA = "durable-workflow.capacity-benchmark-adapter/v1"
 COLLECTOR_SCHEMA = "durable-workflow.capacity-benchmark-collector/v1"
 SUITE_VERSION = "1.7.0"
+SCHEMA_PUBLICATION_SUITE_VERSION = "1.5.0"
 
 REQUIRED_CELL_IDS = {
     "simple-start-complete",
@@ -558,8 +559,11 @@ def _validate_schema_publication(suite_root: Path) -> None:
         raise ContractError(
             f"schema publication manifest must be {SCHEMA_PUBLICATION_CONTRACT}"
         )
-    if publication.get("suite_version") != SUITE_VERSION:
-        raise ContractError(f"schema publication suite_version must be {SUITE_VERSION}")
+    if publication.get("suite_version") != SCHEMA_PUBLICATION_SUITE_VERSION:
+        raise ContractError(
+            "schema publication suite_version must be "
+            f"{SCHEMA_PUBLICATION_SUITE_VERSION}"
+        )
     if publication.get("canonical_url") != SCHEMA_PUBLICATION_URL:
         raise ContractError(
             f"schema publication canonical_url must be {SCHEMA_PUBLICATION_URL}"
