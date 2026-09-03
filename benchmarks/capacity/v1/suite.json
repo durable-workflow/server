@@ -1,7 +1,7 @@
 {
   "$schema": "schemas/suite.schema.json",
   "schema": "durable-workflow.capacity-benchmark-suite/v1",
-  "suite_version": "1.6.0",
+  "suite_version": "1.7.0",
   "status": "engineering_evidence_not_release_gate",
   "description": "Versioned, reproducible Durable Workflow capacity workloads. Throughput evidence does not substitute for correctness conformance.",
   "schemas": {
@@ -213,7 +213,7 @@
         "signals": [],
         "queries": [],
         "payload": {"codec": "avro", "workflow_input_bytes": 1024, "workflow_result_bytes": 1024, "activity_input_bytes": 0, "activity_result_bytes": 0, "signal_bytes": 0},
-        "history": {"target_event_count": 2, "count_scope": "root", "shape": ["workflow_started", "workflow_task_completed", "workflow_completed"], "evidence": [{"source": "history_events", "match": {"type": "WorkflowStarted"}, "count": 1}, {"source": "tasks", "match": {"type": "workflow"}, "count": 1}, {"source": "history_events", "match": {"type": "WorkflowCompleted"}, "count": 1}]}
+        "history": {"target_event_count": 3, "count_scope": "root", "shape": ["start_accepted", "workflow_started", "workflow_task_completed", "workflow_completed"], "evidence": [{"source": "history_events", "match": {"type": "StartAccepted"}, "count": 1}, {"source": "history_events", "match": {"type": "WorkflowStarted"}, "count": 1}, {"source": "tasks", "match": {"type": "workflow"}, "count": 1}, {"source": "history_events", "match": {"type": "WorkflowCompleted"}, "count": 1}]}
       },
       "bindings": [
         {"language": "php", "roles": ["client", "workflow-worker"]},
@@ -239,7 +239,7 @@
         "signals": [],
         "queries": [],
         "payload": {"codec": "avro", "workflow_input_bytes": 1024, "workflow_result_bytes": 1024, "activity_input_bytes": 1024, "activity_result_bytes": 1024, "signal_bytes": 0},
-        "history": {"target_event_count": 5, "count_scope": "root", "shape": ["workflow_started", "workflow_task_completed", "activity_scheduled", "activity_started", "activity_completed", "workflow_task_completed", "workflow_completed"], "evidence": [{"source": "history_events", "match": {"type": "WorkflowStarted"}, "count": 1}, {"source": "history_events", "match": {"type": "ActivityScheduled"}, "count": 1}, {"source": "history_events", "match": {"type": "ActivityStarted"}, "count": 1}, {"source": "history_events", "match": {"type": "ActivityCompleted"}, "count": 1}, {"source": "tasks", "match": {"type": "activity"}, "count": 1}, {"source": "history_events", "match": {"type": "WorkflowCompleted"}, "count": 1}], "ordered_history_event_pattern": {"prefix": ["WorkflowStarted"], "repeat": ["ActivityScheduled", "ActivityStarted", "ActivityCompleted"], "repeat_count": 1, "suffix": ["WorkflowCompleted"]}}
+        "history": {"target_event_count": 6, "count_scope": "root", "shape": ["start_accepted", "workflow_started", "workflow_task_completed", "activity_scheduled", "activity_started", "activity_completed", "workflow_task_completed", "workflow_completed"], "evidence": [{"source": "history_events", "match": {"type": "StartAccepted"}, "count": 1}, {"source": "history_events", "match": {"type": "WorkflowStarted"}, "count": 1}, {"source": "history_events", "match": {"type": "ActivityScheduled"}, "count": 1}, {"source": "history_events", "match": {"type": "ActivityStarted"}, "count": 1}, {"source": "history_events", "match": {"type": "ActivityCompleted"}, "count": 1}, {"source": "tasks", "match": {"type": "activity"}, "count": 1}, {"source": "history_events", "match": {"type": "WorkflowCompleted"}, "count": 1}], "ordered_history_event_pattern": {"prefix": ["StartAccepted", "WorkflowStarted"], "repeat": ["ActivityScheduled", "ActivityStarted", "ActivityCompleted"], "repeat_count": 1, "suffix": ["WorkflowCompleted"]}}
       },
       "bindings": [
         {"language": "php", "roles": ["client", "workflow-worker", "activity-worker"]},
@@ -265,7 +265,7 @@
         "signals": [],
         "queries": [],
         "payload": {"codec": "avro", "workflow_input_bytes": 4096, "workflow_result_bytes": 64, "activity_input_bytes": 4096, "activity_result_bytes": 64, "signal_bytes": 0},
-        "history": {"target_event_count": 17, "count_scope": "root", "shape": ["workflow_started", "five_sequential_activity_triplets", "six_workflow_task_completions", "workflow_completed"], "evidence": [{"source": "history_events", "match": {"type": "WorkflowStarted"}, "count": 1}, {"source": "history_events", "match": {"type": "ActivityScheduled"}, "count": 5}, {"source": "history_events", "match": {"type": "ActivityStarted"}, "count": 5}, {"source": "history_events", "match": {"type": "ActivityCompleted"}, "count": 5}, {"source": "tasks", "match": {"type": "workflow"}, "count": 6}, {"source": "tasks", "match": {"type": "activity"}, "count": 5}, {"source": "history_events", "match": {"type": "WorkflowCompleted"}, "count": 1}], "ordered_history_event_pattern": {"prefix": ["WorkflowStarted"], "repeat": ["ActivityScheduled", "ActivityStarted", "ActivityCompleted"], "repeat_count": 5, "suffix": ["WorkflowCompleted"]}}
+        "history": {"target_event_count": 18, "count_scope": "root", "shape": ["start_accepted", "workflow_started", "five_sequential_activity_triplets", "six_workflow_task_completions", "workflow_completed"], "evidence": [{"source": "history_events", "match": {"type": "StartAccepted"}, "count": 1}, {"source": "history_events", "match": {"type": "WorkflowStarted"}, "count": 1}, {"source": "history_events", "match": {"type": "ActivityScheduled"}, "count": 5}, {"source": "history_events", "match": {"type": "ActivityStarted"}, "count": 5}, {"source": "history_events", "match": {"type": "ActivityCompleted"}, "count": 5}, {"source": "tasks", "match": {"type": "workflow"}, "count": 6}, {"source": "tasks", "match": {"type": "activity"}, "count": 5}, {"source": "history_events", "match": {"type": "WorkflowCompleted"}, "count": 1}], "ordered_history_event_pattern": {"prefix": ["StartAccepted", "WorkflowStarted"], "repeat": ["ActivityScheduled", "ActivityStarted", "ActivityCompleted"], "repeat_count": 5, "suffix": ["WorkflowCompleted"]}}
       },
       "bindings": [
         {"language": "php", "roles": ["client", "workflow-worker", "activity-worker"]},
@@ -291,7 +291,7 @@
         "signals": [],
         "queries": [],
         "payload": {"codec": "avro", "workflow_input_bytes": 128, "workflow_result_bytes": 16, "activity_input_bytes": 0, "activity_result_bytes": 0, "signal_bytes": 0},
-        "history": {"target_event_count": 4, "count_scope": "root", "shape": ["workflow_started", "timer_created", "workflow_task_completed", "timer_fired", "workflow_task_completed", "workflow_completed"], "evidence": [{"source": "history_events", "match": {"type": "WorkflowStarted"}, "count": 1}, {"source": "history_events", "match": {"type": "TimerScheduled"}, "count": 1}, {"source": "history_events", "match": {"type": "TimerFired"}, "count": 1}, {"source": "tasks", "match": {"type": "timer"}, "count": 1}, {"source": "history_events", "match": {"type": "WorkflowCompleted"}, "count": 1}]}
+        "history": {"target_event_count": 5, "count_scope": "root", "shape": ["start_accepted", "workflow_started", "timer_created", "workflow_task_completed", "timer_fired", "workflow_task_completed", "workflow_completed"], "evidence": [{"source": "history_events", "match": {"type": "StartAccepted"}, "count": 1}, {"source": "history_events", "match": {"type": "WorkflowStarted"}, "count": 1}, {"source": "history_events", "match": {"type": "TimerScheduled"}, "count": 1}, {"source": "history_events", "match": {"type": "TimerFired"}, "count": 1}, {"source": "tasks", "match": {"type": "timer"}, "count": 1}, {"source": "history_events", "match": {"type": "WorkflowCompleted"}, "count": 1}]}
       },
       "bindings": [
         {"language": "php", "roles": ["client", "workflow-worker"]},
@@ -317,7 +317,7 @@
         "signals": [{"type": "capacity.v1.append", "count": 4, "behavior": "append_sequence_and_fixed_payload_in_order"}],
         "queries": [],
         "payload": {"codec": "avro", "workflow_input_bytes": 128, "workflow_result_bytes": 16, "activity_input_bytes": 0, "activity_result_bytes": 0, "signal_bytes": 512},
-        "history": {"target_event_count": 11, "count_scope": "root", "shape": ["workflow_started", "four_signal_received_events", "four_workflow_task_completions", "workflow_completed"], "evidence": [{"source": "history_events", "match": {"type": "WorkflowStarted"}, "count": 1}, {"source": "history_events", "match": {"type_in": ["SignalWaitOpened", "ConditionWaitOpened"]}, "count": 1}, {"source": "history_events", "match": {"type": "SignalReceived"}, "count": 4}, {"source": "history_events", "match": {"type": "SignalApplied"}, "count": 4}, {"source": "signals", "match": {"name": "capacity.v1.append"}, "count": 4}, {"source": "history_events", "match": {"type": "WorkflowCompleted"}, "count": 1}]}
+        "history": {"target_event_count": 12, "count_scope": "root", "shape": ["start_accepted", "workflow_started", "four_signal_received_events", "four_workflow_task_completions", "workflow_completed"], "evidence": [{"source": "history_events", "match": {"type": "StartAccepted"}, "count": 1}, {"source": "history_events", "match": {"type": "WorkflowStarted"}, "count": 1}, {"source": "history_events", "match": {"type_in": ["SignalWaitOpened", "ConditionWaitOpened"]}, "count": 1}, {"source": "history_events", "match": {"type": "SignalReceived"}, "count": 4}, {"source": "history_events", "match": {"type": "SignalApplied"}, "count": 4}, {"source": "signals", "match": {"name": "capacity.v1.append"}, "count": 4}, {"source": "history_events", "match": {"type": "WorkflowCompleted"}, "count": 1}]}
       },
       "bindings": [
         {"language": "php", "roles": ["client", "signal-client", "workflow-worker"]},
@@ -343,7 +343,7 @@
         "signals": [],
         "queries": [],
         "payload": {"codec": "avro", "workflow_input_bytes": 256, "workflow_result_bytes": 32, "activity_input_bytes": 0, "activity_result_bytes": 0, "signal_bytes": 0},
-        "history": {"target_event_count": 52, "count_scope": "workflow_tree", "shape": ["parent_started", "ten_child_start_sequences", "ten_child_completion_sequences", "parent_completed"], "evidence": [{"scope": "root", "source": "history_events", "match": {"type": "WorkflowStarted"}, "count": 1}, {"scope": "root", "source": "history_events", "match": {"type": "ChildWorkflowScheduled"}, "count": 10}, {"scope": "root", "source": "history_events", "match": {"type": "ChildRunStarted"}, "count": 10}, {"scope": "root", "source": "history_events", "match": {"type": "ChildRunCompleted"}, "count": 10}, {"scope": "children", "source": "history_events", "match": {"type": "WorkflowStarted"}, "count": 10}, {"scope": "children", "source": "history_events", "match": {"type": "WorkflowCompleted"}, "count": 10}, {"scope": "root", "source": "history_events", "match": {"type": "WorkflowCompleted"}, "count": 1}]}
+        "history": {"target_event_count": 63, "count_scope": "workflow_tree", "shape": ["parent_start_accepted", "parent_started", "ten_child_start_accepted_events", "ten_child_start_sequences", "ten_child_completion_sequences", "parent_completed"], "evidence": [{"scope": "root", "source": "history_events", "match": {"type": "StartAccepted"}, "count": 1}, {"scope": "root", "source": "history_events", "match": {"type": "WorkflowStarted"}, "count": 1}, {"scope": "root", "source": "history_events", "match": {"type": "ChildWorkflowScheduled"}, "count": 10}, {"scope": "root", "source": "history_events", "match": {"type": "ChildRunStarted"}, "count": 10}, {"scope": "root", "source": "history_events", "match": {"type": "ChildRunCompleted"}, "count": 10}, {"scope": "children", "source": "history_events", "match": {"type": "StartAccepted"}, "count": 10}, {"scope": "children", "source": "history_events", "match": {"type": "WorkflowStarted"}, "count": 10}, {"scope": "children", "source": "history_events", "match": {"type": "WorkflowCompleted"}, "count": 10}, {"scope": "root", "source": "history_events", "match": {"type": "WorkflowCompleted"}, "count": 1}]}
       },
       "bindings": [
         {"language": "php", "roles": ["client", "parent-worker", "child-worker"]},
@@ -369,7 +369,7 @@
         "signals": [],
         "queries": [],
         "payload": {"codec": "avro", "workflow_input_bytes": 256, "workflow_result_bytes": 16, "activity_input_bytes": 0, "activity_result_bytes": 0, "signal_bytes": 0},
-        "history": {"target_event_count": 502, "count_scope": "root", "shape": ["workflow_started", "five_hundred_side_effect_markers", "workflow_task_completed", "workflow_completed"], "evidence": [{"source": "history_events", "match": {"type": "WorkflowStarted"}, "count": 1}, {"source": "history_events", "match": {"type": "SideEffectRecorded"}, "count": 500}, {"source": "tasks", "match": {"type": "workflow"}, "count": 1}, {"source": "history_events", "match": {"type": "WorkflowCompleted"}, "count": 1}]}
+        "history": {"target_event_count": 503, "count_scope": "root", "shape": ["start_accepted", "workflow_started", "five_hundred_side_effect_markers", "workflow_task_completed", "workflow_completed"], "evidence": [{"source": "history_events", "match": {"type": "StartAccepted"}, "count": 1}, {"source": "history_events", "match": {"type": "WorkflowStarted"}, "count": 1}, {"source": "history_events", "match": {"type": "SideEffectRecorded"}, "count": 500}, {"source": "tasks", "match": {"type": "workflow"}, "count": 1}, {"source": "history_events", "match": {"type": "WorkflowCompleted"}, "count": 1}]}
       },
       "bindings": [
         {"language": "php", "roles": ["client", "workflow-worker", "replay-worker"]},
@@ -395,7 +395,7 @@
         "signals": [{"type": "capacity.v1.finish", "count": 1, "behavior": "finish_after_measurement_admission_stops"}],
         "queries": [{"type": "capacity.v1.inspect_counter", "rate_per_load_unit_per_second": 5, "behavior": "return_counter_without_mutation"}],
         "payload": {"codec": "avro", "workflow_input_bytes": 128, "workflow_result_bytes": 16, "activity_input_bytes": 0, "activity_result_bytes": 0, "signal_bytes": 16},
-        "history": {"target_event_count": 5, "count_scope": "root", "shape": ["workflow_started", "query_tasks_do_not_mutate_history", "finish_signal_received", "workflow_completed"], "evidence": [{"source": "history_events", "match": {"type": "WorkflowStarted"}, "count": 1}, {"source": "history_events", "match": {"type_in": ["SignalWaitOpened", "ConditionWaitOpened"]}, "count": 1}, {"source": "history_events", "match": {"type": "SignalReceived"}, "count": 1}, {"source": "history_events", "match": {"type": "SignalApplied"}, "count": 1}, {"source": "signals", "match": {"name": "capacity.v1.finish"}, "count": 1}, {"source": "history_events", "match": {"type": "WorkflowCompleted"}, "count": 1}], "forbidden_evidence": [{"source": "history_events", "match": {"type_prefix": "Query"}}, {"source": "tasks", "match": {"type_prefix": "query"}}]}
+        "history": {"target_event_count": 6, "count_scope": "root", "shape": ["start_accepted", "workflow_started", "query_tasks_do_not_mutate_history", "finish_signal_received", "workflow_completed"], "evidence": [{"source": "history_events", "match": {"type": "StartAccepted"}, "count": 1}, {"source": "history_events", "match": {"type": "WorkflowStarted"}, "count": 1}, {"source": "history_events", "match": {"type_in": ["SignalWaitOpened", "ConditionWaitOpened"]}, "count": 1}, {"source": "history_events", "match": {"type": "SignalReceived"}, "count": 1}, {"source": "history_events", "match": {"type": "SignalApplied"}, "count": 1}, {"source": "signals", "match": {"name": "capacity.v1.finish"}, "count": 1}, {"source": "history_events", "match": {"type": "WorkflowCompleted"}, "count": 1}], "forbidden_evidence": [{"source": "history_events", "match": {"type_prefix": "Query"}}, {"source": "tasks", "match": {"type_prefix": "query"}}]}
       },
       "bindings": [
         {"language": "php", "roles": ["client", "query-client", "query-worker"]},

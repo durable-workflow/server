@@ -1,6 +1,6 @@
 {
   "schema": "durable-workflow.capacity-workload-conformance-fixtures/v1",
-  "suite_version": "1.6.0",
+  "suite_version": "1.7.0",
   "deterministic_seed": 104761,
   "bindings": ["php", "python", "rust"],
   "payload_cases": [
@@ -51,28 +51,28 @@
       "id": "workflow-shape",
       "cell_id": "simple-start-complete",
       "shape": "simple-start-complete",
-      "root": {"history_complete": true, "history_event_types": ["WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []},
+      "root": {"history_complete": true, "history_event_types": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []},
       "children": []
     },
     {
       "id": "activity-shape",
       "cell_id": "one-activity",
       "shape": "one-activity",
-      "root": {"history_complete": true, "history_event_types": ["WorkflowStarted", "ActivityScheduled", "ActivityStarted", "ActivityCompleted", "WorkflowCompleted"], "task_types": ["workflow", "activity", "workflow"], "signals": []},
+      "root": {"history_complete": true, "history_event_types": ["StartAccepted", "WorkflowStarted", "ActivityScheduled", "ActivityStarted", "ActivityCompleted", "WorkflowCompleted"], "task_types": ["workflow", "activity", "workflow"], "signals": []},
       "children": []
     },
     {
       "id": "signal-shape",
       "cell_id": "signal",
       "shape": "signal",
-      "root": {"history_complete": true, "history_event_types": ["WorkflowStarted", "ConditionWaitOpened", "SignalReceived", "SignalReceived", "SignalReceived", "SignalReceived", "SignalApplied", "SignalApplied", "SignalApplied", "SignalApplied", "WorkflowCompleted"], "task_types": ["workflow", "workflow", "workflow", "workflow", "workflow"], "signals": [{"name": "capacity.v1.append"}, {"name": "capacity.v1.append"}, {"name": "capacity.v1.append"}, {"name": "capacity.v1.append"}]},
+      "root": {"history_complete": true, "history_event_types": ["StartAccepted", "WorkflowStarted", "ConditionWaitOpened", "SignalReceived", "SignalReceived", "SignalReceived", "SignalReceived", "SignalApplied", "SignalApplied", "SignalApplied", "SignalApplied", "WorkflowCompleted"], "task_types": ["workflow", "workflow", "workflow", "workflow", "workflow"], "signals": [{"name": "capacity.v1.append"}, {"name": "capacity.v1.append"}, {"name": "capacity.v1.append"}, {"name": "capacity.v1.append"}]},
       "children": []
     },
     {
       "id": "query-shape",
       "cell_id": "query-inspection",
       "shape": "query-inspection",
-      "root": {"history_complete": true, "history_event_types": ["WorkflowStarted", "SignalWaitOpened", "SignalReceived", "SignalApplied", "WorkflowCompleted"], "task_types": ["workflow", "workflow"], "signals": [{"name": "capacity.v1.finish"}]},
+      "root": {"history_complete": true, "history_event_types": ["StartAccepted", "WorkflowStarted", "SignalWaitOpened", "SignalReceived", "SignalApplied", "WorkflowCompleted"], "task_types": ["workflow", "workflow"], "signals": [{"name": "capacity.v1.finish"}]},
       "children": []
     },
     {
@@ -82,6 +82,7 @@
       "root": {
         "history_complete": true,
         "history_event_types": [
+          "StartAccepted",
           "WorkflowStarted",
           "ChildWorkflowScheduled", "ChildWorkflowScheduled", "ChildWorkflowScheduled", "ChildWorkflowScheduled", "ChildWorkflowScheduled",
           "ChildWorkflowScheduled", "ChildWorkflowScheduled", "ChildWorkflowScheduled", "ChildWorkflowScheduled", "ChildWorkflowScheduled",
@@ -95,18 +96,18 @@
         "signals": []
       },
       "children": [
-        {"history_complete": true, "history_event_types": ["WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []},
-        {"history_complete": true, "history_event_types": ["WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []},
-        {"history_complete": true, "history_event_types": ["WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []},
-        {"history_complete": true, "history_event_types": ["WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []},
-        {"history_complete": true, "history_event_types": ["WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []},
-        {"history_complete": true, "history_event_types": ["WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []},
-        {"history_complete": true, "history_event_types": ["WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []},
-        {"history_complete": true, "history_event_types": ["WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []},
-        {"history_complete": true, "history_event_types": ["WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []},
-        {"history_complete": true, "history_event_types": ["WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []}
+        {"history_complete": true, "history_event_types": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []},
+        {"history_complete": true, "history_event_types": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []},
+        {"history_complete": true, "history_event_types": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []},
+        {"history_complete": true, "history_event_types": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []},
+        {"history_complete": true, "history_event_types": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []},
+        {"history_complete": true, "history_event_types": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []},
+        {"history_complete": true, "history_event_types": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []},
+        {"history_complete": true, "history_event_types": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []},
+        {"history_complete": true, "history_event_types": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []},
+        {"history_complete": true, "history_event_types": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"], "task_types": ["workflow"], "signals": []}
       ],
-      "expected_evidence": {"target_event_count": 52, "observed_event_count": 52, "child_run_count": 10, "matches": true}
+      "expected_evidence": {"target_event_count": 63, "observed_event_count": 63, "child_run_count": 10, "matches": true}
     }
   ]
 }

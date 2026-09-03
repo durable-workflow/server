@@ -1,6 +1,6 @@
 {
   "schema": "durable-workflow.capacity-benchmark-schema-publication/v1",
-  "suite_version": "1.6.0",
+  "suite_version": "1.7.0",
   "canonical_url": "https://durable-workflow.github.io/schemas/capacity-benchmark/v1/manifest.json",
   "schemas": {
     "adapter": {
