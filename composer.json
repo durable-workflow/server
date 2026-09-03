@@ -8,7 +8,8 @@
         "apache/avro": "^1.12",
         "durable-workflow/workflow": "2.0.3",
         "laravel/framework": "^13.0",
-        "laravel/tinker": "^3.0"
+        "laravel/tinker": "^3.0",
+        "league/flysystem-aws-s3-v3": "^3.35.3"
     },
     "require-dev": {
         "fakerphp/faker": "^1.23",
@@ -47,7 +48,7 @@
     },
     "extra": {
         "durable-workflow": {
-            "product-train": "2.0.3"
+            "product-train": "2.1.0"
         },
         "laravel": {
             "dont-discover": []

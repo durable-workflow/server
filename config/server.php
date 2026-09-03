@@ -480,6 +480,7 @@ return [
     */
 
     'external_payload_transport' => [
+        's3_disk' => 'external-payload-s3',
         'max_payload_bytes' => (int) EnvAuditor::env(
             'DW_EXTERNAL_PAYLOAD_MAX_BYTES',
             'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_MAX_BYTES',

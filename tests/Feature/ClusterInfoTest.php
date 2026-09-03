@@ -2052,6 +2052,7 @@ class ClusterInfoTest extends TestCase
             ->assertJsonPath('namespace.external_payload_storage.configured', true)
             ->assertJsonPath('namespace.external_payload_storage.enabled', true)
             ->assertJsonPath('namespace.external_payload_storage.status', 'available')
+            ->assertJsonPath('namespace.external_payload_storage.configuration_error', null)
             ->assertJsonPath('namespace.external_payload_storage.threshold_bytes', 1024)
             ->assertJsonPath('namespace.external_payload_storage.provider_details_exposed', false)
             ->assertJsonPath('namespace.external_payload_storage.transport.version', 1)
@@ -2087,6 +2088,10 @@ class ClusterInfoTest extends TestCase
             ->assertJsonPath('namespace.external_payload_storage.configured', true)
             ->assertJsonPath('namespace.external_payload_storage.enabled', true)
             ->assertJsonPath('namespace.external_payload_storage.status', 'driver_unavailable')
+            ->assertJsonPath(
+                'namespace.external_payload_storage.configuration_error',
+                'filesystem_disk_not_configured',
+            )
             ->assertJsonPath('namespace.external_payload_storage.provider_details_exposed', false)
             ->assertJsonMissingPath('namespace.external_payload_storage.driver')
             ->assertJsonMissingPath('namespace.external_payload_storage.reference_uri_scheme')

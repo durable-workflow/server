@@ -75,6 +75,9 @@ contract, so a workflow in one language can dispatch activities to another.
 Server supports SQLite for a single-node runtime and MySQL or PostgreSQL for
 shared durable state. Multi-node deployments use shared Redis for queue and
 coordination state. The database remains authoritative for workflow history.
+Namespaces using external payloads in a multi-node deployment should use the
+built-in [S3-compatible shared storage](docs/contracts/external-payload-storage.md#self-hosted-backing-storage)
+instead of node-local files.
 
 ## Capabilities
 

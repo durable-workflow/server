@@ -59,7 +59,10 @@ class StorageController
                 'The server can persist this storage policy, but the configured storage driver is not available in this runtime.',
                 $namespace,
                 $driver,
-                ['supported_diagnostic_drivers' => ['local', 's3', 'gcs', 'azure', 'custom']],
+                [
+                    'configuration_error' => $this->externalPayloadStorage->configurationErrorFor($namespace),
+                    'supported_diagnostic_drivers' => ['local', 's3', 'gcs', 'azure', 'custom'],
+                ],
             );
         }
 

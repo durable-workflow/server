@@ -628,10 +628,13 @@ is needed.
 
 The storage diagnostic writes, reads, verifies, and deletes small and large test
 payloads through the namespace's configured policy. It supports `local` and
-configured-disk `s3`, `gcs`, and `azure` policies; it returns
-`storage_driver_unavailable` when the namespace only stores provider metadata
-and the current server runtime has no filesystem disk configured for that
-provider.
+the built-in S3-compatible disk as well as configured-disk `gcs`, `azure`, and
+`custom` policies. It returns `storage_driver_unavailable` with a non-secret
+`configuration_error` when the selected disk is incomplete or unavailable.
+Configure every Server process with the same `DW_EXTERNAL_PAYLOAD_S3_*`
+environment and follow the
+[external-payload backing-storage setup](contracts/external-payload-storage.md#self-hosted-backing-storage)
+before enabling an S3 namespace policy.
 
 Every non-health, non-discovery control-plane endpoint must send
 `X-Durable-Workflow-Control-Plane-Version: 2` on the request. That
@@ -1535,6 +1538,13 @@ every operator-facing variable the server honors.
 | `DW_EXTERNAL_PAYLOAD_MAX_BYTES` | `67108864` | Max encoded bytes accepted by the authenticated runtime external-payload transport. |
 | `DW_EXTERNAL_PAYLOAD_REQUEST_TIMEOUT` | `30` | Advertised upload/fetch request-timeout budget in seconds. |
 | `DW_EXTERNAL_PAYLOAD_UPLOAD_EXPIRY` | `3600` | Seconds an unclaimed uploaded reference remains valid. |
+| `DW_EXTERNAL_PAYLOAD_S3_ACCESS_KEY_ID` | (unset) | Optional access-key ID for the S3-compatible external-payload disk; omit with its secret when workload identity supplies credentials. |
+| `DW_EXTERNAL_PAYLOAD_S3_SECRET_ACCESS_KEY` | (unset) | Optional secret access key for the S3-compatible external-payload disk; set it together with the access-key ID. |
+| `DW_EXTERNAL_PAYLOAD_S3_SESSION_TOKEN` | (unset) | Optional session token used with temporary S3-compatible credentials. |
+| `DW_EXTERNAL_PAYLOAD_S3_REGION` | `us-east-1` | Region used by the S3-compatible external-payload disk. |
+| `DW_EXTERNAL_PAYLOAD_S3_BUCKET` | (unset) | Bucket used by the S3-compatible external-payload disk. |
+| `DW_EXTERNAL_PAYLOAD_S3_ENDPOINT` | (unset) | Optional HTTPS endpoint for an S3-compatible external-payload service. |
+| `DW_EXTERNAL_PAYLOAD_S3_USE_PATH_STYLE_ENDPOINT` | `false` | Use path-style bucket addressing for the S3-compatible external-payload service. |
 | `DW_MAX_MEMO_BYTES` | `262144` | Max serialized bytes for a workflow memo. |
 | `DW_MAX_SEARCH_ATTRIBUTES` | `100` | Max search attributes per workflow. |
 | `DW_MAX_PENDING_ACTIVITIES` | `2000` | Max pending activities per run. |

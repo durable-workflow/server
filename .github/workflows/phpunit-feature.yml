@@ -165,14 +165,41 @@ jobs:
               && apt-get install -y --no-install-recommends git \
               && rm -rf /var/lib/apt/lists/*
           DOCKERFILE
+          docker network create \
+            "dw-server-feature-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}"
+          docker run --detach \
+            --name "dw-server-minio-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
+            --network "dw-server-feature-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
+            --env MINIO_ROOT_USER=dw-minio-access \
+            --env MINIO_ROOT_PASSWORD=dw-minio-secret-key \
+            minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e \
+            server /data --address :9000
           tar \
             --exclude=vendor \
             --exclude='*/vendor' \
             --exclude=build \
             --exclude='*/build' \
             -cf - . \
-            | docker run --rm -i -e CORPUS_BASE_REF -w /app --entrypoint sh durable-workflow-server-corpus-validator \
+            | docker run --rm -i \
+                --network "dw-server-feature-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
+                -e CORPUS_BASE_REF \
+                -e DW_TEST_S3_ENDPOINT="http://dw-server-minio-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}:9000" \
+                -e DW_TEST_S3_ACCESS_KEY_ID=dw-minio-access \
+                -e DW_TEST_S3_SECRET_ACCESS_KEY=dw-minio-secret-key \
+                -w /app \
+                --entrypoint sh \
+                durable-workflow-server-corpus-validator \
                 -lc 'set -eu; tar --no-same-owner -xf - -C /app; cp -a /app/workflow-package /workflow; php scripts/ci/prepare-release-workflow-composer-metadata.php; composer update durable-workflow/workflow --with-dependencies --minimal-changes --no-install --no-scripts --no-autoloader --no-interaction --no-progress --prefer-dist; composer install --no-interaction --no-progress --prefer-dist; git --version; vendor/bin/phpunit --version; git rev-parse --verify "$CORPUS_BASE_REF^{commit}"; php scripts/ci/check-worker-openapi-evolution.php "$CORPUS_BASE_REF"; vendor/bin/phpunit tests/Feature tests/Unit/NexusContractTest.php tests/Unit/CodecRegressionCorpusTest.php tests/Unit/PhpunitFeatureWorkflowContractTest.php tests/Unit/OpenApiDocumentEvolutionTest.php --no-progress --colors=never; python3 scripts/ci/validate-regression-corpus.py --base-ref "$CORPUS_BASE_REF" --verify-counterfactual'
+
+      - name: Clean up S3-compatible test resources
+        if: always()
+        run: |
+          docker rm -f \
+            "dw-server-minio-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
+            >/dev/null 2>&1 || true
+          docker network rm \
+            "dw-server-feature-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
+            >/dev/null 2>&1 || true
 
   qualification:
     name: Feature source qualification

@@ -12,11 +12,11 @@ use App\Support\ClientCompatibility;
 use App\Support\ControlPlaneProtocol;
 use App\Support\ControlPlaneRequestContract;
 use App\Support\CoordinationHealthContract;
-use App\Support\FilesystemDiskAvailability;
 use App\Support\HeartbeatRuntimeContract;
 use App\Support\LegacyV1ProjectionContract;
 use App\Support\MessageStreamsContract;
 use App\Support\MigrationRuntimeContract;
+use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceRuntimeContract;
 use App\Support\NexusContract;
 use App\Support\PayloadCodecContract;
@@ -63,6 +63,7 @@ class HealthController
     public function __construct(
         private readonly ServerReadiness $readiness,
         private readonly TaskQueueBuildIdRolloutSnapshot $buildIdRollouts,
+        private readonly NamespaceExternalPayloadStorage $externalPayloadStorage,
     ) {}
 
     public function check(): JsonResponse
@@ -343,8 +344,8 @@ class HealthController
         $driver = $this->stringOrNull($policy['driver'] ?? null);
         $enabled = $policy !== [] && ($policy['enabled'] ?? true) !== false;
         $threshold = $policy['threshold_bytes'] ?? config('server.limits.max_payload_bytes', 2 * 1024 * 1024);
-        $config = is_array($policy['config'] ?? null) ? $policy['config'] : [];
-        $resolvedDriver = $enabled && $this->externalPayloadStorageResolvable($driver, $config);
+        $configurationError = $this->externalPayloadStorage->configurationErrorForPolicy($policy);
+        $resolvedDriver = $enabled && $this->externalPayloadStorage->policyResolvable($policy);
 
         return [
             'schema' => RuntimeExternalPayloadReference::SCHEMA,
@@ -352,6 +353,7 @@ class HealthController
             'configured' => $policy !== [],
             'enabled' => $enabled,
             'status' => $this->externalPayloadStorageStatus($policy, $enabled, $resolvedDriver),
+            'configuration_error' => $enabled && ! $resolvedDriver ? $configurationError : null,
             'threshold_bytes' => (int) $threshold,
             'transport' => RuntimeExternalPayloadReference::transportManifest(),
             'provider_details_exposed' => false,
@@ -377,33 +379,6 @@ class HealthController
         }
 
         return $resolved ? 'available' : 'driver_unavailable';
-    }
-
-    /**
-     * @param  array<string, mixed>  $config
-     */
-    private function externalPayloadStorageResolvable(?string $driver, array $config): bool
-    {
-        if ($driver === 'local') {
-            return true;
-        }
-
-        if (! in_array($driver, ['s3', 'gcs', 'azure', 'custom'], true)) {
-            return false;
-        }
-
-        $disk = $this->stringOrNull($config['disk'] ?? null);
-        $bucket = $this->stringOrNull(
-            $config['bucket']
-            ?? $config['container']
-            ?? $config['name']
-            ?? null,
-        );
-        $scheme = $driver === 'custom'
-            ? $this->stringOrNull($config['scheme'] ?? null)
-            : $driver;
-
-        return FilesystemDiskAvailability::configured($disk) && $bucket !== null && $scheme !== null;
     }
 
     private function stringOrNull(mixed $value): ?string

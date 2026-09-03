@@ -624,6 +624,48 @@ return [
             'since' => '2.0.3',
             'legacy' => 'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_NAMESPACE_OVERRIDES',
         ],
+        'DW_EXTERNAL_PAYLOAD_S3_ACCESS_KEY_ID' => [
+            'description' => 'Optional access-key ID for the runtime-managed S3-compatible external-payload disk. May be omitted when workload identity supplies credentials.',
+            'default' => '(unset)',
+            'since' => '2.0.4',
+            'legacy' => 'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_S3_ACCESS_KEY_ID',
+        ],
+        'DW_EXTERNAL_PAYLOAD_S3_SECRET_ACCESS_KEY' => [
+            'description' => 'Optional secret access key for the runtime-managed S3-compatible external-payload disk. Must be set with the access-key ID.',
+            'default' => '(unset)',
+            'since' => '2.0.4',
+            'legacy' => 'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_S3_SECRET_ACCESS_KEY',
+        ],
+        'DW_EXTERNAL_PAYLOAD_S3_SESSION_TOKEN' => [
+            'description' => 'Optional session token for temporary credentials on the runtime-managed S3-compatible external-payload disk.',
+            'default' => '(unset)',
+            'since' => '2.0.4',
+            'legacy' => 'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_S3_SESSION_TOKEN',
+        ],
+        'DW_EXTERNAL_PAYLOAD_S3_REGION' => [
+            'description' => 'Region used by the runtime-managed S3-compatible external-payload disk.',
+            'default' => 'us-east-1',
+            'since' => '2.0.4',
+            'legacy' => 'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_S3_REGION',
+        ],
+        'DW_EXTERNAL_PAYLOAD_S3_BUCKET' => [
+            'description' => 'Bucket used by the runtime-managed S3-compatible external-payload disk.',
+            'default' => '(unset)',
+            'since' => '2.0.4',
+            'legacy' => 'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_S3_BUCKET',
+        ],
+        'DW_EXTERNAL_PAYLOAD_S3_ENDPOINT' => [
+            'description' => 'Optional HTTPS endpoint for an S3-compatible external-payload service.',
+            'default' => '(unset)',
+            'since' => '2.0.4',
+            'legacy' => 'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_S3_ENDPOINT',
+        ],
+        'DW_EXTERNAL_PAYLOAD_S3_USE_PATH_STYLE_ENDPOINT' => [
+            'description' => 'Use path-style bucket addressing for the runtime-managed S3-compatible external-payload service.',
+            'default' => 'false',
+            'since' => '2.0.4',
+            'legacy' => 'WORKFLOW_SERVER_EXTERNAL_PAYLOAD_S3_USE_PATH_STYLE_ENDPOINT',
+        ],
         'DW_MAX_MEMO_BYTES' => [
             'description' => 'Maximum serialized bytes for a workflow memo.',
             'default' => '262144',
