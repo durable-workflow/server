@@ -10,6 +10,7 @@ use App\Http\Controllers\Api\HistoryController;
 use App\Http\Controllers\Api\LegacyV1ProjectionController;
 use App\Http\Controllers\Api\MessageStreamController;
 use App\Http\Controllers\Api\NamespaceController;
+use App\Http\Controllers\Api\RuntimeCredentialController;
 use App\Http\Controllers\Api\RuntimeExternalPayloadController;
 use App\Http\Controllers\Api\ScheduleController;
 use App\Http\Controllers\Api\SearchAttributeController;
@@ -105,6 +106,15 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
         Route::put('/{namespace}', [NamespaceController::class, 'update'])->middleware([$admin, $cpv, $httpControl, $ns, $namespaceAdmission]);
         Route::delete('/{namespace}', [NamespaceController::class, 'destroy'])->middleware([$admin, $cpv, $httpControl, $ns, $namespaceAdmission]);
         Route::put('/{namespace}/external-storage', [NamespaceController::class, 'updateExternalStorage'])->middleware([$admin, $cpv, $httpControl, $ns, $namespaceAdmission]);
+    });
+
+    // ── Runtime Credentials ──────────────────────────────────────────
+    Route::prefix('runtime-credentials')->middleware([$admin, $cpv, $httpControl])->group(function () {
+        Route::get('/', [RuntimeCredentialController::class, 'index']);
+        Route::get('/{credentialId}', [RuntimeCredentialController::class, 'show']);
+        Route::put('/{credentialId}', [RuntimeCredentialController::class, 'upsert']);
+        Route::post('/{credentialId}/rotate', [RuntimeCredentialController::class, 'rotate']);
+        Route::delete('/{credentialId}', [RuntimeCredentialController::class, 'revoke']);
     });
 
     // ── External Payload Storage ───────────────────────────────────

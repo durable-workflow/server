@@ -407,6 +407,7 @@ final class ServerReadiness
         if ($driver === 'token') {
             $token = config('server.auth.token');
             $roleTokens = array_filter((array) config('server.auth.role_tokens', []));
+            $runtimeCredentialsEnabled = (bool) config('server.auth.runtime_credentials.enabled', false);
             $backwardCompatible = (bool) config('server.auth.backward_compatible', true);
 
             try {
@@ -426,12 +427,36 @@ final class ServerReadiness
             $hasRoleTokens = $roleTokens !== [];
             $hasPrincipalTokens = $principalTokens !== [];
 
-            return ($backwardCompatible && $hasLegacyToken) || $hasRoleTokens || $hasPrincipalTokens
-                ? ['status' => 'ok', 'driver' => $driver]
+            if ($runtimeCredentialsEnabled) {
+                try {
+                    if (! Schema::hasTable('runtime_credentials')) {
+                        return [
+                            'status' => 'missing',
+                            'driver' => $driver,
+                            'runtime_credentials' => 'enabled',
+                            'remediation' => 'Run server-bootstrap to create the runtime_credentials table.',
+                        ];
+                    }
+                } catch (\Throwable $exception) {
+                    return [
+                        'status' => 'unavailable',
+                        'driver' => $driver,
+                        'runtime_credentials' => 'enabled',
+                        'message' => $exception->getMessage(),
+                    ];
+                }
+            }
+
+            return ($backwardCompatible && $hasLegacyToken) || $hasRoleTokens || $hasPrincipalTokens || $runtimeCredentialsEnabled
+                ? array_filter([
+                    'status' => 'ok',
+                    'driver' => $driver,
+                    'runtime_credentials' => $runtimeCredentialsEnabled ? 'enabled' : null,
+                ])
                 : [
                     'status' => 'missing',
                     'driver' => $driver,
-                    'remediation' => 'Set DW_AUTH_TOKEN, DW_PRINCIPAL_TOKENS, or role-scoped DW_WORKER_TOKEN/DW_OPERATOR_TOKEN/DW_ADMIN_TOKEN values.',
+                    'remediation' => 'Set DW_AUTH_TOKEN, DW_PRINCIPAL_TOKENS, role-scoped DW_WORKER_TOKEN/DW_OPERATOR_TOKEN/DW_ADMIN_TOKEN values, or enable database runtime credentials.',
                 ];
         }
 

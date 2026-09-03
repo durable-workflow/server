@@ -21,6 +21,9 @@ final class RouteAuthorizationResource
         $requestedNamespace = $this->requestedNamespace($request, $defaultNamespace);
         $operationFamily = $this->operationFamily($request);
         $targetNamespace = $this->targetNamespace($request, $routeParameters, $operationFamily);
+        $callerNamespace = $operationFamily === 'service'
+            ? $this->namespaceIdentifier($request->input('caller_namespace'))
+            : null;
 
         return array_filter([
             'allowed_roles' => $allowedRoles,
@@ -36,6 +39,7 @@ final class RouteAuthorizationResource
             'namespace' => $requestedNamespace,
             'target_namespace' => $targetNamespace,
             'namespace_name' => $targetNamespace,
+            'caller_namespace' => $callerNamespace,
         ] + $this->namedIdentifiers($identifiers, $operationFamily), static fn (mixed $value): bool => $value !== null && $value !== '' && $value !== []);
     }
 
@@ -219,6 +223,7 @@ final class RouteAuthorizationResource
         return match (explode('/', trim($path, '/'))[1] ?? null) {
             'cluster' => 'cluster',
             'namespaces' => 'namespace',
+            'runtime-credentials' => 'runtime_credential',
             'workflows' => 'workflow',
             'worker' => 'worker',
             'workers' => 'worker_management',
