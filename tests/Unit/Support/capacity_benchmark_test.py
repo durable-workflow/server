@@ -1108,6 +1108,38 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
             ):
                 capacity_suite.validate_suite(copied_suite, copied_root / "suite.json")
 
+    def test_schema_publication_revision_is_independent_of_harness_minor(self) -> None:
+        publication = capacity_suite.load_json(
+            capacity_suite.SUITE_ROOT / capacity_suite.SCHEMA_PUBLICATION
+        )
+
+        self.assertEqual(
+            capacity_suite.SCHEMA_PUBLICATION_SUITE_VERSION,
+            publication["suite_version"],
+        )
+        self.assertNotEqual(
+            capacity_suite.SUITE_VERSION,
+            capacity_suite.SCHEMA_PUBLICATION_SUITE_VERSION,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            copied_root = Path(directory) / "v1"
+            shutil.copytree(
+                capacity_suite.SUITE_ROOT,
+                copied_root,
+                ignore=shutil.ignore_patterns("vendor", ".deps", "target"),
+            )
+            publication_path = copied_root / capacity_suite.SCHEMA_PUBLICATION
+            copied_publication = capacity_suite.load_json(publication_path)
+            copied_publication["suite_version"] = capacity_suite.SUITE_VERSION
+            publication_path.write_text(json.dumps(copied_publication))
+
+            with self.assertRaisesRegex(
+                capacity_suite.ContractError,
+                "schema publication suite_version must be",
+            ):
+                capacity_suite._validate_schema_publication(copied_root)
+
     def test_public_schema_qualification_follows_https_redirects_and_checks_json(
         self,
     ) -> None:
