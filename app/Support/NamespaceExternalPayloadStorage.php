@@ -34,31 +34,59 @@ class NamespaceExternalPayloadStorage implements ExternalPayloadStoragePolicy
         }
 
         if (in_array($driver, ['s3', 'gcs', 'azure', 'custom'], true)) {
-            $disk = $policy['config']['disk'] ?? null;
-            $bucket = $policy['config']['bucket']
-                ?? $policy['config']['container']
-                ?? $policy['config']['name']
-                ?? null;
-            $scheme = $driver === 'custom'
-                ? ($policy['config']['scheme'] ?? null)
-                : $driver;
+            $filesystem = $this->filesystemPolicy($policy, $driver);
 
-            if (! FilesystemDiskAvailability::configured($disk)
-                || ! is_string($bucket) || $bucket === ''
-                || ! is_string($scheme) || $scheme === ''
-            ) {
+            if ($filesystem['error'] !== null) {
                 return null;
             }
 
             return $this->guard(new FilesystemExternalPayloadStorage(
-                disk: $disk,
-                scheme: $scheme,
-                bucket: $bucket,
+                disk: $filesystem['disk'],
+                scheme: $filesystem['scheme'],
+                bucket: $filesystem['bucket'],
                 prefix: $this->prefix($policy),
             ));
         }
 
         return null;
+    }
+
+    public function configurationErrorFor(?string $namespace): ?string
+    {
+        $namespace = $namespace ?: (string) config('server.default_namespace', 'default');
+
+        return $this->configurationErrorForPolicy($this->policyFor($namespace));
+    }
+
+    /**
+     * @param  array<string, mixed>  $policy
+     */
+    public function configurationErrorForPolicy(array $policy): ?string
+    {
+        if ($policy === [] || ($policy['enabled'] ?? true) === false) {
+            return null;
+        }
+
+        $driver = $policy['driver'] ?? null;
+        if ($driver === 'local') {
+            return null;
+        }
+
+        if (! is_string($driver) || ! in_array($driver, ['s3', 'gcs', 'azure', 'custom'], true)) {
+            return 'external_payload_storage_driver_unsupported';
+        }
+
+        return $this->filesystemPolicy($policy, $driver)['error'];
+    }
+
+    /**
+     * @param  array<string, mixed>  $policy
+     */
+    public function policyResolvable(array $policy): bool
+    {
+        return $policy !== []
+            && ($policy['enabled'] ?? true) !== false
+            && $this->configurationErrorForPolicy($policy) === null;
     }
 
     public function thresholdBytesFor(?string $namespace): ?int
@@ -117,6 +145,49 @@ class NamespaceExternalPayloadStorage implements ExternalPayloadStoragePolicy
         }
 
         return trim($prefix, '/').'/';
+    }
+
+    /**
+     * @param  array<string, mixed>  $policy
+     * @return array{disk: string, bucket: string, scheme: string, error: ?string}
+     */
+    private function filesystemPolicy(array $policy, string $driver): array
+    {
+        $config = is_array($policy['config'] ?? null) ? $policy['config'] : [];
+        $disk = $config['disk'] ?? null;
+
+        if ((! is_string($disk) || $disk === '') && $driver === 's3') {
+            $disk = (string) config('server.external_payload_transport.s3_disk', 'external-payload-s3');
+        }
+
+        $diskError = FilesystemDiskAvailability::configurationError($disk);
+        $bucket = $config['bucket']
+            ?? $config['container']
+            ?? $config['name']
+            ?? ($driver === 's3' ? FilesystemDiskAvailability::bucket($disk) : null);
+        $scheme = $driver === 'custom' ? ($config['scheme'] ?? null) : $driver;
+
+        $error = $diskError;
+        if ($error === null && (! is_string($bucket) || $bucket === '')) {
+            $error = 'external_payload_storage_bucket_missing';
+        }
+        if ($error === null && (! is_string($scheme) || $scheme === '')) {
+            $error = 'external_payload_storage_scheme_missing';
+        }
+        if ($error === null
+            && $driver === 's3'
+            && FilesystemDiskAvailability::driver($disk) === 's3'
+            && ! hash_equals((string) FilesystemDiskAvailability::bucket($disk), (string) $bucket)
+        ) {
+            $error = 's3_bucket_mismatch';
+        }
+
+        return [
+            'disk' => is_string($disk) ? $disk : '',
+            'bucket' => is_string($bucket) ? $bucket : '',
+            'scheme' => is_string($scheme) ? $scheme : '',
+            'error' => $error,
+        ];
     }
 
     private function guard(RuntimeExternalPayloadStorageDriver $driver): RuntimeExternalPayloadStorageDriver

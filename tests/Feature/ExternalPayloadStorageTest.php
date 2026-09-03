@@ -216,6 +216,7 @@ class ExternalPayloadStorageTest extends TestCase
         ])->assertStatus(422)
             ->assertJsonPath('reason', 'storage_driver_unavailable')
             ->assertJsonPath('driver', 's3')
+            ->assertJsonPath('configuration_error', 's3_bucket_missing')
             ->assertJsonPath('supported_diagnostic_drivers.0', 'local');
 
         WorkflowNamespace::where('name', 'default')->update([
@@ -234,7 +235,8 @@ class ExternalPayloadStorageTest extends TestCase
             'large_payload_bytes' => 64,
         ])->assertStatus(422)
             ->assertJsonPath('reason', 'storage_driver_unavailable')
-            ->assertJsonPath('driver', 's3');
+            ->assertJsonPath('driver', 's3')
+            ->assertJsonPath('configuration_error', 'filesystem_disk_not_configured');
     }
 
     public function test_storage_diagnostic_reports_disabled_policy(): void

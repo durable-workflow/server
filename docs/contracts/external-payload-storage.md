@@ -59,6 +59,58 @@ publishes the request timeout. Fetch responses use private, short-lived,
 immutable caching; SDK caches must be bounded and cannot delete runtime-owned
 objects.
 
+## Self-hosted backing storage
+
+Node-local storage is suitable for a single-node development runtime. A
+multi-node runtime must place external payload bytes on storage reachable from
+every HTTP, queue, scheduler, and maintenance process. The published Server
+image includes an S3-compatible adapter for that purpose.
+
+Set the following environment on every Server process:
+
+```dotenv
+DW_EXTERNAL_PAYLOAD_S3_ACCESS_KEY_ID=example-access-key
+DW_EXTERNAL_PAYLOAD_S3_SECRET_ACCESS_KEY=example-secret-key
+DW_EXTERNAL_PAYLOAD_S3_REGION=us-east-1
+DW_EXTERNAL_PAYLOAD_S3_BUCKET=durable-workflow-payloads
+DW_EXTERNAL_PAYLOAD_S3_ENDPOINT=https://objects.example.com
+DW_EXTERNAL_PAYLOAD_S3_USE_PATH_STYLE_ENDPOINT=false
+```
+
+`DW_EXTERNAL_PAYLOAD_S3_ENDPOINT` is optional for AWS S3. Access key and secret
+may both be omitted when the Server workload receives credentials from an IAM
+role. Temporary credentials can also set
+`DW_EXTERNAL_PAYLOAD_S3_SESSION_TOKEN`. Custom S3-compatible services commonly
+require their HTTPS endpoint and path-style addressing.
+
+Enable the policy with an administrator credential after the bucket exists:
+
+```bash
+curl -X PUT http://localhost:8080/api/namespaces/default/external-storage \
+  -H "Authorization: Bearer $DW_ADMIN_TOKEN" \
+  -H "X-Durable-Workflow-Control-Plane-Version: 2" \
+  -H "Content-Type: application/json" \
+  --data '{
+    "driver": "s3",
+    "enabled": true,
+    "threshold_bytes": 2097152,
+    "config": {"prefix": "namespaces/default/"}
+  }'
+```
+
+The namespace policy contains no object-store credential. Server resolves the
+fixed `external-payload-s3` disk from process configuration and uses the
+configured bucket when the policy omits one. If a policy names a bucket, it
+must match the configured disk bucket.
+
+Before serving workload traffic, call `POST /api/storage/test` for the
+namespace. `GET /api/cluster/info` reports `driver_unavailable` and a bounded
+`configuration_error` such as `s3_bucket_missing`,
+`s3_credentials_incomplete`, or `s3_bucket_mismatch` without returning
+credentials, endpoints, bucket names, or object references. Production
+operators remain responsible for object-store durability, access policy,
+backup, retention, and recovery validation.
+
 ## State, expiry, and retention
 
 An upload starts as unclaimed and expires after the advertised abandoned-upload
