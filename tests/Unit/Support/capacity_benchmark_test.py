@@ -182,6 +182,73 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
                 {binding["language"] for binding in cell["bindings"]},
             )
 
+    def test_standard_workflow_v1_contract_is_stable(self) -> None:
+        cell = next(
+            cell for cell in self.suite["cells"] if cell["id"] == "one-activity"
+        )
+
+        self.assertEqual(
+            "capacity.v1.one_activity", cell["workload"]["workflow"]["type"]
+        )
+        self.assertEqual(
+            [
+                {
+                    "type": "capacity.v1.echo",
+                    "count": 1,
+                    "behavior": "return_input_without_external_io",
+                }
+            ],
+            cell["workload"]["activities"],
+        )
+        self.assertEqual(
+            {
+                "codec": "avro",
+                "workflow_input_bytes": 1024,
+                "workflow_result_bytes": 1024,
+                "activity_input_bytes": 1024,
+                "activity_result_bytes": 1024,
+                "signal_bytes": 0,
+            },
+            cell["workload"]["payload"],
+        )
+        self.assertEqual(
+            {
+                "prefix": ["WorkflowStarted"],
+                "repeat": [
+                    "ActivityScheduled",
+                    "ActivityStarted",
+                    "ActivityCompleted",
+                ],
+                "repeat_count": 1,
+                "suffix": ["WorkflowCompleted"],
+            },
+            cell["workload"]["history"]["ordered_history_event_pattern"],
+        )
+        self.assertEqual(5, cell["workload"]["history"]["target_event_count"])
+        self.assertEqual(
+            {
+                "concurrent_open_workflows": 100,
+                "client_concurrency": 16,
+                "worker_concurrency": 32,
+                "duration_seconds": 300,
+                "warmup_seconds": 60,
+            },
+            {
+                key: cell["execution"][key]
+                for key in (
+                    "concurrent_open_workflows",
+                    "client_concurrency",
+                    "worker_concurrency",
+                    "duration_seconds",
+                    "warmup_seconds",
+                )
+            },
+        )
+        self.assertEqual(
+            ["php", "python", "rust"],
+            [binding["language"] for binding in cell["bindings"]],
+        )
+
     def test_dependency_free_adapter_descriptions_match_checked_in_contracts(
         self,
     ) -> None:
