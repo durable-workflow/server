@@ -211,6 +211,83 @@ class ResultGateTest(unittest.TestCase):
         self.assertEqual("http://docker-host-gateway:28085", endpoints["server_b"])
         self.assertEqual("http://docker-host-gateway:28086", endpoints["load_balancer"])
 
+    def test_restarted_node_refreshes_its_published_endpoint_and_evidence(self) -> None:
+        original_compose = runner.compose
+        original_ports = runner.PUBLISHED_PORTS.copy()
+        original_endpoints = runner.PROBE_ENDPOINTS.copy()
+        original_lb = runner.LB
+        original_server_a = runner.SERVER_A
+        original_server_b = runner.SERVER_B
+        original_topology_ports = runner.RESULT["topology"]["published_ports"]
+        original_diagnostics = runner.TOPOLOGY_DIAGNOSTICS
+
+        try:
+            runner.PUBLISHED_PORTS.clear()
+            runner.PUBLISHED_PORTS.update({
+                "server_a": 28084,
+                "server_b": 28085,
+                "load_balancer": 28086,
+            })
+            runner.PROBE_ENDPOINTS.clear()
+            runner.PROBE_ENDPOINTS.update(
+                runner.build_probe_endpoints(runner.CONNECT_HOST, runner.PUBLISHED_PORTS)
+            )
+            runner.LB = runner.PROBE_ENDPOINTS["load_balancer"]
+            runner.SERVER_A = runner.PROBE_ENDPOINTS["server_a"]
+            runner.SERVER_B = runner.PROBE_ENDPOINTS["server_b"]
+            runner.RESULT["topology"]["published_ports"] = runner.PUBLISHED_PORTS.copy()
+            runner.TOPOLOGY_DIAGNOSTICS = runner.initial_topology_diagnostics()
+            runner.compose = lambda *_args, **_kwargs: subprocess.CompletedProcess(
+                [], 0, "0.0.0.0:29084\n", ""
+            )
+
+            evidence = runner.refresh_published_endpoint("server_a", "server-a")
+
+            self.assertEqual(29084, runner.PUBLISHED_PORTS["server_a"])
+            self.assertEqual(f"http://{runner.CONNECT_HOST}:29084", runner.SERVER_A)
+            self.assertEqual(runner.SERVER_A, evidence["base_url"])
+            self.assertTrue(evidence["endpoint_changed"])
+            self.assertEqual(
+                runner.SERVER_A,
+                runner.TOPOLOGY_DIAGNOSTICS["resolved_probe_endpoints"]["server_a"]["base_url"],
+            )
+            self.assertEqual(
+                f"{runner.SERVER_A}/api/ready",
+                runner.TOPOLOGY_DIAGNOSTICS["readiness_observations"]["server_a"]["endpoint"],
+            )
+            self.assertEqual(29084, runner.RESULT["topology"]["published_ports"]["server_a"])
+        finally:
+            runner.compose = original_compose
+            runner.PUBLISHED_PORTS.clear()
+            runner.PUBLISHED_PORTS.update(original_ports)
+            runner.PROBE_ENDPOINTS.clear()
+            runner.PROBE_ENDPOINTS.update(original_endpoints)
+            runner.LB = original_lb
+            runner.SERVER_A = original_server_a
+            runner.SERVER_B = original_server_b
+            runner.RESULT["topology"]["published_ports"] = original_topology_ports
+            runner.TOPOLOGY_DIAGNOSTICS = original_diagnostics
+
+    def test_restarted_node_refresh_keeps_a_fixed_endpoint_unchanged(self) -> None:
+        original_compose = runner.compose
+        original_diagnostics = runner.TOPOLOGY_DIAGNOSTICS
+        original_port = runner.PUBLISHED_PORTS["server_a"]
+        original_endpoint = runner.PROBE_ENDPOINTS["server_a"]
+
+        try:
+            runner.TOPOLOGY_DIAGNOSTICS = runner.initial_topology_diagnostics()
+            runner.compose = lambda *_args, **_kwargs: subprocess.CompletedProcess(
+                [], 0, f"0.0.0.0:{original_port}\n", ""
+            )
+
+            evidence = runner.refresh_published_endpoint("server_a", "server-a")
+
+            self.assertEqual(original_endpoint, evidence["base_url"])
+            self.assertFalse(evidence["endpoint_changed"])
+        finally:
+            runner.compose = original_compose
+            runner.TOPOLOGY_DIAGNOSTICS = original_diagnostics
+
     def test_topology_readiness_observations_are_bounded(self) -> None:
         original_request = runner.request
         original_diagnostics = runner.TOPOLOGY_DIAGNOSTICS
@@ -403,7 +480,12 @@ class ResultGateTest(unittest.TestCase):
 
         def fake_compose(*args, **_kwargs):
             compose_calls.append(args)
-            stdout = "server-b\nload-balancer\n" if args[:3] == ("ps", "--status", "running") else ""
+            if args[:3] == ("ps", "--status", "running"):
+                stdout = "server-b\nload-balancer\n"
+            elif args[:2] == ("port", "server-a"):
+                stdout = f"0.0.0.0:{runner.PUBLISHED_PORTS['server_a']}\n"
+            else:
+                stdout = ""
             return subprocess.CompletedProcess(args, 0, stdout, "")
 
         def fake_describe(workflow_id, run_id, base=runner.LB):
