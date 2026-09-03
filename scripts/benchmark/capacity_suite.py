@@ -464,11 +464,14 @@ def validate_profile(profile: dict[str, Any]) -> None:
         "sdk-rust-worker",
         "load-generator",
     )
-    if set(components) != set(required_components):
+    missing_components = set(required_components) - set(components)
+    if missing_components:
         raise ContractError(
-            f"infrastructure.components must contain exactly {sorted(required_components)}"
+            "infrastructure.components must contain required components "
+            f"{sorted(missing_components)}"
         )
-    for name in required_components:
+    for name in components:
+        _text(name, "infrastructure.components key")
         component = _object(components.get(name), f"infrastructure.components.{name}")
         _number(
             component.get("cpu_cores"),

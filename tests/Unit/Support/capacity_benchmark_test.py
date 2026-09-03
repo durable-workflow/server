@@ -182,6 +182,44 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
                 {binding["language"] for binding in cell["bindings"]},
             )
 
+    def test_infrastructure_profile_accepts_and_validates_auxiliary_components(
+        self,
+    ) -> None:
+        profile = copy.deepcopy(self.profile)
+        profile["components"]["runtime-ingress"] = {
+            "cpu_cores": 0.25,
+            "memory_bytes": 67_108_864,
+            "image": "example/runtime-ingress@sha256:exact",
+        }
+
+        capacity_suite.validate_profile(profile)
+        observations = capacity_suite._reference_observations(self.suite, profile)
+        summary = capacity_suite._component_summary(observations)
+        self.assertIn("runtime-ingress", summary)
+        self.assertGreater(summary["runtime-ingress"]["peak_cpu_utilization"], 0)
+        self.assertGreater(
+            summary["runtime-ingress"]["peak_memory_utilization"], 0
+        )
+
+        profile["components"]["runtime-ingress"]["memory_bytes"] = 0
+        with self.assertRaisesRegex(
+            capacity_suite.ContractError,
+            "infrastructure.components.runtime-ingress.memory_bytes",
+        ):
+            capacity_suite.validate_profile(profile)
+
+    def test_infrastructure_profile_still_requires_every_standard_component(
+        self,
+    ) -> None:
+        profile = copy.deepcopy(self.profile)
+        del profile["components"]["server-worker"]
+
+        with self.assertRaisesRegex(
+            capacity_suite.ContractError,
+            "required components.*server-worker",
+        ):
+            capacity_suite.validate_profile(profile)
+
     def test_standard_workflow_v1_contract_is_stable(self) -> None:
         cell = next(
             cell for cell in self.suite["cells"] if cell["id"] == "one-activity"
