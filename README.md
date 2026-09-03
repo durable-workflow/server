@@ -86,13 +86,21 @@ coordination state. The database remains authoritative for workflow history.
 - External payload storage for large encoded values
 - Waterline-compatible operational APIs and Prometheus metrics
 
+## Capacity
+
+Published throughput uses [DW Standard Workflow v1](benchmarks/capacity/README.md),
+a versioned one-activity workflow with fixed Avro payloads, history shape,
+concurrency, warmup, measurement, and qualification rules. Timer, signal,
+query, replay, fanout, and mixed workloads are reported separately so a
+generic "workflows per second" number cannot hide the workload being measured.
+
 ## Reference
 
 - [Self-hosting, HTTP API, authentication, and configuration](docs/server-reference.md)
 - [Control-plane OpenAPI contract](resources/platform-protocol-specs/control-plane-api.openapi.yaml)
 - [Worker protocol OpenAPI contract](resources/platform-protocol-specs/worker-protocol-api.openapi.yaml)
 - [Worker stream AsyncAPI contract](resources/platform-protocol-specs/worker-protocol-stream.asyncapi.yaml)
-- [Capacity benchmark suite](benchmarks/capacity/v1/README.md)
+- [Capacity definitions and benchmark suite](benchmarks/capacity/README.md)
 - [Bounded-growth policy](docs/bounded-growth.md)
 - [External payload storage contract](docs/contracts/external-payload-storage.md)
 - [Helm upgrade guide](k8s/helm/durable-workflow/docs/UPGRADING.md)
