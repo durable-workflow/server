@@ -57,6 +57,13 @@ class AuthenticateMiddlewareTest extends TestCase
 
     public function test_token_driver_accepts_named_principal_tokens(): void
     {
+        WorkflowNamespace::query()->create([
+            'name' => 'tenant-a',
+            'description' => 'Tenant A',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+
         config([
             'server.auth.driver' => 'token',
             'server.auth.token' => null,
@@ -75,7 +82,7 @@ class AuthenticateMiddlewareTest extends TestCase
 
         $this->withHeaders($this->controlPlaneHeaders([
             'Authorization' => 'Bearer alice-token',
-            'X-Namespace' => 'default',
+            'X-Namespace' => 'tenant-a',
         ]))
             ->getJson('/api/workflows')
             ->assertOk();

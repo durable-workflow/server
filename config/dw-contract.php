@@ -164,6 +164,12 @@ return [
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_PRINCIPAL_TOKENS',
         ],
+        'DW_RUNTIME_CREDENTIALS_ENABLED' => [
+            'description' => 'Enable durable, database-backed, namespace-bound runtime bearer credentials managed through the admin API.',
+            'default' => 'false',
+            'since' => '2.1.0',
+            'legacy' => 'WORKFLOW_SERVER_RUNTIME_CREDENTIALS_ENABLED',
+        ],
         'DW_WORKER_SIGNATURE_KEY' => [
             'description' => 'HMAC signature key for the worker role (worker registration, deregistration, poll, heartbeat, completion endpoints) when DW_AUTH_DRIVER=signature.',
             'default' => null,

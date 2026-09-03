@@ -130,6 +130,21 @@ class ControlPlaneVersionCoverageTest extends TestCase
             'namespaces.update' => ['method' => 'put', 'path' => '/api/namespaces/default'],
             'namespaces.destroy' => ['method' => 'delete', 'path' => '/api/namespaces/default'],
 
+            // RuntimeCredentialController
+            'runtime-credentials.index' => ['method' => 'get', 'path' => '/api/runtime-credentials'],
+            'runtime-credentials.show' => ['method' => 'get', 'path' => '/api/runtime-credentials/client-a'],
+            'runtime-credentials.upsert' => [
+                'method' => 'put',
+                'path' => '/api/runtime-credentials/client-a',
+                'body' => ['token' => str_repeat('x', 32)],
+            ],
+            'runtime-credentials.rotate' => [
+                'method' => 'post',
+                'path' => '/api/runtime-credentials/client-a/rotate',
+                'body' => ['token' => str_repeat('y', 32)],
+            ],
+            'runtime-credentials.revoke' => ['method' => 'delete', 'path' => '/api/runtime-credentials/client-a'],
+
             // SystemController
             'system.health' => ['method' => 'get', 'path' => '/api/system/health'],
             'system.metrics' => ['method' => 'get', 'path' => '/api/system/metrics'],

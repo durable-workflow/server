@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.control-plane-api
-  version: "9"
+  version: "10"
   summary: Durable Workflow control-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the standalone Durable Workflow
@@ -35,6 +35,7 @@ security:
 tags:
   - name: discovery
   - name: namespaces
+  - name: runtime-credentials
   - name: workflows
   - name: schedules
   - name: task-queues
@@ -119,6 +120,58 @@ paths:
       requestBody: { $ref: "#/components/requestBodies/JsonObject" }
       responses:
         "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "422": { $ref: "#/components/responses/ControlPlaneError" }
+  /runtime-credentials:
+    get:
+      tags: [runtime-credentials]
+      operationId: listRuntimeCredentials
+      parameters: [{ $ref: "#/components/parameters/ControlPlaneVersionHeader" }]
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "403": { $ref: "#/components/responses/ControlPlaneError" }
+  /runtime-credentials/{credentialId}:
+    get:
+      tags: [runtime-credentials]
+      operationId: getRuntimeCredential
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/RuntimeCredentialIdPath"
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "404": { $ref: "#/components/responses/ControlPlaneError" }
+    put:
+      tags: [runtime-credentials]
+      operationId: putRuntimeCredential
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/RuntimeCredentialIdPath"
+      requestBody: { $ref: "#/components/requestBodies/JsonObject" }
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "201": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "409": { $ref: "#/components/responses/ControlPlaneError" }
+        "422": { $ref: "#/components/responses/ControlPlaneError" }
+    delete:
+      tags: [runtime-credentials]
+      operationId: revokeRuntimeCredential
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/RuntimeCredentialIdPath"
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "404": { $ref: "#/components/responses/ControlPlaneError" }
+  /runtime-credentials/{credentialId}/rotate:
+    post:
+      tags: [runtime-credentials]
+      operationId: rotateRuntimeCredential
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/RuntimeCredentialIdPath"
+      requestBody: { $ref: "#/components/requestBodies/JsonObject" }
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "404": { $ref: "#/components/responses/ControlPlaneError" }
+        "409": { $ref: "#/components/responses/ControlPlaneError" }
         "422": { $ref: "#/components/responses/ControlPlaneError" }
   /storage/test:
     post:
@@ -740,6 +793,7 @@ components:
         carrier is present, the server's configured default namespace is used.
       schema: { type: string, minLength: 1 }
     NamespacePath: { name: namespace, in: path, required: true, schema: { type: string, minLength: 1 } }
+    RuntimeCredentialIdPath: { name: credentialId, in: path, required: true, schema: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" } }
     WorkflowIdPath: { name: workflowId, in: path, required: true, schema: { type: string, minLength: 1 } }
     RunIdPath: { name: runId, in: path, required: true, schema: { type: string, minLength: 1 } }
     ScheduleIdPath: { name: scheduleId, in: path, required: true, schema: { type: string, minLength: 1 } }

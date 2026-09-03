@@ -3,6 +3,7 @@
 namespace App\Auth;
 
 use App\Contracts\AuthProvider;
+use App\Models\RuntimeCredential;
 use Illuminate\Http\Request;
 
 final class ConfiguredAuthProvider implements AuthProvider
@@ -37,6 +38,10 @@ final class ConfiguredAuthProvider implements AuthProvider
             return true;
         }
 
+        if (! $this->tenantAllows($principal, $resource)) {
+            return false;
+        }
+
         $allowedRoles = $resource['allowed_roles'] ?? [];
 
         if (! is_array($allowedRoles) || $allowedRoles === []) {
@@ -60,9 +65,10 @@ final class ConfiguredAuthProvider implements AuthProvider
         $hasPrincipalTokens = $principalTokens !== [];
         $hasRoleTokens = $roleTokens !== [];
         $hasLegacyToken = is_string($token) && $token !== '';
+        $runtimeCredentialsEnabled = (bool) config('server.auth.runtime_credentials.enabled', false);
         $backwardCompatible = (bool) config('server.auth.backward_compatible', true);
 
-        if (! $hasPrincipalTokens && ! $hasRoleTokens && (! $backwardCompatible || ! $hasLegacyToken)) {
+        if (! $runtimeCredentialsEnabled && ! $hasPrincipalTokens && ! $hasRoleTokens && (! $backwardCompatible || ! $hasLegacyToken)) {
             throw AuthException::configuration('Auth driver is set to "token" but DW_AUTH_TOKEN or DW_PRINCIPAL_TOKENS is not configured.');
         }
 
@@ -102,7 +108,52 @@ final class ConfiguredAuthProvider implements AuthProvider
             );
         }
 
+        if ($runtimeCredentialsEnabled) {
+            try {
+                $credential = RuntimeCredential::activeForToken($provided);
+            } catch (\Throwable) {
+                throw AuthException::configuration('Database runtime credential authentication is enabled but unavailable.');
+            }
+
+            if ($credential instanceof RuntimeCredential) {
+                return $credential->principal();
+            }
+        }
+
         throw AuthException::unauthenticated('Invalid or missing authentication token.');
+    }
+
+    /**
+     * @param  array<string, mixed>  $resource
+     */
+    private function tenantAllows(Principal $principal, array $resource): bool
+    {
+        $tenant = $principal->tenant();
+
+        if ($tenant === null || trim($tenant) === '') {
+            return true;
+        }
+
+        $tenant = strtolower(trim($tenant));
+        $requestedNamespace = strtolower(trim((string) ($resource['requested_namespace'] ?? '')));
+
+        if ($requestedNamespace === '' || ! hash_equals($tenant, $requestedNamespace)) {
+            return false;
+        }
+
+        $targetNamespace = strtolower(trim((string) ($resource['target_namespace'] ?? '')));
+
+        if ($targetNamespace !== '' && ! hash_equals($tenant, $targetNamespace)) {
+            return false;
+        }
+
+        $callerNamespace = strtolower(trim((string) ($resource['caller_namespace'] ?? '')));
+
+        if ($callerNamespace !== '' && ! hash_equals($tenant, $callerNamespace)) {
+            return false;
+        }
+
+        return ($resource['operation_family'] ?? null) !== 'namespace' || $targetNamespace !== '';
     }
 
     /**

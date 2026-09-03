@@ -1114,6 +1114,39 @@ DW_PRINCIPAL_TOKENS='[{"token":"alice-v1","subject":"alice","roles":["operator"]
 The same subject may appear on more than one token, which lets operators
 rotate credentials without changing the recorded principal identity.
 
+When a principal token defines `tenant`, the built-in provider binds that
+principal to the matching namespace. Requests for another namespace are
+denied before namespace lookup, and a tenant-bound principal cannot use the
+namespace-list endpoint.
+
+Hosts that need to provision and revoke namespace credentials without a
+Server restart can enable the database-backed credential store:
+
+```env
+DW_RUNTIME_CREDENTIALS_ENABLED=true
+```
+
+Use an existing static admin token with the versioned
+`/api/runtime-credentials` endpoints. `PUT /api/runtime-credentials/{id}`
+accepts a caller-generated bearer token, subject, `operator` or `worker` role,
+and required tenant namespace. Repeating an identical `PUT` is idempotent;
+different attributes return `409`. The Server stores only the SHA-256 token
+hash and a non-secret prefix. Rotation and revocation take effect without a
+restart:
+
+```bash
+curl -X PUT http://localhost:8080/api/runtime-credentials/acme-client \
+  -H "Authorization: Bearer admin-secret" \
+  -H "X-Durable-Workflow-Control-Plane-Version: 2" \
+  -H "Content-Type: application/json" \
+  -d '{"token":"replace-with-a-long-random-token","subject":"acme:client","roles":["operator"],"tenant":"acme"}'
+```
+
+The admin surface also supports list, show,
+`POST /api/runtime-credentials/{id}/rotate`, and idempotent revoke through
+`DELETE /api/runtime-credentials/{id}`. Keep a static admin credential for
+recovery; database credentials cannot grant the `admin` role.
+
 ### Signature Authentication
 
 Signature auth supports the same role split with role-scoped HMAC keys:
@@ -1452,6 +1485,7 @@ every operator-facing variable the server honors.
 | `DW_OPERATOR_TOKEN` | (unset) | Bearer token for the operator control plane and diagnostic worker registration; polling remains worker-only. |
 | `DW_ADMIN_TOKEN` | (unset) | Bearer token for the admin control plane and diagnostic worker registration; polling remains worker-only. |
 | `DW_PRINCIPAL_TOKENS` | (unset) | JSON token map for named bearer-token principals used by audit attribution. |
+| `DW_RUNTIME_CREDENTIALS_ENABLED` | `false` | Enable durable, namespace-bound operator and worker credentials managed through the admin API. |
 | `DW_WORKER_SIGNATURE_KEY` | (unset) | Role-scoped HMAC key for worker registration, deregistration, polling, heartbeat, and completion. |
 | `DW_OPERATOR_SIGNATURE_KEY` | (unset) | Role-scoped HMAC key for the operator control plane and diagnostic worker registration; polling remains worker-only. |
 | `DW_ADMIN_SIGNATURE_KEY` | (unset) | Role-scoped HMAC key for the admin control plane and diagnostic worker registration; polling remains worker-only. |
