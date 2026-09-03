@@ -658,6 +658,41 @@ def refresh_topology_diagnostics() -> None:
     TOPOLOGY_DIAGNOSTICS["published_port_mappings"] = mappings
 
 
+def refresh_published_endpoint(name: str, service: str) -> dict[str, Any]:
+    global LB, SERVER_A, SERVER_B
+
+    previous_base_url = PROBE_ENDPOINTS[name]
+    published = compose("port", service, "8080", timeout=30).stdout.splitlines()
+    require(bool(published), f"missing published port for {service}")
+    published_port = parse_published_port(name, published[0].rsplit(":", 1)[-1])
+    require(published_port > 0, f"invalid published port for {service}")
+
+    PUBLISHED_PORTS[name] = published_port
+    PROBE_ENDPOINTS.update(build_probe_endpoints(CONNECT_HOST, PUBLISHED_PORTS))
+    LB = PROBE_ENDPOINTS["load_balancer"]
+    SERVER_A = PROBE_ENDPOINTS["server_a"]
+    SERVER_B = PROBE_ENDPOINTS["server_b"]
+    RESULT["topology"]["published_ports"] = PUBLISHED_PORTS.copy()
+
+    base_url = PROBE_ENDPOINTS[name]
+    TOPOLOGY_DIAGNOSTICS["resolved_probe_endpoints"][name] = {
+        "base_url": base_url,
+        "readiness_url": f"{base_url}/api/ready",
+        "published_port": published_port,
+    }
+    TOPOLOGY_DIAGNOSTICS["readiness_observations"][name]["endpoint"] = (
+        f"{base_url}/api/ready"
+    )
+
+    return {
+        "service": service,
+        "previous_base_url": previous_base_url,
+        "base_url": base_url,
+        "published_port": published_port,
+        "endpoint_changed": previous_base_url != base_url,
+    }
+
+
 def api_node_loss_failure_diagnostics() -> dict[str, Any]:
     diagnostics: dict[str, Any] = {}
     for name, args in (
@@ -1285,7 +1320,13 @@ def api_node_loss_phase() -> dict[str, Any]:
         f"acknowledged state was not preserved: {final_observation}",
     )
     compose("start", "server-a")
-    wait_for("server-a restart readiness", lambda: ready(SERVER_A), 30)
+    restarted_endpoint = refresh_published_endpoint("server_a", "server-a")
+    phase_evidence["restarted_node_endpoint"] = restarted_endpoint
+    wait_for(
+        "server-a restart readiness",
+        lambda: ready(restarted_endpoint["base_url"]),
+        30,
+    )
     RESULT["recovery_timings_ms"]["api_node_useful_traffic"] = recovery_ms
     RESULT["recovery_bounds"]["api_node_useful_traffic_seconds"]["passed"] = recovery_ms <= BOUNDS["api_node_useful_traffic_seconds"] * 1000
     RESULT["identities"]["api_node_loss"] = {
