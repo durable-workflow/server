@@ -27,9 +27,9 @@
     "service_networks": 1
   },
   "components": {
-    "server": {"cpu_cores": 2, "memory_bytes": 2147483648, "image": "docker.io/durableworkflow/server:2.0.3"},
-    "server-worker": {"cpu_cores": 2, "memory_bytes": 2147483648, "image": "docker.io/durableworkflow/server:2.0.3"},
-    "scheduler": {"cpu_cores": 1, "memory_bytes": 1073741824, "image": "docker.io/durableworkflow/server:2.0.3"},
+    "server": {"cpu_cores": 2, "memory_bytes": 2147483648, "image": "docker.io/durableworkflow/server:2.1.0"},
+    "server-worker": {"cpu_cores": 2, "memory_bytes": 2147483648, "image": "docker.io/durableworkflow/server:2.1.0"},
+    "scheduler": {"cpu_cores": 1, "memory_bytes": 1073741824, "image": "docker.io/durableworkflow/server:2.1.0"},
     "mysql": {"cpu_cores": 2, "memory_bytes": 2147483648, "image": "docker.io/library/mysql:8.0.39"},
     "redis": {"cpu_cores": 1, "memory_bytes": 1073741824, "image": "docker.io/library/redis:7.2.5-alpine"},
     "sdk-php-worker": {"cpu_cores": 1, "memory_bytes": 1073741824, "image": "docker.io/library/php:8.3.30-cli-bookworm"},
@@ -43,7 +43,7 @@
       "APP_DEBUG": "false",
       "APP_ENV": "local",
       "APP_NAME": "Durable Workflow Capacity Server",
-      "APP_VERSION": "2.0.3",
+      "APP_VERSION": "2.1.0",
       "CACHE_STORE": "redis",
       "DB_CONNECTION": "mysql",
       "DB_DATABASE": "durable_workflow",
