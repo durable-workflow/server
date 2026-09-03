@@ -5,11 +5,11 @@ type: application
 # The chart's own semver version. Bumped on every chart release; treated as
 # independent of the server image version (appVersion). Breaking-change rules
 # for this version live in docs/helm-upgrading.md alongside the chart.
-version: 0.1.75
+version: 0.1.76
 # The immutable Durable Workflow Server identity this chart release packages.
 # The onboarding default in values.yaml and appVersion are generated from the
 # checked-in source release record.
-appVersion: "2.1.0"
+appVersion: "2.1.1"
 kubeVersion: ">=1.27.0-0"
 home: https://durable-workflow.github.io/docs/2.0/deployment
 sources:
@@ -30,7 +30,7 @@ annotations:
   # exact commit that most recently changed the packaged chart.
   org.opencontainers.image.source: https://github.com/durable-workflow/server
   dev.durable-workflow.source-revision: "unreleased"
-  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:2.1.0"
+  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:2.1.1"
   artifacthub.io/license: MIT
   artifacthub.io/category: integration-delivery
   # Free-form changelog for the current chart release shown by Artifact Hub.
