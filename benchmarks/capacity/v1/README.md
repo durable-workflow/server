@@ -1,6 +1,6 @@
 # Durable Workflow Capacity Benchmark Suite
 
-Suite version: `1.4.0`
+Suite version: `1.5.0`
 
 This directory is immutable evidence input. A changed workload, artifact tuple,
 metric contract, or operating-point rule requires a new suite version instead

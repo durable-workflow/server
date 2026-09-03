@@ -150,6 +150,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "chrono"
+version = "0.4.45"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -235,18 +244,25 @@ dependencies = [
 
 [[package]]
 name = "durable-workflow"
-version = "2.0.0-rc.11"
+version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51cd28b4c5d3e4a2edd4443e3bcb39f7344a2c2afa493803f68600c4790a14af"
+checksum = "2e22310a10fefd3ee2118a260f5255b98c607856b73749629505891fc18aae49"
 dependencies = [
  "apache-avro",
  "base64",
  "bon",
+ "chrono",
  "futures-util",
+ "icu_collections",
+ "icu_locale_core",
+ "icu_normalizer",
+ "icu_properties",
+ "icu_provider",
  "reqwest",
  "serde",
  "serde-value",
  "serde_json",
+ "sha2",
  "thiserror 1.0.69",
  "tokio",
  "uuid",

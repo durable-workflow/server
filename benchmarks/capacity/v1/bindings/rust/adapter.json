@@ -1,14 +1,14 @@
 {
   "$schema": "../../schemas/adapter.schema.json",
   "schema": "durable-workflow.capacity-benchmark-adapter/v1",
-  "suite_version": "1.4.0",
+  "suite_version": "1.5.0",
   "binding": "rust",
   "artifact_key": "sdk_rust",
   "artifact": {
     "registry": "crates.io",
     "name": "durable-workflow",
-    "version": "2.0.0-rc.11",
-    "reference": "durable-workflow@2.0.0-rc.11"
+    "version": "2.0.0",
+    "reference": "durable-workflow@2.0.0"
   },
   "entrypoint": ["cargo", "run", "--release", "--locked", "--manifest-path", "Cargo.toml", "--"],
   "source_files": ["Cargo.toml", "Cargo.lock", "src/main.rs"],

@@ -8,7 +8,7 @@
   "properties": {
     "$schema": {"type": "string"},
     "schema": {"const": "durable-workflow.capacity-benchmark-suite/v1"},
-    "suite_version": {"const": "1.4.0"},
+    "suite_version": {"type": "string", "pattern": "^1\\.[0-9]+\\.[0-9]+$"},
     "status": {"const": "engineering_evidence_not_release_gate"},
     "description": {"type": "string"},
     "schemas": {"type": "object"},

@@ -5,7 +5,7 @@
   "license": "MIT",
   "require": {
     "php": ">=8.1",
-    "durable-workflow/sdk": "2.0.0-rc.14"
+    "durable-workflow/sdk": "2.0.0"
   },
   "minimum-stability": "RC",
   "prefer-stable": true
