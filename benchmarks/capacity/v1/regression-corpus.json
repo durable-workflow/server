@@ -1,6 +1,6 @@
 {
   "schema": "durable-workflow.capacity-benchmark-regression-corpus/v1",
-  "suite_version": "1.7.0",
+  "suite_version": "1.8.0",
   "growth_rule": "append_the_smallest_fixture_that_reproduces_a_missing_field_workload_shape",
   "fixture_requirements": [
     "synthetic_data_only",

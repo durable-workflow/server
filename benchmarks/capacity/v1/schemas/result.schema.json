@@ -36,6 +36,7 @@
       "type": "object",
       "required": ["load_step", "measurement_seconds", "offered_load", "rates", "latency_ms", "concurrent_open_workflows", "workflow_completion_evidence", "completion_ratio", "error_rate", "throttle_rate", "storage", "infrastructure", "drain", "saturation", "operating_point_eligible"],
       "properties": {
+        "load_step": {"type": "number", "minimum": 0.001},
         "workflow_completion_evidence": {"$ref": "#/$defs/workflow_completion_evidence"},
         "offered_load": {
           "type": "object",

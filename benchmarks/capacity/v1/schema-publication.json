@@ -17,15 +17,15 @@
     },
     "observation": {
       "$id": "https://durable-workflow.github.io/schemas/capacity-benchmark-observation/v1.json",
-      "sha256": "fc6fa68cd616d46a1e39a5eeb18c7e5b05d5d03a2fcc72973b2eebdfcdb44b8b"
+      "sha256": "db91207ed79f98d015c639658ae61b48ea41698c2e12e23251add9000336b708"
     },
     "result": {
       "$id": "https://durable-workflow.github.io/schemas/capacity-benchmark-result/v1.json",
-      "sha256": "d347444fdb55048902ef7207fbde4cd7a5db900babe7a07370061e9bd6b8deb1"
+      "sha256": "d74f8d19399a40236306e1615e46af53f7f7143497bc11f8f313d0757026fa7c"
     },
     "suite": {
       "$id": "https://durable-workflow.github.io/schemas/capacity-benchmark-suite/v1.json",
-      "sha256": "478be42d4635b8defdbfcf81973bd2ba7ec6daad39c7dae0e24ec44c2efdf4fe"
+      "sha256": "589d18d3fbb4de13b3a4944f6cfa97fbfba6113a4a73bf9732d369cb81e70b21"
     }
   }
 }

@@ -34,7 +34,7 @@ RESULT_SCHEMA = "durable-workflow.capacity-benchmark-result/v1"
 CORPUS_SCHEMA = "durable-workflow.capacity-benchmark-regression-corpus/v1"
 ADAPTER_SCHEMA = "durable-workflow.capacity-benchmark-adapter/v1"
 COLLECTOR_SCHEMA = "durable-workflow.capacity-benchmark-collector/v1"
-SUITE_VERSION = "1.7.0"
+SUITE_VERSION = "1.8.0"
 SCHEMA_PUBLICATION_SUITE_VERSION = "1.5.0"
 
 REQUIRED_CELL_IDS = {
@@ -171,6 +171,37 @@ def _integer(value: Any, path: str, *, minimum: int | None = None) -> int:
     if int(value) != value:
         raise ContractError(f"{path} must be an integer")
     return int(value)
+
+
+def _load_step(value: Any, path: str) -> int | float:
+    number = _number(value, path, minimum=0.001)
+    return int(number) if number.is_integer() else number
+
+
+def load_step_identifier(value: Any) -> str:
+    step = _load_step(value, "load_step")
+    canonical = format(Decimal(str(step)).normalize(), "f")
+    return canonical.replace(".", "p")
+
+
+def _contract_values_equal(left: Any, right: Any) -> bool:
+    if (
+        not isinstance(left, bool)
+        and not isinstance(right, bool)
+        and isinstance(left, (int, float, Decimal))
+        and isinstance(right, (int, float, Decimal))
+    ):
+        return Decimal(str(left)) == Decimal(str(right))
+    if isinstance(left, dict) and isinstance(right, dict):
+        return set(left) == set(right) and all(
+            _contract_values_equal(left[key], right[key]) for key in left
+        )
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(
+            _contract_values_equal(left_value, right_value)
+            for left_value, right_value in zip(left, right, strict=True)
+        )
+    return left == right
 
 
 def _exact_version(value: Any, path: str) -> str:
@@ -982,7 +1013,7 @@ def validate_suite(suite: dict[str, Any], suite_path: Path = DEFAULT_SUITE) -> N
         ):
             _integer(execution.get(field), f"{path}.execution.{field}", minimum=minimum)
         load_steps = [
-            _integer(value, f"{path}.execution.load_steps[{load_index}]", minimum=1)
+            _load_step(value, f"{path}.execution.load_steps[{load_index}]")
             for load_index, value in enumerate(
                 _list(
                     execution.get("load_steps"),
@@ -1397,7 +1428,7 @@ def validate_observation(observation: dict[str, Any], path: str) -> None:
     binding = _text(observation.get("binding"), f"{path}.binding")
     if binding not in REQUIRED_BINDINGS | {"deterministic-model"}:
         raise ContractError(f"{path}.binding is unsupported")
-    _integer(observation.get("load_step"), f"{path}.load_step", minimum=1)
+    _load_step(observation.get("load_step"), f"{path}.load_step")
     _integer(observation.get("sample_index"), f"{path}.sample_index", minimum=0)
     phase = observation.get("phase")
     if phase not in {"measurement", "drain"}:
@@ -1710,9 +1741,12 @@ def reduce_step(
         )
         if float(drain[0]["interval_seconds"]) > drain_timeout + 1e-6:
             raise ContractError("drain evidence exceeds the declared drain timeout")
-    if any(row["control"]["offered_load"] != offered_load for row in ordered[1:]):
+    if any(
+        not _contract_values_equal(row["control"]["offered_load"], offered_load)
+        for row in ordered[1:]
+    ):
         raise ContractError("a load step must retain one offered-load contract")
-    load_step = int(ordered[0]["load_step"])
+    load_step = _load_step(ordered[0]["load_step"], "load_step")
     if not math.isclose(
         float(offered_load["workflow_starts_per_second"]),
         0.0 if cell_id == "query-inspection" else float(load_step),
@@ -2175,7 +2209,7 @@ def long_lived_query_target(cell: dict[str, Any]) -> int:
 
 
 def _offered_load_contract(
-    cell: dict[str, Any], load_step: int, rule: dict[str, Any]
+    cell: dict[str, Any], load_step: int | float, rule: dict[str, Any]
 ) -> dict[str, float | int]:
     query_rate = sum(
         float(definition.get("rate_per_load_unit_per_second", 0))
@@ -2273,11 +2307,11 @@ def reduce_result(
             **expected_base_control,
             "offered_load": _offered_load_contract(
                 cell,
-                int(observation["load_step"]),
+                _load_step(observation["load_step"], f"observations[{index}].load_step"),
                 suite["operating_point_rule"],
             ),
         }
-        if observation["control"] != expected_control:
+        if not _contract_values_equal(observation["control"], expected_control):
             raise ContractError(
                 f"observations[{index}].control must exactly match the declared execution"
             )
@@ -2311,9 +2345,10 @@ def reduce_result(
         if evidence_class == "harness_reference"
         else float(cell["execution"]["duration_seconds"])
     )
-    grouped: dict[int, list[dict[str, Any]]] = {}
+    grouped: dict[int | float, list[dict[str, Any]]] = {}
     for observation in observations:
-        grouped.setdefault(int(observation["load_step"]), []).append(observation)
+        load_step = _load_step(observation["load_step"], "observation.load_step")
+        grouped.setdefault(load_step, []).append(observation)
     expected_load_steps = set(
         suite["reference_qualification"]["load_steps"]
         if evidence_class == "harness_reference"

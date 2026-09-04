@@ -1,6 +1,6 @@
 # Durable Workflow Capacity Benchmark Suite
 
-Suite version: `1.7.0`
+Suite version: `1.8.0`
 
 This directory is immutable evidence input. A changed workload, artifact tuple,
 metric contract, or operating-point rule requires a new suite version instead
@@ -140,6 +140,12 @@ the resident long-lived query cohort size, and a minimum delivery ratio. A pure
 query cell has no measurement workflow-start rate: its fixed cohort and query
 operation delivery are the workload. Mixed cells retain the workflow-start
 rate for completion-required shapes alongside the resident query cohort.
+Positive fractional steps use the same contract as whole-number steps: for a
+workflow-producing cell, `0.25` means one attempted workflow start every four
+seconds. Counters, cohort sizes, sample indexes, resource byte counts, and queue
+gauges remain integers. This lets the same named workload measure small
+development profiles and larger production profiles without changing the
+workflow being counted.
 Demand counters distinguish requests actually attempted by the generator from
 requests accepted, completed, rejected, or throttled by Server. A full-duration
 observation window remains ineligible when controller overhead, exhausted

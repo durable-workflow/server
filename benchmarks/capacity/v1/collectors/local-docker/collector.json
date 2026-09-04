@@ -1,7 +1,7 @@
 {
   "$schema": "../../schemas/collector.schema.json",
   "schema": "durable-workflow.capacity-benchmark-collector/v1",
-  "suite_version": "1.7.0",
+  "suite_version": "1.8.0",
   "profile_id": "local-docker-amd64-v1",
   "entrypoint": ["python3", "local_docker_collector.py"],
   "source_files": ["collector.json", "local_docker_collector.py"],

@@ -74,14 +74,14 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         return capacity_matrix.MetricBuffer._empty_workflow_cohorts()
 
     def offered_load(
-        self, suite: dict, cell: dict, load_step: int
+        self, suite: dict, cell: dict, load_step: int | float
     ) -> dict[str, float | int]:
         return capacity_suite._offered_load_contract(
             cell, load_step, suite["operating_point_rule"]
         )
 
     def capacity_control(
-        self, suite: dict, cell: dict, load_step: int
+        self, suite: dict, cell: dict, load_step: int | float
     ) -> dict[str, object]:
         execution = cell["execution"]
         return {
@@ -179,6 +179,19 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
                 capacity_suite.REQUIRED_BINDINGS,
                 {binding["language"] for binding in cell["bindings"]},
             )
+
+        standard = next(
+            cell for cell in self.suite["cells"] if cell["id"] == "one-activity"
+        )
+        self.assertEqual(
+            [0.25, 0.5], standard["execution"]["load_steps"][:2]
+        )
+        self.assertEqual(
+            [25, 50, 100, 200, 400],
+            standard["execution"]["load_steps"][-5:],
+        )
+        self.assertEqual("0p25", capacity_suite.load_step_identifier(0.25))
+        self.assertEqual("1", capacity_suite.load_step_identifier(1.0))
 
     def test_infrastructure_profile_accepts_and_validates_auxiliary_components(
         self,
@@ -689,7 +702,7 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
 
         request = urlopen.call_args.args[0]
         self.assertEqual(
-            "Durable-Workflow-Capacity-Suite/1.7",
+            "Durable-Workflow-Capacity-Suite/1.8",
             request.get_header("User-agent"),
         )
 
@@ -1300,6 +1313,11 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         ):
             capacity_suite.validate_suite(unordered)
 
+        non_positive = copy.deepcopy(self.suite)
+        non_positive["cells"][0]["execution"]["load_steps"] = [0]
+        with self.assertRaisesRegex(capacity_suite.ContractError, "at least 0.001"):
+            capacity_suite.validate_suite(non_positive)
+
         query_drift = copy.deepcopy(self.suite)
         query_cell = next(
             cell for cell in query_drift["cells"] if cell["id"] == "query-inspection"
@@ -1386,6 +1404,31 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         ):
             capacity_suite.reduce_step(
                 forged_contract,
+                self.suite["operating_point_rule"],
+                required_measurement_seconds=4,
+                cell_id="simple-start-complete",
+            )
+
+        fractional = copy.deepcopy(observations)
+        for row in fractional:
+            row["load_step"] = 0.25
+            row["control"]["offered_load"]["workflow_starts_per_second"] = 0.25
+        self.assertEqual(
+            0.25,
+            capacity_suite.reduce_step(
+                fractional,
+                self.suite["operating_point_rule"],
+                required_measurement_seconds=4,
+                cell_id="simple-start-complete",
+            )["load_step"],
+        )
+        for row in fractional:
+            row["control"]["offered_load"]["workflow_starts_per_second"] = 0.5
+        with self.assertRaisesRegex(
+            capacity_suite.ContractError, "must equal the declared load step"
+        ):
+            capacity_suite.reduce_step(
+                fractional,
                 self.suite["operating_point_rule"],
                 required_measurement_seconds=4,
                 cell_id="simple-start-complete",
@@ -2003,7 +2046,6 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         )
         component = next(iter(observation["infrastructure"]["components"]))
         adversarial_fields = (
-            ("load_step",),
             ("sample_index",),
             ("counters", "workflow_starts"),
             ("counters", "workflow_completions"),
@@ -2239,6 +2281,90 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
                 rows,
                 **arguments,
             )
+
+    def test_fractional_capacity_observations_survive_jsonl_round_trip(
+        self,
+    ) -> None:
+        suite = copy.deepcopy(self.suite)
+        cell = next(cell for cell in suite["cells"] if cell["id"] == "one-activity")
+        cell["execution"]["load_steps"] = [0.25]
+        cell["execution"]["duration_seconds"] = 4
+        rows = [
+            copy.deepcopy(row)
+            for row in capacity_suite._reference_observations(self.suite, self.profile)
+            if row["load_step"] == 4
+        ]
+        control = self.capacity_control(suite, cell, 0.25)
+        for index, row in enumerate(rows):
+            completed = 1 if index == 0 else 0
+            row["cell_id"] = "one-activity"
+            row["binding"] = "php"
+            row["load_step"] = 0.25
+            row["control"] = copy.deepcopy(control)
+            row["counters"] = {
+                "workflow_starts": completed,
+                "workflow_completions": completed,
+                "activity_dispatches": completed,
+                "errors": 0,
+                "throttles": 0,
+            }
+            row["workflow_cohorts"] = self.empty_workflow_cohorts()
+            row["workflow_cohorts"]["completion_required"] = {
+                "starts": completed,
+                "completions": completed,
+            }
+            row["demand"] = self.empty_demand()
+            row["demand"]["workflow_starts"] = {
+                "attempted": completed,
+                "accepted": completed,
+                "completed": completed,
+                "rejected": 0,
+                "throttled": 0,
+            }
+            row["latencies_ms"] = {
+                "schedule_to_start": [10.0] if completed else [],
+                "replay": [],
+                "query": [],
+            }
+            row["concurrent_open_workflows"] = 0
+
+        drain = copy.deepcopy(rows[-1])
+        drain["sample_index"] = len(rows)
+        drain["phase"] = "drain"
+        drain["interval_seconds"] = 0.001
+        drain["counters"] = {key: 0 for key in drain["counters"]}
+        drain["workflow_cohorts"] = self.empty_workflow_cohorts()
+        drain["demand"] = self.empty_demand()
+        drain["latencies_ms"] = {key: [] for key in drain["latencies_ms"]}
+        drain["infrastructure"]["queue_backlog"] = 0
+        rows.append(drain)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fractional.observations.jsonl"
+            path.write_text("".join(f"{json.dumps(row)}\n" for row in rows))
+            decoded = capacity_suite.load_observations(path)
+
+        result = capacity_suite.reduce_result(
+            suite,
+            capacity_suite.DEFAULT_SUITE,
+            self.profile,
+            capacity_suite.DEFAULT_PROFILE,
+            decoded,
+            source_revision="383b14e389ac7ec4873c74034d6087ce9db0bea0",
+            run_timestamp="2026-08-11T00:00:00Z",
+            architecture="x86_64",
+        )
+
+        self.assertTrue(result["publishable"])
+        self.assertEqual(
+            0.25, result["maximum_sustained_operating_point"]["load_step"]
+        )
+        self.assertEqual(
+            0.25,
+            result["maximum_sustained_operating_point"]["rates"][
+                "workflow_completions_per_second"
+            ],
+        )
 
     def test_mixed_metrics_cannot_mask_each_other(self) -> None:
         base = [

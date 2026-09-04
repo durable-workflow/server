@@ -9,7 +9,7 @@
     "schema": {"const": "durable-workflow.capacity-benchmark-observation/v1"},
     "cell_id": {"type": "string"},
     "binding": {"enum": ["php", "python", "rust", "deterministic-model"]},
-    "load_step": {"type": "integer", "minimum": 1},
+    "load_step": {"type": "number", "minimum": 0.001},
     "sample_index": {"type": "integer", "minimum": 0},
     "phase": {"enum": ["measurement", "drain"]},
     "interval_seconds": {"type": "number", "exclusiveMinimum": 0},
