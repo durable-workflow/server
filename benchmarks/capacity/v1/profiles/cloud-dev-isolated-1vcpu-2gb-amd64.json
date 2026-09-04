@@ -1,8 +1,8 @@
 {
   "$schema": "../schemas/infrastructure.schema.json",
   "schema": "durable-workflow.capacity-benchmark-infrastructure/v1",
-  "profile_id": "cloud-dev-isolated-1vcpu-1gb-amd64-v1",
-  "description": "Provider-neutral isolated single-host development cell with minimal host services, PHP CLI OPcache disabled, direct runtime ingress, and an off-host backup role; no availability SLA.",
+  "profile_id": "cloud-dev-isolated-1vcpu-2gb-amd64-v1",
+  "description": "Provider-neutral isolated single-host development cell with 2 GB of host memory, minimal host services, PHP CLI OPcache disabled, direct runtime ingress, and an off-host backup role; no availability SLA.",
   "architecture": {
     "machine": "x86_64",
     "container": "linux/amd64"
@@ -29,7 +29,7 @@
   "components": {
     "runtime-host": {
       "cpu_cores": 1,
-      "memory_bytes": 1001873408,
+      "memory_bytes": 2057269248,
       "image": "ubuntu:24.04-host-kernel-6.8.0-138-generic"
     },
     "server": {
@@ -137,7 +137,7 @@
     "driver": "local-volume",
     "medium": "nvme-ssd",
     "mount_options": "ext4-defaults",
-    "capacity_bytes": 24566575104,
+    "capacity_bytes": 49734758400,
     "capacity_policy": "minimum",
     "database_destination": "/var/lib/mysql",
     "redis_destination": "/data"
