@@ -1,7 +1,7 @@
 {
   "$schema": "schemas/suite.schema.json",
   "schema": "durable-workflow.capacity-benchmark-suite/v1",
-  "suite_version": "1.7.0",
+  "suite_version": "1.8.0",
   "status": "engineering_evidence_not_release_gate",
   "description": "Versioned, reproducible Durable Workflow capacity workloads. Throughput evidence does not substitute for correctness conformance.",
   "schemas": {
@@ -246,7 +246,7 @@
         {"language": "python", "roles": ["client", "workflow-worker", "activity-worker"]},
         {"language": "rust", "roles": ["client", "workflow-worker", "activity-worker"]}
       ],
-      "execution": {"concurrent_open_workflows": 100, "client_concurrency": 16, "worker_concurrency": 32, "duration_seconds": 300, "warmup_seconds": 60, "deterministic_seed": 104759, "load_steps": [25, 50, 100, 200, 400], "termination": {"condition": "duration_elapsed_then_open_workflows_drained", "drain_timeout_seconds": 120}}
+      "execution": {"concurrent_open_workflows": 100, "client_concurrency": 16, "worker_concurrency": 32, "duration_seconds": 300, "warmup_seconds": 60, "deterministic_seed": 104759, "load_steps": [0.25, 0.5, 1, 2, 5, 10, 25, 50, 100, 200, 400], "termination": {"condition": "duration_elapsed_then_open_workflows_drained", "drain_timeout_seconds": 120}}
     },
     {
       "id": "multiple-activities",

@@ -59,7 +59,7 @@
             "duration_seconds": {"type": "integer", "minimum": 1},
             "warmup_seconds": {"type": "integer", "minimum": 0},
             "deterministic_seed": {"type": "integer", "minimum": 0},
-            "load_steps": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "integer", "minimum": 1}},
+            "load_steps": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "number", "minimum": 0.001}},
             "termination": {
               "type": "object",
               "additionalProperties": false,

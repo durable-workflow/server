@@ -280,7 +280,7 @@ class ControlPlane:
     def get(self, path: str) -> dict[str, Any]:
         headers = {
             "Accept": "application/json",
-            "User-Agent": "Durable-Workflow-Capacity-Suite/1.7",
+            "User-Agent": "Durable-Workflow-Capacity-Suite/1.8",
             "X-Namespace": self.namespace,
             "X-Durable-Workflow-Control-Plane-Version": "2",
         }
@@ -1019,20 +1019,22 @@ class CellRunner:
                 return str(shape)
         return str(next(reversed(weighted)))
 
-    def _new_identity(self, load_step: int) -> tuple[str, int]:
+    def _new_identity(self, load_step: int | float) -> tuple[str, int]:
         self.sequence += 1
         sequence = self.sequence
         cell = str(self.cell["id"]).replace("_", "-")
+        step = capacity_suite.load_step_identifier(load_step)
         workflow_id = (
-            f"capacity-v1-{self.execution_scope}-{self.binding}-{cell}-{load_step}-"
+            f"capacity-v1-{self.execution_scope}-{self.binding}-{cell}-{step}-"
             f"{self.execution['deterministic_seed']}-{sequence}"
         )
         return workflow_id, sequence
 
-    def _task_queue(self, load_step: int) -> str:
+    def _task_queue(self, load_step: int | float) -> str:
+        step = capacity_suite.load_step_identifier(load_step)
         return (
             f"{self.task_queue_prefix}-{self.execution_scope}-"
-            f"{self.binding}-{self.cell['id']}-{load_step}"
+            f"{self.binding}-{self.cell['id']}-{step}"
         )
 
     def _workflow_lifecycle(
@@ -1185,7 +1187,7 @@ class CellRunner:
             open_slots.release()
 
     def _query_loop(
-        self, load_step: int, stop: threading.Event, measured: bool
+        self, load_step: int | float, stop: threading.Event, measured: bool
     ) -> None:
         definitions = self.cell["workload"].get("queries", [])
         if not definitions:
@@ -1250,7 +1252,7 @@ class CellRunner:
             elif delay < -1:
                 next_query = time.monotonic()
 
-    def _query_rate(self, load_step: int) -> float:
+    def _query_rate(self, load_step: int | float) -> float:
         return round(
             sum(
                 float(definition.get("rate_per_load_unit_per_second", 0))
@@ -1261,7 +1263,7 @@ class CellRunner:
             6,
         )
 
-    def _control(self, load_step: int) -> dict[str, Any]:
+    def _control(self, load_step: int | float) -> dict[str, Any]:
         return {
             "suite_version": capacity_suite.SUITE_VERSION,
             "deterministic_seed": int(self.execution["deterministic_seed"]),
@@ -1283,7 +1285,7 @@ class CellRunner:
     def _observation(
         self,
         *,
-        load_step: int,
+        load_step: int | float,
         sample_index: int,
         phase: str,
         interval_seconds: float,
@@ -1320,7 +1322,7 @@ class CellRunner:
     def _start_query_cohort(
         self,
         *,
-        load_step: int,
+        load_step: int | float,
         task_queue: str,
         stop: threading.Event,
         measured: bool,
@@ -1343,7 +1345,7 @@ class CellRunner:
     def _start_query_cohort_inner(
         self,
         *,
-        load_step: int,
+        load_step: int | float,
         task_queue: str,
         stop: threading.Event,
         measured: bool,
@@ -1404,7 +1406,7 @@ class CellRunner:
     def _run_phase(
         self,
         *,
-        load_step: int,
+        load_step: int | float,
         seconds: float,
         task_queue: str,
         measured: bool,
@@ -1426,7 +1428,7 @@ class CellRunner:
     def _run_phase_inner(
         self,
         *,
-        load_step: int,
+        load_step: int | float,
         seconds: float,
         task_queue: str,
         measured: bool,
@@ -1557,7 +1559,7 @@ class CellRunner:
             )
         return observations
 
-    def run_load_step(self, load_step: int) -> list[dict[str, Any]]:
+    def run_load_step(self, load_step: int | float) -> list[dict[str, Any]]:
         task_queue = self._task_queue(load_step)
         maximum_threads = (
             int(self.execution["concurrent_open_workflows"])
@@ -1790,7 +1792,7 @@ def main(argv: list[str] | None = None) -> int:
                         ]
                     ),
                 )
-                rows.extend(runner.run_load_step(int(load_step)))
+                rows.extend(runner.run_load_step(load_step))
             stem = f"{matrix_cell.cell['id']}--{matrix_cell.binding}"
             observations_path = args.output_dir / f"{stem}.observations.jsonl"
             result_path = args.output_dir / f"{stem}.result.json"
