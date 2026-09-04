@@ -1,6 +1,6 @@
 # Durable Workflow Capacity Benchmark Suite
 
-Suite version: `1.8.0`
+Suite version: `1.9.0`
 
 This directory is immutable evidence input. A changed workload, artifact tuple,
 metric contract, or operating-point rule requires a new suite version instead
@@ -141,11 +141,17 @@ query cell has no measurement workflow-start rate: its fixed cohort and query
 operation delivery are the workload. Mixed cells retain the workflow-start
 rate for completion-required shapes alongside the resident query cohort.
 Positive fractional steps use the same contract as whole-number steps: for a
-workflow-producing cell, `0.25` means one attempted workflow start every four
-seconds. Counters, cohort sizes, sample indexes, resource byte counts, and queue
-gauges remain integers. This lets the same named workload measure small
-development profiles and larger production profiles without changing the
-workflow being counted.
+workflow-producing cell, `0.1` means one attempted workflow start every ten
+seconds and `0.25` means one every four seconds. Counters, cohort sizes, sample
+indexes, resource byte counts, and queue gauges remain integers. This lets the
+same named workload measure small development profiles and larger production
+profiles without changing the workflow being counted.
+
+`profiles/cloud-dev-isolated-1vcpu-1gb-amd64.json` records the exact public
+resource and artifact identity used to qualify the isolated, single-host Cloud
+Dev shape. It includes the runtime host, direct ingress, backup role, and
+external SDK/load-generator resources without provider account, customer,
+hostname, or credential data. The profile carries no availability SLA.
 Demand counters distinguish requests actually attempted by the generator from
 requests accepted, completed, rejected, or throttled by Server. A full-duration
 observation window remains ineligible when controller overhead, exhausted

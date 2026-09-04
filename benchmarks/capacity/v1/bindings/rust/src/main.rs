@@ -2,7 +2,7 @@ use std::{collections::HashMap, env, io::Write, time::Duration, time::Instant};
 
 use durable_workflow::{
     json, ChildWorkflowOptions, Client, ClientBuilder, Error, Result, Value, Worker,
-    WorkflowHandle, WorkflowResultOptions,
+    WorkerRetryPolicy, WorkflowHandle, WorkflowResultOptions,
 };
 use futures_util::future::try_join_all;
 use sha2::{Digest, Sha256};
@@ -151,7 +151,14 @@ async fn run_worker() -> Result<()> {
         .max(1);
     let mut worker = Worker::new(client, task_queue.clone())
         .max_concurrent_workflow_tasks(concurrency)
-        .max_concurrent_activity_tasks(concurrency);
+        .max_concurrent_activity_tasks(concurrency)
+        // A matrix step replaces its worker while the previous step's
+        // 30-second long polls may still hold server-side wait slots.
+        .retry_policy(WorkerRetryPolicy {
+            max_retries: 12,
+            initial_backoff: Duration::from_millis(100),
+            max_backoff: Duration::from_secs(5),
+        });
 
     worker.register_activity("capacity.v1.echo", |_ctx, arguments| async move {
         Ok(arguments.get(0).cloned().unwrap_or(Value::Null))

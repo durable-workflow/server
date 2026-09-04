@@ -184,7 +184,7 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
             cell for cell in self.suite["cells"] if cell["id"] == "one-activity"
         )
         self.assertEqual(
-            [0.25, 0.5], standard["execution"]["load_steps"][:2]
+            [0.1, 0.25, 0.5], standard["execution"]["load_steps"][:3]
         )
         self.assertEqual(
             [25, 50, 100, 200, 400],
@@ -192,6 +192,26 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         )
         self.assertEqual("0p25", capacity_suite.load_step_identifier(0.25))
         self.assertEqual("1", capacity_suite.load_step_identifier(1.0))
+
+        cloud_dev_profile = capacity_suite.load_json(
+            capacity_suite.SUITE_ROOT
+            / "profiles/cloud-dev-isolated-1vcpu-1gb-amd64.json"
+        )
+        capacity_suite.validate_profile(cloud_dev_profile)
+        self.assertEqual(
+            "cloud-dev-isolated-1vcpu-1gb-amd64-v1",
+            cloud_dev_profile["profile_id"],
+        )
+        self.assertEqual(
+            "docker.io/durableworkflow/server:2.1.1@sha256:be7dd52fdb4ce32994f4af25e682eb6fc11a15497b8e7f93bb0e0d06a2406642",
+            cloud_dev_profile["components"]["server"]["image"],
+        )
+        self.assertEqual(
+            1_001_873_408,
+            cloud_dev_profile["components"]["runtime-host"]["memory_bytes"],
+        )
+        self.assertIn("runtime-ingress", cloud_dev_profile["components"])
+        self.assertIn("backup", cloud_dev_profile["components"])
 
     def test_infrastructure_profile_accepts_and_validates_auxiliary_components(
         self,
@@ -702,7 +722,7 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
 
         request = urlopen.call_args.args[0]
         self.assertEqual(
-            "Durable-Workflow-Capacity-Suite/1.8",
+            "Durable-Workflow-Capacity-Suite/1.9",
             request.get_header("User-agent"),
         )
 

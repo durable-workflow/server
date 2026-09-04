@@ -1,7 +1,7 @@
 {
   "$schema": "../../schemas/adapter.schema.json",
   "schema": "durable-workflow.capacity-benchmark-adapter/v1",
-  "suite_version": "1.8.0",
+  "suite_version": "1.9.0",
   "binding": "php",
   "artifact_key": "sdk_php",
   "artifact": {
