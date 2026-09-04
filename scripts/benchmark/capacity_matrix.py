@@ -280,7 +280,7 @@ class ControlPlane:
     def get(self, path: str) -> dict[str, Any]:
         headers = {
             "Accept": "application/json",
-            "User-Agent": "Durable-Workflow-Capacity-Suite/1.8",
+            "User-Agent": "Durable-Workflow-Capacity-Suite/1.9",
             "X-Namespace": self.namespace,
             "X-Durable-Workflow-Control-Plane-Version": "2",
         }
