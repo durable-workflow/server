@@ -179,13 +179,12 @@ jobs:
             --network "dw-server-feature-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
             --memory 512m --memory-swap 512m \
             --env MYSQL_ALLOW_EMPTY_PASSWORD=yes --env MYSQL_ROOT_HOST=% \
+            --health-cmd='mysqladmin --silent --host=127.0.0.1 ping' \
+            --health-interval=1s --health-start-period=20s --health-retries=30 \
             mysql@sha256:679e7e924f38a3cbb62a3d7df32924b83f7321a602d3f9f967c01b3df18495d6 \
             --disable-log-bin --performance-schema=OFF \
             --innodb-buffer-pool-size=64M --innodb-redo-log-capacity=64M \
             --innodb-log-buffer-size=8M --table-open-cache=256 --max-connections=40
-          docker exec \
-            "dw-server-backup-mysql-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
-            mysqladmin --wait=30 --silent --host=127.0.0.1 ping
           docker run --detach \
             --name "dw-server-backup-pgsql-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
             --network "dw-server-feature-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
@@ -194,13 +193,15 @@ jobs:
             --health-cmd='pg_isready --host=127.0.0.1 --username=postgres' \
             --health-interval=1s --health-start-period=5s --health-retries=30 \
             postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
-          for attempt in $(seq 1 40); do
-            health="$(docker inspect --format '{{.State.Health.Status}}' "dw-server-backup-pgsql-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}")"
-            [ "$health" = healthy ] && break
-            [ "$health" != unhealthy ] || exit 1
-            sleep 1
+          for database in mysql pgsql; do
+            for attempt in $(seq 1 60); do
+              health="$(docker inspect --format '{{.State.Health.Status}}' "dw-server-backup-${database}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}")"
+              [ "$health" = healthy ] && break
+              [ "$health" != unhealthy ] || exit 1
+              sleep 1
+            done
+            [ "$health" = healthy ]
           done
-          [ "$health" = healthy ]
           tar \
             --exclude=vendor \
             --exclude='*/vendor' \

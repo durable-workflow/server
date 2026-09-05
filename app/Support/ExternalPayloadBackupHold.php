@@ -100,15 +100,16 @@ final class ExternalPayloadBackupHold
     private function locked(Closure $callback): mixed
     {
         return DB::transaction(function () use ($callback): mixed {
+            // SQLite ignores FOR UPDATE. Obtain its writer lock before any
+            // read, avoiding a deferred read-to-write lock upgrade.
+            if (DB::getDriverName() === 'sqlite') {
+                DB::table(self::TABLE)->where('id', 1)->update(['id' => 1]);
+            }
             $row = DB::table(self::TABLE)->where('id', 1)->lockForUpdate()->first();
             if ($row === null) {
                 throw new RuntimeException('External payload backup coordination is not initialized.');
             }
 
-            // SQLite ignores FOR UPDATE; take its writer lock before reading
-            // the lease and applying an external effect.
-            DB::table(self::TABLE)->where('id', 1)->update(['id' => 1]);
-            $row = DB::table(self::TABLE)->where('id', 1)->lockForUpdate()->first();
             // PostgreSQL CURRENT_TIMESTAMP is frozen at transaction start.
             $clock = DB::getDriverName() === 'pgsql' ? 'clock_timestamp()' : 'CURRENT_TIMESTAMP';
             $now = CarbonImmutable::parse(DB::scalar('SELECT '.$clock), 'UTC')->utc();
