@@ -47,7 +47,7 @@ class GuardedExternalPayloadStorage implements RuntimeExternalPayloadStorageDriv
     public function delete(string $uri): void
     {
         try {
-            $this->inner->delete($uri);
+            app(ExternalPayloadBackupHold::class)->deleting(fn () => $this->inner->delete($uri));
         } catch (ExternalPayloadStorageUnavailable|ExternalPayloadObjectMissing|ExternalPayloadObjectOversized|ExternalPayloadIntegrityException $exception) {
             throw $exception;
         } catch (Throwable $exception) {

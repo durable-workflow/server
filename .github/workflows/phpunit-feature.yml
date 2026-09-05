@@ -174,6 +174,33 @@ jobs:
             --env MINIO_ROOT_PASSWORD=dw-minio-secret-key \
             minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e \
             server /data --address :9000
+          docker run --detach \
+            --name "dw-server-backup-mysql-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
+            --network "dw-server-feature-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
+            --memory 512m --memory-swap 512m \
+            --env MYSQL_ALLOW_EMPTY_PASSWORD=yes --env MYSQL_ROOT_HOST=% \
+            mysql@sha256:679e7e924f38a3cbb62a3d7df32924b83f7321a602d3f9f967c01b3df18495d6 \
+            --disable-log-bin --performance-schema=OFF \
+            --innodb-buffer-pool-size=64M --innodb-redo-log-capacity=64M \
+            --innodb-log-buffer-size=8M --table-open-cache=256 --max-connections=40
+          docker exec \
+            "dw-server-backup-mysql-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
+            mysqladmin --wait=30 --silent --host=127.0.0.1 ping
+          docker run --detach \
+            --name "dw-server-backup-pgsql-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
+            --network "dw-server-feature-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
+            --memory 256m --memory-swap 256m \
+            --env POSTGRES_HOST_AUTH_METHOD=trust \
+            --health-cmd='pg_isready --host=127.0.0.1 --username=postgres' \
+            --health-interval=1s --health-start-period=5s --health-retries=30 \
+            postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
+          for attempt in $(seq 1 40); do
+            health="$(docker inspect --format '{{.State.Health.Status}}' "dw-server-backup-pgsql-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}")"
+            [ "$health" = healthy ] && break
+            [ "$health" != unhealthy ] || exit 1
+            sleep 1
+          done
+          [ "$health" = healthy ]
           tar \
             --exclude=vendor \
             --exclude='*/vendor' \
@@ -186,16 +213,20 @@ jobs:
                 -e DW_TEST_S3_ENDPOINT="http://dw-server-minio-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}:9000" \
                 -e DW_TEST_S3_ACCESS_KEY_ID=dw-minio-access \
                 -e DW_TEST_S3_SECRET_ACCESS_KEY=dw-minio-secret-key \
+                -e DW_TEST_BACKUP_MYSQL_HOST="dw-server-backup-mysql-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
+                -e DW_TEST_BACKUP_PGSQL_HOST="dw-server-backup-pgsql-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
                 -w /app \
                 --entrypoint sh \
                 durable-workflow-server-corpus-validator \
                 -lc 'set -eu; tar --no-same-owner -xf - -C /app; cp -a /app/workflow-package /workflow; php scripts/ci/prepare-release-workflow-composer-metadata.php; composer update durable-workflow/workflow --with-dependencies --minimal-changes --no-install --no-scripts --no-autoloader --no-interaction --no-progress --prefer-dist; composer install --no-interaction --no-progress --prefer-dist; git --version; vendor/bin/phpunit --version; git rev-parse --verify "$CORPUS_BASE_REF^{commit}"; php scripts/ci/check-worker-openapi-evolution.php "$CORPUS_BASE_REF"; vendor/bin/phpunit tests/Feature tests/Unit/NexusContractTest.php tests/Unit/CodecRegressionCorpusTest.php tests/Unit/PhpunitFeatureWorkflowContractTest.php tests/Unit/OpenApiDocumentEvolutionTest.php --no-progress --colors=never; python3 scripts/ci/validate-regression-corpus.py --base-ref "$CORPUS_BASE_REF" --verify-counterfactual'
 
-      - name: Clean up S3-compatible test resources
+      - name: Clean up test services
         if: always()
         run: |
           docker rm -f \
             "dw-server-minio-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
+            "dw-server-backup-mysql-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
+            "dw-server-backup-pgsql-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
             >/dev/null 2>&1 || true
           docker network rm \
             "dw-server-feature-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \

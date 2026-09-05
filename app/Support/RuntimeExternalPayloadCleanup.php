@@ -137,6 +137,8 @@ final class RuntimeExternalPayloadCleanup
 
             try {
                 $driver->delete($row->storage_uri);
+            } catch (ExternalPayloadBackupInProgress) {
+                return 'blocked';
             } catch (Throwable $exception) {
                 throw new RuntimeExternalPayloadCleanupStorageFailure($exception);
             }
