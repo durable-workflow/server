@@ -153,6 +153,50 @@ logging provider locations, object-store credentials, bearer tokens, or the
 reusable opaque reference identity. Audit correlation uses a one-way reference
 identity digest.
 
+## Coordinating online backups
+
+A database snapshot does not freeze external objects. Before taking an online
+backup, an operator can pause Server-owned payload reclamation with a bounded
+database-backed hold. This is an Artisan-only operation, not a tenant SDK or
+HTTP API. Upgrade all Server and maintenance processes and apply migrations
+before relying on it; old processes and direct provider deletions cannot be
+fenced by this mechanism.
+
+Use a new UUID for each backup operation, and persist it with that operation:
+
+```sh
+php artisan external-payloads:backup-hold acquire --owner="$BACKUP_ID" --ttl=900
+php artisan external-payloads:backup-hold renew --owner="$BACKUP_ID" --ttl=900
+php artisan external-payloads:backup-hold status --owner="$BACKUP_ID"
+php artisan external-payloads:backup-hold release --owner="$BACKUP_ID"
+```
+
+These commands return JSON. Owner-scoped `status` exits unsuccessfully when the
+hold is inactive or belongs to another operation. Unscoped `status` is for
+inspection only. Repeating `acquire` for the active owner returns the existing
+lease without extending it; use `renew` explicitly. Expired or released holds
+must not be revived to authorize an older backup candidate. Release is
+idempotent for its owner and cannot release a replacement owner's hold.
+
+Acquire waits for an in-flight provider deletion to finish. After it succeeds,
+start the consistent database snapshot, then copy the external objects while
+renewing the hold. Normal reads, uploads and workflow execution remain
+available. Reclamation is deferred for the entire Server, so allow storage
+headroom for the backup interval. Each lease lasts 1-3600 seconds and renewal
+cannot extend one operation past 24 hours from acquisition. Database time is
+the authority, and a lost backup process cannot leave a permanent hold.
+
+Only accept a recovery point after the database and all referenced payload
+bytes have been durably copied and verified, with the hold still active through
+that copy. A failed or expired hold invalidates the candidate. Always attempt
+release in finalization. Use mature database and backup tooling for snapshots,
+encryption, retention and restore; the hold itself provides none of those.
+Provider-side changes outside Server, ambiguous provider failures, and an
+incomplete payload copy still require integrity validation and a failed backup
+must not replace the last verified recovery point. A restored database may
+contain the historical hold; release it after validating the restored copy or
+allow its original deadline to expire.
+
 ## Typed outcomes and retryability
 
 The transport returns a stable
