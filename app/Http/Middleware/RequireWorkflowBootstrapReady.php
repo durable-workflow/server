@@ -2,6 +2,7 @@
 
 namespace App\Http\Middleware;
 
+use App\Support\BackendUnavailable;
 use App\Support\ControlPlaneProtocol;
 use App\Support\ServerReadiness;
 use App\Support\WorkerProtocol;
@@ -19,6 +20,11 @@ class RequireWorkflowBootstrapReady
     public function handle(Request $request, Closure $next): Response
     {
         $status = $this->readiness->bootstrapStatus();
+        if (($status['reason'] ?? null) === 'backend_unavailable'
+            && ($response = BackendUnavailable::workerResponse($request)) !== null) {
+            return $response;
+        }
+
         $blockedBy = is_array($status['blocked_by'] ?? null)
             ? array_values(array_filter($status['blocked_by'], static fn (mixed $value): bool => is_string($value) && $value !== ''))
             : [];

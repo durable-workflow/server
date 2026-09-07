@@ -96,6 +96,18 @@ class WorkerProtocolOpenApiContractTest extends TestCase
         );
     }
 
+    public function test_worker_lifecycle_and_poll_routes_describe_unknown_database_outcomes(): void
+    {
+        foreach (['register', 'heartbeat', 'workflow-tasks/poll', 'activity-tasks/poll', 'query-tasks/poll', 'update-validation-tasks/poll'] as $path) {
+            $this->assertSame('#/components/responses/WorkerServiceUnavailable',
+                $this->spec['paths']['/worker/'.$path]['post']['responses']['503']['$ref'] ?? null);
+        }
+        $contract = $this->spec['components']['schemas']['WorkerBackendUnavailable']['allOf'][1];
+        $this->assertSame('unknown', $contract['properties']['outcome']['const']);
+        $this->assertContains('poll_request_id', $contract['then']['required']);
+        $this->assertSame(true, $contract['then']['properties']['retry_same_poll_request_id']['const']);
+    }
+
     public function test_portable_worker_affinity_is_machine_described_at_protocol_1_18(): void
     {
         $contract = $this->spec['x-durable-workflow-portable-worker-affinity-contract'];
