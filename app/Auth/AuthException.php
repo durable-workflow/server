@@ -3,6 +3,7 @@
 namespace App\Auth;
 
 use RuntimeException;
+use Throwable;
 
 final class AuthException extends RuntimeException
 {
@@ -10,13 +11,14 @@ final class AuthException extends RuntimeException
         private readonly int $status,
         private readonly string $reason,
         string $message,
+        ?Throwable $previous = null,
     ) {
-        parent::__construct($message);
+        parent::__construct($message, 0, $previous);
     }
 
-    public static function configuration(string $message): self
+    public static function configuration(string $message, ?Throwable $previous = null): self
     {
-        return new self(500, 'server_error', $message);
+        return new self(500, 'server_error', $message, $previous);
     }
 
     public static function unauthenticated(string $message): self

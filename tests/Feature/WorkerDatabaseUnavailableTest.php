@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\RuntimeCredential;
 use App\Models\WorkerRegistration;
 use App\Support\WorkerProtocol;
 use Illuminate\Database\Connection;
@@ -105,6 +106,36 @@ class WorkerDatabaseUnavailableTest extends TestCase
             'worker_id' => 'database-worker', 'task_queue' => 'database-queue',
             'poll_request_id' => 'same-logical-poll', 'timeout_seconds' => 0,
         ], $this->workerHeaders() + ['Authorization' => 'Bearer invalid-token'])
+            ->assertStatus(401)->assertJsonMissingPath('retryable');
+    }
+
+    public function test_runtime_credential_lookup_loss_retries_without_authenticating_the_request(): void
+    {
+        $token = 'disposable-worker-token';
+        RuntimeCredential::query()->create([
+            'id' => 'outage-worker', 'subject' => 'test-worker', 'roles' => ['worker'],
+            'tenant' => 'default', 'token_prefix' => RuntimeCredential::prefixFor($token),
+            'token_hash' => RuntimeCredential::hashToken($token),
+        ]);
+        config([
+            'server.auth.driver' => 'token', 'server.auth.token' => null,
+            'server.auth.runtime_credentials.enabled' => true,
+        ]);
+        $this->failureQuery = 'runtime_credentials';
+        $this->databaseUnavailable = true;
+        $request = ['worker_id' => 'database-worker'];
+        $headers = $this->workerHeaders() + ['Authorization' => 'Bearer '.$token];
+        $originalHeartbeat = WorkerRegistration::query()->firstOrFail()->last_heartbeat_at;
+
+        $this->postJson('/api/worker/heartbeat', $request, $headers)
+            ->assertStatus(503)->assertJsonPath('reason', 'backend_unavailable')
+            ->assertJsonPath('outcome', 'unknown')->assertJsonMissingPath('acknowledged');
+        $this->assertTrue($originalHeartbeat->equalTo(WorkerRegistration::query()->firstOrFail()->last_heartbeat_at));
+
+        $this->databaseUnavailable = false;
+        $this->postJson('/api/worker/heartbeat', $request, $headers)->assertOk();
+        $this->postJson('/api/worker/heartbeat', $request,
+            $this->workerHeaders() + ['Authorization' => 'Bearer invalid-token'])
             ->assertStatus(401)->assertJsonMissingPath('retryable');
     }
 

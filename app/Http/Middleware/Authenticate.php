@@ -5,6 +5,7 @@ namespace App\Http\Middleware;
 use App\Auth\AuthException;
 use App\Auth\Principal;
 use App\Contracts\AuthProvider;
+use App\Support\BackendUnavailable;
 use App\Support\ControlPlaneProtocol;
 use App\Support\RuntimeExternalPayloadAudit;
 use App\Support\WorkerProtocol;
@@ -32,6 +33,11 @@ class Authenticate
         try {
             $principal = $this->authProvider->authenticate($request);
         } catch (AuthException $exception) {
+            if (BackendUnavailable::is($exception)
+                && ($response = BackendUnavailable::workerResponse($request)) !== null) {
+                return $response;
+            }
+
             return self::error($request, $exception->status(), $exception->reason(), $exception->getMessage());
         }
 

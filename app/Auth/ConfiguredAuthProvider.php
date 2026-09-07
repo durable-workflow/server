@@ -111,8 +111,8 @@ final class ConfiguredAuthProvider implements AuthProvider
         if ($runtimeCredentialsEnabled) {
             try {
                 $credential = RuntimeCredential::activeForToken($provided);
-            } catch (\Throwable) {
-                throw AuthException::configuration('Database runtime credential authentication is enabled but unavailable.');
+            } catch (\Throwable $exception) {
+                throw AuthException::configuration('Database runtime credential authentication is enabled but unavailable.', $exception);
             }
 
             if ($credential instanceof RuntimeCredential) {
