@@ -16,6 +16,7 @@ use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Feature\Concerns\StoragePressureFixture;
 use Tests\Support\OpenApiSchema;
 use Tests\TestCase;
+use Workflow\V2\Contracts\MatchingRole;
 use Workflow\V2\Models\WorkflowTask;
 
 class StorageAdmissionTest extends TestCase
@@ -152,6 +153,19 @@ class StorageAdmissionTest extends TestCase
         $this->assertNotSame(false, Event::until(new Looping('database', 'default')));
         Event::listen(Looping::class, static fn (): bool => false);
         $this->assertFalse(Event::until(new Looping('database', 'default')));
+    }
+
+    public function test_queue_admission_precedes_package_loop_side_effects(): void
+    {
+        config(['workflows.v2.matching_role.queue_wake_enabled' => true]);
+        $this->mock(MatchingRole::class, static function ($mock): void {
+            $mock->shouldNotReceive('wake');
+        });
+        $this->observeStoragePressure('fenced');
+        $writes = $this->watchWrites();
+
+        $this->assertFalse(Event::until(new Looping('database', 'default')));
+        $this->assertSame([], $writes->queries);
     }
 
     #[DataProvider('durablePollPaths')]

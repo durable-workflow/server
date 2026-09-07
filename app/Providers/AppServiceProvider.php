@@ -28,7 +28,7 @@ use App\Support\WorkflowMemoRollingCompatibility;
 use App\Support\WorkflowPackageApiFloor;
 use App\Support\WorkflowTaskLeaseConfiguration;
 use Illuminate\Contracts\Bus\Dispatcher as BusDispatcher;
-use Illuminate\Support\Facades\Queue;
+use Illuminate\Queue\Events\Looping;
 use Illuminate\Support\ServiceProvider;
 use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
 use Workflow\V2\Contracts\ScheduleWorkflowStarter;
@@ -54,6 +54,10 @@ class AppServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->normalizeRedisPorts();
+
+        // Register before package boot callbacks can enqueue maintenance work.
+        $this->app->make('events')->listen(Looping::class,
+            fn (): ?bool => $this->app->make(StoragePressure::class)->acceptsNewWork() ? null : false);
 
         $this->app->singleton(AuthProvider::class, function ($app): AuthProvider {
             $provider = config('server.auth.provider');
@@ -142,8 +146,6 @@ class AppServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
-        Queue::looping(fn (): ?bool => $this->app->make(StoragePressure::class)->acceptsNewWork() ? null : false);
-
         // Assert the installed workflow package meets the API floor this
         // server depends on. A stale cached install can otherwise produce
         // hard-to-diagnose fatals on /api/cluster/info or queue capability
