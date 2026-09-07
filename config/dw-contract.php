@@ -116,6 +116,22 @@ return [
 
         // --- Authentication --------------------------------------------
 
+        'DW_STORAGE_ADMISSION_FILE' => [
+            'description' => 'Optional read-only local storage-pressure observation file; invalid or stale observations fence writes.',
+            'default' => null,
+            'since' => '2.3.0',
+        ],
+        'DW_STORAGE_ADMISSION_SOURCE' => [
+            'description' => 'Expected storage resource identity in the admission observation.',
+            'default' => null,
+            'since' => '2.3.0',
+        ],
+        'DW_STORAGE_ADMISSION_MAX_AGE_SECONDS' => [
+            'description' => 'Maximum age of a storage observation in seconds (1-300).',
+            'default' => '15',
+            'since' => '2.3.0',
+        ],
+
         'DW_AUTH_PROVIDER' => [
             'description' => 'Optional FQCN of a Laravel-resolvable class implementing App\\Contracts\\AuthProvider.',
             'default' => null,

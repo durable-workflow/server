@@ -163,6 +163,8 @@ final class WorkflowUpdateValidationTaskBroker
      */
     public function claimAvailable(string $namespace, WorkerRegistration $worker): ?array
     {
+        app(StoragePressure::class)->requireNewWork();
+
         if (! $this->workerSupportsValidation($worker)) {
             return null;
         }

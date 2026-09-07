@@ -502,6 +502,8 @@ final class WorkflowTaskPoller
                 &$nextProbeAt,
                 &$resolvedResult,
             ): ?array {
+                app(StoragePressure::class)->requireNewWork();
+
                 if (! WorkerPollFence::isCurrent($workerPollFence)) {
                     $resolvedResult = [
                         'task' => null,

@@ -116,6 +116,17 @@ class EnvAuditorTest extends TestCase
         $this->assertSame('default', EnvAuditor::env('DW_TEST_MISSING', 'WORKFLOW_LEGACY_TEST_MISSING', 'default'));
     }
 
+    public function test_new_setting_can_have_no_legacy_alias(): void
+    {
+        $this->assertSame('default', EnvAuditor::env('DW_TEST_NO_ALIAS', null, 'default'));
+        $_ENV['DW_TEST_NO_ALIAS'] = 'configured';
+        try {
+            $this->assertSame('configured', EnvAuditor::env('DW_TEST_NO_ALIAS', null, 'default'));
+        } finally {
+            unset($_ENV['DW_TEST_NO_ALIAS']);
+        }
+    }
+
     public function test_current_environment_captures_both_env_and_getenv(): void
     {
         putenv('DW_TEST_CAPTURE=via-putenv');

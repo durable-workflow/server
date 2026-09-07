@@ -37,6 +37,12 @@ return [
 
     'mode' => EnvAuditor::env('DW_MODE', 'WORKFLOW_SERVER_MODE', 'service'),
 
+    'storage_admission' => [
+        'file' => EnvAuditor::env('DW_STORAGE_ADMISSION_FILE', null, null),
+        'source' => EnvAuditor::env('DW_STORAGE_ADMISSION_SOURCE', null, null),
+        'max_age_seconds' => (int) EnvAuditor::env('DW_STORAGE_ADMISSION_MAX_AGE_SECONDS', null, 15),
+    ],
+
     'migrations' => [
         'workflow_memo_recovery' => EnvAuditor::env(
             'DW_WORKFLOW_MEMO_MIGRATION_RECOVERY',

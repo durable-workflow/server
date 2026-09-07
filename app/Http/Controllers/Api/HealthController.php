@@ -35,6 +35,7 @@ use App\Support\SignalQueryRuntimeContract;
 use App\Support\SingleRegionFailoverContract;
 use App\Support\SkewRefusalMatrixContract;
 use App\Support\SourceRelease;
+use App\Support\StoragePressure;
 use App\Support\TaskQueueBuildIdRolloutSnapshot;
 use App\Support\TimerRuntimeContract;
 use App\Support\WorkerProtocol;
@@ -91,6 +92,11 @@ class HealthController
     {
         $snapshot = $this->readiness->snapshot();
         $ready = $snapshot['ready'];
+        $storage = app(StoragePressure::class)->snapshot();
+        if ($storage['enabled']) {
+            $snapshot['checks']['storage_admission'] = $storage;
+            $ready = $ready && $storage['state'] === 'normal';
+        }
 
         return response()->json([
             'status' => $ready ? 'ready' : 'not_ready',
