@@ -67,25 +67,40 @@ api() {
 }
 
 destroy_instance() {
-  local cleanup_status=0
+  local attempt delete_status lookup_status
 
   if [[ -z "$INSTANCE_ID" ]]; then
     return
   fi
 
   log "Deleting Vultr instance $INSTANCE_ID"
-  if ! api DELETE "/instances/$INSTANCE_ID" --output /dev/null; then
-    cleanup_status=1
-    log "ERROR: Vultr did not accept deletion for instance $INSTANCE_ID"
-    if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
-      printf '## Cleanup required\n\nVultr instance `%s` was not deleted by the workflow.\n' \
-        "$INSTANCE_ID" >> "$GITHUB_STEP_SUMMARY"
+  for attempt in 1 2 3 4; do
+    # A failed response can still follow a successful provider-side deletion.
+    delete_status="$(api DELETE "/instances/$INSTANCE_ID" --no-fail-with-body \
+      --max-time 15 --output /dev/null --write-out '%{http_code}')" || delete_status=000
+    lookup_status="$(api GET "/instances/$INSTANCE_ID" --no-fail-with-body \
+      --max-time 15 --output /dev/null --write-out '%{http_code}')" || lookup_status=000
+    if [[ "$lookup_status" == 404 ]]; then
+      log "Verified Vultr instance $INSTANCE_ID is absent"
+      return 0
     fi
-  else
-    log "Vultr accepted deletion for instance $INSTANCE_ID"
+    log "Cleanup attempt $attempt: delete=$delete_status lookup=$lookup_status"
+    if [[ "$delete_status" == 401 || "$delete_status" == 403 \
+      || "$lookup_status" == 401 || "$lookup_status" == 403 ]]; then
+      break
+    fi
+    if [[ "$attempt" -lt 4 ]]; then
+      sleep 5
+    fi
+  done
+
+  log "ERROR: Unable to verify deletion of Vultr instance $INSTANCE_ID"
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    printf '## Cleanup required\n\nVultr instance `%s` has not been confirmed absent.\n' \
+      "$INSTANCE_ID" >> "$GITHUB_STEP_SUMMARY"
   fi
 
-  return "$cleanup_status"
+  return 1
 }
 
 cleanup() {
