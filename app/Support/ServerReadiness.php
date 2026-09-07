@@ -92,6 +92,7 @@ final class ServerReadiness
             return [
                 'status' => 'unavailable',
                 'message' => $exception->getMessage(),
+                'reason' => BackendUnavailable::is($exception) ? 'backend_unavailable' : null,
             ];
         }
     }
@@ -109,6 +110,7 @@ final class ServerReadiness
             return [
                 'status' => 'unavailable',
                 'message' => $exception->getMessage(),
+                'reason' => BackendUnavailable::is($exception) ? 'backend_unavailable' : null,
             ];
         }
 
@@ -243,6 +245,7 @@ final class ServerReadiness
             return $check + [
                 'status' => 'unavailable',
                 'message' => $exception->getMessage(),
+                'reason' => BackendUnavailable::is($exception) ? 'backend_unavailable' : null,
             ];
         }
     }
@@ -555,10 +558,12 @@ final class ServerReadiness
     private function bootstrapCheck(array $checks): array
     {
         $blockedBy = [];
+        $reason = null;
 
         foreach (['database', 'migrations', 'queue'] as $key) {
             if (! self::statusAllowsReady($checks[$key]['status'] ?? null)) {
                 $blockedBy[] = $key;
+                $reason ??= $checks[$key]['reason'] ?? null;
             }
         }
 
@@ -566,6 +571,7 @@ final class ServerReadiness
             return [
                 'status' => 'blocked',
                 'blocked_by' => $blockedBy,
+                'reason' => $reason,
                 'remediation' => 'Restore database connectivity and run server-bootstrap to migrate workflow and configured queue storage before serving workflow v2 traffic.',
             ];
         }
@@ -717,7 +723,7 @@ final class ServerReadiness
             'checks' => is_array($check['checks'] ?? null) ? array_values($check['checks']) : [],
         ];
 
-        foreach (['blocked_by', 'message', 'remediation'] as $key) {
+        foreach (['blocked_by', 'message', 'remediation', 'reason'] as $key) {
             if (array_key_exists($key, $check)) {
                 $normalized[$key] = $check[$key];
             }

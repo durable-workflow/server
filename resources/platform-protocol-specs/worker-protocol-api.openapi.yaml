@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "18"
+  version: "19"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -208,6 +208,7 @@ paths:
         "400": { $ref: "#/components/responses/WorkerError" }
         "409": { $ref: "#/components/responses/WorkerRegistrationFailure" }
         "422": { $ref: "#/components/responses/WorkerError" }
+        "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
   /worker/registrations/{workerId}:
     delete:
       operationId: deregisterWorker
@@ -242,6 +243,7 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/WorkerEnvelope" }
         "404": { $ref: "#/components/responses/WorkerError" }
+        "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
   /worker/sessions:
     post:
       operationId: createWorkerSession
@@ -312,6 +314,7 @@ paths:
         "429": { $ref: "#/components/responses/WorkerPollBackpressure" }
         "409": { $ref: "#/components/responses/WorkflowTaskPollConflict" }
         "422": { $ref: "#/components/responses/WorkerError" }
+        "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
   /worker/workflow-tasks/{taskId}/history:
     post:
       operationId: getWorkflowTaskHistoryPage
@@ -399,6 +402,7 @@ paths:
         "409": { $ref: "#/components/responses/WorkerError" }
         "429": { $ref: "#/components/responses/WorkerPollBackpressure" }
         "422": { $ref: "#/components/responses/WorkerError" }
+        "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
   /worker/update-validation-tasks/{taskId}/approve:
     post:
       operationId: approveUpdateValidationTask
@@ -446,6 +450,7 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/WorkerEnvelope" }
         "429": { $ref: "#/components/responses/WorkerPollBackpressure" }
+        "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
   /worker/query-tasks/{queryTaskId}/complete:
     post:
       operationId: completeQueryTask
@@ -504,6 +509,7 @@ paths:
                   - $ref: "#/components/schemas/EmptyPoll"
                   - $ref: "#/components/schemas/DrainingPoll"
         "429": { $ref: "#/components/responses/WorkerPollBackpressure" }
+        "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
   /worker/activity-tasks/{taskId}/heartbeat:
     post:
       operationId: heartbeatActivityTask
@@ -598,6 +604,25 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/WorkerError" }
+    WorkerServiceUnavailable:
+      description: >
+        Temporary database connection loss returns backend_unavailable with an
+        unknown operation outcome. Retry with bounded backoff and the identical
+        worker, queue and poll_request_id; task=null does not prove that no task
+        was claimed. Registration and heartbeat likewise do not acknowledge or
+        reject an operation whose result is unknown. Other 503 errors retain
+        their own contracts and are not automatically retryable.
+      headers:
+        X-Durable-Workflow-Protocol-Version:
+          schema: { $ref: "#/components/schemas/AdvertisedWorkerProtocolVersion" }
+        Retry-After:
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/json:
+          schema:
+            anyOf:
+              - $ref: "#/components/schemas/WorkerBackendUnavailable"
+              - $ref: "#/components/schemas/WorkerError"
     WorkerPollBackpressure:
       description: The node has no capacity for another held long poll; retry after the advertised delay.
       headers:
@@ -736,6 +761,31 @@ components:
         reason: { type: [string, "null"] }
         remediation: { type: [string, "null"] }
         server_capabilities: { $ref: "#/components/schemas/WorkerServerCapabilities" }
+    WorkerBackendUnavailable:
+      allOf:
+        - $ref: "#/components/schemas/WorkerError"
+        - type: object
+          required: [reason, operation, outcome, worker_id, task_queue, retryable, retry_after_seconds]
+          properties:
+            reason: { type: string, const: backend_unavailable }
+            operation:
+              type: string
+              enum: [register_worker, heartbeat_worker, poll_workflow_task, poll_activity_task, poll_query_task, poll_update_validation_task]
+            outcome: { type: string, const: unknown }
+            worker_id: { type: [string, "null"], minLength: 1, maxLength: 255 }
+            task_queue: { type: [string, "null"], minLength: 1, maxLength: 255 }
+            retryable: { type: boolean }
+            retry_after_seconds: { type: integer, minimum: 1 }
+          if:
+            properties:
+              operation: { enum: [poll_workflow_task, poll_activity_task, poll_query_task, poll_update_validation_task] }
+          then:
+            required: [task, poll_status, poll_request_id, retry_same_poll_request_id]
+            properties:
+              task: { type: "null" }
+              poll_status: { type: string, const: backend_unavailable }
+              poll_request_id: { type: [string, "null"], minLength: 1, maxLength: 255 }
+              retry_same_poll_request_id: { type: boolean, const: true }
     WorkerPollBackpressure:
       allOf:
         - $ref: "#/components/schemas/WorkerError"

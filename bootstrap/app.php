@@ -4,6 +4,7 @@ use App\Http\Middleware\CompressResponse;
 use App\Http\Middleware\EnforcePayloadLimits;
 use App\Http\Middleware\RemoveServerHeader;
 use App\Support\BackendLockPressure;
+use App\Support\BackendUnavailable;
 use App\Support\ControlPlaneFailureDiagnostics;
 use App\Support\ControlPlaneOperation;
 use App\Support\ControlPlaneProtocol;
@@ -40,6 +41,12 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {
+        $exceptions->render(function (Throwable $exception, Request $request) {
+            return BackendUnavailable::is($exception)
+                ? BackendUnavailable::workerResponse($request)
+                : null;
+        });
+
         $exceptions->render(function (NamespaceDurableStateException $exception, Request $request) {
             $payload = array_filter([
                 'schema' => 'durable-workflow.v2.namespace-durable-state-error.v1',
