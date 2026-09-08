@@ -35,14 +35,16 @@ final class WorkerMalformedSerializedPayloadTest extends TestCase
             $body = [
                 'lease_owner' => $task['lease_owner'],
                 'workflow_task_attempt' => $task['workflow_task_attempt'],
-                'commands' => [['type' => 'complete_workflow', 'result' => 'bm90LWFuLWF2cm8tZnJhbWU=']],
+                'commands' => [['type' => 'complete_workflow', 'result' => [
+                    'codec' => 'avro', 'blob' => 'bm90LWFuLWF2cm8tZnJhbWU=',
+                ]]],
             ];
             $url = '/api/worker/workflow-tasks/'.$task['task_id'].'/complete';
             $this->postJson($url, $body, $this->workerHeaders())
-                ->assertUnprocessable()->assertJsonValidationErrors('commands.0.result');
-            $body['commands'][0]['result'] = ['codec' => 'avro', 'blob' => 'bm90LWFuLWF2cm8tZnJhbWU='];
-            $this->postJson($url, $body, $this->workerHeaders())
                 ->assertUnprocessable()->assertJsonValidationErrors('commands.0.result.blob');
+            $body['commands'][0]['result'] = 'bm90LWFuLWF2cm8tZnJhbWU=';
+            $this->postJson($url, $body, $this->workerHeaders())
+                ->assertUnprocessable()->assertJsonValidationErrors('commands.0.result');
             $this->assertSame($history, WorkflowHistoryEvent::query()->count());
             $this->assertDatabaseHas('workflow_tasks', ['id' => $task['task_id'], 'status' => 'leased']);
         });

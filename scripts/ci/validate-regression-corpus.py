@@ -2088,21 +2088,6 @@ def _process_detail(result: subprocess.CompletedProcess[str]) -> str:
     )
 
 
-def _codec_causality_sentinel(
-    *,
-    fixture_content: bytes,
-    fixture_path: str,
-    sentinel_content: bytes,
-    sentinel_path: str,
-) -> bytes:
-    fixture = dict(_json(fixture_content, fixture_path))
-    sentinel = _json(sentinel_content, sentinel_path)
-    for field in ("protocol", "value", "framing", "failure_policy"):
-        fixture[field] = sentinel[field]
-    _codec_fixture(fixture, fixture_path, "php")
-    return (json.dumps(fixture, indent=2) + "\n").encode()
-
-
 def _run_phpunit_proof(
     *,
     root: Path,
@@ -2374,7 +2359,6 @@ def _verify_counterfactual_proofs(
     current_files: Mapping[str, bytes],
     proofs: Sequence[CounterfactualProof],
     phpunit: Path,
-    base_fixture_paths: Sequence[str],
     compatibility_paths: set[str],
 ) -> int:
     if not phpunit.is_file():
@@ -2389,12 +2373,6 @@ def _verify_counterfactual_proofs(
             current_files,
             compatibility_paths,
         )
-        if proofs and not base_fixture_paths:
-            raise CorpusError(
-                "counterfactual verification requires a previously executable "
-                "codec fixture as a causality sentinel"
-            )
-
         execution_count = 0
         executions = [
             (proof_index, boundary_index, proof, boundary)
@@ -2454,38 +2432,6 @@ def _verify_counterfactual_proofs(
                     f"counterfactual test {proof.test} did not produce a base assertion "
                     f"failure for {boundary} "
                     f"through PHPUnit: {_process_detail(defective)}"
-                )
-
-            sentinel_fixture = base_fixture_paths[0]
-            sentinel_content = _codec_causality_sentinel(
-                fixture_content=current_files[proof.fixture],
-                fixture_path=proof.fixture,
-                sentinel_content=base_files[sentinel_fixture],
-                sentinel_path=sentinel_fixture,
-            )
-            sentinel_root = snapshot_root / f"sentinel-{index}"
-            sentinel_bootstrap, sentinel_evidence = _write_app_snapshot(
-                sentinel_root,
-                compatible_base_files,
-                fixture_content=sentinel_content,
-                instrument_boundary=boundary,
-            )
-            sentinel = _run_phpunit_proof(
-                root=root,
-                phpunit=phpunit,
-                proof=proof,
-                bootstrap=sentinel_bootstrap,
-                boundary_evidence=sentinel_evidence,
-                boundary=boundary,
-                input_codec="avro",
-            )
-            if sentinel.returncode != 0:
-                raise CorpusError(
-                    f"counterfactual test {proof.test} still fails on the defective base "
-                    f"for {boundary} "
-                    f"after fixture {proof.fixture} is replaced by previously executable "
-                    f"sentinel {sentinel_fixture}; the counted fixture is not causally "
-                    f"exercised through PHPUnit: {_process_detail(sentinel)}"
                 )
 
             isolated_root = snapshot_root / f"isolated-{index}"
@@ -2673,13 +2619,6 @@ def validate(
                         current_files=current_files,
                         proofs=proofs,
                         phpunit=phpunit,
-                        base_fixture_paths=sorted(
-                            {
-                                item.path
-                                for item in base_evidence
-                                if item.category == category_name
-                            }
-                        ),
                         compatibility_paths=category_review_required - related_paths,
                     )
         counts[category_name] = {

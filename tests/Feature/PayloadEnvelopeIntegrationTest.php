@@ -561,8 +561,9 @@ class PayloadEnvelopeIntegrationTest extends TestCase
                 'commands' => [
                     [
                         'type' => 'schedule_activity',
-                        'activity_type' => 'tests.greeting-activity',
-                        'arguments' => '["Ada"]',
+                        'activity_type' => 'tests.external-greeting-activity',
+                        'arguments' => $this->avroEnvelope(['Ada']),
+                        'queue' => 'ext-q',
                     ],
                 ],
             ])
@@ -576,9 +577,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
 
         $activityTask = $activityPoll->json('task');
 
-        if ($activityTask === null) {
-            $this->markTestSkipped('No activity task available for polling');
-        }
+        $this->assertIsArray($activityTask);
 
         $activityTaskId = $activityTask['task_id'];
         $attemptId = $activityTask['activity_attempt_id'];
