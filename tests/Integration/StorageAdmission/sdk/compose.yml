@@ -1,0 +1,33 @@
+x-sdk: &sdk
+  image: ${COMPOSE_PROJECT_NAME}-sdk
+  build:
+    context: ./sdk
+    args:
+      SERVER_IMAGE: ${SERVER_IMAGE:?Set the exact published Server image digest}
+      PHP_SDK_VERSION: ${PHP_SDK_VERSION:?Load versions.env}
+      PYTHON_SDK_VERSION: ${PYTHON_SDK_VERSION:?Load versions.env}
+      RUST_SDK_VERSION: ${RUST_SDK_VERSION:?Load versions.env}
+  user: "1000:1000"
+  volumes:
+    - ${EXPERIMENT_DIRECTORY:?Set an empty disposable directory}:/observation
+  mem_limit: 512m
+
+services:
+  server:
+    image: ${SERVER_IMAGE}
+  experiment:
+    image: ${SERVER_IMAGE}
+    entrypoint: [php, /sdk-experiment.php]
+    volumes:
+      - ./sdk/experiment.php:/sdk-experiment.php:ro
+  maintenance:
+    image: ${SERVER_IMAGE}
+  php:
+    <<: *sdk
+    entrypoint: [php, /sdk/worker.php]
+  python:
+    <<: *sdk
+    entrypoint: [/sdk/venv/bin/python, /sdk/worker.py]
+  rust:
+    <<: *sdk
+    entrypoint: [/sdk/rust-worker]
