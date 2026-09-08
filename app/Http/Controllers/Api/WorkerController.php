@@ -2921,6 +2921,7 @@ class WorkerController
                     $command[$field],
                     "commands.{$index}.{$field}",
                     $driver,
+                    retainExternal: in_array($commandType, ['complete_workflow', 'schedule_activity'], true),
                 );
 
                 if ($resolved['codec'] === null) {

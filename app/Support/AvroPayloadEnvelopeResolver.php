@@ -55,8 +55,19 @@ final class AvroPayloadEnvelopeResolver
         mixed $value,
         string $field = 'result',
         ?ExternalPayloadStorageDriver $externalStorage = null,
+        bool $retainExternal = false,
     ): array {
         self::assertEnvelope($value, $field);
+        if ($retainExternal && $externalStorage instanceof RuntimeTrackedExternalPayloadStorage && is_array($value)) {
+            $keys = array_keys($value);
+            sort($keys);
+            if ($keys === ['codec', 'external_storage'] && is_array($value['external_storage'])) {
+                return [
+                    'codec' => PayloadCodecContract::canonicalize($value['codec']),
+                    'payload' => $externalStorage->retainEnvelope($value, $field.'.blob'),
+                ];
+            }
+        }
         $resolved = PayloadEnvelopeResolver::resolveCommandPayloadWithCodec($value, $field, $externalStorage);
         self::assertResolvedCodec($resolved['codec'] ?? null, $field);
         if ($resolved['codec'] !== null) {

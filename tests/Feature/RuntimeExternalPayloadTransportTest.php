@@ -21,6 +21,7 @@ use Illuminate\Testing\TestResponse;
 use Tests\Feature\Concerns\StoragePressureFixture;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
+use Workflow\Serializers\AvroBinaryValue;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
@@ -703,6 +704,159 @@ class RuntimeExternalPayloadTransportTest extends TestCase
             ->assertJsonPath('commands.0.payload_preview_omitted', true)
             ->assertJsonPath('input_envelope.external_payload.reference_id', $reference['reference_id']);
         $this->assertLessThan(8 * 1024 * 1024, memory_get_peak_usage(true) - $before);
+    }
+
+    public function test_large_workflow_result_is_validated_and_retained_without_an_inline_copy(): void
+    {
+        Queue::fake();
+        $this->withHeaders($this->controlHeaders())->postJson('/api/workflows', [
+            'workflow_id' => 'large-reference-result',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'runtime-payloads',
+            'input' => ['result'],
+        ])->assertCreated();
+        $this->registerWorker('large-result-worker', 'runtime-payloads');
+        $task = $this->withHeaders($this->workerHeaders())->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'large-result-worker',
+            'task_queue' => 'runtime-payloads',
+        ])->assertOk()->json('task');
+
+        $payload = Serializer::serializeWithCodec('avro', AvroBinaryValue::fromBytes(str_repeat('r', 12 * 1024 * 1024)));
+        config(['server.external_payload_transport.max_payload_bytes' => strlen($payload)]);
+        $reference = $this->upload($payload)->assertCreated()->json('reference');
+        unset($payload);
+        memory_reset_peak_usage();
+        $before = memory_get_usage(true);
+
+        $this->withHeaders($this->workerHeaders())->postJson('/api/worker/workflow-tasks/'.$task['task_id'].'/complete', [
+            'lease_owner' => 'large-result-worker',
+            'workflow_task_attempt' => $task['workflow_task_attempt'],
+            'commands' => [[
+                'type' => 'complete_workflow',
+                'sequence' => 1,
+                'result' => ['codec' => 'avro', 'external_payload' => $reference],
+            ]],
+        ])->assertOk()->assertJsonPath('recorded', true);
+        $this->assertLessThan(8 * 1024 * 1024, memory_get_peak_usage(true) - $before);
+
+        $run = WorkflowRun::query()->sole();
+        $this->assertSame($reference['sha256'], ExternalPayloads::storedEnvelope($run->output)['external_storage']['sha256']);
+        $this->assertNotNull(RuntimeExternalPayload::query()->findOrFail($reference['reference_id'])->retained_at);
+        $this->withHeaders($this->controlHeaders())->getJson('/api/workflows/large-reference-result')
+            ->assertOk()
+            ->assertJsonPath('status', 'completed')
+            ->assertJsonPath('output', null)
+            ->assertJsonPath('payload_previews.output_omitted', true)
+            ->assertJsonPath('output_envelope.external_payload.reference_id', $reference['reference_id']);
+    }
+
+    public function test_large_scheduled_activity_arguments_remain_external(): void
+    {
+        Queue::fake();
+        $this->withHeaders($this->controlHeaders())->postJson('/api/workflows', [
+            'workflow_id' => 'large-scheduled-activity',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'runtime-payloads',
+            'input' => [],
+        ])->assertCreated();
+        $this->registerWorker('large-schedule-worker', 'runtime-payloads');
+        WorkerRegistration::query()->where('worker_id', 'large-schedule-worker')->update([
+            'supported_activity_types' => ['remote.large-activity'],
+        ]);
+        $task = $this->withHeaders($this->workerHeaders())->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'large-schedule-worker', 'task_queue' => 'runtime-payloads',
+        ])->assertOk()->json('task');
+        $payload = Serializer::serializeWithCodec('avro', [AvroBinaryValue::fromBytes(str_repeat('s', 12 * 1024 * 1024))]);
+        config(['server.external_payload_transport.max_payload_bytes' => strlen($payload)]);
+        $reference = $this->upload($payload)->assertCreated()->json('reference');
+        unset($payload);
+        memory_reset_peak_usage();
+        $before = memory_get_usage(true);
+
+        $this->withHeaders($this->workerHeaders())->postJson('/api/worker/workflow-tasks/'.$task['task_id'].'/complete', [
+            'lease_owner' => 'large-schedule-worker',
+            'workflow_task_attempt' => $task['workflow_task_attempt'],
+            'commands' => [[
+                'type' => 'schedule_activity', 'sequence' => 1,
+                'activity_type' => 'remote.large-activity', 'task_queue' => 'runtime-payloads',
+                'arguments' => ['codec' => 'avro', 'external_payload' => $reference],
+            ]],
+        ])->assertOk()->assertJsonPath('recorded', true);
+        $this->withHeaders($this->workerHeaders())->postJson('/api/worker/activity-tasks/poll', [
+            'worker_id' => 'large-schedule-worker', 'task_queue' => 'runtime-payloads',
+        ])->assertOk()->assertJsonPath('task.arguments.external_payload.reference_id', $reference['reference_id']);
+        $this->assertLessThan(8 * 1024 * 1024, memory_get_peak_usage(true) - $before);
+        $this->assertNotNull(RuntimeExternalPayload::query()->findOrFail($reference['reference_id'])->retained_at);
+    }
+
+    public function test_large_standalone_activity_keeps_input_and_result_references(): void
+    {
+        Queue::fake();
+        $payload = Serializer::serializeWithCodec('avro', [str_repeat('a', 12 * 1024 * 1024)]);
+        config(['server.external_payload_transport.max_payload_bytes' => strlen($payload)]);
+        $reference = $this->upload($payload)->assertCreated()->json('reference');
+        unset($payload);
+        $this->registerWorker('large-activity-worker', 'runtime-payloads');
+        WorkerRegistration::query()->where('worker_id', 'large-activity-worker')->update([
+            'supported_activity_types' => ['remote.large-activity'],
+        ]);
+        memory_reset_peak_usage();
+        $before = memory_get_usage(true);
+        $this->withHeaders($this->controlHeaders())->postJson('/api/activities', [
+            'activity_id' => 'large-reference-activity', 'activity_type' => 'remote.large-activity',
+            'task_queue' => 'runtime-payloads',
+            'input' => ['codec' => 'avro', 'external_payload' => $reference],
+        ])->assertCreated();
+        $task = $this->withHeaders($this->workerHeaders())->postJson('/api/worker/activity-tasks/poll', [
+            'worker_id' => 'large-activity-worker', 'task_queue' => 'runtime-payloads',
+        ])->assertOk()->assertJsonPath('task.arguments.external_payload.reference_id', $reference['reference_id'])->json('task');
+        $this->assertLessThan(8 * 1024 * 1024, memory_get_peak_usage(true) - $before);
+
+        memory_reset_peak_usage();
+        $before = memory_get_usage(true);
+        $this->withHeaders($this->workerHeaders())->postJson('/api/worker/activity-tasks/'.$task['task_id'].'/complete', [
+            'activity_attempt_id' => $task['activity_attempt_id'], 'lease_owner' => 'large-activity-worker',
+            'result' => ['codec' => 'avro', 'external_payload' => $reference],
+        ])->assertOk();
+        // Validation may hold one text scalar, but not the encoded payload and
+        // a second decoded copy or an unbounded collection of decoded values.
+        $this->assertLessThan(20 * 1024 * 1024, memory_get_peak_usage(true) - $before);
+
+        memory_reset_peak_usage();
+        $before = memory_get_usage(true);
+        $this->withHeaders($this->controlHeaders())->getJson('/api/activities/large-reference-activity')
+            ->assertOk()->assertJsonPath('activity_status', 'completed')
+            ->assertJsonPath('result.external_payload.reference_id', $reference['reference_id']);
+        $this->assertLessThan(8 * 1024 * 1024, memory_get_peak_usage(true) - $before);
+    }
+
+    public function test_invalid_external_result_does_not_complete_or_retain_the_upload(): void
+    {
+        Queue::fake();
+        $this->withHeaders($this->controlHeaders())->postJson('/api/workflows', [
+            'workflow_id' => 'invalid-reference-result',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'runtime-payloads',
+            'input' => [],
+        ])->assertCreated();
+        $this->registerWorker('invalid-result-worker', 'runtime-payloads');
+        $task = $this->withHeaders($this->workerHeaders())->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'invalid-result-worker',
+            'task_queue' => 'runtime-payloads',
+        ])->assertOk()->json('task');
+        $reference = $this->upload('not Avro')->assertCreated()->json('reference');
+
+        $this->withHeaders($this->workerHeaders())->postJson('/api/worker/workflow-tasks/'.$task['task_id'].'/complete', [
+            'lease_owner' => 'invalid-result-worker',
+            'workflow_task_attempt' => $task['workflow_task_attempt'],
+            'commands' => [[
+                'type' => 'complete_workflow',
+                'sequence' => 1,
+                'result' => ['codec' => 'avro', 'external_payload' => $reference],
+            ]],
+        ])->assertStatus(422);
+        $this->assertNull(WorkflowRun::query()->sole()->output);
+        $this->assertNull(RuntimeExternalPayload::query()->findOrFail($reference['reference_id'])->retained_at);
     }
 
     public function test_workflow_open_metadata_preserves_reserved_looking_business_keys(): void

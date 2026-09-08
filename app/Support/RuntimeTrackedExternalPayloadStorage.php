@@ -29,7 +29,7 @@ class RuntimeTrackedExternalPayloadStorage implements RuntimeExternalPayloadStor
     }
 
     /** @param array{codec: string, external_storage: array<string, mixed>} $envelope */
-    public function retainEnvelope(array $envelope): string
+    public function retainEnvelope(array $envelope, ?string $validationField = null): string
     {
         $registry = app(RuntimeExternalPayloadRegistry::class);
         $reference = $registry->referenceForInternal($this->namespace, $envelope['external_storage']);
@@ -42,6 +42,9 @@ class RuntimeTrackedExternalPayloadStorage implements RuntimeExternalPayloadStor
 
         $result = $registry->fetch($this->namespace, $reference, stream: true);
         try {
+            if ($validationField !== null) {
+                AvroExternalPayloadValidator::validate($result['data'], $validationField);
+            }
             $registry->verifyFetchedBytesAndClaim(
                 $this->namespace, $envelope['external_storage']['uri'], $result['data'],
             );

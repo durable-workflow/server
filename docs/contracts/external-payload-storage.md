@@ -73,6 +73,15 @@ report `payload_preview_omitted` when payload-derived fields are omitted. Use
 the authenticated payload endpoint or SDK to read the complete value. A status
 lookup must not decode a large object just to display its workflow metadata.
 
+Workflow and activity results are validated before their stored reference is
+retained. Validation uses Apache Avro schema traversal and the strict Value
+decoder, without constructing a decoded collection or loading the complete
+base64 payload. It needs a temporary decoded stream in addition to the verified
+encoded snapshot. A text scalar is checked for UTF-8 validity and may occupy
+memory up to its decoded length; byte scalars are skipped after length checks.
+Size temporary storage and request concurrency together. Metadata projections
+and standalone activity inspection do not fetch payload bytes.
+
 ## Self-hosted backing storage
 
 Node-local storage is suitable for a single-node development runtime. A

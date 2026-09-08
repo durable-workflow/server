@@ -2,12 +2,13 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Support\AvroPayloadEnvelopeResolver;
 use App\Support\ControlPlaneProtocol;
 use App\Support\ExternalPayloadEnvelopeService;
 use App\Support\ExternalPayloadStorageUnavailable;
 use App\Support\NamespaceExternalPayloadStorage;
-use App\Support\PayloadCodecContract;
 use App\Support\NamespaceWorkflowScope;
+use App\Support\PayloadCodecContract;
 use App\Support\TaskQueueRoutingGate;
 use App\Support\WorkflowCommandContextFactory;
 use Carbon\CarbonInterface;
@@ -23,7 +24,6 @@ use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\StandaloneActivity\StandaloneActivityHostType;
 use Workflow\V2\Support\ExternalPayloads;
-use App\Support\AvroPayloadEnvelopeResolver;
 use Workflow\V2\Support\RunActivityView;
 use Workflow\V2\Support\StandaloneActivityStartService;
 
@@ -142,6 +142,7 @@ class ActivityController
                 $validated['input'] ?? null,
                 'input',
                 $this->externalPayloadStorage->driverFor($namespace),
+                retainExternal: true,
             );
             $payloadCodec = $envelope['codec'] ?? $defaultCodec;
             $arguments = $envelope['blob'] ?? null;
@@ -339,7 +340,6 @@ class ActivityController
     }
 
     /**
-     * @param object $summary
      * @return array<string, mixed>
      */
     private function formatActivityListEntry(object $summary): array
@@ -406,7 +406,7 @@ class ActivityController
             return [];
         }
 
-        foreach (RunActivityView::activitiesForRun($run) as $activity) {
+        foreach (RunActivityView::activitiesForRun($run, decodePayloads: false) as $activity) {
             if (is_array($activity) && ($activity['id'] ?? null) === $execution->id) {
                 return $activity;
             }
@@ -416,7 +416,7 @@ class ActivityController
     }
 
     /**
-     * @param array<string, mixed> $activityView
+     * @param  array<string, mixed>  $activityView
      * @return list<array<string, mixed>>
      */
     private function formatAttempts(array $activityView, ?ActivityExecution $execution): array
@@ -430,7 +430,7 @@ class ActivityController
     }
 
     /**
-     * @param array<string, mixed> $attempt
+     * @param  array<string, mixed>  $attempt
      * @return array<string, mixed>
      */
     private function formatAttempt(array $attempt, ?ActivityExecution $execution): array
@@ -468,7 +468,7 @@ class ActivityController
     }
 
     /**
-     * @param list<array<string, mixed>> $attempts
+     * @param  list<array<string, mixed>>  $attempts
      * @return array<string, mixed>|null
      */
     private function currentAttempt(array $attempts, ?ActivityExecution $execution): ?array

@@ -1371,10 +1371,10 @@ class PayloadEnvelopeIntegrationTest extends TestCase
             ],
         ]);
 
-        $this->assertSame([
-            'codec' => 'avro',
-            'blob' => $workflowPayload,
-        ], $commands[0]['result']);
+        $this->assertSame('avro', $commands[0]['result']['codec']);
+        $storedResult = $commands[0]['result']['blob'];
+        $this->assertSame(hash('sha256', $workflowPayload), ExternalPayloads::storedEnvelope($storedResult)['external_storage']['sha256']);
+        $this->assertSame($workflowPayload, ExternalPayloads::resolveStoredPayload($storedResult, 'avro', 'default'));
         $this->assertSame('avro', $commands[0]['payload_codec'] ?? null);
         $this->assertSame([
             'codec' => 'avro',
