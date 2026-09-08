@@ -7,6 +7,10 @@ use App\Support\RuntimeExternalPayloadException;
 use App\Support\RuntimeExternalPayloadReference;
 use App\Support\RuntimeExternalPayloadRegistry;
 use App\Support\RuntimeExternalPayloadUploadBody;
+use App\Support\RuntimePayloadCompletionContext;
+use App\Support\RuntimePayloadCompletionUploads;
+use App\Support\StorageAdmissionPaused;
+use App\Support\StoragePressure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -62,12 +66,24 @@ class RuntimeExternalPayloadController
         }
 
         $namespace = (string) $request->attributes->get('namespace', config('server.default_namespace'));
-        $reference = $this->registry->upload(
-            $namespace,
-            $data,
-            (string) $request->header('X-Durable-Workflow-Payload-Codec'),
-            strtolower((string) $request->header('X-Durable-Workflow-Payload-SHA256')),
-        );
+        $context = $request->attributes->get(RuntimePayloadCompletionContext::class);
+        $codec = (string) $request->header('X-Durable-Workflow-Payload-Codec');
+        $sha256 = strtolower((string) $request->header('X-Durable-Workflow-Payload-SHA256'));
+        try {
+            if ($context instanceof RuntimePayloadCompletionContext) {
+                $reference = app(RuntimePayloadCompletionUploads::class)->upload($namespace, $context, $data, $codec, $sha256, $this->registry);
+            } else {
+                // Pressure may change while an admitted HTTP upload is being read.
+                $snapshot = app(StoragePressure::class)->snapshot();
+                if ($snapshot['state'] !== 'normal') {
+                    throw new StorageAdmissionPaused($snapshot);
+                }
+                $reference = $this->registry->upload($namespace, $data, $codec, $sha256,
+                    fn () => app(StoragePressure::class)->requireNewWork());
+            }
+        } finally {
+            $data->close();
+        }
 
         $this->audit->record($request, 'external_payload.uploaded', [
             'reference_identity_sha256' => hash('sha256', $reference['reference_id']),

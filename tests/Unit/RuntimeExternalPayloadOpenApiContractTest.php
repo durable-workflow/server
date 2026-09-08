@@ -49,6 +49,10 @@ class RuntimeExternalPayloadOpenApiContractTest extends TestCase
             'external_payload_namespace_bytes_exhausted',
             'external_payload_namespace_objects_exhausted',
             'external_payload_namespace_quota_unavailable',
+            'external_payload_completion_invalid',
+            'external_payload_completion_lease_rejected',
+            'external_payload_completion_conflict',
+            'external_payload_completion_budget_exhausted',
         ], $reasons);
 
         $this->assertSame(

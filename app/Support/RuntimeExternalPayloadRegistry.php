@@ -19,7 +19,7 @@ class RuntimeExternalPayloadRegistry
     /**
      * @return array{schema: string, reference_id: string, codec: string, size_bytes: int, sha256: string}
      */
-    public function upload(string $namespace, string|ExternalPayloadStream $data, string $codec, string $sha256): array
+    public function upload(string $namespace, string|ExternalPayloadStream $data, string $codec, string $sha256, ?\Closure $beforeWrite = null): array
     {
         $namespace = $this->namespace($namespace);
         try {
@@ -56,6 +56,7 @@ class RuntimeExternalPayloadRegistry
             sizeBytes: $sizeBytes,
             retained: false,
             expiresAt: $expiresAt,
+            beforeWrite: $beforeWrite,
         ));
     }
 
@@ -465,6 +466,7 @@ class RuntimeExternalPayloadRegistry
         int $sizeBytes,
         bool $retained,
         mixed $expiresAt,
+        ?\Closure $beforeWrite = null,
     ): RuntimeExternalPayload {
         $observedSize = $data instanceof ExternalPayloadStream ? $data->sizeBytes : strlen($data);
         $observedHash = $data instanceof ExternalPayloadStream ? $data->sha256 : hash('sha256', $data);
@@ -479,17 +481,12 @@ class RuntimeExternalPayloadRegistry
         }
 
         try {
-            $this->objectLock->transaction($uri, fn (): RuntimeExternalPayload => $this->track(
-                $namespace,
-                $uri,
-                $codec,
-                $sha256,
-                $sizeBytes,
-                false,
-                $expiresAt,
-                RuntimeExternalPayload::UPLOAD_WRITING,
-            ));
-        } catch (RuntimeExternalPayloadException $exception) {
+            $this->objectLock->transaction($uri, function () use ($namespace, $uri, $codec, $sha256, $sizeBytes, $expiresAt, $beforeWrite): RuntimeExternalPayload {
+                $beforeWrite?->__invoke();
+
+                return $this->track($namespace, $uri, $codec, $sha256, $sizeBytes, false, $expiresAt, RuntimeExternalPayload::UPLOAD_WRITING);
+            }, $beforeWrite);
+        } catch (RuntimeExternalPayloadException|StorageAdmissionPaused $exception) {
             throw $exception;
         } catch (Throwable $exception) {
             throw $this->unavailable('External payload reference registration failed before storage commit.', $exception);
@@ -506,7 +503,9 @@ class RuntimeExternalPayloadRegistry
                 $sizeBytes,
                 $retained,
                 $expiresAt,
+                $beforeWrite,
             ): RuntimeExternalPayload {
+                $beforeWrite?->__invoke();
                 $row = RuntimeExternalPayload::query()
                     ->where('namespace', $namespace)
                     ->where('storage_uri_sha256', hash('sha256', $uri))
@@ -546,8 +545,8 @@ class RuntimeExternalPayloadRegistry
                     $expiresAt,
                     RuntimeExternalPayload::UPLOAD_READY,
                 );
-            });
-        } catch (RuntimeExternalPayloadException $exception) {
+            }, $beforeWrite);
+        } catch (RuntimeExternalPayloadException|StorageAdmissionPaused $exception) {
             throw $exception;
         } catch (Throwable $exception) {
             // The writing row was committed before the backing write. If this

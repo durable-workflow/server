@@ -3,6 +3,8 @@
 namespace App\Http\Middleware;
 
 use App\Support\ControlPlaneProtocol;
+use App\Support\RuntimePayloadCompletionContext;
+use App\Support\RuntimePayloadCompletionUploads;
 use App\Support\StoragePressure;
 use App\Support\WorkerProtocol;
 use Closure;
@@ -39,6 +41,21 @@ final class EnforceStorageAdmission
     {
         $snapshot = $this->pressure->snapshot();
         $action = class_basename((string) $request->route()?->getActionName());
+        if ($action === 'RuntimeExternalPayloadController@store'
+            && $request->headers->has(RuntimePayloadCompletionContext::HEADER)
+            && in_array($snapshot['state'], ['normal', 'draining'], true)) {
+            return app(RequireRole::class)->handle($request, function (Request $request) use ($next): Response {
+                $context = RuntimePayloadCompletionContext::parse((string) $request->header(RuntimePayloadCompletionContext::HEADER));
+                app(RuntimePayloadCompletionUploads::class)->authorize(
+                    (string) $request->attributes->get('namespace'), $context,
+                    strtolower((string) $request->header('X-Durable-Workflow-Payload-SHA256')),
+                    (int) $request->header('X-Durable-Workflow-Payload-Size'),
+                );
+                $request->attributes->set(RuntimePayloadCompletionContext::class, $context);
+
+                return $next($request);
+            }, 'worker');
+        }
         if ($snapshot['state'] === 'normal' || $request->isMethodSafe()
             || $action === 'WorkerController@workflowTaskHistory'
             || ($snapshot['state'] === 'draining' && in_array($action, self::DRAIN_ACTIONS, true))) {

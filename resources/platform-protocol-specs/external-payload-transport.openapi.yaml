@@ -32,6 +32,7 @@ paths:
         - $ref: "#/components/parameters/PayloadCodecHeader"
         - $ref: "#/components/parameters/PayloadSizeHeader"
         - $ref: "#/components/parameters/PayloadSha256Header"
+        - $ref: "#/components/parameters/PayloadCompletionHeader"
       requestBody:
         required: true
         content:
@@ -51,6 +52,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/InvalidReference" }
         "413": { $ref: "#/components/responses/Oversized" }
         "415": { $ref: "#/components/responses/Unsupported" }
         "422": { $ref: "#/components/responses/InvalidReference" }
@@ -122,6 +124,19 @@ components:
       in: header
       required: true
       schema: { type: string, pattern: '^[a-f0-9]{64}$' }
+    PayloadCompletionHeader:
+      name: X-Durable-Workflow-Payload-Completion
+      in: header
+      required: false
+      description: >
+        Optional JSON worker completion context, at most 4096 UTF-8 bytes.
+        Requires the worker role and a current namespace-scoped task lease for
+        new writes. Use only after a draining refusal when discovery advertises
+        upload.completion_context. Contains exactly schema, kind, task_id,
+        attempt, lease_owner, operation and slot; see docs/storage-admission.md.
+        Fenced or stale admission remains closed. Recorded matching references
+        can be reconciled read-only after the lease closes.
+      schema: { type: string, maxLength: 4096, contentMediaType: application/json }
   headers:
     PayloadCodec:
       schema: { type: string, const: avro }
@@ -182,6 +197,10 @@ components:
             - external_payload_namespace_bytes_exhausted
             - external_payload_namespace_objects_exhausted
             - external_payload_namespace_quota_unavailable
+            - external_payload_completion_invalid
+            - external_payload_completion_lease_rejected
+            - external_payload_completion_conflict
+            - external_payload_completion_budget_exhausted
         message: { type: string, minLength: 1 }
         retryable: { type: boolean }
         status: { type: integer }
