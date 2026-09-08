@@ -130,13 +130,13 @@ class EnvAuditor
      *
      * Used by config/server.php so one rename happens in one place.
      */
-    public static function env(string $name, string $legacy, mixed $default = null): mixed
+    public static function env(string $name, ?string $legacy, mixed $default = null): mixed
     {
         $primary = env($name, null);
         if ($primary !== null) {
             return $primary;
         }
 
-        return env($legacy, $default);
+        return $legacy === null ? $default : env($legacy, $default);
     }
 }

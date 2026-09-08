@@ -33,8 +33,8 @@ final class WorkerTerminalEventAttribution
             throw new RuntimeException('Completed workflow task did not report its workflow run id.');
         }
 
-        /** @var WorkflowHistoryEvent|null $event */
-        $event = WorkflowHistoryEvent::query()
+        // Keep potentially large payloads out of the database sort buffer.
+        $eventId = WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $runId)
             ->where('workflow_task_id', $taskId)
             ->whereIn('event_type', [
@@ -42,7 +42,10 @@ final class WorkerTerminalEventAttribution
                 HistoryEventType::WorkflowFailed->value,
             ])
             ->orderByDesc('sequence')
-            ->first();
+            ->value('id');
+
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $eventId === null ? null : WorkflowHistoryEvent::query()->find($eventId);
 
         // A successfully completed task can transition the run without
         // recording a terminal completion/failure event (for example,

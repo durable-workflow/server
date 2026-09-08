@@ -105,6 +105,7 @@ generic "workflows per second" number cannot hide the workload being measured.
 - [Worker stream AsyncAPI contract](resources/platform-protocol-specs/worker-protocol-stream.asyncapi.yaml)
 - [Capacity definitions and benchmark suite](benchmarks/capacity/README.md)
 - [Bounded-growth policy](docs/bounded-growth.md)
+- [Storage-pressure admission](docs/storage-admission.md)
 - [External payload storage contract](docs/contracts/external-payload-storage.md)
 - [Helm upgrade guide](k8s/helm/durable-workflow/docs/UPGRADING.md)
 

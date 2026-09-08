@@ -8,11 +8,21 @@ use App\Support\HistoryRetentionEnforcer;
 use App\Support\MigrationAdoption;
 use App\Support\PayloadCodecDeploymentPreflight;
 use App\Support\RuntimeExternalPayloadCleanup;
+use App\Support\StoragePressure;
 use Illuminate\Database\Migrations\Migrator;
 use Illuminate\Support\Facades\Artisan;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Support\ScheduleManager;
+
+Artisan::command('server:storage-status {--json : Emit the storage admission observation}', function (StoragePressure $pressure): int {
+    $snapshot = $pressure->snapshot();
+    $this->line($this->option('json')
+        ? json_encode($snapshot, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES)
+        : 'Storage admission: '.$snapshot['state']);
+
+    return $snapshot['state'] === 'normal' ? 0 : 1;
+})->purpose('Check whether storage admission permits new work');
 
 Artisan::command('server:bootstrap {--force : Run bootstrap commands without a production prompt}', function (Migrator $migrator, PayloadCodecDeploymentPreflight $payloadCodecPreflight): int {
     $this->components->info('Running Durable Workflow server bootstrap...');
@@ -41,7 +51,7 @@ Artisan::command('server:bootstrap {--force : Run bootstrap commands without a p
             $report['inspected_frames'],
             $report['inspected_frames'] === 1 ? '' : 's',
         ));
-    } catch (\RuntimeException $exception) {
+    } catch (RuntimeException $exception) {
         $this->components->error($exception->getMessage());
 
         return 1;
@@ -62,6 +72,12 @@ Artisan::command('server:bootstrap {--force : Run bootstrap commands without a p
 Artisan::command('schedule:evaluate
     {--limit=100 : Maximum schedules to fire per evaluation}
     {--json : Emit a machine-readable evaluation report}', function (): int {
+    if (! app(StoragePressure::class)->acceptsNewWork()) {
+        $this->line(json_encode(['reason' => 'storage_admission_paused', 'processed' => 0], JSON_THROW_ON_ERROR));
+
+        return 1;
+    }
+
     $limit = (int) $this->option('limit');
 
     $results = ScheduleManager::tick($limit);
@@ -147,7 +163,7 @@ Artisan::command('schedule:evaluate
                 'summary' => $summary,
                 'results' => $results,
             ], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
-        } catch (\JsonException $exception) {
+        } catch (JsonException $exception) {
             $this->components->error($exception->getMessage());
 
             return 1;
@@ -206,6 +222,12 @@ Artisan::command('schedule:evaluate
 })->purpose('Evaluate due schedules and start their workflows');
 
 Artisan::command('activity:timeout-enforce {--limit=100 : Maximum expired executions to process per pass}', function (): int {
+    if (! app(StoragePressure::class)->acceptsNewWork()) {
+        $this->components->warn('Storage admission paused; no timeout pass started.');
+
+        return 1;
+    }
+
     $limit = max(1, (int) $this->option('limit'));
 
     $expiredIds = ActivityTimeoutScanner::expiredExecutionIds($limit);
@@ -265,6 +287,12 @@ Artisan::command('external-payloads:cleanup
     {--limit=100 : Maximum expired external payload references to process per pass}
     {--namespace= : Clean only this namespace}
     {--json : Emit a machine-readable cleanup report}', function (RuntimeExternalPayloadCleanup $cleanup): int {
+    if (! app(StoragePressure::class)->acceptsNewWork()) {
+        $this->line(json_encode(['reason' => 'storage_admission_paused', 'processed' => 0], JSON_THROW_ON_ERROR));
+
+        return 1;
+    }
+
     $namespace = $this->option('namespace');
     $report = $cleanup->runPass(
         is_string($namespace) && trim($namespace) !== '' ? trim($namespace) : null,
@@ -292,6 +320,12 @@ Artisan::command('external-payloads:cleanup
 })->purpose('Reclaim expired and incomplete runtime external payload uploads');
 
 Artisan::command('history:prune {--limit=100 : Maximum expired runs to prune per pass} {--namespace= : Prune only this namespace}', function (): int {
+    if (! app(StoragePressure::class)->acceptsNewWork()) {
+        $this->components->warn('Storage admission paused; no pruning pass started.');
+
+        return 1;
+    }
+
     $limit = max(1, (int) $this->option('limit'));
     $namespaceFilter = $this->option('namespace');
 

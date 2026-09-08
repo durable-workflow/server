@@ -1,0 +1,82 @@
+x-server: &server
+  image: ${COMPOSE_PROJECT_NAME}-candidate
+  build:
+    context: ../../..
+    dockerfile: tests/Integration/StorageAdmission/Dockerfile
+    args:
+      SERVER_IMAGE: ${SERVER_IMAGE:?Set the published base Server image digest}
+  user: "1000:1000"
+  environment:
+    APP_ENV: testing
+    APP_DEBUG: "false"
+    DW_SERVER_KEY: "base64:dGVzdGluZy10ZXN0aW5nLXRlc3RpbmctdGVzdGluZzEyMzQ1Ng=="
+    DB_CONNECTION: mysql
+    DB_HOST: mysql
+    DB_DATABASE: storage_admission
+    DB_USERNAME: workflow
+    DB_PASSWORD: workflow
+    QUEUE_CONNECTION: database
+    CACHE_STORE: file
+    DW_AUTH_DRIVER: token
+    DW_AUTH_TOKEN: storage-fixture
+    DW_WORKER_POLL_TIMEOUT: "0"
+    DW_WORKFLOW_TASK_TIMEOUT: "600"
+    DW_STORAGE_ADMISSION_FILE: /observation/pressure.json
+    DW_STORAGE_ADMISSION_SOURCE: bounded-mysql
+    DW_STORAGE_ADMISSION_MAX_AGE_SECONDS: "15"
+  volumes:
+    - ${EXPERIMENT_DIRECTORY:?Set an empty disposable directory}:/observation:ro
+  healthcheck:
+    disable: true
+
+services:
+  mysql:
+    image: mysql:8.0.46
+    command:
+      - --innodb-file-per-table=OFF
+      - --innodb-data-file-path=ibdata1:12M:autoextend:max:${MYSQL_MAX_MIB:-256}M
+      - --innodb-buffer-pool-size=128M
+      - --innodb-redo-log-capacity=16M
+      - --skip-log-bin
+      - --max-connections=40
+    environment:
+      MYSQL_DATABASE: storage_admission
+      MYSQL_USER: workflow
+      MYSQL_PASSWORD: workflow
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_ROOT_HOST: "%"
+    volumes:
+      - mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+    mem_limit: 512m
+
+  server:
+    <<: *server
+    depends_on:
+      mysql:
+        condition: service_healthy
+    mem_limit: 1g
+
+  experiment:
+    <<: *server
+    profiles: [experiment]
+    entrypoint: [php, /experiment.php]
+    volumes:
+      - ${EXPERIMENT_DIRECTORY}:/observation
+      - ./experiment.php:/experiment.php:ro
+
+  maintenance:
+    <<: *server
+    profiles: [experiment]
+    command: [php, artisan, "queue:work", "--sleep=1", "--max-time=2", "--stop-when-empty"]
+
+volumes:
+  mysql:
+
+networks:
+  default:
+    internal: true

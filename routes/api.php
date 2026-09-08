@@ -28,6 +28,7 @@ use App\Http\Middleware\Authenticate;
 use App\Http\Middleware\ControlPlaneVersionResolver;
 use App\Http\Middleware\EnforceNamespaceRequestAdmission;
 use App\Http\Middleware\EnforceStandaloneActivityHostQuota;
+use App\Http\Middleware\EnforceStorageAdmission;
 use App\Http\Middleware\NamespaceResolver;
 use App\Http\Middleware\RequireRole;
 use App\Http\Middleware\RequireTopologyRoles;
@@ -109,7 +110,7 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
     });
 
     // ── Runtime Credentials ──────────────────────────────────────────
-    Route::prefix('runtime-credentials')->middleware([$admin, $cpv, $httpControl])->group(function () {
+    Route::prefix('runtime-credentials')->middleware([$admin, $cpv, $httpControl, EnforceStorageAdmission::class])->group(function () {
         Route::get('/', [RuntimeCredentialController::class, 'index']);
         Route::get('/{credentialId}', [RuntimeCredentialController::class, 'show']);
         Route::put('/{credentialId}', [RuntimeCredentialController::class, 'upsert']);

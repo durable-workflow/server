@@ -378,7 +378,9 @@ class RuntimeExternalPayloadRegistry
             throw $this->integrityMismatch('Fetched external payload bytes failed runtime integrity verification.');
         }
 
-        $row->forceFill(['last_fetched_at' => now()])->save();
+        if (app(StoragePressure::class)->acceptsNewWork()) {
+            $row->forceFill(['last_fetched_at' => now()])->save();
+        }
 
         return [$row, $data];
     }

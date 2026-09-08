@@ -867,6 +867,8 @@ final class WorkflowQueryTaskBroker
 
         $result = $this->longPoller->until(
             function () use ($namespace, $taskQueue, $leaseOwner, $supportedWorkflowTypes, $workflowDefinitionFingerprints, $buildId, $pollRequestId, $workerPollFence, &$workflowBlockStatus): ?array {
+                app(StoragePressure::class)->requireNewWork();
+
                 if ($workerPollFence !== [] && ! WorkerPollFence::isCurrent($workerPollFence)) {
                     return ['poll_status' => 'stale_worker_registration'];
                 }

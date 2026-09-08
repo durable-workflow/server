@@ -22,11 +22,13 @@ use App\Support\ServerWorkflowControlPlane;
 use App\Support\ServiceCallBoundary;
 use App\Support\ServiceModeBusDispatcher;
 use App\Support\SharedServiceBoundaryPolicy;
+use App\Support\StoragePressure;
 use App\Support\ValidatedExternalWorkflowUpdateAdmission;
 use App\Support\WorkflowMemoRollingCompatibility;
 use App\Support\WorkflowPackageApiFloor;
 use App\Support\WorkflowTaskLeaseConfiguration;
 use Illuminate\Contracts\Bus\Dispatcher as BusDispatcher;
+use Illuminate\Queue\Events\Looping;
 use Illuminate\Support\ServiceProvider;
 use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
 use Workflow\V2\Contracts\ScheduleWorkflowStarter;
@@ -52,6 +54,10 @@ class AppServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->normalizeRedisPorts();
+
+        // Register before package boot callbacks can enqueue maintenance work.
+        $this->app->make('events')->listen(Looping::class,
+            fn (): ?bool => $this->app->make(StoragePressure::class)->acceptsNewWork() ? null : false);
 
         $this->app->singleton(AuthProvider::class, function ($app): AuthProvider {
             $provider = config('server.auth.provider');

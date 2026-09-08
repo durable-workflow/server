@@ -13,6 +13,7 @@ class NamespaceResolver
 {
     public function __construct(
         private readonly RuntimeExternalPayloadTransport $externalPayloadTransport,
+        private readonly EnforceStorageAdmission $storageAdmission,
     ) {}
 
     public function handle(Request $request, Closure $next): Response
@@ -42,9 +43,11 @@ class NamespaceResolver
             return ControlPlaneProtocol::jsonForRequest($request, $payload, 404);
         }
 
-        $this->externalPayloadTransport->resolveIncoming($request);
+        return $this->storageAdmission->handle($request, function (Request $request) use ($next): Response {
+            $this->externalPayloadTransport->resolveIncoming($request);
 
-        return $next($request);
+            return $next($request);
+        });
     }
 
     /**

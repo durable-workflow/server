@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "19"
+  version: "20"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -611,7 +611,10 @@ components:
         worker, queue and poll_request_id; task=null does not prove that no task
         was claimed. Registration and heartbeat likewise do not acknowledge or
         reject an operation whose result is unknown. Other 503 errors retain
-        their own contracts and are not automatically retryable.
+        their own contracts and are not automatically retryable. Optional
+        storage admission returns storage_pressure or storage_admission_unavailable
+        before admitting a request or a new poll claim. Retain the poll ID on
+        retry: refusal of this attempt does not describe an earlier outcome.
       headers:
         X-Durable-Workflow-Protocol-Version:
           schema: { $ref: "#/components/schemas/AdvertisedWorkerProtocolVersion" }
@@ -622,6 +625,7 @@ components:
           schema:
             anyOf:
               - $ref: "#/components/schemas/WorkerBackendUnavailable"
+              - $ref: "#/components/schemas/WorkerStorageAdmissionRefusal"
               - $ref: "#/components/schemas/WorkerError"
     WorkerPollBackpressure:
       description: The node has no capacity for another held long poll; retry after the advertised delay.
@@ -761,6 +765,30 @@ components:
         reason: { type: [string, "null"] }
         remediation: { type: [string, "null"] }
         server_capabilities: { $ref: "#/components/schemas/WorkerServerCapabilities" }
+    WorkerStorageAdmissionRefusal:
+      allOf:
+        - $ref: "#/components/schemas/WorkerError"
+        - type: object
+          required: [reason, storage_state, retryable, retry_after_seconds]
+          properties:
+            reason: { type: string, enum: [storage_pressure, storage_admission_unavailable] }
+            storage_state: { type: string, enum: [draining, fenced] }
+            request_admitted:
+              type: boolean
+              const: false
+              description: Present only when admission refused before entering the handler. Does not describe previous requests.
+            retryable: { type: boolean, const: true }
+            retry_after_seconds: { type: integer, minimum: 1 }
+          if:
+            required: [poll_status]
+          then:
+            required: [task, claim_admitted, poll_request_id, retry_same_poll_request_id]
+            properties:
+              task: { type: "null" }
+              claim_admitted: { type: boolean, const: false }
+              poll_status: { type: string, enum: [storage_pressure, storage_admission_unavailable] }
+              poll_request_id: { type: [string, "null"], minLength: 1, maxLength: 255 }
+              retry_same_poll_request_id: { type: boolean, const: true }
     WorkerBackendUnavailable:
       allOf:
         - $ref: "#/components/schemas/WorkerError"

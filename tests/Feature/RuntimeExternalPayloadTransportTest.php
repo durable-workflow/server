@@ -18,6 +18,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Testing\TestResponse;
+use Tests\Feature\Concerns\StoragePressureFixture;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
@@ -27,6 +28,7 @@ use Workflow\V2\Support\MemoPayload;
 class RuntimeExternalPayloadTransportTest extends TestCase
 {
     use RefreshDatabase;
+    use StoragePressureFixture;
 
     private string $storageDirectory;
 
@@ -56,9 +58,19 @@ class RuntimeExternalPayloadTransportTest extends TestCase
 
     protected function tearDown(): void
     {
+        $this->removeStoragePressure();
         File::deleteDirectory($this->storageDirectory);
 
         parent::tearDown();
+    }
+
+    public function test_payload_remains_readable_without_touching_registry_during_storage_pressure(): void
+    {
+        $payload = Serializer::serializeWithCodec('avro', ['readable during pressure']);
+        $reference = $this->upload($payload)->assertCreated()->json('reference');
+        $this->configureStoragePressure('fenced');
+        $this->fetch($reference)->assertOk()->assertContent($payload);
+        $this->assertNull(RuntimeExternalPayload::query()->sole()->last_fetched_at);
     }
 
     public function test_authenticated_runtime_upload_and_fetch_round_trip_hides_provider_location(): void
