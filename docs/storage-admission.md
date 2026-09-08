@@ -71,3 +71,7 @@ Before enabling this on a supported deployment, qualify its collector, reserve,
 all SDK retry paths (including large-result uploads), active leases, maintenance,
 and recovery against a real bounded backing volume. A passing admission unit
 test does not prove healthy operation at the hard disk limit.
+
+The [native MySQL experiment](../tests/Integration/StorageAdmission/README.md)
+provides a reproducible bounded-database case, with explicit limits on what it
+qualifies. It is not a production collector or a suggested reserve size.
