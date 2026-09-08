@@ -47,7 +47,7 @@ final class WorkerServiceOperationEnvelopeTest extends TestCase
                 'commands' => [[
                     'type' => 'start_service_operation', 'endpoint_name' => 'billing', 'service_name' => 'invoicing',
                     'operation_name' => 'createinvoice',
-                    'request_payload' => ['codec' => 'avro', 'blob' => 'wwHioz3/VYAiNwwCDgIOaW52b2ljZQRUAAA='],
+                    'request_payload' => ['codec' => 'avro', 'blob' => 'wwHioz3/VYAiNwwCChRpbnZvaWNlLTQyAA=='],
                 ]],
             ], $this->workerHeaders())->assertOk();
             $call = WorkflowServiceCall::query()->sole();
