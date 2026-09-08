@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Contracts\AuthProvider;
+use App\Http\Middleware\Authenticate;
 use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
 use App\Support\AvroPayloadEnvelopeResolver;
@@ -18,6 +20,7 @@ use App\Support\NamespaceWorkflowScope;
 use App\Support\PayloadCodecContract;
 use App\Support\PollRequestTaskKindsConflict;
 use App\Support\QueryTaskQueueUnavailableException;
+use App\Support\RouteAuthorizationResource;
 use App\Support\RuntimeExternalPayloadAudit;
 use App\Support\RuntimeExternalPayloadException;
 use App\Support\SearchAttributeValueValidator;
@@ -1506,6 +1509,31 @@ class WorkerController
             'commands.*.condition_wait_occurrence_id' => ['nullable', 'string'],
             'commands.*.signal_name' => ['nullable', 'string'],
             'commands.*.timeout_seconds' => ['nullable', 'integer', 'min:0'],
+            'commands.*.endpoint_name' => ['nullable', 'string', 'max:191'],
+            'commands.*.service_name' => ['nullable', 'string', 'max:191'],
+            'commands.*.operation_name' => ['nullable', 'string', 'max:191'],
+            'commands.*.request_payload' => ['nullable'],
+            'commands.*.namespace' => ['nullable', 'string', 'max:191'],
+            'commands.*.caller_namespace' => ['nullable', 'string', 'max:191'],
+            'commands.*.service_call_id' => ['nullable', 'string', 'max:191'],
+            'commands.*.idempotency_key' => ['nullable', 'string', 'max:191'],
+            'commands.*.mode_override' => ['nullable', 'string', 'in:sync,async'],
+            'commands.*.wait_for' => ['nullable', 'string', 'in:accepted,completed'],
+            'commands.*.wait_timeout_seconds' => ['nullable', 'integer', 'min:0'],
+            'commands.*.target_workflow_instance_id' => ['nullable', 'string', 'max:191'],
+            'commands.*.target_workflow_run_id' => ['nullable', 'string', 'max:191'],
+            'commands.*.business_key' => ['nullable', 'string', 'max:191'],
+            'commands.*.labels' => ['nullable', 'array'],
+            'commands.*.memo' => ['nullable', 'array'],
+            'commands.*.search_attributes' => ['nullable', 'array'],
+            'commands.*.duplicate_start_policy' => ['nullable', 'string'],
+            'commands.*.metadata' => ['nullable', 'array'],
+            'commands.*.request_payload_reference' => ['nullable', 'string', 'max:191'],
+            'commands.*.principal_subject' => ['prohibited'],
+            'commands.*.principal_method' => ['prohibited'],
+            'commands.*.principal_roles' => ['prohibited'],
+            'commands.*.principal_tenant' => ['prohibited'],
+            'commands.*.principal_claims' => ['prohibited'],
             ...WorkflowCommandNormalizer::parallelMetadataValidationRules(),
             'commands.*.workflow_stream' => ['nullable', 'array'],
             'commands.*.workflow_stream.operation' => ['required_with:commands.*.workflow_stream', 'string', 'in:append,close,error'],
@@ -1560,6 +1588,8 @@ class WorkerController
         )) {
             return $response;
         }
+
+        $commands = $this->authorizeServiceOperationCommands($request, (string) $namespace, $commands);
 
         if ($response = $this->guardWorkerSessionCommandsAvailable(
             $request,
@@ -2651,6 +2681,49 @@ class WorkerController
      * @param  list<array<string, mixed>>  $commands
      * @return list<array<string, mixed>>
      */
+    private function authorizeServiceOperationCommands(Request $request, string $namespace, array $commands): array
+    {
+        foreach ($commands as $index => $command) {
+            if (($command['type'] ?? null) !== 'start_service_operation') {
+                continue;
+            }
+
+            $principal = Authenticate::principal($request);
+            $targetNamespace = strtolower(trim($command['namespace'] ?? $namespace));
+            $callerNamespace = strtolower(trim($command['caller_namespace'] ?? $namespace));
+            if ($callerNamespace !== $namespace) {
+                throw ValidationException::withMessages([
+                    "commands.{$index}.caller_namespace" => 'The caller namespace must match the leased workflow namespace.',
+                ]);
+            }
+
+            $resource = array_replace(app(RouteAuthorizationResource::class)->make($request, ['worker']), [
+                'operation_family' => 'service',
+                'operation_name' => 'execute_operation',
+                'target_namespace' => $targetNamespace,
+                'namespace_name' => $targetNamespace,
+                'caller_namespace' => $namespace,
+                'service_endpoint_name' => strtolower(trim($command['endpoint_name'])),
+                'service_name' => strtolower(trim($command['service_name'])),
+                'service_operation_name' => strtolower(trim($command['operation_name'])),
+            ]);
+            abort_unless($principal !== null && app(AuthProvider::class)->authorize($principal, 'execute_operation', $resource), 403);
+
+            // A worker owns command intent, not the authenticated caller identity.
+            $commands[$index] = array_replace($command, [
+                'namespace' => $targetNamespace,
+                'caller_namespace' => $namespace,
+                'principal_subject' => $principal->subject(),
+                'principal_method' => $principal->method(),
+                'principal_roles' => $principal->roles(),
+                'principal_tenant' => $principal->tenant(),
+                'principal_claims' => $principal->claims(),
+            ]);
+        }
+
+        return $commands;
+    }
+
     private function normalizeWorkflowTaskCommandIntegerFields(array $commands): array
     {
         $integerFields = [
@@ -2668,6 +2741,7 @@ class WorkerController
             'min_supported',
             'max_supported',
             'timeout_seconds',
+            'wait_timeout_seconds',
         ];
 
         foreach ($commands as $index => $command) {
