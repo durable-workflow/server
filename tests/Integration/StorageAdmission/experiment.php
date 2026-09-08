@@ -133,6 +133,10 @@ function counts(PDO $db): array
     return $counts;
 }
 
+if (defined('STORAGE_ADMISSION_HELPERS_ONLY')) {
+    return;
+}
+
 $phase = $argv[1] ?? '';
 try {
     if ($phase === 'normal') {
