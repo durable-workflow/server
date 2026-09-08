@@ -1,6 +1,7 @@
 <?php
 
 declare(strict_types=1);
+use Workflow\Serializers\Serializer;
 
 const STORAGE_ADMISSION_HELPERS_ONLY = true;
 require '/experiment.php';
@@ -90,7 +91,20 @@ try {
         // Bound completion uploads may drain; unbound producers must still wait.
         observe('draining');
         call('POST', '/workflows', startBody('draining-start'), false, 503);
-        call('POST', '/external-payloads/v1', [], true, 503);
+        $payload = Serializer::serializeWithCodec('avro', 'unbound');
+        $upload = curl_init('http://server:8080/api/external-payloads/v1');
+        curl_setopt_array($upload, [CURLOPT_POST => true, CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT => 5, CURLOPT_TIMEOUT => 15, CURLOPT_POSTFIELDS => $payload,
+            CURLOPT_HTTPHEADER => ['Content-Type: application/octet-stream', 'Authorization: Bearer storage-fixture',
+                'X-Namespace: default', 'X-Durable-Workflow-Payload-Codec: avro',
+                'X-Durable-Workflow-Payload-Size: '.strlen($payload),
+                'X-Durable-Workflow-Payload-SHA256: '.hash('sha256', $payload)]]);
+        $response = curl_exec($upload);
+        check(curl_errno($upload) === 0, 'Unbound upload transport failed.');
+        check(curl_getinfo($upload, CURLINFO_RESPONSE_CODE) === 503, 'Unbound upload was not refused while draining.');
+        curl_close($upload);
+        check((json_decode($response, true, flags: JSON_THROW_ON_ERROR)['request_admitted'] ?? null) === false,
+            'Unbound upload was admitted while draining.');
         waitFor(static function () use ($db, $runs): bool {
             $statuses = array_column(attempts($db), 'status', 'workflow_run_id');
             foreach ($runs as $run) {
