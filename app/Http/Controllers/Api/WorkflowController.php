@@ -39,6 +39,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowUpdate;
+use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\FailureSnapshots;
 use Workflow\V2\Support\RunCommandContract;
 use Workflow\V2\Support\TypeRegistry;
@@ -1169,6 +1170,13 @@ class WorkflowController
         }
         $terminalFailure = $this->terminalFailurePayload($run);
         $outputEnvelope = $run->outputEnvelope();
+        $inputEnvelope = $this->workerEnvelope(
+            $namespace,
+            $run->payload_codec,
+            is_string($run->arguments) ? $run->arguments : null,
+        );
+        $omitInputPreview = $this->oversizedPayloadPreview($inputEnvelope);
+        $omitOutputPreview = $this->oversizedPayloadPreview($outputEnvelope);
 
         $payload = [
             'workflow_id' => $run->workflow_instance_id,
@@ -1193,14 +1201,15 @@ class WorkflowController
             'run_timeout_seconds' => $runDescription['run_timeout_seconds'] ?? null,
             'execution_deadline_at' => $runDescription['execution_deadline_at'] ?? null,
             'run_deadline_at' => $runDescription['run_deadline_at'] ?? null,
-            'input' => AvroValueJsonProjection::project($this->workflowArguments($run)),
-            'output' => AvroValueJsonProjection::project($run->workflowOutput()),
-            'input_envelope' => $this->workerEnvelope(
-                $namespace,
-                $run->payload_codec,
-                is_string($run->arguments) ? $run->arguments : null,
-            ),
+            'input' => $omitInputPreview ? null : AvroValueJsonProjection::project($this->workflowArguments($run)),
+            'output' => $omitOutputPreview ? null : AvroValueJsonProjection::project($run->workflowOutput()),
+            'input_envelope' => $inputEnvelope,
             'output_envelope' => $outputEnvelope,
+            'payload_previews' => [
+                'input_omitted' => $omitInputPreview,
+                'output_omitted' => $omitOutputPreview,
+                'max_encoded_bytes' => (int) config('server.limits.max_payload_bytes', 2 * 1024 * 1024),
+            ],
             'started_at' => $run->started_at?->toJSON(),
             'closed_at' => $run->closed_at?->toJSON(),
             'last_progress_at' => $runDescription['last_progress_at'] ?? $run->last_progress_at?->toJSON(),
@@ -1230,6 +1239,13 @@ class WorkflowController
         }
 
         return $payload;
+    }
+
+    /** @param array<string, mixed>|null $envelope */
+    private function oversizedPayloadPreview(?array $envelope): bool
+    {
+        return isset($envelope['external_storage']['size_bytes'])
+            && $envelope['external_storage']['size_bytes'] > (int) config('server.limits.max_payload_bytes', 2 * 1024 * 1024);
     }
 
     private function rejectProjectedV1Operation(
@@ -1281,6 +1297,9 @@ class WorkflowController
             ->map(function (WorkflowCommand $command) use ($updatesByCommandId): array {
                 $update = $updatesByCommandId->get($command->id);
                 $context = $command->commandContext();
+                $omitPayloadPreview = $this->oversizedPayloadPreview(
+                    is_string($command->payload) ? ExternalPayloads::storedEnvelope($command->payload) : null,
+                );
 
                 return $this->withoutNullOrEmptyArrays([
                     'id' => $command->id,
@@ -1289,7 +1308,7 @@ class WorkflowController
                     'target_scope' => $command->target_scope,
                     'requested_run_id' => $command->requestedRunId(),
                     'resolved_run_id' => $command->resolvedRunId(),
-                    'target_name' => $command->targetName(),
+                    'target_name' => $omitPayloadPreview ? null : $command->targetName(),
                     'source' => $command->source,
                     'context' => $this->commandPublicContext($context),
                     'caller_label' => $this->contextString($context, ['caller', 'label']),
@@ -1307,9 +1326,10 @@ class WorkflowController
                     'correlation_id' => $this->contextString($context, ['request', 'correlation_id']),
                     'status' => $this->enumOrString($command->status),
                     'outcome' => $this->enumOrString($command->outcome),
-                    'reason' => $command->commandReason(),
+                    'reason' => $omitPayloadPreview ? $command->rejection_reason : $command->commandReason(),
                     'rejection_reason' => $command->rejection_reason,
-                    'validation_errors' => $command->validationErrors(),
+                    'validation_errors' => $omitPayloadPreview ? [] : $command->validationErrors(),
+                    'payload_preview_omitted' => $omitPayloadPreview,
                     'workflow_type' => $command->workflow_type,
                     'workflow_class' => $command->workflow_class,
                     'accepted_at' => $command->accepted_at?->toJSON(),

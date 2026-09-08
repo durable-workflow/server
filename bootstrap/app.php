@@ -32,9 +32,9 @@ return Application::configure(basePath: dirname(__DIR__))
         },
     )
     ->withMiddleware(function (Middleware $middleware) {
-        $middleware->api(prepend: [
-            EnforcePayloadLimits::class,
-        ]);
+        // Size checks must precede global JSON/form normalization, not merely
+        // the route middleware, so unknown-length bodies remain bounded.
+        $middleware->prepend(EnforcePayloadLimits::class);
         $middleware->api(append: [
             CompressResponse::class,
             RemoveServerHeader::class,

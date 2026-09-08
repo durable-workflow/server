@@ -244,6 +244,7 @@ class ActivityTaskController
                 $validated['result'] ?? null,
                 'result',
                 $this->externalPayloadStorage->driverFor($namespace),
+                retainExternal: true,
             );
         } catch (ValidationException $exception) {
             throw $exception;

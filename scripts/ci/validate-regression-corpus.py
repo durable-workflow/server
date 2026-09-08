@@ -1696,9 +1696,7 @@ def _classified_server_codec_paths(
             continue
         current_content = current_files.get(path)
         if current_content is not None and not _php_lint(root, path):
-            related.add(path)
-            review_required.add(path)
-            continue
+            raise CorpusError(f"changed guarded PHP does not parse: {path}")
         classification = _php_codec_change_classification(
             base_files.get(path),
             current_content,
@@ -2585,25 +2583,34 @@ def validate(
                 related_paths = _guarded_paths(root, base_ref, changed, guards)
                 category_review_required = set()
             related = bool(related_paths)
-            if related and current_count <= base_count:
+            new_fixture_paths = {
+                item.path
+                for item in current_evidence
+                if item.category == category_name and item.path in added_paths
+            }
+            # Server transport/resource edits need their actual HTTP regression,
+            # not an invented wire fixture. Report them for maintainer review.
+            server_review_only = (
+                policy["repository"] == "server"
+                and related
+                and not new_fixture_paths
+                and current_count == base_count
+            )
+            if server_review_only:
+                category_review_required.update(related_paths)
+                review_required_paths.update(related_paths)
+            requires_growth = related and not server_review_only
+            if requires_growth and current_count <= base_count:
                 raise CorpusError(
                     f"{category_name} implementation changed but its corpus did not grow "
                     f"(base={base_count}, current={current_count})"
                 )
-            if related and not any(
-                item.category == category_name and item.path in added_paths
-                for item in current_evidence
-            ):
+            if requires_growth and not new_fixture_paths:
                 raise CorpusError(
                     f"{category_name} implementation changed but no newly added fixture "
                     "provides corpus evidence"
                 )
-            if category_name == "codec" and related:
-                new_fixture_paths = {
-                    item.path
-                    for item in current_evidence
-                    if item.category == category_name and item.path in added_paths
-                }
+            if category_name == "codec" and requires_growth:
                 proofs = _counterfactual_proofs(
                     current_files=current_files,
                     added_paths=added_paths,

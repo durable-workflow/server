@@ -5,7 +5,9 @@ namespace Tests\Feature;
 use App\Models\SearchAttributeDefinition;
 use App\Support\ControlPlaneProtocol;
 use App\Support\WorkerProtocol;
+use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Request;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
@@ -99,6 +101,29 @@ class PayloadLimitsTest extends TestCase
             ->assertJsonPath('reason', 'payload_too_large')
             ->assertJsonPath('server_capabilities.workflow_task_poll_request_idempotency', true)
             ->assertJsonMissingPath('control_plane');
+    }
+
+    public function test_unknown_length_json_is_bounded_before_global_normalization(): void
+    {
+        config(['server.limits.max_payload_bytes' => 1024]);
+        $stream = tmpfile();
+        fwrite($stream, '{"description":"'.str_repeat('x', 16384).'"}');
+        rewind($stream);
+        $request = new Request([], [], [], [], [], [
+            'REQUEST_METHOD' => 'POST',
+            'REQUEST_URI' => '/api/namespaces',
+            'CONTENT_TYPE' => 'application/json',
+            'HTTP_X_DURABLE_WORKFLOW_CONTROL_PLANE_VERSION' => '2',
+        ], $stream);
+
+        try {
+            $response = $this->app->make(Kernel::class)->handle($request);
+            $this->assertSame(413, $response->getStatusCode());
+            $this->assertSame('payload_too_large', json_decode($response->getContent(), true)['reason']);
+            $this->assertSame(1025, ftell($stream));
+        } finally {
+            fclose($stream);
+        }
     }
 
     public function test_control_plane_non_json_request_bodies_use_control_plane_contract(): void

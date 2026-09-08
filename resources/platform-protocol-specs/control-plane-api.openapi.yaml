@@ -215,6 +215,12 @@ paths:
     get:
       tags: [workflows]
       operationId: getWorkflow
+      description: >
+        Returns metadata and complete input/output envelopes. Decoded input or
+        output previews are null for external objects above the ordinary API
+        payload limit; payload_previews reports input_omitted, output_omitted,
+        and max_encoded_bytes. Read the full value through its envelope using
+        the SDK or authenticated external-payload endpoint.
       parameters:
         - $ref: "#/components/parameters/ControlPlaneVersionHeader"
         - $ref: "#/components/parameters/WorkflowIdPath"

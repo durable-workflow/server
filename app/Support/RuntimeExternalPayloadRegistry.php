@@ -19,7 +19,7 @@ class RuntimeExternalPayloadRegistry
     /**
      * @return array{schema: string, reference_id: string, codec: string, size_bytes: int, sha256: string}
      */
-    public function upload(string $namespace, string $data, string $codec, string $sha256): array
+    public function upload(string $namespace, string|ExternalPayloadStream $data, string $codec, string $sha256): array
     {
         $namespace = $this->namespace($namespace);
         try {
@@ -28,11 +28,12 @@ class RuntimeExternalPayloadRegistry
             throw $this->unsupported($exception->getMessage(), $exception);
         }
         $sha256 = strtolower($sha256);
-        $sizeBytes = strlen($data);
+        $sizeBytes = $data instanceof ExternalPayloadStream ? $data->sizeBytes : strlen($data);
 
         $this->assertSize($sizeBytes);
 
-        if (preg_match('/\A[a-f0-9]{64}\z/', $sha256) !== 1 || ! hash_equals($sha256, hash('sha256', $data))) {
+        $observedHash = $data instanceof ExternalPayloadStream ? $data->sha256 : hash('sha256', $data);
+        if (preg_match('/\A[a-f0-9]{64}\z/', $sha256) !== 1 || ! hash_equals($sha256, $observedHash)) {
             throw $this->integrityMismatch('Declared external payload integrity metadata does not match the uploaded bytes.');
         }
 
@@ -198,11 +199,11 @@ class RuntimeExternalPayloadRegistry
 
     /**
      * @param  array<string, mixed>  $transportReference
-     * @return array{data: string, reference: array{schema: string, reference_id: string, codec: string, size_bytes: int, sha256: string}}
+     * @return array{data: string|ExternalPayloadStream, reference: array{schema: string, reference_id: string, codec: string, size_bytes: int, sha256: string}}
      */
-    public function fetch(string $namespace, array $transportReference): array
+    public function fetch(string $namespace, array $transportReference, bool $stream = false): array
     {
-        [$row, $data] = $this->verifiedRow($namespace, $transportReference);
+        [$row, $data] = $this->verifiedRow($namespace, $transportReference, $stream);
 
         return [
             'data' => $data,
@@ -210,13 +211,15 @@ class RuntimeExternalPayloadRegistry
         ];
     }
 
-    public function verifyFetchedBytesAndClaim(string $namespace, string $uri, string $data): void
+    public function verifyFetchedBytesAndClaim(string $namespace, string $uri, string|ExternalPayloadStream $data): void
     {
-        $this->assertSize(strlen($data));
+        $observedSize = $data instanceof ExternalPayloadStream ? $data->sizeBytes : strlen($data);
+        $observedHash = $data instanceof ExternalPayloadStream ? $data->sha256 : hash('sha256', $data);
+        $this->assertSize($observedSize);
         $namespace = $this->namespace($namespace);
 
         try {
-            $this->objectLock->transaction($uri, function () use ($namespace, $uri, $data): void {
+            $this->objectLock->transaction($uri, function () use ($namespace, $uri, $observedSize, $observedHash): void {
                 $row = RuntimeExternalPayload::query()
                     ->where('namespace', $namespace)
                     ->where('storage_uri_sha256', hash('sha256', $uri))
@@ -238,7 +241,7 @@ class RuntimeExternalPayloadRegistry
                     );
                 }
 
-                if (strlen($data) !== $row->size_bytes || ! hash_equals($row->sha256, hash('sha256', $data))) {
+                if ($observedSize !== $row->size_bytes || ! hash_equals($row->sha256, $observedHash)) {
                     throw $this->integrityMismatch('Fetched external payload bytes failed runtime integrity verification.');
                 }
 
@@ -346,9 +349,9 @@ class RuntimeExternalPayloadRegistry
 
     /**
      * @param  array<string, mixed>  $transportReference
-     * @return array{0: RuntimeExternalPayload, 1: string}
+     * @return array{0: RuntimeExternalPayload, 1: string|ExternalPayloadStream}
      */
-    private function verifiedRow(string $namespace, array $transportReference): array
+    private function verifiedRow(string $namespace, array $transportReference, bool $stream): array
     {
         $row = $this->rowForReference($namespace, $transportReference);
         $driver = app(NamespaceExternalPayloadStorage::class)->untrackedDriverFor($row->namespace);
@@ -357,7 +360,25 @@ class RuntimeExternalPayloadRegistry
         }
 
         try {
-            $data = $driver->get($row->storage_uri);
+            if ($stream) {
+                if (! $driver instanceof StreamingExternalPayloadStorageDriver) {
+                    throw new ExternalPayloadStorageUnavailable('External payload driver does not support streaming.');
+                }
+
+                $source = $driver->readStream($row->storage_uri);
+                try {
+                    $data = ExternalPayloadStream::capture(
+                        $source,
+                        max(1, (int) config('server.external_payload_transport.max_payload_bytes')),
+                    );
+                } finally {
+                    if (is_resource($source)) {
+                        fclose($source);
+                    }
+                }
+            } else {
+                $data = $driver->get($row->storage_uri);
+            }
         } catch (ExternalPayloadObjectOversized $exception) {
             throw $this->oversized($exception);
         } catch (ExternalPayloadObjectMissing|ExternalPayloadIntegrityException $exception) {
@@ -374,7 +395,9 @@ class RuntimeExternalPayloadRegistry
             throw $this->unavailable('External payload storage is temporarily unavailable.', $exception);
         }
 
-        if (strlen($data) !== $row->size_bytes || ! hash_equals($row->sha256, hash('sha256', $data))) {
+        $observedSize = $data instanceof ExternalPayloadStream ? $data->sizeBytes : strlen($data);
+        $observedHash = $data instanceof ExternalPayloadStream ? $data->sha256 : hash('sha256', $data);
+        if ($observedSize !== $row->size_bytes || ! hash_equals($row->sha256, $observedHash)) {
             throw $this->integrityMismatch('Fetched external payload bytes failed runtime integrity verification.');
         }
 
@@ -436,14 +459,16 @@ class RuntimeExternalPayloadRegistry
     private function store(
         string $namespace,
         RuntimeExternalPayloadStorageDriver $driver,
-        string $data,
+        string|ExternalPayloadStream $data,
         string $codec,
         string $sha256,
         int $sizeBytes,
         bool $retained,
         mixed $expiresAt,
     ): RuntimeExternalPayload {
-        if ($sizeBytes !== strlen($data) || ! hash_equals($sha256, hash('sha256', $data))) {
+        $observedSize = $data instanceof ExternalPayloadStream ? $data->sizeBytes : strlen($data);
+        $observedHash = $data instanceof ExternalPayloadStream ? $data->sha256 : hash('sha256', $data);
+        if ($sizeBytes !== $observedSize || ! hash_equals($sha256, $observedHash)) {
             throw $this->integrityMismatch('External payload bytes do not match their registry metadata.');
         }
 
@@ -494,7 +519,15 @@ class RuntimeExternalPayloadRegistry
                 }
 
                 try {
-                    $committedUri = $driver->put($data, $sha256, $codec);
+                    if ($data instanceof ExternalPayloadStream) {
+                        if (! $driver instanceof StreamingExternalPayloadStorageDriver) {
+                            throw new ExternalPayloadStorageUnavailable('External payload driver does not support streaming.');
+                        }
+
+                        $committedUri = $driver->putStream($data->rewind(), $sha256, $codec);
+                    } else {
+                        $committedUri = $driver->put($data, $sha256, $codec);
+                    }
                 } catch (Throwable $exception) {
                     throw $this->unavailable('External payload storage could not commit the uploaded bytes.', $exception);
                 }

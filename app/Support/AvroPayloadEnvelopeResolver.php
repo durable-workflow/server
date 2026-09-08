@@ -18,8 +18,22 @@ final class AvroPayloadEnvelopeResolver
         mixed $input,
         string $field = 'input',
         ?ExternalPayloadStorageDriver $externalStorage = null,
+        bool $retainExternal = false,
     ): array {
         self::assertEnvelope($input, $field);
+        if ($retainExternal && $externalStorage instanceof RuntimeTrackedExternalPayloadStorage && is_array($input)) {
+            $keys = array_keys($input);
+            sort($keys);
+            if ($keys === ['codec', 'external_storage'] && is_array($input['external_storage'])) {
+                // The runtime already has these immutable bytes. Verify and
+                // retain that object instead of fetching and uploading it again.
+                return [
+                    'codec' => PayloadCodecContract::canonicalize($input['codec']),
+                    'blob' => $externalStorage->retainEnvelope($input),
+                ];
+            }
+        }
+
         $resolved = PayloadEnvelopeResolver::resolve($input, $field, $externalStorage);
         self::assertResolvedCodec($resolved['codec'] ?? null, $field);
 
@@ -41,8 +55,19 @@ final class AvroPayloadEnvelopeResolver
         mixed $value,
         string $field = 'result',
         ?ExternalPayloadStorageDriver $externalStorage = null,
+        bool $retainExternal = false,
     ): array {
         self::assertEnvelope($value, $field);
+        if ($retainExternal && $externalStorage instanceof RuntimeTrackedExternalPayloadStorage && is_array($value)) {
+            $keys = array_keys($value);
+            sort($keys);
+            if ($keys === ['codec', 'external_storage'] && is_array($value['external_storage'])) {
+                return [
+                    'codec' => PayloadCodecContract::canonicalize($value['codec']),
+                    'payload' => $externalStorage->retainEnvelope($value, $field.'.blob'),
+                ];
+            }
+        }
         $resolved = PayloadEnvelopeResolver::resolveCommandPayloadWithCodec($value, $field, $externalStorage);
         self::assertResolvedCodec($resolved['codec'] ?? null, $field);
         if ($resolved['codec'] !== null) {

@@ -3,6 +3,7 @@
 namespace App\Support;
 
 use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
+use Workflow\V2\Support\ExternalPayloads;
 
 class RuntimeTrackedExternalPayloadStorage implements RuntimeExternalPayloadStorageDriver
 {
@@ -25,6 +26,33 @@ class RuntimeTrackedExternalPayloadStorage implements RuntimeExternalPayloadStor
     public function uriFor(string $sha256, string $codec): string
     {
         return $this->inner->uriFor($sha256, $codec);
+    }
+
+    /** @param array{codec: string, external_storage: array<string, mixed>} $envelope */
+    public function retainEnvelope(array $envelope, ?string $validationField = null): string
+    {
+        $registry = app(RuntimeExternalPayloadRegistry::class);
+        $reference = $registry->referenceForInternal($this->namespace, $envelope['external_storage']);
+        if ($reference['codec'] !== PayloadCodecContract::canonicalize($envelope['codec'])) {
+            throw new RuntimeExternalPayloadException(
+                'external_payload_integrity_mismatch', 422, false,
+                'External payload envelope codec does not match its registered reference.',
+            );
+        }
+
+        $result = $registry->fetch($this->namespace, $reference, stream: true);
+        try {
+            if ($validationField !== null) {
+                AvroExternalPayloadValidator::validate($result['data'], $validationField);
+            }
+            $registry->verifyFetchedBytesAndClaim(
+                $this->namespace, $envelope['external_storage']['uri'], $result['data'],
+            );
+
+            return ExternalPayloads::encodeStoredEnvelope($envelope);
+        } finally {
+            $result['data']->close();
+        }
     }
 
     public function get(string $uri): string

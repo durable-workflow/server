@@ -485,6 +485,18 @@ ServerCodecRegressionFixtureExecutor::exercise(
             )
         return run(*arguments, cwd=self.root)
 
+    def assert_server_review(
+        self, result: subprocess.CompletedProcess[str], boundary: str
+    ) -> None:
+        self.assertEqual(0, result.returncode, result.stderr)
+        report = json.loads(result.stdout)
+        counts = report["counts"]["codec"]
+        self.assertTrue(counts["related_change"])
+        self.assertEqual(counts["base"], counts["current"])
+        self.assertEqual(0, counts["counterfactual_proofs"])
+        self.assertEqual(0, counts["revision_verified"])
+        self.assertIn(boundary, report["review_required_paths"])
+
     @staticmethod
     def codec_method_source(
         class_name: str,
@@ -908,7 +920,17 @@ final class InstrumentedCodecBoundaryRuntimeTest extends TestCase
             result.stderr,
         )
 
-    def test_encode_boundary_change_without_new_fixture_fails_closed(self) -> None:
+    def test_encode_boundary_change_without_new_fixture_requires_review(self) -> None:
+        (self.root / CORE_CODEC_BOUNDARIES[0]).write_text(
+            "<?php\nSerializer::serializeWithCodec($codec, array_values($arguments));\n"
+        )
+
+        result = self.validate()
+
+        self.assert_server_review(result, CORE_CODEC_BOUNDARIES[0])
+
+    def test_non_server_codec_change_still_requires_corpus_growth(self) -> None:
+        self.use_generic_codec_formats()
         (self.root / CORE_CODEC_BOUNDARIES[0]).write_text(
             "<?php\nSerializer::serializeWithCodec($codec, array_values($arguments));\n"
         )
@@ -916,25 +938,25 @@ final class InstrumentedCodecBoundaryRuntimeTest extends TestCase
         result = self.validate()
 
         self.assertNotEqual(0, result.returncode, result.stdout)
-        self.assertIn(
-            "codec implementation changed but its corpus did not grow",
-            result.stderr,
+        self.assertIn("codec implementation changed but its corpus did not grow", result.stderr)
+
+    def test_server_review_does_not_invent_counterfactual_evidence(self) -> None:
+        (self.root / CORE_CODEC_BOUNDARIES[0]).write_text(
+            "<?php\nSerializer::serializeWithCodec($codec, array_values($arguments));\n"
         )
 
-    def test_decode_boundary_change_without_new_fixture_fails_closed(self) -> None:
+        self.assert_server_review(self.validate(verify_counterfactual=True), CORE_CODEC_BOUNDARIES[0])
+
+    def test_decode_boundary_change_without_new_fixture_requires_review(self) -> None:
         (self.root / CORE_CODEC_BOUNDARIES[1]).write_text(
             "<?php\nSerializer::unserializeWithCodec($codec, trim($blob));\n"
         )
 
         result = self.validate()
 
-        self.assertNotEqual(0, result.returncode, result.stdout)
-        self.assertIn(
-            "codec implementation changed but its corpus did not grow",
-            result.stderr,
-        )
+        self.assert_server_review(result, CORE_CODEC_BOUNDARIES[1])
 
-    def test_changed_codec_method_control_flow_requires_corpus_growth(self) -> None:
+    def test_changed_codec_method_control_flow_requires_review(self) -> None:
         (self.root / GUARDED_METHOD_BOUNDARY).write_text(
             self.guarded_method_boundary_source(
                 codec_condition="$task !== [] && count($task) < 100",
@@ -943,11 +965,7 @@ final class InstrumentedCodecBoundaryRuntimeTest extends TestCase
 
         result = self.validate()
 
-        self.assertNotEqual(0, result.returncode, result.stdout)
-        self.assertIn(
-            "codec implementation changed but its corpus did not grow",
-            result.stderr,
-        )
+        self.assert_server_review(result, GUARDED_METHOD_BOUNDARY)
 
     def test_independent_same_method_change_requires_review_without_fake_growth(
         self,
@@ -1003,7 +1021,7 @@ final class InstrumentedCodecBoundaryRuntimeTest extends TestCase
 
         self.assertTrue(classification.related)
 
-    def test_changed_codec_call_requires_corpus_growth(self) -> None:
+    def test_changed_codec_call_requires_review(self) -> None:
         (self.root / GUARDED_METHOD_BOUNDARY).write_text(
             self.guarded_method_boundary_source(
                 codec_operation="unserializeWithCodec",
@@ -1012,13 +1030,9 @@ final class InstrumentedCodecBoundaryRuntimeTest extends TestCase
 
         result = self.validate()
 
-        self.assertNotEqual(0, result.returncode, result.stdout)
-        self.assertIn(
-            "codec implementation changed but its corpus did not grow",
-            result.stderr,
-        )
+        self.assert_server_review(result, GUARDED_METHOD_BOUNDARY)
 
-    def test_new_codec_operation_in_existing_boundary_requires_corpus_growth(
+    def test_new_codec_operation_in_existing_boundary_requires_review(
         self,
     ) -> None:
         extra_method = (
@@ -1034,13 +1048,9 @@ final class InstrumentedCodecBoundaryRuntimeTest extends TestCase
 
         result = self.validate()
 
-        self.assertNotEqual(0, result.returncode, result.stdout)
-        self.assertIn(
-            "codec implementation changed but its corpus did not grow",
-            result.stderr,
-        )
+        self.assert_server_review(result, GUARDED_METHOD_BOUNDARY)
 
-    def test_new_serializer_boundary_without_fixture_fails_closed(self) -> None:
+    def test_new_serializer_boundary_without_fixture_requires_review(self) -> None:
         (self.root / "app/Services/NewSerializerBoundary.php").write_text(
             "<?php\n"
             "namespace App\\Services;\n"
@@ -1056,13 +1066,9 @@ final class InstrumentedCodecBoundaryRuntimeTest extends TestCase
 
         result = self.validate()
 
-        self.assertNotEqual(0, result.returncode, result.stdout)
-        self.assertIn(
-            "codec implementation changed but its corpus did not grow",
-            result.stderr,
-        )
+        self.assert_server_review(result, "app/Services/NewSerializerBoundary.php")
 
-    def test_new_default_serializer_operations_without_fixture_fail_closed(
+    def test_new_default_serializer_operations_without_fixture_require_review(
         self,
     ) -> None:
         boundary = self.root / "app/Services/NewSerializerBoundary.php"
@@ -1083,11 +1089,7 @@ final class InstrumentedCodecBoundaryRuntimeTest extends TestCase
 
                 result = self.validate()
 
-                self.assertNotEqual(0, result.returncode, result.stdout)
-                self.assertIn(
-                    "codec implementation changed but its corpus did not grow",
-                    result.stderr,
-                )
+                self.assert_server_review(result, "app/Services/NewSerializerBoundary.php")
 
     def test_new_static_serializer_operations_use_finite_codec_inventory(
         self,
@@ -1122,11 +1124,7 @@ final class InstrumentedCodecBoundaryRuntimeTest extends TestCase
                 result = self.validate()
 
                 if codec_related:
-                    self.assertNotEqual(0, result.returncode, result.stdout)
-                    self.assertIn(
-                        "codec implementation changed but its corpus did not grow",
-                        result.stderr,
-                    )
+                    self.assert_server_review(result, "app/Services/NewSerializerBoundary.php")
                 else:
                     self.assertEqual(0, result.returncode, result.stderr)
                     report = json.loads(result.stdout)
@@ -1246,11 +1244,11 @@ final class InstrumentedCodecBoundaryRuntimeTest extends TestCase
 
                 self.assertNotEqual(0, result.returncode, result.stdout)
                 self.assertIn(
-                    "codec implementation changed but its corpus did not grow",
+                    "changed guarded PHP does not parse",
                     result.stderr,
                 )
 
-    def test_new_resolve_to_array_boundary_without_fixture_fails_closed(self) -> None:
+    def test_new_resolve_to_array_boundary_without_fixture_requires_review(self) -> None:
         (self.root / "app/Support/NewCodecBoundary.php").write_text(
             "<?php\n"
             "use Workflow\\V2\\Support\\PayloadEnvelopeResolver as Resolver;\n"
@@ -1259,13 +1257,9 @@ final class InstrumentedCodecBoundaryRuntimeTest extends TestCase
 
         result = self.validate()
 
-        self.assertNotEqual(0, result.returncode, result.stdout)
-        self.assertIn(
-            "codec implementation changed but its corpus did not grow",
-            result.stderr,
-        )
+        self.assert_server_review(result, "app/Support/NewCodecBoundary.php")
 
-    def test_new_codec_helper_method_without_fixture_fails_closed(self) -> None:
+    def test_new_codec_helper_method_without_fixture_requires_review(self) -> None:
         (self.root / "app/Support/FutureCodecBoundary.php").write_text(
             "<?php\n"
             "use Workflow\\V2\\Support\\PayloadEnvelopeResolver as Resolver;\n"
@@ -1274,13 +1268,9 @@ final class InstrumentedCodecBoundaryRuntimeTest extends TestCase
 
         result = self.validate()
 
-        self.assertNotEqual(0, result.returncode, result.stdout)
-        self.assertIn(
-            "codec implementation changed but its corpus did not grow",
-            result.stderr,
-        )
+        self.assert_server_review(result, "app/Support/FutureCodecBoundary.php")
 
-    def test_new_root_codec_boundary_without_fixture_fails_closed(self) -> None:
+    def test_new_root_codec_boundary_without_fixture_requires_review(self) -> None:
         (self.root / "app/RootCodecBoundary.php").write_text(
             "<?php\n"
             "use Workflow\\Serializers\\FutureCodec as Codec;\n"
@@ -1289,11 +1279,7 @@ final class InstrumentedCodecBoundaryRuntimeTest extends TestCase
 
         result = self.validate()
 
-        self.assertNotEqual(0, result.returncode, result.stdout)
-        self.assertIn(
-            "codec implementation changed but its corpus did not grow",
-            result.stderr,
-        )
+        self.assert_server_review(result, "app/RootCodecBoundary.php")
 
     def test_content_guard_ignores_unchanged_match_in_an_unrelated_hunk(self) -> None:
         (self.root / CONTROLLER_WITH_PAYLOAD).write_text(
@@ -1316,11 +1302,7 @@ final class InstrumentedCodecBoundaryRuntimeTest extends TestCase
 
         result = self.validate()
 
-        self.assertNotEqual(0, result.returncode, result.stdout)
-        self.assertIn(
-            "codec implementation changed but its corpus did not grow",
-            result.stderr,
-        )
+        self.assert_server_review(result, SEMANTIC_BOUNDARY)
 
     def test_content_guard_checks_a_removed_matching_hunk(self) -> None:
         (self.root / SEMANTIC_BOUNDARY).write_text(
@@ -1329,11 +1311,7 @@ final class InstrumentedCodecBoundaryRuntimeTest extends TestCase
 
         result = self.validate()
 
-        self.assertNotEqual(0, result.returncode, result.stdout)
-        self.assertIn(
-            "codec implementation changed but its corpus did not grow",
-            result.stderr,
-        )
+        self.assert_server_review(result, SEMANTIC_BOUNDARY)
 
     def test_every_core_codec_boundary_has_a_path_level_guard(self) -> None:
         policy = json.loads(REPOSITORY_POLICY.read_text())

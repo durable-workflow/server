@@ -42,7 +42,7 @@ class RuntimeExternalPayloadController
         }
 
         $data = RuntimeExternalPayloadUploadBody::read($request, $maxBytes);
-        $observedSize = strlen($data);
+        $observedSize = $data->sizeBytes;
         if ($observedSize > $maxBytes) {
             throw new RuntimeExternalPayloadException(
                 'external_payload_oversized',
@@ -91,7 +91,7 @@ class RuntimeExternalPayloadController
             'codec' => (string) $request->header('X-Durable-Workflow-Payload-Codec'),
             'size_bytes' => $this->declaredSize($request),
             'sha256' => strtolower((string) $request->header('X-Durable-Workflow-Payload-SHA256')),
-        ]);
+        ], stream: true);
         $reference = $result['reference'];
 
         $this->audit->record($request, 'external_payload.fetched', [
@@ -100,7 +100,21 @@ class RuntimeExternalPayloadController
             'size_bytes' => $reference['size_bytes'],
         ]);
 
-        return response($result['data'], 200, [
+        return response()->stream(static function () use ($result): void {
+            $data = $result['data'];
+            try {
+                $stream = $data->rewind();
+                while (! feof($stream)) {
+                    $chunk = fread($stream, 8192);
+                    if ($chunk === false) {
+                        throw new \RuntimeException('External payload snapshot could not be read.');
+                    }
+                    echo $chunk;
+                }
+            } finally {
+                $data->close();
+            }
+        }, 200, [
             'Content-Type' => 'application/octet-stream',
             'Content-Length' => (string) $reference['size_bytes'],
             'X-Durable-Workflow-Payload-Codec' => $reference['codec'],

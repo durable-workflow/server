@@ -124,7 +124,8 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         $run = WorkflowRun::query()->findOrFail((string) $start->json('run_id'));
 
         $this->assertSame('avro', $run->payload_codec);
-        $this->assertSame($payload, $run->arguments);
+        $this->assertSame(['ExternalAda'], $run->workflowArguments());
+        $this->assertSame(hash('sha256', $payload), $run->argumentsEnvelope()['external_storage']['sha256']);
     }
 
     public function test_signal_accepts_configured_external_storage_envelope_input(): void
@@ -1370,10 +1371,10 @@ class PayloadEnvelopeIntegrationTest extends TestCase
             ],
         ]);
 
-        $this->assertSame([
-            'codec' => 'avro',
-            'blob' => $workflowPayload,
-        ], $commands[0]['result']);
+        $this->assertSame('avro', $commands[0]['result']['codec']);
+        $storedResult = $commands[0]['result']['blob'];
+        $this->assertSame(hash('sha256', $workflowPayload), ExternalPayloads::storedEnvelope($storedResult)['external_storage']['sha256']);
+        $this->assertSame($workflowPayload, ExternalPayloads::resolveStoredPayload($storedResult, 'avro', 'default'));
         $this->assertSame('avro', $commands[0]['payload_codec'] ?? null);
         $this->assertSame([
             'codec' => 'avro',
