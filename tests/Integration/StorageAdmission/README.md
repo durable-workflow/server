@@ -89,8 +89,10 @@ new capacity measurement or a production reserve qualification.
 Each activity computes a value larger than the 64-KiB external-payload threshold
 and records its execution before waiting at a test barrier. The test fences
 Server, releases all three handlers and verifies that no acknowledgement changes
-the original attempts. During draining, PHP/Rust inline completions may finish;
-Python's separate payload upload remains paused because uploads are producers.
+the original attempts. During draining, every SDK must externalize its result
+under the current activity lease and complete the original attempt. Three
+independent completion budgets prove the external path was exercised. New
+workflow starts and unbound uploads remain refused.
 After normal admission resumes, every workflow must consume its original result,
 verify the bytes and complete without re-executing its activity. A fresh-process
 check after Server/MySQL restart verifies the same results and identities.
