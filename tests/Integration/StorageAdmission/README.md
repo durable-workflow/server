@@ -108,16 +108,16 @@ docker compose build php
 docker compose up -d --wait --wait-timeout 180 mysql
 docker compose up -d --no-build server
 docker compose exec -T --user 1000:1000 server php artisan server:bootstrap --force
-docker compose run --rm --no-deps --no-build experiment prepare
+docker compose run --rm --no-deps experiment prepare
 docker compose up -d --no-build php python rust
-docker compose run --rm --no-deps --no-build experiment pressure
+docker compose run --rm --no-deps experiment pressure
 
 # Inspect actual refused acknowledgement/upload requests; no payloads are logged.
 docker compose logs --no-color server
 docker compose stop php python rust
 docker compose restart mysql server
 docker compose up -d --no-build --wait --wait-timeout 180 mysql
-docker compose run --rm --no-deps --no-build experiment recover
+docker compose run --rm --no-deps experiment recover
 
 docker compose down --volumes --remove-orphans
 docker image rm "${COMPOSE_PROJECT_NAME}-sdk"
