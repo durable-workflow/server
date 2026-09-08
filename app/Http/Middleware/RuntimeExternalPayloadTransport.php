@@ -31,6 +31,7 @@ class RuntimeExternalPayloadTransport
             ['commands', '*', 'arguments'],
             ['commands', '*', 'entries'],
             ['commands', '*', 'exception', 'details'],
+            ['commands', '*', 'request_payload'],
             ['commands', '*', 'result'],
         ],
         'WorkflowController@query' => [['input']],

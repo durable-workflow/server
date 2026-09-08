@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Models\RuntimeExternalPayload;
+use App\Models\WorkflowNamespace;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Testing\TestResponse;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -102,6 +105,64 @@ final class WorkerServiceOperationTest extends TestCase
             })->andReturn(['accepted' => true, 'service_call_id' => 'call-42', 'status' => 'started']);
 
         $this->complete($task, $this->command($options))->assertOk();
+    }
+
+    #[DataProvider('runtimePayloadCases')]
+    public function test_runtime_payload_reference_is_resolved_before_service_command_admission(string $case): void
+    {
+        $this->seedCatalog();
+        $task = $this->leaseWorkflow();
+        $directory = storage_path('framework/testing/service-runtime-payload-'.bin2hex(random_bytes(5)));
+        $namespace = $case === 'foreign' ? 'other' : 'default';
+        if ($namespace === 'other') {
+            $this->createNamespace($namespace);
+        }
+        WorkflowNamespace::query()->where('name', $namespace)->update(['external_payload_storage' => [
+            'driver' => 'local', 'enabled' => true, 'threshold_bytes' => 1024,
+            'config' => ['uri' => 'file://'.$directory],
+        ]]);
+        $blob = Avro::serialize([['invoice' => 42]]);
+        try {
+            $reference = $this->call('POST', '/api/external-payloads/v1', [], [], [], [
+                'CONTENT_TYPE' => 'application/octet-stream', 'HTTP_X_NAMESPACE' => $namespace,
+                'HTTP_X_DURABLE_WORKFLOW_PAYLOAD_CODEC' => 'avro',
+                'HTTP_X_DURABLE_WORKFLOW_PAYLOAD_SIZE' => (string) strlen($blob),
+                'HTTP_X_DURABLE_WORKFLOW_PAYLOAD_SHA256' => hash('sha256', $blob),
+            ], $blob)->assertCreated()->json('reference');
+            $this->authenticateWorker();
+            if ($case === 'tampered') {
+                $reference['sha256'] = str_repeat('0', 64);
+            }
+            $historyCount = WorkflowHistoryEvent::query()->count();
+            $response = $this->complete($task, $this->command([
+                'request_payload' => ['codec' => 'avro', 'external_payload' => $reference],
+            ]));
+            if ($case !== 'valid') {
+                $response->assertStatus($case === 'foreign' ? 404 : 422)
+                    ->assertJsonPath('reason', $case === 'foreign' ? 'external_payload_not_found' : 'external_payload_integrity_mismatch');
+                $this->assertDatabaseCount('workflow_service_calls', 0);
+                $this->assertSame($historyCount, WorkflowHistoryEvent::query()->count());
+                $this->assertSame('leased', WorkflowTask::query()->findOrFail($task['task_id'])->status->value);
+                $this->assertNull(RuntimeExternalPayload::query()->findOrFail($reference['reference_id'])->retained_at);
+
+                return;
+            }
+            $response->assertOk();
+            $call = WorkflowServiceCall::query()->sole();
+            $target = WorkflowRun::query()->findOrFail($call->linked_workflow_run_id);
+            $this->assertSame([['invoice' => 42]], Avro::unserialize($target->arguments));
+            $this->assertNotNull(RuntimeExternalPayload::query()->findOrFail($reference['reference_id'])->retained_at);
+            $this->assertDatabaseHas('workflow_history_events', [
+                'workflow_run_id' => $task['run_id'], 'event_type' => 'ServiceCallStarted',
+            ]);
+        } finally {
+            File::deleteDirectory($directory);
+        }
+    }
+
+    public static function runtimePayloadCases(): array
+    {
+        return [['valid'], ['foreign'], ['tampered']];
     }
 
     #[DataProvider('invalidOptions')]
