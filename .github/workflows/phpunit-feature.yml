@@ -215,7 +215,9 @@ jobs:
                 -e DW_TEST_S3_ACCESS_KEY_ID=dw-minio-access \
                 -e DW_TEST_S3_SECRET_ACCESS_KEY=dw-minio-secret-key \
                 -e DW_TEST_BACKUP_MYSQL_HOST="dw-server-backup-mysql-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
+                -e DW_TEST_COMPLETION_MYSQL_HOST="dw-server-backup-mysql-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
                 -e DW_TEST_BACKUP_PGSQL_HOST="dw-server-backup-pgsql-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
+                -e DW_TEST_COMPLETION_PGSQL_HOST="dw-server-backup-pgsql-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
                 -w /app \
                 --entrypoint sh \
                 durable-workflow-server-corpus-validator \

@@ -22,7 +22,8 @@ class RuntimePayloadCompletionProcessTest extends TestCase
 
     public static function cases(): array
     {
-        return [['sqlite', 'activity'], ['sqlite', 'workflow'], ['mysql', 'activity'], ['mysql', 'workflow']];
+        return [['sqlite', 'activity'], ['sqlite', 'workflow'], ['mysql', 'activity'], ['mysql', 'workflow'],
+            ['pgsql', 'activity'], ['pgsql', 'workflow']];
     }
 
     #[DataProvider('cases')]
@@ -91,9 +92,10 @@ class RuntimePayloadCompletionProcessTest extends TestCase
 
     private function initialize(string $driver): void
     {
-        $host = getenv('DW_TEST_COMPLETION_MYSQL_HOST');
-        if ($driver === 'mysql' && ! $host) {
-            $this->markTestSkipped('Set DW_TEST_COMPLETION_MYSQL_HOST to a disposable MySQL test server.');
+        $prefix = $driver === 'pgsql' ? 'DW_TEST_COMPLETION_PGSQL_' : 'DW_TEST_COMPLETION_MYSQL_';
+        $host = getenv($prefix.'HOST');
+        if ($driver !== 'sqlite' && ! $host) {
+            $this->markTestSkipped('Set '.$prefix.'HOST to a disposable database test server.');
         }
         $this->directory = sys_get_temp_dir().'/dw-completion-process-'.bin2hex(random_bytes(6));
         mkdir($this->directory, 0700);
@@ -105,12 +107,13 @@ class RuntimePayloadCompletionProcessTest extends TestCase
             touch($this->environment['DB_DATABASE']);
         } else {
             $this->database = 'dw_completion_'.bin2hex(random_bytes(6));
-            $user = getenv('DW_TEST_COMPLETION_MYSQL_USER') ?: 'root';
-            $password = getenv('DW_TEST_COMPLETION_MYSQL_PASSWORD') ?: '';
-            $this->databaseAdmin = new PDO('mysql:host='.$host.';port=3306', $user, $password,
+            $user = getenv($prefix.'USER') ?: ($driver === 'pgsql' ? 'postgres' : 'root');
+            $password = getenv($prefix.'PASSWORD') ?: '';
+            $port = $driver === 'pgsql' ? '5432' : '3306';
+            $this->databaseAdmin = new PDO($driver.':host='.$host.';port='.$port.($driver === 'pgsql' ? ';dbname=postgres' : ''), $user, $password,
                 [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
             $this->databaseAdmin->exec('CREATE DATABASE '.$this->database);
-            $this->environment = array_replace($this->environment, ['DB_HOST' => $host, 'DB_PORT' => '3306',
+            $this->environment = array_replace($this->environment, ['DB_HOST' => $host, 'DB_PORT' => $port,
                 'DB_DATABASE' => $this->database, 'DB_USERNAME' => $user, 'DB_PASSWORD' => $password]);
         }
     }
