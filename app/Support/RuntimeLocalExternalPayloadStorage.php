@@ -5,7 +5,7 @@ namespace App\Support;
 use InvalidArgumentException;
 use RuntimeException;
 
-final class RuntimeLocalExternalPayloadStorage implements RuntimeExternalPayloadStorageDriver
+final class RuntimeLocalExternalPayloadStorage implements StreamingExternalPayloadStorageDriver
 {
     private string $root;
 
@@ -57,10 +57,68 @@ final class RuntimeLocalExternalPayloadStorage implements RuntimeExternalPayload
             0,
             2,
         ).DIRECTORY_SEPARATOR.$sha256;
+
         return self::pathToFileUri($path);
     }
 
     public function get(string $uri): string
+    {
+        $stream = $this->readStream($uri);
+
+        try {
+            return BoundedExternalPayloadReader::read($stream, self::maxPayloadBytes());
+        } finally {
+            fclose($stream);
+        }
+    }
+
+    public function putStream($stream, string $sha256, string $codec): string
+    {
+        $uri = $this->uriFor($sha256, $codec);
+        $path = rawurldecode((string) parse_url($uri, PHP_URL_PATH));
+        $directory = dirname($path);
+        if (! is_dir($directory) && ! mkdir($directory, 0775, true) && ! is_dir($directory)) {
+            throw new RuntimeException('Unable to create external payload directory.');
+        }
+
+        // The registry owns this URI before writing. A partial write is repaired
+        // on retry and remains discoverable for cleanup if the request dies.
+        $output = fopen($path, 'c+b');
+        if ($output === false) {
+            throw new RuntimeException('Unable to open external payload for writing.');
+        }
+
+        try {
+            $expectedSize = fstat($stream)['size'] ?? null;
+            if (! flock($output, LOCK_EX)) {
+                throw new RuntimeException('Unable to lock external payload bytes.');
+            }
+
+            // Never truncate an already accepted object on an idempotent retry.
+            $existingHash = hash_init('sha256');
+            if (fstat($output)['size'] === $expectedSize
+                && hash_update_stream($existingHash, $output) === $expectedSize
+                && hash_equals($sha256, hash_final($existingHash))
+            ) {
+                return $uri;
+            }
+
+            if (! rewind($output) || ! ftruncate($output, 0)
+                || ($written = stream_copy_to_stream($stream, $output)) === false
+                || ($expectedSize !== null && $written !== $expectedSize)
+                || ! fflush($output)
+                || ! fsync($output)
+            ) {
+                throw new RuntimeException('Unable to commit external payload bytes.');
+            }
+        } finally {
+            fclose($output);
+        }
+
+        return $uri;
+    }
+
+    public function readStream(string $uri)
     {
         $path = $this->pathFromUri($uri);
         if ($path === null || ! is_file($path)) {
@@ -72,11 +130,7 @@ final class RuntimeLocalExternalPayloadStorage implements RuntimeExternalPayload
             throw new RuntimeException('Unable to open external payload object for reading.');
         }
 
-        try {
-            return BoundedExternalPayloadReader::read($stream, self::maxPayloadBytes());
-        } finally {
-            fclose($stream);
-        }
+        return $stream;
     }
 
     public function delete(string $uri): void

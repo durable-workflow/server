@@ -69,7 +69,7 @@ class RuntimeExternalPayloadTransportTest extends TestCase
         $payload = Serializer::serializeWithCodec('avro', ['readable during pressure']);
         $reference = $this->upload($payload)->assertCreated()->json('reference');
         $this->configureStoragePressure('fenced');
-        $this->fetch($reference)->assertOk()->assertContent($payload);
+        $this->fetch($reference)->assertOk()->assertStreamedContent($payload);
         $this->assertNull(RuntimeExternalPayload::query()->sole()->last_fetched_at);
     }
 
@@ -103,11 +103,36 @@ class RuntimeExternalPayloadTransportTest extends TestCase
             ->assertHeader('X-Durable-Workflow-Payload-Codec', 'avro')
             ->assertHeader('X-Durable-Workflow-Payload-SHA256', hash('sha256', $payload))
             ->assertHeader('Cache-Control', 'immutable, max-age=60, private');
-        $this->assertSame($payload, $fetch->getContent());
+        $this->assertSame($payload, $fetch->streamedContent());
 
         $retry = $this->upload($payload);
         $retry->assertCreated()
             ->assertJsonPath('reference.reference_id', $reference['reference_id']);
+        $this->assertDatabaseCount('runtime_external_payloads', 1);
+    }
+
+    public function test_fetch_sends_verified_snapshot_even_if_backing_object_changes_before_send(): void
+    {
+        $payload = 'verified response bytes';
+        $reference = $this->upload($payload)->assertCreated()->json('reference');
+        $response = $this->fetch($reference)->assertOk();
+        $row = RuntimeExternalPayload::query()->sole();
+        file_put_contents(rawurldecode(parse_url($row->storage_uri, PHP_URL_PATH)), 'corrupted afterwards');
+
+        $response->assertStreamedContent($payload);
+        $this->fetch($reference)->assertStatus(422)->assertJsonPath('reason', 'external_payload_integrity_mismatch');
+    }
+
+    public function test_retry_repairs_partial_backing_write_and_keeps_reference_identity(): void
+    {
+        $payload = 'complete uploaded bytes';
+        $reference = $this->upload($payload)->assertCreated()->json('reference');
+        $row = RuntimeExternalPayload::query()->sole();
+        $row->forceFill(['upload_status' => RuntimeExternalPayload::UPLOAD_WRITING])->save();
+        file_put_contents(rawurldecode(parse_url($row->storage_uri, PHP_URL_PATH)), 'partial');
+
+        $this->upload($payload)->assertCreated()->assertJsonPath('reference.reference_id', $reference['reference_id']);
+        $this->fetch($reference)->assertOk()->assertStreamedContent($payload);
         $this->assertDatabaseCount('runtime_external_payloads', 1);
     }
 
@@ -379,12 +404,6 @@ class RuntimeExternalPayloadTransportTest extends TestCase
         $this->assertIsResource($stream);
         $this->assertSame(strlen($payload), fwrite($stream, $payload));
         rewind($stream);
-
-        $entrypoint = File::get(public_path('index.php'));
-        $this->assertStringContainsString('Request::createFromGlobals()', $entrypoint);
-        $this->assertStringNotContainsString('Request::capture()', $entrypoint);
-        $this->assertStringNotContainsString('Request::createFromBase(', $entrypoint);
-        $this->assertStringNotContainsString('getContent(', $entrypoint);
 
         $originalGet = $_GET;
         $originalPost = $_POST;
@@ -800,7 +819,7 @@ class RuntimeExternalPayloadTransportTest extends TestCase
 
         $reference = $poll->json('task.arguments.external_payload');
         $fetched = $this->fetch($reference);
-        $this->assertSame([$largeInput], Serializer::unserializeWithCodec('avro', $fetched->getContent()));
+        $this->assertSame([$largeInput], Serializer::unserializeWithCodec('avro', $fetched->streamedContent()));
 
         $this->withHeaders($this->controlHeaders())
             ->getJson('/api/workflows/runtime-reference-poll/runs/'.$start->json('run_id').'/history/export')

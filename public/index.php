@@ -15,8 +15,9 @@ $app = require_once __DIR__.'/../bootstrap/app.php';
 
 $kernel = $app->make(Kernel::class);
 
-Request::enableHttpMethodParameterOverride();
-$request = Request::createFromGlobals();
+// This API does not accept form bodies. Avoid Symfony's eager PUT/PATCH form
+// parsing before the bounded body middleware gets to inspect the request.
+$request = new Request($_GET, $_POST, [], $_COOKIE, $_FILES, $_SERVER);
 $response = $kernel->handle($request)->send();
 
 $kernel->terminate($request, $response);

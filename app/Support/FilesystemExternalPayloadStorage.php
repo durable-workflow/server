@@ -6,7 +6,7 @@ use Illuminate\Support\Facades\Storage;
 use InvalidArgumentException;
 use RuntimeException;
 
-class FilesystemExternalPayloadStorage implements RuntimeExternalPayloadStorageDriver
+class FilesystemExternalPayloadStorage implements StreamingExternalPayloadStorageDriver
 {
     public function __construct(
         private readonly string $disk,
@@ -33,6 +33,30 @@ class FilesystemExternalPayloadStorage implements RuntimeExternalPayloadStorageD
 
     public function get(string $uri): string
     {
+        $stream = $this->readStream($uri);
+
+        try {
+            return BoundedExternalPayloadReader::read(
+                $stream,
+                max(1, (int) config('server.external_payload_transport.max_payload_bytes')),
+            );
+        } finally {
+            fclose($stream);
+        }
+    }
+
+    public function putStream($stream, string $sha256, string $codec): string
+    {
+        $key = $this->keyFor($sha256, $codec);
+        if (Storage::disk($this->disk)->put($key, $stream) === false) {
+            throw new RuntimeException('Unable to write external payload stream.');
+        }
+
+        return $this->uriForKey($key);
+    }
+
+    public function readStream(string $uri)
+    {
         $key = $this->keyFromUri($uri);
         $disk = Storage::disk($this->disk);
 
@@ -45,14 +69,7 @@ class FilesystemExternalPayloadStorage implements RuntimeExternalPayloadStorageD
             throw new RuntimeException('Unable to open external payload object for reading.');
         }
 
-        try {
-            return BoundedExternalPayloadReader::read(
-                $stream,
-                max(1, (int) config('server.external_payload_transport.max_payload_bytes')),
-            );
-        } finally {
-            fclose($stream);
-        }
+        return $stream;
     }
 
     public function delete(string $uri): void

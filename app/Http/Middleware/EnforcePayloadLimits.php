@@ -3,6 +3,7 @@
 namespace App\Http\Middleware;
 
 use App\Support\ControlPlaneProtocol;
+use App\Support\ExternalPayloadObjectOversized;
 use App\Support\RuntimeExternalPayloadAudit;
 use App\Support\RuntimeExternalPayloadUploadBody;
 use App\Support\WorkerProtocol;
@@ -26,9 +27,28 @@ class EnforcePayloadLimits
             return $this->tooLarge($request, $maxBytes);
         }
 
-        $body = $externalPayloadUpload
-            ? RuntimeExternalPayloadUploadBody::read($request, $maxBytes)
-            : $request->getContent();
+        if ($externalPayloadUpload) {
+            // Reject non-binary bodies before any middleware can JSON-decode
+            // an upload using the much larger external transport allowance.
+            if (! $this->usesOctetStreamMediaType($request)) {
+                return $this->unsupportedMediaType($request);
+            }
+
+            try {
+                RuntimeExternalPayloadUploadBody::read($request, $maxBytes);
+            } catch (ExternalPayloadObjectOversized) {
+                return $this->tooLarge($request, $maxBytes);
+            }
+
+            return $next($request);
+        }
+
+        $stream = $request->getContent(true);
+        $readLimit = $maxBytes === PHP_INT_MAX ? PHP_INT_MAX : max(1, $maxBytes) + 1;
+        $body = stream_get_contents($stream, $readLimit);
+        if ($body === false) {
+            throw new \RuntimeException('Request body could not be read.');
+        }
         $bodySize = strlen($body);
 
         if ($bodySize > $maxBytes) {
@@ -37,10 +57,6 @@ class EnforcePayloadLimits
 
         if ($this->methodCanHaveBody($request)
             && $this->hasBody($contentLength, $bodySize)) {
-            if ($externalPayloadUpload && $this->usesOctetStreamMediaType($request)) {
-                return $next($request);
-            }
-
             if (! $this->usesJsonMediaType($request)) {
                 return $this->unsupportedMediaType($request);
             }
@@ -95,11 +111,7 @@ class EnforcePayloadLimits
 
     private function hasBody(?string $contentLength, int $bodySize): bool
     {
-        if (is_numeric($contentLength)) {
-            return (int) $contentLength > 0;
-        }
-
-        return $bodySize > 0;
+        return $bodySize > 0 || (is_numeric($contentLength) && (int) $contentLength > 0);
     }
 
     private function usesJsonMediaType(Request $request): bool
