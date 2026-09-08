@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace Tests\Feature;
 
 use App\Support\WorkerProtocol;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\HeaderAuthProvider;
@@ -489,6 +491,47 @@ class WorkflowHistoryPrincipalAttributionTest extends TestCase
         $this->assertIsArray($startEvent['principal'] ?? null);
         $this->assertSame('user-api-1', $startEvent['principal']['id'] ?? null);
         $this->assertSame('auth:test-header', $startEvent['principal']['type'] ?? null);
+    }
+
+    public function test_large_terminal_payload_is_not_selected_into_the_attribution_sort(): void
+    {
+        Queue::fake();
+        $this->registerWorker('large-result-worker', 'large-results');
+        $start = $this->withHeaders($this->principalHeaders('operator', 'operator'))
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'large-attributed-result',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'large-results',
+            ])->assertCreated();
+        $task = WorkflowTask::query()->where('workflow_run_id', $start->json('run_id'))->firstOrFail();
+        $this->assertIsArray(app(WorkflowTaskBridge::class)->claim($task->id, 'large-result-worker'));
+        $task->refresh();
+        $lookups = [];
+        DB::listen(static function (QueryExecuted $query) use (&$lookups): void {
+            if (str_contains($query->sql, 'workflow_history_events') && str_contains($query->sql, 'order by')
+                && in_array('WorkflowCompleted', $query->bindings, true)
+                && in_array('WorkflowFailed', $query->bindings, true)) {
+                $lookups[] = $query->sql;
+            }
+        });
+
+        $result = str_repeat('result-', 131072);
+        $this->withHeaders($this->principalHeaders('large-worker', 'worker') + $this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$task->id}/complete", [
+                'lease_owner' => 'large-result-worker',
+                'workflow_task_attempt' => (int) $task->attempt_count,
+                'commands' => [['type' => 'complete_workflow', 'result' => Serializer::serializeWithCodec('avro', $result)]],
+            ])->assertOk()->assertJsonPath('recorded', true)->assertJsonPath('run_status', 'completed');
+
+        $this->assertCount(1, $lookups);
+        $this->assertStringNotContainsString('*', $lookups[0]);
+        $this->assertStringNotContainsString('payload', $lookups[0]);
+        $event = WorkflowHistoryEvent::query()->where('workflow_run_id', $start->json('run_id'))
+            ->where('event_type', HistoryEventType::WorkflowCompleted->value)->firstOrFail();
+        $this->assertSame('large-worker', $event->payload['command']['principal_id']);
+        $this->withHeaders($this->principalHeaders('operator', 'operator'))
+            ->getJson('/api/workflows/large-attributed-result/runs/'.$start->json('run_id'))
+            ->assertOk()->assertJsonPath('output', $result);
     }
 
     public function test_worker_terminal_events_use_the_authenticated_worker_principal(): void
