@@ -48,9 +48,12 @@ final class RuntimePayloadCompletionUploads
         $scope = $context->scope($namespace);
         $this->locks->transaction($scope, function () use ($namespace, $context, $sha256, $data, $expiresAt, $scope): void {
             $this->requireWritable();
-            $budget = RuntimePayloadCompletionBudget::query()->lockForUpdate()->find($scope)
-                ?? new RuntimePayloadCompletionBudget(['id' => $scope, 'namespace' => $namespace,
-                    'context' => $context->toArray(), 'slots' => [], 'objects' => []]);
+            // Insert before a locking read: missing-row locks on different IDs
+            // can share an InnoDB gap and deadlock concurrent first reservations.
+            $budget = RuntimePayloadCompletionBudget::query()->lockForUpdate()->createOrFirst(
+                ['id' => $scope], ['namespace' => $namespace, 'context' => $context->toArray(),
+                    'slots' => [], 'objects' => [], 'expires_at' => $expiresAt->addSeconds($this->retryRetention())],
+            );
             $slots = $budget->slots;
             $objects = $budget->objects;
             $slot = $context->slotIdentity();

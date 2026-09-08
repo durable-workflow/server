@@ -58,9 +58,11 @@ class RuntimePayloadCompletionUploadsTest extends TestCase
         parent::tearDown();
     }
 
-    public function test_owned_activity_result_can_upload_complete_and_reconcile_after_lease_closes(): void
+    #[DataProvider('completionRosterStates')]
+    public function test_owned_activity_result_can_upload_complete_and_reconcile_after_lease_closes(string $roster): void
     {
         $context = $this->activity();
+        $this->setCompletionRoster($roster);
         $payload = Serializer::serializeWithCodec('avro', str_repeat('result', 200));
         $this->observeStoragePressure('draining');
         $reference = $this->upload($payload, $context)->assertCreated()->json('reference');
@@ -84,11 +86,20 @@ class RuntimePayloadCompletionUploadsTest extends TestCase
         ])->assertOk()->assertStreamedContent($payload);
     }
 
-    public function test_workflow_completion_upload_can_be_committed_during_draining(): void
+    #[DataProvider('completionRosterStates')]
+    public function test_workflow_completion_upload_can_be_committed_during_draining(string $roster): void
     {
         $context = $this->workflow();
+        $this->setCompletionRoster($roster);
         $payload = Serializer::serializeWithCodec('avro', ['result' => str_repeat('x', 100)]);
         $this->observeStoragePressure('draining');
+        if ($roster !== 'active') {
+            $this->upload($payload, $context)->assertStatus(409)
+                ->assertJsonPath('reason', 'external_payload_completion_lease_rejected');
+            $this->assertDatabaseCount('runtime_payload_completion_budgets', 0);
+
+            return;
+        }
         $reference = $this->upload($payload, $context)->assertCreated()->json('reference');
         $this->postJson('/api/worker/workflow-tasks/'.$context['task_id'].'/complete', [
             'lease_owner' => 'worker', 'workflow_task_attempt' => $context['attempt'],
@@ -100,7 +111,8 @@ class RuntimePayloadCompletionUploadsTest extends TestCase
         $this->upload($payload, $context)->assertCreated()->assertJsonPath('reference', $reference);
     }
 
-    public function test_query_completion_upload_uses_its_own_current_lease(): void
+    #[DataProvider('completionRosterStates')]
+    public function test_query_completion_upload_uses_its_own_current_lease(string $roster): void
     {
         $this->postJson('/api/workflows', ['workflow_id' => 'query-workflow',
             'workflow_type' => 'tests.external-greeting-workflow', 'task_queue' => 'queue', 'input' => []],
@@ -113,6 +125,7 @@ class RuntimePayloadCompletionUploadsTest extends TestCase
         $task = $this->postJson('/api/worker/query-tasks/poll', ['worker_id' => 'worker', 'task_queue' => 'queue'],
             $this->workerHeaders())->assertOk()->json('task');
         $this->assertIsArray($task);
+        $this->setCompletionRoster($roster);
         $context = ['schema' => RuntimePayloadCompletionContext::SCHEMA, 'kind' => 'query',
             'task_id' => $task['query_task_id'], 'attempt' => $task['query_task_attempt'],
             'lease_owner' => 'worker', 'operation' => 'complete', 'slot' => ['result_envelope']];
@@ -121,6 +134,13 @@ class RuntimePayloadCompletionUploadsTest extends TestCase
         $wrong['attempt']++;
         $this->upload('bytes', $wrong)->assertStatus(409);
         $payload = Serializer::serializeWithCodec('avro', ['status' => str_repeat('ready', 50)]);
+        if ($roster !== 'active') {
+            $this->upload($payload, $context)->assertStatus(409)
+                ->assertJsonPath('reason', 'external_payload_completion_lease_rejected');
+            $this->assertDatabaseCount('runtime_payload_completion_budgets', 0);
+
+            return;
+        }
         $reference = $this->upload($payload, $context)->assertCreated()->json('reference');
         $this->postJson('/api/worker/query-tasks/'.$context['task_id'].'/complete', [
             'lease_owner' => 'worker', 'query_task_attempt' => $context['attempt'],
@@ -303,6 +323,23 @@ class RuntimePayloadCompletionUploadsTest extends TestCase
         RuntimePayloadCompletionBudget::query()->update(['expires_at' => now()->subHour()]);
         app(RuntimeExternalPayloadCleanup::class)->runPass();
         $this->assertDatabaseCount('runtime_payload_completion_budgets', 0);
+    }
+
+    public static function completionRosterStates(): array
+    {
+        return [['active'], ['stale'], ['draining'], ['removed']];
+    }
+
+    private function setCompletionRoster(string $state): void
+    {
+        $worker = WorkerRegistration::query()->where('worker_id', 'worker');
+        if ($state === 'removed') {
+            $worker->delete();
+        } elseif ($state === 'stale') {
+            $worker->update(['last_heartbeat_at' => now()->subDay()]);
+        } else {
+            $worker->update(['status' => $state]);
+        }
     }
 
     private function activity(): array

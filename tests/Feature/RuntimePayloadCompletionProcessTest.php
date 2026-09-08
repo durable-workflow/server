@@ -74,6 +74,42 @@ class RuntimePayloadCompletionProcessTest extends TestCase
         self::assertSame(409, $this->runProbe('upload', $kind, $loser, '1')['status']);
     }
 
+    public static function nativeDatabases(): array
+    {
+        return [['mysql'], ['pgsql']];
+    }
+
+    #[DataProvider('nativeDatabases')]
+    public function test_independent_activity_budgets_can_be_created_concurrently(string $driver): void
+    {
+        $this->initialize($driver);
+        $this->runProbe('init-independent', 'activity');
+        $uploads = [];
+        foreach (range(0, 7) as $member) {
+            $uploads[$member] = $this->probe('upload-independent', 'activity', sprintf('%05d', $member),
+                (string) $member, 'member-'.$member);
+            $uploads[$member]->start();
+        }
+        $deadline = microtime(true) + 10;
+        foreach ($uploads as $member => $process) {
+            while (! is_file($this->directory.'/member-'.$member.'.ready') && $process->isRunning() && microtime(true) < $deadline) {
+                usleep(10000);
+            }
+            self::assertFileExists($this->directory.'/member-'.$member.'.ready', $process->getErrorOutput());
+        }
+        touch($this->directory.'/go');
+        $responses = [];
+        foreach ($uploads as $member => $process) {
+            $responses[$member] = $this->completedResult($process);
+            self::assertSame(201, $responses[$member]['status'], json_encode($responses[$member]));
+        }
+        foreach ($responses as $member => $response) {
+            self::assertSame($response, $this->runProbe('upload-independent', 'activity', sprintf('%05d', $member), (string) $member));
+        }
+        self::assertSame(['budgets' => 8, 'slots' => 8, 'objects' => 8, 'rows' => 8],
+            $this->runProbe('status-independent', 'activity'));
+    }
+
     protected function tearDown(): void
     {
         foreach ($this->processes as $process) {
@@ -122,7 +158,7 @@ class RuntimePayloadCompletionProcessTest extends TestCase
     {
         $process = new Process([PHP_BINARY, 'tests/Support/RuntimePayloadCompletionProcess.php', $action,
             $this->directory, $kind, $variant, $slot, $barrier], dirname(__DIR__, 2), $this->environment,
-            timeout: $action === 'init' ? 120 : 30);
+            timeout: str_starts_with($action, 'init') ? 120 : 30);
         $this->processes[] = $process;
 
         return $process;

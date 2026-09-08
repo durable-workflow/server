@@ -39,38 +39,54 @@ try {
 
         return ['status' => $response->getStatusCode(), 'body' => json_decode($response->getContent(), true, flags: JSON_THROW_ON_ERROR)];
     };
-    if ($action === 'init') {
+    if (in_array($action, ['init', 'init-independent'], true)) {
         file_put_contents($directory.'/pressure.json', json_encode(['schema' => StoragePressure::SCHEMA,
             'source' => 'completion-process-test', 'observed_at' => time(), 'state' => 'normal'], JSON_THROW_ON_ERROR));
         Artisan::call('migrate:fresh', ['--force' => true]);
         WorkflowNamespace::query()->updateOrCreate(['name' => 'default'], ['status' => 'active', 'retention_days' => 30,
             'external_payload_storage' => ['driver' => 'local', 'enabled' => true, 'threshold_bytes' => 32,
                 'config' => ['uri' => 'file://'.$directory.'/objects']]]);
-        WorkerRegistration::query()->create(['worker_id' => 'worker', 'namespace' => 'default', 'task_queue' => 'queue',
-            'runtime' => 'php', 'supported_workflow_types' => ['test.workflow'], 'supported_activity_types' => ['test.activity'],
-            'last_heartbeat_at' => now(), 'status' => 'active']);
-        $plural = $kind === 'activity' ? 'activities' : 'workflows';
-        $started = $request('/api/'.$plural, [$kind.'_id' => 'test', $kind.'_type' => 'test.'.$kind,
-            'task_queue' => 'queue', 'input' => []]);
-        if ($started['status'] !== 201) {
-            throw new RuntimeException(json_encode($started, JSON_THROW_ON_ERROR));
+        foreach (range(0, $action === 'init-independent' ? 7 : 0) as $member) {
+            $worker = $member === 0 ? 'worker' : 'worker-'.$member;
+            WorkerRegistration::query()->create(['worker_id' => $worker, 'namespace' => 'default', 'task_queue' => 'queue',
+                'runtime' => 'php', 'supported_workflow_types' => ['test.workflow'], 'supported_activity_types' => ['test.activity'],
+                'last_heartbeat_at' => now(), 'status' => 'active']);
+            $plural = $kind === 'activity' ? 'activities' : 'workflows';
+            $started = $request('/api/'.$plural, [$kind.'_id' => 'test-'.$member, $kind.'_type' => 'test.'.$kind,
+                'task_queue' => 'queue', 'input' => []]);
+            if ($started['status'] !== 201) {
+                throw new RuntimeException(json_encode($started, JSON_THROW_ON_ERROR));
+            }
+            $polled = $request('/api/worker/'.$kind.'-tasks/poll', ['worker_id' => $worker, 'task_queue' => 'queue']);
+            $task = $polled['body']['task'] ?? null;
+            if (! is_array($task)) {
+                throw new RuntimeException(json_encode($polled, JSON_THROW_ON_ERROR));
+            }
+            $context = ['schema' => RuntimePayloadCompletionContext::SCHEMA, 'kind' => $kind,
+                'task_id' => $task['task_id'], 'attempt' => $task[$kind === 'activity' ? 'activity_attempt_id' : 'workflow_task_attempt'],
+                'lease_owner' => $worker, 'operation' => 'complete',
+                'slot' => $kind === 'activity' ? ['result'] : ['commands', 0, 'result']];
+            $contextFile = $action === 'init-independent' ? '/context-'.$member.'.json' : '/context.json';
+            file_put_contents($directory.$contextFile, json_encode($context, JSON_THROW_ON_ERROR));
         }
-        $polled = $request('/api/worker/'.$kind.'-tasks/poll', ['worker_id' => 'worker', 'task_queue' => 'queue']);
-        $task = $polled['body']['task'] ?? null;
-        if (! is_array($task)) {
-            throw new RuntimeException(json_encode($polled, JSON_THROW_ON_ERROR));
-        }
-        $context = ['schema' => RuntimePayloadCompletionContext::SCHEMA, 'kind' => $kind,
-            'task_id' => $task['task_id'], 'attempt' => $task[$kind === 'activity' ? 'activity_attempt_id' : 'workflow_task_attempt'],
-            'lease_owner' => 'worker', 'operation' => 'complete',
-            'slot' => $kind === 'activity' ? ['result'] : ['commands', 0, 'result']];
-        file_put_contents($directory.'/context.json', json_encode($context, JSON_THROW_ON_ERROR));
         file_put_contents($directory.'/pressure.json', json_encode(['schema' => StoragePressure::SCHEMA,
             'source' => 'completion-process-test', 'observed_at' => time(), 'state' => 'draining'], JSON_THROW_ON_ERROR));
         echo '{}';
         exit(0);
     }
-    $context = json_decode(file_get_contents($directory.'/context.json'), true, flags: JSON_THROW_ON_ERROR);
+    if ($action === 'status-independent') {
+        $budgets = RuntimePayloadCompletionBudget::query()->get();
+        echo json_encode(['budgets' => $budgets->count(), 'slots' => $budgets->sum(fn ($budget) => count($budget->slots)),
+            'objects' => $budgets->sum(fn ($budget) => count($budget->objects)),
+            'rows' => RuntimeExternalPayload::query()->count()], JSON_THROW_ON_ERROR);
+        exit(0);
+    }
+    $contextFile = $action === 'upload-independent' ? '/context-'.$slot.'.json' : '/context.json';
+    $context = json_decode(file_get_contents($directory.$contextFile), true, flags: JSON_THROW_ON_ERROR);
+    if ($action === 'upload-independent') {
+        $action = 'upload';
+        $slot = '0';
+    }
     if ($action === 'upload') {
         if ($slot !== '0') {
             if ($kind === 'activity') {
