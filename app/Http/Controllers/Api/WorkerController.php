@@ -2760,8 +2760,14 @@ class WorkerController
                 }
             }
 
-            foreach (['arguments', 'result', 'entries'] as $field) {
-                if (! array_key_exists($field, $command) || ! is_array($command[$field])) {
+            $payloadFields = WorkflowCommandNormalizer::payloadEnvelopeFields()[$commandType] ?? [];
+            foreach ($payloadFields as $field) {
+                if (is_string($command[$field] ?? null)) {
+                    AvroPayloadEnvelopeResolver::assertSerializedPayload($command[$field], "commands.{$index}.{$field}");
+
+                    continue;
+                }
+                if (! is_array($command[$field] ?? null)) {
                     continue;
                 }
 
@@ -2772,16 +2778,6 @@ class WorkerController
                 );
 
                 if ($resolved['codec'] === null) {
-                    $commands[$index][$field] = $resolved['payload'];
-
-                    continue;
-                }
-
-                $normalizerAcceptsPayloadEnvelope = is_string($commandType)
-                    && WorkflowCommandNormalizer::acceptsPayloadEnvelope($commandType, $field);
-
-                if (! $normalizerAcceptsPayloadEnvelope) {
-                    unset($commands[$index]['payload_codec']);
                     $commands[$index][$field] = $resolved['payload'];
 
                     continue;

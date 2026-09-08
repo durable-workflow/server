@@ -1951,6 +1951,22 @@ ServerCodecRegressionFixtureExecutor::exercise(
         self.assertEqual(1, counts["counterfactual_proofs"])
         self.assertEqual(1, counts["revision_verified"])
 
+    def test_fixed_request_reproducer_uses_candidate_base_and_reverted_boundary(self) -> None:
+        boundary = CORE_CODEC_BOUNDARIES[0]
+        (self.root / boundary).write_text(
+            "<?php\nSerializer::serializeWithCodec($codec, array_values($arguments));\n"
+        )
+        self.write_counterfactual(
+            "fixed-request-defect", boundary, value="3", wire="Bg==",
+        )
+        test = self.root / "tests/Feature/CodecRegression/fixed-request-defectTest.php"
+        test.write_text(test.read_text() + "\n// hard-coded codec input\n")
+
+        result = self.validate(verify_counterfactual=True)
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(1, json.loads(result.stdout)["counts"]["codec"]["revision_verified"])
+
     def test_one_proof_can_claim_multiple_independently_verified_boundaries(self) -> None:
         encode_boundary, decode_boundary = CORE_CODEC_BOUNDARIES
         added_contract = "app/Support/NewCodecContract.php"

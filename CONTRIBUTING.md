@@ -31,5 +31,8 @@ routes its official PHP codec calls through a stateless proxy. The validator
 requires the proxy's per-run boundary attestation, while proof adapters that
 read verifier input, mutate verifier state, branch, or dispatch dynamically are
 rejected. Complete source qualification runs the proof against the candidate,
-the target revision, a causality sentinel, and a candidate with only that
-boundary reverted.
+the target revision, and a candidate with only that boundary reverted. The
+regression must pass on the candidate and fail on both defective revisions.
+Review the fixture and HTTP reproducer together; substituting an unrelated
+valid fixture cannot prove the causality of a request that deliberately submits
+malformed bytes.
