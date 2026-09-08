@@ -4,9 +4,11 @@ namespace Tests\Feature;
 
 use App\Models\RuntimeExternalPayload;
 use App\Models\RuntimePayloadCompletionBudget;
+use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
 use App\Support\RuntimeExternalPayloadCleanup;
 use App\Support\RuntimePayloadCompletionContext;
+use App\Support\WorkflowQueryTaskBroker;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
@@ -16,6 +18,7 @@ use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Feature\Concerns\StoragePressureFixture;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 
 class RuntimePayloadCompletionUploadsTest extends TestCase
@@ -77,6 +80,86 @@ class RuntimePayloadCompletionUploadsTest extends TestCase
             'HTTP_X_DURABLE_WORKFLOW_PAYLOAD_SIZE' => (string) strlen($payload),
             'HTTP_X_DURABLE_WORKFLOW_PAYLOAD_SHA256' => hash('sha256', $payload),
         ])->assertOk()->assertStreamedContent($payload);
+    }
+
+    public function test_workflow_completion_upload_can_be_committed_during_draining(): void
+    {
+        $context = $this->workflow();
+        $payload = Serializer::serializeWithCodec('avro', ['result' => str_repeat('x', 100)]);
+        $this->observeStoragePressure('draining');
+        $reference = $this->upload($payload, $context)->assertCreated()->json('reference');
+        $this->postJson('/api/worker/workflow-tasks/'.$context['task_id'].'/complete', [
+            'lease_owner' => 'worker', 'workflow_task_attempt' => $context['attempt'],
+            'commands' => [['type' => 'complete_workflow', 'sequence' => 1,
+                'result' => ['codec' => 'avro', 'external_payload' => $reference]]],
+        ], $this->workerHeaders())->assertOk();
+        $this->assertNotNull(RuntimeExternalPayload::query()->sole()->retained_at);
+        $this->assertSame('completed', WorkflowRun::query()->sole()->status->value);
+        $this->upload($payload, $context)->assertCreated()->assertJsonPath('reference', $reference);
+    }
+
+    public function test_query_completion_upload_uses_its_own_current_lease(): void
+    {
+        $this->postJson('/api/workflows', ['workflow_id' => 'query-workflow',
+            'workflow_type' => 'tests.external-greeting-workflow', 'task_queue' => 'queue', 'input' => []],
+            $this->apiHeaders())->assertCreated();
+        WorkerRegistration::query()->where('worker_id', 'worker')->update(['capabilities' => ['query_tasks']]);
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $broker->enqueue('default', WorkflowRun::query()->sole(), 'status', [
+            'codec' => 'avro', 'blob' => Serializer::serializeWithCodec('avro', []),
+        ]);
+        $task = $this->postJson('/api/worker/query-tasks/poll', ['worker_id' => 'worker', 'task_queue' => 'queue'],
+            $this->workerHeaders())->assertOk()->json('task');
+        $this->assertIsArray($task);
+        $context = ['schema' => RuntimePayloadCompletionContext::SCHEMA, 'kind' => 'query',
+            'task_id' => $task['query_task_id'], 'attempt' => $task['query_task_attempt'],
+            'lease_owner' => 'worker', 'operation' => 'complete', 'slot' => ['result_envelope']];
+        $this->observeStoragePressure('draining');
+        $wrong = $context;
+        $wrong['attempt']++;
+        $this->upload('bytes', $wrong)->assertStatus(409);
+        $payload = Serializer::serializeWithCodec('avro', ['status' => str_repeat('ready', 50)]);
+        $reference = $this->upload($payload, $context)->assertCreated()->json('reference');
+        $this->postJson('/api/worker/query-tasks/'.$context['task_id'].'/complete', [
+            'lease_owner' => 'worker', 'query_task_attempt' => $context['attempt'],
+            'result_envelope' => ['codec' => 'avro', 'external_payload' => $reference],
+        ], $this->workerHeaders())->assertOk()->assertJsonPath('outcome', 'completed');
+        $this->upload($payload, $context)->assertCreated()->assertJsonPath('reference', $reference);
+    }
+
+    public function test_activity_cannot_claim_another_budget_as_a_workflow_task(): void
+    {
+        $context = $this->activity();
+        $context['kind'] = 'workflow';
+        $context['attempt'] = 1;
+        $context['slot'] = ['commands', 0, 'result'];
+        $this->observeStoragePressure('draining');
+        $this->upload('bytes', $context)->assertStatus(409);
+        $this->assertDatabaseCount('runtime_payload_completion_budgets', 0);
+    }
+
+    public function test_workflow_slots_are_bounded_even_when_the_bytes_are_deduplicated(): void
+    {
+        $context = $this->workflow();
+        $this->observeStoragePressure('draining');
+        for ($index = 0; $index < 128; $index++) {
+            $context['slot'] = ['commands', $index, 'arguments'];
+            $this->upload('same', $context)->assertCreated();
+        }
+        $context['slot'] = ['commands', 128, 'arguments'];
+        $this->upload('same', $context)->assertStatus(429)
+            ->assertJsonPath('reason', 'external_payload_completion_budget_exhausted');
+        $this->assertDatabaseCount('runtime_external_payloads', 1);
+        $this->assertCount(128, RuntimePayloadCompletionBudget::query()->sole()->slots);
+    }
+
+    public function test_renewed_worker_registration_does_not_authorize_a_wrong_workflow_attempt(): void
+    {
+        $context = $this->workflow();
+        $context['attempt']++;
+        $this->observeStoragePressure('draining');
+        $this->upload('bytes', $context)->assertStatus(409);
+        $this->assertDatabaseCount('runtime_payload_completion_budgets', 0);
     }
 
     #[DataProvider('wrongContexts')]
@@ -195,6 +278,20 @@ class RuntimePayloadCompletionUploadsTest extends TestCase
         return ['schema' => RuntimePayloadCompletionContext::SCHEMA, 'kind' => 'activity',
             'task_id' => $task['task_id'], 'attempt' => $task['activity_attempt_id'],
             'lease_owner' => 'worker', 'operation' => 'complete', 'slot' => ['result']];
+    }
+
+    private function workflow(): array
+    {
+        $this->postJson('/api/workflows', ['workflow_id' => 'workflow',
+            'workflow_type' => 'tests.external-greeting-workflow', 'task_queue' => 'queue', 'input' => []],
+            $this->apiHeaders())->assertCreated();
+        $task = $this->postJson('/api/worker/workflow-tasks/poll', ['worker_id' => 'worker', 'task_queue' => 'queue'],
+            $this->workerHeaders())->assertOk()->json('task');
+        $this->assertIsArray($task);
+
+        return ['schema' => RuntimePayloadCompletionContext::SCHEMA, 'kind' => 'workflow',
+            'task_id' => $task['task_id'], 'attempt' => $task['workflow_task_attempt'],
+            'lease_owner' => 'worker', 'operation' => 'complete', 'slot' => ['commands', 0, 'result']];
     }
 
     private function upload(string $bytes, array $context, string $namespace = 'default'): TestResponse
