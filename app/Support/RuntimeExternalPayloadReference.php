@@ -72,6 +72,14 @@ final class RuntimeExternalPayloadReference
                     'X-Durable-Workflow-Payload-SHA256',
                 ],
                 'idempotency' => 'content_addressed_per_namespace',
+                'completion_context' => [
+                    'schema' => RuntimePayloadCompletionContext::SCHEMA,
+                    'header' => RuntimePayloadCompletionContext::HEADER,
+                    'use' => 'retry_draining_refusal_for_current_worker_completion_only',
+                    'max_bytes_per_lease' => RuntimePayloadCompletionUploads::maxBytes(),
+                    'max_slots_per_lease' => RuntimePayloadCompletionUploads::MAX_SLOTS,
+                    'fenced_or_stale_admission' => 'refuse',
+                ],
             ],
             'fetch' => [
                 'method' => 'GET',
@@ -121,6 +129,10 @@ final class RuntimeExternalPayloadReference
                 'external_payload_namespace_bytes_exhausted' => ['status' => 429, 'retryable' => true],
                 'external_payload_namespace_objects_exhausted' => ['status' => 429, 'retryable' => true],
                 'external_payload_namespace_quota_unavailable' => ['status' => 503, 'retryable' => true],
+                'external_payload_completion_invalid' => ['status' => 422, 'retryable' => false],
+                'external_payload_completion_lease_rejected' => ['status' => 409, 'retryable' => false],
+                'external_payload_completion_conflict' => ['status' => 409, 'retryable' => false],
+                'external_payload_completion_budget_exhausted' => ['status' => 429, 'retryable' => true],
             ],
             'audit_events' => [
                 'external_payload.uploaded',

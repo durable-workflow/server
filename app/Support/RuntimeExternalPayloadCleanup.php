@@ -44,6 +44,8 @@ final class RuntimeExternalPayloadCleanup
         $limit = min(self::MAX_BATCH_SIZE, max(1, $limit));
         $cutoff ??= now();
 
+        app(RuntimePayloadCompletionUploads::class)->cleanup($namespace, $limit, $cutoff);
+
         $candidates = $this->expiredQuery($namespace, $cutoff)
             ->orderBy('expires_at')
             ->orderBy('id')

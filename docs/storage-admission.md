@@ -54,6 +54,40 @@ history pruning, and payload cleanup do not start a new pass under pressure.
 
 ## Deployment Requirements
 
+### External Completion Payloads
+
+When discovery advertises `upload.completion_context`, a worker may retry a
+draining upload refusal with `X-Durable-Workflow-Payload-Completion`. The header
+is a JSON object, at most 4096 bytes, containing exactly:
+
+```json
+{"schema":"durable-workflow.v2.payload-completion-context.v1","kind":"activity","task_id":"task-id","attempt":"activity-attempt-id","lease_owner":"worker-id","operation":"complete","slot":["result"]}
+```
+
+`activity` uses its attempt ID; `workflow` and `query` use their positive integer
+attempt counter. The context must describe the current namespace-scoped lease.
+An activity allows `complete`/`["result"]` or `fail`/`["failure","details"]`;
+a query allows `complete`/`["result_envelope"]`. Workflow completion slots are
+`["commands", index, field]` for `arguments`, `entries`, `request_payload`, or
+`result`, plus `exception/details` and `workflow_stream/items/index/payload`.
+Indices are non-negative integers, not numeric strings.
+
+This is not a general upload permission. The worker role and current lease are
+checked before reading and before committing new bytes. Every slot is immutable
+within a lease. All its slots and complete/fail outcomes share at most 128 slots
+and `DW_EXTERNAL_PAYLOAD_COMPLETION_MAX_BYTES` distinct bytes, defaulting to the
+ordinary maximum external payload size. Matching retries do not consume another
+allowance. A recorded ready reference can be returned without a new write after
+the lease closes. Expired references cannot be recreated without a current lease.
+Existing namespace quotas still apply, and fenced/stale admission refuses uploads.
+
+Normal uploads without this header keep their existing behavior. SDKs must not
+attach it to workflow starts, signals, updates, or other new input. The allowance
+does not reserve physical disk space or promise that arbitrarily many leased
+results fit; operators still need the headroom qualification below.
+
+### Physical Reserve
+
 This is cooperative admission, **not a database write fence or an exact byte
 reservation system**. A request, queue job, or maintenance pass already in
 progress can still write. A storage transition can race a successful check.
