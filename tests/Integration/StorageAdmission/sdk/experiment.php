@@ -87,18 +87,26 @@ try {
         check(attempts($db) === $before, 'Fenced completion changed an activity attempt.');
         echo "Fenced attempts unchanged; permitting bounded acknowledgements to drain.\n";
 
-        // Inline acknowledgements may drain; new standalone uploads must wait.
+        // Bound completion uploads may drain; unbound producers must still wait.
         observe('draining');
+        call('POST', '/workflows', startBody('draining-start'), false, 503);
+        call('POST', '/external-payloads/v1', [], true, 503);
         waitFor(static function () use ($db, $runs): bool {
             $statuses = array_column(attempts($db), 'status', 'workflow_run_id');
+            foreach ($runs as $run) {
+                if (($statuses[$run] ?? null) !== 'completed') {
+                    return false;
+                }
+            }
 
-            return ($statuses[$runs['php']] ?? null) === 'completed'
-                && ($statuses[$runs['rust']] ?? null) === 'completed';
-        }, 'Inline SDK completions did not drain.', 30, 'draining');
+            return true;
+        }, 'Lease-bound SDK completions did not drain.', 30, 'draining');
         hold('draining', 10);
         $draining = attempts($db);
-        $statuses = array_column($draining, 'status', 'workflow_run_id');
-        check(($statuses[$runs['python']] ?? null) === 'running', 'Python upload should still be paused while draining.');
+        $budgets = $db->query('SELECT context FROM runtime_payload_completion_budgets')->fetchAll(PDO::FETCH_COLUMN);
+        $contexts = array_map(static fn (string $value): array => json_decode($value, true, flags: JSON_THROW_ON_ERROR), $budgets);
+        $activityBudgets = array_filter($contexts, static fn (array $context): bool => $context['kind'] === 'activity');
+        check(count($activityBudgets) === 3, 'Every SDK must use its own bounded external-completion upload.');
         foreach (LANGUAGES as $language) {
             check(file_get_contents('/observation/'.$language.'.effects') === "executed\n", 'Handler was repeated during pressure.');
         }
@@ -125,7 +133,7 @@ try {
             'activity_tasks' => $db->query("SELECT id, workflow_run_id FROM workflow_tasks WHERE task_type = 'activity'")->fetchAll(PDO::FETCH_ASSOC)];
         file_put_contents('/observation/sdk-evidence.json', json_encode($evidence, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT));
         echo json_encode(['sdk_recovery' => true, 'handlers_executed' => 3, 'payload_bytes_each' => 262144,
-            'separate_python_upload_paused_until_normal' => true], JSON_THROW_ON_ERROR).PHP_EOL;
+            'lease_bound_external_completions_drained' => 3], JSON_THROW_ON_ERROR).PHP_EOL;
     } elseif ($phase === 'recover') {
         $before = json_decode(file_get_contents('/observation/sdk-evidence.json'), true, 512, JSON_THROW_ON_ERROR);
         observe('normal');
