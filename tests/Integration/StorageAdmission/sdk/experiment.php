@@ -89,6 +89,7 @@ try {
         observe('draining');
         waitFor(static function () use ($db, $runs): bool {
             $statuses = array_column(attempts($db), 'status', 'workflow_run_id');
+
             return ($statuses[$runs['php']] ?? null) === 'completed'
                 && ($statuses[$runs['rust']] ?? null) === 'completed';
         }, 'Inline SDK completions did not drain.', 30, 'draining');
@@ -107,6 +108,7 @@ try {
                     return false;
                 }
             }
+
             return true;
         }, 'Published SDK workers did not recover.');
         assertResults($runs);
