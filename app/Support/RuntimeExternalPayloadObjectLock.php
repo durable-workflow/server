@@ -22,11 +22,14 @@ final class RuntimeExternalPayloadObjectLock
      * @param  Closure(): TReturn  $callback
      * @return TReturn
      */
-    public function transaction(string $uri, Closure $callback): mixed
+    public function transaction(string $uri, Closure $callback, ?Closure $beforeLock = null): mixed
     {
         $bucket = hexdec(substr(hash('sha256', $uri), 0, 4)) % self::BUCKETS;
 
-        return DB::transaction(function () use ($bucket, $callback): mixed {
+        return DB::transaction(function () use ($bucket, $callback, $beforeLock): mixed {
+            // Completion ownership locks must precede payload locks, as they do
+            // when the engine commits an activity result.
+            $beforeLock?->__invoke();
             $lock = DB::table('runtime_external_payload_object_locks')
                 ->where('bucket', $bucket)
                 ->lockForUpdate()

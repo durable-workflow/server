@@ -80,6 +80,9 @@ ordinary maximum external payload size. Matching retries do not consume another
 allowance. A recorded ready reference can be returned without a new write after
 the lease closes. Expired references cannot be recreated without a current lease.
 Existing namespace quotas still apply, and fenced/stale admission refuses uploads.
+An exhausted drain allowance returns the ordinary retryable storage-pressure
+refusal, so workers hold their result instead of reporting an activity failure.
+After capacity recovers, retry the ordinary upload without the completion header.
 
 Normal uploads without this header keep their existing behavior. SDKs must not
 attach it to workflow starts, signals, updates, or other new input. The allowance

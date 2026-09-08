@@ -9,13 +9,13 @@ use Symfony\Component\HttpFoundation\Response;
 
 final class StorageAdmissionPaused extends RuntimeException
 {
-    public function __construct(public readonly array $snapshot)
+    public function __construct(public readonly array $snapshot, private readonly bool $unadmitted = false)
     {
         parent::__construct('Storage admission paused before a new claim.');
     }
 
     public function render(Request $request): Response
     {
-        return app(EnforceStorageAdmission::class)->reject($request, $this->snapshot, false);
+        return app(EnforceStorageAdmission::class)->reject($request, $this->snapshot, $this->unadmitted);
     }
 }

@@ -48,7 +48,7 @@ final class RuntimePayloadCompletionUploads
         $scope = $context->scope($namespace);
         $this->locks->transaction($scope, function () use ($namespace, $context, $sha256, $data, $expiresAt, $scope): void {
             $this->requireWritable();
-            $budget = RuntimePayloadCompletionBudget::query()->find($scope)
+            $budget = RuntimePayloadCompletionBudget::query()->lockForUpdate()->find($scope)
                 ?? new RuntimePayloadCompletionBudget(['id' => $scope, 'namespace' => $namespace,
                     'context' => $context->toArray(), 'slots' => [], 'objects' => []]);
             $slots = $budget->slots;
@@ -61,6 +61,12 @@ final class RuntimePayloadCompletionUploads
             }
             if (! isset($slots[$slot]) && count($slots) >= self::MAX_SLOTS
                 || ! isset($objects[$sha256]) && $data->sizeBytes > self::maxBytes() - array_sum($objects)) {
+                $snapshot = $this->pressure->snapshot();
+                if ($snapshot['state'] === 'draining') {
+                    // No slot or object mutation was admitted. Preserve the worker's
+                    // existing pause/retry contract, not an activity failure.
+                    throw new StorageAdmissionPaused($snapshot, unadmitted: true);
+                }
                 throw new RuntimeExternalPayloadException('external_payload_completion_budget_exhausted', 429, true,
                     'The bounded payload allowance for this completion lease is exhausted.', retryAfterSeconds: 5);
             }
@@ -76,7 +82,7 @@ final class RuntimePayloadCompletionUploads
         });
         $this->locks->transaction($scope, function () use ($scope, $context, $reference): void {
             $this->requireWritable();
-            $budget = RuntimePayloadCompletionBudget::query()->findOrFail($scope);
+            $budget = RuntimePayloadCompletionBudget::query()->lockForUpdate()->findOrFail($scope);
             $slots = $budget->slots;
             $slots[$context->slotIdentity()]['reference'] = $reference;
             $budget->forceFill(['slots' => $slots])->save();
@@ -98,18 +104,22 @@ final class RuntimePayloadCompletionUploads
             ->orderBy('expires_at')->limit($limit)->get();
         foreach ($candidates as $candidate) {
             $context = RuntimePayloadCompletionContext::parse(json_encode($candidate->context, JSON_THROW_ON_ERROR));
-            $this->locks->transaction($candidate->id, function () use ($candidate, $context, $cutoff): void {
+            $mayResume = true;
+            $this->locks->transaction($candidate->id, function () use ($candidate, $cutoff, &$mayResume): void {
                 $this->pressure->requireNewWork();
-                $row = RuntimePayloadCompletionBudget::query()->find($candidate->id);
+                $row = RuntimePayloadCompletionBudget::query()->lockForUpdate()->find($candidate->id);
                 if ($row === null || $row->expires_at->gt($cutoff)) {
                     return;
                 }
                 // A heartbeat may keep an old lease alive: never reset its allowance.
-                if ($this->leases->mayResume($candidate->namespace, $context)) {
+                if ($mayResume) {
                     $row->forceFill(['expires_at' => now()->addSeconds($this->retryRetention())])->save();
                 } else {
                     $row->delete();
                 }
+            }, function () use ($candidate, $context, &$mayResume): void {
+                $this->pressure->requireNewWork();
+                $mayResume = $this->leases->mayResume($candidate->namespace, $context);
             });
         }
     }

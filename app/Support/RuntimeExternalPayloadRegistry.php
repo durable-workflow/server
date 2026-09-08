@@ -485,7 +485,7 @@ class RuntimeExternalPayloadRegistry
                 $beforeWrite?->__invoke();
 
                 return $this->track($namespace, $uri, $codec, $sha256, $sizeBytes, false, $expiresAt, RuntimeExternalPayload::UPLOAD_WRITING);
-            });
+            }, $beforeWrite);
         } catch (RuntimeExternalPayloadException|StorageAdmissionPaused $exception) {
             throw $exception;
         } catch (Throwable $exception) {
@@ -545,7 +545,7 @@ class RuntimeExternalPayloadRegistry
                     $expiresAt,
                     RuntimeExternalPayload::UPLOAD_READY,
                 );
-            });
+            }, $beforeWrite);
         } catch (RuntimeExternalPayloadException|StorageAdmissionPaused $exception) {
             throw $exception;
         } catch (Throwable $exception) {
