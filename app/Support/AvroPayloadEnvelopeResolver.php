@@ -18,8 +18,22 @@ final class AvroPayloadEnvelopeResolver
         mixed $input,
         string $field = 'input',
         ?ExternalPayloadStorageDriver $externalStorage = null,
+        bool $retainExternal = false,
     ): array {
         self::assertEnvelope($input, $field);
+        if ($retainExternal && $externalStorage instanceof RuntimeTrackedExternalPayloadStorage && is_array($input)) {
+            $keys = array_keys($input);
+            sort($keys);
+            if ($keys === ['codec', 'external_storage'] && is_array($input['external_storage'])) {
+                // The runtime already has these immutable bytes. Verify and
+                // retain that object instead of fetching and uploading it again.
+                return [
+                    'codec' => PayloadCodecContract::canonicalize($input['codec']),
+                    'blob' => $externalStorage->retainEnvelope($input),
+                ];
+            }
+        }
+
         $resolved = PayloadEnvelopeResolver::resolve($input, $field, $externalStorage);
         self::assertResolvedCodec($resolved['codec'] ?? null, $field);
 

@@ -23,6 +23,8 @@ use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\MemoPayload;
 
 class RuntimeExternalPayloadTransportTest extends TestCase
@@ -664,6 +666,43 @@ class RuntimeExternalPayloadTransportTest extends TestCase
             ->assertStatus(422)
             ->assertJsonPath('reason', 'external_payload_unsupported');
         $this->assertDatabaseMissing('workflow_instances', ['workflow_id' => 'provider-reference-rejected']);
+    }
+
+    public function test_large_workflow_input_keeps_the_verified_reference_without_materializing_bytes(): void
+    {
+        Queue::fake();
+        $payload = Serializer::serializeWithCodec('avro', [str_repeat('x', 12 * 1024 * 1024)]);
+        config(['server.external_payload_transport.max_payload_bytes' => strlen($payload)]);
+        $reference = $this->upload($payload)->assertCreated()->json('reference');
+        unset($payload);
+        memory_reset_peak_usage();
+        $before = memory_get_usage(true);
+
+        $this->withHeaders($this->controlHeaders())->postJson('/api/workflows', [
+            'workflow_id' => 'large-reference-input',
+            'workflow_type' => 'remote.large-input',
+            'task_queue' => 'large-input',
+            'input' => ['codec' => 'avro', 'external_payload' => $reference],
+        ])->assertCreated();
+
+        $this->assertLessThan(8 * 1024 * 1024, memory_get_peak_usage(true) - $before);
+        $row = RuntimeExternalPayload::query()->sole();
+        $this->assertNotNull($row->retained_at);
+        $this->assertNull($row->expires_at);
+        $run = WorkflowRun::query()->sole();
+        $envelope = ExternalPayloads::storedEnvelope($run->arguments);
+        $this->assertSame($row->storage_uri, $envelope['external_storage']['uri']);
+        $this->assertSame($reference['sha256'], $envelope['external_storage']['sha256']);
+
+        memory_reset_peak_usage();
+        $before = memory_get_usage(true);
+        $this->withHeaders($this->controlHeaders())->getJson('/api/workflows/large-reference-input')
+            ->assertOk()
+            ->assertJsonPath('input', null)
+            ->assertJsonPath('payload_previews.input_omitted', true)
+            ->assertJsonPath('commands.0.payload_preview_omitted', true)
+            ->assertJsonPath('input_envelope.external_payload.reference_id', $reference['reference_id']);
+        $this->assertLessThan(8 * 1024 * 1024, memory_get_peak_usage(true) - $before);
     }
 
     public function test_workflow_open_metadata_preserves_reserved_looking_business_keys(): void

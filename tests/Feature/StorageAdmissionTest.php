@@ -43,7 +43,10 @@ class StorageAdmissionTest extends TestCase
     {
         $this->observeStoragePressure('draining');
         $writes = $this->watchWrites();
-        $this->postJson($path, [], $this->apiHeaders())
+        $headers = $path === '/api/external-payloads/v1'
+            ? ['Content-Type' => 'application/octet-stream'] + $this->apiHeaders()
+            : $this->apiHeaders();
+        $this->postJson($path, [], $headers)
             ->assertStatus(503)->assertHeader('Retry-After', '5')
             ->assertJsonPath('reason', 'storage_pressure')->assertJsonPath('request_admitted', false);
         $this->assertSame([], $writes->queries);

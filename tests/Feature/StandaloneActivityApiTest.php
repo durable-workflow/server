@@ -527,7 +527,7 @@ class StandaloneActivityApiTest extends TestCase
         ])->get('/api/external-payloads/v1/'.$reference['reference_id']);
 
         $response->assertOk();
-        $payload = $response->getContent();
+        $payload = $response->streamedContent();
         $this->assertSame((int) $reference['size_bytes'], strlen($payload));
         $this->assertSame((string) $reference['sha256'], hash('sha256', $payload));
 

@@ -211,13 +211,15 @@ class RuntimeExternalPayloadRegistry
         ];
     }
 
-    public function verifyFetchedBytesAndClaim(string $namespace, string $uri, string $data): void
+    public function verifyFetchedBytesAndClaim(string $namespace, string $uri, string|ExternalPayloadStream $data): void
     {
-        $this->assertSize(strlen($data));
+        $observedSize = $data instanceof ExternalPayloadStream ? $data->sizeBytes : strlen($data);
+        $observedHash = $data instanceof ExternalPayloadStream ? $data->sha256 : hash('sha256', $data);
+        $this->assertSize($observedSize);
         $namespace = $this->namespace($namespace);
 
         try {
-            $this->objectLock->transaction($uri, function () use ($namespace, $uri, $data): void {
+            $this->objectLock->transaction($uri, function () use ($namespace, $uri, $observedSize, $observedHash): void {
                 $row = RuntimeExternalPayload::query()
                     ->where('namespace', $namespace)
                     ->where('storage_uri_sha256', hash('sha256', $uri))
@@ -239,7 +241,7 @@ class RuntimeExternalPayloadRegistry
                     );
                 }
 
-                if (strlen($data) !== $row->size_bytes || ! hash_equals($row->sha256, hash('sha256', $data))) {
+                if ($observedSize !== $row->size_bytes || ! hash_equals($row->sha256, $observedHash)) {
                     throw $this->integrityMismatch('Fetched external payload bytes failed runtime integrity verification.');
                 }
 

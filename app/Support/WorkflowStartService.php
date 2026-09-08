@@ -106,6 +106,7 @@ class WorkflowStartService
             $validated['input'] ?? null,
             'input',
             $this->externalPayloadStorage->driverFor($namespace),
+            retainExternal: true,
         );
 
         // When the client sends no input (or an empty array), emit a

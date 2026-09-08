@@ -54,10 +54,24 @@ authenticated namespace, fetches the backing bytes, verifies size and SHA-256,
 and returns `application/octet-stream` with the verified metadata headers.
 SDKs verify the returned bytes again before Avro decode.
 
-Both operations use bounded buffering up to `max_payload_bytes`. Discovery
-publishes the request timeout. Fetch responses use private, short-lived,
+Both HTTP operations use chunked copying into a verified temporary snapshot,
+spilling to the process temporary directory above 2 MiB. Provide temporary
+storage for concurrent transfers as well as the persistent backing store;
+memory-backed temporary directories still count toward container memory limits.
+The runtime checks observed bytes even without `Content-Length`. Ordinary API
+bodies keep their separate, smaller request limit. Discovery publishes the
+request timeout. Fetch responses use private, short-lived,
 immutable caching; SDK caches must be bounded and cannot delete runtime-owned
 objects.
+
+Workflow descriptions retain the complete `input_envelope` and `output_envelope`.
+For external objects larger than the ordinary request limit, the convenient
+decoded `input` or `output` preview is `null`; `payload_previews.input_omitted`
+and `output_omitted` distinguish this from a real null value, and
+`max_encoded_bytes` gives the preview ceiling. Command diagnostics similarly
+report `payload_preview_omitted` when payload-derived fields are omitted. Use
+the authenticated payload endpoint or SDK to read the complete value. A status
+lookup must not decode a large object just to display its workflow metadata.
 
 ## Self-hosted backing storage
 
