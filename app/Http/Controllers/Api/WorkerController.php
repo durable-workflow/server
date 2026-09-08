@@ -24,6 +24,7 @@ use App\Support\RouteAuthorizationResource;
 use App\Support\RuntimeExternalPayloadAudit;
 use App\Support\RuntimeExternalPayloadException;
 use App\Support\SearchAttributeValueValidator;
+use App\Support\ServiceCallBoundary;
 use App\Support\ServiceModeTimerDispatcher;
 use App\Support\StreamClosedException;
 use App\Support\StreamErroredException;
@@ -61,6 +62,7 @@ use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowServiceCall;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\StickyExecution;
 use Workflow\V2\Support\WorkerProtocolVersion;
@@ -1526,7 +1528,7 @@ class WorkerController
             'commands.*.labels' => ['nullable', 'array'],
             'commands.*.memo' => ['nullable', 'array'],
             'commands.*.search_attributes' => ['nullable', 'array'],
-            'commands.*.duplicate_start_policy' => ['nullable', 'string'],
+            'commands.*.duplicate_start_policy' => ['nullable', 'string', 'in:reject_duplicate,return_existing_active'],
             'commands.*.metadata' => ['nullable', 'array'],
             'commands.*.request_payload_reference' => ['nullable', 'string', 'max:191'],
             'commands.*.principal_subject' => ['prohibited'],
@@ -1761,6 +1763,7 @@ class WorkerController
                             return $response;
                         }
 
+                        $this->authorizeServiceOperationReplays($request, (string) $namespace, $taskId, $commands);
                         $commands = $this->canonicalizeWorkflowStreamPayloadCodecs($commands);
                         $commands = app(WorkflowStreamCommandProcessor::class)->process(
                             $taskId,
@@ -2709,6 +2712,14 @@ class WorkerController
             ]);
             abort_unless($principal !== null && app(AuthProvider::class)->authorize($principal, 'execute_operation', $resource), 403);
 
+            if (isset($command['search_attributes'])) {
+                $this->searchAttributeValues->validateForNamespace(
+                    $targetNamespace,
+                    $command['search_attributes'],
+                    "commands.{$index}.search_attributes",
+                );
+            }
+
             // A worker owns command intent, not the authenticated caller identity.
             $commands[$index] = array_replace($command, [
                 'namespace' => $targetNamespace,
@@ -2722,6 +2733,67 @@ class WorkerController
         }
 
         return $commands;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $commands
+     */
+    private function authorizeServiceOperationReplays(Request $request, string $namespace, string $taskId, array $commands): void
+    {
+        foreach ($commands as $index => $command) {
+            if (($command['type'] ?? null) !== 'start_service_operation') {
+                continue;
+            }
+
+            $callId = $command['service_call_id'] ?? null;
+            $key = $command['idempotency_key'] ?? null;
+            if ($callId === null && $key === null) {
+                continue;
+            }
+
+            $query = WorkflowServiceCall::query()->where('target_namespace', $command['namespace']);
+            if ($callId !== null) {
+                $query->whereKey(trim($callId));
+            } else {
+                $query->where('endpoint_name', strtolower(trim($command['endpoint_name'])))
+                    ->where('service_name', strtolower(trim($command['service_name'])))
+                    ->where('operation_name', strtolower(trim($command['operation_name'])))
+                    ->where('idempotency_key', trim($key))
+                    ->oldest('created_at')->oldest('id');
+            }
+            $call = $query->first();
+            if ($call === null && $callId === null) {
+                continue;
+            }
+
+            $runId = WorkflowTask::query()->whereKey($taskId)->value('workflow_run_id');
+            $principal = Authenticate::principal($request);
+            abort_unless($call !== null && $principal !== null
+                && $call->caller_namespace === $namespace
+                && $call->caller_workflow_run_id === $runId
+                && $call->endpoint_name === strtolower(trim($command['endpoint_name']))
+                && $call->service_name === strtolower(trim($command['service_name']))
+                && $call->operation_name === strtolower(trim($command['operation_name'])), 403);
+
+            // Existing call IDs and idempotency keys must not skip current boundary policy.
+            $operation = $call->operation;
+            abort_unless($operation !== null && $call->endpoint !== null && $call->service !== null, 403);
+            $rejection = app(ServiceCallBoundary::class)->replayRejectionFor(
+                principal: $principal,
+                callerNamespace: $namespace,
+                operation: $operation,
+                endpointName: $call->endpoint_name,
+                serviceName: $call->service_name,
+                callerWorkflowInstanceId: $call->caller_workflow_instance_id,
+                callerWorkflowRunId: $runId,
+                idempotencyKey: $key,
+                operationModeOverride: $command['mode_override'] ?? null,
+                endpointBoundaryPolicy: $call->endpoint->boundary_policy ?? [],
+                serviceBoundaryPolicy: $call->service->boundary_policy ?? [],
+                operationBoundaryPolicy: $operation->boundary_policy ?? [],
+            );
+            abort_if($rejection !== null, 403);
+        }
     }
 
     private function normalizeWorkflowTaskCommandIntegerFields(array $commands): array

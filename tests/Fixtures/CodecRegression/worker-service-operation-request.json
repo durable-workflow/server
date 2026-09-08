@@ -1,0 +1,21 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.codec-regression/v1",
+  "id": "worker-service-operation-request",
+  "protocol": {
+    "codec": "avro",
+    "schema": "durable_workflow.protocol.Value",
+    "version": "1",
+    "fingerprint": "e2a33dff55802237"
+  },
+  "bindings": ["php", "python", "rust"],
+  "value": {
+    "type": "array",
+    "items": [{"type": "map", "entries": [{"key": "invoice", "value": {"type": "long", "value": "42"}}]}]
+  },
+  "framing": {
+    "encoding": "avro-single-object",
+    "wire_base64": "wwHioz3/VYAiNwwCDgIOaW52b2ljZQRUAAA="
+  },
+  "failure_policy": {"operation": "round_trip", "error": null}
+}
