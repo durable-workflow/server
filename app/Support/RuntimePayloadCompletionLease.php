@@ -18,10 +18,14 @@ final class RuntimePayloadCompletionLease
 
     public function expiresAt(string $namespace, RuntimePayloadCompletionContext $context): CarbonImmutable
     {
-        $worker = WorkerRegistration::query()->where('namespace', $namespace)
-            ->where('worker_id', $context->leaseOwner)->first();
-        if (! $worker instanceof WorkerRegistration || ! WorkerPollFence::isFresh($worker)) {
-            throw self::rejected();
+        // Activities heartbeat their own leases while application code runs;
+        // their worker roster can age or drain without revoking that authority.
+        if ($context->kind !== 'activity') {
+            $worker = WorkerRegistration::query()->where('namespace', $namespace)
+                ->where('worker_id', $context->leaseOwner)->first();
+            if (! $worker instanceof WorkerRegistration || ! WorkerPollFence::isFresh($worker)) {
+                throw self::rejected();
+            }
         }
 
         $expires = match ($context->kind) {
