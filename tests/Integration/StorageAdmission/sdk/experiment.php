@@ -62,7 +62,7 @@ try {
         echo "SDK fixture ready; runtime payload offload threshold is 64 KiB.\n";
     } elseif ($phase === 'pressure') {
         check(! is_file('/observation/sdk-evidence.json'), 'Use a fresh SDK fixture.');
-        waitFor(static fn (): bool => (int) $db->query('SELECT COUNT(*) FROM worker_registrations')->fetchColumn() === 3,
+        waitFor(static fn (): bool => (int) $db->query('SELECT COUNT(*) FROM workflow_worker_registrations')->fetchColumn() === 3,
             'All three published SDK workers must register.');
         $runs = [];
         foreach (LANGUAGES as $language) {
@@ -76,6 +76,7 @@ try {
             'All activities must execute before fencing.');
         $before = attempts($db);
         check(count($before) === 3, 'Expected exactly three original activity attempts.');
+        echo "Three activity results computed; fencing acknowledgements.\n";
         observe('fenced');
         call('POST', '/workflows', startBody('fenced-start'), false, 503);
         file_put_contents('/observation/release-activities', 'return computed outcomes');
@@ -84,6 +85,7 @@ try {
             'All handlers must return their computed results while fenced.', 30, 'fenced');
         hold('fenced', 20);
         check(attempts($db) === $before, 'Fenced completion changed an activity attempt.');
+        echo "Fenced attempts unchanged; permitting bounded acknowledgements to drain.\n";
 
         // Inline acknowledgements may drain; new standalone uploads must wait.
         observe('draining');
@@ -102,7 +104,10 @@ try {
         }
 
         observe('normal');
-        waitFor(static function () use ($runs): bool {
+        echo "Draining behavior verified; reopening normal admission.\n";
+        waitFor(static function () use ($db, $runs): bool {
+            $failure = $db->query("SELECT last_error FROM workflow_tasks WHERE status = 'failed' ORDER BY id LIMIT 1")->fetchColumn();
+            check($failure === false, 'Workflow task failed during SDK recovery: '.($failure ?: 'unknown failure'));
             foreach ($runs as $language => $run) {
                 if (call('GET', '/workflows/storage-'.$language.'/runs/'.$run)['status'] !== 'completed') {
                     return false;
