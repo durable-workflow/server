@@ -9,6 +9,13 @@ use Symfony\Component\Yaml\Yaml;
 
 class ServerPerfHarnessContractTest extends TestCase
 {
+    public function test_time_bounded_queue_worker_is_supervised_between_recycles(): void
+    {
+        $compose = Yaml::parseFile(dirname(__DIR__, 2).'/docker-compose.yml');
+        $this->assertStringContainsString('--max-time=3600', $compose['services']['worker']['command']);
+        $this->assertSame('unless-stopped', $compose['services']['worker']['restart']);
+    }
+
     public function test_contract_qualification_installs_the_verified_workflow_source(): void
     {
         $workflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/server-perf.yml');
@@ -389,7 +396,7 @@ class ServerPerfHarnessContractTest extends TestCase
             );
         }
 
-        $composeOffset = strpos($source, 'docker compose -p "$PROJECT" -f "$ROOT_DIR/docker-compose.yml" -f "$OVERRIDE_FILE" up -d --build --wait');
+        $composeOffset = strpos($source, '"${compose[@]}" up -d --build --wait');
         $loadOffset = strpos($source, 'Running perf load against ${BASE_URL}');
         $this->assertIsInt($composeOffset);
         $this->assertIsInt($loadOffset);

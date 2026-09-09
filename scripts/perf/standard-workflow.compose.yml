@@ -1,0 +1,15 @@
+services:
+  soak-sdk:
+    profiles: [standard-soak]
+    build:
+      context: .
+      dockerfile: scripts/perf/Dockerfile.sdk
+    environment:
+      DURABLE_WORKFLOW_RUNTIME_URL: http://server:8080
+      DURABLE_WORKFLOW_NAMESPACE: perf-standard
+      DURABLE_WORKFLOW_TASK_QUEUE: perf-standard
+      DURABLE_WORKFLOW_TOKEN: ${DW_AUTH_TOKEN:-perf-token}
+    cpus: 0.5
+    mem_limit: 256m
+    init: true
+    restart: "no"

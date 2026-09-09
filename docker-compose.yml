@@ -111,6 +111,7 @@ services:
         WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-}
         WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-}
     command: php artisan queue:work --sleep=1 --tries=3 --max-time=3600
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "server-process-healthcheck", "worker"]
       interval: 5s

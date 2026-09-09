@@ -623,6 +623,10 @@ function capacityConformanceEvidence(array $fixtures): array
     ];
 }
 
+if (realpath($_SERVER['SCRIPT_FILENAME'] ?? '') !== __FILE__) {
+    return;
+}
+
 $mode = $argv[1] ?? '';
 if ($mode === 'describe') {
     echo json_encode(capacityAdapterDescriptor(), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES).PHP_EOL;

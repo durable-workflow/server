@@ -9,7 +9,6 @@ import hashlib
 import json
 import math
 import os
-import random
 import re
 import subprocess
 import sys
@@ -173,7 +172,7 @@ class EndpointMetrics:
         self.lock = threading.Lock()
         self.endpoints: dict[str, dict[str, Any]] = {}
 
-    def record(self, endpoint: str, status: int, latency: float, *, backpressured: bool = False) -> None:
+    def record(self, endpoint: str, status: int, latency: float, *, backpressured: bool = False, valid: bool = True) -> None:
         with self.lock:
             entry = self.endpoints.setdefault(
                 endpoint,
@@ -182,6 +181,8 @@ class EndpointMetrics:
             entry["requests"] += 1
             entry["statuses"][str(status)] += 1
             entry["latencies"].append(latency)
+            if not valid or (status != 429 and not 200 <= status < 300):
+                entry["errors"] += 1
             if backpressured:
                 entry["backpressured"] = int(entry.get("backpressured", 0)) + 1
 
@@ -230,10 +231,57 @@ class EndpointMetrics:
                             6,
                         ),
                         "max": 0.0 if not latencies else round(latencies[-1], 6),
+                        "p50": percentile(latencies, 0.50),
+                        "p99": percentile(latencies, 0.99),
                     },
                 }
 
-            return snapshot
+        return snapshot
+
+
+def percentile(values: list[float], fraction: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    return round(ordered[max(0, math.ceil(len(ordered) * fraction) - 1)], 6)
+
+
+def standard_workflow_loop(project: str, duration: int, artifact_dir: Path) -> dict[str, Any]:
+    command = ["docker", "exec", f"{project}-soak-sdk-1", "php", "scripts/perf/standard_workflow_soak.php", str(duration)]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=duration + 90, check=False)
+        (artifact_dir / "standard-workflows.jsonl").write_text(result.stdout, encoding="utf-8")
+        (artifact_dir / "standard-workflows.log").write_text(result.stderr, encoding="utf-8")
+        return evaluate_standard_workflows(result.stdout, result.returncode, duration)
+    except subprocess.TimeoutExpired:
+        return {"enabled": True, "failures": ["standard workflow client exceeded its bounded deadline"]}
+
+
+def evaluate_standard_workflows(output: str, exit_code: int, duration: int) -> dict[str, Any]:
+    try:
+        rows = [json.loads(line) for line in output.splitlines() if line.strip()]
+        starts = [row for row in rows if row.get("phase") == "started"]
+        finished = [row for row in rows if row.get("phase") == "finished"]
+        workflows = [row for row in rows if row.get("phase") == "workflow"]
+        completed = [row for row in workflows if row.get("completed") is True]
+        failures = []
+        if exit_code != 0 or len(workflows) != len(completed):
+            failures.append("standard workflow client failed result/history validation or execution")
+        if not workflows or len(starts) != 1 or len(finished) != 1 or float(finished[0]["elapsed_seconds"]) < duration:
+            failures.append("standard workflow measurement was empty, partial, or stopped early")
+        latencies = [float(row["latency_seconds"]) for row in completed]
+        return {
+            "enabled": True, "binding": "php", "workload": "DW Standard Workflow v1",
+            "started": len(workflows), "completed": len(completed), "errors": len(workflows) - len(completed),
+            "duration_seconds": duration, "interval_seconds": 5,
+            "sdk": starts[0].get("sdk") if starts else None,
+            "php": starts[0].get("php") if starts else None,
+            "completed_per_second": round(len(completed) / float(finished[0]["elapsed_seconds"]), 6) if finished else None,
+            "latency_seconds": {f"p{int(p * 100)}": percentile(latencies, p) for p in (0.5, 0.95, 0.99)},
+            "failures": failures,
+        }
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return {"enabled": True, "failures": ["standard workflow client produced malformed evidence"]}
 
 
 class MetricsHandler(BaseHTTPRequestHandler):
@@ -298,7 +346,7 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=float(os.environ.get("DW_PERF_MAX_CONTROL_PLANE_LATENCY_SECONDS", "5")),
     )
-    parser.add_argument("--drain-seconds", type=int, default=int(os.environ.get("DW_PERF_DRAIN_SECONDS", "12")))
+    parser.add_argument("--drain-seconds", type=int, default=int(os.environ.get("DW_PERF_DRAIN_SECONDS", "310")))
     parser.add_argument("--artifact-dir", default=os.environ.get("DW_PERF_ARTIFACT_DIR", "build/perf"))
     parser.add_argument("--compose-project", default=os.environ.get("DW_PERF_COMPOSE_PROJECT", ""))
     parser.add_argument("--metrics-port", type=int, default=int(os.environ.get("DW_PERF_METRICS_PORT", "19090")))
@@ -487,35 +535,23 @@ def create_namespaces(base_url: str, token: str, namespaces: list[str]) -> None:
 PERF_WORKFLOW_TYPE = "perf.harness.workflow"
 
 
-def register_workers(base_url: str, token: str, namespaces: list[str], queues: list[str]) -> list[tuple[str, str, str]]:
+def register_workers(base_url: str, token: str, namespaces: list[str], queues: list[str], count: int) -> list[tuple[str, str, str]]:
     workers: list[tuple[str, str, str]] = []
-    for namespace in namespaces:
-        for queue in queues:
-            worker_id = f"perf-worker-{namespace}-{queue}"
-            status, body = http_json(
-                "POST",
-                f"{base_url}/api/worker/register",
-                auth_headers(token, namespace, worker=True),
-                {
-                    "worker_id": worker_id,
-                    "task_queue": queue,
-                    # Model a published remote SDK that requires successful
-                    # empty poll responses under capacity backpressure.
-                    "runtime": "python",
-                    "sdk_version": "perf-harness",
-                    "max_concurrent_workflow_tasks": 100,
-                    # Workers must advertise at least one workflow type so
-                    # the server treats them as workflow-task-eligible. A
-                    # registration with no types short-circuits every poll
-                    # at no_workflow_capability and the polling cache surface
-                    # never runs — leaving the bounded-growth smoke without
-                    # any observation of the path it asserts on.
-                    "supported_workflow_types": [PERF_WORKFLOW_TYPE],
-                },
-            )
-            if status not in (200, 201):
-                raise RuntimeError(f"failed to register {worker_id}: HTTP {status}: {body}")
-            workers.append((namespace, queue, worker_id))
+    # Each polling thread owns one registration and maintains its heartbeat.
+    for index in range(max(1, count)):
+        namespace, queue = namespaces[index % len(namespaces)], queues[index % len(queues)]
+        worker_id = f"perf-worker-{namespace}-{queue}-{index}"
+        status, body = http_json(
+            "POST", f"{base_url}/api/worker/register", auth_headers(token, namespace, worker=True),
+            {
+                "worker_id": worker_id, "task_queue": queue, "runtime": "python",
+                "sdk_version": "perf-harness", "max_concurrent_workflow_tasks": 1,
+                "supported_workflow_types": [PERF_WORKFLOW_TYPE],
+            },
+        )
+        if status not in (200, 201):
+            raise RuntimeError(f"failed to register {worker_id}: HTTP {status}: {body}")
+        workers.append((namespace, queue, worker_id))
 
     return workers
 
@@ -553,7 +589,8 @@ def file_sha256(path: Path) -> str:
 
 
 def compose_command(project: str, *args: str) -> list[str]:
-    return ["docker", "compose", "-p", project, *args]
+    root = Path(__file__).resolve().parents[2]
+    return ["docker", "compose", "-p", project, "-f", str(root / "docker-compose.yml"), "-f", str(root / "scripts/perf/standard-workflow.compose.yml"), *args]
 
 
 def parse_bytes(value: str) -> int:
@@ -578,19 +615,24 @@ def parse_bytes(value: str) -> int:
     return int(amount * scale)
 
 
-def docker_stats(project: str) -> dict[str, int]:
+def docker_stats(project: str, include_sdk: bool = True) -> dict[str, Any]:
     ids_by_service: dict[str, str] = {}
-    for service in ("server", "mysql", "redis"):
+    services = ["server", "worker", "scheduler", "mysql", "redis"]
+    if include_sdk and os.environ.get("DW_PERF_STANDARD_WORKFLOWS") == "true":
+        services.append("soak-sdk")
+    for service in services:
         result = run_command(compose_command(project, "ps", "-q", service))
         container_id = result.stdout.strip()
         if container_id:
             ids_by_service[service] = container_id
 
-    if set(ids_by_service) != {"server", "mysql", "redis"}:
+    required_services = {"server", "mysql", "redis"}
+    if not required_services.issubset(ids_by_service):
         return {"docker_stats_ok": 0}
 
     result = run_command(["docker", "stats", "--no-stream", "--format", "{{json .}}", *ids_by_service.values()])
     memory_by_id: dict[str, int] = {}
+    cpu_by_id: dict[str, float] = {}
     for line in result.stdout.splitlines():
         try:
             row = json.loads(line)
@@ -601,9 +643,23 @@ def docker_stats(project: str) -> dict[str, int]:
         memory = parse_bytes(mem_usage)
         memory_by_id[row_id] = memory
         memory_by_id[row_id[:12]] = memory
+        try:
+            cpu = float(str(row["CPUPerc"]).removesuffix("%"))
+            if math.isfinite(cpu) and cpu >= 0:
+                cpu_by_id[row_id[:12]] = cpu
+        except (KeyError, ValueError):
+            pass
 
     stats = {f"{service}_memory_bytes": memory_by_id.get(container_id[:12], 0) for service, container_id in ids_by_service.items()}
-    stats["docker_stats_ok"] = 1 if result.returncode == 0 and all(stats.values()) else 0
+    # Queue-worker recycling can overlap a sample. Record that absence without
+    # treating an intentional process restart as corrupt core-resource evidence.
+    stats["docker_stats_ok"] = int(result.returncode == 0 and all(
+        stats[f"{service}_memory_bytes"] > 0 and ids_by_service[service][:12] in cpu_by_id
+        for service in required_services
+    ))
+    for service in services:
+        stats[f"{service}_running"] = int(stats.get(f"{service}_memory_bytes", 0) > 0)
+    stats.update({f"{service}_cpu_percent": cpu_by_id.get(container_id[:12]) for service, container_id in ids_by_service.items()})
     health = command_output(
         ["docker", "inspect", "--format", "{{.State.Health.Status}}", ids_by_service["server"]],
     )
@@ -719,10 +775,10 @@ def mysql_counts(project: str) -> dict[str, int]:
     return {"mysql_sample_ok": 0}
 
 
-def sample(project: str) -> dict[str, Any]:
+def sample(project: str, include_sdk: bool = True) -> dict[str, Any]:
     row: dict[str, Any] = {"timestamp": time.time()}
     if project:
-        row.update(docker_stats(project))
+        row.update(docker_stats(project, include_sdk))
         row.update(redis_info(project))
         row.update(mysql_counts(project))
     return row
@@ -779,16 +835,27 @@ def worker_loop(
     errors_path: Path,
     worker_index: int,
 ) -> None:
-    rng = random.Random(worker_index)
     sequence = 0
+    namespace, queue, worker_id = workers[worker_index % len(workers)]
+    heartbeat_at = 0.0
 
     while time.monotonic() < stop_at:
-        namespace, queue, worker_id = rng.choice(workers)
         sequence += 1
         poll_request_id = f"perf-{worker_index}-{sequence}-{time.time_ns()}"
         started = time.monotonic()
 
         try:
+            if time.monotonic() >= heartbeat_at:
+                heartbeat_started = time.monotonic()
+                heartbeat_status, heartbeat_body = http_json(
+                    "POST", f"{base_url}/api/worker/heartbeat", auth_headers(token, namespace, worker=True),
+                    {"worker_id": worker_id}, timeout_seconds=5,
+                )
+                endpoint_metrics.record("worker_heartbeat", heartbeat_status, time.monotonic() - heartbeat_started)
+                if heartbeat_status != 200:
+                    raise RuntimeError(f"worker heartbeat failed: HTTP {heartbeat_status}: {heartbeat_body}")
+                heartbeat_at = time.monotonic() + 10
+            started = time.monotonic()
             status, body = http_json(
                 "POST",
                 f"{base_url}/api/worker/workflow-tasks/poll",
@@ -811,17 +878,32 @@ def worker_loop(
                 status,
                 latency,
                 backpressured=compatible_backpressure,
+                valid=poll_response_valid(body),
             )
             if status == 429:
                 retry_after = body.get("retry_after_seconds", 1) if isinstance(body, dict) else 1
                 time.sleep(max(0.05, min(5.0, float(retry_after))))
-            elif status != 200:
+            elif status != 200 or not poll_response_valid(body):
                 metrics.record_error()
                 write_jsonl(errors_path, {"status": status, "body": body, "namespace": namespace, "queue": queue})
         except Exception as exc:  # noqa: BLE001
             metrics.record_error()
             endpoint_metrics.record_error("worker_poll", time.monotonic() - started)
             write_jsonl(errors_path, {"exception": repr(exc), "namespace": namespace, "queue": queue})
+
+
+def poll_response_valid(body: Any) -> bool:
+    rejected = {"stale_worker_registration", "worker_not_registered", "worker_registration_superseded", "no_workflow_capability", "unsupported", "rejected", "conflict"}
+    return isinstance(body, dict) and body.get("reason") not in rejected and body.get("poll_status") not in rejected
+
+
+def polling_activity_summary(samples: list[dict[str, Any]], minimum_fraction: float) -> dict[str, Any]:
+    active = sum(int(row.get("redis_polling_keys") or 0) > 0 for row in samples)
+    return {
+        "active_samples": active, "samples": len(samples),
+        "fraction": active / len(samples) if samples else 0,
+        "sustained": bool(samples) and active >= math.ceil(len(samples) * minimum_fraction),
+    }
 
 
 def workflow_start_loop(
@@ -978,8 +1060,8 @@ def health_probe_loop(
                     {},
                     timeout_seconds=timeout_seconds,
                 )
-                endpoint_metrics.record(endpoint, status, time.monotonic() - started)
                 body_status = body.get("status") if isinstance(body, dict) else None
+                endpoint_metrics.record(endpoint, status, time.monotonic() - started, valid=body_status == expected_status)
                 if status != 200 or body_status != expected_status:
                     write_jsonl(
                         errors_path,
@@ -1011,7 +1093,7 @@ def cluster_info_probe_loop(
                 auth_headers(token, namespace),
                 timeout_seconds=timeout_seconds,
             )
-            endpoint_metrics.record("cluster_info", status, time.monotonic() - started)
+            endpoint_metrics.record("cluster_info", status, time.monotonic() - started, valid=isinstance(body, dict) and bool(body.get("version")))
             if status != 200 or not isinstance(body, dict) or not body.get("version"):
                 write_jsonl(
                     errors_path,
@@ -1066,7 +1148,7 @@ def memory_slope_mb_hour(samples: list[dict[str, Any]]) -> float | None:
     points = [
         (float(row["timestamp"]), float(row.get("server_memory_bytes") or 0) / (1024 * 1024))
         for row in samples
-        if row.get("server_memory_bytes")
+        if row.get("phase") != "final" and row.get("server_memory_bytes")
     ]
     if len(points) < 4:
         return None
@@ -1246,6 +1328,82 @@ def github_actions_provenance_present(provenance: dict[str, Any]) -> bool:
     return all(str(provenance.get(field) or "").strip() for field in required_fields)
 
 
+def evaluate_availability(results: dict[str, Any], required: list[str], health_limit: float, control_limit: float) -> list[str]:
+    failures = []
+    for endpoint in required:
+        result = results.get(endpoint, {})
+        if not result.get("requests"):
+            failures.append(f"{endpoint} availability was not sampled")
+        elif result.get("availability", 0) < 1:
+            failures.append(f"{endpoint} availability fell below 1.0")
+        if result.get("errors", 0):
+            failures.append(f"{endpoint} returned request or payload errors")
+        limit = health_limit if endpoint in ("health", "ready") else control_limit if endpoint == "cluster_info" else None
+        if limit is not None and result.get("latency_seconds", {}).get("max", 0) > limit:
+            failures.append(f"{endpoint} latency exceeded {limit}s")
+    # Some backpressure is expected; rejecting every poll is not useful evidence.
+    poll = results.get("worker_poll", {})
+    if "worker_poll" in required and poll.get("requests", 0) <= poll.get("backpressured", 0):
+        failures.append("no non-backpressured worker poll completed")
+    return failures
+
+
+def resource_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    result = {}
+    for service in ("server", "worker", "scheduler", "mysql", "redis", "soak-sdk"):
+        memory = [int(row[f"{service}_memory_bytes"]) / 1048576 for row in samples if f"{service}_memory_bytes" in row]
+        cpu = [float(row[f"{service}_cpu_percent"]) for row in samples if row.get("phase") != "final" and row.get(f"{service}_cpu_percent") is not None]
+        if memory:
+            result[service] = {
+                "peak_memory_mib": round(max(memory), 2),
+                "final_memory_mib": round(memory[-1], 2),
+                "cpu_mean_percent": round(sum(cpu) / len(cpu), 2) if cpu else None,
+                "cpu_peak_percent": round(max(cpu), 2) if cpu else None,
+                "missing_samples": sum(row.get(f"{service}_running") == 0 for row in samples),
+            }
+    return result
+
+
+def render_summary(summary: dict[str, Any]) -> str:
+    standard = summary.get("standard_workflows", {})
+    lines = [
+        "## Server endurance soak",
+        "",
+        "PASS" if not summary.get("failures") else "FAIL: " + "; ".join(summary["failures"]),
+        "",
+        "This is an endurance canary, not a maximum-capacity benchmark or a failover qualification.",
+        "Poll requests are not workflow completions. Backpressure is reported separately from successful polls.",
+        "",
+        f"Measured duration: {summary.get('duration_seconds')}s. Source: `{summary.get('evidence', {}).get('provenance', {}).get('sha', 'unknown')}`.",
+        f"Server memory slope: {summary.get('server_memory_slope_mb_hour')} MiB/h. Final Server cache keys: {summary.get('final_server_cache_keys')}.",
+        f"Sampling: {summary.get('periodic_sample_count')}/{summary.get('expected_periodic_samples')}; unhealthy samples: {summary.get('sampling_health', {}).get('unhealthy_samples')}.",
+        f"Sustained polling activity: {summary.get('polling_activity', 'not measured by this version')}.",
+        "",
+        "| HTTP endpoint | Requests | Successful | Backpressure | Errors | p50 s | p95 s | p99 s |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for name, endpoint in summary.get("request_availability", {}).items():
+        latency = endpoint.get("latency_seconds", {})
+        lines.append(f"| {name} | {endpoint['requests']} | {endpoint['successful']} | {endpoint.get('backpressured', 0)} | {endpoint['errors']} | {latency.get('p50')} | {latency.get('p95')} | {latency.get('p99')} |")
+    lines.extend(["", "### Standard workflows"])
+    if standard.get("enabled"):
+        lines.extend([
+            f"PHP SDK {standard.get('sdk')}, PHP {standard.get('php')}; one 1-KiB echo activity per workflow, closed-loop with a 5s start interval.",
+            f"Completed: {standard.get('completed')} / {standard.get('started')} attempts. Errors: {standard.get('errors')}. Observed completions/s: {standard.get('completed_per_second')}.",
+            f"Start-to-result latency (seconds): {standard.get('latency_seconds')}.",
+            "Every counted completion has its result, completed status, and ordered activity history checked. This is not the capacity suite's concurrency/warmup protocol.",
+        ])
+    else:
+        lines.append("Not exercised in this run.")
+    lines.extend(["", "| Component | Peak MiB | Final MiB | Mean CPU % | Peak CPU % | Missing samples |", "| --- | ---: | ---: | ---: | ---: | ---: |"])
+    for name, row in summary.get("resources", {}).items():
+        lines.append(f"| {name} | {row['peak_memory_mib']} | {row['final_memory_mib']} | {row['cpu_mean_percent']} | {row['cpu_peak_percent']} | {row.get('missing_samples', 0)} |")
+    lines.extend(["", "CPU uses Docker's scale: 100% is one logical CPU. Samples are not whole-host peak RSS.",
+                  "Not covered: timer/signal/query execution, backend failure injection, cross-SDK parity, or HA. Zero keys for an unexercised policy do not qualify that feature.",
+                  "Inspect the artifact's errors and provisioning log as well: workload PASS does not override setup, artifact-upload, or host-cleanup failure.", ""])
+    return "\n".join(lines)
+
+
 def main() -> int:
     args = parse_args()
 
@@ -1266,6 +1424,8 @@ def main() -> int:
     base_url = args.base_url.rstrip("/")
     started_at = datetime.now(timezone.utc)
     started_monotonic = time.monotonic()
+    standard_enabled = os.environ.get("DW_PERF_STANDARD_WORKFLOWS") == "true"
+    standard_result: dict[str, Any] = {"enabled": False}
 
     try:
         emit_progress(f"waiting for health at {base_url}")
@@ -1275,8 +1435,18 @@ def main() -> int:
         namespaces = [f"perf-ns-{index:03d}" for index in range(max(1, args.namespaces))]
         queues = [f"perf-queue-{index:03d}" for index in range(max(1, args.task_queues))]
         create_namespaces(base_url, args.token, namespaces)
-        workers = register_workers(base_url, args.token, namespaces, queues)
+        workers = register_workers(base_url, args.token, namespaces, queues, args.concurrency)
+        if standard_enabled:
+            if not args.compose_project:
+                raise ValueError("Standard workflows require the isolated Compose fixture.")
+            create_namespaces(base_url, args.token, ["perf-standard"])
+            run_command(compose_command(args.compose_project, "up", "-d", "--no-deps", "soak-sdk"), timeout=60).check_returncode()
         resolved_artifact_versions = artifact_versions(base_url, args.token, namespaces[0])
+        if args.compose_project:
+            installed = command_output(["docker", "exec", f"{args.compose_project}-server-1", "php", "-r", "require 'vendor/autoload.php'; echo Composer\\InstalledVersions::getPrettyVersion('durable-workflow/workflow');"])
+            if not installed:
+                raise RuntimeError("Could not identify the workflow package actually installed in the Server image.")
+            resolved_artifact_versions["workflow"] = installed
         emit_progress(
             f"registered {len(workers)} workers across {len(namespaces)} namespaces and {len(queues)} task queues"
         )
@@ -1292,8 +1462,14 @@ def main() -> int:
             f"workflow_runs={args.workflow_runs} and sample_interval={sample_interval}s"
         )
 
-        growth_workers = max(1, args.start_concurrency) + 3 if args.workflow_runs > 0 else 0
-        with ThreadPoolExecutor(max_workers=max(1, args.concurrency) + growth_workers) as executor:
+        growth_workers = max(1, args.start_concurrency) + 1 if args.workflow_runs > 0 else 0
+        with ThreadPoolExecutor(max_workers=max(1, args.concurrency) + growth_workers + 3) as executor:
+            standard_future = None
+            if standard_enabled:
+                standard_future = executor.submit(standard_workflow_loop, args.compose_project, args.duration_seconds, artifact_dir)
+                futures.append(standard_future)
+            futures.append(executor.submit(health_probe_loop, stop_at, base_url, args.health_interval_seconds, args.max_health_latency_seconds, endpoint_metrics, errors_path))
+            futures.append(executor.submit(cluster_info_probe_loop, stop_at, base_url, args.token, namespaces[0], args.control_plane_interval_seconds, args.max_control_plane_latency_seconds, endpoint_metrics, errors_path))
             for index in range(max(1, args.concurrency)):
                 futures.append(
                     executor.submit(
@@ -1336,30 +1512,6 @@ def main() -> int:
                         errors_path,
                     )
                 )
-                futures.append(
-                    executor.submit(
-                        health_probe_loop,
-                        stop_at,
-                        base_url,
-                        args.health_interval_seconds,
-                        args.max_health_latency_seconds,
-                        endpoint_metrics,
-                        errors_path,
-                    )
-                )
-                futures.append(
-                    executor.submit(
-                        cluster_info_probe_loop,
-                        stop_at,
-                        base_url,
-                        args.token,
-                        namespaces[0],
-                        args.control_plane_interval_seconds,
-                        args.max_control_plane_latency_seconds,
-                        endpoint_metrics,
-                        errors_path,
-                    )
-                )
 
             next_sample = time.monotonic()
             while time.monotonic() < stop_at:
@@ -1386,9 +1538,13 @@ def main() -> int:
                     metrics.record_error()
                     write_jsonl(errors_path, {"worker_exception": repr(exception)})
 
+            if standard_future is not None:
+                standard_result = standard_future.result()
+                run_command(compose_command(args.compose_project, "stop", "-t", "10", "soak-sdk")).check_returncode()
+
         emit_progress(f"draining for {max(0, args.drain_seconds)}s before final sample")
         time.sleep(max(0, args.drain_seconds))
-        final_sample = sample(args.compose_project)
+        final_sample = sample(args.compose_project, include_sdk=False) | {"phase": "final"}
         samples.append(final_sample)
         metrics.update_sample(final_sample)
         write_jsonl(samples_path, final_sample | {"phase": "final"})
@@ -1460,6 +1616,7 @@ def main() -> int:
             "duration_seconds": args.duration_seconds,
             "elapsed_seconds": round(elapsed_seconds, 2),
             "concurrency": args.concurrency,
+            "synthetic_worker_registrations": len(workers),
             "workflow_runs_target": args.workflow_runs,
             "start_concurrency": args.start_concurrency,
             "namespaces": len(namespaces),
@@ -1488,7 +1645,14 @@ def main() -> int:
             "final_workflow_runs": final_workflow_runs,
             "final_ready_tasks": final_ready_tasks,
             "workflow_growth": workflow_growth,
+            "standard_workflows": standard_result,
+            "resources": resource_summary(samples),
+            "host": {
+                "logical_cpus": os.cpu_count(), "kernel": os.uname().release, "architecture": os.uname().machine,
+                "physical_memory_mib": round(os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") / 1048576, 2),
+            },
             "polling_observation_status": polling_observation_status,
+            "polling_activity": polling_activity_summary(samples[:-1], sample_coverage),
             "server_memory_slope_mb_hour": None if slope is None else round(slope, 2),
             "sampling_health": sampling_health,
             "request_availability": request_availability,
@@ -1515,36 +1679,15 @@ def main() -> int:
             },
         }
 
-        failures = list(workflow_growth_failures)
+        failures = list(workflow_growth_failures) + list(standard_result.get("failures", []))
         if metrics.errors > 0:
             failures.append(f"{metrics.errors} load-generator errors")
+        required_endpoints = ["health", "ready", "cluster_info", "worker_poll", "worker_heartbeat"]
         if args.workflow_runs > 0:
-            for endpoint in ("health", "ready", "cluster_info", "workflow_list", "worker_poll"):
-                result = request_availability.get(endpoint, {})
-                if int(result.get("requests") or 0) == 0:
-                    failures.append(f"{endpoint} availability was not sampled during workflow growth")
-                elif float(result.get("availability") or 0.0) < 1.0:
-                    failures.append(
-                        f"{endpoint} availability fell below 1.0 "
-                        f"(observed {result.get('availability')})"
-                    )
-
-            for endpoint in ("health", "ready"):
-                result = request_availability.get(endpoint, {})
-                observed_latency = float((result.get("latency_seconds") or {}).get("max") or 0.0)
-                if observed_latency > args.max_health_latency_seconds:
-                    failures.append(
-                        f"{endpoint} latency exceeded {args.max_health_latency_seconds}s "
-                        f"(observed {observed_latency}s)"
-                    )
-
-            cluster_info = request_availability.get("cluster_info", {})
-            cluster_info_latency = float((cluster_info.get("latency_seconds") or {}).get("max") or 0.0)
-            if cluster_info_latency > args.max_control_plane_latency_seconds:
-                failures.append(
-                    f"cluster_info latency exceeded {args.max_control_plane_latency_seconds}s "
-                    f"(observed {cluster_info_latency}s)"
-                )
+            required_endpoints.append("workflow_list")
+        failures.extend(evaluate_availability(request_availability, required_endpoints, args.max_health_latency_seconds, args.max_control_plane_latency_seconds))
+        if args.compose_project and not summary["polling_activity"]["sustained"]:
+            failures.append("polling cache activity was not sustained through the measurement window")
         if periodic_sample_count < min_samples:
             failures.append(
                 f"sample coverage below trusted minimum {min_samples} "
@@ -1556,6 +1699,9 @@ def main() -> int:
                 f"{sampling_health['unhealthy_samples']} compose-backed samples "
                 f"(field failures: {sampling_health.get('unhealthy_field_counts')})"
             )
+        for service in ("worker", "scheduler"):
+            if args.compose_project and final_sample.get(f"{service}_running") != 1:
+                failures.append(f"{service} was not running after the soak")
         if max_server_memory_bytes > args.max_server_memory_mb * 1024 * 1024:
             failures.append(
                 f"server memory exceeded {args.max_server_memory_mb} MB "
@@ -1636,6 +1782,7 @@ def main() -> int:
 
         metrics_path.write_text(metrics.prometheus(), encoding="utf-8")
         summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        (artifact_dir / "summary.md").write_text(render_summary(summary), encoding="utf-8")
         print(json.dumps(summary, indent=2, sort_keys=True))
 
         return 1 if failures else 0

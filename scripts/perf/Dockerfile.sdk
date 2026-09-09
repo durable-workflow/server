@@ -1,0 +1,14 @@
+FROM composer:2 AS dependencies
+WORKDIR /sdk
+COPY benchmarks/capacity/v1/bindings/php/composer.json benchmarks/capacity/v1/bindings/php/composer.lock ./
+RUN composer install --no-dev --no-interaction --no-progress --prefer-dist
+
+FROM php:8.3-cli
+RUN docker-php-ext-install pcntl
+WORKDIR /app
+COPY benchmarks/capacity/v1/bindings/php benchmarks/capacity/v1/bindings/php
+COPY --from=dependencies /sdk/vendor benchmarks/capacity/v1/bindings/php/vendor
+COPY scripts/perf/standard_workflow_soak.php scripts/perf/standard_workflow_soak.php
+USER 1000:1000
+ENTRYPOINT ["php"]
+CMD ["benchmarks/capacity/v1/bindings/php/capacity_adapter.php", "worker"]
