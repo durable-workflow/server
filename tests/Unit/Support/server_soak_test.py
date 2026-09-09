@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 import unittest
@@ -96,6 +97,61 @@ class RuntimeEvidenceConfigurationTest(unittest.TestCase):
             },
         ):
             self.assertEqual("self-hosted", server_soak.runner_environment())
+
+
+class EnduranceCoverageTest(unittest.TestCase):
+    def standard_output(self, completed=True, elapsed=60):
+        return "\n".join(json.dumps(row) for row in [
+            {"phase": "started", "sdk": "test", "php": "test"},
+            {"phase": "workflow", "completed": completed, "latency_seconds": 0.7},
+            {"phase": "finished", "elapsed_seconds": elapsed},
+        ])
+
+    def test_validated_completions_are_distinct_from_poll_requests(self):
+        result = server_soak.evaluate_standard_workflows(self.standard_output(), 0, 60)
+        self.assertEqual([], result["failures"])
+        self.assertEqual(1, result["completed"])
+        self.assertEqual(0.7, result["latency_seconds"]["p99"])
+
+    def test_partial_failed_empty_and_malformed_runs_do_not_pass(self):
+        for output, code in [
+            (self.standard_output(False), 0),
+            (self.standard_output(), 1),
+            (self.standard_output(elapsed=20), 0),
+            ("", 0), ("not json", 0), ("[]", 0),
+        ]:
+            with self.subTest(output=output, code=code):
+                self.assertTrue(server_soak.evaluate_standard_workflows(output, code, 60)["failures"])
+
+    def test_health_failures_are_detected_without_workflow_growth(self):
+        metrics = server_soak.EndpointMetrics()
+        metrics.record("health", 200, 0.1, valid=False)
+        metrics.record("ready", 503, 0.1)
+        failures = server_soak.evaluate_availability(metrics.snapshot(), ["health", "ready", "cluster_info"], 3, 5)
+        self.assertIn("health returned request or payload errors", failures)
+        self.assertIn("ready availability fell below 1.0", failures)
+        self.assertIn("cluster_info availability was not sampled", failures)
+
+    def test_all_backpressure_is_not_a_healthy_poll_experiment(self):
+        for status in (200, 429):
+            metrics = server_soak.EndpointMetrics()
+            metrics.record("worker_poll", status, 0.1, backpressured=status == 200)
+            self.assertTrue(server_soak.evaluate_availability(metrics.snapshot(), ["worker_poll"], 3, 5))
+            metrics.record("worker_poll", 200, 0.1)
+            self.assertEqual([], server_soak.evaluate_availability(metrics.snapshot(), ["worker_poll"], 3, 5))
+
+    def test_resource_summary_does_not_substitute_zero_for_missing_cpu(self):
+        result = server_soak.resource_summary([{"server_memory_bytes": 1048576}])
+        self.assertEqual(1, result["server"]["peak_memory_mib"])
+        self.assertIsNone(result["server"]["cpu_mean_percent"])
+        result = server_soak.resource_summary([{"server_memory_bytes": 1048576, "server_cpu_percent": 0}])
+        self.assertEqual(0, result["server"]["cpu_mean_percent"])
+
+    def test_summary_exposes_missing_standard_workflow_coverage(self):
+        report = server_soak.render_summary({"failures": ["partial"]})
+        self.assertIn("FAIL: partial", report)
+        self.assertIn("Not exercised", report)
+        self.assertIn("not a maximum-capacity benchmark", report)
 
 
 if __name__ == "__main__":

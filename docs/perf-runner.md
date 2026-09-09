@@ -1,7 +1,35 @@
 # Server Perf Runner
 
 The server perf harness exercises the HTTP worker polling path for bounded
-memory growth and polling-cache cleanup.
+memory growth and polling-cache cleanup, with a low-rate PHP standard-workflow
+canary alongside it. The daily Action summary exposes both results directly.
+
+This is an endurance test, not a capacity claim: the canary uses the existing
+`capacity.v1.one_activity` binding (one 1-KiB echo activity), one workflow at a
+time, with at most one start every five seconds. It verifies each result,
+completed status, and ordered activity history. It skips missed start slots
+instead of accumulating a backlog. Its rate is not the capacity suite's
+concurrency/warmup measurement protocol. A slow correct completion is measured,
+not rejected against an invented throughput target; a result timeout is 30s.
+
+Health, readiness, and cluster-info probes run even without workflow-row growth.
+Artifacts include HTTP p50/p95/p99, backpressure separately from successful
+polls, sampled CPU/memory for Server, its queue worker/scheduler, MySQL, Redis,
+and the PHP SDK process container. The SDK client and worker share a 0.5-CPU,
+256-MiB container on the existing host. A 200 with an invalid health payload,
+missing probe results, or an entirely backpressured poll run fails validation.
+
+`DW_PERF_STANDARD_WORKFLOWS=false` disables only the SDK canary for a focused
+polling reproduction. The Compose wrapper enables it by default. Raw
+`server_soak.py` invocation does not build the SDK image; use the wrapper.
+
+The soak still does not exercise timer/signal/query execution, recovery fault
+injection, all SDK bindings, or HA. Those need the separate conformance and
+performance qualification experiments. Zero cache keys for an unexercised
+policy do not prove that feature works. Review failed setup and cleanup steps
+as well as workload results; neither is a successful experiment. Scheduled
+artifacts are retained for 14 days; record significant findings on the owning
+issue rather than committing generated run directories.
 
 ## Runner Shape
 

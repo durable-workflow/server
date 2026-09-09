@@ -57,6 +57,7 @@ export DW_WORKER_TOKEN="${DW_WORKER_TOKEN:-}"
 export DW_OPERATOR_TOKEN="${DW_OPERATOR_TOKEN:-}"
 export DW_ADMIN_TOKEN="${DW_ADMIN_TOKEN:-}"
 export DW_AUTH_BACKWARD_COMPATIBLE="${DW_AUTH_BACKWARD_COMPATIBLE:-true}"
+export DW_PERF_STANDARD_WORKFLOWS="${DW_PERF_STANDARD_WORKFLOWS:-true}"
 
 OVERRIDE_FILE="$ARTIFACT_DIR/docker-compose.perf.yml"
 cat > "$OVERRIDE_FILE" <<YAML
@@ -96,6 +97,8 @@ services:
     ports: !override []
 YAML
 
+compose=(docker compose -p "$PROJECT" -f "$ROOT_DIR/docker-compose.yml" -f "$OVERRIDE_FILE" -f "$ROOT_DIR/scripts/perf/standard-workflow.compose.yml")
+
 cleanup() {
   local status=$?
 
@@ -104,13 +107,14 @@ cleanup() {
   docker logs "${PROJECT}-scheduler-1" > "$ARTIFACT_DIR/scheduler.log" 2>&1 || true
   docker logs "${PROJECT}-mysql-1" > "$ARTIFACT_DIR/mysql.log" 2>&1 || true
   docker logs "${PROJECT}-redis-1" > "$ARTIFACT_DIR/redis.log" 2>&1 || true
+  docker logs "${PROJECT}-soak-sdk-1" > "$ARTIFACT_DIR/soak-sdk.log" 2>&1 || true
 
   docker rm -f "$PROMETHEUS_CONTAINER" >/dev/null 2>&1 || true
   if [ -n "$PROMETHEUS_CONFIG_DIR" ]; then
     rm -rf "$PROMETHEUS_CONFIG_DIR"
   fi
 
-  docker compose -p "$PROJECT" -f "$ROOT_DIR/docker-compose.yml" -f "$OVERRIDE_FILE" down -v --remove-orphans || true
+  "${compose[@]}" --profile standard-soak down -v --remove-orphans || true
   exit "$status"
 }
 trap cleanup EXIT
@@ -224,7 +228,10 @@ else
   echo "Starting perf stack with project ${PROJECT} on a dynamic host port"
 fi
 setup_status=0
-docker compose -p "$PROJECT" -f "$ROOT_DIR/docker-compose.yml" -f "$OVERRIDE_FILE" up -d --build --wait || setup_status=$?
+"${compose[@]}" up -d --build --wait || setup_status=$?
+if [ "$setup_status" -eq 0 ] && [ "$DW_PERF_STANDARD_WORKFLOWS" = true ]; then
+  "${compose[@]}" build soak-sdk || setup_status=$?
+fi
 if [ "$setup_status" -ne 0 ]; then
   echo "Perf environment setup failed before product smoke execution; docker compose could not build or start the stack." >&2
   write_environment_setup_failure "$setup_status" "docker_compose_up" "docker compose failed before server_soak.py started"
