@@ -1148,7 +1148,7 @@ def memory_slope_mb_hour(samples: list[dict[str, Any]]) -> float | None:
     points = [
         (float(row["timestamp"]), float(row.get("server_memory_bytes") or 0) / (1024 * 1024))
         for row in samples
-        if row.get("server_memory_bytes")
+        if row.get("phase") != "final" and row.get("server_memory_bytes")
     ]
     if len(points) < 4:
         return None
@@ -1352,7 +1352,7 @@ def resource_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
     result = {}
     for service in ("server", "worker", "scheduler", "mysql", "redis", "soak-sdk"):
         memory = [int(row[f"{service}_memory_bytes"]) / 1048576 for row in samples if f"{service}_memory_bytes" in row]
-        cpu = [float(row[f"{service}_cpu_percent"]) for row in samples if row.get(f"{service}_cpu_percent") is not None]
+        cpu = [float(row[f"{service}_cpu_percent"]) for row in samples if row.get("phase") != "final" and row.get(f"{service}_cpu_percent") is not None]
         if memory:
             result[service] = {
                 "peak_memory_mib": round(max(memory), 2),
@@ -1544,7 +1544,7 @@ def main() -> int:
 
         emit_progress(f"draining for {max(0, args.drain_seconds)}s before final sample")
         time.sleep(max(0, args.drain_seconds))
-        final_sample = sample(args.compose_project, include_sdk=False)
+        final_sample = sample(args.compose_project, include_sdk=False) | {"phase": "final"}
         samples.append(final_sample)
         metrics.update_sample(final_sample)
         write_jsonl(samples_path, final_sample | {"phase": "final"})

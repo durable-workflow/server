@@ -50,7 +50,7 @@ echo json_encode([
 // Closed-loop canary: never accumulate unbounded work when the runtime slows.
 while (hrtime(true) < $stopAt) {
     if (hrtime(true) < $nextStart) {
-        usleep((int) min(200000, ($nextStart - hrtime(true)) / 1000));
+        usleep((int) max(0, min(200000, ($nextStart - hrtime(true)) / 1000)));
 
         continue;
     }

@@ -165,6 +165,16 @@ class EnduranceCoverageTest(unittest.TestCase):
         result = server_soak.resource_summary([{"server_memory_bytes": 1048576, "server_cpu_percent": 0}])
         self.assertEqual(0, result["server"]["cpu_mean_percent"])
 
+    def test_idle_drain_does_not_dilute_load_memory_slope_or_cpu(self):
+        rows = [{"timestamp": i * 60, "server_memory_bytes": (100 + i) * 1048576,
+                 "server_cpu_percent": 50} for i in range(10)]
+        rows.append({"phase": "final", "timestamp": 900, "server_memory_bytes": 1048576,
+                     "server_cpu_percent": 0})
+        self.assertAlmostEqual(60, server_soak.memory_slope_mb_hour(rows))
+        result = server_soak.resource_summary(rows)["server"]
+        self.assertEqual(50, result["cpu_mean_percent"])
+        self.assertEqual(1, result["final_memory_mib"])
+
     def test_summary_exposes_missing_standard_workflow_coverage(self):
         report = server_soak.render_summary({"failures": ["partial"]})
         self.assertIn("FAIL: partial", report)
