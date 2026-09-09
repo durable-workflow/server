@@ -11,6 +11,7 @@ use App\Support\WorkerProtocol;
 use Illuminate\Contracts\Console\Kernel;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Workflow\Serializers\Serializer;
 
@@ -86,6 +87,21 @@ try {
     if ($action === 'upload-independent') {
         $action = 'upload';
         $slot = '0';
+    }
+    if ($action === 'upload-locked') {
+        DB::statement('PRAGMA busy_timeout = 1');
+        $lock = null;
+        // Interrupt the final acknowledgement after both reservation and object commit.
+        RuntimeExternalPayload::saved(function (RuntimeExternalPayload $payload) use ($directory, &$lock): void {
+            if ($payload->upload_status !== RuntimeExternalPayload::UPLOAD_READY) {
+                return;
+            }
+            DB::afterCommit(function () use ($directory, &$lock): void {
+                $lock = new PDO('sqlite:'.$directory.'/database.sqlite');
+                $lock->exec('BEGIN IMMEDIATE');
+            });
+        });
+        $action = 'upload';
     }
     if ($action === 'upload') {
         if ($slot !== '0') {

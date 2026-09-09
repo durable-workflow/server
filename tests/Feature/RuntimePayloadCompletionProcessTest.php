@@ -43,18 +43,20 @@ class RuntimePayloadCompletionProcessTest extends TestCase
             self::assertFileExists($this->directory.'/'.$name.'.ready', $process->getErrorOutput());
         }
         touch($this->directory.'/go');
-        $a = $this->completedResult($first);
-        $b = $this->completedResult($second);
-        foreach ([$a, $b] as $response) {
+        $responses = ['alpha' => $this->completedResult($first), 'bravo' => $this->completedResult($second)];
+        foreach ($responses as $variant => $response) {
             if ($response['status'] === 503) {
                 self::assertSame('sqlite', $driver);
                 self::assertSame('backend_lock_pressure', $response['body']['reason']);
                 self::assertTrue($response['body']['retryable']);
+                // A reservation may commit before a later write hits lock pressure.
+                $responses[$variant] = $this->runProbe('upload', $kind, $variant);
             }
         }
+        [$a, $b] = array_values($responses);
         $statuses = [$a['status'], $b['status']];
         sort($statuses);
-        self::assertContains($statuses, [[201, 409], [201, 503]], json_encode([$a, $b]));
+        self::assertSame([201, 409], $statuses, json_encode($responses));
         $winner = $a['status'] === 201 ? 'alpha' : 'bravo';
         $loser = $winner === 'alpha' ? 'bravo' : 'alpha';
         $accepted = $a['status'] === 201 ? $a : $b;
@@ -77,6 +79,36 @@ class RuntimePayloadCompletionProcessTest extends TestCase
     public static function nativeDatabases(): array
     {
         return [['mysql'], ['pgsql']];
+    }
+
+    public static function completionKinds(): array
+    {
+        return [['activity'], ['workflow']];
+    }
+
+    #[DataProvider('completionKinds')]
+    public function test_cold_retry_recovers_a_committed_reservation_after_sqlite_lock_pressure(string $kind): void
+    {
+        $this->initialize('sqlite');
+        $this->runProbe('init', $kind);
+        $locked = $this->runProbe('upload-locked', $kind);
+        self::assertSame(503, $locked['status'], json_encode($locked));
+        self::assertSame('backend_lock_pressure', $locked['body']['reason']);
+        self::assertTrue($locked['body']['retryable']);
+        $reserved = $this->runProbe('status', $kind);
+
+        // The 503 did not undo the first byte identity or release its allowance.
+        self::assertSame(409, $this->runProbe('upload', $kind, 'bravo')['status']);
+        $accepted = $this->runProbe('upload', $kind);
+        self::assertSame(201, $accepted['status'], json_encode($accepted));
+        self::assertSame($accepted, $this->runProbe('upload', $kind));
+        $status = ['budgets' => 1, 'slots' => 1, 'objects' => 1,
+            'bytes' => $accepted['body']['reference']['size_bytes'], 'rows' => 1];
+        self::assertSame($status, $reserved);
+        self::assertSame($status, $this->runProbe('status', $kind));
+        self::assertSame(200, $this->runProbe('complete', $kind)['status']);
+        self::assertSame($accepted, $this->runProbe('upload', $kind));
+        self::assertSame($status, $this->runProbe('status', $kind));
     }
 
     #[DataProvider('nativeDatabases')]
