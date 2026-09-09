@@ -13,7 +13,7 @@ The checked-in manifests are synchronized with the repository's stable source
 release and pin its Docker Hub tag:
 
 ```text
-durableworkflow/server:2.3.7
+durableworkflow/server:2.3.8
 ```
 
 Before production use, patch every workload image to the exact published tag or
@@ -21,15 +21,15 @@ digest you intend to run:
 
 ```bash
 kubectl set image -n durable-workflow deploy/durable-workflow-server \
-  server=durableworkflow/server:2.3.7
+  server=durableworkflow/server:2.3.8
 kubectl set image -n durable-workflow deploy/durable-workflow-worker \
-  worker=durableworkflow/server:2.3.7
+  worker=durableworkflow/server:2.3.8
 kubectl set image -n durable-workflow cronjob/durable-workflow-scheduler \
-  scheduler=durableworkflow/server:2.3.7
+  scheduler=durableworkflow/server:2.3.8
 ```
 
 GitHub Container Registry publishes the same release line at
-`ghcr.io/durable-workflow/server:2.3.7`. Digest pinning is preferred for strict
+`ghcr.io/durable-workflow/server:2.3.8`. Digest pinning is preferred for strict
 change control.
 
 The manifests expect you to provide:
