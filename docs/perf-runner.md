@@ -18,6 +18,20 @@ polls, sampled CPU/memory for Server, its queue worker/scheduler, MySQL, Redis,
 and the PHP SDK process container. The SDK client and worker share a 0.5-CPU,
 256-MiB container on the existing host. A 200 with an invalid health payload,
 missing probe results, or an entirely backpressured poll run fails validation.
+Compose restarts the Server queue worker after its configured hourly recycle;
+an exited queue worker must not disappear unnoticed for the second soak hour.
+Each synthetic polling thread owns and heartbeats one registration, distributed
+across the configured namespaces and queues (24 workers, not 128 Cartesian
+registrations, in the daily default). HTTP success carrying a stale/rejected
+worker status fails the run. Polling-cache activity must be present in at least
+the configured minimum sample fraction, not merely once at startup.
+
+The default post-load drain is 310 seconds. Real activity poll-result caches
+retain replay evidence through their five-minute lease plus five seconds;
+heartbeat retention throttles and wake signals also outlive the old 12-second
+idle-only drain. No cache flush, shorter production TTL, or relaxed final-key
+limit is used to obtain a pass. The load remains two hours; build/bootstrap,
+bounded drain, and teardown are additional host time.
 
 `DW_PERF_STANDARD_WORKFLOWS=false` disables only the SDK canary for a focused
 polling reproduction. The Compose wrapper enables it by default. Raw

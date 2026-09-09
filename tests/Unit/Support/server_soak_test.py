@@ -100,6 +100,24 @@ class RuntimeEvidenceConfigurationTest(unittest.TestCase):
 
 
 class EnduranceCoverageTest(unittest.TestCase):
+    def test_startup_only_cache_activity_does_not_qualify_a_long_soak(self):
+        rows = [{"redis_polling_keys": 10}] * 7 + [{"redis_polling_keys": 0}] * 1433
+        self.assertFalse(server_soak.polling_activity_summary(rows, 0.8)["sustained"])
+        self.assertTrue(server_soak.polling_activity_summary(rows[:7], 0.8)["sustained"])
+
+    def test_http_success_with_stale_registration_is_not_a_valid_poll(self):
+        for body in ({"poll_status": "stale_worker_registration"}, {"reason": "worker_not_registered"}, {"poll_status": "no_workflow_capability"}, None):
+            self.assertFalse(server_soak.poll_response_valid(body))
+        self.assertTrue(server_soak.poll_response_valid({"task": None, "poll_status": "empty"}))
+
+    def test_each_polling_thread_gets_a_registration_across_the_configured_dimensions(self):
+        with patch.object(server_soak, "http_json", return_value=(201, {})) as register:
+            workers = server_soak.register_workers("http://fixture", "fixture", [f"ns-{i}" for i in range(8)], [f"queue-{i}" for i in range(16)], 24)
+        self.assertEqual(24, register.call_count)
+        self.assertEqual(24, len({worker[2] for worker in workers}))
+        self.assertEqual(8, len({worker[0] for worker in workers}))
+        self.assertEqual(16, len({worker[1] for worker in workers}))
+
     def standard_output(self, completed=True, elapsed=60):
         return "\n".join(json.dumps(row) for row in [
             {"phase": "started", "sdk": "test", "php": "test"},

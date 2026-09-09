@@ -9,7 +9,6 @@ import hashlib
 import json
 import math
 import os
-import random
 import re
 import subprocess
 import sys
@@ -347,7 +346,7 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=float(os.environ.get("DW_PERF_MAX_CONTROL_PLANE_LATENCY_SECONDS", "5")),
     )
-    parser.add_argument("--drain-seconds", type=int, default=int(os.environ.get("DW_PERF_DRAIN_SECONDS", "12")))
+    parser.add_argument("--drain-seconds", type=int, default=int(os.environ.get("DW_PERF_DRAIN_SECONDS", "310")))
     parser.add_argument("--artifact-dir", default=os.environ.get("DW_PERF_ARTIFACT_DIR", "build/perf"))
     parser.add_argument("--compose-project", default=os.environ.get("DW_PERF_COMPOSE_PROJECT", ""))
     parser.add_argument("--metrics-port", type=int, default=int(os.environ.get("DW_PERF_METRICS_PORT", "19090")))
@@ -536,35 +535,23 @@ def create_namespaces(base_url: str, token: str, namespaces: list[str]) -> None:
 PERF_WORKFLOW_TYPE = "perf.harness.workflow"
 
 
-def register_workers(base_url: str, token: str, namespaces: list[str], queues: list[str]) -> list[tuple[str, str, str]]:
+def register_workers(base_url: str, token: str, namespaces: list[str], queues: list[str], count: int) -> list[tuple[str, str, str]]:
     workers: list[tuple[str, str, str]] = []
-    for namespace in namespaces:
-        for queue in queues:
-            worker_id = f"perf-worker-{namespace}-{queue}"
-            status, body = http_json(
-                "POST",
-                f"{base_url}/api/worker/register",
-                auth_headers(token, namespace, worker=True),
-                {
-                    "worker_id": worker_id,
-                    "task_queue": queue,
-                    # Model a published remote SDK that requires successful
-                    # empty poll responses under capacity backpressure.
-                    "runtime": "python",
-                    "sdk_version": "perf-harness",
-                    "max_concurrent_workflow_tasks": 100,
-                    # Workers must advertise at least one workflow type so
-                    # the server treats them as workflow-task-eligible. A
-                    # registration with no types short-circuits every poll
-                    # at no_workflow_capability and the polling cache surface
-                    # never runs — leaving the bounded-growth smoke without
-                    # any observation of the path it asserts on.
-                    "supported_workflow_types": [PERF_WORKFLOW_TYPE],
-                },
-            )
-            if status not in (200, 201):
-                raise RuntimeError(f"failed to register {worker_id}: HTTP {status}: {body}")
-            workers.append((namespace, queue, worker_id))
+    # Each polling thread owns one registration and maintains its heartbeat.
+    for index in range(max(1, count)):
+        namespace, queue = namespaces[index % len(namespaces)], queues[index % len(queues)]
+        worker_id = f"perf-worker-{namespace}-{queue}-{index}"
+        status, body = http_json(
+            "POST", f"{base_url}/api/worker/register", auth_headers(token, namespace, worker=True),
+            {
+                "worker_id": worker_id, "task_queue": queue, "runtime": "python",
+                "sdk_version": "perf-harness", "max_concurrent_workflow_tasks": 1,
+                "supported_workflow_types": [PERF_WORKFLOW_TYPE],
+            },
+        )
+        if status not in (200, 201):
+            raise RuntimeError(f"failed to register {worker_id}: HTTP {status}: {body}")
+        workers.append((namespace, queue, worker_id))
 
     return workers
 
@@ -639,7 +626,8 @@ def docker_stats(project: str, include_sdk: bool = True) -> dict[str, Any]:
         if container_id:
             ids_by_service[service] = container_id
 
-    if set(ids_by_service) != set(services):
+    required_services = {"server", "mysql", "redis"}
+    if not required_services.issubset(ids_by_service):
         return {"docker_stats_ok": 0}
 
     result = run_command(["docker", "stats", "--no-stream", "--format", "{{json .}}", *ids_by_service.values()])
@@ -663,7 +651,14 @@ def docker_stats(project: str, include_sdk: bool = True) -> dict[str, Any]:
             pass
 
     stats = {f"{service}_memory_bytes": memory_by_id.get(container_id[:12], 0) for service, container_id in ids_by_service.items()}
-    stats["docker_stats_ok"] = 1 if result.returncode == 0 and all(stats.values()) and len(cpu_by_id) == len(services) else 0
+    # Queue-worker recycling can overlap a sample. Record that absence without
+    # treating an intentional process restart as corrupt core-resource evidence.
+    stats["docker_stats_ok"] = int(result.returncode == 0 and all(
+        stats[f"{service}_memory_bytes"] > 0 and ids_by_service[service][:12] in cpu_by_id
+        for service in required_services
+    ))
+    for service in services:
+        stats[f"{service}_running"] = int(stats.get(f"{service}_memory_bytes", 0) > 0)
     stats.update({f"{service}_cpu_percent": cpu_by_id.get(container_id[:12]) for service, container_id in ids_by_service.items()})
     health = command_output(
         ["docker", "inspect", "--format", "{{.State.Health.Status}}", ids_by_service["server"]],
@@ -840,16 +835,27 @@ def worker_loop(
     errors_path: Path,
     worker_index: int,
 ) -> None:
-    rng = random.Random(worker_index)
     sequence = 0
+    namespace, queue, worker_id = workers[worker_index % len(workers)]
+    heartbeat_at = 0.0
 
     while time.monotonic() < stop_at:
-        namespace, queue, worker_id = rng.choice(workers)
         sequence += 1
         poll_request_id = f"perf-{worker_index}-{sequence}-{time.time_ns()}"
         started = time.monotonic()
 
         try:
+            if time.monotonic() >= heartbeat_at:
+                heartbeat_started = time.monotonic()
+                heartbeat_status, heartbeat_body = http_json(
+                    "POST", f"{base_url}/api/worker/heartbeat", auth_headers(token, namespace, worker=True),
+                    {"worker_id": worker_id}, timeout_seconds=5,
+                )
+                endpoint_metrics.record("worker_heartbeat", heartbeat_status, time.monotonic() - heartbeat_started)
+                if heartbeat_status != 200:
+                    raise RuntimeError(f"worker heartbeat failed: HTTP {heartbeat_status}: {heartbeat_body}")
+                heartbeat_at = time.monotonic() + 10
+            started = time.monotonic()
             status, body = http_json(
                 "POST",
                 f"{base_url}/api/worker/workflow-tasks/poll",
@@ -872,17 +878,32 @@ def worker_loop(
                 status,
                 latency,
                 backpressured=compatible_backpressure,
+                valid=poll_response_valid(body),
             )
             if status == 429:
                 retry_after = body.get("retry_after_seconds", 1) if isinstance(body, dict) else 1
                 time.sleep(max(0.05, min(5.0, float(retry_after))))
-            elif status != 200:
+            elif status != 200 or not poll_response_valid(body):
                 metrics.record_error()
                 write_jsonl(errors_path, {"status": status, "body": body, "namespace": namespace, "queue": queue})
         except Exception as exc:  # noqa: BLE001
             metrics.record_error()
             endpoint_metrics.record_error("worker_poll", time.monotonic() - started)
             write_jsonl(errors_path, {"exception": repr(exc), "namespace": namespace, "queue": queue})
+
+
+def poll_response_valid(body: Any) -> bool:
+    rejected = {"stale_worker_registration", "worker_not_registered", "worker_registration_superseded", "no_workflow_capability", "unsupported", "rejected", "conflict"}
+    return isinstance(body, dict) and body.get("reason") not in rejected and body.get("poll_status") not in rejected
+
+
+def polling_activity_summary(samples: list[dict[str, Any]], minimum_fraction: float) -> dict[str, Any]:
+    active = sum(int(row.get("redis_polling_keys") or 0) > 0 for row in samples)
+    return {
+        "active_samples": active, "samples": len(samples),
+        "fraction": active / len(samples) if samples else 0,
+        "sustained": bool(samples) and active >= math.ceil(len(samples) * minimum_fraction),
+    }
 
 
 def workflow_start_loop(
@@ -1338,6 +1359,7 @@ def resource_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
                 "final_memory_mib": round(memory[-1], 2),
                 "cpu_mean_percent": round(sum(cpu) / len(cpu), 2) if cpu else None,
                 "cpu_peak_percent": round(max(cpu), 2) if cpu else None,
+                "missing_samples": sum(row.get(f"{service}_running") == 0 for row in samples),
             }
     return result
 
@@ -1355,6 +1377,7 @@ def render_summary(summary: dict[str, Any]) -> str:
         f"Measured duration: {summary.get('duration_seconds')}s. Source: `{summary.get('evidence', {}).get('provenance', {}).get('sha', 'unknown')}`.",
         f"Server memory slope: {summary.get('server_memory_slope_mb_hour')} MiB/h. Final Server cache keys: {summary.get('final_server_cache_keys')}.",
         f"Sampling: {summary.get('periodic_sample_count')}/{summary.get('expected_periodic_samples')}; unhealthy samples: {summary.get('sampling_health', {}).get('unhealthy_samples')}.",
+        f"Sustained polling activity: {summary.get('polling_activity', 'not measured by this version')}.",
         "",
         "| HTTP endpoint | Requests | Successful | Backpressure | Errors | p50 s | p95 s | p99 s |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
@@ -1372,9 +1395,9 @@ def render_summary(summary: dict[str, Any]) -> str:
         ])
     else:
         lines.append("Not exercised in this run.")
-    lines.extend(["", "| Component | Peak MiB | Final MiB | Mean CPU % | Peak CPU % |", "| --- | ---: | ---: | ---: | ---: |"])
+    lines.extend(["", "| Component | Peak MiB | Final MiB | Mean CPU % | Peak CPU % | Missing samples |", "| --- | ---: | ---: | ---: | ---: | ---: |"])
     for name, row in summary.get("resources", {}).items():
-        lines.append(f"| {name} | {row['peak_memory_mib']} | {row['final_memory_mib']} | {row['cpu_mean_percent']} | {row['cpu_peak_percent']} |")
+        lines.append(f"| {name} | {row['peak_memory_mib']} | {row['final_memory_mib']} | {row['cpu_mean_percent']} | {row['cpu_peak_percent']} | {row.get('missing_samples', 0)} |")
     lines.extend(["", "CPU uses Docker's scale: 100% is one logical CPU. Samples are not whole-host peak RSS.",
                   "Not covered: timer/signal/query execution, backend failure injection, cross-SDK parity, or HA. Zero keys for an unexercised policy do not qualify that feature.",
                   "Inspect the artifact's errors and provisioning log as well: workload PASS does not override setup, artifact-upload, or host-cleanup failure.", ""])
@@ -1412,13 +1435,18 @@ def main() -> int:
         namespaces = [f"perf-ns-{index:03d}" for index in range(max(1, args.namespaces))]
         queues = [f"perf-queue-{index:03d}" for index in range(max(1, args.task_queues))]
         create_namespaces(base_url, args.token, namespaces)
-        workers = register_workers(base_url, args.token, namespaces, queues)
+        workers = register_workers(base_url, args.token, namespaces, queues, args.concurrency)
         if standard_enabled:
             if not args.compose_project:
                 raise ValueError("Standard workflows require the isolated Compose fixture.")
             create_namespaces(base_url, args.token, ["perf-standard"])
             run_command(compose_command(args.compose_project, "up", "-d", "--no-deps", "soak-sdk"), timeout=60).check_returncode()
         resolved_artifact_versions = artifact_versions(base_url, args.token, namespaces[0])
+        if args.compose_project:
+            installed = command_output(["docker", "exec", f"{args.compose_project}-server-1", "php", "-r", "require 'vendor/autoload.php'; echo Composer\\InstalledVersions::getPrettyVersion('durable-workflow/workflow');"])
+            if not installed:
+                raise RuntimeError("Could not identify the workflow package actually installed in the Server image.")
+            resolved_artifact_versions["workflow"] = installed
         emit_progress(
             f"registered {len(workers)} workers across {len(namespaces)} namespaces and {len(queues)} task queues"
         )
@@ -1588,6 +1616,7 @@ def main() -> int:
             "duration_seconds": args.duration_seconds,
             "elapsed_seconds": round(elapsed_seconds, 2),
             "concurrency": args.concurrency,
+            "synthetic_worker_registrations": len(workers),
             "workflow_runs_target": args.workflow_runs,
             "start_concurrency": args.start_concurrency,
             "namespaces": len(namespaces),
@@ -1618,8 +1647,12 @@ def main() -> int:
             "workflow_growth": workflow_growth,
             "standard_workflows": standard_result,
             "resources": resource_summary(samples),
-            "host": {"logical_cpus": os.cpu_count(), "kernel": os.uname().release},
+            "host": {
+                "logical_cpus": os.cpu_count(), "kernel": os.uname().release, "architecture": os.uname().machine,
+                "physical_memory_mib": round(os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") / 1048576, 2),
+            },
             "polling_observation_status": polling_observation_status,
+            "polling_activity": polling_activity_summary(samples[:-1], sample_coverage),
             "server_memory_slope_mb_hour": None if slope is None else round(slope, 2),
             "sampling_health": sampling_health,
             "request_availability": request_availability,
@@ -1649,10 +1682,12 @@ def main() -> int:
         failures = list(workflow_growth_failures) + list(standard_result.get("failures", []))
         if metrics.errors > 0:
             failures.append(f"{metrics.errors} load-generator errors")
-        required_endpoints = ["health", "ready", "cluster_info", "worker_poll"]
+        required_endpoints = ["health", "ready", "cluster_info", "worker_poll", "worker_heartbeat"]
         if args.workflow_runs > 0:
             required_endpoints.append("workflow_list")
         failures.extend(evaluate_availability(request_availability, required_endpoints, args.max_health_latency_seconds, args.max_control_plane_latency_seconds))
+        if args.compose_project and not summary["polling_activity"]["sustained"]:
+            failures.append("polling cache activity was not sustained through the measurement window")
         if periodic_sample_count < min_samples:
             failures.append(
                 f"sample coverage below trusted minimum {min_samples} "
@@ -1664,6 +1699,9 @@ def main() -> int:
                 f"{sampling_health['unhealthy_samples']} compose-backed samples "
                 f"(field failures: {sampling_health.get('unhealthy_field_counts')})"
             )
+        for service in ("worker", "scheduler"):
+            if args.compose_project and final_sample.get(f"{service}_running") != 1:
+                failures.append(f"{service} was not running after the soak")
         if max_server_memory_bytes > args.max_server_memory_mb * 1024 * 1024:
             failures.append(
                 f"server memory exceeded {args.max_server_memory_mb} MB "

@@ -1,6 +1,7 @@
 <?php
 
 declare(strict_types=1);
+use Composer\InstalledVersions;
 
 require dirname(__DIR__, 2).'/benchmarks/capacity/v1/bindings/php/capacity_adapter.php';
 capacityAutoload();
@@ -40,7 +41,7 @@ $nextStart = $started;
 $failed = false;
 echo json_encode([
     'phase' => 'started',
-    'sdk' => Composer\InstalledVersions::getPrettyVersion('durable-workflow/sdk'),
+    'sdk' => InstalledVersions::getPrettyVersion('durable-workflow/sdk'),
     'php' => PHP_VERSION,
     'interval_seconds' => 5,
     'duration_seconds' => $duration,
