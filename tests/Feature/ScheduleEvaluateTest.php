@@ -8,9 +8,11 @@ use App\Support\RemoteScheduleStarter;
 use App\Support\WorkerProtocol;
 use App\Support\WorkflowStartService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Mockery\MockInterface;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Exceptions\WorkflowExecutionUnavailableException;
@@ -118,6 +120,57 @@ class ScheduleEvaluateTest extends TestCase
     }
 
     // ── Successful fire ─────────────────────────────────────────────
+
+    #[DataProvider('timestampBoundaries')]
+    public function test_evaluation_preserves_persisted_timestamp_precision(string $due, string $tick, bool $expected): void
+    {
+        $this->travelTo(Carbon::parse('2026-01-01 12:00:'.$tick, 'UTC'));
+        $starts = 0;
+        $this->fakeStartService(callback: function () use (&$starts): array {
+            $starts++;
+
+            return [
+                'workflow_id' => 'wf-precise',
+                'run_id' => 'run-precise',
+                'workflow_type' => 'TestWorkflow',
+                'outcome' => 'started_new',
+                'reason' => null,
+            ];
+        });
+
+        $deadline = Carbon::parse('2026-01-01 12:00:'.$due, 'UTC');
+        $schedule = WorkflowSchedule::create([
+            'schedule_id' => 'precise-eval',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['* * * * *'], 'timezone' => 'UTC'],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+            'next_fire_at' => $deadline,
+        ])->fresh();
+        $this->assertSame($deadline->format('Y-m-d H:i:s.u'), $schedule->next_fire_at->format('Y-m-d H:i:s.u'));
+
+        $this->assertSame(0, Artisan::call('schedule:evaluate', ['--json' => true]));
+        $report = json_decode(trim(Artisan::output()), true, 512, JSON_THROW_ON_ERROR);
+        $this->assertSame((int) $expected, $report['fired_count']);
+        $this->assertSame((int) $expected, $starts);
+        if ($expected) {
+            $this->assertSame($deadline->format('Y-m-d H:i:s.u'), Carbon::parse($report['results'][0]['occurrence_time'])->format('Y-m-d H:i:s.u'));
+        }
+
+        $this->assertSame(0, Artisan::call('schedule:evaluate', ['--json' => true]));
+        $report = json_decode(trim(Artisan::output()), true, 512, JSON_THROW_ON_ERROR);
+        $this->assertSame(0, $report['fired_count']);
+        $this->assertSame((int) $expected, $starts);
+    }
+
+    public static function timestampBoundaries(): array
+    {
+        return [
+            'exact second' => ['00.000000', '00.000000', true],
+            'exact fraction' => ['00.500000', '00.500000', true],
+            'past fraction' => ['00.500000', '00.750000', true],
+            'future fraction' => ['00.500000', '00.499999', false],
+        ];
+    }
 
     public function test_it_fires_a_due_schedule(): void
     {
