@@ -23,7 +23,7 @@ spec:
     spec:
       containers:
         - name: server
-          image: durableworkflow/server:2.3.8
+          image: durableworkflow/server:2.3.9
           ports:
             - containerPort: 8080
               name: http
