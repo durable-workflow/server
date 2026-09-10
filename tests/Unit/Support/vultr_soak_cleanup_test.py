@@ -10,6 +10,21 @@ SCRIPT = ROOT / "scripts/perf/run-vultr-soak.sh"
 
 
 class DisposableRunnerCleanupTest(unittest.TestCase):
+    def test_ssh_keeps_quiet_drain_alive_and_bounds_dead_peer_detection(self):
+        source = SCRIPT.read_text()
+        options = "ssh_options=(\n" + source.split("ssh_options=(\n", 1)[1].split("\n)", 1)[0] + "\n)\n"
+        result = subprocess.run(
+            ["bash", "-c", options + 'exec ssh -G -F /dev/null "${ssh_options[@]}" fixture.invalid'],
+            env={"PATH": os.environ["PATH"], "KEY_FILE": "/unused-fixture-key", "KNOWN_HOSTS": "/unused-fixture-hosts"},
+            text=True, capture_output=True, timeout=5,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        effective = dict(line.split(" ", 1) for line in result.stdout.splitlines())
+        self.assertEqual("30", effective["serveraliveinterval"])
+        self.assertEqual("6", effective["serveralivecountmax"])
+        self.assertEqual("yes", effective["batchmode"])
+        self.assertEqual("accept-new", effective["stricthostkeychecking"])
+
     def run_cleanup(self, responses, expected_code=0):
         source = SCRIPT.read_text()
         cleanup = "destroy_instance() {\n" + source.split(

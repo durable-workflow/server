@@ -223,6 +223,9 @@ ssh_options=(
   -i "$KEY_FILE"
   -o BatchMode=yes
   -o ConnectTimeout=10
+  # The final cache drain is intentionally quiet for more than five minutes.
+  -o ServerAliveInterval=30
+  -o ServerAliveCountMax=6
   -o StrictHostKeyChecking=accept-new
   -o "UserKnownHostsFile=$KNOWN_HOSTS"
 )
