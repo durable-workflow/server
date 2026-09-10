@@ -5,6 +5,8 @@ namespace Tests\Unit;
 use App\Support\RuntimeLocalExternalPayloadStorage;
 use Illuminate\Support\Facades\File;
 use PHPUnit\Framework\Attributes\DataProvider;
+use RuntimeException;
+use Symfony\Component\Process\Process;
 use Tests\TestCase;
 
 class RuntimeLocalExternalPayloadStorageTest extends TestCase
@@ -72,5 +74,37 @@ class RuntimeLocalExternalPayloadStorageTest extends TestCase
         } finally {
             fclose($source);
         }
+    }
+
+    public function test_short_stream_write_is_repairable_by_a_fresh_string_writer(): void
+    {
+        $driver = new RuntimeLocalExternalPayloadStorage($this->directory);
+        $payload = "retained\x00payload\xff";
+        $hash = hash('sha256', $payload);
+        $uri = $driver->uriFor($hash, 'avro');
+        $stream = tmpfile();
+        fwrite($stream, $payload);
+        fseek($stream, 5);
+
+        try {
+            $driver->putStream($stream, $hash, 'avro');
+            $this->fail('An incomplete stream must not be acknowledged.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('Unable to commit external payload bytes.', $exception->getMessage());
+        } finally {
+            fclose($stream);
+        }
+
+        $path = rawurldecode(parse_url($uri, PHP_URL_PATH));
+        $this->assertSame(substr($payload, 5), file_get_contents($path));
+        $process = new Process([PHP_BINARY, '-r', <<<'PHP'
+            require 'vendor/autoload.php';
+            $driver = new App\Support\RuntimeLocalExternalPayloadStorage($argv[1]);
+            $payload = base64_decode($argv[2], true);
+            echo $driver->put($payload, hash('sha256', $payload), 'avro');
+            PHP, $this->directory, base64_encode($payload)], base_path(), timeout: 10);
+        $process->mustRun();
+        $this->assertSame($uri, $process->getOutput());
+        $this->assertSame($payload, file_get_contents($path));
     }
 }
