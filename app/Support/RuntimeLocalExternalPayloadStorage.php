@@ -2,6 +2,7 @@
 
 namespace App\Support;
 
+use Closure;
 use InvalidArgumentException;
 use RuntimeException;
 
@@ -33,19 +34,12 @@ final class RuntimeLocalExternalPayloadStorage implements StreamingExternalPaylo
 
     public function put(string $data, string $sha256, string $codec): string
     {
-        $uri = $this->uriFor($sha256, $codec);
-        $path = rawurldecode((string) parse_url($uri, PHP_URL_PATH));
-        $directory = dirname($path);
-
-        if (! is_dir($directory) && ! mkdir($directory, 0775, true) && ! is_dir($directory)) {
-            throw new RuntimeException(sprintf('Unable to create external payload directory [%s].', $directory));
-        }
-
-        if (! is_file($path) && file_put_contents($path, $data, LOCK_EX) === false) {
-            throw new RuntimeException(sprintf('Unable to write external payload [%s].', $path));
-        }
-
-        return $uri;
+        return $this->commit(
+            $this->uriFor($sha256, $codec),
+            $sha256,
+            strlen($data),
+            static fn ($output) => fwrite($output, $data),
+        );
     }
 
     public function uriFor(string $sha256, string $codec): string
@@ -74,7 +68,16 @@ final class RuntimeLocalExternalPayloadStorage implements StreamingExternalPaylo
 
     public function putStream($stream, string $sha256, string $codec): string
     {
-        $uri = $this->uriFor($sha256, $codec);
+        return $this->commit(
+            $this->uriFor($sha256, $codec),
+            $sha256,
+            fstat($stream)['size'] ?? null,
+            static fn ($output) => stream_copy_to_stream($stream, $output),
+        );
+    }
+
+    private function commit(string $uri, string $sha256, ?int $expectedSize, Closure $write): string
+    {
         $path = rawurldecode((string) parse_url($uri, PHP_URL_PATH));
         $directory = dirname($path);
         if (! is_dir($directory) && ! mkdir($directory, 0775, true) && ! is_dir($directory)) {
@@ -89,26 +92,24 @@ final class RuntimeLocalExternalPayloadStorage implements StreamingExternalPaylo
         }
 
         try {
-            $expectedSize = fstat($stream)['size'] ?? null;
             if (! flock($output, LOCK_EX)) {
                 throw new RuntimeException('Unable to lock external payload bytes.');
             }
 
             // Never truncate an already accepted object on an idempotent retry.
             $existingHash = hash_init('sha256');
-            if (fstat($output)['size'] === $expectedSize
+            $matches = fstat($output)['size'] === $expectedSize
                 && hash_update_stream($existingHash, $output) === $expectedSize
-                && hash_equals($sha256, hash_final($existingHash))
-            ) {
-                return $uri;
+                && hash_equals($sha256, hash_final($existingHash));
+
+            if (! $matches && (! rewind($output) || ! ftruncate($output, 0)
+                || ($written = $write($output)) === false
+                || ($expectedSize !== null && $written !== $expectedSize))) {
+                throw new RuntimeException('Unable to commit external payload bytes.');
             }
 
-            if (! rewind($output) || ! ftruncate($output, 0)
-                || ($written = stream_copy_to_stream($stream, $output)) === false
-                || ($expectedSize !== null && $written !== $expectedSize)
-                || ! fflush($output)
-                || ! fsync($output)
-            ) {
+            // A retry may follow a failed sync even when the bytes already match.
+            if (! fflush($output) || ! fsync($output)) {
                 throw new RuntimeException('Unable to commit external payload bytes.');
             }
         } finally {

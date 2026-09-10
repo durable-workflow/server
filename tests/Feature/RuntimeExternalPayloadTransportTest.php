@@ -9,6 +9,7 @@ use App\Support\RuntimeExternalPayloadException;
 use App\Support\RuntimeExternalPayloadQuota;
 use App\Support\RuntimeExternalPayloadReference;
 use App\Support\RuntimeExternalPayloadRegistry;
+use App\Support\RuntimeLocalExternalPayloadStorage;
 use App\Support\WorkerProtocol;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -135,6 +136,27 @@ class RuntimeExternalPayloadTransportTest extends TestCase
         file_put_contents(rawurldecode(parse_url($row->storage_uri, PHP_URL_PATH)), 'partial');
 
         $this->upload($payload)->assertCreated()->assertJsonPath('reference.reference_id', $reference['reference_id']);
+        $this->fetch($reference)->assertOk()->assertStreamedContent($payload);
+        $this->assertDatabaseCount('runtime_external_payloads', 1);
+    }
+
+    public function test_retained_string_retry_repairs_partial_bytes_before_marking_ready(): void
+    {
+        $payload = Serializer::serializeWithCodec('avro', ['retained result']);
+        $hash = hash('sha256', $payload);
+        $driver = new RuntimeLocalExternalPayloadStorage($this->storageDirectory.'/default');
+        $registry = app(RuntimeExternalPayloadRegistry::class);
+        $uri = $registry->storeRetained('default', $driver, $payload, 'avro', $hash);
+        $row = RuntimeExternalPayload::query()->sole();
+        $id = $row->id;
+        $row->forceFill(['upload_status' => RuntimeExternalPayload::UPLOAD_WRITING])->save();
+        file_put_contents(rawurldecode(parse_url($uri, PHP_URL_PATH)), 'partial');
+
+        $this->assertSame($uri, $registry->storeRetained('default', $driver, $payload, 'avro', $hash));
+        $this->assertSame(RuntimeExternalPayload::UPLOAD_READY, $row->fresh()->upload_status);
+        $this->assertNotNull($row->fresh()->retained_at);
+        $this->assertSame($id, RuntimeExternalPayload::query()->sole()->id);
+        $reference = $registry->referenceForUri('default', $uri);
         $this->fetch($reference)->assertOk()->assertStreamedContent($payload);
         $this->assertDatabaseCount('runtime_external_payloads', 1);
     }
