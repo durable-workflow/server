@@ -740,7 +740,7 @@ def parse_int_field(value: str) -> tuple[int, bool]:
         return 0, False
 
 
-def mysql_counts(project: str) -> dict[str, int]:
+def mysql_counts(project: str) -> dict[str, int | str]:
     query = (
         "SELECT "
         "(SELECT COUNT(*) FROM workflow_namespaces) AS namespaces, "
@@ -764,23 +764,35 @@ def mysql_counts(project: str) -> dict[str, int]:
         )
     )
     parts = result.stdout.strip().split()
-    if len(parts) >= 4:
+    if result.returncode == 0 and len(parts) == 4 and all(re.fullmatch(r"[0-9]+", part) for part in parts):
         return {
-            "mysql_sample_ok": 1 if result.returncode == 0 else 0,
+            "mysql_sample_ok": 1,
             "mysql_namespaces": int(parts[0]),
             "mysql_worker_registrations": int(parts[1]),
             "mysql_workflow_runs": int(parts[2]),
             "mysql_ready_tasks": int(parts[3]),
         }
-    return {"mysql_sample_ok": 0}
+    return {
+        "mysql_sample_ok": 0,
+        "mysql_sample_error": "command_failed" if result.returncode else "malformed_counts",
+    }
 
 
 def sample(project: str, include_sdk: bool = True) -> dict[str, Any]:
     row: dict[str, Any] = {"timestamp": time.time()}
     if project:
-        row.update(docker_stats(project, include_sdk))
-        row.update(redis_info(project))
-        row.update(mysql_counts(project))
+        for collect, arguments, health_field in (
+            (docker_stats, (project, include_sdk), "docker_stats_ok"),
+            (redis_info, (project,), "redis_sample_ok"),
+            (mysql_counts, (project,), "mysql_sample_ok"),
+        ):
+            try:
+                row.update(collect(*arguments))
+            except (OSError, subprocess.TimeoutExpired) as error:
+                # Preserve the failed observation without losing the remaining
+                # load window and final report. It still disqualifies the run.
+                row[health_field] = 0
+                row[health_field + "_error"] = type(error).__name__
     return row
 
 

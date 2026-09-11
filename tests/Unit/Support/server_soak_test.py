@@ -3,6 +3,7 @@
 import importlib.util
 import json
 import os
+import subprocess
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -73,6 +74,50 @@ class WorkflowGrowthResultGateTest(unittest.TestCase):
 
 
 class RuntimeEvidenceConfigurationTest(unittest.TestCase):
+    def test_mysql_sampling_rejects_failed_or_malformed_output_without_crashing(self):
+        for code, output in (
+            (1, "Unavailable: backend could not be reached"),
+            (0, "Unavailable: backend could not be reached"),
+            (1, "1 2 3 4"), (0, "1 2 3"), (0, "1 2 3 4 extra"),
+            (0, "1 2 -3 4"), (0, "1 2 3.0 4"), (0, ""),
+        ):
+            with self.subTest(code=code, output=output):
+                result = subprocess.CompletedProcess([], code, stdout=output)
+                with patch.object(server_soak, "run_command", return_value=result):
+                    observation = server_soak.mysql_counts("fixture")
+                self.assertEqual(0, observation["mysql_sample_ok"])
+                self.assertNotIn("mysql_ready_tasks", observation)
+
+    def test_mysql_sampling_preserves_zero_and_valid_counts(self):
+        result = subprocess.CompletedProcess([], 0, stdout="10\t25\t49\t0\n")
+        with patch.object(server_soak, "run_command", return_value=result):
+            self.assertEqual({
+                "mysql_sample_ok": 1, "mysql_namespaces": 10,
+                "mysql_worker_registrations": 25, "mysql_workflow_runs": 49,
+                "mysql_ready_tasks": 0,
+            }, server_soak.mysql_counts("fixture"))
+
+    def test_failed_sampler_does_not_prevent_other_samples_or_later_recovery(self):
+        samplers = {"docker_stats": "docker_stats_ok", "redis_info": "redis_sample_ok", "mysql_counts": "mysql_sample_ok"}
+        for failing, field in samplers.items():
+            for error in (OSError("fixture"), subprocess.TimeoutExpired(["fixture"], 30)):
+                with self.subTest(sampler=failing, error=type(error).__name__):
+                    with patch.object(server_soak, "docker_stats", return_value={"docker_stats_ok": 1, "server_container_healthy": 1}), \
+                         patch.object(server_soak, "redis_info", return_value={"redis_sample_ok": 1}), \
+                         patch.object(server_soak, "mysql_counts", return_value={"mysql_sample_ok": 1}):
+                        with patch.object(server_soak, failing, side_effect=error):
+                            failed = server_soak.sample("fixture")
+                        recovered = server_soak.sample("fixture")
+                    self.assertEqual(0, failed[field])
+                    for health in samplers.values():
+                        self.assertEqual(1, recovered[health])
+                        if health != field:
+                            self.assertEqual(1, failed[health])
+                    health = server_soak.sample_health([failed, recovered], "fixture")
+                    self.assertEqual(1, health["unhealthy_samples"])
+                    self.assertEqual(1, health["unhealthy_field_counts"][field])
+                    self.assertFalse(health["unhealthy_final_sample"])
+
     def test_redis_sampling_targets_the_configured_cache_database(self) -> None:
         with patch.dict(os.environ, {"DW_PERF_REDIS_CACHE_DB": "3"}):
             self.assertEqual(3, server_soak.redis_cache_database())
