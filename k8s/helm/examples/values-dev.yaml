@@ -3,7 +3,7 @@
 # shape in production.
 
 image:
-  tag: "2.3.10"
+  tag: "2.3.11"
 
 externalDatabase:
   connection: mysql
