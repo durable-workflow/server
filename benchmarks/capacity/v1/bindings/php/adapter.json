@@ -7,8 +7,8 @@
   "artifact": {
     "registry": "packagist.org",
     "name": "durable-workflow/sdk",
-    "version": "2.0.1",
-    "reference": "durable-workflow/sdk:2.0.1"
+    "version": "2.0.10",
+    "reference": "durable-workflow/sdk:2.0.10"
   },
   "entrypoint": ["php", "capacity_adapter.php"],
   "source_files": ["capacity_adapter.php", "composer.json", "composer.lock"],

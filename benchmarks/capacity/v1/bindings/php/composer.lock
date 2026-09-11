@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "1d91be8ff0c88586c7d6b30e2bcc7f5e",
+    "content-hash": "9d774966cf4ac7d2cb7b94857739fd02",
     "packages": [
         {
             "name": "apache/avro",
@@ -70,16 +70,16 @@
         },
         {
             "name": "durable-workflow/sdk",
-            "version": "2.0.1",
+            "version": "2.0.10",
             "source": {
                 "type": "git",
                 "url": "https://github.com/durable-workflow/sdk-php.git",
-                "reference": "865c28b2761b716972604c9adc81dc7e28dbb3cc"
+                "reference": "19b2695d0bbfb37f0dd1ac54632bd5b1d5023b67"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/durable-workflow/sdk-php/zipball/865c28b2761b716972604c9adc81dc7e28dbb3cc",
-                "reference": "865c28b2761b716972604c9adc81dc7e28dbb3cc",
+                "url": "https://api.github.com/repos/durable-workflow/sdk-php/zipball/19b2695d0bbfb37f0dd1ac54632bd5b1d5023b67",
+                "reference": "19b2695d0bbfb37f0dd1ac54632bd5b1d5023b67",
                 "shasum": ""
             },
             "require": {
@@ -120,7 +120,7 @@
                         "laravel": "^9.0|^10.0|^11.0|^12.0|^13.0",
                         "symfony": "^6.4|^7.0|^8.0"
                     },
-                    "product-train": "2.0.1",
+                    "product-train": "2.0.10",
                     "payload-codecs": [
                         "avro"
                     ],
@@ -186,7 +186,7 @@
                 "issues": "https://github.com/durable-workflow/sdk-php/issues",
                 "source": "https://github.com/durable-workflow/sdk-php"
             },
-            "time": "2026-09-03T17:06:51+00:00"
+            "time": "2026-09-11T15:26:39+00:00"
         },
         {
             "name": "guzzlehttp/guzzle",
