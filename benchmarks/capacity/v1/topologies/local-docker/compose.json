@@ -260,7 +260,7 @@
     "sdk-php-worker": {
       "image": "docker.io/library/php:8.3.30-cli-bookworm",
       "platform": "linux/amd64",
-      "command": ["sh", "-ec", "php -r \"require '/capacity/vendor/autoload.php'; exit(Composer\\\\InstalledVersions::getPrettyVersion('durable-workflow/sdk') === '2.0.1' ? 0 : 1);\"; touch /tmp/capacity-adapter-ready; exec tail -f /dev/null"],
+      "command": ["sh", "-ec", "php -r \"require '/capacity/vendor/autoload.php'; exit(Composer\\\\InstalledVersions::getPrettyVersion('durable-workflow/sdk') === '2.0.10' ? 0 : 1);\"; touch /tmp/capacity-adapter-ready; exec tail -f /dev/null"],
       "depends_on": {"composer-installer": {"condition": "service_completed_successfully"}},
       "working_dir": "/capacity",
       "volumes": [
@@ -271,7 +271,7 @@
       "cpus": 1,
       "mem_limit": 1073741824,
       "healthcheck": {
-        "test": ["CMD", "php", "-r", "require '/capacity/vendor/autoload.php'; exit(is_file('/tmp/capacity-adapter-ready') && Composer\\InstalledVersions::getPrettyVersion('durable-workflow/sdk') === '2.0.1' ? 0 : 1);"],
+        "test": ["CMD", "php", "-r", "require '/capacity/vendor/autoload.php'; exit(is_file('/tmp/capacity-adapter-ready') && Composer\\InstalledVersions::getPrettyVersion('durable-workflow/sdk') === '2.0.10' ? 0 : 1);"],
         "interval": "2s",
         "timeout": "3s",
         "retries": 60

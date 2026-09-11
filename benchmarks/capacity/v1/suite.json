@@ -28,8 +28,8 @@
     "sdk_php": {
       "registry": "packagist.org",
       "name": "durable-workflow/sdk",
-      "version": "2.0.1",
-      "reference": "durable-workflow/sdk:2.0.1"
+      "version": "2.0.10",
+      "reference": "durable-workflow/sdk:2.0.10"
     },
     "sdk_python": {
       "registry": "pypi.org",
@@ -202,7 +202,7 @@
       "artifacts": {
         "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.1.1", "reference": "docker.io/durableworkflow/server:2.1.1"},
         "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.3", "reference": "durable-workflow/workflow:2.0.3"},
-        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.1", "reference": "durable-workflow/sdk:2.0.1"},
+        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.10", "reference": "durable-workflow/sdk:2.0.10"},
         "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.1", "reference": "durable-workflow==2.0.1"},
         "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0", "reference": "durable-workflow@2.0.0"}
       },
@@ -228,7 +228,7 @@
       "artifacts": {
         "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.1.1", "reference": "docker.io/durableworkflow/server:2.1.1"},
         "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.3", "reference": "durable-workflow/workflow:2.0.3"},
-        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.1", "reference": "durable-workflow/sdk:2.0.1"},
+        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.10", "reference": "durable-workflow/sdk:2.0.10"},
         "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.1", "reference": "durable-workflow==2.0.1"},
         "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0", "reference": "durable-workflow@2.0.0"}
       },
@@ -254,7 +254,7 @@
       "artifacts": {
         "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.1.1", "reference": "docker.io/durableworkflow/server:2.1.1"},
         "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.3", "reference": "durable-workflow/workflow:2.0.3"},
-        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.1", "reference": "durable-workflow/sdk:2.0.1"},
+        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.10", "reference": "durable-workflow/sdk:2.0.10"},
         "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.1", "reference": "durable-workflow==2.0.1"},
         "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0", "reference": "durable-workflow@2.0.0"}
       },
@@ -280,7 +280,7 @@
       "artifacts": {
         "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.1.1", "reference": "docker.io/durableworkflow/server:2.1.1"},
         "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.3", "reference": "durable-workflow/workflow:2.0.3"},
-        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.1", "reference": "durable-workflow/sdk:2.0.1"},
+        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.10", "reference": "durable-workflow/sdk:2.0.10"},
         "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.1", "reference": "durable-workflow==2.0.1"},
         "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0", "reference": "durable-workflow@2.0.0"}
       },
@@ -306,7 +306,7 @@
       "artifacts": {
         "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.1.1", "reference": "docker.io/durableworkflow/server:2.1.1"},
         "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.3", "reference": "durable-workflow/workflow:2.0.3"},
-        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.1", "reference": "durable-workflow/sdk:2.0.1"},
+        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.10", "reference": "durable-workflow/sdk:2.0.10"},
         "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.1", "reference": "durable-workflow==2.0.1"},
         "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0", "reference": "durable-workflow@2.0.0"}
       },
@@ -332,7 +332,7 @@
       "artifacts": {
         "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.1.1", "reference": "docker.io/durableworkflow/server:2.1.1"},
         "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.3", "reference": "durable-workflow/workflow:2.0.3"},
-        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.1", "reference": "durable-workflow/sdk:2.0.1"},
+        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.10", "reference": "durable-workflow/sdk:2.0.10"},
         "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.1", "reference": "durable-workflow==2.0.1"},
         "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0", "reference": "durable-workflow@2.0.0"}
       },
@@ -358,7 +358,7 @@
       "artifacts": {
         "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.1.1", "reference": "docker.io/durableworkflow/server:2.1.1"},
         "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.3", "reference": "durable-workflow/workflow:2.0.3"},
-        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.1", "reference": "durable-workflow/sdk:2.0.1"},
+        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.10", "reference": "durable-workflow/sdk:2.0.10"},
         "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.1", "reference": "durable-workflow==2.0.1"},
         "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0", "reference": "durable-workflow@2.0.0"}
       },
@@ -384,7 +384,7 @@
       "artifacts": {
         "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.1.1", "reference": "docker.io/durableworkflow/server:2.1.1"},
         "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.3", "reference": "durable-workflow/workflow:2.0.3"},
-        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.1", "reference": "durable-workflow/sdk:2.0.1"},
+        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.10", "reference": "durable-workflow/sdk:2.0.10"},
         "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.1", "reference": "durable-workflow==2.0.1"},
         "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0", "reference": "durable-workflow@2.0.0"}
       },
@@ -410,7 +410,7 @@
       "artifacts": {
         "server": {"registry": "docker.io", "name": "durableworkflow/server", "version": "2.1.1", "reference": "docker.io/durableworkflow/server:2.1.1"},
         "workflow_php": {"registry": "packagist.org", "name": "durable-workflow/workflow", "version": "2.0.3", "reference": "durable-workflow/workflow:2.0.3"},
-        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.1", "reference": "durable-workflow/sdk:2.0.1"},
+        "sdk_php": {"registry": "packagist.org", "name": "durable-workflow/sdk", "version": "2.0.10", "reference": "durable-workflow/sdk:2.0.10"},
         "sdk_python": {"registry": "pypi.org", "name": "durable-workflow", "version": "2.0.1", "reference": "durable-workflow==2.0.1"},
         "sdk_rust": {"registry": "crates.io", "name": "durable-workflow", "version": "2.0.0", "reference": "durable-workflow@2.0.0"}
       },
