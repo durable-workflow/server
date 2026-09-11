@@ -172,7 +172,7 @@ jobs:
             --network "dw-server-feature-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
             --env MINIO_ROOT_USER=dw-minio-access \
             --env MINIO_ROOT_PASSWORD=dw-minio-secret-key \
-            minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e \
+            quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e \
             server /data --address :9000
           docker run --detach \
             --name "dw-server-backup-mysql-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}" \
