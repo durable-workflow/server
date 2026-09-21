@@ -105,7 +105,7 @@ final class ServerReadiness
         try {
             $inspection = $this->migrationAdoption->inspect();
             $contract = ReadinessContract::definition();
-            $operatorSurface = WaterlineEngineSource::status();
+            $operatorSurface = WaterlineEngineSource::status(throwOnInspectionFailure: true);
         } catch (\Throwable $exception) {
             return [
                 'status' => 'unavailable',
