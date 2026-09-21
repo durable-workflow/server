@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\RuntimeCredential;
 use App\Models\WorkerRegistration;
 use App\Support\WorkerProtocol;
+use App\Support\WorkflowUpdateValidationTaskBroker;
 use Illuminate\Database\Connection;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -95,6 +96,65 @@ class WorkerDatabaseUnavailableTest extends TestCase
         ], $this->workerHeaders())->assertStatus(503)
             ->assertJsonPath('reason', 'backend_unavailable')
             ->assertJsonPath('poll_request_id', 'same-logical-poll');
+    }
+
+    #[DataProvider('schemaInspectionFailures')]
+    public function test_operator_schema_inspection_preserves_failure_classification(string $path, int $code, string $reason): void
+    {
+        WorkerRegistration::query()->where('worker_id', 'database-worker')
+            ->update(['capabilities' => [WorkflowUpdateValidationTaskBroker::CAPABILITY]]);
+        $injected = 0;
+        $inject = true;
+        DB::connection()->beforeExecuting(function (string $query) use (&$injected, &$inject, $code): void {
+            if ($inject && str_contains($query, "'workflow_run_summaries'")
+                && str_contains($query, 'sqlite_master')) {
+                $injected++;
+                $exception = new PDOException('private connection lost during schema inspection');
+                $exception->errorInfo = ['HY000', $code, 'private connection lost during schema inspection'];
+                throw $exception;
+            }
+        });
+
+        $request = [
+            'worker_id' => 'database-worker',
+            'task_queue' => 'database-queue',
+            'poll_request_id' => 'schema-inspection-poll',
+            'timeout_seconds' => 0,
+        ];
+        $response = $this->postJson($path, $request, $this->workerHeaders());
+
+        $this->assertGreaterThan(0, $injected);
+        $response->assertStatus(503)->assertJsonPath('reason', $reason);
+        $this->assertStringNotContainsString('private connection', $response->getContent());
+        if ($reason === 'backend_unavailable') {
+            $response->assertHeader('Retry-After', '1')->assertJsonPath('retryable', true)
+                ->assertJsonPath('outcome', 'unknown');
+            if ($path === '/api/worker/heartbeat') {
+                $response->assertJsonPath('operation', 'heartbeat_worker')
+                    ->assertJsonPath('worker_id', 'database-worker')->assertJsonMissingPath('acknowledged');
+            } else {
+                $response->assertJsonPath('poll_request_id', 'schema-inspection-poll')
+                    ->assertJsonPath('retry_same_poll_request_id', true);
+            }
+        } else {
+            $response->assertJsonMissingPath('retryable');
+        }
+
+        $inject = false;
+        $this->postJson($path, $request, $this->workerHeaders())->assertSuccessful();
+    }
+
+    public static function schemaInspectionFailures(): array
+    {
+        $cases = [];
+        foreach ([['/api/worker/heartbeat'], ...self::pollPaths()] as [$path]) {
+            foreach ([2002, 2006, 2013, 1045, 1049] as $code) {
+                $cases[$path.'-'.$code] = [$path, $code,
+                    in_array($code, [2002, 2006, 2013], true) ? 'backend_unavailable' : 'workflow_v2_blocked'];
+            }
+        }
+
+        return $cases;
     }
 
     public function test_invalid_authentication_remains_unauthorized_during_database_loss(): void
