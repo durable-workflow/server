@@ -97,6 +97,29 @@ class WorkerDatabaseUnavailableTest extends TestCase
             ->assertJsonPath('poll_request_id', 'same-logical-poll');
     }
 
+    public function test_connection_loss_during_operator_schema_inspection_is_retryable(): void
+    {
+        $injected = 0;
+        DB::connection()->beforeExecuting(function (string $query) use (&$injected): void {
+            if (str_contains($query, "'workflow_run_summaries'")
+                && str_contains($query, 'sqlite_master')) {
+                ++$injected;
+                $exception = new PDOException('private connection lost during schema inspection');
+                $exception->errorInfo = ['HY000', 2006, 'private connection lost during schema inspection'];
+                throw $exception;
+            }
+        });
+
+        $response = $this->postJson('/api/worker/heartbeat', [
+            'worker_id' => 'database-worker',
+        ], $this->workerHeaders());
+
+        $this->assertGreaterThan(0, $injected);
+        $response->assertStatus(503)
+            ->assertJsonPath('reason', 'backend_unavailable')
+            ->assertJsonPath('retryable', true);
+    }
+
     public function test_invalid_authentication_remains_unauthorized_during_database_loss(): void
     {
         config(['server.auth.driver' => 'token', 'server.auth.token' => 'test-secret-token']);
