@@ -124,6 +124,15 @@ class WorkflowStartService
                 'contract_scope' => WorkflowStartVersionPin::CONTRACT_SCOPE_NONE,
             ];
         $pinnedBuildId = $startCohort['build_id'];
+        $definitionFingerprint = $namespace !== null
+            ? $this->versionPin->definitionFingerprintForCohort(
+                $namespace,
+                $taskQueue,
+                $workflowType,
+                $startCohort['contract_build_id'],
+                $startCohort['contract_scope'],
+            )
+            : null;
 
         $startOptions = array_filter([
             'arguments' => $arguments,
@@ -149,6 +158,7 @@ class WorkflowStartService
             'namespace' => $namespace,
             'command_context' => $commandContext,
             'build_id' => $pinnedBuildId,
+            'external_workflow_definition_fingerprint' => $definitionFingerprint,
         ], static fn (mixed $value): bool => $value !== null);
 
         $result = $this->withAmbientCompatibilityFallback(

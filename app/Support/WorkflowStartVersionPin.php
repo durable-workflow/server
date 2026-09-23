@@ -6,6 +6,7 @@ namespace App\Support;
 
 use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Schema;
 use Workflow\V2\Support\StandaloneWorkerVisibility;
 
@@ -103,6 +104,65 @@ final class WorkflowStartVersionPin
         ];
     }
 
+    public function definitionFingerprintForCohort(
+        string $namespace,
+        string $taskQueue,
+        string $workflowType,
+        ?string $buildId,
+        string $scope,
+    ): ?string {
+        if (! in_array($scope, [self::CONTRACT_SCOPE_BUILD_ID, self::CONTRACT_SCOPE_UNVERSIONED], true)
+            || ($scope === self::CONTRACT_SCOPE_BUILD_ID && $buildId === null)
+            || ! Schema::hasTable('workflow_worker_registrations')
+        ) {
+            return null;
+        }
+
+        $fingerprint = null;
+        $matched = false;
+
+        foreach ($this->activeWorkers($namespace, $taskQueue, [
+            'build_id',
+            'supported_workflow_types',
+            'workflow_definition_fingerprints',
+            'last_heartbeat_at',
+        ]) as $worker) {
+            if (! $this->workerSupportsWorkflowType($worker, $workflowType)) {
+                continue;
+            }
+
+            $workerBuildId = is_string($worker->build_id) && trim($worker->build_id) !== ''
+                ? trim($worker->build_id)
+                : null;
+            if (($scope === self::CONTRACT_SCOPE_BUILD_ID && $workerBuildId !== $buildId)
+                || ($scope === self::CONTRACT_SCOPE_UNVERSIONED && $workerBuildId !== null)
+            ) {
+                continue;
+            }
+
+            $fingerprints = $worker->workflow_definition_fingerprints;
+            $advertised = is_array($fingerprints) ? ($fingerprints[$workflowType] ?? null) : null;
+
+            if (! $worker->last_heartbeat_at instanceof \DateTimeInterface
+                || ! is_string($advertised)
+                || trim($advertised) === ''
+                || strlen($advertised) > 255
+            ) {
+                return null;
+            }
+
+            $advertised = trim($advertised);
+            if ($fingerprint !== null && ! hash_equals($fingerprint, $advertised)) {
+                return null;
+            }
+
+            $fingerprint = $advertised;
+            $matched = true;
+        }
+
+        return $matched ? $fingerprint : null;
+    }
+
     /**
      * @return array{found: bool, build_id: string|null}
      */
@@ -157,9 +217,9 @@ final class WorkflowStartVersionPin
 
     /**
      * @param  list<string>  $columns
-     * @return \Illuminate\Support\Collection<int, WorkerRegistration>
+     * @return Collection<int, WorkerRegistration>
      */
-    private function activeWorkers(string $namespace, string $taskQueue, array $columns): \Illuminate\Support\Collection
+    private function activeWorkers(string $namespace, string $taskQueue, array $columns): Collection
     {
         $staleAfter = StandaloneWorkerVisibility::staleAfterSeconds(
             is_numeric(config('server.workers.stale_after_seconds'))
