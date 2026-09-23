@@ -6,7 +6,7 @@
     "require": {
         "php": "^8.2",
         "apache/avro": "^1.12",
-        "durable-workflow/workflow": "dev-feature/failed-run-redrive-501",
+        "durable-workflow/workflow": "2.0.19",
         "laravel/framework": "^13.0",
         "laravel/tinker": "^3.0",
         "league/flysystem-aws-s3-v3": "^3.35.3"
@@ -19,12 +19,6 @@
         "mockery/mockery": "^1.6",
         "phpunit/phpunit": "^11.5"
     },
-    "repositories": [
-        {
-            "type": "vcs",
-            "url": "https://github.com/durable-workflow/workflow"
-        }
-    ],
     "autoload": {
         "psr-4": {
             "App\\": "app/",

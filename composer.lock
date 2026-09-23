@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "9194935d12ec658e474adade261ebe7c",
+    "content-hash": "bdfa66cec1456e50e0da703da1552000",
     "packages": [
         {
             "name": "apache/avro",
@@ -655,16 +655,16 @@
         },
         {
             "name": "durable-workflow/workflow",
-            "version": "dev-feature/failed-run-redrive-501",
+            "version": "2.0.19",
             "source": {
                 "type": "git",
                 "url": "https://github.com/durable-workflow/workflow.git",
-                "reference": "3ca8c188f611b9ca05571583e52b4c1029005143"
+                "reference": "0ed1ad50ddd52f4dc934209fbf02bc84375d0ad7"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/durable-workflow/workflow/zipball/3ca8c188f611b9ca05571583e52b4c1029005143",
-                "reference": "3ca8c188f611b9ca05571583e52b4c1029005143",
+                "url": "https://api.github.com/repos/durable-workflow/workflow/zipball/0ed1ad50ddd52f4dc934209fbf02bc84375d0ad7",
+                "reference": "0ed1ad50ddd52f4dc934209fbf02bc84375d0ad7",
                 "shasum": ""
             },
             "require": {
@@ -688,6 +688,11 @@
             },
             "type": "library",
             "extra": {
+                "laravel": {
+                    "providers": [
+                        "Workflow\\Providers\\WorkflowServiceProvider"
+                    ]
+                },
                 "branch-alias": {
                     "dev-main": "2.0.x-dev"
                 },
@@ -695,73 +700,18 @@
                     "product-train": "2.0.19",
                     "laravel-embedded-upgrade-contract": "resources/laravel-embedded-upgrade-contract.json",
                     "laravel-dependency-security-policy": "resources/laravel-dependency-security-policy.json"
-                },
-                "laravel": {
-                    "providers": [
-                        "Workflow\\Providers\\WorkflowServiceProvider"
-                    ]
                 }
             },
             "autoload": {
-                "psr-4": {
-                    "Workflow\\": "src/"
-                },
                 "files": [
                     "src/functions.php",
                     "src/V2/functions.php"
-                ]
-            },
-            "autoload-dev": {
+                ],
                 "psr-4": {
-                    "Tests\\": "tests/",
-                    "Workbench\\App\\": "workbench/app/",
-                    "Workbench\\Database\\Factories\\": "workbench/database/factories/",
-                    "Workbench\\Database\\Seeders\\": "workbench/database/seeders/"
+                    "Workflow\\": "src/"
                 }
             },
-            "scripts": {
-                "ecs": [
-                    "vendor/bin/ecs check --fix"
-                ],
-                "stan": [
-                    "vendor/bin/phpstan analyse src tests"
-                ],
-                "feature": [
-                    "Composer\\Config::disableProcessTimeout",
-                    "phpunit --testdox --testsuite feature"
-                ],
-                "unit": [
-                    "phpunit --testdox --testsuite unit"
-                ],
-                "test": [
-                    "phpunit --testdox"
-                ],
-                "coverage": [
-                    "XDEBUG_MODE=coverage phpunit --testdox --testsuite unit --coverage-clover coverage.xml",
-                    "@php scripts/ci/check-v2-coverage.php --contract=resources/v2-unit-coverage-contract.json"
-                ],
-                "post-autoload-dump": [
-                    "@clear",
-                    "@prepare"
-                ],
-                "clear": [
-                    "@php vendor/bin/testbench package:purge-skeleton --ansi"
-                ],
-                "prepare": [
-                    "@php vendor/bin/testbench package:discover --ansi"
-                ],
-                "build": [
-                    "@php vendor/bin/testbench workbench:build --ansi"
-                ],
-                "serve": [
-                    "Composer\\Config::disableProcessTimeout",
-                    "@build",
-                    "@php vendor/bin/testbench serve --ansi"
-                ],
-                "lint": [
-                    "@php vendor/bin/phpstan analyse --verbose --ansi"
-                ]
-            },
+            "notification-url": "https://packagist.org/downloads/",
             "license": [
                 "MIT"
             ],
@@ -773,10 +723,10 @@
             ],
             "description": "Embedded durable workflow runtime and orchestration engine for Laravel applications.",
             "support": {
-                "source": "https://github.com/durable-workflow/workflow/tree/feature/failed-run-redrive-501",
-                "issues": "https://github.com/durable-workflow/workflow/issues"
+                "issues": "https://github.com/durable-workflow/workflow/issues",
+                "source": "https://github.com/durable-workflow/workflow/tree/2.0.19"
             },
-            "time": "2026-09-23T04:16:11+00:00"
+            "time": "2026-09-23T00:03:57+00:00"
         },
         {
             "name": "egulias/email-validator",
@@ -8923,9 +8873,7 @@
     ],
     "aliases": [],
     "minimum-stability": "dev",
-    "stability-flags": {
-        "durable-workflow/workflow": 20
-    },
+    "stability-flags": {},
     "prefer-stable": true,
     "prefer-lowest": false,
     "platform": {
