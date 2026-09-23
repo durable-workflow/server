@@ -17,7 +17,6 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
-use Workflow\V2\Support\DefaultWorkflowControlPlane;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 
 final class WorkflowRedriveEndpointTest extends TestCase
@@ -47,7 +46,6 @@ final class WorkflowRedriveEndpointTest extends TestCase
 
     public function test_failed_run_redrives_once_with_visible_reused_history_and_provenance(): void
     {
-        $this->requireRedrivePackage();
         $source = $this->failedSource('redrive-http-1');
 
         $response = $this->withHeaders($this->apiHeaders())
@@ -112,7 +110,6 @@ final class WorkflowRedriveEndpointTest extends TestCase
 
     public function test_redrive_rejects_cross_namespace_and_changed_worker_definition(): void
     {
-        $this->requireRedrivePackage();
         $source = $this->failedSource('redrive-http-2');
 
         $this->withHeaders($this->apiHeaders('other'))
@@ -133,7 +130,6 @@ final class WorkflowRedriveEndpointTest extends TestCase
 
     public function test_redrive_refuses_a_run_that_did_not_fail(): void
     {
-        $this->requireRedrivePackage();
         $start = $this->withHeaders($this->apiHeaders())
             ->postJson('/api/workflows', [
                 'workflow_id' => 'redrive-http-open',
@@ -151,7 +147,6 @@ final class WorkflowRedriveEndpointTest extends TestCase
 
     public function test_redrive_cannot_bypass_namespace_run_quota(): void
     {
-        $this->requireRedrivePackage();
         $source = $this->failedSource('redrive-http-quota');
         config(['server.namespace_durable_state.limits' => [
             'max_workflow_runs' => 1,
@@ -184,13 +179,6 @@ final class WorkflowRedriveEndpointTest extends TestCase
         $this->withHeaders($this->apiHeaders('other'))
             ->getJson("/api/workflows/redrive-http-hidden/runs/{$runId}/activities")
             ->assertNotFound();
-    }
-
-    private function requireRedrivePackage(): void
-    {
-        if (! method_exists(DefaultWorkflowControlPlane::class, 'redrive')) {
-            $this->markTestSkipped('Requires the next published Workflow release with failed-run redrive.');
-        }
     }
 
     private function failedSource(string $workflowId): WorkflowRun
