@@ -12,6 +12,7 @@ use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Jobs\RunTimerTask;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
@@ -740,6 +741,7 @@ final class WorkflowTaskPoller
                                 historyPageSize: $historyPageSize,
                                 acceptHistoryEncoding: $acceptHistoryEncoding,
                                 supportedWorkflowTypes: $supportedWorkflowTypes,
+                                workflowDefinitionFingerprints: $workflowDefinitionFingerprints,
                                 workerPollFence: $workerPollFence,
                             ),
                         ),
@@ -788,6 +790,7 @@ final class WorkflowTaskPoller
                                     historyPageSize: $historyPageSize,
                                     acceptHistoryEncoding: $acceptHistoryEncoding,
                                     supportedWorkflowTypes: $supportedWorkflowTypes,
+                                    workflowDefinitionFingerprints: $workflowDefinitionFingerprints,
                                     workerPollFence: $workerPollFence,
                                 ),
                             ),
@@ -957,6 +960,7 @@ final class WorkflowTaskPoller
         ?int $historyPageSize = null,
         ?string $acceptHistoryEncoding = null,
         array $supportedWorkflowTypes = [],
+        array $workflowDefinitionFingerprints = [],
         array $workerPollFence = [],
     ): ?array {
         $readyTasks = $this->pollReplayEligibleReadyTasks(
@@ -1025,6 +1029,14 @@ final class WorkflowTaskPoller
                     $this->nonEmptyString($workerPollFence['protocol_version'] ?? null),
                 )
             ) {
+                continue;
+            }
+
+            if (! $this->matchesRecordedWorkflowDefinition(
+                $runId,
+                $readyTask['workflow_type'] ?? null,
+                $workflowDefinitionFingerprints,
+            )) {
                 continue;
             }
 
@@ -2297,6 +2309,30 @@ final class WorkflowTaskPoller
             $capabilities,
             $protocolVersion,
         );
+    }
+
+    /** @param array<string, string> $workflowDefinitionFingerprints */
+    private function matchesRecordedWorkflowDefinition(
+        string $runId,
+        mixed $workflowType,
+        array $workflowDefinitionFingerprints,
+    ): bool {
+        $started = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', 'WorkflowStarted')
+            ->orderBy('sequence')
+            ->first();
+        $recorded = $this->nonEmptyString($started?->payload['workflow_definition_fingerprint'] ?? null);
+
+        if ($recorded === null) {
+            return true;
+        }
+
+        $advertised = is_string($workflowType)
+            ? $this->nonEmptyString($workflowDefinitionFingerprints[$workflowType] ?? null)
+            : null;
+
+        return $advertised !== null && hash_equals($recorded, $advertised);
     }
 
     /**

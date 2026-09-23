@@ -3955,9 +3955,12 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         ], $this->workerHeaders());
 
         $poll->assertOk()
-            ->assertJsonPath('poll_status', 'leased')
-            ->assertJsonPath('task.run_id', $run->id)
-            ->assertJsonPath('task.lease_owner', 'python-query-mismatched-fingerprint-worker');
+            ->assertJsonPath('poll_status', 'query_task_pending')
+            ->assertJsonPath('task', null);
+
+        $workflowTask = WorkflowTask::query()->where('workflow_run_id', $run->id)->firstOrFail();
+        $this->assertSame(TaskStatus::Ready, $workflowTask->status);
+        $this->assertNull($workflowTask->lease_owner);
 
         $this->assertSame(
             'pending',
