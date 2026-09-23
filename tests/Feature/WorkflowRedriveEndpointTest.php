@@ -102,6 +102,12 @@ final class WorkflowRedriveEndpointTest extends TestCase
         $this->assertSame($source->id, $history[2]['payload']['reused_from_run_id']);
         $this->assertSame(1, $history[2]['payload']['sequence']);
         $this->assertIsArray($history[2]['payload']['result']);
+
+        $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/redrive-http-1/runs/{$successorId}/activities")
+            ->assertOk()
+            ->assertJsonPath('activities.0.reused_from_run_id', $source->id)
+            ->assertJsonPath('activities.0.sequence', 1);
     }
 
     public function test_redrive_rejects_cross_namespace_and_changed_worker_definition(): void
@@ -174,6 +180,9 @@ final class WorkflowRedriveEndpointTest extends TestCase
 
         $this->withHeaders($this->apiHeaders('other'))
             ->postJson("/api/workflows/redrive-http-hidden/runs/{$runId}/redrive")
+            ->assertNotFound();
+        $this->withHeaders($this->apiHeaders('other'))
+            ->getJson("/api/workflows/redrive-http-hidden/runs/{$runId}/activities")
             ->assertNotFound();
     }
 

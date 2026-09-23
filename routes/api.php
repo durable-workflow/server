@@ -172,6 +172,7 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
 
         // History
         Route::get('/{workflowId}/runs/{runId}/history', [HistoryController::class, 'show']);
+        Route::get('/{workflowId}/runs/{runId}/activities', [HistoryController::class, 'activities']);
         Route::get('/{workflowId}/runs/{runId}/history/export', [HistoryController::class, 'export']);
 
         // Caller-side Nexus operations: every cross-namespace service call this

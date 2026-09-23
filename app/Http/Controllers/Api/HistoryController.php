@@ -4,9 +4,9 @@ namespace App\Http\Controllers\Api;
 
 use App\Support\ControlPlaneProtocol;
 use App\Support\ExternalPayloadEnvelopeService;
+use App\Support\LegacyV1Projection;
 use App\Support\LongPoller;
 use App\Support\LongPollSignalStore;
-use App\Support\LegacyV1Projection;
 use App\Support\NamespaceWorkflowScope;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -15,6 +15,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Support\RunActivityView;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 class HistoryController
@@ -89,6 +90,26 @@ class HistoryController
         }
 
         return ControlPlaneProtocol::jsonForRequest($request, $payload);
+    }
+
+    public function activities(Request $request, string $workflowId, string $runId): JsonResponse
+    {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $namespace = (string) $request->attributes->get('namespace');
+        $run = NamespaceWorkflowScope::run($namespace, $workflowId, $runId);
+
+        if (! $run) {
+            return $this->runNotFound($request, $workflowId, $runId);
+        }
+
+        return ControlPlaneProtocol::jsonForRequest($request, [
+            'workflow_id' => $workflowId,
+            'run_id' => $runId,
+            'activities' => RunActivityView::activitiesForRun($run, decodePayloads: false),
+        ]);
     }
 
     /**
