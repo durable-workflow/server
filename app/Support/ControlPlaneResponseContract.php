@@ -230,6 +230,12 @@ final class ControlPlaneResponseContract
             'rejection_fields' => ['workflow_id', 'run_id', 'reason', 'message', 'remediation'],
             'rejection_reasons' => ['v1_projection_read_only'],
         ],
+        'redrive' => [
+            'operation_name_field' => null,
+            'required_fields' => ['workflow_id', 'continued_from_run_id'],
+            'success_fields' => ['run_id', 'resume_step_sequence', 'outcome'],
+            'rejection_fields' => ['workflow_id', 'continued_from_run_id', 'run_id', 'reason', 'message'],
+        ],
         'archive' => [
             'operation_name_field' => null,
             'required_fields' => ['workflow_id'],

@@ -25,6 +25,7 @@ final class ServerWorkflowControlPlane implements RuntimeSignalControlPlane, Wor
         private readonly ControlPlaneMutationRetrier $mutations,
         private readonly ControlPlaneFailureDiagnostics $failureDiagnostics,
         private readonly NamespaceDurableStateQuota $durableStateQuota,
+        private readonly WorkflowStartVersionPin $versionPin,
     ) {}
 
     public function start(string $workflowType, ?string $instanceId = null, array $options = []): array
@@ -148,6 +149,43 @@ final class ServerWorkflowControlPlane implements RuntimeSignalControlPlane, Wor
         return $this->mutations->run(
             fn (): array => $this->inner->repair($instanceId, $options),
         );
+    }
+
+    public function redrive(string $instanceId, string $failedRunId, array $options = []): array
+    {
+        $namespace = $this->namespace($options);
+
+        if ($namespace !== null) {
+            $source = NamespaceWorkflowScope::run($namespace, $instanceId, $failedRunId);
+            $buildId = $source instanceof WorkflowRun && is_string($source->compatibility)
+                && trim($source->compatibility) !== ''
+                ? trim($source->compatibility)
+                : null;
+            $options['external_workflow_definition_fingerprint'] = $source instanceof WorkflowRun
+                ? $this->versionPin->definitionFingerprintForCohort(
+                    $namespace,
+                    (string) $source->queue,
+                    (string) $source->workflow_type,
+                    $buildId,
+                    $buildId === null
+                        ? WorkflowStartVersionPin::CONTRACT_SCOPE_UNVERSIONED
+                        : WorkflowStartVersionPin::CONTRACT_SCOPE_BUILD_ID,
+                )
+                : null;
+        }
+
+        $mutation = fn (): array => $this->inner->redrive($instanceId, $failedRunId, $options);
+
+        return $this->mutations->run(fn (): array => $namespace === null
+            ? $mutation()
+            : $this->durableStateQuota->mutate($namespace, [
+                NamespaceDurableStateQuota::WORKFLOW_RUNS,
+                NamespaceDurableStateQuota::OPEN_WORKFLOW_RUNS,
+                NamespaceDurableStateQuota::WORKFLOW_HISTORY_EVENTS,
+                NamespaceDurableStateQuota::WORKFLOW_TASKS,
+                NamespaceDurableStateQuota::PENDING_WORKFLOW_TASKS,
+                NamespaceDurableStateQuota::WORKFLOW_COMMANDS,
+            ], $mutation));
     }
 
     public function archive(string $instanceId, array $options = []): array

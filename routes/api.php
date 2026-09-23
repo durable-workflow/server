@@ -144,13 +144,14 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
         Route::post('/{workflowId}/repair', [WorkflowController::class, 'repair']);
         Route::post('/{workflowId}/archive', [WorkflowController::class, 'archive']);
 
-        // Commands (run-targeted — rejects historical runs explicitly)
+        // Commands (run-targeted — except redrive, reject historical runs explicitly)
         Route::post('/{workflowId}/runs/{runId}/signal/{signalName}', [WorkflowController::class, 'signalRun']);
         Route::post('/{workflowId}/runs/{runId}/query/{queryName}', [WorkflowController::class, 'queryRun']);
         Route::post('/{workflowId}/runs/{runId}/update/{updateName}', [WorkflowController::class, 'updateRun']);
         Route::post('/{workflowId}/runs/{runId}/cancel', [WorkflowController::class, 'cancelRun']);
         Route::post('/{workflowId}/runs/{runId}/terminate', [WorkflowController::class, 'terminateRun']);
         Route::post('/{workflowId}/runs/{runId}/repair', [WorkflowController::class, 'repairRun']);
+        Route::post('/{workflowId}/runs/{runId}/redrive', [WorkflowController::class, 'redriveRun']);
         Route::post('/{workflowId}/runs/{runId}/archive', [WorkflowController::class, 'archiveRun']);
 
         // Durable workflow streams (producer side): append ordered items
