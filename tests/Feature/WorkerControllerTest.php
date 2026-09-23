@@ -456,6 +456,34 @@ class WorkerControllerTest extends TestCase
         $this->assertSame(['order.process' => 'sha256:old'], $worker->workflow_definition_fingerprints);
     }
 
+    public function test_register_rejects_explicit_missing_fingerprint_for_same_worker(): void
+    {
+        $registration = [
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
+            'worker_id' => 'source-backed-worker',
+            'task_queue' => 'default',
+            'runtime' => 'rust',
+            'supported_workflow_types' => ['order.process'],
+        ];
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', $registration + [
+                'workflow_definition_fingerprints' => ['order.process' => 'sha256:old'],
+            ])
+            ->assertStatus(201);
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', $registration + [
+                'workflow_definition_fingerprints' => [],
+            ])
+            ->assertStatus(409)
+            ->assertJsonPath('reason', 'workflow_definition_fingerprint_missing')
+            ->assertJsonPath('workflow_type', 'order.process');
+
+        $worker = WorkerRegistration::query()->where('worker_id', 'source-backed-worker')->firstOrFail();
+        $this->assertSame(['order.process' => 'sha256:old'], $worker->workflow_definition_fingerprints);
+    }
+
     public function test_register_allows_same_workflow_definition_for_same_worker(): void
     {
         foreach (range(1, 2) as $_) {

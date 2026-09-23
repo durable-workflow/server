@@ -284,6 +284,18 @@ class WorkerController
             $currentWorkflowDefinitionFingerprints = $this->workflowDefinitionFingerprints(
                 $existing->workflow_definition_fingerprints ?? []
             );
+            if ($request->has('workflow_definition_fingerprints')) {
+                foreach ($validated['supported_workflow_types'] ?? array_keys($currentWorkflowDefinitionFingerprints) as $workflowType) {
+                    if (isset($currentWorkflowDefinitionFingerprints[$workflowType]) && ! isset($workflowDefinitionFingerprints[$workflowType])) {
+                        return WorkerProtocol::json([
+                            'error' => 'Worker omitted a previously advertised workflow definition fingerprint.',
+                            'reason' => 'workflow_definition_fingerprint_missing',
+                            'workflow_type' => $workflowType,
+                            'remediation' => 'Advertise the matching definition fingerprint or restart with a new worker_id.',
+                        ], 409);
+                    }
+                }
+            }
             $conflict = $this->firstWorkflowDefinitionFingerprintConflict(
                 $currentWorkflowDefinitionFingerprints,
                 $workflowDefinitionFingerprints,
