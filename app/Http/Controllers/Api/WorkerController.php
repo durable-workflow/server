@@ -284,6 +284,18 @@ class WorkerController
             $currentWorkflowDefinitionFingerprints = $this->workflowDefinitionFingerprints(
                 $existing->workflow_definition_fingerprints ?? []
             );
+            if ($request->has('workflow_definition_fingerprints')) {
+                foreach ($validated['supported_workflow_types'] ?? array_keys($currentWorkflowDefinitionFingerprints) as $workflowType) {
+                    if (isset($currentWorkflowDefinitionFingerprints[$workflowType]) && ! isset($workflowDefinitionFingerprints[$workflowType])) {
+                        return WorkerProtocol::json([
+                            'error' => 'Worker omitted a previously advertised workflow definition fingerprint.',
+                            'reason' => 'workflow_definition_fingerprint_missing',
+                            'workflow_type' => $workflowType,
+                            'remediation' => 'Advertise the matching definition fingerprint or restart with a new worker_id.',
+                        ], 409);
+                    }
+                }
+            }
             $conflict = $this->firstWorkflowDefinitionFingerprintConflict(
                 $currentWorkflowDefinitionFingerprints,
                 $workflowDefinitionFingerprints,
@@ -1496,6 +1508,8 @@ class WorkerController
             'commands.*.exception_class' => ['nullable', 'string'],
             'commands.*.exception_type' => ['nullable', 'string'],
             'commands.*.exception' => ['nullable', 'array'],
+            'commands.*.failed_step_sequence' => ['nullable', 'integer', 'min:1'],
+            'commands.*.failed_activity_execution_id' => ['nullable', 'string', 'max:255'],
             'commands.*.change_id' => ['nullable', 'string'],
             'commands.*.version' => ['nullable', 'integer'],
             'commands.*.min_supported' => ['nullable', 'integer'],
@@ -2621,6 +2635,21 @@ class WorkerController
                     'exception is only supported for fail_workflow commands.';
             }
 
+            foreach (['failed_step_sequence', 'failed_activity_execution_id'] as $field) {
+                if ($this->hasCommandValue($command, $field) && $type !== 'fail_workflow') {
+                    $errors["commands.{$index}.{$field}"][] =
+                        "{$field} is only supported for fail_workflow commands.";
+                }
+            }
+
+            if ($type === 'fail_workflow'
+                && $this->hasCommandValue($command, 'failed_step_sequence')
+                    !== $this->hasCommandValue($command, 'failed_activity_execution_id')
+            ) {
+                $errors["commands.{$index}.failed_step_sequence"][] =
+                    'Uncaught activity failure identity requires both failed_step_sequence and failed_activity_execution_id.';
+            }
+
             if ($type === 'schedule_activity') {
                 $this->validateActivityTimeoutEnvelope($command, $index, $errors);
             }
@@ -2814,6 +2843,7 @@ class WorkerController
             'max_supported',
             'timeout_seconds',
             'wait_timeout_seconds',
+            'failed_step_sequence',
         ];
 
         foreach ($commands as $index => $command) {

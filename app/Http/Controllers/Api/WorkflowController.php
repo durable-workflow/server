@@ -1046,6 +1046,47 @@ class WorkflowController
         });
     }
 
+    public function redriveRun(Request $request, string $workflowId, string $runId): JsonResponse
+    {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $namespace = $request->attributes->get('namespace');
+        $source = NamespaceWorkflowScope::workflowBound($namespace, $workflowId)
+            ? NamespaceWorkflowScope::run($namespace, $workflowId, $runId)
+            : null;
+
+        if (! $source instanceof WorkflowRun) {
+            return $this->runNotFound($request, $workflowId, $runId);
+        }
+
+        if (LegacyV1Projection::isProjectedRun($source)) {
+            return $this->projectedV1OperationResponse($request, $source, 'redrive');
+        }
+
+        $validated = $request->validate([
+            'request_id' => ['nullable', 'string', 'max:191'],
+        ]);
+
+        $result = $this->workflowControlPlane->redrive($workflowId, $runId, [
+            'namespace' => $namespace,
+            'request_id' => $validated['request_id'] ?? null,
+            'command_context' => $this->commandContexts->make(
+                $request,
+                workflowId: $workflowId,
+                commandName: 'redrive',
+                metadata: array_filter([
+                    'request_id' => $validated['request_id'] ?? null,
+                    'continued_from_run_id' => $runId,
+                ], static fn (mixed $value): bool => $value !== null),
+            ),
+            'strict_configured_type_validation' => true,
+        ]);
+
+        return $this->resultMapper->redrive($workflowId, $runId, $result);
+    }
+
     public function archiveRun(Request $request, string $workflowId, string $runId): JsonResponse
     {
         return $this->withCurrentRunGuard($request, $workflowId, $runId, 'archive', null, function () use ($request, $workflowId) {
@@ -1192,6 +1233,9 @@ class WorkflowController
             'run_number' => $runDescription['run_number'] ?? (int) $run->run_number,
             'run_count' => $description['run_count'] ?? ($migrationProjection !== null ? 1 : null),
             'is_current_run' => $runDescription['is_current_run'] ?? ($migrationProjection !== null ? true : null),
+            'continued_from_run_id' => $runDescription['continued_from_run_id'] ?? null,
+            'resume_step_sequence' => $runDescription['resume_step_sequence'] ?? null,
+            'recovery_kind' => $runDescription['recovery_kind'] ?? null,
             'compatibility' => $runDescription['compatibility'] ?? $run->compatibility,
             'compatibility_status' => $this->compatibilityStatus($namespace, $run),
             'compatibility_supported_in_fleet' => $this->compatibilitySupportedInFleet($namespace, $run),

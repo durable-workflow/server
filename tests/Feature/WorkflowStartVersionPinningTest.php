@@ -88,6 +88,123 @@ class WorkflowStartVersionPinningTest extends TestCase
         self::assertSame('v2.0.0', $task->compatibility);
     }
 
+    public function test_worker_definition_fingerprint_requires_consensus_in_selected_cohort(): void
+    {
+        $this->seedWorker('redrive-a-1', taskQueue: 'redrive-q', buildId: 'build-a');
+        $this->seedWorker('redrive-a-2', taskQueue: 'redrive-q', buildId: 'build-a');
+        $this->seedWorker('redrive-b', taskQueue: 'redrive-q', buildId: 'build-b');
+
+        WorkerRegistration::query()
+            ->whereIn('worker_id', ['redrive-a-1', 'redrive-a-2'])
+            ->get()
+            ->each(static function (WorkerRegistration $worker): void {
+                $worker->workflow_definition_fingerprints = [
+                    'tests.external-greeting-workflow' => 'definition-a',
+                ];
+                $worker->save();
+            });
+        WorkerRegistration::query()->where('worker_id', 'redrive-b')->firstOrFail()
+            ->forceFill(['workflow_definition_fingerprints' => [
+                'tests.external-greeting-workflow' => 'definition-b',
+            ]])->save();
+
+        $resolver = $this->app->make(WorkflowStartVersionPin::class);
+        $selected = fn (): ?string => $resolver->definitionFingerprintForCohort(
+            'default', 'redrive-q', 'tests.external-greeting-workflow', 'build-a',
+            WorkflowStartVersionPin::CONTRACT_SCOPE_BUILD_ID,
+        );
+
+        self::assertSame('definition-a', $selected());
+        self::assertNull($resolver->definitionFingerprintForCohort(
+            'default', 'redrive-q', 'tests.external-greeting-workflow', null,
+            WorkflowStartVersionPin::CONTRACT_SCOPE_BUILD_ID,
+        ));
+
+        WorkerRegistration::query()->where('worker_id', 'redrive-a-2')->firstOrFail()
+            ->forceFill(['workflow_definition_fingerprints' => [
+                'tests.external-greeting-workflow' => 'definition-changed',
+            ]])->save();
+        self::assertNull($selected());
+
+        WorkerRegistration::query()->where('worker_id', 'redrive-a-2')->firstOrFail()
+            ->forceFill(['workflow_definition_fingerprints' => []])->save();
+        self::assertNull($selected());
+
+        $this->seedWorker('redrive-unversioned', taskQueue: 'redrive-q', buildId: null);
+        WorkerRegistration::query()->where('worker_id', 'redrive-unversioned')->firstOrFail()
+            ->forceFill(['workflow_definition_fingerprints' => [
+                'tests.external-greeting-workflow' => 'definition-unversioned',
+            ]])->save();
+        self::assertSame('definition-unversioned', $resolver->definitionFingerprintForCohort(
+            'default', 'redrive-q', 'tests.external-greeting-workflow', null,
+            WorkflowStartVersionPin::CONTRACT_SCOPE_UNVERSIONED,
+        ));
+    }
+
+    public function test_workflow_task_poll_requires_the_recorded_worker_definition(): void
+    {
+        config(['server.polling.timeout' => 0]);
+
+        $this->seedWorker('fingerprint-matching', taskQueue: 'fingerprint-q', buildId: null);
+        WorkerRegistration::query()->where('worker_id', 'fingerprint-matching')->firstOrFail()
+            ->forceFill(['workflow_definition_fingerprints' => [
+                'tests.external-greeting-workflow' => 'definition-v1',
+            ]])->save();
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-definition-pinned',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'fingerprint-q',
+            ])
+            ->assertCreated();
+        $runId = (string) $start->json('run_id');
+
+        $started = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->firstOrFail();
+        $started->payload = [
+            ...$started->payload,
+            'workflow_definition_fingerprint' => 'definition-v1',
+            'workflow_definition_fingerprint_source' => 'worker',
+        ];
+        $started->save();
+
+        foreach (['changed' => 'definition-v2', 'missing' => null] as $name => $fingerprint) {
+            $workerId = "fingerprint-{$name}";
+            $this->seedWorker($workerId, taskQueue: 'fingerprint-q', buildId: null);
+            WorkerRegistration::query()->where('worker_id', $workerId)->firstOrFail()
+                ->forceFill(['workflow_definition_fingerprints' => $fingerprint === null
+                    ? []
+                    : ['tests.external-greeting-workflow' => $fingerprint]])->save();
+        }
+
+        foreach (['fingerprint-changed', 'fingerprint-missing'] as $workerId) {
+            $this->withHeaders($this->workerHeaders())
+                ->postJson('/api/worker/workflow-tasks/poll', [
+                    'worker_id' => $workerId,
+                    'task_queue' => 'fingerprint-q',
+                    'timeout_seconds' => 0,
+                ])
+                ->assertOk()
+                ->assertJsonPath('task', null);
+        }
+
+        $ready = WorkflowTask::query()->where('workflow_run_id', $runId)->firstOrFail();
+        self::assertSame(TaskStatus::Ready, $ready->status);
+        self::assertNull($ready->lease_owner);
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'fingerprint-matching',
+                'task_queue' => 'fingerprint-q',
+                'timeout_seconds' => 0,
+            ])
+            ->assertOk()
+            ->assertJsonPath('task.run_id', $runId);
+    }
+
     public function test_pins_to_single_active_build_id_when_no_rollout_promoted_yet(): void
     {
         $this->seedWorker('w-v1-only', taskQueue: 'isolated', buildId: 'v1.0.0');

@@ -392,6 +392,45 @@ class WorkerProtocolContractTest extends TestCase
             ->assertJsonPath('reason', 'task_not_found');
     }
 
+    public function test_paired_uncaught_activity_failure_identity_reaches_task_ownership(): void
+    {
+        $response = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/missing-task/complete', [
+                'lease_owner' => 'redrive-worker',
+                'workflow_task_attempt' => 1,
+                'commands' => [[
+                    'type' => 'fail_workflow',
+                    'message' => 'activity failed',
+                    'failed_step_sequence' => '2',
+                    'failed_activity_execution_id' => 'activity-123',
+                ]],
+            ]);
+
+        $response->assertNotFound()
+            ->assertJsonPath('reason', 'task_not_found');
+    }
+
+    public function test_uncaught_activity_failure_identity_requires_both_fields(): void
+    {
+        $response = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/missing-task/complete', [
+                'lease_owner' => 'redrive-worker',
+                'workflow_task_attempt' => 1,
+                'commands' => [[
+                    'type' => 'fail_workflow',
+                    'message' => 'activity failed',
+                    'failed_step_sequence' => 2,
+                ]],
+            ]);
+
+        $response->assertUnprocessable()
+            ->assertJsonPath('reason', 'validation_failed');
+        $this->assertSame(
+            'Uncaught activity failure identity requires both failed_step_sequence and failed_activity_execution_id.',
+            $response->json('validation_errors')['commands.0.failed_step_sequence'][0] ?? null,
+        );
+    }
+
     /**
      * @param  array<string, mixed>  $command
      */
@@ -461,6 +500,22 @@ class WorkerProtocolContractTest extends TestCase
                 ],
                 'errorField' => 'commands.0.non_retryable',
                 'expectedMessage' => 'non_retryable is only supported for fail_workflow and fail_update commands.',
+            ],
+            'failed step sequence on completion' => [
+                'command' => [
+                    'type' => 'complete_workflow',
+                    'failed_step_sequence' => 2,
+                ],
+                'errorField' => 'commands.0.failed_step_sequence',
+                'expectedMessage' => 'failed_step_sequence is only supported for fail_workflow commands.',
+            ],
+            'failed activity id on completion' => [
+                'command' => [
+                    'type' => 'complete_workflow',
+                    'failed_activity_execution_id' => 'activity-123',
+                ],
+                'errorField' => 'commands.0.failed_activity_execution_id',
+                'expectedMessage' => 'failed_activity_execution_id is only supported for fail_workflow commands.',
             ],
             'parallel metadata on completion' => [
                 'command' => [

@@ -129,6 +129,28 @@ final class ControlPlaneResultMapper
     /**
      * @param  array<string, mixed>  $result
      */
+    public function redrive(string $workflowId, string $sourceRunId, array $result): JsonResponse
+    {
+        $accepted = ($result['accepted'] ?? false) === true;
+        $result['run_id'] = $accepted ? ($result['workflow_run_id'] ?? null) : $sourceRunId;
+        $result['command_status'] = $accepted ? 'accepted' : 'rejected';
+        $result['outcome'] = $accepted ? 'redriven' : 'rejected';
+
+        return $this->commandResponse(
+            operation: 'redrive',
+            operationName: null,
+            workflowId: $workflowId,
+            runId: $sourceRunId,
+            result: $result,
+            defaultStatus: 202,
+            fallbackFields: [],
+            projectCommandReason: true,
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $result
+     */
     public function archive(string $workflowId, array $result, ?string $runId = null): JsonResponse
     {
         return $this->commandResponse(
