@@ -87,6 +87,21 @@ final class WorkflowRedriveEndpointTest extends TestCase
             ->assertOk()
             ->assertJsonPath('run_id', $successorId);
         $this->assertSame(2, WorkflowRun::query()->where('workflow_instance_id', 'redrive-http-1')->count());
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'redrive-worker',
+                'task_queue' => 'redrive-queue',
+            ]);
+        $poll->assertOk()->assertJsonPath('task.run_id', $successorId);
+        $history = (array) $poll->json('task.history_events');
+        $this->assertSame(
+            ['StartAccepted', 'WorkflowStarted', 'ActivityCompleted'],
+            array_column($history, 'event_type'),
+        );
+        $this->assertSame($source->id, $history[2]['payload']['reused_from_run_id']);
+        $this->assertSame(1, $history[2]['payload']['sequence']);
+        $this->assertIsArray($history[2]['payload']['result']);
     }
 
     public function test_redrive_rejects_cross_namespace_and_changed_worker_definition(): void
