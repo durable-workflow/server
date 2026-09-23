@@ -8,6 +8,27 @@ use PHPUnit\Framework\TestCase;
 
 class ActivityConformanceRunnerContractTest extends TestCase
 {
+    private string|false $originalContainerHandoff;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->originalContainerHandoff = getenv('DW_ACTIVITIES_CONTAINER_HANDOFF');
+        putenv('DW_ACTIVITIES_CONTAINER_HANDOFF=1');
+    }
+
+    protected function tearDown(): void
+    {
+        if ($this->originalContainerHandoff === false) {
+            putenv('DW_ACTIVITIES_CONTAINER_HANDOFF');
+        } else {
+            putenv('DW_ACTIVITIES_CONTAINER_HANDOFF='.$this->originalContainerHandoff);
+        }
+
+        parent::tearDown();
+    }
+
     public function test_extracted_runner_hands_execution_back_to_the_exact_published_server_image(): void
     {
         if (trim((string) shell_exec('command -v bash 2>/dev/null')) === '') {
@@ -43,6 +64,7 @@ class ActivityConformanceRunnerContractTest extends TestCase
                 'DW_PYTHON_SDK_VERSION=9.9.9',
                 'DW_WORKFLOW_PHP_VERSION=9.9.9',
                 'DW_WATERLINE_VERSION=9.9.9',
+                'DW_ACTIVITIES_CONTAINER_HANDOFF=0',
                 'bash',
                 escapeshellarg($runnerDir.'/activities-published-artifacts.sh'),
                 '--result-dir',
@@ -2401,7 +2423,11 @@ SH);
             $this->assertFalse($record['runnerBlocked']);
             $this->assertNotEmpty($result['published_artifact_worker_execution_failures'] ?? []);
             $this->assertStringContainsString(
-                'local product source probe',
+                'server.source is local or forbidden',
+                implode('; ', $result['published_artifact_worker_execution_failures'] ?? []),
+            );
+            $this->assertStringContainsString(
+                'server.local_product_source_checkouts_used=true',
                 implode('; ', $result['published_artifact_worker_execution_failures'] ?? []),
             );
 
