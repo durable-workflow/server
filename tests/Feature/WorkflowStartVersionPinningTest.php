@@ -167,6 +167,7 @@ class WorkflowStartVersionPinningTest extends TestCase
         $started->payload = [
             ...$started->payload,
             'workflow_definition_fingerprint' => 'definition-v1',
+            'workflow_definition_fingerprint_source' => 'worker',
         ];
         $started->save();
 

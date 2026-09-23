@@ -2322,10 +2322,15 @@ final class WorkflowTaskPoller
             ->where('event_type', 'WorkflowStarted')
             ->orderBy('sequence')
             ->first();
+
+        if (($started?->payload['workflow_definition_fingerprint_source'] ?? null) !== 'worker') {
+            return true;
+        }
+
         $recorded = $this->nonEmptyString($started?->payload['workflow_definition_fingerprint'] ?? null);
 
         if ($recorded === null) {
-            return true;
+            return false;
         }
 
         $advertised = is_string($workflowType)
