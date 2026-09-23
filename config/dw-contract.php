@@ -834,6 +834,12 @@ return [
         // follow the same DW_*-primary / legacy-fallback pattern as the
         // server's own config/server.php.
 
+        'DW_V1_ENABLED' => [
+            'description' => 'Enable legacy embedded v1 migration and queue-drain behavior. Standalone Server defaults to v2-only; enable only when deliberately preserving v1 state.',
+            'default' => 'false',
+            'since' => '2.3.15',
+            'legacy' => 'WORKFLOW_V1_ENABLED',
+        ],
         'DW_V2_NAMESPACE' => [
             'description' => 'Scopes workflow instances to a namespace. When unset, instances are visible to every consumer.',
             'default' => null,
