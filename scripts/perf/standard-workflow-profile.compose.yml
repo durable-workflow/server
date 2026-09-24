@@ -1,0 +1,89 @@
+# Disposable SQL/Redis cost profile for the published DW Standard Workflow v1.
+# This is not the capacity-suite topology or a customer throughput benchmark.
+# Supply exact published image digests through DW_PROFILE_*_IMAGE.
+services:
+  mysql:
+    image: ${DW_PROFILE_MYSQL_IMAGE:?Set an exact MySQL image digest}
+    environment:
+      MYSQL_DATABASE: durable_workflow
+      MYSQL_USER: workflow
+      MYSQL_PASSWORD: workflow
+      MYSQL_ROOT_PASSWORD: root
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: ${DW_PROFILE_REDIS_IMAGE:?Set an exact Redis image digest}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  bootstrap:
+    image: &server_image ${DW_PROFILE_SERVER_IMAGE:?Set an exact published Server image digest}
+    command: ["server-bootstrap"]
+    environment: &server_env
+      APP_ENV: local
+      DW_SERVER_KEY: "base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+      DB_CONNECTION: mysql
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_DATABASE: durable_workflow
+      DB_USERNAME: workflow
+      DB_PASSWORD: workflow
+      REDIS_HOST: redis
+      QUEUE_CONNECTION: redis
+      CACHE_STORE: redis
+      DW_AUTH_DRIVER: token
+      DW_AUTH_TOKEN: profile-token
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  server:
+    image: *server_image
+    environment: *server_env
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "server-healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  worker:
+    image: *server_image
+    command: ["php", "artisan", "queue:work", "--sleep=1", "--tries=3", "--max-time=3600"]
+    environment: *server_env
+    depends_on:
+      server:
+        condition: service_healthy
+
+  sdk-worker:
+    build:
+      context: ../..
+      dockerfile: scripts/perf/Dockerfile.sdk
+    command: ["benchmarks/capacity/v1/bindings/php/capacity_adapter.php", "worker"]
+    environment:
+      DURABLE_WORKFLOW_RUNTIME_URL: http://server:8080
+      DURABLE_WORKFLOW_NAMESPACE: default
+      DURABLE_WORKFLOW_TASK_QUEUE: perf-standard
+      DURABLE_WORKFLOW_TOKEN: profile-token
+    depends_on:
+      server:
+        condition: service_healthy
+
+volumes:
+  mysql_data:
+  redis_data:
