@@ -48,7 +48,7 @@
     },
     "extra": {
         "durable-workflow": {
-            "product-train": "2.4.1"
+            "product-train": "2.4.2"
         },
         "laravel": {
             "dont-discover": []
