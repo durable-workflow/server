@@ -12,6 +12,9 @@ if ($count === false) {
 
 $client = capacityClient(false);
 $queue = capacityEnvironment('DURABLE_WORKFLOW_TASK_QUEUE');
+if ($queue === null) {
+    throw new InvalidArgumentException('Set DURABLE_WORKFLOW_TASK_QUEUE.');
+}
 $payload = str_repeat('s', 1024);
 $input = [
     'blob' => $payload,
