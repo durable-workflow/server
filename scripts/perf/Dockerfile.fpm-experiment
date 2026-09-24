@@ -1,0 +1,22 @@
+ARG SERVER_IMAGE=durableworkflow/server@sha256:998b9dffe1f8effb159af9660ac190ccbc9d0c954900e68e9946baa6bb4c6c42
+FROM ${SERVER_IMAGE} AS published
+
+FROM php:8.3.33-fpm-trixie@sha256:ebf282c3e870b221c7c631da8e2c4c7d3b69951ba5af1153f3737be55678960c
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libpq5 libzip5 \
+    && groupmod --gid 1000 www-data \
+    && usermod --uid 1000 --gid 1000 www-data \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=published /usr/local/lib/php/extensions/no-debug-non-zts-20230831/ /usr/local/lib/php/extensions/no-debug-non-zts-20230831/
+COPY --from=published /usr/local/etc/php/conf.d/ /usr/local/etc/php/conf.d/
+COPY --from=published /usr/local/bin/server-* /usr/local/bin/
+COPY --from=published /app/ /app/
+COPY scripts/perf/fpm-pool-experiment.conf /usr/local/etc/php-fpm.d/zz-experiment.conf
+
+WORKDIR /app
+ENV DW_WORKER_LONG_POLL_MAX_CONCURRENT=2 \
+    DW_QUERY_TASK_POLL_MAX_CONCURRENT=1
+ENTRYPOINT ["server-entrypoint"]
+CMD ["php-fpm", "-F"]

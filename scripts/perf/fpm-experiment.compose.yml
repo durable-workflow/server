@@ -1,0 +1,37 @@
+services:
+  fpm:
+    build:
+      context: ../..
+      dockerfile: scripts/perf/Dockerfile.fpm-experiment
+      args:
+        SERVER_IMAGE: ${DW_PROFILE_SERVER_IMAGE:?Set an exact published Server image digest}
+    environment:
+      APP_ENV: local
+      DW_SERVER_KEY: "base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+      DB_CONNECTION: mysql
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_DATABASE: durable_workflow
+      DB_USERNAME: workflow
+      DB_PASSWORD: workflow
+      REDIS_HOST: redis
+      QUEUE_CONNECTION: redis
+      CACHE_STORE: redis
+      DW_AUTH_DRIVER: token
+      DW_AUTH_TOKEN: profile-token
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+
+  server:
+    image: nginx@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236
+    volumes:
+      - ./nginx-fpm-experiment.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      fpm:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/api/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
