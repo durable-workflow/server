@@ -155,6 +155,14 @@ class EnduranceCoverageTest(unittest.TestCase):
             self.assertFalse(server_soak.poll_response_valid(body))
         self.assertTrue(server_soak.poll_response_valid({"task": None, "poll_status": "empty"}))
 
+    def test_only_capacity_exhaustion_is_accepted_as_poll_backpressure(self):
+        capacity = {"reason": "long_poll_capacity_exhausted", "poll_status": "long_poll_capacity_exhausted"}
+        for status in (200, 429):
+            self.assertTrue(server_soak.poll_backpressure_valid(status, capacity))
+        self.assertFalse(server_soak.poll_backpressure_valid(503, capacity))
+        for body in ({"reason": "namespace_request_rate_exceeded"}, {"poll_status": "long_poll_capacity_exhausted"}, None):
+            self.assertFalse(server_soak.poll_backpressure_valid(429, body))
+
     def test_each_polling_thread_gets_a_registration_across_the_configured_dimensions(self):
         with patch.object(server_soak, "http_json", return_value=(201, {})) as register:
             workers = server_soak.register_workers("http://fixture", "fixture", [f"ns-{i}" for i in range(8)], [f"queue-{i}" for i in range(16)], 24)
@@ -198,10 +206,20 @@ class EnduranceCoverageTest(unittest.TestCase):
     def test_all_backpressure_is_not_a_healthy_poll_experiment(self):
         for status in (200, 429):
             metrics = server_soak.EndpointMetrics()
-            metrics.record("worker_poll", status, 0.1, backpressured=status == 200)
+            metrics.record("worker_poll", status, 0.1, backpressured=True)
             self.assertTrue(server_soak.evaluate_availability(metrics.snapshot(), ["worker_poll"], 3, 5))
             metrics.record("worker_poll", 200, 0.1)
             self.assertEqual([], server_soak.evaluate_availability(metrics.snapshot(), ["worker_poll"], 3, 5))
+
+    def test_unexpected_429_is_not_counted_as_available_backpressure(self):
+        metrics = server_soak.EndpointMetrics()
+        metrics.record("worker_poll", 200, 0.1)
+        metrics.record("worker_poll", 429, 0.1, valid=False)
+        snapshot = metrics.snapshot()["worker_poll"]
+        self.assertEqual(1, snapshot["errors"])
+        self.assertEqual(0, snapshot["backpressured"])
+        self.assertEqual(1, snapshot["available"])
+        self.assertEqual(0.5, snapshot["availability"])
 
     def test_resource_summary_does_not_substitute_zero_for_missing_cpu(self):
         result = server_soak.resource_summary([{"server_memory_bytes": 1048576}])
