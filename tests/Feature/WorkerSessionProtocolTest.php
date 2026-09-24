@@ -106,6 +106,58 @@ class WorkerSessionProtocolTest extends TestCase
             ->assertJsonPath('session.status', 'closed');
     }
 
+    public function test_session_conflicts_keep_http_status_separate_from_session_status(): void
+    {
+        $this->registerWorkerThroughProtocol('session-holder', 'session-queue');
+        $this->registerWorkerThroughProtocol('session-contender', 'session-queue');
+
+        $this->postJson('/api/worker/sessions', [
+            'worker_id' => 'session-holder',
+            'session_id' => 'contested-session',
+            'queue' => 'session-queue',
+            'lease_seconds' => 120,
+        ], $this->workerHeaders())->assertCreated();
+
+        $this->postJson('/api/worker/sessions', [
+            'worker_id' => 'session-contender',
+            'session_id' => 'contested-session',
+            'queue' => 'session-queue',
+        ], $this->workerHeaders())
+            ->assertStatus(409)
+            ->assertJsonPath('reason', 'session_owned_by_another_worker')
+            ->assertJsonPath('status', 409)
+            ->assertJsonPath('session.status', 'active')
+            ->assertJsonPath('session.lease_owner', 'session-holder');
+
+        $this->postJson('/api/worker/sessions/contested-session/heartbeat', [
+            'worker_id' => 'session-contender',
+        ], $this->workerHeaders())
+            ->assertStatus(409)
+            ->assertJsonPath('reason', 'session_owner_mismatch')
+            ->assertJsonPath('session.status', 'active');
+
+        $this->deleteJson('/api/worker/sessions/contested-session', [
+            'worker_id' => 'session-contender',
+        ], $this->workerHeaders())
+            ->assertStatus(409)
+            ->assertJsonPath('reason', 'session_owner_mismatch')
+            ->assertJsonPath('session.status', 'active');
+
+        $this->deleteJson('/api/worker/sessions/contested-session', [
+            'worker_id' => 'session-holder',
+        ], $this->workerHeaders())->assertOk();
+
+        $this->postJson('/api/worker/sessions', [
+            'worker_id' => 'session-contender',
+            'session_id' => 'contested-session',
+            'queue' => 'session-queue',
+        ], $this->workerHeaders())
+            ->assertStatus(409)
+            ->assertJsonPath('reason', 'session_closed')
+            ->assertJsonPath('status', 409)
+            ->assertJsonPath('session.status', 'closed');
+    }
+
     public function test_activity_poll_admits_worker_session_only_to_capable_holder(): void
     {
         Queue::fake();

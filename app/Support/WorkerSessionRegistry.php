@@ -12,7 +12,9 @@ use Workflow\V2\Models\ActivityExecution;
 final class WorkerSessionRegistry
 {
     private const DEFAULT_LEASE_SECONDS = 120;
+
     private const DEFAULT_TTL_SECONDS = 1800;
+
     private const DEFAULT_MAX_CONCURRENT_ACTIVITIES = 1;
 
     /**
@@ -106,7 +108,7 @@ final class WorkerSessionRegistry
                     'session_not_active',
                     'Worker session is not active.',
                     409,
-                    $this->sessionSnapshot($session),
+                    ['session' => $this->sessionSnapshot($session)],
                 );
             }
 
@@ -115,7 +117,7 @@ final class WorkerSessionRegistry
                     'session_owner_mismatch',
                     'Worker session lease is owned by another worker.',
                     409,
-                    $this->sessionSnapshot($session),
+                    ['session' => $this->sessionSnapshot($session)],
                 );
             }
 
@@ -199,7 +201,7 @@ final class WorkerSessionRegistry
                     'session_owner_mismatch',
                     'Worker session lease is owned by another worker.',
                     409,
-                    $this->sessionSnapshot($session),
+                    ['session' => $this->sessionSnapshot($session)],
                 );
             }
 
@@ -391,7 +393,7 @@ final class WorkerSessionRegistry
                     'session_owned_by_another_worker',
                     'Worker session is currently leased by another worker.',
                     409,
-                    $this->sessionSnapshot($session),
+                    ['session' => $this->sessionSnapshot($session)],
                 );
             }
 
@@ -412,7 +414,7 @@ final class WorkerSessionRegistry
                 'session_closed',
                 'Worker session was closed and cannot be reacquired.',
                 409,
-                $this->sessionSnapshot($session),
+                ['session' => $this->sessionSnapshot($session)],
             );
         }
 
@@ -421,7 +423,7 @@ final class WorkerSessionRegistry
                 'session_reacquire_disallowed',
                 'Worker session is terminal and cannot be reacquired.',
                 409,
-                $this->sessionSnapshot($session),
+                ['session' => $this->sessionSnapshot($session)],
             );
         }
 
@@ -430,7 +432,7 @@ final class WorkerSessionRegistry
                 'session_reacquire_disallowed',
                 'Worker session options disallow reacquisition after holder failure.',
                 409,
-                $this->sessionSnapshot($session),
+                ['session' => $this->sessionSnapshot($session)],
             );
         }
 
@@ -646,7 +648,7 @@ final class WorkerSessionRegistry
             'session_activity_limit_exceeded',
             'Worker session has reached max_concurrent_activities.',
             409,
-            $this->sessionSnapshot($session) + ['max_concurrent_activities' => $limit],
+            ['session' => $this->sessionSnapshot($session), 'max_concurrent_activities' => $limit],
         );
     }
 
@@ -717,11 +719,11 @@ final class WorkerSessionRegistry
     private function failure(string $reason, string $message, int $status = 409, array $context = []): array
     {
         return [
+            ...$context,
             'admitted' => false,
             'error' => $message,
             'reason' => $reason,
             'status' => $status,
-            ...$context,
         ];
     }
 
