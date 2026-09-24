@@ -176,15 +176,17 @@ class EndpointMetrics:
         with self.lock:
             entry = self.endpoints.setdefault(
                 endpoint,
-                {"requests": 0, "errors": 0, "statuses": Counter(), "latencies": [], "backpressured": 0},
+                {"requests": 0, "errors": 0, "statuses": Counter(), "latencies": [], "backpressured": 0, "backpressured_429": 0},
             )
             entry["requests"] += 1
             entry["statuses"][str(status)] += 1
             entry["latencies"].append(latency)
-            if not valid or (status != 429 and not 200 <= status < 300):
+            if not valid or not (200 <= status < 300 or (status == 429 and backpressured)):
                 entry["errors"] += 1
             if backpressured:
                 entry["backpressured"] = int(entry.get("backpressured", 0)) + 1
+                if status == 429:
+                    entry["backpressured_429"] = int(entry.get("backpressured_429", 0)) + 1
 
     def record_error(self, endpoint: str, latency: float) -> None:
         with self.lock:
@@ -206,12 +208,8 @@ class EndpointMetrics:
                     for status, count in entry["statuses"].items()
                     if 200 <= int(status) < 300
                 )
-                http_backpressured = (
-                    int(entry["statuses"].get("429", 0))
-                    if endpoint == "worker_poll"
-                    else 0
-                )
-                backpressured = int(entry.get("backpressured", 0)) + http_backpressured
+                http_backpressured = int(entry.get("backpressured_429", 0))
+                backpressured = int(entry.get("backpressured", 0))
                 available = successful + http_backpressured
                 requests = int(entry["requests"])
                 snapshot[endpoint] = {
@@ -880,22 +878,19 @@ def worker_loop(
             )
             latency = time.monotonic() - started
             metrics.record_request(status, latency)
-            compatible_backpressure = (
-                status == 200
-                and isinstance(body, dict)
-                and body.get("reason") == "long_poll_capacity_exhausted"
-            )
+            compatible_backpressure = poll_backpressure_valid(status, body)
+            valid = poll_response_valid(body) if status == 200 else compatible_backpressure
             endpoint_metrics.record(
                 "worker_poll",
                 status,
                 latency,
                 backpressured=compatible_backpressure,
-                valid=poll_response_valid(body),
+                valid=valid,
             )
             if status == 429:
                 retry_after = body.get("retry_after_seconds", 1) if isinstance(body, dict) else 1
                 time.sleep(max(0.05, min(5.0, float(retry_after))))
-            elif status != 200 or not poll_response_valid(body):
+            if not valid:
                 metrics.record_error()
                 write_jsonl(errors_path, {"status": status, "body": body, "namespace": namespace, "queue": queue})
         except Exception as exc:  # noqa: BLE001
@@ -907,6 +902,15 @@ def worker_loop(
 def poll_response_valid(body: Any) -> bool:
     rejected = {"stale_worker_registration", "worker_not_registered", "worker_registration_superseded", "no_workflow_capability", "unsupported", "rejected", "conflict"}
     return isinstance(body, dict) and body.get("reason") not in rejected and body.get("poll_status") not in rejected
+
+
+def poll_backpressure_valid(status: int, body: Any) -> bool:
+    return (
+        status in (200, 429)
+        and isinstance(body, dict)
+        and body.get("reason") == "long_poll_capacity_exhausted"
+        and body.get("poll_status") == "long_poll_capacity_exhausted"
+    )
 
 
 def polling_activity_summary(samples: list[dict[str, Any]], minimum_fraction: float) -> dict[str, Any]:
