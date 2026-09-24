@@ -187,6 +187,9 @@ class EndpointMetrics:
                 entry["backpressured"] = int(entry.get("backpressured", 0)) + 1
                 if status == 429:
                     entry["backpressured_429"] = int(entry.get("backpressured_429", 0)) + 1
+            elif valid and 200 <= status < 300:
+                entry["accepted"] = int(entry.get("accepted", 0)) + 1
+                entry.setdefault("accepted_latencies", []).append(latency)
 
     def record_error(self, endpoint: str, latency: float) -> None:
         with self.lock:
@@ -210,16 +213,26 @@ class EndpointMetrics:
                 )
                 http_backpressured = int(entry.get("backpressured_429", 0))
                 backpressured = int(entry.get("backpressured", 0))
+                accepted = int(entry.get("accepted", 0))
                 available = successful + http_backpressured
                 requests = int(entry["requests"])
+                accepted_latencies = entry.get("accepted_latencies", [])
                 snapshot[endpoint] = {
                     "requests": requests,
                     "successful": successful,
+                    "accepted": accepted,
+                    "accepted_fraction": 0.0 if requests == 0 else round(accepted / requests, 6),
                     "backpressured": backpressured,
+                    "backpressure_fraction": 0.0 if requests == 0 else round(backpressured / requests, 6),
                     "available": available,
                     "errors": int(entry["errors"]),
                     "availability": 0.0 if requests == 0 else round(available / requests, 6),
                     "statuses": dict(entry["statuses"]),
+                    "accepted_latency_seconds": {
+                        "p50": percentile(accepted_latencies, 0.50),
+                        "p95": percentile(accepted_latencies, 0.95),
+                        "p99": percentile(accepted_latencies, 0.99),
+                    },
                     "latency_seconds": {
                         "average": 0.0 if not latencies else round(sum(latencies) / len(latencies), 6),
                         "p95": 0.0
@@ -1382,25 +1395,33 @@ def resource_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
 
 def render_summary(summary: dict[str, Any]) -> str:
     standard = summary.get("standard_workflows", {})
+    poll = summary.get("request_availability", {}).get("worker_poll", {})
     lines = [
         "## Server endurance soak",
         "",
         "PASS" if not summary.get("failures") else "FAIL: " + "; ".join(summary["failures"]),
         "",
         "This is an endurance canary, not a maximum-capacity benchmark or a failover qualification.",
-        "Poll requests are not workflow completions. Backpressure is reported separately from successful polls.",
+        "Poll requests are not workflow completions. Accepted and backpressured polls are distinct outcomes.",
         "",
         f"Measured duration: {summary.get('duration_seconds')}s. Source: `{summary.get('evidence', {}).get('provenance', {}).get('sha', 'unknown')}`.",
         f"Server memory slope: {summary.get('server_memory_slope_mb_hour')} MiB/h. Final Server cache keys: {summary.get('final_server_cache_keys')}.",
         f"Sampling: {summary.get('periodic_sample_count')}/{summary.get('expected_periodic_samples')}; unhealthy samples: {summary.get('sampling_health', {}).get('unhealthy_samples')}.",
         f"Sustained polling activity: {summary.get('polling_activity', 'not measured by this version')}.",
         "",
-        "| HTTP endpoint | Requests | Successful | Backpressure | Errors | p50 s | p95 s | p99 s |",
+        "| HTTP endpoint | Requests | Accepted | Backpressure | Errors | p50 s | p95 s | p99 s |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for name, endpoint in summary.get("request_availability", {}).items():
         latency = endpoint.get("latency_seconds", {})
-        lines.append(f"| {name} | {endpoint['requests']} | {endpoint['successful']} | {endpoint.get('backpressured', 0)} | {endpoint['errors']} | {latency.get('p50')} | {latency.get('p95')} | {latency.get('p99')} |")
+        lines.append(f"| {name} | {endpoint['requests']} | {endpoint.get('accepted', 'n/a')} | {endpoint.get('backpressured', 0)} | {endpoint['errors']} | {latency.get('p50')} | {latency.get('p95')} | {latency.get('p99')} |")
+    if poll and "accepted" in poll:
+        accepted_latency = poll.get("accepted_latency_seconds", {})
+        lines.extend([
+            "",
+            f"Worker poll admission: {poll['accepted']}/{poll['requests']} accepted ({poll['accepted_fraction'] * 100:.2f}%); {poll['backpressured']}/{poll['requests']} backpressured ({poll['backpressure_fraction'] * 100:.2f}%).",
+            f"Accepted-poll latency (seconds): {accepted_latency}. Table latency includes backpressure responses.",
+        ])
     lines.extend(["", "### Standard workflows"])
     if standard.get("enabled"):
         lines.extend([

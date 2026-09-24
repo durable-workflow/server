@@ -221,6 +221,22 @@ class EnduranceCoverageTest(unittest.TestCase):
         self.assertEqual(1, snapshot["available"])
         self.assertEqual(0.5, snapshot["availability"])
 
+    def test_poll_admission_and_latency_exclude_backpressure(self):
+        metrics = server_soak.EndpointMetrics()
+        metrics.record("worker_poll", 200, 1.0)
+        metrics.record("worker_poll", 429, 0.1, backpressured=True)
+        metrics.record("worker_poll", 200, 0.2, backpressured=True)
+        snapshot = metrics.snapshot()["worker_poll"]
+        self.assertEqual(1, snapshot["accepted"])
+        self.assertEqual(2, snapshot["backpressured"])
+        self.assertEqual(2, snapshot["successful"])
+        self.assertEqual(0.333333, snapshot["accepted_fraction"])
+        self.assertEqual(0.666667, snapshot["backpressure_fraction"])
+        self.assertEqual(1.0, snapshot["accepted_latency_seconds"]["p95"])
+        self.assertIn("1/3 accepted (33.33%)", server_soak.render_summary({
+            "request_availability": {"worker_poll": snapshot},
+        }))
+
     def test_resource_summary_does_not_substitute_zero_for_missing_cpu(self):
         result = server_soak.resource_summary([{"server_memory_bytes": 1048576}])
         self.assertEqual(1, result["server"]["peak_memory_mib"])
