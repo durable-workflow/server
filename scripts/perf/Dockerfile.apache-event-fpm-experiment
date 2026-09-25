@@ -1,0 +1,7 @@
+ARG SERVER_IMAGE=durableworkflow/server@sha256:998b9dffe1f8effb159af9660ac190ccbc9d0c954900e68e9946baa6bb4c6c42
+FROM ${SERVER_IMAGE} AS published
+
+FROM httpd@sha256:3a1e0bbe28c4673a03b7a3fbc71a56325eacb1a8d11c1ad696fbf9678f07febd
+
+COPY --from=published /app/public/ /app/public/
+COPY scripts/perf/apache-event-fpm-experiment.conf /usr/local/apache2/conf/httpd.conf

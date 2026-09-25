@@ -1,0 +1,15 @@
+# Add after standard-workflow-profile.compose.yml and fpm-experiment.compose.yml.
+services:
+  server:
+    image: !reset null
+    build:
+      context: ../..
+      dockerfile: scripts/perf/Dockerfile.apache-event-fpm-experiment
+      args:
+        SERVER_IMAGE: ${DW_PROFILE_SERVER_IMAGE:?Set an exact published Server image digest}
+    volumes: !reset []
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080; printf 'GET /api/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3; grep -m1 -q 'HTTP/1.1 200' <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 6

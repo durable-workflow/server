@@ -48,6 +48,17 @@ digests, runner commit, host identity, UTC times, raw counter deltas, completed
 workflow count, errors and idle-subtraction method on the owning issue. A
 capacity claim requires the separate capacity-suite workload and topology.
 
+To exercise an alternative HTTP frontend with the same published application,
+set `COMPOSE_FILE` to the colon-separated base file plus
+`scripts/perf/fpm-experiment.compose.yml` for nginx/FPM. Append
+`scripts/perf/apache-event-fpm-experiment.compose.yml` as a third file for
+Apache event/FPM.
+The latter overlay replaces nginx with a digest-pinned Apache event proxy while
+reusing the same PHP-FPM pool. Run `docker compose config --quiet` before `up`
+and verify `httpd -M` reports `mpm_event_module`. These overlays are API
+experiments, not production images or capacity claims. In particular, FPM
+workers remain occupied while synchronous Server long polls wait.
+
 Remove this project and its synthetic durable state after recording evidence:
 
 ```sh
