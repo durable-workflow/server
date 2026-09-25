@@ -23,9 +23,9 @@ final class BoundedRedisReadinessProbe
         private readonly RedisReadinessProcess $process,
     ) {}
 
-    public function roundTrip(string $key, string $value, int $ttlSeconds): string
+    public function roundTrip(string $key, string $value, int $ttlSeconds, ?string $connectionName = null): string
     {
-        [$connectionName, $configuration] = $this->configuration();
+        [$connectionName, $configuration] = $this->configuration($connectionName);
         $output = $this->process->run(serialize([
             'version' => 1,
             'connection_name' => $connectionName,
@@ -49,17 +49,17 @@ final class BoundedRedisReadinessProbe
     }
 
     /**
-     * Build a private Laravel Redis manager from the configured connection.
+     * Build a private Laravel Redis manager from the selected connection.
      * Laravel's URL parser and selected connector retain runtime endpoint,
      * credential, database, TLS, IPv6, serializer, and prefix behavior. Only
      * persistence, retry, and transport timing differ for readiness.
      *
      * @return array{string, array<string, mixed>}
      */
-    private function configuration(): array
+    private function configuration(?string $connectionName): array
     {
         $store = config('cache.stores.redis');
-        $connectionName = is_array($store) && is_string($store['connection'] ?? null)
+        $connectionName ??= is_array($store) && is_string($store['connection'] ?? null)
             ? $store['connection']
             : 'cache';
         $configuration = config('database.redis');
@@ -98,9 +98,8 @@ final class BoundedRedisReadinessProbe
             $optionOverrides,
         );
 
-        // The private manager intentionally knows only the selected cache
-        // connection. Cleanup therefore cannot resolve or contact an unrelated
-        // runtime/default endpoint even if this code changes in the future.
+        // The private manager intentionally knows only the selected connection.
+        // Cleanup cannot resolve or contact an unrelated runtime endpoint.
         return [$connectionName, [
             'client' => $client,
             'options' => $options,

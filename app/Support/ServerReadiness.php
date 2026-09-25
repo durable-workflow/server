@@ -28,12 +28,23 @@ final class ServerReadiness
      */
     public function snapshot(): array
     {
+        $queue = $this->queueCheck(probeRedis: true);
+        $cache = ($queue['driver'] ?? null) === 'redis'
+            && ($queue['status'] ?? null) === 'unavailable'
+            && $this->redisCacheIsConfigured()
+                ? [
+                    'status' => 'unverified',
+                    'store' => 'redis',
+                    'message' => 'Cache health was not checked because the required Redis queue is unavailable.',
+                ]
+                : $this->cacheCheck();
+
         $checks = [
             'database' => $this->databaseCheck(),
             'migrations' => $this->migrationCheck(),
-            'queue' => $this->queueCheck(),
+            'queue' => $queue,
             'default_namespace' => $this->defaultNamespaceCheck(),
-            'cache' => $this->cacheCheck(),
+            'cache' => $cache,
             'auth' => $this->authCheck(),
         ];
         $checks['workflow_v2'] = $this->workflowStatus($checks);
@@ -60,7 +71,7 @@ final class ServerReadiness
         $checks ??= [
             'database' => $this->databaseCheck(),
             'migrations' => $this->migrationCheck(),
-            'queue' => $this->queueCheck(),
+            'queue' => $this->queueCheck(probeRedis: true),
         ];
 
         return $this->normalizeWorkflowCheck($this->workflowCheck($checks));
@@ -175,7 +186,7 @@ final class ServerReadiness
     /**
      * @return array<string, mixed>
      */
-    private function queueCheck(): array
+    private function queueCheck(bool $probeRedis = false): array
     {
         $connection = config('queue.default');
 
@@ -200,6 +211,47 @@ final class ServerReadiness
         }
 
         $driver = trim($driver);
+        if ($driver === 'redis') {
+            $redisConnection = config("queue.connections.{$connection}.connection", 'default');
+            if (! is_string($redisConnection) || trim($redisConnection) === '') {
+                return [
+                    'status' => 'invalid',
+                    'connection' => $connection,
+                    'driver' => $driver,
+                    'message' => 'The Redis queue connection is not configured.',
+                ];
+            }
+
+            if (! $probeRedis) {
+                return [
+                    'status' => 'ok',
+                    'connection' => $connection,
+                    'driver' => $driver,
+                ];
+            }
+
+            try {
+                $key = 'server:readiness:'.bin2hex(random_bytes(8));
+                $value = bin2hex(random_bytes(8));
+                if ($this->redisReadiness->roundTrip($key, $value, 10, trim($redisConnection)) !== $value) {
+                    throw new \RuntimeException(RedisReadinessProcess::FAILURE_MESSAGE);
+                }
+
+                return [
+                    'status' => 'ok',
+                    'connection' => $connection,
+                    'driver' => $driver,
+                ];
+            } catch (\Throwable) {
+                return [
+                    'status' => 'unavailable',
+                    'connection' => $connection,
+                    'driver' => $driver,
+                    'message' => RedisReadinessProcess::FAILURE_MESSAGE,
+                ];
+            }
+        }
+
         if ($driver !== 'database') {
             return [
                 'status' => 'ok',

@@ -7,6 +7,7 @@ namespace Tests\Feature;
 use App\Models\WorkflowNamespace;
 use App\Support\BoundedRedisReadinessProbe;
 use App\Support\RedisReadinessProcess;
+use App\Support\ServerReadiness;
 use App\Support\ServerTopology;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -282,7 +283,12 @@ class HealthControllerTest extends TestCase
         config([
             'queue.default' => 'redis',
             'queue.connections.redis.driver' => 'redis',
+            'cache.stores.redis.connection' => 'missing-readiness-connection',
         ]);
+        app()->instance(
+            BoundedRedisReadinessProbe::class,
+            new BoundedRedisReadinessProbe(new RedisReadinessProcess($this->redisReadinessFailureCommand('success'))),
+        );
         Schema::drop('jobs');
 
         $this->getJson('/api/ready')
@@ -293,6 +299,100 @@ class HealthControllerTest extends TestCase
             ->assertJsonPath('checks.queue.connection', 'redis')
             ->assertJsonPath('checks.queue.driver', 'redis')
             ->assertJsonPath('checks.workflow_v2.status', 'ok');
+    }
+
+    public function test_readiness_blocks_when_redis_queue_is_unavailable(): void
+    {
+        WorkflowNamespace::query()->create([
+            'name' => 'default',
+            'description' => 'Default namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+
+        $port = $this->reserveRefusedTcpPort();
+        config([
+            'queue.default' => 'redis',
+            'queue.connections.redis.driver' => 'redis',
+            'queue.connections.redis.connection' => 'refused-readiness',
+            'cache.default' => 'redis',
+            'cache.stores.redis.connection' => 'refused-readiness',
+            'database.redis.refused-readiness' => [
+                'host' => '127.0.0.1',
+                'port' => $port,
+                'password' => 'refused-password',
+                'database' => 0,
+            ],
+        ]);
+
+        $started = microtime(true);
+        $response = $this->getJson('/api/ready');
+
+        $response->assertStatus(503)
+            ->assertJsonPath('status', 'not_ready')
+            ->assertJsonPath('checks.queue.status', 'unavailable')
+            ->assertJsonPath('checks.queue.driver', 'redis')
+            ->assertJsonPath('checks.queue.message', RedisReadinessProcess::FAILURE_MESSAGE)
+            ->assertJsonPath('checks.cache.status', 'unverified')
+            ->assertJsonPath('checks.workflow_v2.status', 'blocked')
+            ->assertJsonPath('checks.workflow_v2.blocked_by.0', 'queue');
+        $this->assertStringNotContainsString('refused-password', $response->getContent());
+        $this->assertStringNotContainsString(sprintf('127.0.0.1:%d', $port), $response->getContent());
+        $this->assertLessThan(
+            BoundedRedisReadinessProbe::RESPONSE_BOUND_SECONDS,
+            microtime(true) - $started,
+        );
+
+        config(['cache.default' => 'array']);
+        $this->getJson('/api/ready')
+            ->assertStatus(503)
+            ->assertJsonPath('checks.queue.status', 'unavailable')
+            ->assertJsonPath('checks.cache.status', 'ok');
+    }
+
+    public function test_readiness_bounds_stalled_required_redis_queue_without_waiting_for_cache(): void
+    {
+        WorkflowNamespace::query()->create([
+            'name' => 'default',
+            'description' => 'Default namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+
+        config([
+            'queue.default' => 'redis',
+            'queue.connections.redis.driver' => 'redis',
+            'cache.default' => 'redis',
+        ]);
+        app()->instance(
+            BoundedRedisReadinessProbe::class,
+            new BoundedRedisReadinessProbe(new RedisReadinessProcess($this->redisReadinessFailureCommand('timeout'))),
+        );
+
+        $started = microtime(true);
+        $this->getJson('/api/ready')
+            ->assertStatus(503)
+            ->assertJsonPath('checks.queue.status', 'unavailable')
+            ->assertJsonPath('checks.cache.status', 'unverified');
+        $this->assertLessThan(BoundedRedisReadinessProbe::RESPONSE_BOUND_SECONDS, microtime(true) - $started);
+    }
+
+    public function test_bootstrap_admission_does_not_probe_redis_on_every_request(): void
+    {
+        config([
+            'queue.default' => 'redis',
+            'queue.connections.redis.driver' => 'redis',
+        ]);
+        app()->instance(
+            BoundedRedisReadinessProbe::class,
+            new BoundedRedisReadinessProbe(new RedisReadinessProcess($this->redisReadinessFailureCommand('timeout'))),
+        );
+
+        $started = microtime(true);
+        $status = app(ServerReadiness::class)->bootstrapStatus();
+
+        $this->assertSame('ok', $status['status']);
+        $this->assertLessThan(0.5, microtime(true) - $started);
     }
 
     public function test_readiness_check_reports_missing_default_namespace_before_bootstrap_seed(): void
@@ -722,8 +822,7 @@ class HealthControllerTest extends TestCase
         string $diagnostics,
         string $configuredUrl,
         int $port,
-    ): void
-    {
+    ): void {
         foreach ([
             $configuredUrl,
             'refused-user',
