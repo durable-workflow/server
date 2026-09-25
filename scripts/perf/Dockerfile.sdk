@@ -10,6 +10,7 @@ COPY benchmarks/capacity/v1/bindings/php benchmarks/capacity/v1/bindings/php
 COPY --from=dependencies /sdk/vendor benchmarks/capacity/v1/bindings/php/vendor
 COPY scripts/perf/standard_workflow_soak.php scripts/perf/standard_workflow_soak.php
 COPY scripts/perf/standard-workflow-burst.php scripts/perf/standard-workflow-burst.php
+COPY scripts/perf/standard-workflow-offered.php scripts/perf/standard-workflow-offered.php
 COPY scripts/perf/idle-poll-probe.php scripts/perf/idle-poll-probe.php
 USER 1000:1000
 ENTRYPOINT ["php"]

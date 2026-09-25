@@ -70,6 +70,27 @@ volumes for each candidate, identical published artifacts, and equal warmup
 and measurement windows. The closed-loop canary's five-second start interval
 does not measure saturation or maximum capacity.
 
+For an experimental fixed offered rate, run the PHP SDK client with an offer
+rate, offer window, and bounded drain (seconds):
+
+```sh
+docker compose run --rm --no-deps sdk-worker \
+  scripts/perf/standard-workflow-offered.php 1 30 60
+```
+
+The client schedules starts at one-second intervals in this example and polls
+in-flight executions round-robin instead of serially waiting for each result.
+It validates output and semantic history after the observation window. Its
+latency boundary is the client start-request beginning to the Server's
+`closed_at` timestamp; the containers must share a clock. The reported
+offer-window completion rate excludes the bounded drain, while the completed
+count includes it. A nonzero exit means missed offer slots, late starts over
+one slot, incomplete/failed workflows, a poll error, or verification failure.
+Do not use a single short run as a capacity claim. Repeat at the same offered
+rate, recheck the baseline, record host and container limits, and inspect
+errors and final backlog before comparing frontends. The collector itself
+adds describe requests, so verify it is not the bottleneck at higher rates.
+
 For an idle workflow-task poll check, start the selected fresh stack without
 `sdk-worker`, then run `docker compose` with the same file list and project:
 
