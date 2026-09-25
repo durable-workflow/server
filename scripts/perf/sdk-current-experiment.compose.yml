@@ -1,0 +1,5 @@
+services:
+  sdk-worker:
+    build:
+      context: ../..
+      dockerfile: scripts/perf/Dockerfile.sdk-current-experiment
