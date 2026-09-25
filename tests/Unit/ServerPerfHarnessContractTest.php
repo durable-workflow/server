@@ -685,7 +685,7 @@ class ServerPerfHarnessContractTest extends TestCase
             'duration_seconds:',
             'default: "7200"',
             'concurrency:',
-            'default: "24"',
+            'default: "12"',
             'remote_write:',
             'type: boolean',
             "github.event_name == 'workflow_dispatch'",
