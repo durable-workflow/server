@@ -90,8 +90,9 @@ The optional fourth argument is a minimum interval in milliseconds between
 client `describe()` calls (0-1000, default 0 for the original unpaced probe).
 For example, append `250` to test whether unpaced observation traffic affects
 the same HTTP server being measured. The output records the interval and number
-of describe calls. Pacing never delays a scheduled start; it may delay when the
-client notices completion, but latency still uses the Server's `closed_at`.
+of describe calls. The loop checks due starts before its pacing wait, but any
+synchronous HTTP call can still make a start late. Pacing may delay when the
+client notices completion; latency still uses the Server's `closed_at`.
 Do not use a single short run as a capacity claim. Repeat at the same offered
 rate, recheck the baseline, record host and container limits, and inspect
 errors and final backlog before comparing frontends. The collector itself
