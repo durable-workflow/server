@@ -123,3 +123,17 @@ Remove this project and its synthetic durable state after recording evidence:
 ```sh
 docker compose down -v --remove-orphans
 ```
+
+For the experimental Octane/FrankenPHP candidate, append
+`scripts/perf/octane-frankenphp-experiment.compose.yml` to the base profile and
+fixed-envelope files. The derived image reuses the published Server application
+and installs pinned Octane dependencies on PHP 8.3.33 ZTS; its PHP extensions
+are built separately from the published Apache image. The candidate starts four
+Octane workers by default. For eight concurrent idle polls, additionally append
+`scripts/perf/poll-wait-octane-experiment.compose.yml` and set
+`DW_PROFILE_POLL_WAIT_LIMIT=8`; that overlay starts 12 workers to leave HTTP
+headroom. Do not raise the admission cap above the available worker count and
+call a queued request a successful wait. A canary and idle-poll pass are only
+setup evidence: persistent-worker state isolation, backend interruption,
+repeatable throughput, and bounded memory still require qualification before
+any runtime recommendation.

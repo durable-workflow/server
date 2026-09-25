@@ -1,0 +1,13 @@
+# Append only for disposable Octane long-poll experiments.
+services:
+  server:
+    command:
+      - php
+      - artisan
+      - octane:start
+      - --server=frankenphp
+      - --host=0.0.0.0
+      - --port=8080
+      - --workers=${DW_PROFILE_OCTANE_WORKERS:-12}
+    environment:
+      DW_WORKER_LONG_POLL_MAX_CONCURRENT: ${DW_PROFILE_POLL_WAIT_LIMIT:?Set an experimental poll-wait limit}
