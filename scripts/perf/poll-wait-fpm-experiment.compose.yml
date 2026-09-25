@@ -1,0 +1,5 @@
+# Append after an FPM frontend overlay in disposable poll experiments.
+services:
+  fpm:
+    environment:
+      DW_WORKER_LONG_POLL_MAX_CONCURRENT: ${DW_PROFILE_POLL_WAIT_LIMIT:?Set an experimental poll-wait limit}

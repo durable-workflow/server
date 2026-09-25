@@ -8,9 +8,9 @@ require dirname(__DIR__, 2).'/benchmarks/capacity/v1/bindings/php/capacity_adapt
 capacityAutoload();
 
 $count = filter_var($argv[1] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1, 'max_range' => 24]]);
-$pollSeconds = filter_var($argv[2] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 2, 'max_range' => 30]]);
+$pollSeconds = filter_var($argv[2] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 2, 'max_range' => 20]]);
 if ($count === false || $pollSeconds === false || ! function_exists('pcntl_fork')) {
-    throw new InvalidArgumentException('Supply 1-24 polls and a 2-30 second timeout; pcntl is required.');
+    throw new InvalidArgumentException('Supply 1-24 polls and a 2-20 second timeout; pcntl is required.');
 }
 
 $queue = capacityEnvironment('DURABLE_WORKFLOW_TASK_QUEUE');
@@ -49,8 +49,10 @@ for ($index = 0; $index < $count; ++$index) {
                 $started = hrtime(true);
                 try {
                     $response = $client->pollWorkflowTaskResponse($workerId, $queue, $pollSeconds);
-                    $result['outcome'] = isset($response['task']) && is_array($response['task']) ? 'task' : 'empty';
                     $result['poll_status'] = $response['poll_status'] ?? null;
+                    $result['outcome'] = isset($response['task']) && is_array($response['task'])
+                        ? 'task'
+                        : ($result['poll_status'] === 'empty' ? 'empty' : 'unexpected');
                 } catch (ServerException $exception) {
                     $result['outcome'] = $exception->status === 429
                         && $exception->reason === 'long_poll_capacity_exhausted' ? 'backpressure' : 'error';
@@ -108,4 +110,4 @@ echo json_encode([
     'outcomes' => $counts,
     'results' => $results,
 ], JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE).PHP_EOL;
-exit($ready && $cleanupErrors === 0 && ! isset($counts['error']) && ! isset($counts['task']) && ! isset($counts['aborted']) ? 0 : 1);
+exit($ready && $cleanupErrors === 0 && ! isset($counts['error']) && ! isset($counts['task']) && ! isset($counts['aborted']) && ! isset($counts['unexpected']) ? 0 : 1);
