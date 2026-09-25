@@ -107,8 +107,12 @@ docker compose run --rm --no-deps sdk-worker \
 ```
 
 The probe registers four synthetic workers, releases their ten-second polls
-together, and reports empty waits versus explicit 429 backpressure. Change the
-count for a bounded concurrency step. Run it only when the queue has no work;
+together, and reports empty waits versus explicit 429 backpressure. The optional
+third argument selects `workflow`, `activity`, `query`, or `mixed` (round-robin);
+the default is `workflow`. Workflow and activity waits share one admission pool,
+while query waits use a separate pool. The reported timeout is the client request;
+Server can clamp it (query polls default to five seconds). Change the count for a
+bounded concurrency step. Run it only when the queue has no work;
 an actual claimed task makes the probe fail. This tests the configured poll
 admission path, not maximum HTTP concurrency or task wake latency. Use the
 same fresh project, image tuple, limits, and poll count for each frontend.
@@ -117,7 +121,8 @@ To measure HTTP headroom while polls wait, append
 `scripts/perf/poll-wait-apache-experiment.compose.yml` for the published Apache
 image, or `scripts/perf/poll-wait-fpm-experiment.compose.yml` after the FPM
 overlays. Set `DW_PROFILE_POLL_WAIT_LIMIT` to the desired experimental cap
-before `up`, and use the same file list for `run`. The probe's 20-second maximum
+before `up`, and use the same file list for `run`. Both worker and query wait
+pools receive that experimental cap. The probe's 20-second maximum
 keeps its one-shot registrations live without a separate heartbeat process.
 Sample `/api/ready` from another container on the same Compose network while
 the polls are held; record its timeouts and response times alongside the probe

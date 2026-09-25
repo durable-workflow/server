@@ -3,3 +3,4 @@ services:
   fpm:
     environment:
       DW_WORKER_LONG_POLL_MAX_CONCURRENT: ${DW_PROFILE_POLL_WAIT_LIMIT:?Set an experimental poll-wait limit}
+      DW_QUERY_TASK_POLL_MAX_CONCURRENT: ${DW_PROFILE_POLL_WAIT_LIMIT:?Set an experimental poll-wait limit}
