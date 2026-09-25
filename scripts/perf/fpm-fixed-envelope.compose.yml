@@ -1,0 +1,9 @@
+# Append after standard-workflow-fixed-envelope.compose.yml for either FPM proxy.
+services:
+  server:
+    cpus: 0.2
+    mem_limit: 128m
+
+  fpm:
+    cpus: 0.8
+    mem_limit: 896m
