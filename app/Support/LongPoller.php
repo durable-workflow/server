@@ -13,6 +13,7 @@ class LongPoller
      * Re-run the probe until the result satisfies the ready check or timeout expires.
      *
      * @param  list<string>  $wakeChannels
+     * @param  list<string>  $interruptChannels
      */
     public function until(
         callable $probe,
@@ -24,6 +25,8 @@ class LongPoller
         bool $reserveWorkerWaitSlot = false,
         string $waitSlotPool = 'worker',
         ?string $waitSlotNamespace = null,
+        array $interruptChannels = [],
+        ?callable $onInterrupt = null,
     ): mixed {
         $timeoutSeconds ??= max(0, (int) config('server.polling.timeout', 30));
         $intervalMilliseconds ??= max(1, (int) config('server.polling.interval_ms', 1000));
@@ -36,6 +39,9 @@ class LongPoller
         );
 
         $wakeSnapshot = $this->signals->snapshot($wakeChannels);
+        $interruptSnapshot = $onInterrupt !== null && $timeoutSeconds > 0
+            ? $this->signals->snapshot($interruptChannels)
+            : [];
         $value = $probe();
 
         if ($ready($value)) {
@@ -53,6 +59,12 @@ class LongPoller
 
         if ($timeoutSeconds === 0) {
             return $value;
+        }
+
+        if ($onInterrupt !== null && $interruptSnapshot !== [] && $this->signals->changed($interruptSnapshot)) {
+            $value = $probe();
+
+            return $ready($value) ? $value : $onInterrupt($value);
         }
 
         $waitSlot = null;
@@ -88,8 +100,9 @@ class LongPoller
 
                 $now = microtime(true);
                 $wakeChanged = $wakeChannels !== [] && $this->signals->changed($wakeSnapshot);
+                $interruptChanged = $interruptSnapshot !== [] && $this->signals->changed($interruptSnapshot);
 
-                if (! $wakeChanged && $now < $nextForcedProbeAt) {
+                if (! $wakeChanged && ! $interruptChanged && $now < $nextForcedProbeAt) {
                     continue;
                 }
 
@@ -107,6 +120,10 @@ class LongPoller
 
                 if ($ready($value)) {
                     return $value;
+                }
+
+                if ($interruptChanged && $onInterrupt !== null) {
+                    return $onInterrupt($value);
                 }
             }
         } finally {

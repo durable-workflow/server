@@ -72,6 +72,86 @@ class LongPollerTest extends TestCase
         $this->assertSame(1, $poller->pauseCalls);
     }
 
+    public function test_an_interrupt_returns_an_empty_poll_and_releases_its_wait_slot(): void
+    {
+        config(['server.polling.max_concurrent_waits' => 1]);
+
+        $signals = app(LongPollSignalStore::class);
+        $waitSlots = app(LongPollWaitSlotStore::class);
+        $channel = $signals->workerTaskQueueChannel('default', 'external-workflows');
+        $poller = new class($signals, $waitSlots) extends LongPoller
+        {
+            public int $pauseCalls = 0;
+
+            public $onPause = null;
+
+            protected function pause(int $milliseconds): void
+            {
+                $this->pauseCalls++;
+                ($this->onPause)();
+            }
+        };
+        $poller->onPause = static fn () => $signals->signal($channel);
+        $probes = 0;
+
+        $result = $poller->until(
+            function () use (&$probes): null {
+                $probes++;
+
+                return null;
+            },
+            static fn (): bool => false,
+            timeoutSeconds: 5,
+            intervalMilliseconds: 1000,
+            reserveWorkerWaitSlot: true,
+            waitSlotNamespace: 'default',
+            interruptChannels: [$channel],
+            onInterrupt: static fn (): array => ['poll_status' => 'task_queue_changed'],
+        );
+
+        $this->assertSame(['poll_status' => 'task_queue_changed'], $result);
+        $this->assertSame(2, $probes);
+        $this->assertSame(1, $poller->pauseCalls);
+        $slot = $waitSlots->tryAcquire(1, 'default');
+        $this->assertNotNull($slot);
+        $slot->release();
+    }
+
+    public function test_a_ready_task_wins_when_an_interrupt_and_own_wake_arrive_together(): void
+    {
+        $signals = app(LongPollSignalStore::class);
+        $wake = $signals->workflowTaskPollChannels('default', null, 'external-workflows')[0];
+        $interrupt = $signals->workerTaskQueueChannel('default', 'external-workflows');
+        $poller = new class($signals, app(LongPollWaitSlotStore::class)) extends LongPoller
+        {
+            public $onPause = null;
+
+            protected function pause(int $milliseconds): void
+            {
+                ($this->onPause)();
+            }
+        };
+        $poller->onPause = static fn () => $signals->signal($wake, $interrupt);
+        $probes = 0;
+
+        $result = $poller->until(
+            function () use (&$probes): ?string {
+                $probes++;
+
+                return $probes === 2 ? 'task' : null;
+            },
+            static fn (?string $value): bool => $value === 'task',
+            timeoutSeconds: 5,
+            intervalMilliseconds: 1000,
+            wakeChannels: [$wake],
+            interruptChannels: [$interrupt],
+            onInterrupt: static fn (): string => 'interrupted',
+        );
+
+        $this->assertSame('task', $result);
+        $this->assertSame(2, $probes);
+    }
+
     public function test_it_still_forces_periodic_rechecks_without_a_signal_change(): void
     {
         /** @var LongPollSignalStore $signals */

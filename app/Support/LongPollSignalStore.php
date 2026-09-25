@@ -133,11 +133,17 @@ final class LongPollSignalStore implements LongPollWakeStore
         ]);
     }
 
+    public function workerTaskQueueChannel(string $namespace, mixed $queue): string
+    {
+        return $this->queueChannel('worker-tasks', $namespace, null, $queue);
+    }
+
     public function signalQueryTaskQueue(string $namespace, ?string $queue): void
     {
         $this->signal(
             $this->queueChannel('query-tasks', null, null, $queue),
             $this->queueChannel('query-tasks', $namespace, null, $queue),
+            $this->workerTaskQueueChannel($namespace, $queue),
         );
     }
 
@@ -224,6 +230,10 @@ final class LongPollSignalStore implements LongPollWakeStore
             default => [],
         };
 
+        if ($channels !== [] && $namespace !== null) {
+            $channels[] = $this->workerTaskQueueChannel($namespace, $task->queue);
+        }
+
         $this->signal(...$channels);
     }
 
@@ -281,6 +291,10 @@ final class LongPollSignalStore implements LongPollWakeStore
             ],
             default => [],
         };
+
+        if ($channels !== [] && $namespace !== null) {
+            $channels[] = $this->workerTaskQueueChannel($namespace, $task->queue);
+        }
 
         $this->signal(...$channels);
     }

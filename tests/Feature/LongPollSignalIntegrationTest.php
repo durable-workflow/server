@@ -11,9 +11,9 @@ use Mockery\MockInterface;
 use Tests\Fixtures\AwaitApprovalWorkflow;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
+use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRunSummary;
-use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\WorkflowExecutor;
 
@@ -42,6 +42,8 @@ class LongPollSignalIntegrationTest extends TestCase
         $snapshot = $signals->snapshot(
             $signals->workflowTaskPollChannels('default', null, 'external-workflows'),
         );
+        $workerQueueChannel = $signals->workerTaskQueueChannel('default', 'external-workflows');
+        $workerQueueSnapshot = $signals->snapshot([$workerQueueChannel]);
 
         $this->withHeaders($this->apiHeaders())
             ->postJson('/api/workflows', [
@@ -53,6 +55,7 @@ class LongPollSignalIntegrationTest extends TestCase
             ->assertCreated();
 
         $this->assertTrue($signals->changed($snapshot));
+        $this->assertTrue($signals->changed($workerQueueSnapshot));
     }
 
     public function test_running_a_workflow_task_signals_activity_poll_channels_and_history_waiters(): void
@@ -80,6 +83,8 @@ class LongPollSignalIntegrationTest extends TestCase
         $activitySnapshot = $signals->snapshot(
             $signals->activityTaskPollChannels('default', null, 'external-activities'),
         );
+        $workerQueueChannel = $signals->workerTaskQueueChannel('default', 'external-activities');
+        $workerQueueSnapshot = $signals->snapshot([$workerQueueChannel]);
         $historySnapshot = $signals->snapshot([
             $signals->historyRunChannel($runId),
         ]);
@@ -87,6 +92,7 @@ class LongPollSignalIntegrationTest extends TestCase
         $this->runReadyWorkflowTask($runId);
 
         $this->assertTrue($signals->changed($activitySnapshot));
+        $this->assertTrue($signals->changed($workerQueueSnapshot));
         $this->assertTrue($signals->changed($historySnapshot));
     }
 
@@ -118,7 +124,7 @@ class LongPollSignalIntegrationTest extends TestCase
         /** @var LongPollSignalStore $signals */
         $signals = app(LongPollSignalStore::class);
         $expectedChannel = $signals->historyRunChannel($runId);
-        $captured = new \ArrayObject();
+        $captured = new \ArrayObject;
 
         $this->mock(LongPoller::class, function (MockInterface $mock) use (
             $expectedChannel,

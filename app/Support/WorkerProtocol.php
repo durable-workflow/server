@@ -3,6 +3,7 @@
 namespace App\Support;
 
 use App\Models\SearchAttributeDefinition;
+use App\Models\WorkerRegistration;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Workflow\V2\Support\WorkerHistoryPayloadContract;
@@ -21,6 +22,8 @@ class WorkerProtocol
     public const VERSION = '1.19';
 
     public const PORTABLE_WORKER_AFFINITY_MINIMUM_PROTOCOL_VERSION = '1.18';
+
+    public const CROSS_KIND_POLL_WAKE_CAPABILITY = 'cross_kind_poll_wake';
 
     /** @var list<string> */
     public const PORTABLE_WORKER_AFFINITY_CAPABILITIES = [
@@ -223,6 +226,12 @@ class WorkerProtocol
         $configured = (string) config('server.worker_protocol.version', self::VERSION);
 
         return self::protocolVersionSupportsWorkerSessions($configured);
+    }
+
+    public static function supportsCrossKindPollWake(WorkerRegistration $worker): bool
+    {
+        return is_array($worker->capabilities)
+            && in_array(self::CROSS_KIND_POLL_WAKE_CAPABILITY, $worker->capabilities, true);
     }
 
     public static function portableWorkerAffinitySupported(?string $version = null): bool
