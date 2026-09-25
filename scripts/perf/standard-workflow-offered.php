@@ -8,8 +8,9 @@ capacityAutoload();
 $rate = filter_var($argv[1] ?? null, FILTER_VALIDATE_FLOAT, ['options' => ['min_range' => 0.1, 'max_range' => 20.0]]);
 $duration = filter_var($argv[2] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 5, 'max_range' => 120]]);
 $drain = filter_var($argv[3] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 10, 'max_range' => 180]]);
-if ($rate === false || $duration === false || $drain === false) {
-    throw new InvalidArgumentException('Usage: standard-workflow-offered.php <0.1-20 starts/sec> <5-120 offer seconds> <10-180 drain seconds>.');
+$describeIntervalMs = filter_var($argv[4] ?? '0', FILTER_VALIDATE_INT, ['options' => ['min_range' => 0, 'max_range' => 1000]]);
+if ($rate === false || $duration === false || $drain === false || $describeIntervalMs === false) {
+    throw new InvalidArgumentException('Usage: standard-workflow-offered.php <0.1-20 starts/sec> <5-120 offer seconds> <10-180 drain seconds> [0-1000 describe interval ms].');
 }
 
 $queue = capacityEnvironment('DURABLE_WORKFLOW_TASK_QUEUE');
@@ -32,6 +33,7 @@ $input = [
 $expectedEvents = ['WorkflowStarted', 'ActivityScheduled', 'ActivityStarted', 'ActivityCompleted', 'WorkflowCompleted'];
 $planned = (int) ceil($rate * $duration);
 $intervalNs = (int) round(1_000_000_000 / $rate);
+$describeIntervalNs = $describeIntervalMs * 1_000_000;
 $beganWall = microtime(true);
 $beganNs = hrtime(true);
 $offerEndsWall = $beganWall + $duration;
@@ -48,6 +50,8 @@ $lateStarts = 0;
 $maxStartLagSeconds = 0.0;
 $pollErrors = 0;
 $pollErrorClasses = [];
+$describeCalls = 0;
+$nextDescribeNs = $beganNs;
 
 while (($next < $planned || $pending !== []) && hrtime(true) < $deadlineNs) {
     $nowNs = hrtime(true);
@@ -77,7 +81,14 @@ while (($next < $planned || $pending !== []) && hrtime(true) < $deadlineNs) {
         continue;
     }
     if ($pending !== []) {
+        if ($nowNs < $nextDescribeNs) {
+            $nextWakeNs = $next < $planned ? min($nextDescribeNs, $dueNs) : $nextDescribeNs;
+            usleep((int) min(50_000, max(1, ($nextWakeNs - $nowNs) / 1000)));
+            continue;
+        }
+        $nextDescribeNs = $nowNs + $describeIntervalNs;
         $id = array_shift($pending);
+        $describeCalls++;
         try {
             $execution = $started[$id]['handle']->describe();
             if ($execution->status === 'completed') {
@@ -139,6 +150,8 @@ $result = [
     'offered_rate_per_second' => $rate,
     'offer_seconds' => $duration,
     'drain_limit_seconds' => $drain,
+    'describe_interval_ms' => $describeIntervalMs,
+    'describe_calls' => $describeCalls,
     'planned_starts' => $planned,
     'attempted_starts' => $attempted,
     'skipped_offer_slots' => $skippedOffers,
