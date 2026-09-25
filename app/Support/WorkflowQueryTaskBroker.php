@@ -496,7 +496,7 @@ final class WorkflowQueryTaskBroker
             throw $exception;
         }
 
-        $this->signals->signalQueryTaskQueue($namespace, $taskQueue);
+        $this->signals->signalQueuedQueryTask($namespace, $taskQueue);
 
         return $task;
     }
@@ -1180,7 +1180,7 @@ final class WorkflowQueryTaskBroker
         );
 
         if ($recovered) {
-            $this->signals->signalQueryTaskQueue($namespace, $taskQueue);
+            $this->signals->signalQueuedQueryTask($namespace, $taskQueue);
         }
 
         return $this->task($queryTaskId);

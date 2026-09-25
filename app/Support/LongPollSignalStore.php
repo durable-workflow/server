@@ -143,8 +143,13 @@ final class LongPollSignalStore implements LongPollWakeStore
         $this->signal(
             $this->queueChannel('query-tasks', null, null, $queue),
             $this->queueChannel('query-tasks', $namespace, null, $queue),
-            $this->workerTaskQueueChannel($namespace, $queue),
         );
+    }
+
+    public function signalQueuedQueryTask(string $namespace, ?string $queue): void
+    {
+        $this->signalQueryTaskQueue($namespace, $queue);
+        $this->signal($this->workerTaskQueueChannel($namespace, $queue));
     }
 
     public function queryTaskResultChannel(string $queryTaskId): string
