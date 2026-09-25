@@ -86,6 +86,13 @@ latency boundary is the client start-request beginning to the Server's
 offer-window completion rate excludes the bounded drain, while the completed
 count includes it. A nonzero exit means missed offer slots, late starts over
 one slot, incomplete/failed workflows, a poll error, or verification failure.
+The optional fourth argument is a minimum interval in milliseconds between
+client `describe()` calls (0-1000, default 0 for the original unpaced probe).
+For example, append `250` to test whether unpaced observation traffic affects
+the same HTTP server being measured. The output records the interval and number
+of describe calls. The loop checks due starts before its pacing wait, but any
+synchronous HTTP call can still make a start late. Pacing may delay when the
+client notices completion; latency still uses the Server's `closed_at`.
 Do not use a single short run as a capacity claim. Repeat at the same offered
 rate, recheck the baseline, record host and container limits, and inspect
 errors and final backlog before comparing frontends. The collector itself
