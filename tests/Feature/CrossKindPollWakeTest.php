@@ -111,4 +111,30 @@ class CrossKindPollWakeTest extends TestCase
         $this->assertGreaterThanOrEqual(0.9, microtime(true) - $started);
         $this->assertGreaterThan(1, $poller->pauseCalls);
     }
+
+    public function test_empty_query_poll_does_not_interrupt_other_task_kinds(): void
+    {
+        config(['cache.default' => 'array']);
+        $this->createNamespace('default');
+        $this->registerWorker(
+            workerId: 'mixed-worker',
+            taskQueue: 'mixed-queue',
+            capabilities: ['query_tasks', WorkerProtocol::CROSS_KIND_POLL_WAKE_CAPABILITY],
+        );
+
+        $signals = app(LongPollSignalStore::class);
+        $channel = $signals->workerTaskQueueChannel('default', 'mixed-queue');
+        $snapshot = $signals->snapshot([$channel]);
+
+        $this->postJson('/api/worker/query-tasks/poll', [
+            'worker_id' => 'mixed-worker',
+            'task_queue' => 'mixed-queue',
+            'poll_request_id' => 'empty-query-poll',
+            'timeout_seconds' => 0,
+        ], $this->workerHeaders())
+            ->assertOk()
+            ->assertJsonPath('task', null);
+
+        $this->assertFalse($signals->changed($snapshot));
+    }
 }
