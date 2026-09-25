@@ -1,0 +1,5 @@
+# Append to the published Apache profile only in disposable poll experiments.
+services:
+  server:
+    environment:
+      DW_WORKER_LONG_POLL_MAX_CONCURRENT: ${DW_PROFILE_POLL_WAIT_LIMIT:?Set an experimental poll-wait limit}

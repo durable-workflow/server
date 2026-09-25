@@ -85,6 +85,18 @@ an actual claimed task makes the probe fail. This tests the configured poll
 admission path, not maximum HTTP concurrency or task wake latency. Use the
 same fresh project, image tuple, limits, and poll count for each frontend.
 
+To measure HTTP headroom while polls wait, append
+`scripts/perf/poll-wait-apache-experiment.compose.yml` for the published Apache
+image, or `scripts/perf/poll-wait-fpm-experiment.compose.yml` after the FPM
+overlays. Set `DW_PROFILE_POLL_WAIT_LIMIT` to the desired experimental cap
+before `up`, and use the same file list for `run`. The probe's 20-second maximum
+keeps its one-shot registrations live without a separate heartbeat process.
+Sample `/api/ready` from another container on the same Compose network while
+the polls are held; record its timeouts and response times alongside the probe
+outcome and `docker stats`. The cap is not a throughput target: a held poll
+occupies one Apache request worker or FPM child, so reserve capacity for
+ordinary API calls and never deploy a cap based on this idle-only experiment.
+
 Remove this project and its synthetic durable state after recording evidence:
 
 ```sh
