@@ -31,6 +31,14 @@ $input = [
     ],
 ];
 $expectedEvents = ['WorkflowStarted', 'ActivityScheduled', 'ActivityStarted', 'ActivityCompleted', 'WorkflowCompleted'];
+$stageNames = [
+    'WorkflowStarted' => 'client_start_to_workflow_started',
+    'ActivityScheduled' => 'workflow_started_to_activity_scheduled',
+    'ActivityStarted' => 'activity_scheduled_to_activity_started',
+    'ActivityCompleted' => 'activity_started_to_activity_completed',
+    'WorkflowCompleted' => 'activity_completed_to_workflow_completed',
+];
+$stageSamples = array_fill_keys(array_values($stageNames), []);
 $planned = (int) ceil($rate * $duration);
 $intervalNs = (int) round(1_000_000_000 / $rate);
 $describeIntervalNs = $describeIntervalMs * 1_000_000;
@@ -59,6 +67,7 @@ while (($next < $planned || $pending !== []) && hrtime(true) < $deadlineNs) {
     if ($next < $planned && $nowNs >= $offerEndsNs) {
         $skippedOffers = $planned - $next;
         $next = $planned;
+
         continue;
     }
     if ($next < $planned && $nowNs >= $dueNs) {
@@ -78,12 +87,14 @@ while (($next < $planned || $pending !== []) && hrtime(true) < $deadlineNs) {
             $errors[] = $id.': start: '.$error->getMessage();
         }
         $next++;
+
         continue;
     }
     if ($pending !== []) {
         if ($nowNs < $nextDescribeNs) {
             $nextWakeNs = $next < $planned ? min($nextDescribeNs, $dueNs) : $nextDescribeNs;
             usleep((int) min(50_000, max(1, ($nextWakeNs - $nowNs) / 1000)));
+
             continue;
         }
         $nextDescribeNs = $nowNs + $describeIntervalNs;
@@ -94,11 +105,13 @@ while (($next < $planned || $pending !== []) && hrtime(true) < $deadlineNs) {
             if ($execution->status === 'completed') {
                 if ($execution->closedAt === null) {
                     $errors[] = $id.': completed execution has no closed_at';
+
                     continue;
                 }
                 $closedWall = (float) (new DateTimeImmutable($execution->closedAt))->format('U.u');
                 if ($closedWall < $started[$id]['wall']) {
                     $errors[] = $id.': Server closed_at precedes client start; clock contract failed';
+
                     continue;
                 }
                 $completed[$id] = [
@@ -134,16 +147,53 @@ foreach ($completed as $id => $sample) {
         if ($sample['output'] !== $blob || array_values(array_intersect($events, $expectedEvents)) !== $expectedEvents) {
             throw new RuntimeException('Output or ordered semantic history did not match.');
         }
+        $eventTimes = [];
+        foreach ($history['events'] ?? [] as $event) {
+            $type = $event['event_type'] ?? null;
+            if (isset($stageNames[$type]) && ! isset($eventTimes[$type])) {
+                $timestamp = $event['timestamp'] ?? null;
+                if (! is_string($timestamp) || $timestamp === '') {
+                    throw new RuntimeException('Standard history event has no timestamp: '.$type);
+                }
+                $eventTimes[$type] = (float) (new DateTimeImmutable($timestamp))->format('U.u');
+            }
+        }
+        $previousTime = $started[$id]['wall'];
+        $intervals = [];
+        foreach ($stageNames as $eventType => $stage) {
+            $eventTime = $eventTimes[$eventType] ?? null;
+            if ($eventTime === null || $eventTime < $previousTime) {
+                throw new RuntimeException('Standard history timestamps are missing or out of order: '.$eventType);
+            }
+            $intervals[$stage] = $eventTime - $previousTime;
+            $previousTime = $eventTime;
+        }
+        foreach ($intervals as $stage => $interval) {
+            $stageSamples[$stage][] = $interval;
+        }
     } catch (Throwable $error) {
         $errors[] = $id.': verification: '.$error->getMessage();
     }
 }
 
 $latencies = array_column($completed, 'latency');
-sort($latencies);
-$percentile = static fn (float $fraction): ?float => $latencies === []
-    ? null
-    : $latencies[max(0, (int) ceil($fraction * count($latencies)) - 1)];
+$percentile = static function (array $values, float $fraction): ?float {
+    if ($values === []) {
+        return null;
+    }
+    sort($values);
+
+    return $values[max(0, (int) ceil($fraction * count($values)) - 1)];
+};
+$stageIntervals = [];
+foreach ($stageSamples as $stage => $values) {
+    $stageIntervals[$stage] = [
+        'count' => count($values),
+        'p50' => $percentile($values, 0.50),
+        'p95' => $percentile($values, 0.95),
+        'p99' => $percentile($values, 0.99),
+    ];
+}
 $closedInWindow = count(array_filter($completed, static fn (array $sample): bool => $sample['closed_wall'] < $offerEndsWall));
 $result = [
     'probe' => 'fixed-offered-standard-experiment',
@@ -164,9 +214,10 @@ $result = [
     'offer_window_completions_per_second' => $closedInWindow / $duration,
     'observation_seconds_excluding_history_verification' => ($lastObservationNs - $beganNs) / 1_000_000_000,
     'latency_boundary' => 'Client start request beginning to Server closed_at; shared host clock, SDK describe collection delay excluded.',
-    'latency_p50_seconds' => $percentile(0.50),
-    'latency_p95_seconds' => $percentile(0.95),
-    'latency_p99_seconds' => $percentile(0.99),
+    'latency_p50_seconds' => $percentile($latencies, 0.50),
+    'latency_p95_seconds' => $percentile($latencies, 0.95),
+    'latency_p99_seconds' => $percentile($latencies, 0.99),
+    'history_stage_intervals_seconds' => $stageIntervals,
     'poll_errors' => $pollErrors,
     'poll_error_classes' => $pollErrorClasses,
     'errors' => $errors,

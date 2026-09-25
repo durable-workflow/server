@@ -86,6 +86,12 @@ latency boundary is the client start-request beginning to the Server's
 offer-window completion rate excludes the bounded drain, while the completed
 count includes it. A nonzero exit means missed offer slots, late starts over
 one slot, incomplete/failed workflows, a poll error, or verification failure.
+The same verified history reports p50/p95/p99 intervals between the client
+start and `WorkflowStarted`, then each adjacent standard workflow event through
+`WorkflowCompleted`. These intervals include queueing, polling, handler work,
+and persistence; they are not isolated task-wakeup latency. A missing or
+out-of-order event timestamp fails verification rather than producing a partial
+stage summary.
 The optional fourth argument is a minimum interval in milliseconds between
 client `describe()` calls (0-1000, default 0 for the original unpaced probe).
 For example, append `250` to test whether unpaced observation traffic affects
