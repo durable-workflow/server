@@ -231,7 +231,7 @@ final class ServerReadiness
             }
 
             try {
-                $key = 'server:queue-readiness:'.bin2hex(random_bytes(8));
+                $key = 'server:readiness:'.bin2hex(random_bytes(8));
                 $value = bin2hex(random_bytes(8));
                 if ($this->redisReadiness->roundTrip($key, $value, 10, trim($redisConnection)) !== $value) {
                     throw new \RuntimeException(RedisReadinessProcess::FAILURE_MESSAGE);
