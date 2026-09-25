@@ -2,7 +2,7 @@ ARG SERVER_IMAGE=durableworkflow/server@sha256:4ee8a95df43fbd7022b4d1b583046063b
 FROM ${SERVER_IMAGE}
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends $PHPIZE_DEPS libssl-dev pkg-config \
+    && apt-get install -y --no-install-recommends $PHPIZE_DEPS libbrotli-dev libssl-dev pkg-config \
     && pecl install swoole-6.1.10 \
     && docker-php-ext-enable swoole \
     && rm -rf /var/lib/apt/lists/*
