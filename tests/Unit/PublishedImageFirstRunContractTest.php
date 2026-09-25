@@ -128,6 +128,13 @@ final class PublishedImageFirstRunContractTest extends TestCase
         }
     }
 
+    public function test_published_compose_restarts_the_queue_worker_after_backend_loss(): void
+    {
+        $compose = Yaml::parse($this->read('docker-compose.published.yml'));
+
+        $this->assertSame('unless-stopped', $compose['services']['worker']['restart'] ?? null);
+    }
+
     public function test_process_healthcheck_is_shipped_for_cli_compose_roles(): void
     {
         $dockerfile = $this->read('Dockerfile');
