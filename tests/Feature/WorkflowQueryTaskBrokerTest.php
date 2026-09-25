@@ -822,6 +822,8 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                 bool $reserveWorkerWaitSlot = false,
                 string $waitSlotPool = 'worker',
                 ?string $waitSlotNamespace = null,
+                array $interruptChannels = [],
+                ?callable $onInterrupt = null,
             ): mixed {
                 $value = $probe();
 
@@ -1047,6 +1049,8 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                 bool $reserveWorkerWaitSlot = false,
                 string $waitSlotPool = 'worker',
                 ?string $waitSlotNamespace = null,
+                array $interruptChannels = [],
+                ?callable $onInterrupt = null,
             ): mixed {
                 $value = $probe();
 
@@ -1226,6 +1230,8 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                 bool $reserveWorkerWaitSlot = false,
                 string $waitSlotPool = 'worker',
                 ?string $waitSlotNamespace = null,
+                array $interruptChannels = [],
+                ?callable $onInterrupt = null,
             ): mixed {
                 if (is_callable($this->beforeProbe)) {
                     ($this->beforeProbe)();
@@ -1536,6 +1542,8 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                 bool $reserveWorkerWaitSlot = false,
                 string $waitSlotPool = 'worker',
                 ?string $waitSlotNamespace = null,
+                array $interruptChannels = [],
+                ?callable $onInterrupt = null,
             ): mixed {
                 while (true) {
                     $value = $probe();
@@ -2008,6 +2016,8 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                     bool $reserveWorkerWaitSlot = false,
                     string $waitSlotPool = 'worker',
                     ?string $waitSlotNamespace = null,
+                    array $interruptChannels = [],
+                    ?callable $onInterrupt = null,
                 ): mixed {
                     $value = $probe();
 
@@ -2343,6 +2353,8 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                 bool $reserveWorkerWaitSlot = false,
                 string $waitSlotPool = 'worker',
                 ?string $waitSlotNamespace = null,
+                array $interruptChannels = [],
+                ?callable $onInterrupt = null,
             ): mixed {
                 $value = $probe();
 
@@ -3151,6 +3163,8 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                 bool $reserveWorkerWaitSlot = false,
                 string $waitSlotPool = 'worker',
                 ?string $waitSlotNamespace = null,
+                array $interruptChannels = [],
+                ?callable $onInterrupt = null,
             ): mixed {
                 $this->timeoutSeconds = $timeoutSeconds;
 

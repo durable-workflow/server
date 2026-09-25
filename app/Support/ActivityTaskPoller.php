@@ -442,6 +442,8 @@ final class ActivityTaskPoller
         ];
         $workerPollFence = WorkerPollFence::snapshot($worker);
 
+        $crossKindWake = WorkerProtocol::supportsCrossKindPollWake($worker);
+
         $pollResult = $this->longPoller->until(
             function () use (
                 $namespace,
@@ -504,11 +506,17 @@ final class ActivityTaskPoller
             },
             reserveWorkerWaitSlot: true,
             waitSlotNamespace: $namespace,
+            interruptChannels: $crossKindWake
+                ? [$this->signals->workerTaskQueueChannel($namespace, $taskQueue)]
+                : [],
+            onInterrupt: $crossKindWake
+                ? static fn (): array => ['poll_status' => 'task_queue_changed']
+                : null,
         );
 
         if (in_array(
             $pollResult['poll_status'] ?? null,
-            ['query_task_pending', 'stale_worker_registration'],
+            ['query_task_pending', 'stale_worker_registration', 'task_queue_changed'],
             true,
         )) {
             return [

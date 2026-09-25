@@ -496,7 +496,7 @@ final class WorkflowQueryTaskBroker
             throw $exception;
         }
 
-        $this->signals->signalQueryTaskQueue($namespace, $taskQueue);
+        $this->signals->signalQueuedQueryTask($namespace, $taskQueue);
 
         return $task;
     }
@@ -554,6 +554,7 @@ final class WorkflowQueryTaskBroker
         $pollRequestId = $this->stringValue($pollRequestId);
         $taskQueue = (string) $worker->task_queue;
         $buildId = $this->stringValue($worker->build_id);
+        $crossKindWake = WorkerProtocol::supportsCrossKindPollWake($worker);
         $supportedWorkflowTypes = $this->stringArray($worker->supported_workflow_types);
         $workflowDefinitionFingerprints = $this->fingerprintMap($worker->workflow_definition_fingerprints);
 
@@ -581,6 +582,7 @@ final class WorkflowQueryTaskBroker
                 $workflowDefinitionFingerprints,
                 $this->queryPollTimeoutSeconds($timeoutSeconds),
                 $workerPollFence,
+                $crossKindWake,
             );
         }
 
@@ -593,6 +595,7 @@ final class WorkflowQueryTaskBroker
             $buildId,
             timeoutSeconds: $this->queryPollTimeoutSeconds($timeoutSeconds),
             workerPollFence: $workerPollFence,
+            crossKindWake: $crossKindWake,
         ));
     }
 
@@ -611,6 +614,7 @@ final class WorkflowQueryTaskBroker
         array $workflowDefinitionFingerprints,
         ?int $timeoutSeconds,
         array $workerPollFence,
+        bool $crossKindWake,
     ): array {
         for ($attempt = 0; $attempt < 3; $attempt++) {
             if (! WorkerPollFence::isCurrent($workerPollFence)) {
@@ -637,6 +641,7 @@ final class WorkflowQueryTaskBroker
                     $workflowDefinitionFingerprints,
                     $timeoutSeconds,
                     $workerPollFence,
+                    $crossKindWake,
                 );
             }
 
@@ -687,6 +692,7 @@ final class WorkflowQueryTaskBroker
         array $workflowDefinitionFingerprints,
         ?int $timeoutSeconds,
         array $workerPollFence,
+        bool $crossKindWake,
     ): array {
         try {
             $task = $this->performPoll(
@@ -699,6 +705,7 @@ final class WorkflowQueryTaskBroker
                 $pollRequestId,
                 $timeoutSeconds,
                 $workerPollFence,
+                $crossKindWake,
             );
         } catch (\Throwable $exception) {
             $this->pollRequests->forgetPending($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId);
@@ -862,6 +869,7 @@ final class WorkflowQueryTaskBroker
         ?string $pollRequestId = null,
         ?int $timeoutSeconds = null,
         array $workerPollFence = [],
+        bool $crossKindWake = false,
     ): ?array {
         $workflowBlockStatus = null;
 
@@ -930,6 +938,12 @@ final class WorkflowQueryTaskBroker
             reserveWorkerWaitSlot: true,
             waitSlotPool: 'query-task',
             waitSlotNamespace: $namespace,
+            interruptChannels: $crossKindWake
+                ? [$this->signals->workerTaskQueueChannel($namespace, $taskQueue)]
+                : [],
+            onInterrupt: $crossKindWake
+                ? static fn (): array => ['poll_status' => 'task_queue_changed']
+                : null,
         );
 
         if ($result === null && $workflowBlockStatus === 'workflow_task_leased') {
@@ -1166,7 +1180,7 @@ final class WorkflowQueryTaskBroker
         );
 
         if ($recovered) {
-            $this->signals->signalQueryTaskQueue($namespace, $taskQueue);
+            $this->signals->signalQueuedQueryTask($namespace, $taskQueue);
         }
 
         return $this->task($queryTaskId);

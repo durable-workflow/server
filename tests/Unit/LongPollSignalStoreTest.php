@@ -78,4 +78,32 @@ class LongPollSignalStoreTest extends TestCase
         $this->assertTrue($signals->changed($secondSnapshot));
         $this->assertSame([$channel => null], $signals->snapshot([$channel]));
     }
+
+    public function test_query_task_wake_is_scoped_to_the_worker_namespace_and_queue(): void
+    {
+        $signals = app(LongPollSignalStore::class);
+        $matching = $signals->workerTaskQueueChannel('tenant-a', 'orders');
+        $otherNamespace = $signals->workerTaskQueueChannel('tenant-b', 'orders');
+        $otherQueue = $signals->workerTaskQueueChannel('tenant-a', 'billing');
+        $snapshot = $signals->snapshot([$matching, $otherNamespace, $otherQueue]);
+
+        $signals->signalQueuedQueryTask('tenant-a', 'orders');
+
+        $this->assertTrue($signals->changed([$matching => $snapshot[$matching]]));
+        $this->assertFalse($signals->changed([$otherNamespace => $snapshot[$otherNamespace]]));
+        $this->assertFalse($signals->changed([$otherQueue => $snapshot[$otherQueue]]));
+    }
+
+    public function test_query_poll_registration_does_not_interrupt_other_task_kinds(): void
+    {
+        $signals = app(LongPollSignalStore::class);
+        $workerChannel = $signals->workerTaskQueueChannel('tenant-a', 'orders');
+        $queryChannel = $signals->queryTaskPollChannels('tenant-a', 'orders')[1];
+        $snapshot = $signals->snapshot([$workerChannel, $queryChannel]);
+
+        $signals->signalQueryTaskQueue('tenant-a', 'orders');
+
+        $this->assertFalse($signals->changed([$workerChannel => $snapshot[$workerChannel]]));
+        $this->assertTrue($signals->changed([$queryChannel => $snapshot[$queryChannel]]));
+    }
 }

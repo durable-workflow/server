@@ -224,15 +224,14 @@ class NexusWorkflowQueryServiceExecutionTest extends TestCase
     }
 
     /**
-     * @param list<array<string, mixed>> $outcomes
+     * @param  list<array<string, mixed>>  $outcomes
      */
     private function bindScriptedQueryWorker(
         array $outcomes,
         string $namespace = 'default',
         string $workerId = 'python-query-worker',
         string $taskQueue = 'python-queries',
-    ): void
-    {
+    ): void {
         $signals = app(LongPollSignalStore::class);
         $cache = app(ServerPollingCache::class);
         $workerStep = function (array $task) use (&$outcomes, $namespace, $workerId, $taskQueue): void {
@@ -296,6 +295,8 @@ class NexusWorkflowQueryServiceExecutionTest extends TestCase
                 bool $reserveWorkerWaitSlot = false,
                 string $waitSlotPool = 'worker',
                 ?string $waitSlotNamespace = null,
+                array $interruptChannels = [],
+                ?callable $onInterrupt = null,
             ): mixed {
                 $value = $probe();
 
@@ -326,8 +327,7 @@ class NexusWorkflowQueryServiceExecutionTest extends TestCase
         string $namespace = 'default',
         string $workflowType = 'python.queryable',
         string $taskQueue = 'python-queries',
-    ): WorkflowRun
-    {
+    ): WorkflowRun {
         $start = $this->postJson('/api/workflows', [
             'workflow_id' => $workflowId,
             'workflow_type' => $workflowType,
@@ -344,15 +344,14 @@ class NexusWorkflowQueryServiceExecutionTest extends TestCase
     }
 
     /**
-     * @param list<string> $supportedWorkflowTypes
+     * @param  list<string>  $supportedWorkflowTypes
      */
     private function registerQueryWorker(
         string $workerId,
         string $taskQueue,
         array $supportedWorkflowTypes,
         string $namespace = 'default',
-    ): void
-    {
+    ): void {
         WorkerRegistration::query()->create([
             'worker_id' => $workerId,
             'namespace' => $namespace,
@@ -373,8 +372,7 @@ class NexusWorkflowQueryServiceExecutionTest extends TestCase
         string $workerId,
         string $namespace = 'default',
         string $taskQueue = 'python-queries',
-    ): void
-    {
+    ): void {
         $pollingTimeout = config('server.polling.timeout');
 
         config(['server.polling.timeout' => 0]);
@@ -393,7 +391,7 @@ class NexusWorkflowQueryServiceExecutionTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $retryPolicy
+     * @param  array<string, mixed>  $retryPolicy
      * @return array{0: WorkflowServiceEndpoint, 1: WorkflowService, 2: WorkflowServiceOperation}
      */
     private function createWorkflowQueryOperation(
@@ -404,8 +402,7 @@ class NexusWorkflowQueryServiceExecutionTest extends TestCase
         string $operationName = 'greet',
         string $workflowInstanceId = 'shared-greeter-workflow',
         string $queryName = 'greet',
-    ): array
-    {
+    ): array {
         $endpoint = WorkflowServiceEndpoint::query()->create([
             'namespace' => $namespace,
             'endpoint_name' => $endpointName,
