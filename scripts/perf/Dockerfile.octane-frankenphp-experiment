@@ -1,0 +1,21 @@
+ARG SERVER_IMAGE=durableworkflow/server@sha256:998b9dffe1f8effb159af9660ac190ccbc9d0c954900e68e9946baa6bb4c6c42
+FROM ${SERVER_IMAGE} AS published
+
+FROM dunglas/frankenphp:php8.3@sha256:d5c2c5cdc8b6e73d861cccbf26ddab6443e3dc56e82641e5d991d21133e58a5d
+
+RUN install-php-extensions pdo_mysql pdo_pgsql pcntl redis zip bcmath
+
+COPY --from=published /usr/bin/composer /usr/bin/composer
+COPY --from=published /usr/local/bin/server-* /usr/local/bin/
+COPY --from=published /app/ /app/
+
+WORKDIR /app
+
+RUN composer require 'laravel/octane:^2.0' --no-dev --no-interaction --no-progress --no-scripts \
+    && php artisan octane:install --server=frankenphp --no-interaction
+
+ENV DW_WORKER_LONG_POLL_MAX_CONCURRENT=2 \
+    DW_QUERY_TASK_POLL_MAX_CONCURRENT=1
+
+ENTRYPOINT ["server-entrypoint"]
+CMD ["php", "artisan", "octane:start", "--server=frankenphp", "--host=0.0.0.0", "--port=8080", "--workers=4"]
