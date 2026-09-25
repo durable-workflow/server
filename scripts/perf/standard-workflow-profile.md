@@ -75,10 +75,10 @@ rate, offer window, and bounded drain (seconds):
 
 ```sh
 docker compose run --rm --no-deps sdk-worker \
-  scripts/perf/standard-workflow-offered.php 1 30 60
+  scripts/perf/standard-workflow-offered.php 0.25 30 60
 ```
 
-The client schedules starts at one-second intervals in this example and polls
+The client schedules starts every four seconds in this example and polls
 in-flight executions round-robin instead of serially waiting for each result.
 It validates output and semantic history after the observation window. Its
 latency boundary is the client start-request beginning to the Server's

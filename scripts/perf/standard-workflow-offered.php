@@ -5,11 +5,11 @@ declare(strict_types=1);
 require dirname(__DIR__, 2).'/benchmarks/capacity/v1/bindings/php/capacity_adapter.php';
 capacityAutoload();
 
-$rate = filter_var($argv[1] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1, 'max_range' => 20]]);
+$rate = filter_var($argv[1] ?? null, FILTER_VALIDATE_FLOAT, ['options' => ['min_range' => 0.1, 'max_range' => 20.0]]);
 $duration = filter_var($argv[2] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 5, 'max_range' => 120]]);
 $drain = filter_var($argv[3] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 10, 'max_range' => 180]]);
 if ($rate === false || $duration === false || $drain === false) {
-    throw new InvalidArgumentException('Usage: standard-workflow-offered.php <1-20 starts/sec> <5-120 offer seconds> <10-180 drain seconds>.');
+    throw new InvalidArgumentException('Usage: standard-workflow-offered.php <0.1-20 starts/sec> <5-120 offer seconds> <10-180 drain seconds>.');
 }
 
 $queue = capacityEnvironment('DURABLE_WORKFLOW_TASK_QUEUE');
@@ -30,8 +30,8 @@ $input = [
     ],
 ];
 $expectedEvents = ['WorkflowStarted', 'ActivityScheduled', 'ActivityStarted', 'ActivityCompleted', 'WorkflowCompleted'];
-$planned = $rate * $duration;
-$intervalNs = (int) (1_000_000_000 / $rate);
+$planned = (int) ceil($rate * $duration);
+$intervalNs = (int) round(1_000_000_000 / $rate);
 $beganWall = microtime(true);
 $beganNs = hrtime(true);
 $offerEndsWall = $beganWall + $duration;
