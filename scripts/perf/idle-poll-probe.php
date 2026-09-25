@@ -9,8 +9,10 @@ capacityAutoload();
 
 $count = filter_var($argv[1] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1, 'max_range' => 24]]);
 $pollSeconds = filter_var($argv[2] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 2, 'max_range' => 20]]);
-if ($count === false || $pollSeconds === false || ! function_exists('pcntl_fork')) {
-    throw new InvalidArgumentException('Supply 1-24 polls and a 2-20 second timeout; pcntl is required.');
+$kind = $argv[3] ?? 'workflow';
+if ($count === false || $pollSeconds === false || ! in_array($kind, ['workflow', 'activity', 'query', 'mixed'], true)
+    || ! function_exists('pcntl_fork')) {
+    throw new InvalidArgumentException('Supply 1-24 polls, a 2-20 second timeout, and workflow|activity|query|mixed; pcntl is required.');
 }
 
 $queue = capacityEnvironment('DURABLE_WORKFLOW_TASK_QUEUE');
@@ -19,7 +21,8 @@ if ($queue === null) {
 }
 
 $children = [];
-for ($index = 0; $index < $count; ++$index) {
+for ($index = 0; $index < $count; $index++) {
+    $pollKind = $kind === 'mixed' ? ['workflow', 'activity', 'query'][$index % 3] : $kind;
     $sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
     if ($sockets === false) {
         throw new RuntimeException('Could not create probe socket pair.');
@@ -37,10 +40,18 @@ for ($index = 0; $index < $count; ++$index) {
         stream_set_timeout($socket, 35);
         $workerId = 'idle-probe-'.bin2hex(random_bytes(8));
         $registered = false;
-        $result = ['index' => $index, 'outcome' => 'error'];
+        $result = ['index' => $index, 'kind' => $pollKind, 'outcome' => 'error'];
         try {
             $client = capacityClient(true);
-            $client->registerWorker($workerId, $queue, ['capacity.v1.one_activity'], [], [], 1, 0);
+            $client->registerWorker(
+                $workerId,
+                $queue,
+                $pollKind === 'activity' ? [] : [$pollKind === 'query' ? 'capacity.v1.queryable_counter' : 'capacity.v1.one_activity'],
+                $pollKind === 'activity' ? ['capacity.v1.echo'] : [],
+                $pollKind === 'query' ? ['query_tasks'] : [],
+                $pollKind === 'activity' ? 0 : 1,
+                $pollKind === 'activity' ? 1 : 0,
+            );
             $registered = true;
             fwrite($socket, "ready\n");
             if (trim((string) fgets($socket)) !== 'go') {
@@ -48,7 +59,11 @@ for ($index = 0; $index < $count; ++$index) {
             } else {
                 $started = hrtime(true);
                 try {
-                    $response = $client->pollWorkflowTaskResponse($workerId, $queue, $pollSeconds);
+                    $response = match ($pollKind) {
+                        'activity' => $client->pollActivityTaskResponse($workerId, $queue, $pollSeconds),
+                        'query' => $client->pollQueryTaskResponse($workerId, $queue, $pollSeconds),
+                        default => $client->pollWorkflowTaskResponse($workerId, $queue, $pollSeconds),
+                    };
                     $result['poll_status'] = $response['poll_status'] ?? null;
                     $result['outcome'] = isset($response['task']) && is_array($response['task'])
                         ? 'task'
@@ -100,14 +115,21 @@ foreach ($children as $child) {
     pcntl_waitpid($child['pid'], $status);
 }
 $counts = array_count_values(array_column($results, 'outcome'));
+$countsByKind = [];
+foreach ($results as $result) {
+    $resultKind = $result['kind'] ?? 'unknown';
+    $outcome = $result['outcome'];
+    $countsByKind[$resultKind][$outcome] = ($countsByKind[$resultKind][$outcome] ?? 0) + 1;
+}
 $cleanupErrors = count(array_filter($results, static fn (array $row): bool => isset($row['deregister_error'])));
 echo json_encode([
-    'probe' => 'idle-workflow-poll-not-capacity',
+    'probe' => 'idle-'.$kind.'-poll-not-capacity',
     'requested_polls' => $count,
-    'poll_timeout_seconds' => $pollSeconds,
+    'requested_poll_timeout_seconds' => $pollSeconds,
     'all_registered' => $ready,
     'cleanup_errors' => $cleanupErrors,
     'outcomes' => $counts,
+    'outcomes_by_kind' => $countsByKind,
     'results' => $results,
 ], JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE).PHP_EOL;
 exit($ready && $cleanupErrors === 0 && ! isset($counts['error']) && ! isset($counts['task']) && ! isset($counts['aborted']) && ! isset($counts['unexpected']) ? 0 : 1);
