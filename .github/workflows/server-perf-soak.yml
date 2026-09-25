@@ -12,7 +12,7 @@ on:
       concurrency:
         description: "Concurrent long-poll workers"
         required: false
-        default: "24"
+        default: "12"
       remote_write:
         description: "Enable Prometheus remote_write when variables/secrets are configured"
         required: false
@@ -47,7 +47,7 @@ jobs:
           VULTR_PERF_PLAN: "vhp-2c-4gb-amd"
           VULTR_PERF_OS_ID: "2284"
           DW_PERF_DURATION_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.duration_seconds || '7200' }}
-          DW_PERF_CONCURRENCY: ${{ github.event_name == 'workflow_dispatch' && inputs.concurrency || '24' }}
+          DW_PERF_CONCURRENCY: ${{ github.event_name == 'workflow_dispatch' && inputs.concurrency || '12' }}
           DW_PERF_NAMESPACES: "8"
           DW_PERF_TASK_QUEUES: "16"
           DW_PERF_STANDARD_WORKFLOWS: "true"
