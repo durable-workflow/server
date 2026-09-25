@@ -59,6 +59,17 @@ and verify `httpd -M` reports `mpm_event_module`. These overlays are API
 experiments, not production images or capacity claims. In particular, FPM
 workers remain occupied while synchronous Server long polls wait.
 
+For a fixed local comparison, append
+`scripts/perf/standard-workflow-fixed-envelope.compose.yml` immediately after
+the base profile. It caps Apache HTTP at 1 CPU / 1 GiB, with separate declared
+caps for the queue worker, MySQL, Redis and SDK worker. For either FPM frontend,
+append `scripts/perf/fpm-fixed-envelope.compose.yml` last; it splits the same
+HTTP allowance into 0.2 CPU / 128 MiB for the proxy and 0.8 CPU / 896 MiB for
+FPM. This chosen split is not tuned. Use a fresh Compose project and durable
+volumes for each candidate, identical published artifacts, and equal warmup
+and measurement windows. The closed-loop canary's five-second start interval
+does not measure saturation or maximum capacity.
+
 Remove this project and its synthetic durable state after recording evidence:
 
 ```sh
