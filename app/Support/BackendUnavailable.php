@@ -5,6 +5,7 @@ namespace App\Support;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use PDOException;
+use RedisException;
 use Throwable;
 
 final class BackendUnavailable
@@ -12,6 +13,10 @@ final class BackendUnavailable
     public static function is(Throwable $exception): bool
     {
         for ($current = $exception; $current !== null; $current = $current->getPrevious()) {
+            if ($current instanceof RedisException && self::isRedisConnectionFailure($current)) {
+                return true;
+            }
+
             if (! $current instanceof PDOException || ! is_array($current->errorInfo)) {
                 continue;
             }
@@ -54,7 +59,7 @@ final class BackendUnavailable
         $isPoll = str_starts_with($operation, 'poll_');
         $payload = [
             'reason' => 'backend_unavailable',
-            'message' => 'The database is temporarily unavailable. Retry the same request with backoff; its outcome may be unknown.',
+            'message' => 'A required backend is temporarily unavailable. Retry the same request with backoff; its outcome may be unknown.',
             'operation' => $operation,
             'outcome' => 'unknown',
             'worker_id' => $workerId,
@@ -81,5 +86,15 @@ final class BackendUnavailable
     private static function identity(mixed $value): ?string
     {
         return is_string($value) && $value !== '' && strlen($value) <= 255 ? $value : null;
+    }
+
+    private static function isRedisConnectionFailure(RedisException $exception): bool
+    {
+        // phpredis has no structured transport error code; only match its
+        // connection failures, not authentication, command, or memory errors.
+        return preg_match(
+            '/(?:getaddrinfo|failed to connect|connection (?:refused|reset|lost|timed out)|read error on connection|redis server went away|socket error|no route to host)/i',
+            $exception->getMessage(),
+        ) === 1;
     }
 }

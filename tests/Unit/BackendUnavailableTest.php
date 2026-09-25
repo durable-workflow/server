@@ -7,6 +7,7 @@ use Illuminate\Database\QueryException;
 use PDOException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use RedisException;
 use RuntimeException;
 
 class BackendUnavailableTest extends TestCase
@@ -47,5 +48,27 @@ class BackendUnavailableTest extends TestCase
     {
         $this->assertFalse(BackendUnavailable::is(new RuntimeException('SQLSTATE[HY000] [2002] Connection refused')));
         $this->assertFalse(BackendUnavailable::is(new PDOException('SQLSTATE[HY000] [2002] Connection refused')));
+    }
+
+    #[DataProvider('redisErrors')]
+    public function test_only_redis_transport_failures_are_retryable(string $message, bool $retryable): void
+    {
+        $exception = new RedisException($message);
+
+        $this->assertSame($retryable, BackendUnavailable::is($exception));
+        $this->assertSame($retryable, BackendUnavailable::is(new RuntimeException('wrapped Redis failure', 0, $exception)));
+    }
+
+    public static function redisErrors(): array
+    {
+        return [
+            'dns failure' => ['php_network_getaddresses: getaddrinfo for redis failed', true],
+            'connection refused' => ['Connection refused', true],
+            'connection lost' => ['Redis connection lost', true],
+            'read failure' => ['read error on connection', true],
+            'authentication failure' => ['WRONGPASS invalid username-password pair', false],
+            'memory limit' => ['OOM command not allowed when used memory > maxmemory', false],
+            'invalid command' => ['ERR unknown command', false],
+        ];
     }
 }
