@@ -70,6 +70,21 @@ volumes for each candidate, identical published artifacts, and equal warmup
 and measurement windows. The closed-loop canary's five-second start interval
 does not measure saturation or maximum capacity.
 
+For an idle workflow-task poll check, start the selected fresh stack without
+`sdk-worker`, then run `docker compose` with the same file list and project:
+
+```sh
+docker compose run --rm --no-deps sdk-worker \
+  scripts/perf/idle-poll-probe.php 4 10
+```
+
+The probe registers four synthetic workers, releases their ten-second polls
+together, and reports empty waits versus explicit 429 backpressure. Change the
+count for a bounded concurrency step. Run it only when the queue has no work;
+an actual claimed task makes the probe fail. This tests the configured poll
+admission path, not maximum HTTP concurrency or task wake latency. Use the
+same fresh project, image tuple, limits, and poll count for each frontend.
+
 Remove this project and its synthetic durable state after recording evidence:
 
 ```sh
