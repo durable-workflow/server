@@ -28,7 +28,7 @@ $input = [
 ];
 $expectedEvents = ['WorkflowStarted', 'ActivityScheduled', 'ActivityStarted', 'ActivityCompleted', 'WorkflowCompleted'];
 $handles = [];
-$latencies = [];
+$observationLags = [];
 $errors = [];
 $started = hrtime(true);
 
@@ -55,26 +55,27 @@ foreach ($handles as $id => $entry) {
         if ($result !== $payload || $execution->status !== 'completed' || array_values(array_intersect($events, $expectedEvents)) !== $expectedEvents) {
             throw new RuntimeException('Result, status, or ordered semantic history did not match.');
         }
-        $latencies[] = (hrtime(true) - $entry['started']) / 1_000_000_000;
+        $observationLags[] = (hrtime(true) - $entry['started']) / 1_000_000_000;
     } catch (Throwable $error) {
         $errors[] = $id.': '.$error->getMessage();
     }
 }
 
-sort($latencies);
+sort($observationLags);
 $elapsed = (hrtime(true) - $started) / 1_000_000_000;
-$percentile = static fn (float $fraction): ?float => $latencies === []
+$percentile = static fn (float $fraction): ?float => $observationLags === []
     ? null
-    : $latencies[max(0, (int) ceil($fraction * count($latencies)) - 1)];
+    : $observationLags[max(0, (int) ceil($fraction * count($observationLags)) - 1)];
 echo json_encode([
     'probe' => 'exploratory-burst-not-capacity',
     'attempted' => $count,
-    'completed' => count($latencies),
+    'completed' => count($observationLags),
     'errors' => $errors,
     'elapsed_seconds' => $elapsed,
-    'completed_per_elapsed_second' => count($latencies) / $elapsed,
-    'p50_seconds' => $percentile(0.50),
-    'p95_seconds' => $percentile(0.95),
-    'p99_seconds' => $percentile(0.99),
+    'drain_inclusive_completions_per_second' => count($observationLags) / $elapsed,
+    'observation' => 'Sequential starts followed by serial result and history reads; lags include client collection delay.',
+    'serial_observation_lag_p50_seconds' => $percentile(0.50),
+    'serial_observation_lag_p95_seconds' => $percentile(0.95),
+    'serial_observation_lag_p99_seconds' => $percentile(0.99),
 ], JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE).PHP_EOL;
 exit($errors === [] ? 0 : 1);
