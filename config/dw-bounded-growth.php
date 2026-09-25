@@ -276,7 +276,7 @@ return [
                 'workflow_task_id',
             ],
             'ttl' => 'server.polling.expired_workflow_task_recovery_ttl_seconds seconds, with a runtime minimum of 1 second.',
-            'bound' => 'Recovery scans examine at most server.polling.expired_workflow_task_recovery_scan_limit tasks per poll path, default 5.',
+            'bound' => 'One key per distinct workflow task ID during the TTL window. Each poll scans at most server.polling.expired_workflow_task_recovery_scan_limit tasks (default 5); total live keys scale with expired tasks across polls.',
             'admission' => 'Cache add suppresses duplicate recovery attempts for the same expired workflow task during the TTL window.',
             'eviction' => 'Cache TTL only. The durable task row remains the source of truth.',
         ],
