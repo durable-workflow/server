@@ -1,0 +1,17 @@
+ARG SERVER_IMAGE=durableworkflow/server@sha256:4ee8a95df43fbd7022b4d1b583046063b9d3e6e2d1fd4408e58a6b8f486cff56
+FROM ${SERVER_IMAGE}
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends $PHPIZE_DEPS libbrotli-dev libssl-dev pkg-config \
+    && pecl install swoole-6.1.10 \
+    && docker-php-ext-enable swoole \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN composer require 'laravel/octane:2.20.0' 'laminas/laminas-diactoros:3.8.0' \
+        'symfony/psr-http-message-bridge:7.4.8' \
+        --update-no-dev --no-interaction --no-progress --no-scripts \
+    && php artisan package:discover --no-ansi \
+    && php artisan octane:install --server=swoole --no-interaction
+
+ENTRYPOINT ["server-entrypoint"]
+CMD ["php", "artisan", "octane:start", "--server=swoole", "--host=0.0.0.0", "--port=8080", "--workers=4"]
