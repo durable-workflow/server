@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "7b85930375f12fd0e1212db3a58a426d",
+    "content-hash": "95f9506e672ad71ea446dffb743b5de8",
     "packages": [
         {
             "name": "apache/avro",
@@ -655,16 +655,16 @@
         },
         {
             "name": "durable-workflow/workflow",
-            "version": "2.2.5",
+            "version": "2.2.6",
             "source": {
                 "type": "git",
                 "url": "https://github.com/durable-workflow/workflow.git",
-                "reference": "210682a4c40558273b483e037b17a8ca62e9d463"
+                "reference": "da7c3fd9f2483767551120577278cdf0eec1d55d"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/durable-workflow/workflow/zipball/210682a4c40558273b483e037b17a8ca62e9d463",
-                "reference": "210682a4c40558273b483e037b17a8ca62e9d463",
+                "url": "https://api.github.com/repos/durable-workflow/workflow/zipball/da7c3fd9f2483767551120577278cdf0eec1d55d",
+                "reference": "da7c3fd9f2483767551120577278cdf0eec1d55d",
                 "shasum": ""
             },
             "require": {
@@ -724,9 +724,9 @@
             "description": "Embedded durable workflow runtime and orchestration engine for Laravel applications.",
             "support": {
                 "issues": "https://github.com/durable-workflow/workflow/issues",
-                "source": "https://github.com/durable-workflow/workflow/tree/2.2.5"
+                "source": "https://github.com/durable-workflow/workflow/tree/2.2.6"
             },
-            "time": "2026-09-24T21:40:49+00:00"
+            "time": "2026-09-25T08:23:37+00:00"
         },
         {
             "name": "egulias/email-validator",
