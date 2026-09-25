@@ -1,0 +1,18 @@
+# Force consecutive HTTP requests through one persistent PHP worker and recycle
+# it frequently while checking request-scoped namespace and authentication state.
+services:
+  server:
+    environment:
+      DW_ADMIN_TOKEN: probe-admin-token
+      DW_OPERATOR_TOKEN: probe-operator-token
+      DW_WORKER_TOKEN: probe-worker-token
+      DW_AUTH_BACKWARD_COMPATIBLE: 'false'
+    command:
+      - php
+      - artisan
+      - octane:start
+      - --server=frankenphp
+      - --host=0.0.0.0
+      - --port=8080
+      - --workers=1
+      - --max-requests=20
