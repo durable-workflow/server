@@ -6,6 +6,16 @@ $input = (string) stream_get_contents(STDIN);
 
 $mode = $argv[1] ?? '';
 
+if ($mode === 'success') {
+    $request = unserialize($input, ['allowed_classes' => false]);
+    if (! is_array($request) || ! is_string($request['value'] ?? null)) {
+        exit(2);
+    }
+
+    echo json_encode(['ok' => true, 'value' => $request['value']], JSON_THROW_ON_ERROR);
+    exit(0);
+}
+
 if ($mode === 'timeout') {
     usleep(3_000_000);
     exit(0);
