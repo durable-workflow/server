@@ -78,6 +78,7 @@ services:
     image: *server-image
     platform: ${DW_SERVER_PLATFORM:-}
     command: php artisan queue:work --sleep=1 --tries=3 --max-time=3600
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "server-process-healthcheck", "worker"]
       interval: 5s
