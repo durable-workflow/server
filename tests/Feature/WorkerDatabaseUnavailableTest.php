@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\RuntimeCredential;
 use App\Models\WorkerRegistration;
+use App\Support\ActivityTaskPollRequestStore;
 use App\Support\WorkerProtocol;
 use App\Support\WorkflowUpdateValidationTaskBroker;
 use Illuminate\Database\Connection;
@@ -12,6 +13,7 @@ use Illuminate\Support\Facades\DB;
 use Mockery;
 use PDOException;
 use PHPUnit\Framework\Attributes\DataProvider;
+use RedisException;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Support\OpenApiSchema;
 use Tests\TestCase;
@@ -73,6 +75,27 @@ class WorkerDatabaseUnavailableTest extends TestCase
             ['/api/worker/query-tasks/poll'],
             ['/api/worker/update-validation-tasks/poll'],
         ];
+    }
+
+    public function test_redis_connection_loss_during_coordinated_poll_preserves_poll_identity(): void
+    {
+        $store = Mockery::mock(ActivityTaskPollRequestStore::class);
+        $store->shouldReceive('result')->once()
+            ->andThrow(new RedisException('php_network_getaddresses: getaddrinfo for redis failed'));
+        $this->app->instance(ActivityTaskPollRequestStore::class, $store);
+
+        $response = $this->postJson('/api/worker/activity-tasks/poll', [
+            'worker_id' => 'database-worker', 'task_queue' => 'database-queue',
+            'poll_request_id' => 'redis-loss-poll', 'timeout_seconds' => 0,
+        ], $this->workerHeaders());
+
+        $response->assertStatus(503)->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
+            ->assertHeader('Retry-After', '1')->assertJsonPath('reason', 'backend_unavailable')
+            ->assertJsonPath('operation', 'poll_activity_task')->assertJsonPath('outcome', 'unknown')
+            ->assertJsonPath('task', null)->assertJsonPath('retryable', true)
+            ->assertJsonPath('poll_request_id', 'redis-loss-poll')
+            ->assertJsonPath('retry_same_poll_request_id', true);
+        $this->assertStringNotContainsString('getaddrinfo', $response->getContent());
     }
 
     public function test_worker_heartbeat_does_not_claim_an_acknowledgement_during_database_loss(): void
