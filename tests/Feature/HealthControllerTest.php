@@ -822,8 +822,7 @@ class HealthControllerTest extends TestCase
         string $diagnostics,
         string $configuredUrl,
         int $port,
-    ): void
-    {
+    ): void {
         foreach ([
             $configuredUrl,
             'refused-user',
