@@ -155,3 +155,24 @@ call a queued request a successful wait. A canary and idle-poll pass are only
 setup evidence: persistent-worker state isolation, backend interruption,
 repeatable throughput, and bounded memory still require qualification before
 any runtime recommendation.
+
+To check request-scoped authentication and namespace state in one persistent
+Octane worker, append `scripts/perf/octane-single-worker-experiment.compose.yml`
+after the Octane overlay and start `server worker` in a fresh project. This
+override configures synthetic role tokens, one HTTP worker, and recycling after
+20 requests. Run the black-box probe from a separate PHP container on the
+project network:
+
+```sh
+docker run --rm --user 1000:1000 --network "${COMPOSE_PROJECT_NAME}_default" \
+  -e DW_PROBE_URL=http://server:8080 \
+  -e DW_PROBE_TOKEN=probe-admin-token \
+  -e DW_PROBE_WORKER_TOKEN=probe-worker-token \
+  --mount "type=bind,source=$PWD/scripts/perf/octane-request-isolation.php,target=/probe.php,readonly" \
+  php:8.3-cli php /probe.php
+```
+
+The probe creates disposable namespaces and pending workflows, then alternates
+210 control-plane requests across namespace and credential boundaries. It must
+report `result: pass`; any unexpected HTTP status or wrong-namespace response
+exits nonzero. Remove the entire Compose project and its volumes afterward.
