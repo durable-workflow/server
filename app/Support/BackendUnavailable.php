@@ -17,7 +17,18 @@ final class BackendUnavailable
                 return true;
             }
 
-            if (! $current instanceof PDOException || ! is_array($current->errorInfo)) {
+            if (! $current instanceof PDOException) {
+                continue;
+            }
+
+            // PDO can replace the original driver error while rolling back a
+            // nested transaction after connection loss. That exception has no
+            // errorInfo; accept only the exact driver-generated 2006 message.
+            if (! is_array($current->errorInfo)) {
+                if ($current->getMessage() === 'SQLSTATE[HY000]: General error: 2006 MySQL server has gone away') {
+                    return true;
+                }
+
                 continue;
             }
 
@@ -48,18 +59,19 @@ final class BackendUnavailable
             $request->is('api/worker/register') => 'register_worker',
             $request->is('api/worker/heartbeat') => 'heartbeat_worker',
             $request->is('api/worker/workflow-tasks/*/heartbeat') => 'heartbeat_workflow_task',
+            $request->is('api/worker/workflow-tasks/*/complete') => 'complete_workflow_task',
             default => null,
         };
         if ($operation === null) {
             return null;
         }
 
-        $taskHeartbeat = $operation === 'heartbeat_workflow_task';
-        $taskId = $taskHeartbeat ? self::identity($request->route('taskId')) : null;
-        $leaseOwner = $taskHeartbeat ? self::identity($request->input('lease_owner')) : null;
+        $fencedWorkflowTask = in_array($operation, ['heartbeat_workflow_task', 'complete_workflow_task'], true);
+        $taskId = $fencedWorkflowTask ? self::identity($request->route('taskId')) : null;
+        $leaseOwner = $fencedWorkflowTask ? self::identity($request->input('lease_owner')) : null;
         $taskAttempt = $request->input('workflow_task_attempt');
-        $taskAttempt = $taskHeartbeat && is_int($taskAttempt) && $taskAttempt > 0 ? $taskAttempt : null;
-        $workerId = $taskHeartbeat ? $leaseOwner : self::identity($request->input('worker_id'));
+        $taskAttempt = $fencedWorkflowTask && is_int($taskAttempt) && $taskAttempt > 0 ? $taskAttempt : null;
+        $workerId = $fencedWorkflowTask ? $leaseOwner : self::identity($request->input('worker_id'));
         $taskQueue = self::identity($request->input('task_queue'));
         $pollId = self::identity($request->input('poll_request_id'));
         $isPoll = str_starts_with($operation, 'poll_');
@@ -70,7 +82,7 @@ final class BackendUnavailable
             'outcome' => 'unknown',
             'worker_id' => $workerId,
             'task_queue' => $taskQueue,
-            'retryable' => $taskHeartbeat
+            'retryable' => $fencedWorkflowTask
                 ? $taskId !== null && $leaseOwner !== null && $taskAttempt !== null
                 : $workerId !== null
                     && ($operation === 'heartbeat_worker' || $taskQueue !== null)
@@ -87,7 +99,7 @@ final class BackendUnavailable
                 'retry_same_poll_request_id' => true,
             ];
         }
-        if ($taskHeartbeat) {
+        if ($fencedWorkflowTask) {
             $payload += [
                 'task_id' => $taskId,
                 'lease_owner' => $leaseOwner,
