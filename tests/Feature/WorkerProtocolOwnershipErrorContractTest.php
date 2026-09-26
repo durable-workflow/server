@@ -445,7 +445,27 @@ class WorkerProtocolOwnershipErrorContractTest extends TestCase
 
         $this->assertWorkerProtocolError($notLeased, 409, 'task_not_leased')
             ->assertJsonPath('task_id', $taskId)
-            ->assertJsonPath('workflow_task_attempt', $attempt);
+            ->assertJsonPath('workflow_task_attempt', $attempt)
+            ->assertJsonPath('task_status', 'ready');
+
+        WorkflowTask::query()->findOrFail($taskId)->forceFill([
+            'status' => TaskStatus::Completed,
+            'lease_owner' => 'workflow-lease-state-worker',
+        ])->save();
+
+        $alreadyCompleted = $this->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+            'lease_owner' => 'workflow-lease-state-worker',
+            'workflow_task_attempt' => $attempt,
+            'commands' => [[
+                'type' => 'complete_workflow',
+                'result' => Serializer::serializeWithCodec('avro', ['ok' => true]),
+            ]],
+        ], $this->mixedWorkerHeaders());
+
+        $this->assertWorkerProtocolError($alreadyCompleted, 409, 'task_not_leased')
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('workflow_task_attempt', $attempt)
+            ->assertJsonPath('task_status', 'completed');
     }
 
     private function assertWorkerProtocolError(TestResponse $response, int $status, string $reason): TestResponse

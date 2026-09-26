@@ -4153,6 +4153,7 @@ class WorkerController
                 'workflow_task_attempt' => $workflowTaskAttempt,
                 'error' => 'Workflow task is not currently leased.',
                 'reason' => 'task_not_leased',
+                'task_status' => $result['status']['task_status'] ?? null,
             ], 409),
 
             'lease_owner_mismatch' => WorkerProtocol::json([

@@ -50,6 +50,16 @@ class BackendUnavailableTest extends TestCase
         $this->assertFalse(BackendUnavailable::is(new PDOException('SQLSTATE[HY000] [2002] Connection refused')));
     }
 
+    public function test_unstructured_pdo_rollback_connection_loss_is_classified_narrowly(): void
+    {
+        $driverMessage = 'SQLSTATE[HY000]: General error: 2006 MySQL server has gone away';
+
+        $this->assertTrue(BackendUnavailable::is(new PDOException($driverMessage)));
+        $this->assertTrue(BackendUnavailable::is(new RuntimeException('rollback failed', 0, new PDOException($driverMessage))));
+        $this->assertFalse(BackendUnavailable::is(new RuntimeException($driverMessage)));
+        $this->assertFalse(BackendUnavailable::is(new PDOException($driverMessage.' in customer SQL')));
+    }
+
     #[DataProvider('redisErrors')]
     public function test_only_redis_transport_failures_are_retryable(string $message, bool $retryable): void
     {

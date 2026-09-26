@@ -159,6 +159,31 @@ class WorkerDatabaseUnavailableTest extends TestCase
             ->assertReferenceMatches('#/components/schemas/WorkerBackendUnavailable', json_decode($response->getContent()));
     }
 
+    public function test_workflow_task_completion_connection_loss_returns_fenced_unknown_outcome(): void
+    {
+        $this->failureQuery = 'workflow_tasks';
+        $this->databaseUnavailable = true;
+
+        $response = $this->postJson('/api/worker/workflow-tasks/leased-task/complete', [
+            'lease_owner' => 'database-worker',
+            'workflow_task_attempt' => 1,
+            'commands' => [['type' => 'complete_workflow', 'result' => 'done']],
+        ], $this->workerHeaders());
+
+        $response->assertStatus(503)->assertHeader('Retry-After', '1')
+            ->assertJsonPath('reason', 'backend_unavailable')
+            ->assertJsonPath('operation', 'complete_workflow_task')
+            ->assertJsonPath('task_id', 'leased-task')
+            ->assertJsonPath('lease_owner', 'database-worker')
+            ->assertJsonPath('workflow_task_attempt', 1)
+            ->assertJsonPath('outcome', 'unknown')
+            ->assertJsonPath('retryable', true)
+            ->assertJsonMissingPath('recorded');
+        $this->assertStringNotContainsString('SQLSTATE', $response->getContent());
+        OpenApiSchema::fromFile(base_path('resources/platform-protocol-specs/worker-protocol-api.openapi.yaml'))
+            ->assertReferenceMatches('#/components/schemas/WorkerBackendUnavailable', json_decode($response->getContent()));
+    }
+
     public function test_connection_loss_in_a_bootstrap_query_keeps_the_retry_contract(): void
     {
         $this->failureQuery = 'migrations';
