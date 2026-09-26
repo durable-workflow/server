@@ -47,13 +47,19 @@ final class BackendUnavailable
             $request->is('api/worker/update-validation-tasks/poll') => 'poll_update_validation_task',
             $request->is('api/worker/register') => 'register_worker',
             $request->is('api/worker/heartbeat') => 'heartbeat_worker',
+            $request->is('api/worker/workflow-tasks/*/heartbeat') => 'heartbeat_workflow_task',
             default => null,
         };
         if ($operation === null) {
             return null;
         }
 
-        $workerId = self::identity($request->input('worker_id'));
+        $taskHeartbeat = $operation === 'heartbeat_workflow_task';
+        $taskId = $taskHeartbeat ? self::identity($request->route('taskId')) : null;
+        $leaseOwner = $taskHeartbeat ? self::identity($request->input('lease_owner')) : null;
+        $taskAttempt = $request->input('workflow_task_attempt');
+        $taskAttempt = $taskHeartbeat && is_int($taskAttempt) && $taskAttempt > 0 ? $taskAttempt : null;
+        $workerId = $taskHeartbeat ? $leaseOwner : self::identity($request->input('worker_id'));
         $taskQueue = self::identity($request->input('task_queue'));
         $pollId = self::identity($request->input('poll_request_id'));
         $isPoll = str_starts_with($operation, 'poll_');
@@ -64,9 +70,11 @@ final class BackendUnavailable
             'outcome' => 'unknown',
             'worker_id' => $workerId,
             'task_queue' => $taskQueue,
-            'retryable' => $workerId !== null
-                && ($operation === 'heartbeat_worker' || $taskQueue !== null)
-                && (! $isPoll || $pollId !== null),
+            'retryable' => $taskHeartbeat
+                ? $taskId !== null && $leaseOwner !== null && $taskAttempt !== null
+                : $workerId !== null
+                    && ($operation === 'heartbeat_worker' || $taskQueue !== null)
+                    && (! $isPoll || $pollId !== null),
             'retry_after_seconds' => 1,
         ];
         if ($isPoll) {
@@ -77,6 +85,13 @@ final class BackendUnavailable
                 'poll_status' => 'backend_unavailable',
                 'poll_request_id' => $pollId,
                 'retry_same_poll_request_id' => true,
+            ];
+        }
+        if ($taskHeartbeat) {
+            $payload += [
+                'task_id' => $taskId,
+                'lease_owner' => $leaseOwner,
+                'workflow_task_attempt' => $taskAttempt,
             ];
         }
 
