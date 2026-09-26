@@ -10,6 +10,23 @@ SCRIPT = ROOT / "scripts/perf/run-vultr-soak.sh"
 
 
 class DisposableRunnerCleanupTest(unittest.TestCase):
+    def test_rejects_unpinned_server_image_before_provider_request(self):
+        result = subprocess.run(
+            ["bash", str(SCRIPT)],
+            env={
+                **os.environ,
+                "VULTR_API_KEY": "fixture-only",
+                "GITHUB_SHA": "a" * 40,
+                "GITHUB_RUN_ID": "1",
+                "GITHUB_RUN_ATTEMPT": "1",
+                "DW_PERF_PUBLISHED_SERVER_IMAGE": "durableworkflow/server:latest",
+            },
+            text=True, capture_output=True, timeout=5,
+        )
+        self.assertEqual(2, result.returncode)
+        self.assertIn("must be an exact durableworkflow/server sha256 digest", result.stderr)
+        self.assertNotIn("Creating disposable Vultr instance", result.stdout)
+
     def test_ssh_keeps_quiet_drain_alive_and_bounds_dead_peer_detection(self):
         source = SCRIPT.read_text()
         options = "ssh_options=(\n" + source.split("ssh_options=(\n", 1)[1].split("\n)", 1)[0] + "\n)\n"

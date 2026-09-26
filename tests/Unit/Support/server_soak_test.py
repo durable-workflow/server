@@ -74,6 +74,24 @@ class WorkflowGrowthResultGateTest(unittest.TestCase):
 
 
 class RuntimeEvidenceConfigurationTest(unittest.TestCase):
+    def test_published_summary_separates_runner_and_server_sources(self):
+        summary = {
+            "duration_seconds": 3600,
+            "evidence": {"provenance": {
+                "sha": "a" * 40,
+                "server_image": "durableworkflow/server@sha256:" + "b" * 64,
+                "server_source_sha": "c" * 40,
+            }},
+        }
+        rendered = server_soak.render_summary(summary)
+        self.assertIn("Runner source: `" + "a" * 40 + "`", rendered)
+        self.assertIn("Published Server image: `durableworkflow/server@sha256:" + "b" * 64 + "`", rendered)
+        self.assertIn("Server source: `" + "c" * 40 + "`", rendered)
+        self.assertNotIn("Source-built Server", rendered)
+
+        summary["evidence"]["provenance"]["server_image"] = ""
+        self.assertIn("Source-built Server: `" + "a" * 40 + "`", server_soak.render_summary(summary))
+
     def test_mysql_sampling_rejects_failed_or_malformed_output_without_crashing(self):
         for code, output in (
             (1, "Unavailable: backend could not be reached"),
