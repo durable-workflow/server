@@ -65,6 +65,8 @@ class BackendUnavailableTest extends TestCase
             'dns failure' => ['php_network_getaddresses: getaddrinfo for redis failed', true],
             'connection refused' => ['Connection refused', true],
             'connection lost' => ['Redis connection lost', true],
+            'redis host went away' => ['Redis server redis:6379 went away', true],
+            'redis server went away' => ['Redis server went away', true],
             'read failure' => ['read error on connection', true],
             'authentication failure' => ['WRONGPASS invalid username-password pair', false],
             'memory limit' => ['OOM command not allowed when used memory > maxmemory', false],

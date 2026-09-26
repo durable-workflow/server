@@ -93,7 +93,7 @@ final class BackendUnavailable
         // phpredis has no structured transport error code; only match its
         // connection failures, not authentication, command, or memory errors.
         return preg_match(
-            '/(?:getaddrinfo|failed to connect|connection (?:refused|reset|lost|timed out)|read error on connection|redis server went away|socket error|no route to host)/i',
+            '/(?:getaddrinfo|failed to connect|connection (?:refused|reset|lost|timed out)|read error on connection|redis server(?:\s+\S+)?\s+went away|socket error|no route to host)/i',
             $exception->getMessage(),
         ) === 1;
     }
