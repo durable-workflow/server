@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "22"
+  version: "23"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -530,6 +530,11 @@ paths:
     post:
       operationId: completeActivityTask
       tags: [activity-tasks]
+      description: >
+        An unknown backend outcome returns a retryable 503 fenced by task_id,
+        activity_attempt_id and lease_owner. Retry the same result without
+        rerunning the activity. A committed first attempt can return 409
+        stale_attempt with completed activity, attempt and task statuses.
       parameters:
         - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
         - $ref: "#/components/parameters/TaskIdPath"
@@ -541,6 +546,7 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/WorkerEnvelope" }
         "409": { $ref: "#/components/responses/WorkerError" }
+        "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
   /worker/activity-tasks/{taskId}/fail:
     post:
       operationId: failActivityTask
@@ -613,7 +619,9 @@ components:
         was claimed. Registration and worker heartbeat likewise do not acknowledge or
         reject an operation whose result is unknown. A workflow-task heartbeat
         carries task_id, lease_owner, and workflow_task_attempt so a worker can
-        retry the same lease fence; a later 409 still revokes that lease. Other
+        retry the same lease fence; a later 409 still revokes that lease. An
+        activity completion carries task_id, activity_attempt_id and lease_owner
+        to retry the same immutable result. Other
         503 errors retain their own contracts and are not automatically retryable. Optional
         storage admission returns storage_pressure or storage_admission_unavailable
         before admitting a request or a new poll claim. Retain the poll ID on
@@ -801,13 +809,14 @@ components:
             reason: { type: string, const: backend_unavailable }
             operation:
               type: string
-              enum: [register_worker, heartbeat_worker, heartbeat_workflow_task, complete_workflow_task, poll_workflow_task, poll_activity_task, poll_query_task, poll_update_validation_task]
+              enum: [register_worker, heartbeat_worker, heartbeat_workflow_task, complete_workflow_task, complete_activity_task, poll_workflow_task, poll_activity_task, poll_query_task, poll_update_validation_task]
             outcome: { type: string, const: unknown }
             worker_id: { type: [string, "null"], minLength: 1, maxLength: 255 }
             task_queue: { type: [string, "null"], minLength: 1, maxLength: 255 }
             task_id: { type: [string, "null"], minLength: 1, maxLength: 255 }
             lease_owner: { type: [string, "null"], minLength: 1, maxLength: 255 }
             workflow_task_attempt: { type: [integer, "null"], minimum: 1 }
+            activity_attempt_id: { type: [string, "null"], minLength: 1, maxLength: 255 }
             retryable: { type: boolean }
             retry_after_seconds: { type: integer, minimum: 1 }
           if:
@@ -826,6 +835,12 @@ components:
                 operation: { enum: [heartbeat_workflow_task, complete_workflow_task] }
             then:
               required: [task_id, lease_owner, workflow_task_attempt]
+            else:
+              if:
+                properties:
+                  operation: { const: complete_activity_task }
+              then:
+                required: [task_id, lease_owner, activity_attempt_id]
     WorkerPollBackpressure:
       allOf:
         - $ref: "#/components/schemas/WorkerError"

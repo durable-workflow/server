@@ -271,6 +271,14 @@ class ActivityTaskController
             return BackendLockPressure::workerOperationResponse($request, false);
         }
         $stopStatus = $this->activityStopStatus($bridge, $validated['activity_attempt_id'], $outcome['reason']);
+        $retryStatus = $outcome['reason'] === 'stale_attempt'
+            ? $this->staleCompletionStatus(
+                $bridge,
+                $taskId,
+                $validated['activity_attempt_id'],
+                $validated['lease_owner'],
+            )
+            : [];
 
         return WorkerProtocol::json(array_merge([
             'task_id' => $taskId,
@@ -279,7 +287,7 @@ class ActivityTaskController
             'recorded' => $outcome['recorded'],
             'reason' => $outcome['reason'],
             'next_task_id' => $outcome['next_task_id'],
-        ], $stopStatus), $this->outcomeStatus($outcome['reason']));
+        ], $stopStatus, $retryStatus), $this->outcomeStatus($outcome['reason']));
     }
 
     /**
@@ -769,6 +777,28 @@ class ActivityTaskController
             'task_status' => $status['task_status'],
             'lease_owner' => $status['lease_owner'],
             'lease_expires_at' => $status['lease_expires_at'],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function staleCompletionStatus(
+        ActivityTaskBridgeContract $bridge,
+        string $taskId,
+        string $attemptId,
+        string $leaseOwner,
+    ): array {
+        $status = $bridge->status($attemptId);
+        if (($status['workflow_task_id'] ?? null) !== $taskId
+            || ($status['activity_attempt_id'] ?? null) !== $attemptId
+            || ($status['lease_owner'] ?? null) !== $leaseOwner) {
+            return [];
+        }
+
+        return [
+            'lease_owner' => $leaseOwner,
+            'activity_status' => $status['activity_status'] ?? null,
+            'attempt_status' => $status['attempt_status'] ?? null,
+            'task_status' => $status['task_status'] ?? null,
         ];
     }
 

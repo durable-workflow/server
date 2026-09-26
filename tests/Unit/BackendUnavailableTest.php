@@ -47,7 +47,17 @@ class BackendUnavailableTest extends TestCase
     public function test_error_text_cannot_classify_a_failure(): void
     {
         $this->assertFalse(BackendUnavailable::is(new RuntimeException('SQLSTATE[HY000] [2002] Connection refused')));
-        $this->assertFalse(BackendUnavailable::is(new PDOException('SQLSTATE[HY000] [2002] Connection refused')));
+        $this->assertFalse(BackendUnavailable::is(new PDOException('SQLSTATE[HY000] [2002] Connection refused in customer SQL')));
+    }
+
+    public function test_unstructured_pdo_connection_refusal_is_classified_narrowly(): void
+    {
+        $driverMessage = 'SQLSTATE[HY000] [2002] Connection refused';
+
+        $this->assertTrue(BackendUnavailable::is(new PDOException($driverMessage)));
+        $this->assertTrue(BackendUnavailable::is(new RuntimeException('query failed', 0, new PDOException($driverMessage))));
+        $this->assertFalse(BackendUnavailable::is(new RuntimeException($driverMessage)));
+        $this->assertFalse(BackendUnavailable::is(new PDOException($driverMessage.' in customer SQL')));
     }
 
     public function test_unstructured_pdo_rollback_connection_loss_is_classified_narrowly(): void
