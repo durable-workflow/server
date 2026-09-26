@@ -1,22 +1,28 @@
 # Generic local Server experiment, not a Cloud plan or capacity-suite profile.
 # Apache HTTP gets 1 CPU / 1 GiB. FPM frontends split that same budget below.
+# Equal memory and memory+swap limits keep each service within its RAM envelope.
 services:
   server:
     cpus: 1.0
     mem_limit: 1024m
+    memswap_limit: 1024m
 
   worker:
     cpus: 0.75
     mem_limit: 768m
+    memswap_limit: 768m
 
   mysql:
     cpus: 1.0
     mem_limit: 1536m
+    memswap_limit: 1536m
 
   redis:
     cpus: 0.25
     mem_limit: 256m
+    memswap_limit: 256m
 
   sdk-worker:
     cpus: 0.5
     mem_limit: 512m
+    memswap_limit: 512m
