@@ -106,6 +106,12 @@ class ActivityCompletionIdempotencyTest extends TestCase
             ->assertJsonMissingPath('control_plane')
             ->assertJsonPath('outcome', 'completed')
             ->assertJsonPath('recorded', false)
-            ->assertJsonPath('reason', 'stale_attempt');
+            ->assertJsonPath('reason', 'stale_attempt')
+            ->assertJsonPath('activity_attempt_id', $attemptId)
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('lease_owner', $leaseOwner)
+            ->assertJsonPath('activity_status', 'completed')
+            ->assertJsonPath('attempt_status', 'completed')
+            ->assertJsonPath('task_status', 'completed');
     }
 }

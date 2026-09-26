@@ -21,11 +21,14 @@ final class BackendUnavailable
                 continue;
             }
 
-            // PDO can replace the original driver error while rolling back a
-            // nested transaction after connection loss. That exception has no
-            // errorInfo; accept only the exact driver-generated 2006 message.
+            // PDO can omit errorInfo for a refused connection or replace the
+            // original driver error while rolling back a lost transaction.
+            // Accept only these exact driver-generated messages.
             if (! is_array($current->errorInfo)) {
-                if ($current->getMessage() === 'SQLSTATE[HY000]: General error: 2006 MySQL server has gone away') {
+                if (in_array($current->getMessage(), [
+                    'SQLSTATE[HY000] [2002] Connection refused',
+                    'SQLSTATE[HY000]: General error: 2006 MySQL server has gone away',
+                ], true)) {
                     return true;
                 }
 
@@ -60,6 +63,7 @@ final class BackendUnavailable
             $request->is('api/worker/heartbeat') => 'heartbeat_worker',
             $request->is('api/worker/workflow-tasks/*/heartbeat') => 'heartbeat_workflow_task',
             $request->is('api/worker/workflow-tasks/*/complete') => 'complete_workflow_task',
+            $request->is('api/worker/activity-tasks/*/complete') => 'complete_activity_task',
             default => null,
         };
         if ($operation === null) {
@@ -67,14 +71,24 @@ final class BackendUnavailable
         }
 
         $fencedWorkflowTask = in_array($operation, ['heartbeat_workflow_task', 'complete_workflow_task'], true);
-        $taskId = $fencedWorkflowTask ? self::identity($request->route('taskId')) : null;
-        $leaseOwner = $fencedWorkflowTask ? self::identity($request->input('lease_owner')) : null;
+        $fencedActivityTask = $operation === 'complete_activity_task';
+        $fencedTask = $fencedWorkflowTask || $fencedActivityTask;
+        $taskId = $fencedTask ? self::identity($request->route('taskId')) : null;
+        $leaseOwner = $fencedTask ? self::identity($request->input('lease_owner')) : null;
         $taskAttempt = $request->input('workflow_task_attempt');
         $taskAttempt = $fencedWorkflowTask && is_int($taskAttempt) && $taskAttempt > 0 ? $taskAttempt : null;
-        $workerId = $fencedWorkflowTask ? $leaseOwner : self::identity($request->input('worker_id'));
+        $activityAttemptId = $fencedActivityTask ? self::identity($request->input('activity_attempt_id')) : null;
+        $workerId = $fencedTask ? $leaseOwner : self::identity($request->input('worker_id'));
         $taskQueue = self::identity($request->input('task_queue'));
         $pollId = self::identity($request->input('poll_request_id'));
         $isPoll = str_starts_with($operation, 'poll_');
+        $retryable = match (true) {
+            $fencedWorkflowTask => $taskId !== null && $leaseOwner !== null && $taskAttempt !== null,
+            $fencedActivityTask => $taskId !== null && $leaseOwner !== null && $activityAttemptId !== null,
+            default => $workerId !== null
+                && ($operation === 'heartbeat_worker' || $taskQueue !== null)
+                && (! $isPoll || $pollId !== null),
+        };
         $payload = [
             'reason' => 'backend_unavailable',
             'message' => 'A required backend is temporarily unavailable. Retry the same request with backoff; its outcome may be unknown.',
@@ -82,11 +96,7 @@ final class BackendUnavailable
             'outcome' => 'unknown',
             'worker_id' => $workerId,
             'task_queue' => $taskQueue,
-            'retryable' => $fencedWorkflowTask
-                ? $taskId !== null && $leaseOwner !== null && $taskAttempt !== null
-                : $workerId !== null
-                    && ($operation === 'heartbeat_worker' || $taskQueue !== null)
-                    && (! $isPoll || $pollId !== null),
+            'retryable' => $retryable,
             'retry_after_seconds' => 1,
         ];
         if ($isPoll) {
@@ -104,6 +114,13 @@ final class BackendUnavailable
                 'task_id' => $taskId,
                 'lease_owner' => $leaseOwner,
                 'workflow_task_attempt' => $taskAttempt,
+            ];
+        }
+        if ($fencedActivityTask) {
+            $payload += [
+                'task_id' => $taskId,
+                'lease_owner' => $leaseOwner,
+                'activity_attempt_id' => $activityAttemptId,
             ];
         }
 

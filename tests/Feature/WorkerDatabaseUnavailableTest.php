@@ -28,6 +28,8 @@ class WorkerDatabaseUnavailableTest extends TestCase
 
     private string $failureQuery = 'workflow_worker_registrations';
 
+    private bool $unstructuredConnectionRefused = false;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -38,7 +40,9 @@ class WorkerDatabaseUnavailableTest extends TestCase
         DB::connection()->beforeExecuting(function (string $query): void {
             if ($this->databaseUnavailable && str_contains($query, $this->failureQuery)) {
                 $exception = new PDOException('SQLSTATE[HY000] [2002] Connection refused');
-                $exception->errorInfo = ['HY000', 2002, 'private database connection refused'];
+                if (! $this->unstructuredConnectionRefused) {
+                    $exception->errorInfo = ['HY000', 2002, 'private database connection refused'];
+                }
                 throw $exception;
             }
         });
@@ -176,6 +180,33 @@ class WorkerDatabaseUnavailableTest extends TestCase
             ->assertJsonPath('task_id', 'leased-task')
             ->assertJsonPath('lease_owner', 'database-worker')
             ->assertJsonPath('workflow_task_attempt', 1)
+            ->assertJsonPath('outcome', 'unknown')
+            ->assertJsonPath('retryable', true)
+            ->assertJsonMissingPath('recorded');
+        $this->assertStringNotContainsString('SQLSTATE', $response->getContent());
+        OpenApiSchema::fromFile(base_path('resources/platform-protocol-specs/worker-protocol-api.openapi.yaml'))
+            ->assertReferenceMatches('#/components/schemas/WorkerBackendUnavailable', json_decode($response->getContent()));
+    }
+
+    public function test_activity_task_completion_connection_loss_returns_fenced_unknown_outcome(): void
+    {
+        $this->failureQuery = 'workflow_tasks';
+        $this->unstructuredConnectionRefused = true;
+        $this->databaseUnavailable = true;
+
+        $response = $this->postJson('/api/worker/activity-tasks/leased-task/complete', [
+            'activity_attempt_id' => 'activity-attempt-1',
+            'lease_owner' => 'database-worker',
+            'result' => 'done',
+        ], $this->workerHeaders());
+
+        $response->assertStatus(503)->assertHeader('Retry-After', '1')
+            ->assertJsonPath('reason', 'backend_unavailable')
+            ->assertJsonPath('operation', 'complete_activity_task')
+            ->assertJsonPath('task_id', 'leased-task')
+            ->assertJsonPath('activity_attempt_id', 'activity-attempt-1')
+            ->assertJsonPath('lease_owner', 'database-worker')
+            ->assertJsonPath('worker_id', 'database-worker')
             ->assertJsonPath('outcome', 'unknown')
             ->assertJsonPath('retryable', true)
             ->assertJsonMissingPath('recorded');
