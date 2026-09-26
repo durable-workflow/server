@@ -1,0 +1,13 @@
+services:
+  server:
+    image: ${COMPOSE_PROJECT_NAME:-dw}-octane-openswoole:local
+    build:
+      context: ../..
+      dockerfile: scripts/perf/Dockerfile.octane-openswoole-experiment
+      args:
+        SERVER_IMAGE: ${DW_PROFILE_SERVER_IMAGE:?Set an exact published Server image digest}
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/api/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
