@@ -23,6 +23,10 @@ on:
         required: false
         type: boolean
         default: false
+      published_server_image:
+        description: "Optional exact durableworkflow/server@sha256 digest for published-image qualification"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -54,6 +58,7 @@ jobs:
           DW_PERF_DURATION_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.duration_seconds || '7200' }}
           DW_PERF_CONCURRENCY: ${{ github.event_name == 'workflow_dispatch' && inputs.concurrency || '12' }}
           DW_PERF_READINESS_DIAGNOSTICS: ${{ github.event_name == 'workflow_dispatch' && inputs.readiness_diagnostics && '1' || '0' }}
+          DW_PERF_PUBLISHED_SERVER_IMAGE: ${{ github.event_name == 'workflow_dispatch' && inputs.published_server_image || '' }}
           DW_PERF_NAMESPACES: "8"
           DW_PERF_TASK_QUEUES: "16"
           DW_PERF_STANDARD_WORKFLOWS: "true"

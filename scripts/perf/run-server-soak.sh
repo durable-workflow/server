@@ -33,8 +33,14 @@ POLL_TIMEOUT="${DW_PERF_POLL_TIMEOUT:-1}"
 POLL_INTERVAL_MS="${DW_PERF_POLL_INTERVAL_MS:-50}"
 POLL_SIGNAL_CHECK_INTERVAL_MS="${DW_PERF_POLL_SIGNAL_CHECK_INTERVAL_MS:-25}"
 READINESS_DIAGNOSTICS="${DW_PERF_READINESS_DIAGNOSTICS:-0}"
+PUBLISHED_SERVER_IMAGE="${DW_PERF_PUBLISHED_SERVER_IMAGE:-}"
 if [[ "$READINESS_DIAGNOSTICS" != 0 && "$READINESS_DIAGNOSTICS" != 1 ]]; then
   echo "DW_PERF_READINESS_DIAGNOSTICS must be 0 or 1." >&2
+  exit 2
+fi
+if [[ -n "$PUBLISHED_SERVER_IMAGE" \
+  && ! "$PUBLISHED_SERVER_IMAGE" =~ ^durableworkflow/server@sha256:[0-9a-f]{64}$ ]]; then
+  echo "DW_PERF_PUBLISHED_SERVER_IMAGE must be an exact durableworkflow/server sha256 digest." >&2
   exit 2
 fi
 LOAD_TIMEOUT_SECONDS="${DW_PERF_LOAD_TIMEOUT_SECONDS:-}"
@@ -68,6 +74,9 @@ export DW_AUTH_BACKWARD_COMPATIBLE="${DW_AUTH_BACKWARD_COMPATIBLE:-true}"
 export DW_PERF_STANDARD_WORKFLOWS="${DW_PERF_STANDARD_WORKFLOWS:-true}"
 
 OVERRIDE_FILE="$ARTIFACT_DIR/docker-compose.perf.yml"
+PUBLISHED_OVERRIDE_FILE="$ARTIFACT_DIR/docker-compose.published.yml"
+published_image_id=""
+server_php_version=""
 cat > "$OVERRIDE_FILE" <<YAML
 services:
   bootstrap:
@@ -106,7 +115,51 @@ services:
     ports: !override []
 YAML
 
+if [[ -n "$PUBLISHED_SERVER_IMAGE" ]]; then
+  cat > "$PUBLISHED_OVERRIDE_FILE" <<'YAML'
+services:
+  bootstrap:
+    build: !reset null
+    image: ${DW_PERF_PUBLISHED_SERVER_IMAGE}
+  server:
+    build: !reset null
+    image: ${DW_PERF_PUBLISHED_SERVER_IMAGE}
+  worker:
+    build: !reset null
+    image: ${DW_PERF_PUBLISHED_SERVER_IMAGE}
+  scheduler:
+    build: !reset null
+    image: ${DW_PERF_PUBLISHED_SERVER_IMAGE}
+YAML
+  docker image pull "$PUBLISHED_SERVER_IMAGE"
+  docker image inspect "$PUBLISHED_SERVER_IMAGE" | jq -e --arg image "$PUBLISHED_SERVER_IMAGE" \
+    '.[0].RepoDigests | index($image) != null' >/dev/null
+  server_source_sha="$(docker image inspect "$PUBLISHED_SERVER_IMAGE" \
+    --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+  if [[ ! "$server_source_sha" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "Published Server image lacks a full source revision label." >&2
+    exit 1
+  fi
+  published_image_id="$(docker image inspect "$PUBLISHED_SERVER_IMAGE" --format '{{.Id}}')"
+  server_php_version="$(docker run --rm --entrypoint php "$PUBLISHED_SERVER_IMAGE" -r 'echo PHP_VERSION;')"
+  export DW_PERF_SERVER_SOURCE_SHA="$server_source_sha"
+  export DW_PERF_SERVER_IMAGE="$PUBLISHED_SERVER_IMAGE"
+else
+  export DW_PERF_SERVER_SOURCE_SHA="${GITHUB_SHA:-}"
+  export DW_PERF_SERVER_IMAGE=""
+fi
+
+jq -n --arg mode "$([[ -n "$PUBLISHED_SERVER_IMAGE" ]] && echo published || echo source_build)" \
+  --arg image "$PUBLISHED_SERVER_IMAGE" --arg server_source_sha "$DW_PERF_SERVER_SOURCE_SHA" \
+  --arg image_id "$published_image_id" --arg php_version "$server_php_version" \
+  --arg runner_sha "${GITHUB_SHA:-}" \
+  '{mode:$mode,image:$image,image_id:$image_id,php_version:$php_version,server_source_sha:$server_source_sha,runner_sha:$runner_sha}' \
+  > "$ARTIFACT_DIR/server-image.json"
+
 compose=(docker compose -p "$PROJECT" -f "$ROOT_DIR/docker-compose.yml" -f "$OVERRIDE_FILE" -f "$ROOT_DIR/scripts/perf/standard-workflow.compose.yml")
+if [[ -n "$PUBLISHED_SERVER_IMAGE" ]]; then
+  compose+=(-f "$PUBLISHED_OVERRIDE_FILE")
+fi
 
 cleanup() {
   local status=$?
@@ -215,7 +268,7 @@ server_base_url() {
     fi
   fi
 
-  server_id="$(docker compose -p "$PROJECT" -f "$ROOT_DIR/docker-compose.yml" -f "$OVERRIDE_FILE" ps -q server)"
+  server_id="$("${compose[@]}" ps -q server)"
   server_ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$server_id" 2>/dev/null || true)"
 
   if [ -n "$server_ip" ]; then
@@ -244,11 +297,22 @@ fi
 if [ "$setup_status" -ne 0 ]; then
   echo "Perf environment setup failed before product smoke execution; docker compose could not build or start the stack." >&2
   write_environment_setup_failure "$setup_status" "docker_compose_up" "docker compose failed before server_soak.py started"
-  docker compose -p "$PROJECT" -f "$ROOT_DIR/docker-compose.yml" -f "$OVERRIDE_FILE" ps >&2 || true
+  "${compose[@]}" ps >&2 || true
   exit "$setup_status"
 fi
 
-PUBLISHED_SERVER_PORT="$(docker compose -p "$PROJECT" -f "$ROOT_DIR/docker-compose.yml" -f "$OVERRIDE_FILE" port server 8080 | awk -F: 'END {print $NF}')"
+if [[ -n "$PUBLISHED_SERVER_IMAGE" ]]; then
+  for service in bootstrap server worker scheduler; do
+    actual_image_id="$(docker inspect "${PROJECT}-${service}-1" --format '{{.Image}}')"
+    if [[ "$actual_image_id" != "$published_image_id" ]]; then
+      echo "Perf ${service} did not start from the selected published Server image." >&2
+      write_environment_setup_failure 1 "published_image_identity" "runtime role image differs from selected published Server digest"
+      exit 1
+    fi
+  done
+fi
+
+PUBLISHED_SERVER_PORT="$("${compose[@]}" port server 8080 | awk -F: 'END {print $NF}')"
 if [ -z "$PUBLISHED_SERVER_PORT" ]; then
   echo "Unable to discover published server port for ${PROJECT}" >&2
   write_environment_setup_failure 1 "published_port_discovery" "server port discovery failed before server_soak.py started"
@@ -290,7 +354,7 @@ if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
   "status": ${status}
 }
 JSON
-  docker compose -p "$PROJECT" -f "$ROOT_DIR/docker-compose.yml" -f "$OVERRIDE_FILE" ps >&2 || true
+  "${compose[@]}" ps >&2 || true
   docker logs --tail=120 "${PROJECT}-server-1" >&2 || true
   docker logs --tail=120 "${PROJECT}-worker-1" >&2 || true
 fi

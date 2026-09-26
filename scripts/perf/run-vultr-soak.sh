@@ -9,9 +9,6 @@ OS_ID="${VULTR_PERF_OS_ID:-2284}"
 SSH_USER="perf"
 INSTANCE_ID=""
 INSTANCE_IP=""
-WORK_DIR="$(mktemp -d)"
-KEY_FILE="$WORK_DIR/id_ed25519"
-KNOWN_HOSTS="$WORK_DIR/known_hosts"
 PROVISION_LOG="${DW_PERF_ARTIFACT_DIR:-build/perf}/provisioning.log"
 
 : "${VULTR_API_KEY:?VULTR_API_KEY is required}"
@@ -21,6 +18,7 @@ PROVISION_LOG="${DW_PERF_ARTIFACT_DIR:-build/perf}/provisioning.log"
 
 DURATION_SECONDS="${DW_PERF_DURATION_SECONDS:-7200}"
 CONCURRENCY="${DW_PERF_CONCURRENCY:-24}"
+PUBLISHED_SERVER_IMAGE="${DW_PERF_PUBLISHED_SERVER_IMAGE:-}"
 
 if [[ ! "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]; then
   echo "GITHUB_SHA must be a full lowercase commit SHA." >&2
@@ -43,6 +41,16 @@ if [[ ! "$CONCURRENCY" =~ ^[0-9]+$ ]] \
   echo "DW_PERF_CONCURRENCY must be between 1 and 128." >&2
   exit 2
 fi
+
+if [[ -n "$PUBLISHED_SERVER_IMAGE" \
+  && ! "$PUBLISHED_SERVER_IMAGE" =~ ^durableworkflow/server@sha256:[0-9a-f]{64}$ ]]; then
+  echo "DW_PERF_PUBLISHED_SERVER_IMAGE must be an exact durableworkflow/server sha256 digest." >&2
+  exit 2
+fi
+
+WORK_DIR="$(mktemp -d)"
+KEY_FILE="$WORK_DIR/id_ed25519"
+KNOWN_HOSTS="$WORK_DIR/known_hosts"
 
 mkdir -p "$(dirname "$PROVISION_LOG")"
 : > "$PROVISION_LOG"
@@ -268,6 +276,7 @@ for name in \
   DW_PERF_DURATION_SECONDS \
   DW_PERF_CONCURRENCY \
   DW_PERF_READINESS_DIAGNOSTICS \
+  DW_PERF_PUBLISHED_SERVER_IMAGE \
   DW_PERF_NAMESPACES \
   DW_PERF_TASK_QUEUES \
   DW_PERF_STANDARD_WORKFLOWS \

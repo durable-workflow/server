@@ -1221,6 +1221,8 @@ def evidence_provenance(base_url: str, compose_project: str) -> dict[str, Any]:
         "sha": github_sha,
         "checked_out_sha": checked_out_sha,
         "github_sha_matches_checked_out": github_sha == checked_out_sha,
+        "server_image": os.environ.get("DW_PERF_SERVER_IMAGE", ""),
+        "server_source_sha": os.environ.get("DW_PERF_SERVER_SOURCE_SHA") or checked_out_sha,
         "workflow": os.environ.get("GITHUB_WORKFLOW", ""),
         "event_name": os.environ.get("GITHUB_EVENT_NAME", ""),
         "run_id": os.environ.get("GITHUB_RUN_ID", ""),
@@ -1396,6 +1398,13 @@ def resource_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
 def render_summary(summary: dict[str, Any]) -> str:
     standard = summary.get("standard_workflows", {})
     poll = summary.get("request_availability", {}).get("worker_poll", {})
+    provenance = summary.get("evidence", {}).get("provenance", {})
+    server_image = provenance.get("server_image")
+    source_description = (
+        f"Runner source: `{provenance.get('sha', 'unknown')}`. Published Server image: `{server_image}`; "
+        f"Server source: `{provenance.get('server_source_sha', 'unknown')}`."
+        if server_image else f"Source-built Server: `{provenance.get('sha', 'unknown')}`."
+    )
     lines = [
         "## Server endurance soak",
         "",
@@ -1404,7 +1413,7 @@ def render_summary(summary: dict[str, Any]) -> str:
         "This is an endurance canary, not a maximum-capacity benchmark or a failover qualification.",
         "Poll requests are not workflow completions. Accepted and backpressured polls are distinct outcomes.",
         "",
-        f"Measured duration: {summary.get('duration_seconds')}s. Source: `{summary.get('evidence', {}).get('provenance', {}).get('sha', 'unknown')}`.",
+        f"Measured duration: {summary.get('duration_seconds')}s. {source_description}",
         f"Server memory slope: {summary.get('server_memory_slope_mb_hour')} MiB/h. Final Server cache keys: {summary.get('final_server_cache_keys')}.",
         f"Sampling: {summary.get('periodic_sample_count')}/{summary.get('expected_periodic_samples')}; unhealthy samples: {summary.get('sampling_health', {}).get('unhealthy_samples')}.",
         f"Sustained polling activity: {summary.get('polling_activity', 'not measured by this version')}.",
