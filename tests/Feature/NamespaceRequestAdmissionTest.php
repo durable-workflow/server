@@ -174,6 +174,8 @@ class NamespaceRequestAdmissionTest extends TestCase
 
     public function test_metrics_report_fixed_reason_rejections_for_the_requested_namespace(): void
     {
+        // Keep the rejection and metrics read in one minute bucket.
+        $this->travelTo(now());
         config(['server.namespace_admission.max_requests_per_minute' => 1]);
 
         $this->getJson('/api/workflows', $this->headers())->assertOk();
