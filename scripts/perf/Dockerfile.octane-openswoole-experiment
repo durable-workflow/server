@@ -1,4 +1,4 @@
-ARG SERVER_IMAGE
+ARG SERVER_IMAGE=durableworkflow/server@sha256:5d435d14fdbe3acc991ae591a155864f132cefbfbf1b53b724a8e7b006a91612
 FROM ${SERVER_IMAGE}
 
 RUN apt-get update \
