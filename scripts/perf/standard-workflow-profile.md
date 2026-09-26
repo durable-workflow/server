@@ -160,8 +160,11 @@ To check request-scoped authentication and namespace state in one persistent
 Octane worker, append `scripts/perf/octane-single-worker-experiment.compose.yml`
 after the Octane overlay and start `server worker` in a fresh project. This
 override configures synthetic role tokens, one HTTP worker, and recycling after
-20 requests. Run the black-box probe from a separate PHP container on the
-project network:
+20 requests. It defaults to FrankenPHP. For the Swoole or OpenSwoole overlay,
+set `DW_PROFILE_OCTANE_SERVER=swoole` when running `docker compose`; both use
+Octane's Swoole server driver. Keep the published Server, MySQL and Redis image
+digests and the fixed resource envelope the same across candidate fixtures.
+Run the black-box probe from a separate PHP container on the project network:
 
 ```sh
 docker run --rm --user 1000:1000 --network "${COMPOSE_PROJECT_NAME}_default" \
