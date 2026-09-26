@@ -2,7 +2,9 @@
 
 namespace App\Support;
 
+use Closure;
 use RuntimeException;
+use Throwable;
 
 final class RedisReadinessProcess
 {
@@ -19,12 +21,16 @@ final class RedisReadinessProcess
     /** @var list<string>|null */
     private readonly ?array $command;
 
+    /** @var Closure(array<string, int|string|null>): void|null */
+    private readonly ?Closure $diagnosticSink;
+
     /**
      * @param  list<string>|null  $command
      */
-    public function __construct(?array $command = null)
+    public function __construct(?array $command = null, ?Closure $diagnosticSink = null)
     {
         $this->command = $command;
+        $this->diagnosticSink = $diagnosticSink;
     }
 
     public function run(string $input): string
@@ -34,6 +40,7 @@ final class RedisReadinessProcess
         }
 
         $pipes = [];
+        $spawnStartedAt = hrtime(true);
         $process = proc_open(
             $this->command ?? [$this->phpCliBinary(), base_path('bin/redis-readiness-probe.php')],
             [
@@ -48,6 +55,7 @@ final class RedisReadinessProcess
         if (! is_resource($process)) {
             throw new RuntimeException('Unable to start Redis readiness child process.');
         }
+        $spawnElapsedMilliseconds = intdiv(hrtime(true) - $spawnStartedAt, 1_000_000);
 
         foreach ($pipes as $pipe) {
             stream_set_blocking($pipe, false);
@@ -56,7 +64,8 @@ final class RedisReadinessProcess
         $stdout = '';
         $stderr = '';
         $inputOffset = 0;
-        $deadline = microtime(true) + self::TIMEOUT_SECONDS;
+        $runStartedAt = microtime(true);
+        $deadline = $runStartedAt + self::TIMEOUT_SECONDS;
         $timedOut = false;
         $exitCode = null;
 
@@ -80,6 +89,8 @@ final class RedisReadinessProcess
                     if ((proc_get_status($process)['running'] ?? false) === true) {
                         proc_terminate($process, 9);
                     }
+
+                    $this->drain($pipes[2], $stderr);
 
                     break;
                 }
@@ -143,6 +154,12 @@ final class RedisReadinessProcess
         }
 
         if ($timedOut) {
+            $this->recordFailureDiagnostic(
+                RedisReadinessProbeFailure::TIMEOUT,
+                $stderr,
+                $runStartedAt,
+                $spawnElapsedMilliseconds,
+            );
             throw new RedisReadinessProbeFailure(
                 RedisReadinessProbeFailure::TIMEOUT,
                 'Redis readiness child exceeded its 1.5 second deadline.',
@@ -154,6 +171,12 @@ final class RedisReadinessProcess
             // or endpoint. Keep draining and bounding both streams so a failed
             // child cannot block, but never project their contents across the
             // process boundary.
+            $this->recordFailureDiagnostic(
+                RedisReadinessProbeFailure::CHILD_FAILURE,
+                $stderr,
+                $runStartedAt,
+                $spawnElapsedMilliseconds,
+            );
             throw new RedisReadinessProbeFailure(
                 RedisReadinessProbeFailure::CHILD_FAILURE,
                 self::FAILURE_MESSAGE,
@@ -161,6 +184,53 @@ final class RedisReadinessProcess
         }
 
         return $stdout;
+    }
+
+    private function recordFailureDiagnostic(
+        string $reason,
+        string $stderr,
+        float $runStartedAt,
+        int $spawnElapsedMilliseconds,
+    ): void {
+        if ($this->diagnosticSink === null && getenv('DW_REDIS_READINESS_DIAGNOSTICS') !== '1') {
+            return;
+        }
+
+        // The child stream is untrusted. Admit only fixed stage names and a
+        // bounded number; never log its raw output or selected Redis settings.
+        preg_match_all(
+            '/^DW_REDIS_READY_STAGE (entry|autoloaded|bootstrapped|input_decoded|connecting|connected|setex|get|del) ([0-9]{1,5})\r?$/m',
+            $stderr,
+            $matches,
+            PREG_SET_ORDER,
+        );
+        $lastStage = 'not_reported';
+        $stageElapsedMilliseconds = null;
+        foreach ($matches as $match) {
+            $elapsed = (int) $match[2];
+            if ($elapsed > 10_000) {
+                continue;
+            }
+            $lastStage = $match[1];
+            $stageElapsedMilliseconds = $elapsed;
+        }
+
+        $details = [
+            'reason' => $reason,
+            'last_stage' => $lastStage,
+            'child_stage_elapsed_ms' => $stageElapsedMilliseconds,
+            'parent_elapsed_ms' => (int) round((microtime(true) - $runStartedAt) * 1000),
+            'spawn_elapsed_ms' => $spawnElapsedMilliseconds,
+        ];
+        try {
+            if ($this->diagnosticSink !== null) {
+                ($this->diagnosticSink)($details);
+            } else {
+                @error_log('DW redis readiness diagnostic '.json_encode($details));
+            }
+        } catch (Throwable) {
+            // Diagnostics must not change the bounded public readiness result.
+        }
     }
 
     private function phpCliBinary(): string
