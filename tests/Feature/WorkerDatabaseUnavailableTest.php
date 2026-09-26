@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\RuntimeCredential;
 use App\Models\WorkerRegistration;
 use App\Support\ActivityTaskPollRequestStore;
+use App\Support\QueryTaskPollRequestStore;
 use App\Support\WorkerProtocol;
 use App\Support\WorkflowUpdateValidationTaskBroker;
 use Illuminate\Database\Connection;
@@ -96,6 +97,32 @@ class WorkerDatabaseUnavailableTest extends TestCase
             ->assertJsonPath('poll_request_id', 'redis-loss-poll')
             ->assertJsonPath('retry_same_poll_request_id', true);
         $this->assertStringNotContainsString('getaddrinfo', $response->getContent());
+    }
+
+    public function test_redis_host_disconnect_during_query_poll_preserves_poll_identity(): void
+    {
+        WorkerRegistration::query()->where('worker_id', 'database-worker')
+            ->update(['capabilities' => ['query_tasks']]);
+
+        $store = Mockery::mock(QueryTaskPollRequestStore::class);
+        $store->shouldReceive('markCurrentIfFresh')->once()
+            ->andThrow(new RedisException('Redis server redis:6379 went away'));
+        $this->app->instance(QueryTaskPollRequestStore::class, $store);
+
+        $response = $this->postJson('/api/worker/query-tasks/poll', [
+            'worker_id' => 'database-worker', 'task_queue' => 'database-queue',
+            'poll_request_id' => 'redis-reconnect-query-poll', 'timeout_seconds' => 0,
+        ], $this->workerHeaders());
+
+        $response->assertStatus(503)->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
+            ->assertHeader('Retry-After', '1')->assertJsonPath('reason', 'backend_unavailable')
+            ->assertJsonPath('operation', 'poll_query_task')->assertJsonPath('outcome', 'unknown')
+            ->assertJsonPath('task', null)->assertJsonPath('retryable', true)
+            ->assertJsonPath('poll_request_id', 'redis-reconnect-query-poll')
+            ->assertJsonPath('retry_same_poll_request_id', true);
+        $this->assertStringNotContainsString('redis:6379', $response->getContent());
+        OpenApiSchema::fromFile(base_path('resources/platform-protocol-specs/worker-protocol-api.openapi.yaml'))
+            ->assertReferenceMatches('#/components/schemas/WorkerBackendUnavailable', json_decode($response->getContent()));
     }
 
     public function test_worker_heartbeat_does_not_claim_an_acknowledgement_during_database_loss(): void
