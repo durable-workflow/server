@@ -6,6 +6,7 @@ namespace Tests\Feature;
 
 use App\Models\WorkflowNamespace;
 use App\Support\BoundedRedisReadinessProbe;
+use App\Support\RedisReadinessProbeFailure;
 use App\Support\RedisReadinessProcess;
 use App\Support\ServerReadiness;
 use App\Support\ServerTopology;
@@ -725,6 +726,83 @@ class HealthControllerTest extends TestCase
             microtime(true) - $started,
             'A stalled readiness child exceeded the public response bound.',
         );
+    }
+
+    public function test_redis_readiness_timeout_reports_only_bounded_stage_metadata(): void
+    {
+        $diagnostic = null;
+        $process = new RedisReadinessProcess(
+            $this->redisReadinessFailureCommand('staged_timeout'),
+            static function (array $details) use (&$diagnostic): void {
+                $diagnostic = $details;
+            },
+        );
+        $secret = 'redis://private-user:private-password@redis-private.internal:6380/7';
+
+        try {
+            $process->run($secret);
+            $this->fail('The staged child should time out.');
+        } catch (RedisReadinessProbeFailure $exception) {
+            $this->assertSame(RedisReadinessProbeFailure::TIMEOUT, $exception->reason);
+        }
+
+        $this->assertIsArray($diagnostic);
+        $this->assertSame('connecting', $diagnostic['last_stage']);
+        $this->assertSame(12, $diagnostic['child_stage_elapsed_ms']);
+        $this->assertGreaterThanOrEqual(1500, $diagnostic['parent_elapsed_ms']);
+        $this->assertArrayHasKey('spawn_elapsed_ms', $diagnostic);
+        $this->assertStringNotContainsString($secret, json_encode($diagnostic, JSON_THROW_ON_ERROR));
+    }
+
+    public function test_redis_readiness_child_failure_discards_raw_stage_stream(): void
+    {
+        $diagnostic = null;
+        $process = new RedisReadinessProcess(
+            $this->redisReadinessFailureCommand('staged_crash'),
+            static function (array $details) use (&$diagnostic): void {
+                $diagnostic = $details;
+            },
+        );
+        $secret = 'redis://private-user:private-password@redis-private.internal:6380/7';
+
+        try {
+            $process->run($secret);
+            $this->fail('The staged child should fail.');
+        } catch (RedisReadinessProbeFailure $exception) {
+            $this->assertSame(RedisReadinessProbeFailure::CHILD_FAILURE, $exception->reason);
+        }
+
+        $this->assertIsArray($diagnostic);
+        $this->assertSame('connected', $diagnostic['last_stage']);
+        $this->assertStringNotContainsString($secret, json_encode($diagnostic, JSON_THROW_ON_ERROR));
+    }
+
+    public function test_actual_redis_readiness_child_marks_failed_connect_without_exposing_endpoint(): void
+    {
+        $port = $this->reserveRefusedTcpPort();
+        $secret = sprintf('redis://private-user:private-password@127.0.0.1:%d/7', $port);
+        config(['database.redis.readiness-stage' => ['url' => $secret]]);
+        $previous = getenv('DW_REDIS_READINESS_DIAGNOSTICS');
+        putenv('DW_REDIS_READINESS_DIAGNOSTICS=1');
+        $diagnostic = null;
+
+        try {
+            (new BoundedRedisReadinessProbe(new RedisReadinessProcess(
+                null,
+                static function (array $details) use (&$diagnostic): void {
+                    $diagnostic = $details;
+                },
+            )))->roundTrip('stage-check', 'value', 10, 'readiness-stage');
+            $this->fail('The refused Redis connection should fail.');
+        } catch (RedisReadinessProbeFailure $exception) {
+            $this->assertSame(RedisReadinessProbeFailure::CHILD_FAILURE, $exception->reason);
+        } finally {
+            putenv($previous === false ? 'DW_REDIS_READINESS_DIAGNOSTICS' : 'DW_REDIS_READINESS_DIAGNOSTICS='.$previous);
+        }
+
+        $this->assertIsArray($diagnostic);
+        $this->assertSame('connecting', $diagnostic['last_stage']);
+        $this->assertStringNotContainsString($secret, json_encode($diagnostic, JSON_THROW_ON_ERROR));
     }
 
     public function test_redis_readiness_child_crash_discards_sensitive_bounded_diagnostics(): void

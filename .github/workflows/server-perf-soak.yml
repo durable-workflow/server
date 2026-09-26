@@ -18,6 +18,11 @@ on:
         required: false
         type: boolean
         default: true
+      readiness_diagnostics:
+        description: "Record bounded Redis readiness child stages on failures"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -48,6 +53,7 @@ jobs:
           VULTR_PERF_OS_ID: "2284"
           DW_PERF_DURATION_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.duration_seconds || '7200' }}
           DW_PERF_CONCURRENCY: ${{ github.event_name == 'workflow_dispatch' && inputs.concurrency || '12' }}
+          DW_PERF_READINESS_DIAGNOSTICS: ${{ github.event_name == 'workflow_dispatch' && inputs.readiness_diagnostics && '1' || '0' }}
           DW_PERF_NAMESPACES: "8"
           DW_PERF_TASK_QUEUES: "16"
           DW_PERF_STANDARD_WORKFLOWS: "true"
