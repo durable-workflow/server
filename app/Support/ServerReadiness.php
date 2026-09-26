@@ -242,12 +242,15 @@ final class ServerReadiness
                     'connection' => $connection,
                     'driver' => $driver,
                 ];
-            } catch (\Throwable) {
+            } catch (\Throwable $exception) {
                 return [
                     'status' => 'unavailable',
                     'connection' => $connection,
                     'driver' => $driver,
                     'message' => RedisReadinessProcess::FAILURE_MESSAGE,
+                    'reason' => $exception instanceof RedisReadinessProbeFailure
+                        ? $exception->reason
+                        : 'probe_failed',
                 ];
             }
         }
