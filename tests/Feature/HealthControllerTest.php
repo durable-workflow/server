@@ -333,6 +333,7 @@ class HealthControllerTest extends TestCase
             ->assertJsonPath('checks.queue.status', 'unavailable')
             ->assertJsonPath('checks.queue.driver', 'redis')
             ->assertJsonPath('checks.queue.message', RedisReadinessProcess::FAILURE_MESSAGE)
+            ->assertJsonPath('checks.queue.reason', 'probe_child_failed')
             ->assertJsonPath('checks.cache.status', 'unverified')
             ->assertJsonPath('checks.workflow_v2.status', 'blocked')
             ->assertJsonPath('checks.workflow_v2.blocked_by.0', 'queue');
@@ -373,6 +374,7 @@ class HealthControllerTest extends TestCase
         $this->getJson('/api/ready')
             ->assertStatus(503)
             ->assertJsonPath('checks.queue.status', 'unavailable')
+            ->assertJsonPath('checks.queue.reason', 'probe_timeout')
             ->assertJsonPath('checks.cache.status', 'unverified');
         $this->assertLessThan(BoundedRedisReadinessProbe::RESPONSE_BOUND_SECONDS, microtime(true) - $started);
     }

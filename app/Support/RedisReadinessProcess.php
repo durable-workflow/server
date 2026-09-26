@@ -143,7 +143,10 @@ final class RedisReadinessProcess
         }
 
         if ($timedOut) {
-            throw new RuntimeException('Redis readiness child exceeded its 1.5 second deadline.');
+            throw new RedisReadinessProbeFailure(
+                RedisReadinessProbeFailure::TIMEOUT,
+                'Redis readiness child exceeded its 1.5 second deadline.',
+            );
         }
 
         if ($exitCode !== 0) {
@@ -151,7 +154,10 @@ final class RedisReadinessProcess
             // or endpoint. Keep draining and bounding both streams so a failed
             // child cannot block, but never project their contents across the
             // process boundary.
-            throw new RuntimeException(self::FAILURE_MESSAGE);
+            throw new RedisReadinessProbeFailure(
+                RedisReadinessProbeFailure::CHILD_FAILURE,
+                self::FAILURE_MESSAGE,
+            );
         }
 
         return $stdout;
