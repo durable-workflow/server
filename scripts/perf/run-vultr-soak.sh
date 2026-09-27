@@ -63,8 +63,8 @@ if [[ "$IMAGE_DISTRIBUTION_METRICS" != 0 && "$IMAGE_DISTRIBUTION_METRICS" != 1 ]
   echo "DW_PERF_IMAGE_DISTRIBUTION_METRICS must be 0 or 1." >&2
   exit 2
 fi
-if [[ "$IMAGE_DISTRIBUTION_METRICS" == 1 && ( "$HTTP_VARIANT" != apache || -z "$PUBLISHED_SERVER_IMAGE" || "$FIXED_ENVELOPE" != 1 ) ]]; then
-  echo "Image distribution metrics require Apache, an exact published Server image, and the fixed resource envelope." >&2
+if [[ "$IMAGE_DISTRIBUTION_METRICS" == 1 && ( "$HTTP_VARIANT" != apache || -z "$PUBLISHED_SERVER_IMAGE" ) ]]; then
+  echo "Image distribution metrics require Apache and an exact published Server image." >&2
   exit 2
 fi
 if [[ "$HTTP_VARIANT" != apache && ( -z "$PUBLISHED_SERVER_IMAGE" || "$FIXED_ENVELOPE" != 1 ) ]]; then

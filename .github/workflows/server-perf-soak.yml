@@ -39,7 +39,7 @@ on:
         type: boolean
         default: false
       image_distribution_metrics:
-        description: "Measure a clean-host published Apache image with the fixed resource envelope"
+        description: "Measure a clean-host published Apache image pull, disk growth, and stack readiness"
         required: false
         type: boolean
         default: false
