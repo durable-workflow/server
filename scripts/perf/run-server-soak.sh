@@ -245,6 +245,24 @@ for compose_file in "${compose_files[@]}"; do
 done
 export DW_PERF_COMPOSE_FILES="$(IFS=:; echo "${compose_files[*]}")"
 
+if [[ "$HTTP_VARIANT" == nginx-fpm || "$HTTP_VARIANT" == apache-event-fpm ]]; then
+  if ! "${compose[@]}" config --format json | jq -e '
+    . as $config
+    | all([
+        "DW_WORKER_POLL_TIMEOUT",
+        "DW_WORKER_POLL_INTERVAL_MS",
+        "DW_WORKER_POLL_SIGNAL_CHECK_INTERVAL_MS"
+      ][];
+      . as $key
+      | $config.services.server.environment[$key] != null
+        and $config.services.server.environment[$key] == $config.services.fpm.environment[$key]
+    )
+  ' >/dev/null; then
+    echo "FPM poll controls differ from the HTTP proxy workload settings." >&2
+    exit 2
+  fi
+fi
+
 cleanup() {
   local status=$?
 
