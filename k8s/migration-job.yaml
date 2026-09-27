@@ -13,7 +13,7 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: migrate
-          image: durableworkflow/server:2.4.15
+          image: durableworkflow/server:2.4.16
           command: ["server-entrypoint"]
           args: ["server-bootstrap"]
           envFrom:
