@@ -143,8 +143,9 @@ same published application, queue worker, scheduler, SDK fixture, workload,
 host plan, and 1-CPU/1-GiB HTTP cap. The Swoole variants build local Octane
 images from the selected published digest with 12 request workers and a
 500-request recycle limit; the official image remains the Apache baseline.
-The fixed overlay caps the other services and sets identical worker/query poll
-admission limits across variants. `server-image.json` records the actual HTTP
+The fixed overlay pins MySQL, Redis, Composer and PHP image digests, caps the
+other services, and sets identical worker/query poll admission limits across
+variants. `server-image.json` records the actual HTTP
 image ID and variant, while `summary.json` records the selected base digest,
 runner commit, resource samples, completed workflows, latency, errors, memory
 slope, and post-drain state. A candidate's local derived image is experimental

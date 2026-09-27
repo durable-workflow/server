@@ -1,9 +1,11 @@
-FROM composer:2 AS dependencies
+ARG COMPOSER_IMAGE=composer:2
+ARG PHP_IMAGE=php:8.3-cli
+FROM ${COMPOSER_IMAGE} AS dependencies
 WORKDIR /sdk
 COPY benchmarks/capacity/v1/bindings/php/composer.json benchmarks/capacity/v1/bindings/php/composer.lock ./
 RUN composer install --no-dev --no-interaction --no-progress --prefer-dist
 
-FROM php:8.3-cli
+FROM ${PHP_IMAGE}
 RUN docker-php-ext-install pcntl
 WORKDIR /app
 COPY benchmarks/capacity/v1/bindings/php benchmarks/capacity/v1/bindings/php
