@@ -3,7 +3,7 @@
   "version": 1,
   "category": "timer_runtime_contract",
   "suite_schema": "durable-workflow.v2.platform-conformance.suite",
-  "suite_version": 15,
+  "suite_version": 47,
   "description": "Public scenario manifest for timer and sleep conformance. The current handoff is executable from the published server image and proves normal sleep completion, worker restart while sleeping, server restart while sleeping, replay after timer fire, concurrent timers with distinct deadlines, cancellation while waiting, and operator-visible waiting state when the focused shards run.",
   "fixture_type": "published_artifact_runtime_scenario_manifest",
   "result_schema": "durable-workflow.v2.timer-runtime.result",

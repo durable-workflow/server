@@ -953,9 +953,14 @@ final class TimerRuntimeContractTest extends TestCase
                 ['timer-worker-restart-while-sleeping-product-gap'],
                 $result['finding_links']['worker_restart_while_sleeping'],
             );
-            $this->assertSame('timer_runtime_product_gap', $result['findings'][0]['finding_type']);
-            $this->assertSame('product-gap', $result['findings'][0]['classification']);
-            $this->assertSame('timer_runtime', $result['findings'][0]['owning_surface']);
+            $workerFindings = array_values(array_filter(
+                $result['findings'],
+                static fn (array $finding): bool => $finding['id'] === 'timer-worker-restart-while-sleeping-product-gap',
+            ));
+            $this->assertCount(1, $workerFindings);
+            $this->assertSame('timer_runtime_product_gap', $workerFindings[0]['finding_type']);
+            $this->assertSame('product-gap', $workerFindings[0]['classification']);
+            $this->assertSame('timer_runtime', $workerFindings[0]['owning_surface']);
         } finally {
             $this->removeDirectory($resultDir);
         }
