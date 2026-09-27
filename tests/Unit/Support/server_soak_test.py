@@ -78,6 +78,7 @@ class RuntimeEvidenceConfigurationTest(unittest.TestCase):
         for variant, service in (
             ("apache", "server"),
             ("swoole", "server"),
+            ("openswoole", "server"),
             ("frankenphp", "server"),
             ("nginx-fpm", "fpm"),
             ("apache-event-fpm", "fpm"),
