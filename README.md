@@ -41,6 +41,8 @@ deployments should use role-scoped worker, operator, and administrator
 credentials and pin the Server image by version or digest. See the
 [self-hosting reference](docs/server-reference.md) for SQLite, production
 Compose, authentication, backup, upgrade, API, and configuration guidance.
+For a tested recovery sequence, see the
+[self-hosted backup and restore procedure](docs/self-hosted-backup-and-restore.md).
 
 Install the current CLI for server administration and workflow inspection:
 
