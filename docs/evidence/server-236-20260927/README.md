@@ -82,8 +82,11 @@ verification.
   inclusive manual wall interval was **152 seconds**. It includes operator
   pauses and is one measured recovery, not an RTO commitment.
 - The restored timer remained waiting with its pre-backup history unchanged at
-  this checkpoint. Its real deadline and retry/in-flight recovery still need
-  verification before Server #236 is closed.
+  this checkpoint. Its real deadline still needs verification before Server
+  #236 is closed. The [in-flight activity follow-up](inflight/README.md)
+  records a missing automatic repair pass in the published Compose stack and
+  a successful candidate Compose correction in Server PR #241. That correction
+  is not yet a verified published release.
 
 The raw helpers are [drill.py](drill.py), [edge.py](edge.py), and
 [event-counts.py](event-counts.py). The SDK runner used
