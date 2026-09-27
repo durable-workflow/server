@@ -49,8 +49,9 @@ if [[ -n "$PUBLISHED_SERVER_IMAGE" \
   echo "DW_PERF_PUBLISHED_SERVER_IMAGE must be an exact durableworkflow/server sha256 digest." >&2
   exit 2
 fi
-if [[ "$HTTP_VARIANT" != apache && "$HTTP_VARIANT" != swoole && "$HTTP_VARIANT" != openswoole ]]; then
-  echo "DW_PERF_HTTP_VARIANT must be apache, swoole, or openswoole." >&2
+if [[ "$HTTP_VARIANT" != apache && "$HTTP_VARIANT" != nginx-fpm && "$HTTP_VARIANT" != apache-event-fpm \
+  && "$HTTP_VARIANT" != frankenphp && "$HTTP_VARIANT" != swoole && "$HTTP_VARIANT" != openswoole ]]; then
+  echo "DW_PERF_HTTP_VARIANT must be apache, nginx-fpm, apache-event-fpm, frankenphp, swoole, or openswoole." >&2
   exit 2
 fi
 if [[ "$FIXED_ENVELOPE" != 0 && "$FIXED_ENVELOPE" != 1 ]]; then

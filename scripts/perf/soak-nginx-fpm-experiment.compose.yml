@@ -1,0 +1,4 @@
+services:
+  server:
+    volumes: !override
+      - ./scripts/perf/nginx-fpm-experiment.conf:/etc/nginx/conf.d/default.conf:ro

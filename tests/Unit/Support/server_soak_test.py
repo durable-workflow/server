@@ -74,6 +74,29 @@ class WorkflowGrowthResultGateTest(unittest.TestCase):
 
 
 class RuntimeEvidenceConfigurationTest(unittest.TestCase):
+    def test_fpm_comparison_rejects_missing_php_process_samples(self):
+        def command(args):
+            if args[-3:] == ["ps", "-q", "fpm"]:
+                return subprocess.CompletedProcess(args, 0, stdout="")
+            if len(args) >= 3 and args[0:2] == ["docker", "compose"] and args[-3:-1] == ["ps", "-q"]:
+                return subprocess.CompletedProcess(args, 0, stdout=args[-1] + "-container\n")
+            return subprocess.CompletedProcess(args, 0, stdout="")
+
+        with patch.dict(os.environ, {"DW_PERF_HTTP_VARIANT": "nginx-fpm", "DW_PERF_STANDARD_WORKFLOWS": "false"}):
+            with patch.object(server_soak, "run_command", side_effect=command):
+                self.assertEqual(0, server_soak.docker_stats("fixture")["docker_stats_ok"])
+
+    def test_fpm_summary_counts_proxy_and_php_memory_together(self):
+        samples = [{
+            "phase": "periodic", "server_memory_bytes": 100 * 1048576,
+            "fpm_memory_bytes": 700 * 1048576, "http_memory_bytes": 800 * 1048576,
+            "server_cpu_percent": 10.0, "fpm_cpu_percent": 70.0, "http_cpu_percent": 80.0,
+            "server_running": 1, "fpm_running": 1,
+        }]
+        resources = server_soak.resource_summary(samples)
+        self.assertEqual(800, resources["http"]["peak_memory_mib"])
+        self.assertEqual(80, resources["http"]["cpu_mean_percent"])
+
     def test_soak_subprocesses_use_the_same_comparison_overlays(self) -> None:
         with patch.dict(os.environ, {"DW_PERF_COMPOSE_FILES": "/tmp/base.yml:/tmp/fixed.yml:/tmp/swoole.yml"}):
             self.assertEqual(
