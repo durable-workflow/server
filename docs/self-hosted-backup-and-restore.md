@@ -103,10 +103,11 @@ restoring it into an isolated stack.
 3. Restore every manifest key to the replacement store. Read each target body
    back and compare its length and SHA-256 to the manifest **before** starting
    Server processes. A successful upload response alone is insufficient.
-4. Start the remaining published Compose services. Verify `/api/ready`, an
-   authorized and unauthorized request, and the external-storage diagnostic.
-   Release any historical backup hold restored with the database, using its
-   recorded owner UUID.
+4. Start the remaining published Compose services. Verify `/api/ready` and an
+   authorized and unauthorized request. Release any historical backup hold
+   restored with the database, using its recorded owner UUID. Then run the
+   external-storage diagnostic. Its cleanup can return `503` while the restored
+   hold still prevents payload reclamation.
 
    ```bash
    docker compose --env-file restored.env \
@@ -123,10 +124,11 @@ restoring it into an isolated stack.
    Keep the former stack fenced when the replacement begins serving writes.
 
    If an activity was leased at the recovery point, wait for that lease to
-   expire and check that the scheduler repairs it. The Server 2.4.18 published
-   Compose stack does not run an unscoped repair pass for remote SDK queues.
-   For that stack, run the repair pass explicitly after lease expiry, inspect
-   its JSON report, and confirm a new worker completes the activity once:
+   expire and check that the scheduler repairs it. The Server 2.4.19 published
+   Compose scheduler runs an unscoped repair pass for remote SDK queues. Check
+   that the task returns to `ready` and a new worker completes the activity
+   once. The Server 2.4.18 published Compose stack requires an explicit repair
+   pass after lease expiry. Inspect its JSON report before resuming a worker:
 
    ```bash
    docker compose --env-file restored.env \

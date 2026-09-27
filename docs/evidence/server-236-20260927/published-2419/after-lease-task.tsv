@@ -1,0 +1,3 @@
+task_type	status	lease_expires_at	repair_count
+activity	ready	NULL	1
+activity	completed	NULL	0

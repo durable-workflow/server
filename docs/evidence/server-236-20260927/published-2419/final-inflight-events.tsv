@@ -1,0 +1,8 @@
+event_type	sequence	recorded_at_utc
+StartAccepted	1	2026-09-27 20:45:08.582572
+WorkflowStarted	2	2026-09-27 20:45:08.592833
+ActivityScheduled	3	2026-09-27 20:45:09.121545
+ActivityStarted	4	2026-09-27 20:45:09.433406
+ActivityStarted	5	2026-09-27 20:51:10.239512
+ActivityCompleted	6	2026-09-27 20:51:11.448434
+WorkflowCompleted	7	2026-09-27 20:51:12.073349
