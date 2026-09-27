@@ -17,6 +17,8 @@ This is a bounded first measurement for [Server #237](https://github.com/durable
 
 The workload records deterministic integer side effects. Every 75 side effects, an activity completes to create a new workflow task. It checks the ordered event sequences, all side effect and activity counts, and the arithmetic result. `history_probe.py` caps one run at 12,000 side effects and the worker at 900 seconds. The event count includes start and terminal events; continuation count is zero. The candidate SDK fetches history in pages of 1,000 and resolves the terminal event through the same paginated path.
 
+The signal probe starts a workflow that waits for distinct integer signals, stops its first SDK worker, sends bounded batches of signals, then starts a new worker to check replay and the exact result. The published Server 2.4.19 image bundles Workflow 2.2.11. Its source was not changed for these observations.
+
 ## Commands
 
 The task-local `stack.env` set the image references above, `COMPOSE_PROJECT_NAME=dw237h2250`, the synthetic role tokens, `APP_ENV=production`, a synthetic `DW_SERVER_KEY`, and `SERVER_PORT=127.0.0.1:18237`. It was not committed. Set `RUN_ENV` to that synthetic environment file and `SDK_SOURCE` to the candidate SDK's `src` directory. From the Server checkout:
@@ -56,6 +58,22 @@ docker compose --env-file "$RUN_ENV" \
 The [published-package raw result](history-probe-1050-published-235.json) again records 1,092 ordered events in two pages and the exact result `550725`, with 13 completed activities. The worker took 273.90 seconds and the probe process peaked at 52,760 KiB RSS. These two runs are not controlled repetitions because the SDK source changed. They verify that the released package can retrieve a terminal event beyond the first history page.
 
 Published PHP SDK 2.1.5 (Packagist source `d664c865c8b9b352eb79abd27ee3141a87a1924f`) read the same completed run and returned `550725` from both the description and `workflowResult()`. Its `workflowHistory()` returned the first 100 events with a next-page token; the [raw output](php-result-215.json) records that distinction. This scalar-result check found no PHP result defect. It does not cover large external result payloads or a failure event on a later page.
+
+## Signal ingestion and worker restart
+
+A separate isolated Compose project, `dw237s2334`, used the same published Server, MySQL, Redis and Python SDK 2.3.5 digests and the same limits. `signal_history_probe.py` sent eight concurrent signal requests at a time. The [completed 100-signal raw result](signal-probe-100-published-235.json) records 100 acknowledged signals, 106 ordered history events, the exact sum `4950`, and a completed result after stopping and restarting the SDK worker. Offering the signals took 21.96 seconds; observed per-request p50/p95/p99 latency was 0.885/1.931/2.222 seconds. This is one smoke run, not a throughput claim.
+
+An 8,100-signal target used the same eight-request pattern, but admission slowed as the run grew. The attempt was stopped deliberately after 584 acknowledged signal events in about six minutes and 54 seconds. The [stop snapshot](signal-probe-8100-stopped.json) records a `waiting` run with 587 history events, 779,995 serialized history bytes, and no budget pressure yet. No final result or 8,100-event claim is made. The probe had not yet emitted its first 1,000-signal progress line, so the stop snapshot comes from the published stack's run summary and history tables. Source inspection found that each accepted signal loads all run commands and history events under locks in bundled Workflow 2.2.11. [Workflow #565](https://github.com/durable-workflow/workflow/issues/565) owns profiling and a bounded signal-admission fix before this history-boundary probe is repeated.
+
+To reproduce the signal smoke case with the published SDK, use the same Compose stack and probe build commands above without a candidate source mount, then run:
+
+```bash
+docker compose --env-file "$RUN_ENV" \
+  -f docker-compose.published.yml -f docs/evidence/server-237-20260927/compose.yml \
+  run --rm --no-deps --entrypoint python \
+  -e PROBE_RUN_ID=smoke100f8 -e PROBE_SIGNAL_CONCURRENCY=8 \
+  probe /probe/signal_history_probe.py 100
+```
 
 Two smaller observations exposed limits in the measurement path:
 

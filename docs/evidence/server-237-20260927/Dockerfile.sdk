@@ -3,5 +3,6 @@ ARG PYTHON_SDK_VERSION=2.3.4
 RUN python -m pip install --no-cache-dir "durable-workflow==${PYTHON_SDK_VERSION}"
 WORKDIR /probe
 COPY docs/evidence/server-237-20260927/history_probe.py /probe/history_probe.py
+COPY docs/evidence/server-237-20260927/signal_history_probe.py /probe/signal_history_probe.py
 USER 1000:1000
 ENTRYPOINT ["python", "/probe/history_probe.py"]
