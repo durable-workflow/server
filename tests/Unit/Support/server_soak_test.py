@@ -74,6 +74,17 @@ class WorkflowGrowthResultGateTest(unittest.TestCase):
 
 
 class RuntimeEvidenceConfigurationTest(unittest.TestCase):
+    def test_soak_subprocesses_use_the_same_comparison_overlays(self) -> None:
+        with patch.dict(os.environ, {"DW_PERF_COMPOSE_FILES": "/tmp/base.yml:/tmp/fixed.yml:/tmp/swoole.yml"}):
+            self.assertEqual(
+                [
+                    "docker", "compose", "-p", "fixture",
+                    "-f", "/tmp/base.yml", "-f", "/tmp/fixed.yml",
+                    "-f", "/tmp/swoole.yml", "ps", "-q", "server",
+                ],
+                server_soak.compose_command("fixture", "ps", "-q", "server"),
+            )
+
     def test_published_summary_separates_runner_and_server_sources(self):
         summary = {
             "duration_seconds": 3600,

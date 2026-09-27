@@ -601,7 +601,12 @@ def file_sha256(path: Path) -> str:
 
 def compose_command(project: str, *args: str) -> list[str]:
     root = Path(__file__).resolve().parents[2]
-    return ["docker", "compose", "-p", project, "-f", str(root / "docker-compose.yml"), "-f", str(root / "scripts/perf/standard-workflow.compose.yml"), *args]
+    configured = os.environ.get("DW_PERF_COMPOSE_FILES", "")
+    files = configured.split(":") if configured else [
+        str(root / "docker-compose.yml"),
+        str(root / "scripts/perf/standard-workflow.compose.yml"),
+    ]
+    return ["docker", "compose", "-p", project, *(part for path in files for part in ("-f", path)), *args]
 
 
 def parse_bytes(value: str) -> int:
@@ -1223,6 +1228,8 @@ def evidence_provenance(base_url: str, compose_project: str) -> dict[str, Any]:
         "github_sha_matches_checked_out": github_sha == checked_out_sha,
         "server_image": os.environ.get("DW_PERF_SERVER_IMAGE", ""),
         "server_source_sha": os.environ.get("DW_PERF_SERVER_SOURCE_SHA") or checked_out_sha,
+        "http_variant": os.environ.get("DW_PERF_HTTP_VARIANT", "apache"),
+        "fixed_envelope": os.environ.get("DW_PERF_FIXED_ENVELOPE", "0") == "1",
         "workflow": os.environ.get("GITHUB_WORKFLOW", ""),
         "event_name": os.environ.get("GITHUB_EVENT_NAME", ""),
         "run_id": os.environ.get("GITHUB_RUN_ID", ""),

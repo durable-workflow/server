@@ -19,6 +19,8 @@ PROVISION_LOG="${DW_PERF_ARTIFACT_DIR:-build/perf}/provisioning.log"
 DURATION_SECONDS="${DW_PERF_DURATION_SECONDS:-7200}"
 CONCURRENCY="${DW_PERF_CONCURRENCY:-24}"
 PUBLISHED_SERVER_IMAGE="${DW_PERF_PUBLISHED_SERVER_IMAGE:-}"
+HTTP_VARIANT="${DW_PERF_HTTP_VARIANT:-apache}"
+FIXED_ENVELOPE="${DW_PERF_FIXED_ENVELOPE:-0}"
 
 if [[ ! "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]; then
   echo "GITHUB_SHA must be a full lowercase commit SHA." >&2
@@ -45,6 +47,22 @@ fi
 if [[ -n "$PUBLISHED_SERVER_IMAGE" \
   && ! "$PUBLISHED_SERVER_IMAGE" =~ ^durableworkflow/server@sha256:[0-9a-f]{64}$ ]]; then
   echo "DW_PERF_PUBLISHED_SERVER_IMAGE must be an exact durableworkflow/server sha256 digest." >&2
+  exit 2
+fi
+if [[ "$HTTP_VARIANT" != apache && "$HTTP_VARIANT" != swoole && "$HTTP_VARIANT" != openswoole ]]; then
+  echo "DW_PERF_HTTP_VARIANT must be apache, swoole, or openswoole." >&2
+  exit 2
+fi
+if [[ "$FIXED_ENVELOPE" != 0 && "$FIXED_ENVELOPE" != 1 ]]; then
+  echo "DW_PERF_FIXED_ENVELOPE must be 0 or 1." >&2
+  exit 2
+fi
+if [[ "$HTTP_VARIANT" != apache && ( -z "$PUBLISHED_SERVER_IMAGE" || "$FIXED_ENVELOPE" != 1 ) ]]; then
+  echo "An experimental HTTP variant requires an exact published Server image and fixed envelope." >&2
+  exit 2
+fi
+if [[ "$FIXED_ENVELOPE" == 1 && -z "$PUBLISHED_SERVER_IMAGE" ]]; then
+  echo "The fixed comparison envelope requires an exact published Server image." >&2
   exit 2
 fi
 
@@ -277,6 +295,8 @@ for name in \
   DW_PERF_CONCURRENCY \
   DW_PERF_READINESS_DIAGNOSTICS \
   DW_PERF_PUBLISHED_SERVER_IMAGE \
+  DW_PERF_HTTP_VARIANT \
+  DW_PERF_FIXED_ENVELOPE \
   DW_PERF_NAMESPACES \
   DW_PERF_TASK_QUEUES \
   DW_PERF_STANDARD_WORKFLOWS \

@@ -34,6 +34,24 @@ POLL_INTERVAL_MS="${DW_PERF_POLL_INTERVAL_MS:-50}"
 POLL_SIGNAL_CHECK_INTERVAL_MS="${DW_PERF_POLL_SIGNAL_CHECK_INTERVAL_MS:-25}"
 READINESS_DIAGNOSTICS="${DW_PERF_READINESS_DIAGNOSTICS:-0}"
 PUBLISHED_SERVER_IMAGE="${DW_PERF_PUBLISHED_SERVER_IMAGE:-}"
+HTTP_VARIANT="${DW_PERF_HTTP_VARIANT:-apache}"
+FIXED_ENVELOPE="${DW_PERF_FIXED_ENVELOPE:-0}"
+if [[ "$HTTP_VARIANT" != apache && "$HTTP_VARIANT" != swoole && "$HTTP_VARIANT" != openswoole ]]; then
+  echo "DW_PERF_HTTP_VARIANT must be apache, swoole, or openswoole." >&2
+  exit 2
+fi
+if [[ "$FIXED_ENVELOPE" != 0 && "$FIXED_ENVELOPE" != 1 ]]; then
+  echo "DW_PERF_FIXED_ENVELOPE must be 0 or 1." >&2
+  exit 2
+fi
+if [[ "$HTTP_VARIANT" != apache && ( -z "$PUBLISHED_SERVER_IMAGE" || "$FIXED_ENVELOPE" != 1 ) ]]; then
+  echo "An experimental HTTP variant requires an exact published Server image and fixed envelope." >&2
+  exit 2
+fi
+if [[ "$FIXED_ENVELOPE" == 1 && -z "$PUBLISHED_SERVER_IMAGE" ]]; then
+  echo "The fixed comparison envelope requires an exact published Server image." >&2
+  exit 2
+fi
 if [[ "$READINESS_DIAGNOSTICS" != 0 && "$READINESS_DIAGNOSTICS" != 1 ]]; then
   echo "DW_PERF_READINESS_DIAGNOSTICS must be 0 or 1." >&2
   exit 2
@@ -156,10 +174,23 @@ jq -n --arg mode "$([[ -n "$PUBLISHED_SERVER_IMAGE" ]] && echo published || echo
   '{mode:$mode,image:$image,image_id:$image_id,php_version:$php_version,server_source_sha:$server_source_sha,runner_sha:$runner_sha}' \
   > "$ARTIFACT_DIR/server-image.json"
 
-compose=(docker compose -p "$PROJECT" -f "$ROOT_DIR/docker-compose.yml" -f "$OVERRIDE_FILE" -f "$ROOT_DIR/scripts/perf/standard-workflow.compose.yml")
+compose_files=("$ROOT_DIR/docker-compose.yml" "$OVERRIDE_FILE" "$ROOT_DIR/scripts/perf/standard-workflow.compose.yml")
 if [[ -n "$PUBLISHED_SERVER_IMAGE" ]]; then
-  compose+=(-f "$PUBLISHED_OVERRIDE_FILE")
+  compose_files+=("$PUBLISHED_OVERRIDE_FILE")
 fi
+if [[ "$FIXED_ENVELOPE" == 1 ]]; then
+  compose_files+=("$ROOT_DIR/scripts/perf/soak-fixed-envelope.compose.yml")
+fi
+if [[ "$HTTP_VARIANT" != apache ]]; then
+  export DW_PROFILE_SERVER_IMAGE="$PUBLISHED_SERVER_IMAGE"
+  compose_files+=("$ROOT_DIR/scripts/perf/octane-${HTTP_VARIANT}-experiment.compose.yml")
+  compose_files+=("$ROOT_DIR/scripts/perf/soak-octane-experiment.compose.yml")
+fi
+compose=(docker compose -p "$PROJECT")
+for compose_file in "${compose_files[@]}"; do
+  compose+=(-f "$compose_file")
+done
+export DW_PERF_COMPOSE_FILES="$(IFS=:; echo "${compose_files[*]}")"
 
 cleanup() {
   local status=$?
@@ -304,6 +335,16 @@ fi
 if [[ -n "$PUBLISHED_SERVER_IMAGE" ]]; then
   for service in bootstrap server worker scheduler; do
     actual_image_id="$(docker inspect "${PROJECT}-${service}-1" --format '{{.Image}}')"
+    if [[ "$service" == server && "$HTTP_VARIANT" != apache ]]; then
+      expected_server_image="$(docker image inspect "${PROJECT}-octane-${HTTP_VARIANT}:local" --format '{{.Id}}')"
+      expected_revision="$(docker inspect "${PROJECT}-${service}-1" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+      if [[ "$actual_image_id" != "$expected_server_image" || "$expected_revision" != "$server_source_sha" ]]; then
+        echo "Experimental HTTP server does not match the derived image and published source revision." >&2
+        write_environment_setup_failure 1 "experimental_image_identity" "experimental HTTP image differs from selected derived image or source revision"
+        exit 1
+      fi
+      continue
+    fi
     if [[ "$actual_image_id" != "$published_image_id" ]]; then
       echo "Perf ${service} did not start from the selected published Server image." >&2
       write_environment_setup_failure 1 "published_image_identity" "runtime role image differs from selected published Server digest"
@@ -311,6 +352,12 @@ if [[ -n "$PUBLISHED_SERVER_IMAGE" ]]; then
     fi
   done
 fi
+http_image_id="$(docker inspect "${PROJECT}-server-1" --format '{{.Image}}')"
+jq --arg variant "$HTTP_VARIANT" --arg fixed_envelope "$FIXED_ENVELOPE" \
+  --arg http_image_id "$http_image_id" \
+  '. + {http_variant: $variant, fixed_envelope: ($fixed_envelope == "1"), http_image_id: $http_image_id}' \
+  "$ARTIFACT_DIR/server-image.json" > "$ARTIFACT_DIR/server-image.updated.json"
+mv "$ARTIFACT_DIR/server-image.updated.json" "$ARTIFACT_DIR/server-image.json"
 
 PUBLISHED_SERVER_PORT="$("${compose[@]}" port server 8080 | awk -F: 'END {print $NF}')"
 if [ -z "$PUBLISHED_SERVER_PORT" ]; then

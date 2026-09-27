@@ -1,0 +1,17 @@
+# Append after the chosen Swoole/OpenSwoole image overlay for Server #137.
+services:
+  server:
+    # This soak uses the repository-root Compose file first. Override the
+    # experiment overlay's relative context, which was written for a profile
+    # Compose file under scripts/perf/ as the first file.
+    build:
+      context: .
+    command:
+      - php
+      - artisan
+      - octane:start
+      - --server=swoole
+      - --host=0.0.0.0
+      - --port=8080
+      - --workers=12
+      - --max-requests=500

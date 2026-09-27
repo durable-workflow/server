@@ -136,6 +136,22 @@ scripts/perf/run-server-soak.sh
 
 Artifacts land in `build/perf/` by default. The script removes the Compose project and volumes on exit.
 
+For the Server #137 HTTP-runtime comparison, dispatch `Server Perf Soak` on
+`main` with an exact `published_server_image` digest, `fixed_envelope=true`,
+and `http_variant=apache`, `swoole`, or `openswoole`. Each dispatch uses the
+same published application, queue worker, scheduler, SDK fixture, workload,
+host plan, and 1-CPU/1-GiB HTTP cap. The Swoole variants build local Octane
+images from the selected published digest with 12 request workers and a
+500-request recycle limit; the official image remains the Apache baseline.
+The fixed overlay pins MySQL, Redis, Composer and PHP image digests, caps the
+other services, and sets identical worker/query poll admission limits across
+variants. `server-image.json` records the actual HTTP
+image ID and variant, while `summary.json` records the selected base digest,
+runner commit, resource samples, completed workflows, latency, errors, memory
+slope, and post-drain state. A candidate's local derived image is experimental
+evidence, not a released Server image. Use separate runs and inspect variation;
+the default scheduled soak remains unchanged.
+
 `summary.json` is the evidence index for a run. It includes the configured
 duration, elapsed time, request/error totals, memory and Redis key ceilings,
 final drain counts, sample coverage, GitHub runner provenance, and the
