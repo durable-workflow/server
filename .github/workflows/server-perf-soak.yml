@@ -27,6 +27,17 @@ on:
         description: "Optional exact durableworkflow/server@sha256 digest for published-image qualification"
         required: false
         default: ""
+      http_variant:
+        description: "Experimental HTTP runtime built from the exact published image"
+        required: false
+        type: choice
+        options: [apache, swoole, openswoole]
+        default: apache
+      fixed_envelope:
+        description: "Apply Server #137 fixed resource limits to every compared service"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -59,6 +70,8 @@ jobs:
           DW_PERF_CONCURRENCY: ${{ github.event_name == 'workflow_dispatch' && inputs.concurrency || '12' }}
           DW_PERF_READINESS_DIAGNOSTICS: ${{ github.event_name == 'workflow_dispatch' && inputs.readiness_diagnostics && '1' || '0' }}
           DW_PERF_PUBLISHED_SERVER_IMAGE: ${{ github.event_name == 'workflow_dispatch' && inputs.published_server_image || '' }}
+          DW_PERF_HTTP_VARIANT: ${{ github.event_name == 'workflow_dispatch' && inputs.http_variant || 'apache' }}
+          DW_PERF_FIXED_ENVELOPE: ${{ github.event_name == 'workflow_dispatch' && inputs.fixed_envelope && '1' || '0' }}
           DW_PERF_NAMESPACES: "8"
           DW_PERF_TASK_QUEUES: "16"
           DW_PERF_STANDARD_WORKFLOWS: "true"

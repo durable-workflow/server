@@ -1,0 +1,35 @@
+# Opt-in comparison envelope for Server #137. All candidates use these limits.
+# The 4-GiB host retains 512 MiB outside the declared container RAM budgets.
+services:
+  server:
+    cpus: 1.0
+    mem_limit: 1024m
+    memswap_limit: 1024m
+    environment:
+      DW_WORKER_LONG_POLL_MAX_CONCURRENT: 6
+      DW_QUERY_TASK_POLL_MAX_CONCURRENT: 2
+
+  worker:
+    cpus: 0.5
+    mem_limit: 512m
+    memswap_limit: 512m
+
+  scheduler:
+    cpus: 0.25
+    mem_limit: 256m
+    memswap_limit: 256m
+
+  mysql:
+    cpus: 1.0
+    mem_limit: 1024m
+    memswap_limit: 1024m
+
+  redis:
+    cpus: 0.25
+    mem_limit: 256m
+    memswap_limit: 256m
+
+  soak-sdk:
+    cpus: 0.5
+    mem_limit: 512m
+    memswap_limit: 512m
