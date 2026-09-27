@@ -94,7 +94,6 @@ class WorkerDatabaseUnavailableTest extends TestCase
             ->assertHeader('Retry-After', '1')
             ->assertJsonPath('reason', 'backend_unavailable')
             ->assertJsonPath('operation', 'cluster_info')
-            ->assertJsonPath('request_admitted', false)
             ->assertJsonPath('retryable', true)
             ->assertJsonPath('retry_after_seconds', 1);
         $this->assertStringNotContainsString('private database', $response->getContent());

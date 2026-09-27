@@ -22,7 +22,6 @@ final class BackendUnavailable
             'reason' => 'backend_unavailable',
             'message' => 'A required backend is temporarily unavailable. Retry discovery with backoff.',
             'operation' => 'cluster_info',
-            'request_admitted' => false,
             'retryable' => true,
             'retry_after_seconds' => 1,
         ], 503)->header('Retry-After', '1');
