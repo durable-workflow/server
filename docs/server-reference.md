@@ -172,10 +172,16 @@ Persistence and backups:
 
 Backup and restore examples:
 
+The dump options take a consistent snapshot of Server's InnoDB tables without
+locking them for the full backup and avoid requiring `PROCESS` privilege for
+tablespace metadata. Do not run migrations or other schema changes during the
+dump. Keep the external-payload backup hold active until the database dump and
+all referenced objects have been copied and verified.
+
 ```bash
 docker compose --env-file durable-workflow.prod.env \
   -f docker-compose.published.yml exec -T mysql \
-  sh -lc 'mysqldump -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE"' \
+  sh -lc 'mysqldump --single-transaction --quick --no-tablespaces -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE"' \
   > durable-workflow-$(date +%Y%m%d%H%M%S).sql
 
 docker compose --env-file durable-workflow.prod.env \
@@ -183,6 +189,11 @@ docker compose --env-file durable-workflow.prod.env \
   sh -lc 'mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE"' \
   < durable-workflow-backup.sql
 ```
+
+Review dump errors even if the command exits successfully, and verify each
+recovery point with a restore. Import only into an isolated replacement stack
+with Server, worker, and scheduler stopped. Restore and verify external payload
+objects before starting those services and shifting traffic.
 
 Upgrade order:
 
