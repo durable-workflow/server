@@ -194,6 +194,8 @@ Review dump errors even if the command exits successfully, and verify each
 recovery point with a restore. Import only into an isolated replacement stack
 with Server, worker, and scheduler stopped. Restore and verify external payload
 objects before starting those services and shifting traffic.
+Follow the [complete self-hosted backup and restore procedure](self-hosted-backup-and-restore.md)
+for the backup hold, object manifest, recovery-point boundary and verification.
 
 Upgrade order:
 

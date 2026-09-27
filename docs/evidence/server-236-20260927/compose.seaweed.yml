@@ -1,0 +1,24 @@
+services:
+  seaweed:
+    image: chrislusf/seaweedfs@sha256:ce9e796f1fe6f06968f4c04bdaf8f678dad9c8acdfef3d244133d71bfa6bf882
+    environment:
+      AWS_ACCESS_KEY_ID: drill-access
+      AWS_SECRET_ACCESS_KEY: drill-secret
+      S3_BUCKET: restore-drill
+    command: [mini, -dir=/data]
+    volumes:
+      - weed_data:/data
+  bootstrap:
+    environment:
+      DW_EXTERNAL_PAYLOAD_S3_ENDPOINT: http://seaweed:8333
+  server:
+    environment:
+      DW_EXTERNAL_PAYLOAD_S3_ENDPOINT: http://seaweed:8333
+  worker:
+    environment:
+      DW_EXTERNAL_PAYLOAD_S3_ENDPOINT: http://seaweed:8333
+  scheduler:
+    environment:
+      DW_EXTERNAL_PAYLOAD_S3_ENDPOINT: http://seaweed:8333
+volumes:
+  weed_data:

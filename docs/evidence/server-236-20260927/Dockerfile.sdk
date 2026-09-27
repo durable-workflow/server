@@ -1,0 +1,6 @@
+FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
+RUN python -m pip install --no-cache-dir durable-workflow==2.0.0 boto3==1.40.0
+WORKDIR /drill
+COPY drill.py /drill/drill.py
+USER 1000:1000
+ENTRYPOINT ["python", "/drill/drill.py"]
