@@ -10,4 +10,5 @@ services:
       - --port=8080
       - --workers=${DW_PROFILE_OCTANE_WORKERS:-12}
     environment:
-      DW_WORKER_LONG_POLL_MAX_CONCURRENT: ${DW_PROFILE_POLL_WAIT_LIMIT:?Set an experimental poll-wait limit}
+      DW_WORKER_LONG_POLL_MAX_CONCURRENT: ${DW_PROFILE_POLL_WAIT_WORKER_LIMIT:?Set an experimental worker-poll limit}
+      DW_QUERY_TASK_POLL_MAX_CONCURRENT: ${DW_PROFILE_POLL_WAIT_QUERY_LIMIT:?Set an experimental query-poll limit}
