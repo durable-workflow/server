@@ -1,0 +1,14 @@
+services:
+  probe:
+    build:
+      context: .
+      dockerfile: docs/evidence/server-237-20260927/Dockerfile.sdk
+    environment:
+      SERVER_URL: http://server:8080
+      DRILL_CONTROL_TOKEN: ${DW_OPERATOR_TOKEN:?Set synthetic operator token}
+      DRILL_WORKER_TOKEN: ${DW_WORKER_TOKEN:?Set synthetic worker token}
+    cpus: 1
+    mem_limit: 1g
+    depends_on:
+      server:
+        condition: service_healthy
