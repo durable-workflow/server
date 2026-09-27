@@ -1188,6 +1188,15 @@ def artifact_versions(base_url: str, token: str, namespace: str) -> dict[str, st
     }
 
 
+def installed_workflow_version(project: str) -> str:
+    variant = os.environ.get("DW_PERF_HTTP_VARIANT", "apache")
+    php_service = "fpm" if variant in ("nginx-fpm", "apache-event-fpm") else "server"
+    return command_output([
+        "docker", "exec", f"{project}-{php_service}-1", "php", "-r",
+        "require 'vendor/autoload.php'; echo Composer\\InstalledVersions::getPrettyVersion('durable-workflow/workflow');",
+    ])
+
+
 def memory_slope_mb_hour(samples: list[dict[str, Any]]) -> float | None:
     points = [
         (float(row["timestamp"]), float(row.get("http_memory_bytes") or row.get("server_memory_bytes") or 0) / (1024 * 1024))
@@ -1506,7 +1515,7 @@ def main() -> int:
             run_command(compose_command(args.compose_project, "up", "-d", "--no-deps", "soak-sdk"), timeout=60).check_returncode()
         resolved_artifact_versions = artifact_versions(base_url, args.token, namespaces[0])
         if args.compose_project:
-            installed = command_output(["docker", "exec", f"{args.compose_project}-server-1", "php", "-r", "require 'vendor/autoload.php'; echo Composer\\InstalledVersions::getPrettyVersion('durable-workflow/workflow');"])
+            installed = installed_workflow_version(args.compose_project)
             if not installed:
                 raise RuntimeError("Could not identify the workflow package actually installed in the Server image.")
             resolved_artifact_versions["workflow"] = installed

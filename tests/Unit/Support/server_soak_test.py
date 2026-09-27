@@ -74,6 +74,20 @@ class WorkflowGrowthResultGateTest(unittest.TestCase):
 
 
 class RuntimeEvidenceConfigurationTest(unittest.TestCase):
+    def test_installed_workflow_version_uses_php_service(self):
+        for variant, service in (
+            ("apache", "server"),
+            ("swoole", "server"),
+            ("frankenphp", "server"),
+            ("nginx-fpm", "fpm"),
+            ("apache-event-fpm", "fpm"),
+        ):
+            with self.subTest(variant=variant):
+                with patch.dict(os.environ, {"DW_PERF_HTTP_VARIANT": variant}):
+                    with patch.object(server_soak, "command_output", return_value="2.2.9") as output:
+                        self.assertEqual("2.2.9", server_soak.installed_workflow_version("fixture"))
+                self.assertEqual(["docker", "exec", f"fixture-{service}-1"], output.call_args.args[0][:3])
+
     def test_fpm_comparison_rejects_missing_php_process_samples(self):
         def command(args):
             if args[-3:] == ["ps", "-q", "fpm"]:
