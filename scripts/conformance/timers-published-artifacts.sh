@@ -701,6 +701,17 @@ function run_timer_through_database_queue(WorkflowTask $timerTask): array
 
     $jobId = $queuedJob->id ?? null;
     $availableAt = $queuedJob->available_at ?? null;
+    if (! is_numeric($availableAt)) {
+        throw new RuntimeException('database queue job has no numeric available_at for timer task '.$taskId);
+    }
+
+    // The durable timer keeps subsecond precision, while the database queue
+    // stores whole-second availability. Wait for the actual queue deadline.
+    $waitMicros = (int) max(0, (((int) $availableAt) - microtime(true) + 0.1) * 1_000_000);
+    if ($waitMicros > 0) {
+        usleep($waitMicros);
+    }
+
     $exitCode = Artisan::call('queue:work', [
         'connection' => $connection,
         '--once' => true,
