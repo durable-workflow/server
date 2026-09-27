@@ -38,6 +38,11 @@ on:
         required: false
         type: boolean
         default: false
+      image_distribution_metrics:
+        description: "Measure a clean-host published Apache image pull, disk growth, and stack readiness"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -72,6 +77,7 @@ jobs:
           DW_PERF_PUBLISHED_SERVER_IMAGE: ${{ github.event_name == 'workflow_dispatch' && inputs.published_server_image || '' }}
           DW_PERF_HTTP_VARIANT: ${{ github.event_name == 'workflow_dispatch' && inputs.http_variant || 'apache' }}
           DW_PERF_FIXED_ENVELOPE: ${{ github.event_name == 'workflow_dispatch' && inputs.fixed_envelope && '1' || '0' }}
+          DW_PERF_IMAGE_DISTRIBUTION_METRICS: ${{ github.event_name == 'workflow_dispatch' && inputs.image_distribution_metrics && '1' || '0' }}
           DW_PERF_NAMESPACES: "8"
           DW_PERF_TASK_QUEUES: "16"
           DW_PERF_STANDARD_WORKFLOWS: "true"

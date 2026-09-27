@@ -36,6 +36,7 @@ READINESS_DIAGNOSTICS="${DW_PERF_READINESS_DIAGNOSTICS:-0}"
 PUBLISHED_SERVER_IMAGE="${DW_PERF_PUBLISHED_SERVER_IMAGE:-}"
 HTTP_VARIANT="${DW_PERF_HTTP_VARIANT:-apache}"
 FIXED_ENVELOPE="${DW_PERF_FIXED_ENVELOPE:-0}"
+IMAGE_DISTRIBUTION_METRICS="${DW_PERF_IMAGE_DISTRIBUTION_METRICS:-0}"
 if [[ "$HTTP_VARIANT" != apache && "$HTTP_VARIANT" != nginx-fpm && "$HTTP_VARIANT" != apache-event-fpm \
   && "$HTTP_VARIANT" != frankenphp && "$HTTP_VARIANT" != swoole && "$HTTP_VARIANT" != openswoole ]]; then
   echo "DW_PERF_HTTP_VARIANT must be apache, nginx-fpm, apache-event-fpm, frankenphp, swoole, or openswoole." >&2
@@ -43,6 +44,14 @@ if [[ "$HTTP_VARIANT" != apache && "$HTTP_VARIANT" != nginx-fpm && "$HTTP_VARIAN
 fi
 if [[ "$FIXED_ENVELOPE" != 0 && "$FIXED_ENVELOPE" != 1 ]]; then
   echo "DW_PERF_FIXED_ENVELOPE must be 0 or 1." >&2
+  exit 2
+fi
+if [[ "$IMAGE_DISTRIBUTION_METRICS" != 0 && "$IMAGE_DISTRIBUTION_METRICS" != 1 ]]; then
+  echo "DW_PERF_IMAGE_DISTRIBUTION_METRICS must be 0 or 1." >&2
+  exit 2
+fi
+if [[ "$IMAGE_DISTRIBUTION_METRICS" == 1 && ( "$HTTP_VARIANT" != apache || -z "$PUBLISHED_SERVER_IMAGE" ) ]]; then
+  echo "Image distribution metrics require Apache and an exact published Server image." >&2
   exit 2
 fi
 if [[ "$HTTP_VARIANT" != apache && ( -z "$PUBLISHED_SERVER_IMAGE" || "$FIXED_ENVELOPE" != 1 ) ]]; then
@@ -150,7 +159,33 @@ services:
     build: !reset null
     image: ${DW_PERF_PUBLISHED_SERVER_IMAGE}
 YAML
+  if [[ "$IMAGE_DISTRIBUTION_METRICS" == 1 ]]; then
+    docker_root="$(docker info --format '{{.DockerRootDir}}')"
+    image_count_before="$(docker image ls -q | wc -l | tr -d ' ')"
+    if [[ "$image_count_before" != 0 ]]; then
+      echo "Image distribution measurements require a host with no cached Docker images." >&2
+      exit 1
+    fi
+    docker_bytes_before="$(sudo du -s -B1 "$docker_root" | awk '{print $1}')"
+    pull_started_ns="$(date +%s%N)"
+  fi
   docker image pull "$PUBLISHED_SERVER_IMAGE"
+  if [[ "$IMAGE_DISTRIBUTION_METRICS" == 1 ]]; then
+    pull_completed_ns="$(date +%s%N)"
+    docker_bytes_after="$(sudo du -s -B1 "$docker_root" | awk '{print $1}')"
+    jq -n \
+      --arg image "$PUBLISHED_SERVER_IMAGE" \
+      --arg platform "$(docker image inspect "$PUBLISHED_SERVER_IMAGE" --format '{{.Os}}/{{.Architecture}}')" \
+      --arg storage_driver "$(docker info --format '{{.Driver}}')" \
+      --argjson image_count_before "$image_count_before" \
+      --argjson pull_elapsed_ms "$(((pull_completed_ns - pull_started_ns) / 1000000))" \
+      --argjson docker_root_allocated_bytes_before "$docker_bytes_before" \
+      --argjson docker_root_allocated_bytes_after "$docker_bytes_after" \
+      --argjson docker_root_allocated_bytes_delta "$((docker_bytes_after - docker_bytes_before))" \
+      --argjson virtual_uncompressed_bytes "$(docker image inspect "$PUBLISHED_SERVER_IMAGE" --format '{{.Size}}')" \
+      '{image:$image,platform:$platform,storage_driver:$storage_driver,image_count_before:$image_count_before,pull_elapsed_ms:$pull_elapsed_ms,docker_root_allocated_bytes_before:$docker_root_allocated_bytes_before,docker_root_allocated_bytes_after:$docker_root_allocated_bytes_after,docker_root_allocated_bytes_delta:$docker_root_allocated_bytes_delta,virtual_uncompressed_bytes:$virtual_uncompressed_bytes,stack_ready_scope:"compose up --wait after backend image pulls"}' \
+      > "$ARTIFACT_DIR/image-distribution.json"
+  fi
   docker image inspect "$PUBLISHED_SERVER_IMAGE" | jq -e --arg image "$PUBLISHED_SERVER_IMAGE" \
     '.[0].RepoDigests | index($image) != null' >/dev/null
   server_source_sha="$(docker image inspect "$PUBLISHED_SERVER_IMAGE" \
@@ -342,9 +377,39 @@ else
   echo "Starting perf stack with project ${PROJECT} on a dynamic host port"
 fi
 setup_status=0
+if [[ "$IMAGE_DISTRIBUTION_METRICS" == 1 ]]; then
+  "${compose[@]}" pull mysql redis
+  stack_started_ns="$(date +%s%N)"
+fi
 "${compose[@]}" up -d --build --wait || setup_status=$?
+if [[ "$IMAGE_DISTRIBUTION_METRICS" == 1 ]]; then
+  stack_completed_ns="$(date +%s%N)"
+  jq --argjson stack_setup_elapsed_ms "$(((stack_completed_ns - stack_started_ns) / 1000000))" \
+    --argjson stack_ready "$([[ "$setup_status" == 0 ]] && echo true || echo false)" \
+    '. + {stack_setup_elapsed_ms:$stack_setup_elapsed_ms,stack_ready:$stack_ready}' \
+    "$ARTIFACT_DIR/image-distribution.json" > "$ARTIFACT_DIR/image-distribution.updated.json"
+  mv "$ARTIFACT_DIR/image-distribution.updated.json" "$ARTIFACT_DIR/image-distribution.json"
+fi
 if [ "$setup_status" -eq 0 ] && [ "$DW_PERF_STANDARD_WORKFLOWS" = true ]; then
   "${compose[@]}" build soak-sdk || setup_status=$?
+fi
+if [[ "$IMAGE_DISTRIBUTION_METRICS" == 1 && "$setup_status" -eq 0 ]]; then
+  mysql_image_id="$(docker inspect "${PROJECT}-mysql-1" --format '{{.Image}}')"
+  redis_image_id="$(docker inspect "${PROJECT}-redis-1" --format '{{.Image}}')"
+  mysql_repo_digest="$(docker image inspect "$mysql_image_id" | jq -r '.[0].RepoDigests[0] // ""')"
+  redis_repo_digest="$(docker image inspect "$redis_image_id" | jq -r '.[0].RepoDigests[0] // ""')"
+  if [[ "$mysql_repo_digest" != *@sha256:* || "$redis_repo_digest" != *@sha256:* ]]; then
+    echo "Image distribution measurements require resolved MySQL and Redis image digests." >&2
+    exit 1
+  fi
+  jq \
+    --arg mysql_image_id "$mysql_image_id" \
+    --arg redis_image_id "$redis_image_id" \
+    --arg mysql_repo_digest "$mysql_repo_digest" \
+    --arg redis_repo_digest "$redis_repo_digest" \
+    '. + {mysql_image_id:$mysql_image_id,redis_image_id:$redis_image_id,mysql_repo_digest:$mysql_repo_digest,redis_repo_digest:$redis_repo_digest}' \
+    "$ARTIFACT_DIR/image-distribution.json" > "$ARTIFACT_DIR/image-distribution.updated.json"
+  mv "$ARTIFACT_DIR/image-distribution.updated.json" "$ARTIFACT_DIR/image-distribution.json"
 fi
 if [ "$setup_status" -ne 0 ]; then
   echo "Perf environment setup failed before product smoke execution; docker compose could not build or start the stack." >&2
