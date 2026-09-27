@@ -122,6 +122,18 @@ restoring it into an isolated stack.
    counts. Check recovery and ordinary API requests before moving traffic.
    Keep the former stack fenced when the replacement begins serving writes.
 
+   If an activity was leased at the recovery point, wait for that lease to
+   expire and check that the scheduler repairs it. The Server 2.4.18 published
+   Compose stack does not run an unscoped repair pass for remote SDK queues.
+   For that stack, run the repair pass explicitly after lease expiry, inspect
+   its JSON report, and confirm a new worker completes the activity once:
+
+   ```bash
+   docker compose --env-file restored.env \
+     -f docker-compose.published.yml exec -T server \
+     php artisan workflow:v2:repair-pass --json
+   ```
+
 The [2026-09-27 published-artifact drill](evidence/server-236-20260927/README.md)
 records pinned versions, commands, raw results and recovery time. Its test
 environment is isolated and contains only synthetic workflows.

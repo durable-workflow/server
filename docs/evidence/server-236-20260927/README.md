@@ -81,11 +81,15 @@ verification.
   [verified worker completion](restore-complete.epoch) was 18:26:53 UTC. The
   inclusive manual wall interval was **152 seconds**. It includes operator
   pauses and is one measured recovery, not an RTO commitment.
-- The restored timer remained waiting with its pre-backup history unchanged at
-  this checkpoint. Its real deadline was 19:22:33 UTC and is being checked
-  separately. The [in-flight activity follow-up](inflight/README.md) records
-  a missing automatic repair pass in the published Compose stack and a
-  successful candidate Compose correction in Server PR #241. That correction
+- The restored timer remained waiting with its pre-backup history unchanged
+  until its original 19:22:33 UTC deadline. The published Python SDK worker
+  then completed it with the expected input digest. The
+  [result](timer-after.json), [counts before](event-counts-before-timer.json),
+  and [counts after](event-counts-after-timer.json) show one `TimerFired` and
+  one `WorkflowCompleted` for the timer, with the other three workflows still
+  completed exactly once. The [in-flight activity follow-up](inflight/README.md)
+  records a missing automatic repair pass in the published Compose stack and
+  a successful candidate Compose correction in Server PR #241. That correction
   is not yet a verified published release.
 
 An earlier three-workflow trial used Adobe S3Mock in place of SeaweedFS. Its
@@ -101,5 +105,5 @@ The raw helpers are [drill.py](drill.py), [edge.py](edge.py),
 `DRILL_CONTROL_TOKEN` set to the synthetic operator token and
 `DRILL_WORKER_TOKEN` set to the synthetic worker token. The S3 helper used
 `DRILL_S3_ENDPOINT=http://seaweed:8333` and a mounted evidence directory.
-All source project containers and volumes were removed after the copied
-evidence was checked. The replacement remains isolated for the timer check.
+All source and replacement project containers and volumes were removed after
+the copied evidence and timer completion were checked.
