@@ -1,0 +1,30 @@
+# Append after the FPM proxy overlay and fpm-fixed-envelope.compose.yml.
+# The proxy and FPM together retain the same 1 CPU / 1 GiB HTTP envelope.
+services:
+  fpm:
+    image: ${COMPOSE_PROJECT_NAME:-dw}-fpm:local
+    build:
+      context: .
+    environment:
+      APP_ENV: local
+      APP_VERSION: ${APP_VERSION:-2.4.18}
+      DW_SERVER_KEY: ${DW_SERVER_KEY:?Set the Server key}
+      DW_SERVER_TOPOLOGY_SHAPE: standalone_server
+      DW_SERVER_PROCESS_CLASS: server_http_node
+      DB_CONNECTION: mysql
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_DATABASE: durable_workflow
+      DB_USERNAME: workflow
+      DB_PASSWORD: workflow
+      REDIS_HOST: redis
+      QUEUE_CONNECTION: redis
+      CACHE_STORE: redis
+      DW_AUTH_DRIVER: token
+      DW_AUTH_TOKEN: ${DW_AUTH_TOKEN:?Set the perf token}
+      DW_WORKER_LONG_POLL_MAX_CONCURRENT: 6
+      DW_QUERY_TASK_POLL_MAX_CONCURRENT: 2
+    memswap_limit: 896m
+
+  server:
+    memswap_limit: 128m

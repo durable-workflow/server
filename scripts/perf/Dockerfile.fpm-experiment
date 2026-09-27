@@ -1,7 +1,7 @@
 ARG SERVER_IMAGE=durableworkflow/server@sha256:998b9dffe1f8effb159af9660ac190ccbc9d0c954900e68e9946baa6bb4c6c42
 FROM ${SERVER_IMAGE} AS published
 
-FROM php:8.3.33-fpm-trixie@sha256:ebf282c3e870b221c7c631da8e2c4c7d3b69951ba5af1153f3737be55678960c
+FROM php:8.3.35-fpm-trixie@sha256:ea1c5007c904d2cdf12e4ac87528c9f12407fb8d7636a31a93b4a862b22e2f8f
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libpq5 libzip5 \

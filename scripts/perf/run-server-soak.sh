@@ -36,8 +36,9 @@ READINESS_DIAGNOSTICS="${DW_PERF_READINESS_DIAGNOSTICS:-0}"
 PUBLISHED_SERVER_IMAGE="${DW_PERF_PUBLISHED_SERVER_IMAGE:-}"
 HTTP_VARIANT="${DW_PERF_HTTP_VARIANT:-apache}"
 FIXED_ENVELOPE="${DW_PERF_FIXED_ENVELOPE:-0}"
-if [[ "$HTTP_VARIANT" != apache && "$HTTP_VARIANT" != swoole && "$HTTP_VARIANT" != openswoole ]]; then
-  echo "DW_PERF_HTTP_VARIANT must be apache, swoole, or openswoole." >&2
+if [[ "$HTTP_VARIANT" != apache && "$HTTP_VARIANT" != nginx-fpm && "$HTTP_VARIANT" != apache-event-fpm \
+  && "$HTTP_VARIANT" != frankenphp && "$HTTP_VARIANT" != swoole && "$HTTP_VARIANT" != openswoole ]]; then
+  echo "DW_PERF_HTTP_VARIANT must be apache, nginx-fpm, apache-event-fpm, frankenphp, swoole, or openswoole." >&2
   exit 2
 fi
 if [[ "$FIXED_ENVELOPE" != 0 && "$FIXED_ENVELOPE" != 1 ]]; then
@@ -181,10 +182,27 @@ fi
 if [[ "$FIXED_ENVELOPE" == 1 ]]; then
   compose_files+=("$ROOT_DIR/scripts/perf/soak-fixed-envelope.compose.yml")
 fi
-if [[ "$HTTP_VARIANT" != apache ]]; then
+if [[ "$HTTP_VARIANT" == swoole || "$HTTP_VARIANT" == openswoole ]]; then
   export DW_PROFILE_SERVER_IMAGE="$PUBLISHED_SERVER_IMAGE"
   compose_files+=("$ROOT_DIR/scripts/perf/octane-${HTTP_VARIANT}-experiment.compose.yml")
   compose_files+=("$ROOT_DIR/scripts/perf/soak-octane-experiment.compose.yml")
+elif [[ "$HTTP_VARIANT" == frankenphp ]]; then
+  export DW_PROFILE_SERVER_IMAGE="$PUBLISHED_SERVER_IMAGE"
+  compose_files+=("$ROOT_DIR/scripts/perf/octane-frankenphp-experiment.compose.yml")
+  compose_files+=("$ROOT_DIR/scripts/perf/soak-frankenphp-experiment.compose.yml")
+elif [[ "$HTTP_VARIANT" == nginx-fpm || "$HTTP_VARIANT" == apache-event-fpm ]]; then
+  export DW_PROFILE_SERVER_IMAGE="$PUBLISHED_SERVER_IMAGE"
+  compose_files+=("$ROOT_DIR/scripts/perf/fpm-experiment.compose.yml")
+  if [[ "$HTTP_VARIANT" == apache-event-fpm ]]; then
+    compose_files+=("$ROOT_DIR/scripts/perf/apache-event-fpm-experiment.compose.yml")
+  fi
+  compose_files+=("$ROOT_DIR/scripts/perf/fpm-fixed-envelope.compose.yml")
+  compose_files+=("$ROOT_DIR/scripts/perf/soak-fpm-experiment.compose.yml")
+  if [[ "$HTTP_VARIANT" == nginx-fpm ]]; then
+    compose_files+=("$ROOT_DIR/scripts/perf/soak-nginx-fpm-experiment.compose.yml")
+  else
+    compose_files+=("$ROOT_DIR/scripts/perf/soak-apache-event-fpm-experiment.compose.yml")
+  fi
 fi
 compose=(docker compose -p "$PROJECT")
 for compose_file in "${compose_files[@]}"; do
@@ -196,6 +214,9 @@ cleanup() {
   local status=$?
 
   docker logs "${PROJECT}-server-1" > "$ARTIFACT_DIR/server.log" 2>&1 || true
+  if [[ "$HTTP_VARIANT" == nginx-fpm || "$HTTP_VARIANT" == apache-event-fpm ]]; then
+    docker logs "${PROJECT}-fpm-1" > "$ARTIFACT_DIR/fpm.log" 2>&1 || true
+  fi
   docker logs "${PROJECT}-worker-1" > "$ARTIFACT_DIR/worker.log" 2>&1 || true
   docker logs "${PROJECT}-scheduler-1" > "$ARTIFACT_DIR/scheduler.log" 2>&1 || true
   docker logs "${PROJECT}-mysql-1" > "$ARTIFACT_DIR/mysql.log" 2>&1 || true
@@ -336,12 +357,24 @@ if [[ -n "$PUBLISHED_SERVER_IMAGE" ]]; then
   for service in bootstrap server worker scheduler; do
     actual_image_id="$(docker inspect "${PROJECT}-${service}-1" --format '{{.Image}}')"
     if [[ "$service" == server && "$HTTP_VARIANT" != apache ]]; then
-      expected_server_image="$(docker image inspect "${PROJECT}-octane-${HTTP_VARIANT}:local" --format '{{.Id}}')"
-      expected_revision="$(docker inspect "${PROJECT}-${service}-1" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
-      if [[ "$actual_image_id" != "$expected_server_image" || "$expected_revision" != "$server_source_sha" ]]; then
-        echo "Experimental HTTP server does not match the derived image and published source revision." >&2
-        write_environment_setup_failure 1 "experimental_image_identity" "experimental HTTP image differs from selected derived image or source revision"
+      if [[ "$HTTP_VARIANT" == nginx-fpm ]]; then
+        expected_server_image="$(docker image inspect 'nginx@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236' --format '{{.Id}}')"
+      elif [[ "$HTTP_VARIANT" == apache-event-fpm ]]; then
+        expected_server_image="$(docker image inspect "${PROJECT}-apache-event-fpm:local" --format '{{.Id}}')"
+      else
+        expected_server_image="$(docker image inspect "${PROJECT}-octane-${HTTP_VARIANT}:local" --format '{{.Id}}')"
+      fi
+      if [[ "$actual_image_id" != "$expected_server_image" ]]; then
+        echo "Experimental HTTP server does not match the selected derived/proxy image." >&2
+        write_environment_setup_failure 1 "experimental_image_identity" "experimental HTTP image differs from selected derived/proxy image"
         exit 1
+      fi
+      if [[ "$HTTP_VARIANT" == swoole || "$HTTP_VARIANT" == openswoole ]]; then
+        expected_revision="$(docker inspect "${PROJECT}-${service}-1" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+        if [[ "$expected_revision" != "$server_source_sha" ]]; then
+          write_environment_setup_failure 1 "experimental_image_revision" "experimental HTTP image lacks selected published source revision"
+          exit 1
+        fi
       fi
       continue
     fi
@@ -351,6 +384,22 @@ if [[ -n "$PUBLISHED_SERVER_IMAGE" ]]; then
       exit 1
     fi
   done
+fi
+if [[ "$HTTP_VARIANT" == nginx-fpm || "$HTTP_VARIANT" == apache-event-fpm ]]; then
+  expected_fpm_image="$(docker image inspect "${PROJECT}-fpm:local" --format '{{.Id}}')"
+  actual_fpm_image="$(docker inspect "${PROJECT}-fpm-1" --format '{{.Image}}')"
+  if [[ "$actual_fpm_image" != "$expected_fpm_image" ]]; then
+    write_environment_setup_failure 1 "experimental_fpm_image_identity" "FPM image differs from selected derived image"
+    exit 1
+  fi
+  jq -n --arg base_image "$PUBLISHED_SERVER_IMAGE" --arg image_id "$actual_fpm_image" \
+    --arg php_version "$(docker exec "${PROJECT}-fpm-1" php -r 'echo PHP_VERSION;')" \
+    '{base_image:$base_image,image_id:$image_id,php_version:$php_version}' > "$ARTIFACT_DIR/fpm-image.json"
+elif [[ "$HTTP_VARIANT" == frankenphp ]]; then
+  jq -n --arg base_image "$PUBLISHED_SERVER_IMAGE" \
+    --arg image_id "$(docker inspect "${PROJECT}-server-1" --format '{{.Image}}')" \
+    --arg php_version "$(docker exec "${PROJECT}-server-1" php -r 'echo PHP_VERSION;')" \
+    '{base_image:$base_image,image_id:$image_id,php_version:$php_version}' > "$ARTIFACT_DIR/http-derived-image.json"
 fi
 http_image_id="$(docker inspect "${PROJECT}-server-1" --format '{{.Image}}')"
 jq --arg variant "$HTTP_VARIANT" --arg fixed_envelope "$FIXED_ENVELOPE" \

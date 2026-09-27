@@ -31,7 +31,7 @@ on:
         description: "Experimental HTTP runtime built from the exact published image"
         required: false
         type: choice
-        options: [apache, swoole, openswoole]
+        options: [apache, nginx-fpm, apache-event-fpm, frankenphp, swoole, openswoole]
         default: apache
       fixed_envelope:
         description: "Apply Server #137 fixed resource limits to every compared service"

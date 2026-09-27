@@ -1,0 +1,6 @@
+services:
+  server:
+    image: ${COMPOSE_PROJECT_NAME:-dw}-apache-event-fpm:local
+    build:
+      context: .
+    volumes: !override []

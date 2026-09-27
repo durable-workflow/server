@@ -102,7 +102,7 @@ class Metrics:
 
     def update_sample(self, sample: dict[str, Any]) -> None:
         with self.lock:
-            self.latest["server_memory_bytes"] = int(sample.get("server_memory_bytes") or 0)
+            self.latest["server_memory_bytes"] = int(sample.get("http_memory_bytes") or sample.get("server_memory_bytes") or 0)
             self.latest["redis_memory_bytes"] = int(sample.get("redis_used_memory_bytes") or 0)
             self.latest["redis_db_keys"] = int(sample.get("redis_db_keys") or 0)
             self.latest["redis_polling_keys"] = int(sample.get("redis_polling_keys") or 0)
@@ -136,7 +136,7 @@ class Metrics:
                     "# HELP dw_perf_latency_seconds_average Average request latency.",
                     "# TYPE dw_perf_latency_seconds_average gauge",
                     f"dw_perf_latency_seconds_average {average_latency:.6f}",
-                    "# HELP dw_perf_server_memory_bytes Sampled server container memory.",
+                    "# HELP dw_perf_server_memory_bytes Sampled HTTP frontend memory, including FPM when selected.",
                     "# TYPE dw_perf_server_memory_bytes gauge",
                     f"dw_perf_server_memory_bytes {self.latest['server_memory_bytes']}",
                     "# HELP dw_perf_redis_memory_bytes Redis used_memory from INFO memory.",
@@ -634,6 +634,9 @@ def parse_bytes(value: str) -> int:
 def docker_stats(project: str, include_sdk: bool = True) -> dict[str, Any]:
     ids_by_service: dict[str, str] = {}
     services = ["server", "worker", "scheduler", "mysql", "redis"]
+    fpm_variant = os.environ.get("DW_PERF_HTTP_VARIANT") in ("nginx-fpm", "apache-event-fpm")
+    if fpm_variant:
+        services.append("fpm")
     if include_sdk and os.environ.get("DW_PERF_STANDARD_WORKFLOWS") == "true":
         services.append("soak-sdk")
     for service in services:
@@ -643,6 +646,8 @@ def docker_stats(project: str, include_sdk: bool = True) -> dict[str, Any]:
             ids_by_service[service] = container_id
 
     required_services = {"server", "mysql", "redis"}
+    if fpm_variant:
+        required_services.add("fpm")
     if not required_services.issubset(ids_by_service):
         return {"docker_stats_ok": 0}
 
@@ -676,6 +681,11 @@ def docker_stats(project: str, include_sdk: bool = True) -> dict[str, Any]:
     for service in services:
         stats[f"{service}_running"] = int(stats.get(f"{service}_memory_bytes", 0) > 0)
     stats.update({f"{service}_cpu_percent": cpu_by_id.get(container_id[:12]) for service, container_id in ids_by_service.items()})
+    stats["http_memory_bytes"] = stats["server_memory_bytes"] + stats.get("fpm_memory_bytes", 0)
+    stats["http_running"] = int(stats["server_running"] == 1 and (not fpm_variant or stats["fpm_running"] == 1))
+    server_cpu = stats.get("server_cpu_percent")
+    fpm_cpu = stats.get("fpm_cpu_percent")
+    stats["http_cpu_percent"] = server_cpu + (fpm_cpu or 0) if server_cpu is not None and (not fpm_variant or fpm_cpu is not None) else None
     health = command_output(
         ["docker", "inspect", "--format", "{{.State.Health.Status}}", ids_by_service["server"]],
     )
@@ -1180,9 +1190,9 @@ def artifact_versions(base_url: str, token: str, namespace: str) -> dict[str, st
 
 def memory_slope_mb_hour(samples: list[dict[str, Any]]) -> float | None:
     points = [
-        (float(row["timestamp"]), float(row.get("server_memory_bytes") or 0) / (1024 * 1024))
+        (float(row["timestamp"]), float(row.get("http_memory_bytes") or row.get("server_memory_bytes") or 0) / (1024 * 1024))
         for row in samples
-        if row.get("phase") != "final" and row.get("server_memory_bytes")
+        if row.get("phase") != "final" and (row.get("http_memory_bytes") or row.get("server_memory_bytes"))
     ]
     if len(points) < 4:
         return None
@@ -1388,7 +1398,7 @@ def evaluate_availability(results: dict[str, Any], required: list[str], health_l
 
 def resource_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
     result = {}
-    for service in ("server", "worker", "scheduler", "mysql", "redis", "soak-sdk"):
+    for service in ("server", "fpm", "http", "worker", "scheduler", "mysql", "redis", "soak-sdk"):
         memory = [int(row[f"{service}_memory_bytes"]) / 1048576 for row in samples if f"{service}_memory_bytes" in row]
         cpu = [float(row[f"{service}_cpu_percent"]) for row in samples if row.get("phase") != "final" and row.get(f"{service}_cpu_percent") is not None]
         if memory:
@@ -1397,7 +1407,7 @@ def resource_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
                 "final_memory_mib": round(memory[-1], 2),
                 "cpu_mean_percent": round(sum(cpu) / len(cpu), 2) if cpu else None,
                 "cpu_peak_percent": round(max(cpu), 2) if cpu else None,
-                "missing_samples": sum(row.get(f"{service}_running") == 0 for row in samples),
+                "missing_samples": sum(row.get(f"{service}_running", 1) == 0 for row in samples),
             }
     return result
 
@@ -1421,7 +1431,7 @@ def render_summary(summary: dict[str, Any]) -> str:
         "Poll requests are not workflow completions. Accepted and backpressured polls are distinct outcomes.",
         "",
         f"Measured duration: {summary.get('duration_seconds')}s. {source_description}",
-        f"Server memory slope: {summary.get('server_memory_slope_mb_hour')} MiB/h. Final Server cache keys: {summary.get('final_server_cache_keys')}.",
+        f"HTTP memory slope: {summary.get('server_memory_slope_mb_hour')} MiB/h. Final Server cache keys: {summary.get('final_server_cache_keys')}.",
         f"Sampling: {summary.get('periodic_sample_count')}/{summary.get('expected_periodic_samples')}; unhealthy samples: {summary.get('sampling_health', {}).get('unhealthy_samples')}.",
         f"Sustained polling activity: {summary.get('polling_activity', 'not measured by this version')}.",
         "",
@@ -1602,7 +1612,7 @@ def main() -> int:
         metrics.update_sample(final_sample)
         write_jsonl(samples_path, final_sample | {"phase": "final"})
 
-        max_server_memory_bytes = max((int(row.get("server_memory_bytes") or 0) for row in samples), default=0)
+        max_server_memory_bytes = max((int(row.get("http_memory_bytes") or row.get("server_memory_bytes") or 0) for row in samples), default=0)
         max_pattern_polling_keys = max((int(row.get("redis_polling_keys") or 0) for row in samples), default=0)
         max_server_cache_keys = max((int(row.get("redis_server_keys") or 0) for row in samples), default=0)
         max_redis_db_keys = max((int(row.get("redis_db_keys") or 0) for row in samples), default=0)
