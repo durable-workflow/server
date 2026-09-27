@@ -70,6 +70,21 @@ class BackendUnavailableTest extends TestCase
         $this->assertFalse(BackendUnavailable::is(new PDOException($driverMessage.' in customer SQL')));
     }
 
+    public function test_transient_pdo_dns_failure_is_classified_without_accepting_permanent_host_errors(): void
+    {
+        $driverMessage = 'PDO::__construct(): php_network_getaddresses: getaddrinfo for mysql failed: Temporary failure in name resolution';
+
+        $this->assertTrue(BackendUnavailable::is(new PDOException($driverMessage)));
+        $this->assertTrue(BackendUnavailable::is(new QueryException(
+            'mysql', 'select ?', ['value'], new PDOException($driverMessage)
+        )));
+        $this->assertFalse(BackendUnavailable::is(new RuntimeException($driverMessage)));
+        $this->assertFalse(BackendUnavailable::is(new PDOException(
+            'PDO::__construct(): php_network_getaddresses: getaddrinfo for mysql failed: Name or service not known'
+        )));
+        $this->assertFalse(BackendUnavailable::is(new PDOException($driverMessage.' in customer SQL')));
+    }
+
     #[DataProvider('redisErrors')]
     public function test_only_redis_transport_failures_are_retryable(string $message, bool $retryable): void
     {

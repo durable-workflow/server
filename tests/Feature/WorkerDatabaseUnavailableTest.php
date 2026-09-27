@@ -28,7 +28,7 @@ class WorkerDatabaseUnavailableTest extends TestCase
 
     private string $failureQuery = 'workflow_worker_registrations';
 
-    private bool $unstructuredConnectionRefused = false;
+    private ?string $unstructuredPdoFailure = null;
 
     protected function setUp(): void
     {
@@ -39,8 +39,10 @@ class WorkerDatabaseUnavailableTest extends TestCase
 
         DB::connection()->beforeExecuting(function (string $query): void {
             if ($this->databaseUnavailable && str_contains($query, $this->failureQuery)) {
-                $exception = new PDOException('SQLSTATE[HY000] [2002] Connection refused');
-                if (! $this->unstructuredConnectionRefused) {
+                $exception = new PDOException(
+                    $this->unstructuredPdoFailure ?? 'SQLSTATE[HY000] [2002] Connection refused'
+                );
+                if ($this->unstructuredPdoFailure === null) {
                     $exception->errorInfo = ['HY000', 2002, 'private database connection refused'];
                 }
                 throw $exception;
@@ -188,10 +190,11 @@ class WorkerDatabaseUnavailableTest extends TestCase
             ->assertReferenceMatches('#/components/schemas/WorkerBackendUnavailable', json_decode($response->getContent()));
     }
 
-    public function test_activity_task_completion_connection_loss_returns_fenced_unknown_outcome(): void
+    #[DataProvider('unstructuredActivityCompletionFailures')]
+    public function test_activity_task_completion_connection_loss_returns_fenced_unknown_outcome(string $message): void
     {
         $this->failureQuery = 'workflow_tasks';
-        $this->unstructuredConnectionRefused = true;
+        $this->unstructuredPdoFailure = $message;
         $this->databaseUnavailable = true;
 
         $response = $this->postJson('/api/worker/activity-tasks/leased-task/complete', [
@@ -213,6 +216,16 @@ class WorkerDatabaseUnavailableTest extends TestCase
         $this->assertStringNotContainsString('SQLSTATE', $response->getContent());
         OpenApiSchema::fromFile(base_path('resources/platform-protocol-specs/worker-protocol-api.openapi.yaml'))
             ->assertReferenceMatches('#/components/schemas/WorkerBackendUnavailable', json_decode($response->getContent()));
+    }
+
+    public static function unstructuredActivityCompletionFailures(): array
+    {
+        return [
+            'refused connection' => ['SQLSTATE[HY000] [2002] Connection refused'],
+            'transient DNS failure' => [
+                'PDO::__construct(): php_network_getaddresses: getaddrinfo for mysql failed: Temporary failure in name resolution',
+            ],
+        ];
     }
 
     public function test_connection_loss_in_a_bootstrap_query_keeps_the_retry_contract(): void

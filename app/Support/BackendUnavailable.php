@@ -32,6 +32,16 @@ final class BackendUnavailable
                     return true;
                 }
 
+                // MySQL's DNS lookup can fail temporarily before PDO fills
+                // errorInfo. Keep this exact driver form distinct from a
+                // permanent unknown-host/configuration error.
+                if (preg_match(
+                    '/^(?:PDO::__construct\(\): )?php_network_getaddresses: getaddrinfo for [^\s]+ failed: Temporary failure in name resolution$/',
+                    $current->getMessage(),
+                ) === 1) {
+                    return true;
+                }
+
                 continue;
             }
 
