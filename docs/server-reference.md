@@ -112,8 +112,11 @@ curl -X POST http://localhost:8080/api/worker/register \
 #### Single-Node Production Compose
 
 This recipe is for a small self-hosted deployment on one Docker host. It keeps
-MySQL, Redis, and server storage in named volumes, exposes only the API port,
-and expects role-scoped credentials plus an exact image tag or digest.
+MySQL and Redis in named volumes, exposes only the API port, and expects
+role-scoped credentials plus an exact image tag or digest. The Compose file
+does not persist server-local payload files. For external payloads, configure
+[shared S3-compatible storage](contracts/external-payload-storage.md#self-hosted-backing-storage)
+reachable by every Server process.
 
 Create a production env file outside source control:
 
@@ -163,6 +166,9 @@ Persistence and backups:
   MySQL remains the source of truth for workflow history.
 - Keep a copy of the exact env file and image reference with each backup so a
   restore uses the same auth, database, and image contract.
+- External payload bytes are outside the MySQL and Redis volumes. Follow the
+  [online backup coordination procedure](contracts/external-payload-storage.md#coordinating-online-backups)
+  and verify a copy of the referenced objects before accepting a recovery point.
 
 Backup and restore examples:
 
