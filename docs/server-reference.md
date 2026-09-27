@@ -1302,11 +1302,12 @@ executed by recurring liveness/readiness probes.
 
 ### Dedicated Matching-Role Daemon
 
-By default every queue worker also runs the in-worker matching-role wake on
-every Looping event, which keeps the broad-poll repair sweep close to the
-workers that consume tasks. This is the in-worker shape of the matching role
-described in `vendor/durable-workflow/workflow/docs/architecture/task-matching.md`
-and is the right default for small deployments.
+By default every queue worker runs the in-worker matching-role wake on each
+Looping event for its Laravel queue. The published Compose scheduler also runs
+an unscoped repair pass every maintenance cycle. That pass covers remote SDK
+task queues, which need not match the Laravel queue name, and recovers their
+expired leases. This is the small-deployment shape of the matching role
+described in `vendor/durable-workflow/workflow/docs/architecture/task-matching.md`.
 
 Larger deployments can opt execution-only nodes out of the in-worker wake and
 run the broad sweep as a dedicated process. Set
@@ -1333,8 +1334,9 @@ docker compose \
 ```
 
 The override sets `DW_V2_MATCHING_ROLE_QUEUE_WAKE=false` on the `server`,
-`worker`, `scheduler`, and `matching` services so every long-running process
-reports the dedicated repair pass as the broad-poll wake owner. It adds a
+`worker`, `scheduler`, and `matching` services. This also skips the published
+Compose scheduler's unscoped pass, so the dedicated daemon is the sole broad
+sweep owner. It adds a
 `matching` service running `php artisan workflow:v2:repair-pass --loop` so the
 broad sweep runs in a dedicated process operators can scale and supervise
 independently of API ingress and execution workers. It also pins
@@ -1607,7 +1609,7 @@ inside the package's `config/workflows.php` via
 | `DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE` | `5000` | Package-level history-transaction event ceiling. |
 | `DW_V2_LIMIT_WARNING_THRESHOLD_PERCENT` | `80` | Percent of a structural limit at which the package warns. |
 | `DW_V2_TASK_DISPATCH_MODE` | `queue` | Package-level workflow-task dispatch mode. Usually overridden by the server via `DW_TASK_DISPATCH_MODE`. |
-| `DW_V2_MATCHING_ROLE_QUEUE_WAKE` | `true` | Whether queue workers run the in-worker matching-role wake on every Looping event. Set to `false` to opt execution-only nodes out of the broad-poll wake when a dedicated `php artisan workflow:v2:repair-pass --loop` daemon owns the sweep. |
+| `DW_V2_MATCHING_ROLE_QUEUE_WAKE` | `true` | Whether queue workers run the in-worker matching-role wake on every Looping event. In the supplied Compose stacks, `false` also skips the scheduler's unscoped repair pass. Set it to `false` only when a dedicated `php artisan workflow:v2:repair-pass --loop` daemon owns the sweep. |
 | `DW_V2_TASK_REPAIR_REDISPATCH_AFTER_SECONDS` | `3` | Seconds before an orphaned workflow task is redispatched. |
 | `DW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS` | `5` | Minimum seconds between successive task-repair passes. |
 | `DW_V2_TASK_REPAIR_SCAN_LIMIT` | `25` | Maximum tasks considered per task-repair pass. |

@@ -26,7 +26,15 @@ spec:
             - name: scheduler
               image: durableworkflow/server:2.4.18
               command: ["server-entrypoint"]
-              args: ["sh", "-c", "php artisan schedule:evaluate --limit=100 --json; php artisan activity:timeout-enforce --limit=100; if php artisan list --raw | grep -q '^external-payloads:cleanup '; then php artisan external-payloads:cleanup --limit=100 --json; fi; php artisan history:prune --limit=100"]
+              args:
+                - sh
+                - -c
+                - >-
+                  php artisan schedule:evaluate --limit=100 --json;
+                  if [ "$DW_V2_MATCHING_ROLE_QUEUE_WAKE" != "false" ] && [ "$DW_V2_MATCHING_ROLE_QUEUE_WAKE" != "0" ]; then php artisan workflow:v2:repair-pass --json; fi;
+                  php artisan activity:timeout-enforce --limit=100;
+                  if php artisan list --raw | grep -q '^external-payloads:cleanup '; then php artisan external-payloads:cleanup --limit=100 --json; fi;
+                  php artisan history:prune --limit=100
               envFrom:
                 - configMapRef:
                     name: durable-workflow-config

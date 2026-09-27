@@ -410,12 +410,19 @@ scheduler:
   activeDeadlineSeconds: 55
   backoffLimit: 1
 
-  # Default command runs schedule eval, activity timeouts, external-payload
-  # reclamation, and history pruning.
+  # Default command runs schedule eval, unscoped task repair, activity timeouts,
+  # external-payload reclamation, and history pruning. The repair pass is skipped
+  # when config.extraEnv.DW_V2_MATCHING_ROLE_QUEUE_WAKE is false or 0 because a
+  # separately supervised matching daemon must then own the broad sweep.
   args:
     - "sh"
     - "-c"
-    - "php artisan schedule:evaluate --limit=100 --json; php artisan activity:timeout-enforce --limit=100; if php artisan list --raw | grep -q '^external-payloads:cleanup '; then php artisan external-payloads:cleanup --limit=100 --json; fi; php artisan history:prune --limit=100"
+    - >-
+      php artisan schedule:evaluate --limit=100 --json;
+      if [ "$DW_V2_MATCHING_ROLE_QUEUE_WAKE" != "false" ] && [ "$DW_V2_MATCHING_ROLE_QUEUE_WAKE" != "0" ]; then php artisan workflow:v2:repair-pass --json; fi;
+      php artisan activity:timeout-enforce --limit=100;
+      if php artisan list --raw | grep -q '^external-payloads:cleanup '; then php artisan external-payloads:cleanup --limit=100 --json; fi;
+      php artisan history:prune --limit=100
 
   resources:
     requests:

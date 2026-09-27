@@ -103,8 +103,9 @@ services:
   scheduler:
     image: *server-image
     init: true
+    # Include an unscoped repair pass for remote SDK task queues.
     command: >-
-      sh -c 'while true; do php artisan schedule:evaluate --limit=100 --json; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100; sleep 1; done'
+      sh -c 'while true; do php artisan schedule:evaluate --limit=100 --json; if [ "$$DW_V2_MATCHING_ROLE_QUEUE_WAKE" != "false" ] && [ "$$DW_V2_MATCHING_ROLE_QUEUE_WAKE" != "0" ]; then php artisan workflow:v2:repair-pass --json; fi; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100; sleep 1; done'
     healthcheck:
       test: ["CMD", "server-process-healthcheck", "scheduler"]
       interval: 5s

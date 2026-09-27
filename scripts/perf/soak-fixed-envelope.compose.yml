@@ -18,6 +18,9 @@ services:
     cpus: 0.25
     mem_limit: 256m
     memswap_limit: 256m
+    # Freeze the scheduler work used by the active Server #137 comparison.
+    command: >-
+      sh -c 'while true; do php artisan schedule:evaluate --limit=100 --json; php artisan activity:timeout-enforce --limit=100; php artisan external-payloads:cleanup --limit=100 --json; php artisan history:prune --limit=100; sleep 10; done'
 
   mysql:
     image: mysql:8.4@sha256:679e7e924f38a3cbb62a3d7df32924b83f7321a602d3f9f967c01b3df18495d6
