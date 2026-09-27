@@ -82,14 +82,22 @@ verification.
   inclusive manual wall interval was **152 seconds**. It includes operator
   pauses and is one measured recovery, not an RTO commitment.
 - The restored timer remained waiting with its pre-backup history unchanged at
-  this checkpoint. Its real deadline still needs verification before Server
-  #236 is closed. The [in-flight activity follow-up](inflight/README.md)
-  records a missing automatic repair pass in the published Compose stack and
-  a successful candidate Compose correction in Server PR #241. That correction
+  this checkpoint. Its real deadline was 19:22:33 UTC and is being checked
+  separately. The [in-flight activity follow-up](inflight/README.md) records
+  a missing automatic repair pass in the published Compose stack and a
+  successful candidate Compose correction in Server PR #241. That correction
   is not yet a verified published release.
 
-The raw helpers are [drill.py](drill.py), [edge.py](edge.py), and
-[event-counts.py](event-counts.py). The SDK runner used
+An earlier three-workflow trial used Adobe S3Mock in place of SeaweedFS. Its
+restored timer fired at its original 19:06:21 UTC deadline and the published
+Python SDK worker completed it with the expected payload digest. The
+[post-timer result](first-pass-timer-after.json) and
+[event counts](first-pass-event-counts-after-timer.json) show one `TimerFired`
+and one `WorkflowCompleted` event for that run. This trial supports timer
+recovery but does not replace the SeaweedFS result above.
+
+The raw helpers are [drill.py](drill.py), [edge.py](edge.py),
+[event-counts.py](event-counts.py), and [timer-resume.py](timer-resume.py). The SDK runner used
 `DRILL_CONTROL_TOKEN` set to the synthetic operator token and
 `DRILL_WORKER_TOKEN` set to the synthetic worker token. The S3 helper used
 `DRILL_S3_ENDPOINT=http://seaweed:8333` and a mounted evidence directory.

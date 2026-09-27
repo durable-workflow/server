@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from collections import Counter
 
 from drill import client
@@ -16,7 +17,7 @@ IDS = (
 async def main():
     rows = {}
     async with client() as runtime:
-        for workflow_id in IDS:
+        for workflow_id in os.environ.get("DRILL_IDS", ",".join(IDS)).split(","):
             execution = await runtime.describe_workflow(workflow_id)
             history = await runtime.get_history(workflow_id, execution.run_id)
             if history.get("next_page_token"):
