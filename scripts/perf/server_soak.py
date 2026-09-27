@@ -1441,7 +1441,7 @@ def render_summary(summary: dict[str, Any]) -> str:
         "",
         f"Measured duration: {summary.get('duration_seconds')}s. {source_description}",
         f"HTTP memory slope: {summary.get('server_memory_slope_mb_hour')} MiB/h. Final Server cache keys: {summary.get('final_server_cache_keys')}.",
-        f"Final ready tasks: {summary.get('final_ready_tasks')}. Scheduler stopped for cache drain: {summary.get('drain_scheduler_stopped', False)}.",
+        f"Final ready tasks: {summary.get('final_ready_tasks')}. Scheduler running during load: {summary.get('scheduler_running_periodic_samples')}/{summary.get('periodic_sample_count')} samples. Stopped for cache drain: {summary.get('drain_scheduler_stopped', False)}.",
         f"Sampling: {summary.get('periodic_sample_count')}/{summary.get('expected_periodic_samples')}; unhealthy samples: {summary.get('sampling_health', {}).get('unhealthy_samples')}.",
         f"Sustained polling activity: {summary.get('polling_activity', 'not measured by this version')}.",
         "",
@@ -1726,6 +1726,9 @@ def main() -> int:
             "final_workflow_runs": final_workflow_runs,
             "final_ready_tasks": final_ready_tasks,
             "drain_scheduler_stopped": drain_scheduler_stopped,
+            "scheduler_running_periodic_samples": sum(
+                int(row.get("scheduler_running") == 1) for row in samples[:-1]
+            ),
             "workflow_growth": workflow_growth,
             "standard_workflows": standard_result,
             "resources": resource_summary(samples),
@@ -1781,9 +1784,14 @@ def main() -> int:
                 f"{sampling_health['unhealthy_samples']} compose-backed samples "
                 f"(field failures: {sampling_health.get('unhealthy_field_counts')})"
             )
-        for service in ("worker", "scheduler"):
-            if args.compose_project and final_sample.get(f"{service}_running") != 1:
-                failures.append(f"{service} was not running after the soak")
+        if args.compose_project and final_sample.get("worker_running") != 1:
+            failures.append("worker was not running after the soak")
+        if args.compose_project:
+            if drain_scheduler_stopped:
+                if summary["scheduler_running_periodic_samples"] != periodic_sample_count:
+                    failures.append("scheduler was not running throughout the measured load")
+            elif final_sample.get("scheduler_running") != 1:
+                failures.append("scheduler was not running after the soak")
         if max_server_memory_bytes > args.max_server_memory_mb * 1024 * 1024:
             failures.append(
                 f"server memory exceeded {args.max_server_memory_mb} MB "
