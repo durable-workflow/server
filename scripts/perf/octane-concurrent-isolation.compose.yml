@@ -1,0 +1,17 @@
+# Disposable Server #137 multi-worker isolation fixture.
+services:
+  server:
+    environment:
+      DW_ADMIN_TOKEN: probe-admin-token
+      DW_OPERATOR_TOKEN: probe-operator-token
+      DW_WORKER_TOKEN: probe-worker-token
+      DW_AUTH_BACKWARD_COMPATIBLE: 'false'
+    command:
+      - php
+      - artisan
+      - octane:start
+      - --server=swoole
+      - --host=0.0.0.0
+      - --port=8080
+      - --workers=4
+      - --max-requests=50

@@ -179,3 +179,32 @@ The probe creates disposable namespaces and pending workflows, then alternates
 210 control-plane requests across namespace and credential boundaries. It must
 report `result: pass`; any unexpected HTTP status or wrong-namespace response
 exits nonzero. Remove the entire Compose project and its volumes afterward.
+
+For a bounded concurrent isolation check, use a new project with the same
+published image digests and fixed envelope, replace the single-worker overlay
+with `scripts/perf/octane-concurrent-isolation.compose.yml`, and retain the
+selected Swoole or OpenSwoole overlay before it. The concurrent overlay sets
+four HTTP workers, 50 requests per worker, and synthetic role tokens. For
+example, with a unique `COMPOSE_PROJECT_NAME` and the three `DW_PROFILE_*_IMAGE`
+digests set as above:
+
+```sh
+export COMPOSE_FILE=scripts/perf/standard-workflow-profile.compose.yml:scripts/perf/standard-workflow-fixed-envelope.compose.yml:scripts/perf/octane-swoole-experiment.compose.yml:scripts/perf/octane-concurrent-isolation.compose.yml
+docker compose up -d --build --wait server worker
+docker run --rm --user 1000:1000 --network "${COMPOSE_PROJECT_NAME}_default" \
+  -e DW_PROBE_URL=http://server:8080 \
+  -e DW_PROBE_TOKEN=probe-admin-token \
+  -e DW_PROBE_WORKER_TOKEN=probe-worker-token \
+  --mount "type=bind,source=$PWD/scripts/perf/octane-concurrent-request-isolation.py,target=/probe.py,readonly" \
+  python:3.12-alpine python /probe.py
+docker compose down -v --remove-orphans
+```
+
+Repeat with `octane-openswoole-experiment.compose.yml` in a separate project.
+The probe sends 16 simultaneous requests for 40 rounds across two namespaces,
+mixing authorized, cross-namespace, invalid-token, and worker-role reads. It
+checks all 640 statuses and returned namespaces, then verifies authorized reads
+again. Inspect container health, restarts, and OOM state before cleanup. This
+only tests a small synthetic request-isolation fixture; long polls, database
+interruption, memory slope, sustained throughput, and full conformance still
+need separate evidence.
