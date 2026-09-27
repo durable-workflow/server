@@ -126,9 +126,11 @@ same fresh project, image tuple, limits, and poll count for each frontend.
 To measure HTTP headroom while polls wait, append
 `scripts/perf/poll-wait-apache-experiment.compose.yml` for the published Apache
 image, or `scripts/perf/poll-wait-fpm-experiment.compose.yml` after the FPM
-overlays. Set `DW_PROFILE_POLL_WAIT_LIMIT` to the desired experimental cap
-before `up`, and use the same file list for `run`. Both worker and query wait
-pools receive that experimental cap. The probe's 20-second maximum
+overlays. Set `DW_PROFILE_POLL_WAIT_WORKER_LIMIT` and
+`DW_PROFILE_POLL_WAIT_QUERY_LIMIT` to the desired experimental caps before `up`,
+and use the same file list for `run`. Workflow and activity polls share the
+worker cap; query polls have their own cap. Add both caps when reserving request
+workers or FPM children for ordinary API traffic. The probe's 20-second maximum
 keeps its one-shot registrations live without a separate heartbeat process.
 Sample `/api/ready` from another container on the same Compose network while
 the polls are held; record its timeouts and response times alongside the probe
@@ -149,9 +151,12 @@ and installs pinned Octane dependencies on PHP 8.3.33 ZTS; its PHP extensions
 are built separately from the published Apache image. The candidate starts four
 Octane workers by default. For eight concurrent idle polls, additionally append
 `scripts/perf/poll-wait-octane-experiment.compose.yml` and set
-`DW_PROFILE_POLL_WAIT_LIMIT=8`; that overlay starts 12 workers to leave HTTP
-headroom. Do not raise the admission cap above the available worker count and
-call a queued request a successful wait. A canary and idle-poll pass are only
+`DW_PROFILE_POLL_WAIT_WORKER_LIMIT=6` and
+`DW_PROFILE_POLL_WAIT_QUERY_LIMIT=2`; that overlay starts 12 workers, admitting
+six workflow/activity polls and two query polls while leaving four workers for
+ordinary requests. Keep the sum of the two caps below the available worker
+count and record both values with each run. A queued request is not a successful
+wait. A canary and idle-poll pass are only
 setup evidence: persistent-worker state isolation, backend interruption,
 repeatable throughput, and bounded memory still require qualification before
 any runtime recommendation.
