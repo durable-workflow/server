@@ -10,6 +10,23 @@ use Throwable;
 
 final class BackendUnavailable
 {
+    public static function discoveryResponse(Request $request): ?JsonResponse
+    {
+        if (! $request->isMethod('GET')
+            || ! $request->is('api/cluster/info')
+            || ControlPlaneProtocol::requestVersion($request) !== ControlPlaneProtocol::VERSION) {
+            return null;
+        }
+
+        return ControlPlaneProtocol::jsonForRequest($request, [
+            'reason' => 'backend_unavailable',
+            'message' => 'A required backend is temporarily unavailable. Retry discovery with backoff.',
+            'operation' => 'cluster_info',
+            'retryable' => true,
+            'retry_after_seconds' => 1,
+        ], 503)->header('Retry-After', '1');
+    }
+
     public static function is(Throwable $exception): bool
     {
         for ($current = $exception; $current !== null; $current = $current->getPrevious()) {

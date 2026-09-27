@@ -42,9 +42,12 @@ return Application::configure(basePath: dirname(__DIR__))
     })
     ->withExceptions(function (Exceptions $exceptions) {
         $exceptions->render(function (Throwable $exception, Request $request) {
-            return BackendUnavailable::is($exception)
-                ? BackendUnavailable::workerResponse($request)
-                : null;
+            if (! BackendUnavailable::is($exception)) {
+                return null;
+            }
+
+            return BackendUnavailable::workerResponse($request)
+                ?? BackendUnavailable::discoveryResponse($request);
         });
 
         $exceptions->render(function (NamespaceDurableStateException $exception, Request $request) {

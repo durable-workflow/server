@@ -82,6 +82,24 @@ class WorkerDatabaseUnavailableTest extends TestCase
         ];
     }
 
+    public function test_cluster_discovery_reports_backend_loss_before_worker_completion(): void
+    {
+        $this->failureQuery = 'workflow_namespaces';
+        $this->databaseUnavailable = true;
+
+        $response = $this->getJson('/api/cluster/info', $this->apiHeaders());
+
+        $response->assertStatus(503)
+            ->assertHeader('X-Durable-Workflow-Control-Plane-Version', '2')
+            ->assertHeader('Retry-After', '1')
+            ->assertJsonPath('reason', 'backend_unavailable')
+            ->assertJsonPath('operation', 'cluster_info')
+            ->assertJsonPath('retryable', true)
+            ->assertJsonPath('retry_after_seconds', 1);
+        $this->assertStringNotContainsString('private database', $response->getContent());
+        $this->assertStringNotContainsString('SQLSTATE', $response->getContent());
+    }
+
     public function test_redis_connection_loss_during_coordinated_poll_preserves_poll_identity(): void
     {
         $store = Mockery::mock(ActivityTaskPollRequestStore::class);
