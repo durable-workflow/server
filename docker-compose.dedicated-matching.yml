@@ -2,9 +2,9 @@ name: durable-workflow-server
 
 # Compose override that enables the dedicated matching-role daemon shape on
 # top of `docker-compose.published.yml`. The default shape runs the in-worker
-# matching-role wake on every Looping event, which is the right default for
-# small deployments. Larger deployments can opt execution-only workers out of
-# the broad-poll wake and let a single dedicated daemon own the sweep.
+# matching-role wake on every Looping event and an unscoped scheduler repair
+# pass for remote SDK queues. Larger deployments can opt execution-only workers
+# out of the wake and let a single dedicated daemon own the broad sweep.
 #
 # Usage:
 #   docker compose \
@@ -20,8 +20,8 @@ name: durable-workflow-server
 #     so process-local matching-role diagnostics consistently report the
 #     dedicated repair pass as the broad-poll wake owner instead of implying
 #     an in-worker wake loop on HTTP, scheduler, or matching-only nodes
-#   - execution-only workers therefore no longer broad-poll the durable task
-#     table on every Looping event
+#   - execution-only workers no longer poll the durable task table on every
+#     Looping event; the published scheduler also skips its unscoped pass
 #   - adds a `matching` service running `php artisan workflow:v2:repair-pass
 #     --loop` so the broad sweep runs in a dedicated process the operator can
 #     scale and observe independently

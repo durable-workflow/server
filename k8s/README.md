@@ -47,8 +47,8 @@ The included contract is deliberately bounded:
 - `k8s/server-deployment.yaml` exposes `/api/health` for liveness and
   `/api/ready` for usable readiness;
 - `k8s/worker-deployment.yaml` runs the queue worker;
-- `k8s/scheduler-cronjob.yaml` runs recurring schedule, timeout, and retention
-  maintenance;
+- `k8s/scheduler-cronjob.yaml` runs recurring schedule, unscoped task repair,
+  timeout, and retention maintenance;
 - `k8s/secret.yaml` separates public config from app-level secrets and refers
   to externally managed database and Redis credentials.
 

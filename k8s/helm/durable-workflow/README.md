@@ -124,7 +124,7 @@ Driver, or any GitOps secret bridge that produces a Kubernetes `Secret`.
 | `Ingress` (`*-server`) | Optional. | `server.ingress.enabled: false` (default) |
 | `HorizontalPodAutoscaler` (`*-server`) | Optional. | `server.autoscaling.enabled: false` (default) |
 | `Deployment` (`*-worker`) | Worker pool. Independent scale axis. | `worker.enabled: false` |
-| `CronJob` (`*-scheduler`) | Singleton scheduler/maintenance runner. **`concurrencyPolicy: Forbid`** is enforced — see below. | `scheduler.enabled: false` |
+| `CronJob` (`*-scheduler`) | Singleton scheduler/maintenance runner, including unscoped repair for expired remote SDK task leases. **`concurrencyPolicy: Forbid`** is enforced — see below. | `scheduler.enabled: false` |
 | `ConfigMap` (`*-config`) | All non-secret config (DB host, Redis host, auth driver, metrics knobs). | Always rendered. |
 | `Secret` (`*-app-secrets`) | Server signing key, role-scoped tokens, and named principal token map. | `auth.existingSecret` is set. |
 | `Secret` (`*-database`) | DB username/password. | `externalDatabase.existingSecret` is set. |

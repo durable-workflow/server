@@ -103,8 +103,10 @@ services:
     image: *server-image
     platform: ${DW_SERVER_PLATFORM:-}
     init: true
+    # Remote SDK queues can differ from the Laravel queue worker's Looping scope.
+    # The dedicated matching override disables this unscoped scheduler pass.
     command: >-
-      sh -c 'while true; do php artisan schedule:evaluate --limit=100 --json; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100; sleep 10; done'
+      sh -c 'while true; do php artisan schedule:evaluate --limit=100 --json; if [ "$$DW_V2_MATCHING_ROLE_QUEUE_WAKE" != "false" ] && [ "$$DW_V2_MATCHING_ROLE_QUEUE_WAKE" != "0" ]; then php artisan workflow:v2:repair-pass --json; fi; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100; sleep 10; done'
     healthcheck:
       test: ["CMD", "server-process-healthcheck", "scheduler"]
       interval: 5s

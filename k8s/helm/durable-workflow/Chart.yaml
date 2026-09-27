@@ -36,4 +36,4 @@ annotations:
   # Free-form changelog for the current chart release shown by Artifact Hub.
   artifacthub.io/changes: |
     - kind: changed
-      description: Update the default Server image to 2.4.19.
+      description: Update the default Server image to 2.4.19 with the scheduler task repair for expired remote SDK activity leases.
