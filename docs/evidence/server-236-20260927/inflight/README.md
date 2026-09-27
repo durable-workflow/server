@@ -49,7 +49,6 @@ exactly one `WorkflowCompleted` event. `ActivityStarted` appeared twice, which
 is the expected retry after restoring an in-flight lease. The restored
 historical backup hold was released after validation.
 
-This second pass verifies the candidate Compose configuration against the
-failed recovery path. PR #241 must pass review and be released, then the
-published artifact must be checked before #236 can claim automatic recovery
-for the supported stack.
+This second pass verified the candidate Compose configuration against the
+failed recovery path. The [published Server 2.4.19 recheck](../published-2419/README.md)
+then verified the released digest and automatic recovery in a fresh restore.

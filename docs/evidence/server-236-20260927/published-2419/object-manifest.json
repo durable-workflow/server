@@ -1,0 +1,20 @@
+[
+  {
+    "bytes": 10960,
+    "file": "bb685425b2dc131ed22669e7d1cae6e36d8ddc10424ca58157a7d142eade3fa4",
+    "key": "namespaces/default/avro/13/135a6d98b2256f39af6c6c983e17f04ab41f9ed46b28bc23a00a066de3c60457",
+    "sha256": "135a6d98b2256f39af6c6c983e17f04ab41f9ed46b28bc23a00a066de3c60457"
+  },
+  {
+    "bytes": 10956,
+    "file": "f2dc0ab6d63061831c43edc9ceb2928768df7f3827747f3ba10109cdaeca1175",
+    "key": "namespaces/default/avro/38/380951a0521d3ceb7e80483e896f9990a7beb0b258311a964c9fdb95371ed50b",
+    "sha256": "380951a0521d3ceb7e80483e896f9990a7beb0b258311a964c9fdb95371ed50b"
+  },
+  {
+    "bytes": 10956,
+    "file": "23901fc213f7a191d2a38d287d405b1f874d39a425eb0c8cf3c5c9dc53a95875",
+    "key": "namespaces/default/avro/5d/5d572254c9896ba40fb5e80addb281b68b82ee13319435ad5ddac2a0104f0d73",
+    "sha256": "5d572254c9896ba40fb5e80addb281b68b82ee13319435ad5ddac2a0104f0d73"
+  }
+]

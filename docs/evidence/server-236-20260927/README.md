@@ -89,8 +89,9 @@ verification.
   one `WorkflowCompleted` for the timer, with the other three workflows still
   completed exactly once. The [in-flight activity follow-up](inflight/README.md)
   records a missing automatic repair pass in the published Compose stack and
-  a successful candidate Compose correction in Server PR #241. That correction
-  is not yet a verified published release.
+  a successful candidate Compose correction in Server PR #241. The
+  [published Server 2.4.19 recheck](published-2419/README.md) verifies the
+  released digest and automatic recovery in a fresh restore.
 
 An earlier three-workflow trial used Adobe S3Mock in place of SeaweedFS. Its
 restored timer fired at its original 19:06:21 UTC deadline and the published
