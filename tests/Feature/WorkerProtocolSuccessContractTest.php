@@ -2389,6 +2389,10 @@ class WorkerProtocolSuccessContractTest extends TestCase
 
     public function test_service_mode_poll_dispatches_timer_job_on_local_queue(): void
     {
+        Carbon::setTestNow(Carbon::parse('2026-09-27 13:55:00.554193 UTC'));
+        $this->beforeApplicationDestroyed(static function (): void {
+            Carbon::setTestNow();
+        });
         Queue::fake();
 
         config([
@@ -2433,7 +2437,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
             'commands' => [
                 [
                     'type' => 'start_timer',
-                    'delay_seconds' => 0,
+                    'delay_seconds' => 30,
                 ],
             ],
         ], $this->workerProtocolHeaders());
@@ -2448,7 +2452,9 @@ class WorkerProtocolSuccessContractTest extends TestCase
         Queue::assertPushed(
             RunTimerTask::class,
             static fn (RunTimerTask $job): bool => $job->taskId === $timerTaskId
-                && $job->queue === null,
+                && $job->queue === null
+                && $job->delay instanceof Carbon
+                && $job->delay->equalTo(Carbon::parse('2026-09-27 13:55:31 UTC')),
         );
     }
 

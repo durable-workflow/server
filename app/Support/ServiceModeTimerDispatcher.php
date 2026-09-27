@@ -79,7 +79,9 @@ class ServiceModeTimerDispatcher
             // Timer jobs are server infrastructure work; external workflow
             // task queues remain HTTP-polled by user workers in service mode.
             if ($task->available_at !== null && $task->available_at->isFuture()) {
-                $job->delay(TimerTransportChunker::cappedDispatchDelay($task->available_at, $task->connection));
+                // Queue backends store second-resolution deadlines; never wake before the durable timer.
+                $availableAt = $task->available_at->copy()->ceilSecond();
+                $job->delay(TimerTransportChunker::cappedDispatchDelay($availableAt, $task->connection));
             }
 
             app(BusDispatcher::class)->dispatch($job);
