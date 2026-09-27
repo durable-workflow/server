@@ -10,6 +10,7 @@ This is a bounded first measurement for [Server #237](https://github.com/durable
 | MySQL | Published 8.4 image `sha256:679e7e924f38a3cbb62a3d7df32924b83f7321a602d3f9f967c01b3df18495d6` |
 | Redis | Published 7.2 image `sha256:0637954999d01b7c9ce9167db2da50656e2590d3b884f1c600c5f63bb6e6773c` |
 | SDK | Published Python SDK 2.3.4 dependencies with candidate `sdk-python` source commit `bb4dd8d` bind-mounted for paginated history and result retrieval, tracked by [SDK #81](https://github.com/durable-workflow/sdk-python/issues/81) |
+| Published recheck SDK | Python SDK 2.3.5 from PyPI, wheel SHA-256 `1db40895ed81d6df44a6e62db3305fa6ec01fce41296acf2a0beafb17e6e685f`, released from source commit `53e7ddd57c1a31aa4ec6ce4395e50d3018c409e9` |
 | Host | Four-core Intel i5-6500, 15 GiB RAM, x86-64, local Docker |
 | Limits | Probe container: 1 CPU and 1 GiB. Server, MySQL, Redis, worker, and scheduler used Compose defaults without explicit CPU/memory caps. |
 | Auth | Synthetic role-scoped token credentials, `DW_AUTH_BACKWARD_COMPATIBLE=false`, local-only API port `127.0.0.1:18237` |
@@ -37,6 +38,24 @@ docker compose --env-file "$RUN_ENV" \
 ## Observed result
 
 The [raw JSON](history-probe-1050.json) reports 1,092 ordered history events in two API pages: 1,050 `SideEffectRecorded`, 13 each of `ActivityScheduled`, `ActivityStarted`, and `ActivityCompleted`, one accepted start, one workflow start, and one workflow completion. The result was `550725`, the expected sum of integers 0 through 1,049. Worker execution took 261.24 seconds and the probe process peaked at 54,392 KiB RSS by the time its worker stopped. This is one local diagnostic run, without repetition or a baseline. It does not establish throughput, a recommended history limit, or a Server memory ceiling.
+
+After Python SDK 2.3.5 published, a fresh stack used the same Server/MySQL/Redis digests and resource limits. Build and run the exact published package without a source mount:
+
+```bash
+docker compose --env-file "$RUN_ENV" \
+  -f docker-compose.published.yml -f docs/evidence/server-237-20260927/compose.yml \
+  up -d --wait server worker scheduler
+docker compose --env-file "$RUN_ENV" \
+  -f docker-compose.published.yml -f docs/evidence/server-237-20260927/compose.yml \
+  build --build-arg PYTHON_SDK_VERSION=2.3.5 probe
+docker compose --env-file "$RUN_ENV" \
+  -f docker-compose.published.yml -f docs/evidence/server-237-20260927/compose.yml \
+  run --rm --no-deps -e PROBE_RUN_ID=published235 probe 1050
+```
+
+The [published-package raw result](history-probe-1050-published-235.json) again records 1,092 ordered events in two pages and the exact result `550725`, with 13 completed activities. The worker took 273.90 seconds and the probe process peaked at 52,760 KiB RSS. These two runs are not controlled repetitions because the SDK source changed. They verify that the released package can retrieve a terminal event beyond the first history page.
+
+Published PHP SDK 2.1.5 (Packagist source `d664c865c8b9b352eb79abd27ee3141a87a1924f`) read the same completed run and returned `550725` from both the description and `workflowResult()`. Its `workflowHistory()` returned the first 100 events with a next-page token; the [raw output](php-result-215.json) records that distinction. This scalar-result check found no PHP result defect. It does not cover large external result payloads or a failure event on a later page.
 
 Two smaller observations exposed limits in the measurement path:
 
