@@ -1,0 +1,5 @@
+server-2424-ext-20260928t1936-server-1 | 0.01% | 77.3MiB / 15.48GiB | 5
+server-2424-ext-20260928t1936-worker-1 | 0.65% | 74.9MiB / 15.48GiB | 1
+server-2424-ext-20260928t1936-scheduler-1 | 43.79% | 2.176MiB / 15.48GiB | 3
+server-2424-ext-20260928t1936-mysql-1 | 1.37% | 555.8MiB / 15.48GiB | 44
+server-2424-ext-20260928t1936-redis-1 | 0.17% | 3.293MiB / 15.48GiB | 5

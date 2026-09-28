@@ -1,0 +1,19 @@
+{
+  "mediaType": "application/vnd.oci.image.index.v1+json",
+  "manifests": [
+    {
+      "digest": "sha256:76461d6e6fb72f73671a43c0ccbebf7131c79f3cdef283bb94b48e6b1d14bfad",
+      "platform": {
+        "architecture": "amd64",
+        "os": "linux"
+      }
+    },
+    {
+      "digest": "sha256:cfdb97a6573943de474973e34b926baede41ed5a2382a737c07dc169a7e75547",
+      "platform": {
+        "architecture": "arm64",
+        "os": "linux"
+      }
+    }
+  ]
+}
