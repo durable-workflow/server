@@ -879,6 +879,8 @@ def run_in_composer_container(root: Path, workdir: Path, command: list[str], *, 
         docker,
         "run",
         "--rm",
+        "--user",
+        f"{os.getuid()}:{os.getgid()}",
         "-v",
         f"{root}:/work",
         "-w",
@@ -1403,7 +1405,7 @@ waterline_key_status=not_invoked
 waterline_migrate_status=not_invoked
 waterline_command_status=not_invoked
 waterline_report_validation_status=not_invoked
-if docker run --rm -v "$waterline_app:/app" -w /app composer:2 \
+if docker run --rm --user "$(id -u):$(id -g)" -v "$waterline_app:/app" -w /app composer:2 \
   composer create-project laravel/laravel . --no-interaction --no-progress \
   > "$result_dir/waterline-create-project.log" 2>&1; then
   waterline_create_status=0
@@ -1415,7 +1417,7 @@ if [[ "$waterline_create_status" == 0 ]]; then
   mkdir -p "$waterline_app/database"
   : > "$waterline_app/database/database.sqlite"
 
-  if docker run --rm -v "$waterline_app:/app" -w /app composer:2 \
+  if docker run --rm --user "$(id -u):$(id -g)" -v "$waterline_app:/app" -w /app composer:2 \
     composer require --no-interaction --no-progress \
       "durable-workflow/waterline:${waterline_version}@beta" \
       "durable-workflow/workflow:${workflow_php_version}@beta" \
@@ -1429,6 +1431,7 @@ fi
 
 if [[ "$waterline_require_status" == 0 ]]; then
   if docker run --rm \
+    --user "$(id -u):$(id -g)" \
     -v "$waterline_app:/app" \
     -w /app \
     -e DB_CONNECTION=sqlite \
@@ -1445,6 +1448,7 @@ fi
 
 if [[ "$waterline_key_status" == 0 ]]; then
   if docker run --rm \
+    --user "$(id -u):$(id -g)" \
     -v "$waterline_app:/app" \
     -w /app \
     -e DB_CONNECTION=sqlite \
@@ -1461,6 +1465,7 @@ fi
 
 if [[ "$waterline_migrate_status" == 0 ]]; then
   if docker run --rm \
+    --user "$(id -u):$(id -g)" \
     -v "$waterline_app:/app" \
     -v "$result_dir:/result" \
     -w /app \
@@ -2140,6 +2145,8 @@ def run_php_code(code: str, env: dict[str, str], *, timeout: int = 45) -> subpro
         docker,
         "run",
         "--rm",
+        "--user",
+        f"{os.getuid()}:{os.getgid()}",
         "--network",
         "host",
         "-v",
