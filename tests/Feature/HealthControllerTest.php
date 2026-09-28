@@ -749,6 +749,7 @@ class HealthControllerTest extends TestCase
         $this->assertIsArray($diagnostic);
         $this->assertSame('connecting', $diagnostic['last_stage']);
         $this->assertSame(12, $diagnostic['child_stage_elapsed_ms']);
+        $this->assertSame(['entry' => 0, 'connecting' => 12], $diagnostic['stages_ms']);
         $this->assertGreaterThanOrEqual(1500, $diagnostic['parent_elapsed_ms']);
         $this->assertArrayHasKey('spawn_elapsed_ms', $diagnostic);
         $this->assertStringNotContainsString($secret, json_encode($diagnostic, JSON_THROW_ON_ERROR));
@@ -774,6 +775,7 @@ class HealthControllerTest extends TestCase
 
         $this->assertIsArray($diagnostic);
         $this->assertSame('connected', $diagnostic['last_stage']);
+        $this->assertSame(['connected' => 15], $diagnostic['stages_ms']);
         $this->assertStringNotContainsString($secret, json_encode($diagnostic, JSON_THROW_ON_ERROR));
     }
 
