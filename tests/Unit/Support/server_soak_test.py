@@ -19,6 +19,39 @@ spec.loader.exec_module(server_soak)
 
 
 class WorkflowGrowthResultGateTest(unittest.TestCase):
+    def test_synthetic_starts_follow_the_configured_offer_schedule(self) -> None:
+        class Clock:
+            now = 0.0
+
+            def sleep(self, seconds: float) -> None:
+                self.now += seconds
+
+        clock = Clock()
+        offered_at = []
+
+        def start_request(*_args):
+            offered_at.append(clock.now)
+            return 201, {}
+
+        with patch.object(server_soak.time, "monotonic", side_effect=lambda: clock.now), \
+             patch.object(server_soak.time, "sleep", side_effect=clock.sleep), \
+             patch.object(server_soak, "http_json", side_effect=start_request):
+            server_soak.workflow_start_loop(
+                stop_at=1.0,
+                load_started_at=0.0,
+                base_url="http://fixture",
+                token="fixture-token",
+                workers=[("namespace", "queue", "worker")],
+                target_runs=5,
+                start_concurrency=1,
+                start_interval_ms=200,
+                worker_index=0,
+                endpoint_metrics=server_soak.EndpointMetrics(),
+                errors_path=Path("unused-errors.jsonl"),
+            )
+
+        self.assertEqual([0.0, 0.2, 0.4, 0.6, 0.8], [round(value, 1) for value in offered_at])
+
     def test_healthy_shared_runner_contention_meets_completion_floor(self) -> None:
         result, failures = server_soak.evaluate_workflow_growth(
             target_runs=1000,
