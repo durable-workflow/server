@@ -1,0 +1,22 @@
+{
+    "run_id": "01m3kcm8gm8rjyx99dkhfmthdm",
+    "status": "pending",
+    "last_history_sequence": 2,
+    "message_cursor_position": 0,
+    "history_event_rows": 2,
+    "history_event_types": {
+        "StartAccepted": 1,
+        "WorkflowStarted": 1
+    },
+    "timeline_rows": 2,
+    "signals_received": 0,
+    "signals_applied": 0,
+    "signals_rejected": 0,
+    "open_tasks": 1,
+    "commands_accepted": 1,
+    "commands_rejected": 0,
+    "summary_event_count": 2,
+    "summary_size_bytes": 2558,
+    "summary_pressure": "ok",
+    "summary_continue_as_new": false
+}

@@ -1,0 +1,24 @@
+{
+    "run_id": "01m3kak9kkp251ce03gnmzf35m",
+    "status": "waiting",
+    "last_history_sequence": 5003,
+    "message_cursor_position": 0,
+    "history_event_rows": 5003,
+    "history_event_types": {
+        "StartAccepted": 1,
+        "WorkflowStarted": 1,
+        "ConditionWaitOpened": 1,
+        "SignalReceived": 5000
+    },
+    "timeline_rows": 5003,
+    "signals_received": 5000,
+    "signals_applied": 0,
+    "signals_rejected": 8,
+    "open_tasks": 1,
+    "commands_accepted": 5001,
+    "commands_rejected": 8,
+    "summary_event_count": 5003,
+    "summary_size_bytes": 6775727,
+    "summary_pressure": "continue_as_new_recommended",
+    "summary_continue_as_new": true
+}

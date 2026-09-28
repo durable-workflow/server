@@ -1,0 +1,6 @@
+[Mon Sep 28 06:53:52.454614 2026] [php:error] [pid 25:tid 25] [client 172.19.0.7:46384] PHP Fatal error:  Maximum execution time of 30 seconds exceeded in /app/vendor/laravel/framework/src/Illuminate/Validation/ValidationRuleParser.php on line 167
+[Mon Sep 28 06:53:52.454676 2026] [php:notice] [pid 25:tid 25] [client 172.19.0.7:46384] qualification_complete_peak_bytes=24641536 final_bytes=22020096
+[Mon Sep 28 06:54:22.604369 2026] [php:error] [pid 52:tid 52] [client 172.19.0.7:57192] PHP Fatal error:  Maximum execution time of 30 seconds exceeded in /app/vendor/laravel/framework/src/Illuminate/Validation/ValidationRuleParser.php on line 167
+[Mon Sep 28 06:54:22.604470 2026] [php:notice] [pid 52:tid 52] [client 172.19.0.7:57192] qualification_complete_peak_bytes=24641536 final_bytes=22020096
+[Mon Sep 28 06:54:52.791222 2026] [php:error] [pid 25:tid 25] [client 172.19.0.7:43302] PHP Fatal error:  Maximum execution time of 30 seconds exceeded in /app/vendor/laravel/framework/src/Illuminate/Validation/ValidationRuleParser.php on line 167
+[Mon Sep 28 06:54:52.791279 2026] [php:notice] [pid 25:tid 25] [client 172.19.0.7:43302] qualification_complete_peak_bytes=24641536 final_bytes=22020096

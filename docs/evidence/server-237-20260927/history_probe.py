@@ -18,14 +18,14 @@ def boundary(index):
 
 @workflow.defn(name="history-qualification-side-effects")
 class SideEffectHistory:
-    def run(self, ctx, count):
+    def run(self, ctx, count, activity_interval=75):
         total = 0
         for index in range(count):
             recorded = yield ctx.side_effect(lambda value=index: value)
             if recorded != index:
                 raise ValueError(f"side effect {index} replayed as {recorded!r}")
             total += recorded
-            if (index + 1) % 75 == 0 and index + 1 < count:
+            if (index + 1) % activity_interval == 0 and index + 1 < count:
                 acknowledged = yield ctx.schedule_activity("history-qualification-boundary", [index])
                 if acknowledged != index:
                     raise ValueError(f"activity boundary {index} returned {acknowledged!r}")
@@ -35,6 +35,12 @@ class SideEffectHistory:
 async def main(count):
     if count < 1 or count > 12000:
         raise ValueError("count must be in [1, 12000]")
+    worker_timeout = int(os.environ.get("PROBE_WORKER_TIMEOUT_SECONDS", "900"))
+    if worker_timeout < 1 or worker_timeout > 3600:
+        raise ValueError("PROBE_WORKER_TIMEOUT_SECONDS must be in [1, 3600]")
+    activity_interval = int(os.environ.get("PROBE_ACTIVITY_INTERVAL", "75"))
+    if activity_interval < 1 or activity_interval > 1000:
+        raise ValueError("PROBE_ACTIVITY_INTERVAL must be in [1, 1000]")
     run_id = os.environ.get("PROBE_RUN_ID", "first")
     workflow_id = f"history-qualification-side-effects-{count}-{run_id}"
     queue = f"history-qualification-{count}-{run_id}"
@@ -49,13 +55,13 @@ async def main(count):
             workflow_type="history-qualification-side-effects",
             task_queue=queue,
             workflow_id=workflow_id,
-            input=[count],
+            input=[count] if activity_interval == 75 else [count, activity_interval],
             execution_timeout_seconds=3600,
             run_timeout_seconds=3600,
         )
         started = time.monotonic()
         worker = Worker(client, task_queue=queue, workflows=[SideEffectHistory], activities=[boundary])
-        await worker.run_until(workflow_id=workflow_id, timeout=900)
+        await worker.run_until(workflow_id=workflow_id, timeout=worker_timeout)
         finished = time.monotonic()
         worker_peak_rss_kib = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         execution = await client.describe_workflow(workflow_id)
@@ -86,7 +92,7 @@ async def main(count):
         result = await handle.result(timeout=30)
         if result != count * (count - 1) // 2:
             raise ValueError(f"wrong result: {result!r}; status={execution.status}; events={dict(types)}; output={execution.output!r}")
-        expected_activities = (count - 1) // 75
+        expected_activities = (count - 1) // activity_interval
         if (
             types["SideEffectRecorded"] != count
             or types["WorkflowCompleted"] != 1
@@ -100,9 +106,11 @@ async def main(count):
             "workflow_id": workflow_id,
             "run_id": execution.run_id,
             "count": count,
+            "activity_interval": activity_interval,
             "result": result,
             "start_to_worker_seconds": started - start,
             "worker_seconds": finished - started,
+            "worker_timeout_seconds": worker_timeout,
             "event_count": event_count,
             "history_pages": page_count,
             "event_types": dict(types),
