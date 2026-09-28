@@ -333,6 +333,46 @@ class WorkerProtocolContractTest extends TestCase
         );
     }
 
+    public function test_large_completion_batch_preserves_late_command_validation_and_reaches_ownership(): void
+    {
+        $commands = array_fill(0, 500, [
+            'type' => 'record_side_effect',
+            'result' => 1,
+        ]);
+        unset($commands[26]['type']);
+        $commands[497]['workflow_stream'] = ['operation' => 'append'];
+        $commands[498]['principal_subject'] = 'forbidden';
+        $commands[499]['retry_policy'] = ['max_attempts' => 'invalid'];
+
+        $payload = [
+            'lease_owner' => '',
+            'workflow_task_attempt' => 1,
+            'commands' => $commands,
+        ];
+
+        $invalid = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/missing-task/complete', $payload);
+
+        $invalid->assertUnprocessable()
+            ->assertJsonPath('reason', 'validation_failed');
+        $this->assertArrayHasKey('lease_owner', $invalid->json('validation_errors'));
+        $this->assertArrayHasKey('commands.26.type', $invalid->json('validation_errors'));
+        $this->assertArrayHasKey('commands.497.workflow_stream.stream_name', $invalid->json('validation_errors'));
+        $this->assertArrayHasKey('commands.498.principal_subject', $invalid->json('validation_errors'));
+        $this->assertArrayHasKey('commands.499.retry_policy.max_attempts', $invalid->json('validation_errors'));
+
+        $payload['lease_owner'] = 'large-batch-worker';
+        $payload['commands'][26]['type'] = 'record_side_effect';
+        unset($payload['commands'][497]['workflow_stream']);
+        unset($payload['commands'][498]['principal_subject']);
+        unset($payload['commands'][499]['retry_policy']);
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/missing-task/complete', $payload)
+            ->assertNotFound()
+            ->assertJsonPath('reason', 'task_not_found');
+    }
+
     public function test_parallel_group_ingress_rejects_incomplete_top_level_metadata(): void
     {
         $entry = [

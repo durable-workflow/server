@@ -1,0 +1,2 @@
+[Mon Sep 28 07:20:19.576176 2026] [php:notice] [pid 35:tid 35] [client 172.19.0.7:45996] qualification_complete_peak_bytes=16777216 final_bytes=16777216
+[Mon Sep 28 07:20:44.642774 2026] [php:notice] [pid 35:tid 35] [client 172.19.0.7:45996] qualification_complete_peak_bytes=29360128 final_bytes=29360128
