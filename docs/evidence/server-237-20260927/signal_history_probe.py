@@ -21,15 +21,19 @@ class SignalHistory:
     def __init__(self):
         self.seen = set()
         self.total = 0
+        self.payload_bytes = 0
 
     @workflow.signal("append")
-    def append(self, index):
+    def append(self, index, payload=None):
         if index in self.seen:
             raise ValueError(f"duplicate signal index: {index}")
+        if self.payload_bytes and payload != "p" * self.payload_bytes:
+            raise ValueError(f"signal {index} payload did not survive replay")
         self.seen.add(index)
         self.total += index
 
-    def run(self, ctx, target, mixed_interval=0, continue_new=False, stage=0, carried_total=0):
+    def run(self, ctx, target, mixed_interval=0, continue_new=False, stage=0, carried_total=0, payload_bytes=0):
+        self.payload_bytes = payload_bytes
         if stage == 1:
             return {"count": target, "total": carried_total}
 
@@ -62,12 +66,25 @@ async def main(target):
     if mixed_interval < 0 or mixed_interval > target:
         raise ValueError("PROBE_MIXED_INTERVAL must be in [0, target]")
     continue_as_new = os.environ.get("PROBE_CONTINUE_AS_NEW") == "1"
+    payload_bytes = int(os.environ.get("PROBE_SIGNAL_PAYLOAD_BYTES", "0"))
+    if payload_bytes < 0 or payload_bytes > 1024 * 1024:
+        raise ValueError("PROBE_SIGNAL_PAYLOAD_BYTES must be in [0, 1048576]")
     resume_run_id = os.environ.get("PROBE_RESUME_INITIAL_RUN_ID")
     worker_window = int(os.environ.get("PROBE_WORKER_WINDOW_SECONDS", "1800"))
     if worker_window < 1 or worker_window > 3600:
         raise ValueError("PROBE_WORKER_WINDOW_SECONDS must be in [1, 3600]")
     workflow_id = f"history-qualification-signals-{target}-{run_label}"
     queue = f"history-signals-{target}-{run_label}"
+    if payload_bytes:
+        async with Client(
+            os.environ["SERVER_URL"],
+            control_token=os.environ["DRILL_ADMIN_TOKEN"],
+            worker_token=os.environ["DRILL_WORKER_TOKEN"],
+            namespace="default",
+        ) as admin_client:
+            await admin_client.set_namespace_external_storage(
+                "default", driver="local", threshold_bytes=1024
+            )
     async with Client(
         os.environ["SERVER_URL"],
         control_token=os.environ["DRILL_CONTROL_TOKEN"],
@@ -84,8 +101,8 @@ async def main(target):
                 workflow_type="history-qualification-signals",
                 task_queue=queue,
                 workflow_id=workflow_id,
-                input=[target, mixed_interval, continue_as_new]
-                if mixed_interval or continue_as_new else [target],
+                input=[target, mixed_interval, continue_as_new, 0, 0, payload_bytes]
+                if mixed_interval or continue_as_new or payload_bytes else [target],
                 execution_timeout_seconds=3600,
                 run_timeout_seconds=3600,
             )
@@ -108,7 +125,8 @@ async def main(target):
 
             async def send_signal(index):
                 sent_at = time.monotonic()
-                await client.signal_workflow(workflow_id, "append", args=[index])
+                args = [index, "p" * payload_bytes] if payload_bytes else [index]
+                await client.signal_workflow(workflow_id, "append", args=args)
                 latencies.append(time.monotonic() - sent_at)
 
             offer_started = time.monotonic()
@@ -203,6 +221,7 @@ async def main(target):
             "target_signals": target,
             "signal_concurrency": fanout,
             "mixed_interval": mixed_interval,
+            "signal_payload_bytes": payload_bytes,
             "continue_as_new": continue_as_new,
             "worker_window_seconds": worker_window,
             "resumed": bool(resume_run_id),

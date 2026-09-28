@@ -1,6 +1,6 @@
 # Server #237 published long-history signal probe, 2026-09-28
 
-This is a local qualification slice with synthetic workflows and credentials. It exercises signal admission, a cold SDK worker restart, replay, workflow-task completion, exact result, and paginated history. Later runs add activities, timers, continue-as-new, and recovery from an expired activity lease. The published Server 2.4.22 MySQL result is below. Published-image PostgreSQL, retention, external payloads, and the 8,000/10,000-event thresholds remain open.
+This is a local qualification slice with synthetic workflows and credentials. It exercises signal admission, a cold SDK worker restart, replay, workflow-task completion, exact result, and paginated history. Later runs add activities, timers, continue-as-new, and recovery from an expired activity lease. Published-image MySQL and PostgreSQL mixed runs, plus one external-payload signal run, are below. Retention cleanup, backend interruption, and the 8,000/10,000-event thresholds remain open.
 
 ## Frozen inputs
 
@@ -261,6 +261,32 @@ bash scripts/conformance/replay-published-artifacts.sh \
 
 The [merged result](published-2422-replay-replay-conformance-result.json) reports `pass`: all 31 scenario results passed, all three runtime shards exited zero, and there were no findings. This includes 11 completed-history replay scenarios and 13 worker-restart replay scenarios. The [PHP](published-2422-replay-php-replay-shard.json), [Python](published-2422-replay-python-replay-shard.json) and [Rust](published-2422-replay-rust-replay-shard.json) shard reports retain their detailed observations. The [execution record](published-2422-replay-replay-conformance-record.json), [distribution identities](published-2422-replay-executed-distribution-identities.json) and [pins](published-2422-replay-pins.json) identify the exact published artifacts. The runner removed its isolated containers, volumes and network after completion. This replay matrix is a service conformance slice, not the full protocol catalog.
 
+## Published Server 2.4.23 external-payload signal run
+
+An isolated MySQL stack used the unmodified published `durableworkflow/server@sha256:33c59071952ab08d5b4be7c20862d53cc21e5aed56564ff8718a40b5f239f400` multiarchitecture image, with Workflow 2.2.17 embedded. The probe used published Python SDK 2.3.5 in image `sha256:d0af697717a60a7a106c9a26c9dc0d77cec23fc0d9281f605382a09d34e42ab5`. MySQL and Redis used the pinned digests in `digests.compose.yml`. The four-core i5-6500 host, 15 GiB RAM, Server PHP 128 MiB limit and one-CPU/one-GiB probe limit matched the earlier runs. Service containers used the published Compose defaults without CPU or memory caps. The only new service configuration was a disposable shared local payload directory mounted into HTTP, queue and scheduler containers. This is a single-node local-storage test, not a multi-node storage qualification.
+
+The [Compose overlay](external-local.compose.yml) requires `PROBE_EXTERNAL_PAYLOAD_ROOT` in the task-local `stack.env`, alongside a synthetic `DW_ADMIN_TOKEN`. Create that root outside the repository evidence directory, grant the Server processes write access, and set a unique project and loopback port. Use the published Compose, probe and digest files above, add the external-local overlay last, and build the probe with `PYTHON_SDK_VERSION=2.3.5`. The probe sets the `default` namespace's local external storage threshold to 1 KiB using the admin token, then uses separate operator and worker tokens for the workload:
+
+```bash
+docker compose --env-file "$RUN_ENV" \
+  -f docker-compose.published.yml \
+  -f docs/evidence/server-237-20260927/compose.yml \
+  -f docs/evidence/server-237-20260928/digests.compose.yml \
+  -f docs/evidence/server-237-20260928/external-local.compose.yml \
+  run --rm --no-deps --entrypoint python \
+  -e PROBE_RUN_ID=pub-2423-ext-mixed-20260928-a \
+  -e PROBE_SIGNAL_CONCURRENCY=8 \
+  -e PROBE_SIGNAL_PAYLOAD_BYTES=2048 \
+  -e PROBE_MIXED_INTERVAL=250 \
+  -e PROBE_CONTINUE_AS_NEW=1 \
+  -e PROBE_WORKER_WINDOW_SECONDS=900 \
+  probe /probe/signal_history_probe.py 1000
+```
+
+The [SDK result](published-2423-mysql-external-mixed-1000.log) acknowledged all 1,000 signals in 113.91 seconds; signal API p50/p95/p99 was 0.596/0.936/1.069 seconds. The first SDK worker stopped before offers. A fresh worker finished in 76.58 seconds with reported process peak RSS 133,280 KiB. It verified exact result `{"count":1000,"total":499500}`, 1,028 ordered events across the [initial](published-2423-mysql-external-initial-snapshot.json) and [successor](published-2423-mysql-external-successor-snapshot.json) runs, four activities and timers, and one continuation. Both runs and their timeline projections completed, with [zero final backlog](published-2423-mysql-external-final-db.tsv). Sampled [container stats](published-2423-mysql-external-container-stats.tsv) and [outcome](published-2423-mysql-external-container-outcome.psv) are raw observations, not true memory peaks.
+
+The run found a storage defect. The namespace stored [1,000 external objects](published-2423-mysql-external-object-count.txt), occupying [2,756,000 bytes](published-2423-mysql-external-payload-disk-bytes.tsv), and the registry marked all 1,000 retained. Yet all 1,000 signal records kept inline 2,756,000-byte encoded arguments, none contained an external-storage reference, and none of the 1,000 `SignalReceived` history rows contained an external-payload reference. The 1,026 initial-run history JSON rows totaled 6,913,406 bytes, and its summary reported 6,856,490 history bytes with `continue_as_new_recommended=true`. The [read-only SQL counts](published-2423-mysql-external-final-db.tsv) came from this disposable stack. The external upload succeeded, but the durable signal path copied the payload into the database. [Server #262](https://github.com/durable-workflow/server/issues/262) owns the fix and published-artifact repeat. These numbers are one diagnostic run, not a capacity or comparative-throughput estimate.
+
 ## Remaining qualification
 
-Qualify external payloads, retention cleanup, backend interruption, and around/beyond the 8,000/10,000-event guidance. Record active SDK-worker steady memory and repeat latency observations under the same load. Run affected non-replay service conformance before recommending guidance.
+Repeat the external-payload slice on the fixed published tuple and verify retention cleanup. Qualify backend interruption and around/beyond the 8,000/10,000-event guidance. Record active SDK-worker steady memory and repeat latency observations under the same load. Run affected non-replay service conformance before recommending guidance.
