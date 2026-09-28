@@ -1,0 +1,19 @@
+{
+  "schema": "server-237-signal-history-stop-snapshot-v1",
+  "server_version": "2.4.20",
+  "server_image_index_digest": "sha256:9231de0d3c0c8fed79f1a2e6d62129f85ac844ed7c0afdc6c653a732b1e55bf4",
+  "workflow_version": "2.2.13",
+  "python_sdk_version": "2.3.5",
+  "php_memory_limit_bytes": 134217728,
+  "offered_signals": 3300,
+  "workflow_run_id": "01m3k28vf0ftz43b96azhsx2yt",
+  "run_status": "waiting",
+  "history_event_count": 3303,
+  "history_size_bytes": 4399594,
+  "history_budget_pressure": "approaching",
+  "continue_as_new_recommended": false,
+  "workflow_task_status": "leased",
+  "worker_completion_http_status": 500,
+  "server_error": "Allowed memory size of 134217728 bytes exhausted",
+  "stop_reason": "Repeated HTTP 500 on workflow-task completion; task-local probe container stopped"
+}

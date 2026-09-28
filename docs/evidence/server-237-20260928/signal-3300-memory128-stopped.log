@@ -1,0 +1,10 @@
+{"phase": "offered", "signals": 1000}
+{"phase": "offered", "signals": 2000}
+{"phase": "offered", "signals": 3000}
+{"phase": "offered", "signals": 3300}
+retrying workflow task 01m3k28w88x5m2n2hgbhgen12r completion after attempt 1/3 failed: server returned 500: ''
+retrying workflow task 01m3k28w88x5m2n2hgbhgen12r completion after attempt 2/3 failed: server returned 500: ''
+failed to complete workflow task 01m3k28w88x5m2n2hgbhgen12r: server returned 500: ''
+retrying workflow task 01m3k28w88x5m2n2hgbhgen12r completion after attempt 1/3 failed: server returned 500: {'message': 'Server Error'}
+retrying workflow task 01m3k28w88x5m2n2hgbhgen12r completion after attempt 2/3 failed: server returned 500: {'message': 'Server Error'}
+failed to complete workflow task 01m3k28w88x5m2n2hgbhgen12r: server returned 500: {'message': 'Server Error'}
