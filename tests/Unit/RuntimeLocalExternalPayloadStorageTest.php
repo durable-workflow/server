@@ -56,6 +56,53 @@ class RuntimeLocalExternalPayloadStorageTest extends TestCase
         ];
     }
 
+    #[DataProvider('directoryRaceCases')]
+    public function test_directory_created_by_another_writer_is_accepted(bool $rootExists): void
+    {
+        if ($rootExists) {
+            File::ensureDirectoryExists($this->directory);
+        }
+
+        $payload = 'concurrent-directory-payload';
+        $process = new Process([
+            PHP_BINARY,
+            base_path('tests/Fixtures/RuntimeLocalPayloadDirectoryRace.php'),
+            $this->directory,
+            base64_encode($payload),
+        ], base_path(), timeout: 10);
+
+        $process->mustRun();
+        $uri = $process->getOutput();
+        $path = rawurldecode(parse_url($uri, PHP_URL_PATH));
+
+        $retryDriver = new RuntimeLocalExternalPayloadStorage($this->directory);
+        $this->assertSame($uri, $retryDriver->put($payload, hash('sha256', $payload), 'avro'));
+        $this->assertSame($payload, file_get_contents($path));
+        $this->assertSame(hash('sha256', $payload), hash_file('sha256', $path));
+    }
+
+    public static function directoryRaceCases(): array
+    {
+        return [
+            'root directory' => [false],
+            'hash partition directory' => [true],
+        ];
+    }
+
+    public function test_hash_partition_blocked_by_a_file_still_fails(): void
+    {
+        $driver = new RuntimeLocalExternalPayloadStorage($this->directory);
+        $payload = 'blocked-directory-payload';
+        $uri = $driver->uriFor(hash('sha256', $payload), 'avro');
+        $partition = dirname(rawurldecode(parse_url($uri, PHP_URL_PATH)));
+        File::ensureDirectoryExists(dirname($partition));
+        file_put_contents($partition, 'not a directory');
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('Unable to create external payload directory.');
+        $driver->put($payload, hash('sha256', $payload), 'avro');
+    }
+
     public function test_string_and_stream_share_identity_without_a_second_large_copy(): void
     {
         $driver = new RuntimeLocalExternalPayloadStorage($this->directory);
