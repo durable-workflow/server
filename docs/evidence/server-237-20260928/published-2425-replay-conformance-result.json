@@ -1,0 +1,2281 @@
+{
+  "adversarial_replay": {
+    "passed": 4,
+    "scenario_statuses": {
+      "malformed_history_refusal": "pass",
+      "php_code_divergence_refusal": "pass",
+      "python_code_divergence_refusal": "pass",
+      "server_history_mutation_refusal": "pass"
+    },
+    "scenarios": [
+      "python_code_divergence_refusal",
+      "php_code_divergence_refusal",
+      "server_history_mutation_refusal",
+      "malformed_history_refusal"
+    ],
+    "status": "pass",
+    "total": 4
+  },
+  "artifact_sources": {
+    "cli": "github_release_asset",
+    "sdk-php": "packagist_package",
+    "sdk-python": "pypi_package",
+    "sdk-rust": "crates_io_package",
+    "server": "published_docker_image",
+    "waterline": "packagist_package",
+    "workflow-php": "packagist_package"
+  },
+  "artifact_versions": {
+    "cli": "2.1.2",
+    "sdk-php": "2.1.5",
+    "sdk-python": "2.3.5",
+    "sdk-rust": "2.1.1",
+    "server": "2.4.25",
+    "waterline": "2.0.7",
+    "workflow": "2.2.18"
+  },
+  "completed_history_replay": {
+    "passed": 11,
+    "scenario_statuses": {
+      "php_completed_history_activity_replay": "pass",
+      "php_completed_history_saga_compensation_replay": "pass",
+      "php_completed_history_signal_update_replay": "pass",
+      "php_completed_history_version_marker_replay": "pass",
+      "php_completed_history_wait_condition_replay": "pass",
+      "python_completed_history_activity_replay": "pass",
+      "python_completed_history_saga_compensation_replay": "pass",
+      "python_completed_history_signal_update_replay": "pass",
+      "python_completed_history_version_marker_replay": "pass",
+      "python_completed_history_wait_condition_replay": "pass",
+      "rust_side_effect_replay_after_worker_restart": "pass"
+    },
+    "scenarios": [
+      "python_completed_history_activity_replay",
+      "python_completed_history_signal_update_replay",
+      "python_completed_history_wait_condition_replay",
+      "python_completed_history_version_marker_replay",
+      "python_completed_history_saga_compensation_replay",
+      "php_completed_history_activity_replay",
+      "php_completed_history_signal_update_replay",
+      "php_completed_history_wait_condition_replay",
+      "php_completed_history_version_marker_replay",
+      "php_completed_history_saga_compensation_replay",
+      "rust_side_effect_replay_after_worker_restart"
+    ],
+    "status": "pass",
+    "total": 11
+  },
+  "executed_distribution_identities": {
+    "cli": {
+      "artifacts": [
+        {
+          "name": "install.sh",
+          "sha256": "022f9c532d731aede3c9c6252a11b2cb8e5b6b4a0e8516399bfc214fbde530ca"
+        }
+      ],
+      "kind": "github-release",
+      "locator": "github-release:durable-workflow/cli@2.1.2"
+    },
+    "sdk-php": {
+      "artifacts": [
+        {
+          "name": "durable-workflow/sdk",
+          "sha256": "cf83e1b784ac20cd435341220c58ba108d7e74ac04a0e1f1ec5872d48d10ad38"
+        }
+      ],
+      "kind": "composer",
+      "locator": "composer:durable-workflow/sdk@2.1.5"
+    },
+    "sdk-python": {
+      "artifacts": [
+        {
+          "name": "durable_workflow-2.3.5-py3-none-any.whl",
+          "sha256": "1db40895ed81d6df44a6e62db3305fa6ec01fce41296acf2a0beafb17e6e685f"
+        }
+      ],
+      "kind": "pypi",
+      "locator": "pypi:durable-workflow@2.3.5"
+    },
+    "sdk-rust": {
+      "artifacts": [
+        {
+          "name": "durable-workflow-2.1.1.crate",
+          "sha256": "051437bb0e0b004038629e5ca7e44d11f1f24434b216f84b6d1516b218882eb8"
+        }
+      ],
+      "kind": "crates.io",
+      "locator": "crates.io:durable-workflow@2.1.1"
+    },
+    "server": {
+      "artifacts": [
+        {
+          "name": "manifest",
+          "sha256": "4bd97a895175ceaed2dd39705bc0446acc5c330ba60830657d449f875b9f66e5"
+        }
+      ],
+      "kind": "oci",
+      "locator": "oci:docker.io/durableworkflow/server@2.4.25"
+    },
+    "waterline": {
+      "artifacts": [
+        {
+          "name": "durable-workflow/waterline",
+          "sha256": "6caa447d2ad001d4c3caf0535b770172fb1ccc57264f2887ba178db47195addb"
+        }
+      ],
+      "kind": "composer",
+      "locator": "composer:durable-workflow/waterline@2.0.7"
+    },
+    "workflow": {
+      "artifacts": [
+        {
+          "name": "durable-workflow/workflow",
+          "sha256": "0bf8483dc0c9719866650ede19fa5453cf2ddc7cd3c5a15f273bcc65fff8ee84"
+        }
+      ],
+      "kind": "composer",
+      "locator": "composer:durable-workflow/workflow@2.2.18"
+    }
+  },
+  "finding_links": {},
+  "findings": [],
+  "finished_at": "2026-09-28T21:13:23Z",
+  "generated_at": "2026-09-28T21:13:23Z",
+  "in_flight_timing": {
+    "passed": 2,
+    "scenario_statuses": {
+      "php_in_flight_signal_restart_timing": "pass",
+      "python_in_flight_signal_restart_timing": "pass"
+    },
+    "scenarios": [
+      "python_in_flight_signal_restart_timing",
+      "php_in_flight_signal_restart_timing"
+    ],
+    "status": "pass",
+    "total": 2
+  },
+  "namespace_setup": {
+    "isolation": {
+      "compose_project": "dw-replay-replay-root-2",
+      "fresh_published_server_topology": true
+    },
+    "outcome": "pass",
+    "requests": [
+      {
+        "establishment": "already_exists",
+        "namespace": "default",
+        "server_response": {
+          "body_excerpt": "{\"message\":\"Namespace already exists.\",\"reason\":\"namespace_already_exists\",\"namespace\":\"default\"}",
+          "payload": {
+            "message": "Namespace already exists.",
+            "namespace": "default",
+            "reason": "namespace_already_exists"
+          },
+          "reason": "namespace_already_exists",
+          "status_code": 409,
+          "truncated": false
+        },
+        "status": "pass"
+      },
+      {
+        "establishment": "created",
+        "namespace": "replay-conformance",
+        "server_response": {
+          "body_excerpt": "{\"name\":\"replay-conformance\",\"description\":\"Published replay conformance namespace\",\"retention_mode\":\"bounded\",\"retention_days\":1,\"status\":\"active\",\"external_payload_storage\":null,\"created_at\":\"2026-09-28T21:10:49+00:00\",\"updated_at\":\"2026-09-28T21:10:49+00:00\"}",
+          "payload": {
+            "created_at": "2026-09-28T21:10:49+00:00",
+            "description": "Published replay conformance namespace",
+            "external_payload_storage": null,
+            "name": "replay-conformance",
+            "retention_days": 1,
+            "retention_mode": "bounded",
+            "status": "active",
+            "updated_at": "2026-09-28T21:10:49+00:00"
+          },
+          "reason": null,
+          "status_code": 201,
+          "truncated": false
+        },
+        "status": "pass"
+      }
+    ],
+    "runtime_namespaces": {
+      "sdk-php": "replay-conformance",
+      "sdk-python": null,
+      "sdk-rust": "default"
+    },
+    "schema": "durable-workflow.v2.replay-conformance.namespace-setup",
+    "selected_namespace": "replay-conformance",
+    "selected_namespaces": [
+      "default",
+      "replay-conformance"
+    ],
+    "server_url": "http://127.0.0.1:18246"
+  },
+  "outcome": "pass",
+  "portable_evidence_contract": {
+    "max_evidence_cell_bytes": 65536,
+    "max_result_bytes": 4194304,
+    "max_string_bytes": 4096,
+    "projection_target_bytes": 3145728,
+    "scenario_evidence": "complete_required_statuses_and_bounded_diagnostics",
+    "schema": "durable-workflow.v1.portable-native-evidence",
+    "sensitive_values": "omitted",
+    "unbounded_values": "sha256_summary"
+  },
+  "runner_blocked": false,
+  "runtime_matrix": {
+    "coverage_scopes": [
+      "sdk-php-runtime-shard",
+      "sdk-python-runtime-shard",
+      "sdk-rust-runtime-shard"
+    ],
+    "runtimes": [
+      "sdk-php",
+      "sdk-python",
+      "sdk-rust"
+    ],
+    "shards": {
+      "sdk-php": {
+        "exit_code": 0,
+        "outcome": "pass",
+        "reported": true
+      },
+      "sdk-python": {
+        "exit_code": 0,
+        "outcome": "pass",
+        "reported": true
+      },
+      "sdk-rust": {
+        "exit_code": 0,
+        "outcome": "pass",
+        "reported": true
+      }
+    }
+  },
+  "scenario_results": {
+    "malformed_history_refusal": {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-python",
+        "version": "2.3.5"
+      },
+      "observed_outputs": {
+        "integrity": {
+          "path": null,
+          "rule": "workflow.run_id_missing",
+          "status": "failed"
+        },
+        "message": "Bundle workflow.run_id must be a non-empty string.",
+        "observed_outcome": "bundle_invalid_or_failed"
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.5",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.25",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-python"
+        ]
+      },
+      "scenario_id": "malformed_history_refusal",
+      "status": "pass"
+    },
+    "php_code_divergence_refusal": {
+      "executed_runtime_cell": true,
+      "observed_outputs": {
+        "cell_id": "php-published-sdk-code-divergence",
+        "evidence_file": "php-sdk-client-replay-matrix.json",
+        "exception_type": "DurableWorkflow\\Exception\\NonDeterministicWorkflow",
+        "observed_outcome": "non_determinism_error",
+        "run_id": "01m3mxta9p0epsjbt4g604jfv9",
+        "runtime_cell_executed": true,
+        "worker_id": "php-sdk-worker-1",
+        "worker_process_id": 96,
+        "workflow_id": "php-sdk-replay-matrix-1790629971-1-16930"
+      },
+      "replay_diagnostics": {
+        "actual_shape": "php.sdk.divergent-activity",
+        "exception_type": "DurableWorkflow\\Exception\\NonDeterministicWorkflow",
+        "expected_shape": "php.sdk.echo",
+        "message": "Recorded activity detail changed from php.sdk.echo to php.sdk.divergent-activity.",
+        "observed_outcome": "non_determinism_error",
+        "recorded_event_types": [
+          "StartAccepted",
+          "WorkflowStarted",
+          "UpdateAccepted",
+          "ActivityScheduled",
+          "ActivityStarted",
+          "ActivityHeartbeatRecorded",
+          "ActivityCompleted",
+          "UpdateApplied",
+          "UpdateCompleted",
+          "MessageCursorAdvanced",
+          "SignalReceived",
+          "SideEffectRecorded",
+          "TimerScheduled",
+          "MessageCursorAdvanced",
+          "SignalApplied",
+          "TimerFired",
+          "ActivityScheduled",
+          "ActivityStarted",
+          "ActivityFailed",
+          "ActivityScheduled",
+          "ActivityStarted",
+          "ActivityHeartbeatRecorded",
+          "ActivityCompleted",
+          "ActivityScheduled",
+          "ActivityStarted",
+          "ActivityHeartbeatRecorded",
+          "ActivityCompleted",
+          "WorkflowCompleted"
+        ],
+        "workflow_sequence": 1
+      },
+      "runtime_cell": {
+        "artifact_source": "packagist",
+        "cell_id": "php-published-sdk-code-divergence",
+        "executed": true,
+        "server_source": "public_image"
+      },
+      "scenario_id": "php_code_divergence_refusal",
+      "status": "pass"
+    },
+    "php_completed_history_activity_replay": {
+      "executed_runtime_cell": true,
+      "observed_outputs": {
+        "activity_callback_cardinality": {
+          "callback_records": [
+            {
+              "activity_attempt_id": "01M3MXT3YDAKCQ2K61YCD51YB8",
+              "activity_type": "php.sdk.echo",
+              "attempt_number": 1,
+              "global_callback_count": 1,
+              "heartbeat_recorded": true,
+              "phase": "initial_execution",
+              "task_id": "01m3mxt3sfv01hp3fyex9ef3v4",
+              "worker_id": "php-sdk-worker-1",
+              "worker_process_id": 96
+            },
+            {
+              "activity_attempt_id": "01M3MXTAXXR57YJQF19YQ29JTM",
+              "activity_type": "php.sdk.echo",
+              "attempt_number": 1,
+              "global_callback_count": 2,
+              "heartbeat_recorded": true,
+              "phase": "replay_matrix",
+              "task_id": "01m3mxtarnxqbaqcw7s3k8g9pg",
+              "worker_id": "php-sdk-worker-1",
+              "worker_process_id": 96
+            },
+            {
+              "activity_attempt_id": "01M3MXTFBRSMEVFBQX6GKMCMZZ",
+              "activity_type": "php.sdk.echo",
+              "attempt_number": 1,
+              "global_callback_count": 3,
+              "heartbeat_recorded": true,
+              "phase": "replay_matrix",
+              "task_id": "01m3mxtf72nh0530tt5ghr5xph",
+              "worker_id": "php-sdk-worker-1",
+              "worker_process_id": 96
+            },
+            {
+              "activity_attempt_id": "01M3MXTGMK5S0JSR74RKZ5CQGJ",
+              "activity_type": "php.sdk.echo",
+              "attempt_number": 1,
+              "global_callback_count": 4,
+              "heartbeat_recorded": true,
+              "phase": "replay_matrix",
+              "task_id": "01m3mxtge9emsmwbpbkwam4p3k",
+              "worker_id": "php-sdk-worker-1",
+              "worker_process_id": 96
+            },
+            {
+              "activity_attempt_id": "01M3MXTJTYGZBRZQ8YE08YP2A5",
+              "activity_type": "php.sdk.echo",
+              "attempt_number": 1,
+              "global_callback_count": 5,
+              "heartbeat_recorded": true,
+              "phase": "durable_replay",
+              "task_id": "01m3mxtjnpjw016m008012chyr",
+              "worker_id": "php-sdk-worker-1",
+              "worker_process_id": 96
+            },
+            {
+              "activity_attempt_id": "01M3MXTSMJHYWG8CKPJ4379RFN",
+              "activity_type": "php.sdk.echo",
+              "attempt_number": 1,
+              "global_callback_count": 6,
+              "heartbeat_recorded": true,
+              "phase": "in_flight_replay",
+              "task_id": "01m3mxtsg36ncwsmhv3wewt1qt",
+              "worker_id": "php-sdk-worker-2",
+              "worker_process_id": 121
+            }
+          ],
+          "expected_callback_counts_by_phase": {
+            "durable_replay": 1,
+            "in_flight_replay": 1,
+            "initial_execution": 1,
+            "replay_matrix": 3
+          },
+          "observed_callback_counts_by_phase": {
+            "durable_replay": 1,
+            "in_flight_replay": 1,
+            "initial_execution": 1,
+            "replay_matrix": 3
+          },
+          "passed": true,
+          "phase_results": {
+            "durable_replay": {
+              "distinct_activity_attempt_ids": [
+                "01M3MXTJTYGZBRZQ8YE08YP2A5"
+              ],
+              "distinct_task_ids": [
+                "01m3mxtjnpjw016m008012chyr"
+              ],
+              "expected_callback_count": 1,
+              "history_checkpoints": {
+                "after_worker_restart": {
+                  "expected_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityScheduled": 1
+                  },
+                  "observed_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityHeartbeatRecorded": 1,
+                    "ActivityScheduled": 1,
+                    "ActivityStarted": 1,
+                    "StartAccepted": 1,
+                    "TimerFired": 1,
+                    "TimerScheduled": 1,
+                    "WorkflowCompleted": 1,
+                    "WorkflowStarted": 1
+                  },
+                  "passed": true
+                },
+                "before_worker_restart": {
+                  "expected_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityScheduled": 1
+                  },
+                  "observed_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityHeartbeatRecorded": 1,
+                    "ActivityScheduled": 1,
+                    "ActivityStarted": 1,
+                    "StartAccepted": 1,
+                    "TimerScheduled": 1,
+                    "WorkflowStarted": 1
+                  },
+                  "passed": true
+                }
+              },
+              "observed_callback_count": 1,
+              "passed": true
+            },
+            "in_flight_replay": {
+              "distinct_activity_attempt_ids": [
+                "01M3MXTSMJHYWG8CKPJ4379RFN"
+              ],
+              "distinct_task_ids": [
+                "01m3mxtsg36ncwsmhv3wewt1qt"
+              ],
+              "expected_callback_count": 1,
+              "history_checkpoints": {
+                "after_worker_restart": {
+                  "expected_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityScheduled": 1
+                  },
+                  "observed_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityHeartbeatRecorded": 1,
+                    "ActivityScheduled": 1,
+                    "ActivityStarted": 1,
+                    "MessageCursorAdvanced": 1,
+                    "SignalApplied": 1,
+                    "SignalReceived": 1,
+                    "StartAccepted": 1,
+                    "TimerFired": 1,
+                    "TimerScheduled": 1,
+                    "WorkflowCompleted": 1,
+                    "WorkflowStarted": 1
+                  },
+                  "passed": true
+                }
+              },
+              "observed_callback_count": 1,
+              "passed": true
+            },
+            "initial_execution": {
+              "distinct_activity_attempt_ids": [
+                "01M3MXT3YDAKCQ2K61YCD51YB8"
+              ],
+              "distinct_task_ids": [
+                "01m3mxt3sfv01hp3fyex9ef3v4"
+              ],
+              "expected_callback_count": 1,
+              "history_checkpoints": {
+                "completed": {
+                  "expected_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityScheduled": 1
+                  },
+                  "observed_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityHeartbeatRecorded": 1,
+                    "ActivityScheduled": 1,
+                    "ActivityStarted": 1,
+                    "StartAccepted": 1,
+                    "WorkflowCompleted": 1,
+                    "WorkflowStarted": 1
+                  },
+                  "passed": true
+                }
+              },
+              "observed_callback_count": 1,
+              "passed": true
+            },
+            "replay_matrix": {
+              "distinct_activity_attempt_ids": [
+                "01M3MXTAXXR57YJQF19YQ29JTM",
+                "01M3MXTFBRSMEVFBQX6GKMCMZZ",
+                "01M3MXTGMK5S0JSR74RKZ5CQGJ"
+              ],
+              "distinct_task_ids": [
+                "01m3mxtarnxqbaqcw7s3k8g9pg",
+                "01m3mxtf72nh0530tt5ghr5xph",
+                "01m3mxtge9emsmwbpbkwam4p3k"
+              ],
+              "expected_callback_count": 3,
+              "history_checkpoints": {
+                "after_worker_restart": {
+                  "expected_event_counts": {
+                    "ActivityCompleted": 3,
+                    "ActivityFailed": 1,
+                    "ActivityScheduled": 4
+                  },
+                  "observed_event_counts": {
+                    "ActivityCompleted": 3,
+                    "ActivityFailed": 1,
+                    "ActivityHeartbeatRecorded": 3,
+                    "ActivityScheduled": 4,
+                    "ActivityStarted": 4,
+                    "MessageCursorAdvanced": 2,
+                    "SideEffectRecorded": 1,
+                    "SignalApplied": 1,
+                    "SignalReceived": 1,
+                    "StartAccepted": 1,
+                    "TimerFired": 1,
+                    "TimerScheduled": 1,
+                    "UpdateAccepted": 1,
+                    "UpdateApplied": 1,
+                    "UpdateCompleted": 1,
+                    "WorkflowCompleted": 1,
+                    "WorkflowStarted": 1
+                  },
+                  "passed": true
+                },
+                "completed": {
+                  "expected_event_counts": {
+                    "ActivityCompleted": 3,
+                    "ActivityFailed": 1,
+                    "ActivityScheduled": 4
+                  },
+                  "observed_event_counts": {
+                    "ActivityCompleted": 3,
+                    "ActivityFailed": 1,
+                    "ActivityHeartbeatRecorded": 3,
+                    "ActivityScheduled": 4,
+                    "ActivityStarted": 4,
+                    "MessageCursorAdvanced": 2,
+                    "SideEffectRecorded": 1,
+                    "SignalApplied": 1,
+                    "SignalReceived": 1,
+                    "StartAccepted": 1,
+                    "TimerFired": 1,
+                    "TimerScheduled": 1,
+                    "UpdateAccepted": 1,
+                    "UpdateApplied": 1,
+                    "UpdateCompleted": 1,
+                    "WorkflowCompleted": 1,
+                    "WorkflowStarted": 1
+                  },
+                  "passed": true
+                }
+              },
+              "observed_callback_count": 3,
+              "passed": true
+            }
+          },
+          "unexpected_phases": []
+        },
+        "activity_completed_events": 3,
+        "activity_result": {
+          "activity_process_id": 96,
+          "echo": {
+            "matrix": "activity"
+          }
+        },
+        "cell_id": "php-completed-history-replay-matrix",
+        "evidence_file": "php-sdk-client-replay-matrix.json",
+        "run_id": "01m3mxta9p0epsjbt4g604jfv9",
+        "runtime_cell_executed": true,
+        "worker_id": "php-sdk-worker-1",
+        "worker_process_id": 96,
+        "workflow_id": "php-sdk-replay-matrix-1790629971-1-16930"
+      },
+      "runtime_cell": {
+        "artifact_source": "packagist",
+        "cell_id": "php-completed-history-replay-matrix",
+        "executed": true,
+        "server_source": "public_image"
+      },
+      "scenario_id": "php_completed_history_activity_replay",
+      "status": "pass"
+    },
+    "php_completed_history_saga_compensation_replay": {
+      "executed_runtime_cell": true,
+      "observed_outputs": {
+        "activity_failed_events": 1,
+        "cell_id": "php-completed-history-replay-matrix",
+        "compensation_result": {
+          "activity_process_id": 96,
+          "echo": {
+            "failure_type": "DomainException",
+            "matrix": "compensation"
+          }
+        },
+        "evidence_file": "php-sdk-client-replay-matrix.json",
+        "failed_activity_callback_count": 1,
+        "run_id": "01m3mxta9p0epsjbt4g604jfv9",
+        "runtime_cell_executed": true,
+        "worker_id": "php-sdk-worker-1",
+        "worker_process_id": 96,
+        "workflow_id": "php-sdk-replay-matrix-1790629971-1-16930"
+      },
+      "runtime_cell": {
+        "artifact_source": "packagist",
+        "cell_id": "php-completed-history-replay-matrix",
+        "executed": true,
+        "server_source": "public_image"
+      },
+      "scenario_id": "php_completed_history_saga_compensation_replay",
+      "status": "pass"
+    },
+    "php_completed_history_signal_update_replay": {
+      "executed_runtime_cell": true,
+      "observed_outputs": {
+        "cell_id": "php-completed-history-replay-matrix",
+        "evidence_file": "php-sdk-client-replay-matrix.json",
+        "history_event_counts": {
+          "ActivityCompleted": 3,
+          "ActivityFailed": 1,
+          "ActivityHeartbeatRecorded": 3,
+          "ActivityScheduled": 4,
+          "ActivityStarted": 4,
+          "MessageCursorAdvanced": 2,
+          "SideEffectRecorded": 1,
+          "SignalApplied": 1,
+          "SignalReceived": 1,
+          "StartAccepted": 1,
+          "TimerFired": 1,
+          "TimerScheduled": 1,
+          "UpdateAccepted": 1,
+          "UpdateApplied": 1,
+          "UpdateCompleted": 1,
+          "WorkflowCompleted": 1,
+          "WorkflowStarted": 1
+        },
+        "run_id": "01m3mxta9p0epsjbt4g604jfv9",
+        "runtime_cell_executed": true,
+        "signals": [
+          7
+        ],
+        "updates": [
+          19
+        ],
+        "worker_id": "php-sdk-worker-1",
+        "worker_process_id": 96,
+        "workflow_id": "php-sdk-replay-matrix-1790629971-1-16930"
+      },
+      "runtime_cell": {
+        "artifact_source": "packagist",
+        "cell_id": "php-completed-history-replay-matrix",
+        "executed": true,
+        "server_source": "public_image"
+      },
+      "scenario_id": "php_completed_history_signal_update_replay",
+      "status": "pass"
+    },
+    "php_completed_history_version_marker_replay": {
+      "executed_runtime_cell": true,
+      "observed_outputs": {
+        "cell_id": "php-completed-history-replay-matrix",
+        "evidence_file": "php-sdk-client-replay-matrix.json",
+        "run_id": "01m3mxta9p0epsjbt4g604jfv9",
+        "runtime_cell_executed": true,
+        "side_effect_recorded_events": 1,
+        "version_marker": {
+          "change_id": "php-replay-matrix",
+          "version": 1
+        },
+        "version_marker_callback_count": 1,
+        "worker_id": "php-sdk-worker-1",
+        "worker_process_id": 96,
+        "workflow_id": "php-sdk-replay-matrix-1790629971-1-16930"
+      },
+      "runtime_cell": {
+        "artifact_source": "packagist",
+        "cell_id": "php-completed-history-replay-matrix",
+        "executed": true,
+        "server_source": "public_image"
+      },
+      "scenario_id": "php_completed_history_version_marker_replay",
+      "status": "pass"
+    },
+    "php_completed_history_wait_condition_replay": {
+      "executed_runtime_cell": true,
+      "observed_outputs": {
+        "cell_id": "php-completed-history-replay-matrix",
+        "evidence_file": "php-sdk-client-replay-matrix.json",
+        "run_id": "01m3mxta9p0epsjbt4g604jfv9",
+        "runtime_cell_executed": true,
+        "timer_fired_events": 1,
+        "timer_scheduled_events": 1,
+        "wait_cycles": 1,
+        "worker_id": "php-sdk-worker-1",
+        "worker_process_id": 96,
+        "workflow_id": "php-sdk-replay-matrix-1790629971-1-16930"
+      },
+      "runtime_cell": {
+        "artifact_source": "packagist",
+        "cell_id": "php-completed-history-replay-matrix",
+        "executed": true,
+        "server_source": "public_image"
+      },
+      "scenario_id": "php_completed_history_wait_condition_replay",
+      "status": "pass"
+    },
+    "php_in_flight_signal_restart_timing": {
+      "executed_runtime_cell": true,
+      "observed_outputs": {
+        "cell_id": "php-in-flight-signal-worker-restart",
+        "history_event_counts": {
+          "ActivityCompleted": 1,
+          "ActivityHeartbeatRecorded": 1,
+          "ActivityScheduled": 1,
+          "ActivityStarted": 1,
+          "MessageCursorAdvanced": 1,
+          "SignalApplied": 1,
+          "SignalReceived": 1,
+          "StartAccepted": 1,
+          "TimerFired": 1,
+          "TimerScheduled": 1,
+          "WorkflowCompleted": 1,
+          "WorkflowStarted": 1
+        },
+        "history_reloaded_at": "2026-09-28T21:13:15.889146Z",
+        "observed_outcome": "same_next_decision_after_replay",
+        "replay_worker_id": "php-sdk-worker-2",
+        "replay_worker_process_id": 121,
+        "replayed_next_decision": "schedule_activity:php.sdk.echo",
+        "result": {
+          "next_decision_result": {
+            "activity_process_id": 121,
+            "echo": {
+              "matrix": "in-flight-after-signal"
+            }
+          },
+          "signals": [
+            23
+          ],
+          "wait_cycles": 1,
+          "workflow_process_id": 121
+        },
+        "run_id": "01m3mxtm3rftcm3n3m0cmby0eg",
+        "runtime_cell_executed": true,
+        "signal_inputs": [
+          23
+        ],
+        "signal_sent_at": "2026-09-28T21:13:11.089440Z",
+        "worker_restart_at": "2026-09-28T21:13:11.811908Z",
+        "workflow_id": "php-sdk-in-flight-1790629971-1-16930"
+      },
+      "replay_diagnostics": {
+        "history_reloaded_at": "2026-09-28T21:13:15.889146Z",
+        "observed_outcome": "same_next_decision_after_replay",
+        "replayed_next_decision": "schedule_activity:php.sdk.echo",
+        "signal_sent_at": "2026-09-28T21:13:11.089440Z",
+        "worker_restart_at": "2026-09-28T21:13:11.811908Z"
+      },
+      "runtime_cell": {
+        "artifact_source": "packagist",
+        "cell_id": "php-in-flight-signal-worker-restart",
+        "executed": true,
+        "server_source": "public_image"
+      },
+      "scenario_id": "php_in_flight_signal_restart_timing",
+      "status": "pass"
+    },
+    "php_worker_restart_activity_state": {
+      "executed_runtime_cell": true,
+      "observed_outputs": {
+        "activity_callback_cardinality": {
+          "callback_records": [
+            {
+              "activity_attempt_id": "01M3MXT3YDAKCQ2K61YCD51YB8",
+              "activity_type": "php.sdk.echo",
+              "attempt_number": 1,
+              "global_callback_count": 1,
+              "heartbeat_recorded": true,
+              "phase": "initial_execution",
+              "task_id": "01m3mxt3sfv01hp3fyex9ef3v4",
+              "worker_id": "php-sdk-worker-1",
+              "worker_process_id": 96
+            },
+            {
+              "activity_attempt_id": "01M3MXTAXXR57YJQF19YQ29JTM",
+              "activity_type": "php.sdk.echo",
+              "attempt_number": 1,
+              "global_callback_count": 2,
+              "heartbeat_recorded": true,
+              "phase": "replay_matrix",
+              "task_id": "01m3mxtarnxqbaqcw7s3k8g9pg",
+              "worker_id": "php-sdk-worker-1",
+              "worker_process_id": 96
+            },
+            {
+              "activity_attempt_id": "01M3MXTFBRSMEVFBQX6GKMCMZZ",
+              "activity_type": "php.sdk.echo",
+              "attempt_number": 1,
+              "global_callback_count": 3,
+              "heartbeat_recorded": true,
+              "phase": "replay_matrix",
+              "task_id": "01m3mxtf72nh0530tt5ghr5xph",
+              "worker_id": "php-sdk-worker-1",
+              "worker_process_id": 96
+            },
+            {
+              "activity_attempt_id": "01M3MXTGMK5S0JSR74RKZ5CQGJ",
+              "activity_type": "php.sdk.echo",
+              "attempt_number": 1,
+              "global_callback_count": 4,
+              "heartbeat_recorded": true,
+              "phase": "replay_matrix",
+              "task_id": "01m3mxtge9emsmwbpbkwam4p3k",
+              "worker_id": "php-sdk-worker-1",
+              "worker_process_id": 96
+            },
+            {
+              "activity_attempt_id": "01M3MXTJTYGZBRZQ8YE08YP2A5",
+              "activity_type": "php.sdk.echo",
+              "attempt_number": 1,
+              "global_callback_count": 5,
+              "heartbeat_recorded": true,
+              "phase": "durable_replay",
+              "task_id": "01m3mxtjnpjw016m008012chyr",
+              "worker_id": "php-sdk-worker-1",
+              "worker_process_id": 96
+            },
+            {
+              "activity_attempt_id": "01M3MXTSMJHYWG8CKPJ4379RFN",
+              "activity_type": "php.sdk.echo",
+              "attempt_number": 1,
+              "global_callback_count": 6,
+              "heartbeat_recorded": true,
+              "phase": "in_flight_replay",
+              "task_id": "01m3mxtsg36ncwsmhv3wewt1qt",
+              "worker_id": "php-sdk-worker-2",
+              "worker_process_id": 121
+            }
+          ],
+          "expected_callback_counts_by_phase": {
+            "durable_replay": 1,
+            "in_flight_replay": 1,
+            "initial_execution": 1,
+            "replay_matrix": 3
+          },
+          "observed_callback_counts_by_phase": {
+            "durable_replay": 1,
+            "in_flight_replay": 1,
+            "initial_execution": 1,
+            "replay_matrix": 3
+          },
+          "passed": true,
+          "phase_results": {
+            "durable_replay": {
+              "distinct_activity_attempt_ids": [
+                "01M3MXTJTYGZBRZQ8YE08YP2A5"
+              ],
+              "distinct_task_ids": [
+                "01m3mxtjnpjw016m008012chyr"
+              ],
+              "expected_callback_count": 1,
+              "history_checkpoints": {
+                "after_worker_restart": {
+                  "expected_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityScheduled": 1
+                  },
+                  "observed_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityHeartbeatRecorded": 1,
+                    "ActivityScheduled": 1,
+                    "ActivityStarted": 1,
+                    "StartAccepted": 1,
+                    "TimerFired": 1,
+                    "TimerScheduled": 1,
+                    "WorkflowCompleted": 1,
+                    "WorkflowStarted": 1
+                  },
+                  "passed": true
+                },
+                "before_worker_restart": {
+                  "expected_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityScheduled": 1
+                  },
+                  "observed_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityHeartbeatRecorded": 1,
+                    "ActivityScheduled": 1,
+                    "ActivityStarted": 1,
+                    "StartAccepted": 1,
+                    "TimerScheduled": 1,
+                    "WorkflowStarted": 1
+                  },
+                  "passed": true
+                }
+              },
+              "observed_callback_count": 1,
+              "passed": true
+            },
+            "in_flight_replay": {
+              "distinct_activity_attempt_ids": [
+                "01M3MXTSMJHYWG8CKPJ4379RFN"
+              ],
+              "distinct_task_ids": [
+                "01m3mxtsg36ncwsmhv3wewt1qt"
+              ],
+              "expected_callback_count": 1,
+              "history_checkpoints": {
+                "after_worker_restart": {
+                  "expected_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityScheduled": 1
+                  },
+                  "observed_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityHeartbeatRecorded": 1,
+                    "ActivityScheduled": 1,
+                    "ActivityStarted": 1,
+                    "MessageCursorAdvanced": 1,
+                    "SignalApplied": 1,
+                    "SignalReceived": 1,
+                    "StartAccepted": 1,
+                    "TimerFired": 1,
+                    "TimerScheduled": 1,
+                    "WorkflowCompleted": 1,
+                    "WorkflowStarted": 1
+                  },
+                  "passed": true
+                }
+              },
+              "observed_callback_count": 1,
+              "passed": true
+            },
+            "initial_execution": {
+              "distinct_activity_attempt_ids": [
+                "01M3MXT3YDAKCQ2K61YCD51YB8"
+              ],
+              "distinct_task_ids": [
+                "01m3mxt3sfv01hp3fyex9ef3v4"
+              ],
+              "expected_callback_count": 1,
+              "history_checkpoints": {
+                "completed": {
+                  "expected_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityScheduled": 1
+                  },
+                  "observed_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityHeartbeatRecorded": 1,
+                    "ActivityScheduled": 1,
+                    "ActivityStarted": 1,
+                    "StartAccepted": 1,
+                    "WorkflowCompleted": 1,
+                    "WorkflowStarted": 1
+                  },
+                  "passed": true
+                }
+              },
+              "observed_callback_count": 1,
+              "passed": true
+            },
+            "replay_matrix": {
+              "distinct_activity_attempt_ids": [
+                "01M3MXTAXXR57YJQF19YQ29JTM",
+                "01M3MXTFBRSMEVFBQX6GKMCMZZ",
+                "01M3MXTGMK5S0JSR74RKZ5CQGJ"
+              ],
+              "distinct_task_ids": [
+                "01m3mxtarnxqbaqcw7s3k8g9pg",
+                "01m3mxtf72nh0530tt5ghr5xph",
+                "01m3mxtge9emsmwbpbkwam4p3k"
+              ],
+              "expected_callback_count": 3,
+              "history_checkpoints": {
+                "after_worker_restart": {
+                  "expected_event_counts": {
+                    "ActivityCompleted": 3,
+                    "ActivityFailed": 1,
+                    "ActivityScheduled": 4
+                  },
+                  "observed_event_counts": {
+                    "ActivityCompleted": 3,
+                    "ActivityFailed": 1,
+                    "ActivityHeartbeatRecorded": 3,
+                    "ActivityScheduled": 4,
+                    "ActivityStarted": 4,
+                    "MessageCursorAdvanced": 2,
+                    "SideEffectRecorded": 1,
+                    "SignalApplied": 1,
+                    "SignalReceived": 1,
+                    "StartAccepted": 1,
+                    "TimerFired": 1,
+                    "TimerScheduled": 1,
+                    "UpdateAccepted": 1,
+                    "UpdateApplied": 1,
+                    "UpdateCompleted": 1,
+                    "WorkflowCompleted": 1,
+                    "WorkflowStarted": 1
+                  },
+                  "passed": true
+                },
+                "completed": {
+                  "expected_event_counts": {
+                    "ActivityCompleted": 3,
+                    "ActivityFailed": 1,
+                    "ActivityScheduled": 4
+                  },
+                  "observed_event_counts": {
+                    "ActivityCompleted": 3,
+                    "ActivityFailed": 1,
+                    "ActivityHeartbeatRecorded": 3,
+                    "ActivityScheduled": 4,
+                    "ActivityStarted": 4,
+                    "MessageCursorAdvanced": 2,
+                    "SideEffectRecorded": 1,
+                    "SignalApplied": 1,
+                    "SignalReceived": 1,
+                    "StartAccepted": 1,
+                    "TimerFired": 1,
+                    "TimerScheduled": 1,
+                    "UpdateAccepted": 1,
+                    "UpdateApplied": 1,
+                    "UpdateCompleted": 1,
+                    "WorkflowCompleted": 1,
+                    "WorkflowStarted": 1
+                  },
+                  "passed": true
+                }
+              },
+              "observed_callback_count": 3,
+              "passed": true
+            }
+          },
+          "unexpected_phases": []
+        },
+        "activity_completed_events": 3,
+        "activity_result": {
+          "activity_process_id": 96,
+          "echo": {
+            "matrix": "activity"
+          }
+        },
+        "activity_types_from_reloaded_history": [
+          "php.sdk.echo",
+          "php.sdk.replay-matrix-fail",
+          "php.sdk.echo",
+          "php.sdk.echo"
+        ],
+        "cell_id": "php-completed-query-after-worker-restart",
+        "evidence_file": "php-sdk-client-replay-matrix-restart.json",
+        "run_id": "01m3mxta9p0epsjbt4g604jfv9",
+        "runtime_cell_executed": true,
+        "worker_id": "php-sdk-worker-2",
+        "worker_process_id": 121,
+        "workflow_id": "php-sdk-replay-matrix-1790629971-1-16930"
+      },
+      "runtime_cell": {
+        "artifact_source": "packagist",
+        "cell_id": "php-completed-query-after-worker-restart",
+        "executed": true,
+        "server_source": "public_image"
+      },
+      "scenario_id": "php_worker_restart_activity_state",
+      "status": "pass"
+    },
+    "php_worker_restart_completed_query": {
+      "executed_runtime_cell": true,
+      "observed_outputs": {
+        "cell_id": "php-completed-query-after-worker-restart",
+        "completed_query": {
+          "activity_types": [
+            "php.sdk.echo",
+            "php.sdk.replay-matrix-fail",
+            "php.sdk.echo",
+            "php.sdk.echo"
+          ],
+          "event_counts": {
+            "ActivityCompleted": 3,
+            "ActivityFailed": 1,
+            "ActivityHeartbeatRecorded": 3,
+            "ActivityScheduled": 4,
+            "ActivityStarted": 4,
+            "MessageCursorAdvanced": 2,
+            "SideEffectRecorded": 1,
+            "SignalApplied": 1,
+            "SignalReceived": 1,
+            "StartAccepted": 1,
+            "TimerFired": 1,
+            "TimerScheduled": 1,
+            "UpdateAccepted": 1,
+            "UpdateApplied": 1,
+            "UpdateCompleted": 1,
+            "WorkflowCompleted": 1,
+            "WorkflowStarted": 1
+          },
+          "query_process_id": 121,
+          "signals": [
+            7
+          ],
+          "updates": [
+            19
+          ]
+        },
+        "evidence_file": "php-sdk-client-replay-matrix-restart.json",
+        "original_result": {
+          "activity": {
+            "activity_process_id": 96,
+            "echo": {
+              "matrix": "activity"
+            }
+          },
+          "after_signal": {
+            "activity_process_id": 96,
+            "echo": {
+              "matrix": "after-signal"
+            }
+          },
+          "compensation": {
+            "activity_process_id": 96,
+            "echo": {
+              "failure_type": "DomainException",
+              "matrix": "compensation"
+            }
+          },
+          "signals": [
+            7
+          ],
+          "updates": [
+            19
+          ],
+          "version_marker": {
+            "change_id": "php-replay-matrix",
+            "version": 1
+          },
+          "wait_cycles": 1,
+          "workflow_process_id": 96
+        },
+        "query_process_matches_restarted_worker": true,
+        "run_id": "01m3mxta9p0epsjbt4g604jfv9",
+        "runtime_cell_executed": true,
+        "worker_id": "php-sdk-worker-2",
+        "worker_process_id": 121,
+        "workflow_id": "php-sdk-replay-matrix-1790629971-1-16930"
+      },
+      "runtime_cell": {
+        "artifact_source": "packagist",
+        "cell_id": "php-completed-query-after-worker-restart",
+        "executed": true,
+        "server_source": "public_image"
+      },
+      "scenario_id": "php_worker_restart_completed_query",
+      "status": "pass"
+    },
+    "php_worker_restart_saga_compensation_state": {
+      "executed_runtime_cell": true,
+      "observed_outputs": {
+        "activity_completed_events": 3,
+        "activity_failed_events": 1,
+        "cell_id": "php-completed-query-after-worker-restart",
+        "compensation_result": {
+          "activity_process_id": 96,
+          "echo": {
+            "failure_type": "DomainException",
+            "matrix": "compensation"
+          }
+        },
+        "evidence_file": "php-sdk-client-replay-matrix-restart.json",
+        "run_id": "01m3mxta9p0epsjbt4g604jfv9",
+        "runtime_cell_executed": true,
+        "worker_id": "php-sdk-worker-2",
+        "worker_process_id": 121,
+        "workflow_id": "php-sdk-replay-matrix-1790629971-1-16930"
+      },
+      "runtime_cell": {
+        "artifact_source": "packagist",
+        "cell_id": "php-completed-query-after-worker-restart",
+        "executed": true,
+        "server_source": "public_image"
+      },
+      "scenario_id": "php_worker_restart_saga_compensation_state",
+      "status": "pass"
+    },
+    "php_worker_restart_signal_update_state": {
+      "executed_runtime_cell": true,
+      "observed_outputs": {
+        "cell_id": "php-completed-query-after-worker-restart",
+        "evidence_file": "php-sdk-client-replay-matrix-restart.json",
+        "run_id": "01m3mxta9p0epsjbt4g604jfv9",
+        "runtime_cell_executed": true,
+        "signals_from_reloaded_history": [
+          7
+        ],
+        "updates_from_reloaded_history": [
+          19
+        ],
+        "worker_id": "php-sdk-worker-2",
+        "worker_process_id": 121,
+        "workflow_id": "php-sdk-replay-matrix-1790629971-1-16930"
+      },
+      "runtime_cell": {
+        "artifact_source": "packagist",
+        "cell_id": "php-completed-query-after-worker-restart",
+        "executed": true,
+        "server_source": "public_image"
+      },
+      "scenario_id": "php_worker_restart_signal_update_state",
+      "status": "pass"
+    },
+    "php_worker_restart_version_marker_state": {
+      "executed_runtime_cell": true,
+      "observed_outputs": {
+        "cell_id": "php-completed-query-after-worker-restart",
+        "evidence_file": "php-sdk-client-replay-matrix-restart.json",
+        "run_id": "01m3mxta9p0epsjbt4g604jfv9",
+        "runtime_cell_executed": true,
+        "side_effect_recorded_events": 1,
+        "version_marker": {
+          "change_id": "php-replay-matrix",
+          "version": 1
+        },
+        "version_marker_callback_count": 1,
+        "worker_id": "php-sdk-worker-2",
+        "worker_process_id": 121,
+        "workflow_id": "php-sdk-replay-matrix-1790629971-1-16930"
+      },
+      "runtime_cell": {
+        "artifact_source": "packagist",
+        "cell_id": "php-completed-query-after-worker-restart",
+        "executed": true,
+        "server_source": "public_image"
+      },
+      "scenario_id": "php_worker_restart_version_marker_state",
+      "status": "pass"
+    },
+    "php_worker_restart_wait_condition_state": {
+      "executed_runtime_cell": true,
+      "observed_outputs": {
+        "cell_id": "php-completed-query-after-worker-restart",
+        "evidence_file": "php-sdk-client-replay-matrix-restart.json",
+        "run_id": "01m3mxta9p0epsjbt4g604jfv9",
+        "runtime_cell_executed": true,
+        "timer_fired_events": 1,
+        "timer_scheduled_events": 1,
+        "wait_cycles": 1,
+        "worker_id": "php-sdk-worker-2",
+        "worker_process_id": 121,
+        "workflow_id": "php-sdk-replay-matrix-1790629971-1-16930"
+      },
+      "runtime_cell": {
+        "artifact_source": "packagist",
+        "cell_id": "php-completed-query-after-worker-restart",
+        "executed": true,
+        "server_source": "public_image"
+      },
+      "scenario_id": "php_worker_restart_wait_condition_state",
+      "status": "pass"
+    },
+    "published_artifact_install_only": {
+      "observed_outputs": {
+        "original_bytes": 600720,
+        "reason": "evidence_cell_limit",
+        "retained": false,
+        "sha256": "fb22e28ddd8ff30fdb5037a55b212b4527b24ee58a695c1d93f1f24a07f89e99"
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-php",
+          "sdk-python",
+          "sdk-rust"
+        ]
+      },
+      "scenario_id": "published_artifact_install_only",
+      "status": "pass"
+    },
+    "python_code_divergence_refusal": {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-python",
+        "version": "2.3.5"
+      },
+      "observed_outputs": {
+        "expected_shape": "activity:python-replay.farewell",
+        "message": "workflow history at workflow sequence 1 recorded ['ActivityCompleted'], but the current workflow yielded activity:python-replay.farewell. Recorded activity_type 'python-replay.greet', but current workflow scheduled 'python-replay.farewell'. Keep yielded workflow steps stable across deployments or run this workflow on a compatible build.",
+        "observed_outcome": "non_determinism_error",
+        "recorded_event_types": [
+          "ActivityCompleted"
+        ],
+        "replay_diff": {
+          "divergence": {
+            "expected_shape": "activity:python-replay.farewell",
+            "message": "workflow history at workflow sequence 1 recorded ['ActivityCompleted'], but the current workflow yielded activity:python-replay.farewell. Recorded activity_type 'python-replay.greet', but current workflow scheduled 'python-replay.farewell'. Keep yielded workflow steps stable across deployments or run this workflow on a compatible build.",
+            "recorded_event_types": [
+              "ActivityCompleted"
+            ],
+            "workflow_sequence": 1
+          },
+          "error": {
+            "class": "NonDeterministicReplayError",
+            "expected_shape": "activity:python-replay.farewell",
+            "message": "workflow history at workflow sequence 1 recorded ['ActivityCompleted'], but the current workflow yielded activity:python-replay.farewell. Recorded activity_type 'python-replay.greet', but current workflow scheduled 'python-replay.farewell'. Keep yielded workflow steps stable across deployments or run this workflow on a compatible build.",
+            "recorded_event_types": [
+              "ActivityCompleted"
+            ],
+            "workflow_sequence": 1
+          },
+          "expected": null,
+          "family": null,
+          "id": "python_code_divergence_refusal",
+          "observed": null,
+          "promotion_decision": "block_until_compatible",
+          "reason": "shape_mismatch",
+          "source": null,
+          "status": "drifted",
+          "verdict": "drifted",
+          "workflow_type": "python-replay-conformance"
+        },
+        "workflow_sequence": 1
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.5",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.25",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-python"
+        ]
+      },
+      "scenario_id": "python_code_divergence_refusal",
+      "status": "pass"
+    },
+    "python_completed_history_activity_replay": {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-python",
+        "version": "2.3.5"
+      },
+      "observed_outputs": {
+        "expected_state": {
+          "approved": false,
+          "events": [
+            "activity:Hello, Ada!"
+          ],
+          "greeting": "Hello, Ada!",
+          "name": null,
+          "reservation_id": null,
+          "stage": "completed",
+          "version": -1,
+          "version_result": null
+        },
+        "family": "activity",
+        "history_event_types": [
+          "ActivityCompleted"
+        ],
+        "replayed_command_sequence": [
+          {
+            "command_type": "CompleteWorkflow"
+          }
+        ],
+        "replayed_state": {
+          "approved": false,
+          "events": [
+            "activity:Hello, Ada!"
+          ],
+          "greeting": "Hello, Ada!",
+          "name": null,
+          "reservation_id": null,
+          "stage": "completed",
+          "version": -1,
+          "version_result": null
+        },
+        "state_matches_fixture": true
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.5",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.25",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-python"
+        ]
+      },
+      "scenario_id": "python_completed_history_activity_replay",
+      "status": "pass"
+    },
+    "python_completed_history_saga_compensation_replay": {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-python",
+        "version": "2.3.5"
+      },
+      "observed_outputs": {
+        "expected_state": {
+          "approved": false,
+          "events": [
+            "compensated:payment declined"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": "inventory-id-456",
+          "stage": "compensated",
+          "version": -1,
+          "version_result": null
+        },
+        "family": "saga-compensation",
+        "history_event_types": [
+          "ActivityCompleted",
+          "ChildRunFailed",
+          "ActivityCompleted"
+        ],
+        "replayed_command_sequence": [
+          {
+            "command_type": "CompleteWorkflow"
+          }
+        ],
+        "replayed_state": {
+          "approved": false,
+          "events": [
+            "compensated:payment declined"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": "inventory-id-456",
+          "stage": "compensated",
+          "version": -1,
+          "version_result": null
+        },
+        "state_matches_fixture": true
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.5",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.25",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-python"
+        ]
+      },
+      "scenario_id": "python_completed_history_saga_compensation_replay",
+      "status": "pass"
+    },
+    "python_completed_history_signal_update_replay": {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-python",
+        "version": "2.3.5"
+      },
+      "observed_outputs": {
+        "expected_state": {
+          "approved": false,
+          "events": [
+            "signal:Grace",
+            "activity:Hello, Grace!"
+          ],
+          "greeting": "Hello, Grace!",
+          "name": "Grace",
+          "reservation_id": null,
+          "stage": "completed",
+          "version": -1,
+          "version_result": null
+        },
+        "family": "signal-update",
+        "history_event_types": [
+          "ConditionWaitOpened",
+          "SignalReceived",
+          "ConditionWaitSatisfied",
+          "ActivityCompleted"
+        ],
+        "replayed_command_sequence": [
+          {
+            "command_type": "CompleteWorkflow"
+          }
+        ],
+        "replayed_state": {
+          "approved": false,
+          "events": [
+            "signal:Grace",
+            "activity:Hello, Grace!"
+          ],
+          "greeting": "Hello, Grace!",
+          "name": "Grace",
+          "reservation_id": null,
+          "stage": "completed",
+          "version": -1,
+          "version_result": null
+        },
+        "state_matches_fixture": true
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.5",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.25",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-python"
+        ]
+      },
+      "scenario_id": "python_completed_history_signal_update_replay",
+      "status": "pass"
+    },
+    "python_completed_history_version_marker_replay": {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-python",
+        "version": "2.3.5"
+      },
+      "observed_outputs": {
+        "expected_state": {
+          "approved": false,
+          "events": [
+            "version:2"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": null,
+          "stage": "completed",
+          "version": 2,
+          "version_result": "v3_result"
+        },
+        "family": "version-marker",
+        "history_event_types": [
+          "VersionMarkerRecorded",
+          "ActivityCompleted"
+        ],
+        "replayed_command_sequence": [
+          {
+            "command_type": "CompleteWorkflow"
+          }
+        ],
+        "replayed_state": {
+          "approved": false,
+          "events": [
+            "version:2"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": null,
+          "stage": "completed",
+          "version": 2,
+          "version_result": "v3_result"
+        },
+        "state_matches_fixture": true
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.5",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.25",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-python"
+        ]
+      },
+      "scenario_id": "python_completed_history_version_marker_replay",
+      "status": "pass"
+    },
+    "python_completed_history_wait_condition_replay": {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-python",
+        "version": "2.3.5"
+      },
+      "observed_outputs": {
+        "expected_state": {
+          "approved": true,
+          "events": [
+            "approved",
+            "condition-satisfied"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": null,
+          "stage": "approved",
+          "version": -1,
+          "version_result": null
+        },
+        "family": "wait-condition",
+        "history_event_types": [
+          "ConditionWaitOpened",
+          "UpdateApplied",
+          "ConditionWaitSatisfied"
+        ],
+        "replayed_command_sequence": [
+          {
+            "command_type": "CompleteWorkflow"
+          }
+        ],
+        "replayed_state": {
+          "approved": true,
+          "events": [
+            "approved",
+            "condition-satisfied"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": null,
+          "stage": "approved",
+          "version": -1,
+          "version_result": null
+        },
+        "state_matches_fixture": true
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.5",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.25",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-python"
+        ]
+      },
+      "scenario_id": "python_completed_history_wait_condition_replay",
+      "status": "pass"
+    },
+    "python_in_flight_signal_restart_timing": {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-python",
+        "version": "2.3.5"
+      },
+      "observed_outputs": {
+        "expected_next_decision": {
+          "activity_type": "python-replay.greet",
+          "arguments": [
+            "Grace"
+          ],
+          "command_type": "ScheduleActivity"
+        },
+        "history_event_types": [
+          "ConditionWaitOpened",
+          "SignalReceived",
+          "ConditionWaitSatisfied"
+        ],
+        "history_reloaded_at": "durable_workflow.workflow.replay",
+        "observed_outcome": "same_next_decision_after_replay",
+        "replayed_next_decision": {
+          "activity_type": "python-replay.greet",
+          "arguments": [
+            "Grace"
+          ],
+          "command_type": "ScheduleActivity"
+        },
+        "signal_sent_at": "history_event:SignalReceived",
+        "worker_restart_at": "after_signal_history_reload"
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.5",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.25",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-python"
+        ]
+      },
+      "scenario_id": "python_in_flight_signal_restart_timing",
+      "status": "pass"
+    },
+    "python_worker_restart_activity_state": {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-python",
+        "version": "2.3.5"
+      },
+      "observed_outputs": {
+        "family": "activity",
+        "history_event_types": [
+          "ActivityCompleted"
+        ],
+        "original_query_result": {
+          "approved": false,
+          "events": [
+            "activity:Hello, Ada!"
+          ],
+          "greeting": "Hello, Ada!",
+          "name": null,
+          "reservation_id": null,
+          "stage": "completed",
+          "version": -1,
+          "version_result": null
+        },
+        "query_result_matches_original": true,
+        "replay_query_result": {
+          "approved": false,
+          "events": [
+            "activity:Hello, Ada!"
+          ],
+          "greeting": "Hello, Ada!",
+          "name": null,
+          "reservation_id": null,
+          "stage": "completed",
+          "version": -1,
+          "version_result": null
+        },
+        "worker_restart_simulated": true
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.5",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.25",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-python"
+        ]
+      },
+      "scenario_id": "python_worker_restart_activity_state",
+      "status": "pass"
+    },
+    "python_worker_restart_completed_query": {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-python",
+        "version": "2.3.5"
+      },
+      "observed_outputs": {
+        "family": "completed-query",
+        "history_event_types": [
+          "ActivityCompleted"
+        ],
+        "original_query_result": {
+          "approved": false,
+          "events": [
+            "activity:Hello, Ada!"
+          ],
+          "greeting": "Hello, Ada!",
+          "name": null,
+          "reservation_id": null,
+          "stage": "completed",
+          "version": -1,
+          "version_result": null
+        },
+        "query_result_matches_original": true,
+        "replay_query_result": {
+          "approved": false,
+          "events": [
+            "activity:Hello, Ada!"
+          ],
+          "greeting": "Hello, Ada!",
+          "name": null,
+          "reservation_id": null,
+          "stage": "completed",
+          "version": -1,
+          "version_result": null
+        },
+        "worker_restart_simulated": true
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.5",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.25",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-python"
+        ]
+      },
+      "scenario_id": "python_worker_restart_completed_query",
+      "status": "pass"
+    },
+    "python_worker_restart_saga_compensation_state": {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-python",
+        "version": "2.3.5"
+      },
+      "observed_outputs": {
+        "family": "saga-compensation",
+        "history_event_types": [
+          "ActivityCompleted",
+          "ChildRunFailed",
+          "ActivityCompleted"
+        ],
+        "original_query_result": {
+          "approved": false,
+          "events": [
+            "compensated:payment declined"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": "inventory-id-456",
+          "stage": "compensated",
+          "version": -1,
+          "version_result": null
+        },
+        "query_result_matches_original": true,
+        "replay_query_result": {
+          "approved": false,
+          "events": [
+            "compensated:payment declined"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": "inventory-id-456",
+          "stage": "compensated",
+          "version": -1,
+          "version_result": null
+        },
+        "worker_restart_simulated": true
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.5",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.25",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-python"
+        ]
+      },
+      "scenario_id": "python_worker_restart_saga_compensation_state",
+      "status": "pass"
+    },
+    "python_worker_restart_signal_update_state": {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-python",
+        "version": "2.3.5"
+      },
+      "observed_outputs": {
+        "family": "signal-update",
+        "history_event_types": [
+          "ConditionWaitOpened",
+          "SignalReceived",
+          "ConditionWaitSatisfied",
+          "ActivityCompleted"
+        ],
+        "original_query_result": {
+          "approved": false,
+          "events": [
+            "signal:Grace",
+            "activity:Hello, Grace!"
+          ],
+          "greeting": "Hello, Grace!",
+          "name": "Grace",
+          "reservation_id": null,
+          "stage": "completed",
+          "version": -1,
+          "version_result": null
+        },
+        "query_result_matches_original": true,
+        "replay_query_result": {
+          "approved": false,
+          "events": [
+            "signal:Grace",
+            "activity:Hello, Grace!"
+          ],
+          "greeting": "Hello, Grace!",
+          "name": "Grace",
+          "reservation_id": null,
+          "stage": "completed",
+          "version": -1,
+          "version_result": null
+        },
+        "worker_restart_simulated": true
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.5",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.25",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-python"
+        ]
+      },
+      "scenario_id": "python_worker_restart_signal_update_state",
+      "status": "pass"
+    },
+    "python_worker_restart_version_marker_state": {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-python",
+        "version": "2.3.5"
+      },
+      "observed_outputs": {
+        "family": "version-marker",
+        "history_event_types": [
+          "VersionMarkerRecorded",
+          "ActivityCompleted"
+        ],
+        "original_query_result": {
+          "approved": false,
+          "events": [
+            "version:2"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": null,
+          "stage": "completed",
+          "version": 2,
+          "version_result": "v3_result"
+        },
+        "query_result_matches_original": true,
+        "replay_query_result": {
+          "approved": false,
+          "events": [
+            "version:2"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": null,
+          "stage": "completed",
+          "version": 2,
+          "version_result": "v3_result"
+        },
+        "worker_restart_simulated": true
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.5",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.25",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-python"
+        ]
+      },
+      "scenario_id": "python_worker_restart_version_marker_state",
+      "status": "pass"
+    },
+    "python_worker_restart_wait_condition_state": {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-python",
+        "version": "2.3.5"
+      },
+      "observed_outputs": {
+        "family": "wait-condition",
+        "history_event_types": [
+          "ConditionWaitOpened",
+          "UpdateApplied",
+          "ConditionWaitSatisfied"
+        ],
+        "original_query_result": {
+          "approved": true,
+          "events": [
+            "approved",
+            "condition-satisfied"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": null,
+          "stage": "approved",
+          "version": -1,
+          "version_result": null
+        },
+        "query_result_matches_original": true,
+        "replay_query_result": {
+          "approved": true,
+          "events": [
+            "approved",
+            "condition-satisfied"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": null,
+          "stage": "approved",
+          "version": -1,
+          "version_result": null
+        },
+        "worker_restart_simulated": true
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.5",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.25",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-python"
+        ]
+      },
+      "scenario_id": "python_worker_restart_wait_condition_state",
+      "status": "pass"
+    },
+    "rust_side_effect_replay_after_worker_restart": {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-rust",
+        "version": "2.1.1"
+      },
+      "observed_outputs": {
+        "callback_calls": 1,
+        "continue_as_new": {
+          "current_run_id": "01m3mxsggpdkejq5jqxkaaekyv",
+          "result": {
+            "links": 3,
+            "status": "completed"
+          },
+          "selected_closed_reason": "continued",
+          "selected_run_id": "01m3mxsfm6x1ens7vk145yctgh",
+          "workflow_id": "rust-continue-1790629951787242703"
+        },
+        "initial_supported_range": [
+          1,
+          2
+        ],
+        "original": {
+          "captured": "b823dd55-b81c-4915-8e22-47b0e3be9739",
+          "version": 2
+        },
+        "replayed": {
+          "captured": "b823dd55-b81c-4915-8e22-47b0e3be9739",
+          "version": 2
+        },
+        "run_id": "01m3mxsepfaa531s6tj0ezvjk1",
+        "upgraded_supported_range": [
+          1,
+          3
+        ],
+        "workflow_id": "rust-replay-1790629951787242703"
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.5",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.25",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-rust"
+        ]
+      },
+      "scenario_id": "rust_side_effect_replay_after_worker_restart",
+      "status": "pass"
+    },
+    "rust_version_marker_replay_after_code_upgrade": {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-rust",
+        "version": "2.1.1"
+      },
+      "observed_outputs": {
+        "callback_calls": 1,
+        "continue_as_new": {
+          "current_run_id": "01m3mxsggpdkejq5jqxkaaekyv",
+          "result": {
+            "links": 3,
+            "status": "completed"
+          },
+          "selected_closed_reason": "continued",
+          "selected_run_id": "01m3mxsfm6x1ens7vk145yctgh",
+          "workflow_id": "rust-continue-1790629951787242703"
+        },
+        "initial_supported_range": [
+          1,
+          2
+        ],
+        "original": {
+          "captured": "b823dd55-b81c-4915-8e22-47b0e3be9739",
+          "version": 2
+        },
+        "replayed": {
+          "captured": "b823dd55-b81c-4915-8e22-47b0e3be9739",
+          "version": 2
+        },
+        "run_id": "01m3mxsepfaa531s6tj0ezvjk1",
+        "upgraded_supported_range": [
+          1,
+          3
+        ],
+        "workflow_id": "rust-replay-1790629951787242703"
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.5",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.25",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-rust"
+        ]
+      },
+      "scenario_id": "rust_version_marker_replay_after_code_upgrade",
+      "status": "pass"
+    },
+    "server_history_mutation_refusal": {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-python",
+        "version": "2.3.5"
+      },
+      "observed_outputs": {
+        "integrity": {
+          "path": null,
+          "rule": "integrity.checksum_mismatch",
+          "status": "failed"
+        },
+        "message": "integrity.checksum=[9c97ad2719a26245b75c390a4bd706c0fd885478bb434ddeb0a7a913089029c9] does not match recomputed sha256=[b622e6132ac1aec7d88ccb6d7b7b60c56a79e31703a506c474e15cc7f36c96c3]. Bundle has been tampered with or canonicalization disagrees.",
+        "observed_outcome": "bundle_invalid_or_drifted",
+        "replay_diff": {
+          "reason": "bundle_invalid",
+          "status": "failed"
+        }
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.5",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.25",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-python"
+        ]
+      },
+      "scenario_id": "server_history_mutation_refusal",
+      "status": "pass"
+    }
+  },
+  "schema": "durable-workflow.v2.replay-conformance.result",
+  "schema_version": 1,
+  "source_policy": {
+    "artifact_source": "published_artifacts",
+    "local_product_source_checkouts_used": false
+  },
+  "started_at": "2026-09-28T21:08:25Z",
+  "worker_restart_replay": {
+    "passed": 13,
+    "scenario_statuses": {
+      "php_worker_restart_activity_state": "pass",
+      "php_worker_restart_completed_query": "pass",
+      "php_worker_restart_saga_compensation_state": "pass",
+      "php_worker_restart_signal_update_state": "pass",
+      "php_worker_restart_version_marker_state": "pass",
+      "php_worker_restart_wait_condition_state": "pass",
+      "python_worker_restart_activity_state": "pass",
+      "python_worker_restart_completed_query": "pass",
+      "python_worker_restart_saga_compensation_state": "pass",
+      "python_worker_restart_signal_update_state": "pass",
+      "python_worker_restart_version_marker_state": "pass",
+      "python_worker_restart_wait_condition_state": "pass",
+      "rust_version_marker_replay_after_code_upgrade": "pass"
+    },
+    "scenarios": [
+      "python_worker_restart_completed_query",
+      "python_worker_restart_activity_state",
+      "python_worker_restart_signal_update_state",
+      "python_worker_restart_wait_condition_state",
+      "python_worker_restart_version_marker_state",
+      "python_worker_restart_saga_compensation_state",
+      "php_worker_restart_completed_query",
+      "php_worker_restart_activity_state",
+      "php_worker_restart_signal_update_state",
+      "php_worker_restart_wait_condition_state",
+      "php_worker_restart_version_marker_state",
+      "php_worker_restart_saga_compensation_state",
+      "rust_version_marker_replay_after_code_upgrade"
+    ],
+    "status": "pass",
+    "total": 13
+  }
+}
