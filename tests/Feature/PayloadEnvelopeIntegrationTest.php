@@ -153,7 +153,8 @@ class PayloadEnvelopeIntegrationTest extends TestCase
 
         $this->runReadyWorkflowTask($runId);
 
-        $payload = Serializer::serializeWithCodec('avro', ['ExternalSignal']);
+        $signalValue = str_repeat('S', 2048);
+        $payload = Serializer::serializeWithCodec('avro', [$signalValue]);
         $signal = $this->withHeaders($this->apiHeaders())
             ->postJson('/api/workflows/wf-external-storage-signal/signal/advance', [
                 'input' => $this->externalStorageEnvelope('avro', $payload),
@@ -168,14 +169,25 @@ class PayloadEnvelopeIntegrationTest extends TestCase
             ->firstOrFail();
 
         $this->assertSame('avro', $recordedSignal->payload_codec);
-        $this->assertSame($payload, $recordedSignal->arguments);
+        $this->assertTrue(ExternalPayloads::isStoredReference($recordedSignal->arguments));
+        $this->assertSame(
+            hash('sha256', $payload),
+            ExternalPayloads::wireEnvelope($recordedSignal->arguments, 'avro', 'default')['external_storage']['sha256'],
+        );
+        $received = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::SignalReceived->value)
+            ->firstOrFail();
+        $this->assertSame(hash('sha256', $payload), $received->payload['arguments']['external_storage']['sha256']);
+        $command = WorkflowCommand::query()->findOrFail($recordedSignal->workflow_command_id);
+        $this->assertLessThan(1024, strlen($command->payload));
 
         $this->runReadyWorkflowTask($runId);
 
         $this->withHeaders($this->apiHeaders())
             ->postJson('/api/workflows/wf-external-storage-signal/query/currentState')
             ->assertOk()
-            ->assertJsonPath('result.name', 'ExternalSignal')
+            ->assertJsonPath('result.name', $signalValue)
             ->assertJsonPath('result.stage', 'waiting-for-finish');
     }
 

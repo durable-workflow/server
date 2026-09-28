@@ -549,7 +549,12 @@ class WorkflowController
         }
 
         $externalStorage = $this->externalPayloadStorage->driverFor($namespace);
-        $envelope = AvroPayloadEnvelopeResolver::resolve($validated['input'] ?? null, 'input', $externalStorage);
+        $envelope = AvroPayloadEnvelopeResolver::resolve(
+            $validated['input'] ?? null,
+            'input',
+            $externalStorage,
+            retainExternal: true,
+        );
 
         $result = $this->workflowControlPlane->signal(
             $workflowId,
