@@ -1,0 +1,1 @@
+{"endpoint": "/api/cluster/info", "p50_seconds": 0.1273479931987822, "p95_seconds": 0.14729866106063128, "p99_seconds": 0.14729866106063128, "samples": 10, "statuses": {"200": 10}}

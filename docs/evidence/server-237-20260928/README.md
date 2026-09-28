@@ -215,6 +215,41 @@ The [55 point samples per service](published-2422-mysql-container-stats.psv) run
 
 This is one published-image repetition on MySQL. It supports the exact mixed-run correctness result. It does not yet give a replicated performance estimate or cover the remaining durability boundaries.
 
+## Published Server 2.4.22 PostgreSQL mixed run
+
+Another fresh isolated stack used the same unmodified Server 2.4.22 image index, embedded Workflow 2.2.16, published Python SDK 2.3.5, Redis digest, host, PHP 128 MiB limit, signal concurrency, activity/timer spacing, continuation and 1,800-second worker window. The published-SDK probe image ID was `sha256:c6b648ece6b55551724e865b7b5e5e9023e25b71f5caeb55840c19a9bc22ed2e`. The SQL backend was PostgreSQL 16.15 at the pinned `postgres@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea`. Only the probe had explicit one-CPU/one-GiB limits; other services used Compose defaults. No candidate source was mounted.
+
+Use a fresh synthetic `stack.env` as above, with project `server-2422-pg-history-20260928` and an unused loopback port. Add `postgresql.compose.yml` after the three published Compose files to replace the database dependency. Build `probe` with `PYTHON_SDK_VERSION=2.3.5`, then run:
+
+```bash
+docker compose --env-file "$RUN_ENV" \
+  -f docker-compose.published.yml \
+  -f docs/evidence/server-237-20260927/compose.yml \
+  -f docs/evidence/server-237-20260928/digests.compose.yml \
+  -f docs/evidence/server-237-20260928/postgresql.compose.yml \
+  run --rm --no-deps --entrypoint python \
+  -e PROBE_RUN_ID=pub-2422-pg-mixed-20260928-a \
+  -e PROBE_SIGNAL_CONCURRENCY=8 \
+  -e PROBE_MIXED_INTERVAL=500 \
+  -e PROBE_CONTINUE_AS_NEW=1 \
+  -e PROBE_WORKER_WINDOW_SECONDS=1800 \
+  probe /probe/signal_history_probe.py 4000
+```
+
+The [SDK verifier](published-2422-pg-mixed-4000.log) acknowledged 4,000 signals in 347.23 seconds; signal API p50/p95/p99 was 0.415/0.743/0.900 seconds. The [durable event span](published-2422-pg-offer-span.tsv) was 14:29:21.748686–14:35:08.815459 UTC. The cold worker completed in 515.35 seconds and reported peak process RSS of 142,876 KiB. It verified exact result `{"count":4000,"total":7998000}`, 4,048 ordered events over six history pages and two runs, eight activity starts/completions, eight timers, one continuation and no retry. The [initial](published-2422-pg-initial-snapshot.json) and [successor](published-2422-pg-successor-snapshot.json) snapshots confirm completed runs with matching 4,046/4,046 and 2/2 history/timeline rows. The initial summary recorded 5,501,314 history bytes and recommended continue-as-new. Signal-record statuses remain 3,999 `received` and one `applied`, as on MySQL; that semantic question remains open. [Final backlog](published-2422-pg-final-backlog.tsv) has zero queued/failed jobs, open tasks and nonterminal runs.
+
+| Completed task created after the last signal | Count | p50 / p95 / p99 lifetime |
+| --- | ---: | ---: |
+| Workflow | 17 | 10.64 / 24.61 / 24.61 s |
+| Activity | 8 | 17.73 / 21.70 / 21.70 s |
+| Timer | 8 | 8.62 / 9.12 / 9.12 s |
+
+These nearest-rank values use `updated_at - created_at` on the completed [task rows](published-2422-pg-post-offer-task-timing.tsv); the [summary](published-2422-pg-post-offer-task-summary.tsv) is a calculation of those rows, not isolated handler latency. Ten ordinary authenticated API calls during offers and ten during worker processing all returned HTTP 200, with p95 [0.169](published-2422-pg-api-during-offers.json) and [0.147](published-2422-pg-api-during-worker.json) seconds. The small samples do not characterize the full latency distribution.
+
+PostgreSQL `pg_database_size` rose from [12,639,255](published-2422-pg-database-before-bytes.txt) bytes before the workload to [40,811,543](published-2422-pg-database-after-offers-bytes.txt) bytes after signal offers and [41,573,399](published-2422-pg-database-final-bytes.txt) bytes after completion, a final increase of 28,934,144 bytes including indexes and database overhead. The [75 point samples per service](published-2422-pg-container-stats.psv), collected from 14:29:09 to 14:44:00 UTC, have observed memory maxima in the [summary](published-2422-pg-container-stats-summary.json) of 211.4 MiB HTTP, 109.4 MiB queue worker, 102.6 MiB scheduler, 86.14 MiB PostgreSQL and 21.65 MiB Redis. These samples are not true peaks or steady-state estimates. The [final container outcome](published-2422-pg-container-outcome.tsv) shows all five services healthy with zero Docker restarts or OOM flags. Host [swap counters](published-2422-pg-swap-before.txt) did not increase by the [final sample](published-2422-pg-swap-final.txt).
+
+The rollback-only [full timeline diagnostic](published-2422-pg-timestamp-dirty-full.json) on the completed initial run visited all 4,046 entries and found **zero** `recorded_at` updates. The [initial snapshot after the diagnostic](published-2422-pg-initial-snapshot-after-diagnostic.json) was byte-identical to the one before it. This verifies that the published Workflow 2.2.16/Server 2.4.22 tuple avoids the 413 redundant PostgreSQL timestamp writes observed on the candidate-source pre-fix history above. The isolated containers, volumes, network and probe image were removed and verified absent. This is one published-image PostgreSQL repetition, not a cross-database performance comparison.
+
 ## Published PHP, Python and Rust replay conformance
 
 The Server repository's `scripts/conformance/replay-published-artifacts.sh` ran in an ephemeral Python 3.12/Docker CLI container as UID/GID 1000:1000 with the host Docker socket and network. The exact pinned tuple was Server 2.4.22 at `durableworkflow/server@sha256:c0152bf71b163b047dea9ecba2ff79ef1f5f081815d79003474d34107453bb9e`, Workflow 2.2.16, PHP SDK 2.1.5, Python SDK 2.3.5, Rust SDK 2.1.1, CLI 2.1.2 and Waterline 2.0.7. Set `DW_SERVER_IMAGE`, `DW_SERVER_VERSION`, `DW_WORKFLOW_PHP_VERSION`, `DW_PHP_SDK_VERSION`, `DW_PYTHON_SDK_VERSION`, `DW_RUST_SDK_VERSION`, `DW_CLI_VERSION` and `DW_WATERLINE_VERSION` to those values, then run:
@@ -228,4 +263,4 @@ The [merged result](published-2422-replay-replay-conformance-result.json) report
 
 ## Remaining qualification
 
-Repeat the PostgreSQL timestamp check on a published package and image. Qualify external payloads, retention cleanup, backend interruption, and around/beyond the 8,000/10,000-event guidance. Record active SDK-worker steady memory and repeat latency observations under the same load. Run affected non-replay service conformance before recommending guidance.
+Qualify external payloads, retention cleanup, backend interruption, and around/beyond the 8,000/10,000-event guidance. Record active SDK-worker steady memory and repeat latency observations under the same load. Run affected non-replay service conformance before recommending guidance.
