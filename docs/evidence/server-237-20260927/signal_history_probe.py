@@ -74,6 +74,10 @@ async def main(target):
     worker_window = int(os.environ.get("PROBE_WORKER_WINDOW_SECONDS", "1800"))
     if worker_window < 1 or worker_window > 3600:
         raise ValueError("PROBE_WORKER_WINDOW_SECONDS must be in [1, 3600]")
+    cache_entries = int(os.environ.get("PROBE_EXTERNAL_CACHE_ENTRIES", "0"))
+    if cache_entries < 0 or cache_entries > 10000:
+        raise ValueError("PROBE_EXTERNAL_CACHE_ENTRIES must be in [0, 10000]")
+    external_cache = ExternalPayloadCache(max_entries=cache_entries) if cache_entries else None
     workflow_id = f"history-qualification-signals-{target}-{run_label}"
     queue = f"history-signals-{target}-{run_label}"
     if payload_bytes:
@@ -91,6 +95,7 @@ async def main(target):
         control_token=os.environ["DRILL_CONTROL_TOKEN"],
         worker_token=os.environ["DRILL_WORKER_TOKEN"],
         namespace="default",
+        external_storage_cache=external_cache,
     ) as client:
         if resume_run_id:
             handle = client.get_workflow_handle(workflow_id, run_id=resume_run_id)
@@ -159,9 +164,6 @@ async def main(target):
                 }, sort_keys=True), flush=True)
                 return
 
-        cache_entries = int(os.environ.get("PROBE_EXTERNAL_CACHE_ENTRIES", "0"))
-        if cache_entries < 0 or cache_entries > 10000:
-            raise ValueError("PROBE_EXTERNAL_CACHE_ENTRIES must be in [0, 10000]")
         print(json.dumps({
             "phase": "worker_cache",
             "external_cache_entries": cache_entries if cache_entries else 128,
@@ -172,8 +174,7 @@ async def main(target):
             task_queue=queue,
             workflows=[SignalHistory],
             activities=[mixed_boundary],
-            external_storage_cache=ExternalPayloadCache(max_entries=cache_entries)
-            if cache_entries else None,
+            external_storage_cache=external_cache,
         )
         resumed_at = time.monotonic()
         try:
