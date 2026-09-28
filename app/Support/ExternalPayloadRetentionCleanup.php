@@ -87,14 +87,19 @@ class ExternalPayloadRetentionCleanup
         $runIds = $this->normalizedStrings($runIds);
         $instanceIds = $this->normalizedStrings($instanceIds);
 
+        $namespace = strtolower($namespace);
+        $references = $this->referencesForNamespaceCleanup($namespace, $runIds, $instanceIds);
+        $candidateUris = array_fill_keys(array_column($references, 'uri'), true);
+        $retainedUris = $this->retainedReferencesForNamespaceCleanup(
+            $namespace,
+            $runIds,
+            $instanceIds,
+            $candidateUris,
+        );
+
         return $this->deleteReferencesForOwningNamespaces(
-            $this->referencesForNamespaceCleanup(strtolower($namespace), $runIds, $instanceIds),
-            fn (string $uri): bool => $this->isReferencedByRetainedNamespaceRow(
-                $uri,
-                strtolower($namespace),
-                $runIds,
-                $instanceIds,
-            ),
+            $references,
+            static fn (string $uri): bool => isset($retainedUris[$uri]),
         );
     }
 
@@ -304,13 +309,21 @@ class ExternalPayloadRetentionCleanup
     /**
      * @param  list<string>  $runIds
      * @param  list<string>  $instanceIds
+     * @param  array<string, bool>  $candidateUris
+     * @return array<string, bool>
      */
-    private function isReferencedByRetainedNamespaceRow(
-        string $uri,
+    private function retainedReferencesForNamespaceCleanup(
         string $namespace,
         array $runIds,
         array $instanceIds,
-    ): bool {
+        array $candidateUris,
+    ): array {
+        if ($candidateUris === []) {
+            return [];
+        }
+
+        $retainedUris = [];
+
         foreach ($this->namespaceCleanupReferenceSources($namespace, $runIds, $instanceIds) as $source) {
             $query = $this->retainedQueryForScope($source['table'], $source['scope']);
 
@@ -319,19 +332,36 @@ class ExternalPayloadRetentionCleanup
             }
 
             foreach ($source['payload_columns'] as $column) {
-                if ($this->payloadTableColumnReferencesUri(clone $query, $source['table'], $column, $uri)) {
-                    return true;
+                if (! $this->hasTableColumn($source['table'], $column)) {
+                    continue;
+                }
+
+                foreach ((clone $query)->select([$column])->cursor() as $row) {
+                    $uris = [];
+                    $this->collectReferences($row->{$column}, $uris);
+
+                    foreach ($uris as $uri) {
+                        if (isset($candidateUris[$uri])) {
+                            $retainedUris[$uri] = true;
+                        }
+                    }
                 }
             }
 
             foreach ($source['reference_columns'] as $column) {
-                if ($this->referenceTableColumnReferencesUri(clone $query, $source['table'], $column, $uri)) {
-                    return true;
+                if (! $this->hasTableColumn($source['table'], $column)) {
+                    continue;
+                }
+
+                foreach (array_chunk(array_keys($candidateUris), 500) as $uriChunk) {
+                    foreach ((clone $query)->whereIn($column, $uriChunk)->pluck($column) as $uri) {
+                        $retainedUris[$uri] = true;
+                    }
                 }
             }
         }
 
-        return false;
+        return $retainedUris;
     }
 
     /**
@@ -955,30 +985,6 @@ class ExternalPayloadRetentionCleanup
                 ];
             }
         }
-    }
-
-    private function payloadTableColumnReferencesUri($query, string $table, string $column, string $uri): bool
-    {
-        if (! $this->hasTableColumn($table, $column)) {
-            return false;
-        }
-
-        foreach ($query->select([$column])->cursor() as $row) {
-            if ($this->valueReferencesUri($row->{$column}, $uri)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private function referenceTableColumnReferencesUri($query, string $table, string $column, string $uri): bool
-    {
-        if (! $this->hasTableColumn($table, $column)) {
-            return false;
-        }
-
-        return $query->where($column, $uri)->exists();
     }
 
     /**

@@ -507,6 +507,55 @@ class NamespaceControllerTest extends TestCase
         File::deleteDirectory($storageDirectory);
     }
 
+    public function test_namespace_cleanup_scans_retained_rows_once_for_many_external_payloads(): void
+    {
+        $storageDirectory = storage_path('framework/testing/namespace-many-external-payloads');
+        File::deleteDirectory($storageDirectory);
+        File::ensureDirectoryExists($storageDirectory.'/payloads');
+
+        WorkflowNamespace::create([
+            'name' => 'tenant-a',
+            'retention_days' => 30,
+            'status' => 'active',
+            'external_payload_storage' => [
+                'driver' => 'local',
+                'enabled' => true,
+                'config' => ['uri' => 'file://'.$storageDirectory],
+            ],
+        ]);
+
+        $workflowId = 'wf-tenant-a-many-external';
+        $runId = $this->runtimeState('tenant-a', $workflowId);
+        $payloadCount = 40;
+
+        for ($index = 0; $index < $payloadCount; $index++) {
+            $path = $storageDirectory.'/payloads/'.$index.'.bin';
+            $payload = 'encoded-payload-'.$index;
+            file_put_contents($path, $payload);
+            $this->addExternalPayloadCommand($workflowId, $runId, $runId, 'file://'.$path, $payload);
+        }
+
+        $queryCount = 0;
+        $countQueries = false;
+        DB::listen(static function () use (&$queryCount, &$countQueries): void {
+            if ($countQueries) {
+                $queryCount++;
+            }
+        });
+
+        $countQueries = true;
+        $this->deleteJson('/api/namespaces/tenant-a')
+            ->assertOk()
+            ->assertJsonPath('deleted.external_payloads_deleted', $payloadCount);
+        $countQueries = false;
+
+        $this->assertLessThan(2000, $queryCount);
+        $this->assertCount(0, File::files($storageDirectory.'/payloads'));
+        $this->assertDatabaseMissing('workflow_runs', ['id' => $runId]);
+
+        File::deleteDirectory($storageDirectory);
+    }
+
     public function test_it_deletes_namespace_service_call_external_payload_references_before_service_rows(): void
     {
         $storageDirectory = storage_path('framework/testing/namespace-service-call-payloads');
