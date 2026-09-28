@@ -9,6 +9,7 @@ import sys
 import time
 
 from durable_workflow import Client, Worker, activity, workflow
+from durable_workflow.external_storage import ExternalPayloadCache
 
 
 @activity.defn(name="history-qualification-mixed-boundary")
@@ -158,8 +159,21 @@ async def main(target):
                 }, sort_keys=True), flush=True)
                 return
 
+        cache_entries = int(os.environ.get("PROBE_EXTERNAL_CACHE_ENTRIES", "0"))
+        if cache_entries < 0 or cache_entries > 10000:
+            raise ValueError("PROBE_EXTERNAL_CACHE_ENTRIES must be in [0, 10000]")
+        print(json.dumps({
+            "phase": "worker_cache",
+            "external_cache_entries": cache_entries if cache_entries else 128,
+            "external_cache_bytes": 16 * 1024 * 1024,
+        }, sort_keys=True), flush=True)
         worker = Worker(
-            client, task_queue=queue, workflows=[SignalHistory], activities=[mixed_boundary]
+            client,
+            task_queue=queue,
+            workflows=[SignalHistory],
+            activities=[mixed_boundary],
+            external_storage_cache=ExternalPayloadCache(max_entries=cache_entries)
+            if cache_entries else None,
         )
         resumed_at = time.monotonic()
         try:
