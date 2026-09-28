@@ -341,6 +341,8 @@ The [predelete durable summary](published-2426-predelete-summary.json) verified 
 
 Namespace deletion returned [HTTP 200 in 4.02 seconds](published-2426-namespace-delete.log) and reported all 1,000 external objects deleted. [Postdelete database counts](published-2426-postdelete-rows.tsv) and the [physical count](published-2426-postdelete-physical-count.txt) were zero for namespaces, runs, signal rows, registry rows and files. The isolated project's [startup](published-2426-stack-start.log) and [cleanup](published-2426-stack-cleanup.log) logs show its containers and volumes were removed.
 
+The exact 2.4.26 published-artifact [replay conformance result](published-2426-replay-conformance-result.json) passed all 31 scenarios with zero findings across [PHP](published-2426-php-replay-shard.json), [Python](published-2426-python-replay-shard.json) and [Rust](published-2426-rust-replay-shard.json). Its [record](published-2426-replay-conformance-record.json), [executed distribution identities](published-2426-executed-distribution-identities.json) and [pins](published-2426-pins.json) identify the exact Server 2.4.26, Workflow 2.2.18, PHP SDK 2.1.5, Python SDK 2.3.5, Rust SDK 2.1.1, CLI 2.1.2 and Waterline 2.0.7 tuple. The runner used published distributions, no local product source checkouts, and removed its isolated containers and volumes.
+
 ## Remaining qualification
 
 Measure a genuinely fresh SDK worker process with a bounded shared cache before recommending a new default for long-lived workflows. Qualify backend interruption and around/beyond the 8,000/10,000-event guidance. Record active SDK-worker steady memory and repeat latency observations under the same load, then run affected non-replay service conformance for the wider history qualification.

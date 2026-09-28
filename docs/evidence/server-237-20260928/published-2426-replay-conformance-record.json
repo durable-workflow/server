@@ -1,0 +1,17 @@
+{
+  "artifactVersions": {
+    "cli": "2.1.2",
+    "sdk-php": "2.1.5",
+    "sdk-python": "2.3.5",
+    "sdk-rust": "2.1.1",
+    "server": "2.4.26",
+    "waterline": "2.0.7",
+    "workflow-php": "2.2.18"
+  },
+  "finished_at": "2026-09-28T21:56:59Z",
+  "outcome": "pass",
+  "result_file": "replay-conformance-result.json",
+  "runnerBlocked": false,
+  "schema": "durable-workflow.v2.replay-conformance.record",
+  "started_at": "2026-09-28T21:52:17Z"
+}
