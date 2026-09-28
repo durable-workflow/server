@@ -1,6 +1,6 @@
 # Server #237 published long-history signal probe, 2026-09-28
 
-This is a local qualification slice with synthetic workflows and credentials. It exercises signal admission, a cold SDK worker restart, replay, workflow-task completion, exact result, and paginated history. A later candidate-source run adds activities, timers, continue-as-new, and recovery from an expired activity lease. PostgreSQL, retention, external payloads, and the 8,000/10,000-event thresholds remain open.
+This is a local qualification slice with synthetic workflows and credentials. It exercises signal admission, a cold SDK worker restart, replay, workflow-task completion, exact result, and paginated history. Later runs add activities, timers, continue-as-new, and recovery from an expired activity lease. The published Server 2.4.22 MySQL result is below. Published-image PostgreSQL, retention, external payloads, and the 8,000/10,000-event thresholds remain open.
 
 ## Frozen inputs
 
@@ -181,6 +181,40 @@ Workflow [PR #578](https://github.com/durable-workflow/workflow/pull/578) compar
 
 To reproduce, use `docker-compose.published.yml`, `../server-237-20260927/compose.yml`, `digests.compose.yml`, `candidate-workflow.compose.yml`, and finally `postgresql.compose.yml` in that order. Set a fresh project, port and source worktree at `1a95bbbe`, build the published-SDK probe, then run `probe /probe/signal_history_probe.py 4000` with `PROBE_RUN_ID=pg-4000-20260928-a`, `PROBE_SIGNAL_CONCURRENCY=8`, `PROBE_MIXED_INTERVAL=500`, `PROBE_CONTINUE_AS_NEW=1` and `PROBE_WORKER_WINDOW_SECONDS=1800`. The timestamp diagnostic accepts `QUALIFICATION_RUN_ID` and `QUALIFICATION_ENTRY_LIMIT=0` for the complete run and must be used only on disposable state.
 
+## Published Server 2.4.22 MySQL mixed run
+
+A fresh isolated Compose stack used the unmodified published `durableworkflow/server:2.4.22@sha256:c0152bf71b163b047dea9ecba2ff79ef1f5f081815d79003474d34107453bb9e` multiarchitecture image. Its amd64 child was `sha256:dde901fec94ef9f1167ba16f32a0e07676e07fd2f07d8d8bc865abbf39e89c20`, with Workflow 2.2.16 embedded at dist commit `f91bd13856d9258dd04bafa90b9f6eb8d0b67cb7`. The published Python SDK was 2.3.5 in probe image `sha256:1a6bae0f436328d397064f2db45c64096d725afff30a748493311feeab2be623`. MySQL and Redis used the pinned digests above. The four-core i5-6500 host, 15 GiB RAM, one-CPU/one-GiB probe limit, 128 MiB Server PHP limit, eight concurrent signal requests, eight activity/timer boundaries, continuation, and 1,800-second worker window matched the prior mixed shape. Server service containers used the published Compose defaults without CPU or memory caps. The task-local project was `server-2422-history-20260928`, with HTTP bound to loopback port 18240. No candidate source was mounted.
+
+Run the published Compose, probe and digest overlays shown above with `DW_SERVER_IMAGE` set to that exact index, `DW_SERVER_TAG=2.4.22`, a fresh project and synthetic credentials. Build `probe` with `PYTHON_SDK_VERSION=2.3.5`. The measured command was:
+
+```bash
+docker compose --env-file "$RUN_ENV" \
+  -f docker-compose.published.yml \
+  -f docs/evidence/server-237-20260927/compose.yml \
+  -f docs/evidence/server-237-20260928/digests.compose.yml \
+  run --rm --no-deps --entrypoint python \
+  -e PROBE_RUN_ID=pub-2422-mixed-20260928-a \
+  -e PROBE_SIGNAL_CONCURRENCY=8 \
+  -e PROBE_MIXED_INTERVAL=500 \
+  -e PROBE_CONTINUE_AS_NEW=1 \
+  -e PROBE_WORKER_WINDOW_SECONDS=1800 \
+  probe /probe/signal_history_probe.py 4000
+```
+
+The [raw verifier log](published-2422-mysql-mixed-4000.log) reports all 4,000 signals acknowledged in 363.19 seconds with signal API p50/p95/p99 of 0.417/0.757/0.824 seconds. The [durable event timestamps](published-2422-mysql-offer-span.tsv) span 13:51:17.404567–13:57:20.483958 UTC. The resumed SDK worker completed in 448.32 seconds and reported peak process RSS of 129,332 KiB. It verified exact result `{"count":4000,"total":7998000}`, 4,048 ordered events over six pages and two completed runs, eight activity starts/completions, eight timers, one continuation, and no activity retry. The [initial](published-2422-mysql-initial-snapshot.json) and [successor](published-2422-mysql-successor-snapshot.json) snapshots show matching 4,046/4,046 and 2/2 history/timeline rows, no open tasks or rejected signals, and an initial 5,476,237 history bytes with `continue_as_new_recommended`. Signal-record statuses remain 3,999 `received` and one `applied`; the exact history and result checks pass, while those record statuses still need semantic review. [Final backlog](published-2422-mysql-final-backlog.tsv) shows zero queued jobs, failed jobs, open tasks, and open runs.
+
+| Completed task created after the last signal | Count | p50 / p95 / p99 lifetime |
+| --- | ---: | ---: |
+| Workflow | 17 | 8.96 / 20.12 / 20.12 s |
+| Activity | 8 | 15.43 / 18.68 / 18.68 s |
+| Timer | 8 | 9.07 / 9.61 / 9.61 s |
+
+These nearest-rank values come from the [task rows](published-2422-mysql-post-offer-task-timing.tsv) and [summary](published-2422-mysql-post-offer-task-summary.tsv), using `updated_at - created_at` on completed tasks. They cover task lifetime, not isolated handler latency. Ten ordinary authenticated API calls during offers and ten during worker processing all returned HTTP 200, with p95 of [0.159](published-2422-mysql-api-during-offers.json) and [0.118](published-2422-mysql-api-during-worker.json) seconds. These small samples do not characterize an API latency distribution.
+
+The [55 point samples per service](published-2422-mysql-container-stats.psv) run from 13:54:16 to 14:05:33 UTC. Their [summary](published-2422-mysql-container-stats-summary.json) gives observed maxima of 187.7 MiB for HTTP, 124.3 MiB for the queue worker, 88.15 MiB for scheduler, 661.0 MiB for MySQL, and 27.08 MiB for Redis. Sampling started after signal offers began and does not establish true peaks or steady-state memory. The [container outcome](published-2422-mysql-container-outcome.tsv) shows all five services healthy at completion, with zero Docker restarts or OOM flags. Swap-in/out counters did not move between the [mid-offer](published-2422-mysql-swap-mid-offer.txt) and [final](published-2422-mysql-swap-final.txt) samples. The [MySQL volume](published-2422-mysql-volume-final-bytes.txt) held 383,760,505 physical bytes at the end, including database files; without a before snapshot this is not a growth estimate. The isolated containers, volumes, and network were removed after evidence capture and verified absent.
+
+This is one published-image repetition on MySQL. It supports the exact mixed-run correctness result. It does not yet give a replicated performance estimate or cover the remaining durability boundaries.
+
 ## Remaining qualification
 
-Repeat the PostgreSQL timestamp check on a published package and image. Qualify external payloads, retention cleanup, backend interruption, and around/beyond the 8,000/10,000-event guidance. Record active SDK-worker steady memory and repeat latency observations under the same load. Run the published PHP/Python/Rust conformance tuple and repeat final limit checks on published packages and images before recommending guidance.
+Repeat the PostgreSQL timestamp check on a published package and image. Qualify external payloads, retention cleanup, backend interruption, and around/beyond the 8,000/10,000-event guidance. Record active SDK-worker steady memory and repeat latency observations under the same load. Run the published PHP/Python/Rust conformance tuple before recommending guidance.
