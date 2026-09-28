@@ -1,6 +1,6 @@
 # Server #237 published long-history signal probe, 2026-09-28
 
-This is a local qualification slice with synthetic workflows and credentials. It exercises signal admission, a cold SDK worker restart, replay, workflow-task completion, exact result, and paginated history. It does not yet cover mixed activities and timers, PostgreSQL, retention, or the 8,000/10,000-event thresholds.
+This is a local qualification slice with synthetic workflows and credentials. It exercises signal admission, a cold SDK worker restart, replay, workflow-task completion, exact result, and paginated history. A later candidate-source run adds activities, timers, continue-as-new, and recovery from an expired activity lease. PostgreSQL, retention, external payloads, and the 8,000/10,000-event thresholds remain open.
 
 ## Frozen inputs
 
@@ -105,6 +105,28 @@ for component in budget timeline_map timeline_project summary; do
 done
 ```
 
+## Mixed 4,000-signal continuation and worker recovery
+
+An isolated MySQL run used published Server 2.4.21 (`durableworkflow/server@sha256:3985988df14263102056cfc65cb4a8beb9e4ad2335ee91a38bcea74e214fe807`) with Workflow #568 candidate `141eeb1551b762d44f0d74bacb7260134eec18a9` mounted read-only. The published Python SDK was PyPI 2.3.5. MySQL and Redis used the digests in `digests.compose.yml`. The host, PHP 128 MiB limit, eight concurrent signal offers, and synthetic scoped tokens matched the earlier signal probe. The HTTP Server, scheduler, and queue worker ran together. The probe container had one CPU and 1 GiB; the service containers had no explicit CPU or container-memory cap.
+
+The first Python worker stopped before offers. The probe then acknowledged 4,000 distinct signals over a 441.225-second first-to-last durable event span. A fresh worker scheduled eight activities and eight zero-delay timers, one pair per 500 signals, before continuing as new. That first worker's 900-second processing window expired during the fifth activity. Its five-minute lease expired, and a second published-SDK worker retried the activity and finished the workflow. The first run completed at 09:58:07 UTC, about 34 minutes 50 seconds after the last signal event at 09:23:17 UTC. This includes the worker timeout, lease wait, and scheduler/queue work; it is not replay CPU time.
+
+The [final SDK verification](mixed-4000-final-verification.jsonl) retrieved six ordered history pages across both run IDs and the exact result `{"count":4000,"total":7998000}`. There were 4,000 `SignalReceived`, eight each of `ActivityScheduled`, `ActivityCompleted`, `TimerScheduled`, and `TimerFired`, nine `ActivityStarted` because the fifth activity retried once, one `WorkflowContinuedAsNew`, and one `WorkflowCompleted`. The [initial](mixed-4000-initial-snapshot.json) and [successor](mixed-4000-successor-snapshot.json) durable snapshots show 4,047/4,047 and 2/2 history/timeline rows, respectively, no open tasks, no rejected signals, and no failed jobs. The initial summary size was 5,429,147 bytes with `continue_as_new_recommended=true`. Its signal-record statuses were 3,999 `received` and one `applied`; the history and result checks establish execution, while those record statuses need separate semantic review.
+
+| Completed task, created after offers | Count | p50 | p95 | p99 |
+| --- | ---: | ---: | ---: | ---: |
+| Workflow | 16 | 15.74 s | 160.00 s | 160.00 s |
+| Activity | 8 | 29.61 s | 375.68 s | 375.68 s |
+| Timer | 8 | 19.11 s | 26.08 s | 26.08 s |
+
+These are nearest-rank percentiles of task creation-to-completed-status time from the [raw task rows](mixed-4000-task-timing.tsv), not isolated handler latency. The activity tail includes the five-minute lease expiry. The [offer timestamps](mixed-4000-offer-span.tsv) count durable signal events. Per-request signal latency samples were lost when the first probe worker timed out; the fixture now emits them before starting the worker. The [Server request-peak log](mixed-4000-server-php-peaks.log) has a highest PHP allocation of 96,468,992 bytes (92 MiB), below the image's 128 MiB PHP limit. This is PHP allocated memory, not container RSS. The Server and scheduler stayed healthy without Docker OOM or restart. The queue-worker container restarted eight times with no Docker OOM; its last observed exit code was zero and the image uses Laravel `queue:work --memory=128` by default. The exact recycling cause and active SDK-worker peak RSS were not captured.
+
+This run also exposed expensive overlapping projection work. A live MySQL snapshot showed a scheduler transaction with 3,308 rows modified and 4,601 locked while a Server completion transaction waited for a task lock. `TaskWatchdog::recoverExistingTask()` projects full history while holding task/run locks, and `TaskDispatcher::refreshRunSummary()` projects it again after redispatch. [Workflow #573](https://github.com/durable-workflow/workflow/issues/573) owns the bounded repair path. This is a candidate-source qualification result, not a published Workflow-package result or a safe long-history latency limit.
+
+Raw first-worker [timeout](mixed-4000-first-worker.log) and [resumed-worker verifier failure](mixed-4000-resumed-worker.log) logs are retained alongside the final successful verifier. The latter used an older assertion requiring exactly eight activity starts; the durable retry correctly produced nine. The current `signal_history_probe.py` accepts `PROBE_MIXED_INTERVAL=500`, `PROBE_CONTINUE_AS_NEW=1`, `PROBE_WORKER_WINDOW_SECONDS=900` for the first bounded worker, and `PROBE_RESUME_INITIAL_RUN_ID` for a later worker. Set the same `PROBE_RUN_ID` and target on resume; no signals are reoffered. Use the four-file Compose command above plus `candidate-workflow.compose.yml` and a fresh `WORKFLOW_CANDIDATE_ROOT` at the exact Workflow commit. Run each experiment in its own project and remove its volumes afterward.
+
+The unchanged default mode also passed a fresh [10-signal smoke run](mixed-probe-default-smoke.jsonl): exact result 45, 16 ordered events, and no mixed events or continuation.
+
 ## Remaining qualification
 
-After the completion path is bounded, repeat around the 4/5 MiB and 8,000/10,000-event guidance with mixed signals, timers, activities, continuations, external payloads, worker restarts, retention cleanup, and MySQL/PostgreSQL backends. Measure replay latency, task latency, worker and Server memory, database growth, result integrity, and acknowledged-work survival. Run published PHP/Python/Rust conformance before recommending limits.
+Repeat this mixed shape with the bounded watchdog candidate and compare latency under the same load. Qualify PostgreSQL, external payloads, retention cleanup, and around/beyond the 8,000/10,000-event guidance. Record active SDK-worker peak/steady memory, ordinary API responsiveness, backlog and per-request latency during the load. Run the published PHP/Python/Rust conformance tuple and repeat the final limit checks on published packages and images before recommending guidance.
