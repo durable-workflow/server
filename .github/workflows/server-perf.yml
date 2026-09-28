@@ -13,6 +13,8 @@ on:
       - "app/Support/HistoryRetentionEnforcer.php"
       - "app/Support/BoundedMetricPolicy.php"
       - "app/Support/BoundedRedisReadinessProbe.php"
+      - "app/Support/RedisReadinessProcess.php"
+      - "bin/redis-readiness-probe.php"
       - "app/Support/LongPollSignalStore.php"
       - "app/Support/LongPoller.php"
       - "app/Support/LongPollCapacityExhaustedException.php"
@@ -69,6 +71,8 @@ on:
       - "app/Support/HistoryRetentionEnforcer.php"
       - "app/Support/BoundedMetricPolicy.php"
       - "app/Support/BoundedRedisReadinessProbe.php"
+      - "app/Support/RedisReadinessProcess.php"
+      - "bin/redis-readiness-probe.php"
       - "app/Support/LongPollSignalStore.php"
       - "app/Support/LongPoller.php"
       - "app/Support/LongPollCapacityExhaustedException.php"
@@ -246,9 +250,13 @@ jobs:
           DW_PERF_TASK_QUEUES: "8"
           DW_PERF_WORKFLOW_RUNS: "1000"
           DW_PERF_START_CONCURRENCY: "8"
+          # Spread the 1,000 synthetic starts over 100 seconds. This keeps the
+          # cache-growth coverage while leaving CPU headroom for readiness.
+          DW_PERF_WORKFLOW_START_INTERVAL_MS: "100"
           DW_PERF_MIN_WORKFLOW_COMPLETION_RATIO: "0.98"
           DW_PERF_HEALTH_INTERVAL_SECONDS: "0.5"
           DW_PERF_MAX_HEALTH_LATENCY_SECONDS: "3"
+          DW_PERF_READINESS_DIAGNOSTICS: "1"
           DW_PERF_CONTROL_PLANE_INTERVAL_SECONDS: "5"
           DW_PERF_MAX_CONTROL_PLANE_LATENCY_SECONDS: "5"
           DW_PERF_WORKFLOW_VERSION: ${{ steps.workflow.outputs.ref }}

@@ -206,6 +206,7 @@ final class RedisReadinessProcess
         );
         $lastStage = 'not_reported';
         $stageElapsedMilliseconds = null;
+        $stagesMilliseconds = [];
         foreach ($matches as $match) {
             $elapsed = (int) $match[2];
             if ($elapsed > 10_000) {
@@ -213,12 +214,14 @@ final class RedisReadinessProcess
             }
             $lastStage = $match[1];
             $stageElapsedMilliseconds = $elapsed;
+            $stagesMilliseconds[$lastStage] = $elapsed;
         }
 
         $details = [
             'reason' => $reason,
             'last_stage' => $lastStage,
             'child_stage_elapsed_ms' => $stageElapsedMilliseconds,
+            'stages_ms' => $stagesMilliseconds,
             'parent_elapsed_ms' => (int) round((microtime(true) - $runStartedAt) * 1000),
             'spawn_elapsed_ms' => $spawnElapsedMilliseconds,
         ];
