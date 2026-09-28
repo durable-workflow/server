@@ -215,6 +215,17 @@ The [55 point samples per service](published-2422-mysql-container-stats.psv) run
 
 This is one published-image repetition on MySQL. It supports the exact mixed-run correctness result. It does not yet give a replicated performance estimate or cover the remaining durability boundaries.
 
+## Published PHP, Python and Rust replay conformance
+
+The Server repository's `scripts/conformance/replay-published-artifacts.sh` ran in an ephemeral Python 3.12/Docker CLI container as UID/GID 1000:1000 with the host Docker socket and network. The exact pinned tuple was Server 2.4.22 at `durableworkflow/server@sha256:c0152bf71b163b047dea9ecba2ff79ef1f5f081815d79003474d34107453bb9e`, Workflow 2.2.16, PHP SDK 2.1.5, Python SDK 2.3.5, Rust SDK 2.1.1, CLI 2.1.2 and Waterline 2.0.7. Set `DW_SERVER_IMAGE`, `DW_SERVER_VERSION`, `DW_WORKFLOW_PHP_VERSION`, `DW_PHP_SDK_VERSION`, `DW_PYTHON_SDK_VERSION`, `DW_RUST_SDK_VERSION`, `DW_CLI_VERSION` and `DW_WATERLINE_VERSION` to those values, then run:
+
+```bash
+bash scripts/conformance/replay-published-artifacts.sh \
+  --result-dir /path/to/isolated/replay-result
+```
+
+The [merged result](published-2422-replay-replay-conformance-result.json) reports `pass`: all 31 scenario results passed, all three runtime shards exited zero, and there were no findings. This includes 11 completed-history replay scenarios and 13 worker-restart replay scenarios. The [PHP](published-2422-replay-php-replay-shard.json), [Python](published-2422-replay-python-replay-shard.json) and [Rust](published-2422-replay-rust-replay-shard.json) shard reports retain their detailed observations. The [execution record](published-2422-replay-replay-conformance-record.json), [distribution identities](published-2422-replay-executed-distribution-identities.json) and [pins](published-2422-replay-pins.json) identify the exact published artifacts. The runner removed its isolated containers, volumes and network after completion. This replay matrix is a service conformance slice, not the full protocol catalog.
+
 ## Remaining qualification
 
-Repeat the PostgreSQL timestamp check on a published package and image. Qualify external payloads, retention cleanup, backend interruption, and around/beyond the 8,000/10,000-event guidance. Record active SDK-worker steady memory and repeat latency observations under the same load. Run the published PHP/Python/Rust conformance tuple before recommending guidance.
+Repeat the PostgreSQL timestamp check on a published package and image. Qualify external payloads, retention cleanup, backend interruption, and around/beyond the 8,000/10,000-event guidance. Record active SDK-worker steady memory and repeat latency observations under the same load. Run affected non-replay service conformance before recommending guidance.
