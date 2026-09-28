@@ -1,0 +1,90 @@
+{
+    "entries": 4046,
+    "updated_rows": 413,
+    "examples": [
+        {
+            "history_event_id": "01m3kyeyyd1cpvf1vag9zbgfa9",
+            "before_raw": "2026-09-28 12:05:02.53999",
+            "after_attribute": "2026-09-28 12:05:02.539990",
+            "before_original_cast": "2026-09-28 12:05:02",
+            "after_cast": "2026-09-28 12:05:02"
+        },
+        {
+            "history_event_id": "01m3kyf021g3117cvxa3n6p12h",
+            "before_raw": "2026-09-28 12:05:03.67692",
+            "after_attribute": "2026-09-28 12:05:03.676920",
+            "before_original_cast": "2026-09-28 12:05:03",
+            "after_cast": "2026-09-28 12:05:03"
+        },
+        {
+            "history_event_id": "01m3kyf1npsg27pgynq15mmcc1",
+            "before_raw": "2026-09-28 12:05:05.33093",
+            "after_attribute": "2026-09-28 12:05:05.330930",
+            "before_original_cast": "2026-09-28 12:05:05",
+            "after_cast": "2026-09-28 12:05:05"
+        },
+        {
+            "history_event_id": "01m3kyf2338fh3vkmt74ewn92c",
+            "before_raw": "2026-09-28 12:05:05.75895",
+            "after_attribute": "2026-09-28 12:05:05.758950",
+            "before_original_cast": "2026-09-28 12:05:05",
+            "after_cast": "2026-09-28 12:05:05"
+        },
+        {
+            "history_event_id": "01m3kyf2khbxp3d1wq2b2axc7x",
+            "before_raw": "2026-09-28 12:05:06.28765",
+            "after_attribute": "2026-09-28 12:05:06.287650",
+            "before_original_cast": "2026-09-28 12:05:06",
+            "after_cast": "2026-09-28 12:05:06"
+        },
+        {
+            "history_event_id": "01m3kyf2rxfjendn0vpc8d6s7r",
+            "before_raw": "2026-09-28 12:05:06.45936",
+            "after_attribute": "2026-09-28 12:05:06.459360",
+            "before_original_cast": "2026-09-28 12:05:06",
+            "after_cast": "2026-09-28 12:05:06"
+        },
+        {
+            "history_event_id": "01m3kyf39pes60hr1etvmktxvr",
+            "before_raw": "2026-09-28 12:05:06.99372",
+            "after_attribute": "2026-09-28 12:05:06.993720",
+            "before_original_cast": "2026-09-28 12:05:06",
+            "after_cast": "2026-09-28 12:05:06"
+        },
+        {
+            "history_event_id": "01m3kyf446nmhf5kqwya7x32kj",
+            "before_raw": "2026-09-28 12:05:07.84391",
+            "after_attribute": "2026-09-28 12:05:07.843910",
+            "before_original_cast": "2026-09-28 12:05:07",
+            "after_cast": "2026-09-28 12:05:07"
+        },
+        {
+            "history_event_id": "01m3kyf4m5a9eanfye0cbkj4fy",
+            "before_raw": "2026-09-28 12:05:08.35569",
+            "after_attribute": "2026-09-28 12:05:08.355690",
+            "before_original_cast": "2026-09-28 12:05:08",
+            "after_cast": "2026-09-28 12:05:08"
+        },
+        {
+            "history_event_id": "01m3kyf4zt3dh1d9mmvfhjhf3d",
+            "before_raw": "2026-09-28 12:05:08.72838",
+            "after_attribute": "2026-09-28 12:05:08.728380",
+            "before_original_cast": "2026-09-28 12:05:08",
+            "after_cast": "2026-09-28 12:05:08"
+        },
+        {
+            "history_event_id": "01m3kyf539fcdw9qwmdzvbrd5h",
+            "before_raw": "2026-09-28 12:05:08.83947",
+            "after_attribute": "2026-09-28 12:05:08.839470",
+            "before_original_cast": "2026-09-28 12:05:08",
+            "after_cast": "2026-09-28 12:05:08"
+        },
+        {
+            "history_event_id": "01m3kyf5pyqk22fxb3xasn1ndf",
+            "before_raw": "2026-09-28 12:05:09.46845",
+            "after_attribute": "2026-09-28 12:05:09.468450",
+            "before_original_cast": "2026-09-28 12:05:09",
+            "after_cast": "2026-09-28 12:05:09"
+        }
+    ]
+}
