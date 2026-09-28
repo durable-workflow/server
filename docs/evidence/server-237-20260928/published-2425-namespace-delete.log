@@ -1,0 +1,3 @@
+{"name":"default","status":"deleted","deleted":{"external_payloads_deleted":1000,"workflow_signal_records":1000,"workflow_commands":1001,"workflow_history_events":1003,"workflow_run_timeline_entries":1003,"workflow_run_waits":1,"workflow_tasks":2,"workflow_run_summaries":1,"workflow_runs":1,"workflow_instances":1}}
+HTTP 200
+TOTAL 5.437768
