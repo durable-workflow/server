@@ -1,0 +1,41 @@
+2026-09-28T10:29:01Z
+dw-server237-combined-20260928-probe-run-9ee0e3fe696a	0.00%	87.98MiB / 1GiB	7
+dw-server237-combined-20260928-worker-1	0.20%	46.55MiB / 15.48GiB	1
+dw-server237-combined-20260928-server-1	9.08%	152.4MiB / 15.48GiB	7
+dw-server237-combined-20260928-scheduler-1	78.34%	1.898MiB / 15.48GiB	3
+dw-server237-combined-20260928-mysql-1	13.25%	625.8MiB / 15.48GiB	44
+dw-server237-combined-20260928-redis-1	0.41%	11.59MiB / 15.48GiB	5
+2026-09-28T10:32:53Z
+dw-server237-combined-20260928-probe-run-9ee0e3fe696a	0.00%	81.44MiB / 1GiB	7
+dw-server237-combined-20260928-worker-1	0.26%	46.96MiB / 15.48GiB	1
+dw-server237-combined-20260928-server-1	6.56%	146.5MiB / 15.48GiB	7
+dw-server237-combined-20260928-scheduler-1	5.96%	106MiB / 15.48GiB	3
+dw-server237-combined-20260928-mysql-1	20.06%	644MiB / 15.48GiB	44
+dw-server237-combined-20260928-redis-1	0.47%	3.684MiB / 15.48GiB	5
+2026-09-28T10:38:39Z
+dw-server237-combined-20260928-probe-run-9ee0e3fe696a	0.25%	99.69MiB / 1GiB	7
+dw-server237-combined-20260928-worker-1	3.67%	108.9MiB / 15.48GiB	1
+dw-server237-combined-20260928-server-1	67.71%	151.5MiB / 15.48GiB	7
+dw-server237-combined-20260928-scheduler-1	68.70%	38.96MiB / 15.48GiB	3
+dw-server237-combined-20260928-mysql-1	36.69%	685.8MiB / 15.48GiB	44
+dw-server237-combined-20260928-redis-1	3.11%	19.58MiB / 15.48GiB	5
+2026-09-28T10:39:11Z
+dw-server237-combined-20260928-probe-run-9ee0e3fe696a	0.00%	85.55MiB / 1GiB	7
+dw-server237-combined-20260928-worker-1	0.25%	46.55MiB / 15.48GiB	1
+dw-server237-combined-20260928-server-1	13.36%	147.5MiB / 15.48GiB	7
+dw-server237-combined-20260928-scheduler-1	3.79%	1.914MiB / 15.48GiB	3
+dw-server237-combined-20260928-mysql-1	13.66%	687.4MiB / 15.48GiB	44
+dw-server237-combined-20260928-redis-1	0.45%	11.63MiB / 15.48GiB	5
+2026-09-28T10:49:36Z
+dw-server237-combined-20260928-probe-run-9ee0e3fe696a	0.80%	108.7MiB / 1GiB	7
+dw-server237-combined-20260928-worker-1	0.27%	46.96MiB / 15.48GiB	1
+dw-server237-combined-20260928-server-1	10.34%	148.2MiB / 15.48GiB	7
+dw-server237-combined-20260928-scheduler-1	5.52%	106.2MiB / 15.48GiB	3
+dw-server237-combined-20260928-mysql-1	16.91%	725.1MiB / 15.48GiB	44
+dw-server237-combined-20260928-redis-1	0.51%	3.684MiB / 15.48GiB	5
+2026-09-28T10:53:10Z
+dw-server237-combined-20260928-worker-1	1.25%	46.56MiB / 15.48GiB	1
+dw-server237-combined-20260928-server-1	0.01%	71.65MiB / 15.48GiB	5
+dw-server237-combined-20260928-scheduler-1	3.99%	1.984MiB / 15.48GiB	3
+dw-server237-combined-20260928-mysql-1	3.05%	730.8MiB / 15.48GiB	43
+dw-server237-combined-20260928-redis-1	0.25%	3.688MiB / 15.48GiB	5

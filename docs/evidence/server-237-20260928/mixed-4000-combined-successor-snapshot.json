@@ -1,0 +1,22 @@
+{
+    "run_id": "01m3kt9gmsh9exyjhy2v7nxnvk",
+    "status": "completed",
+    "last_history_sequence": 2,
+    "message_cursor_position": 1,
+    "history_event_rows": 2,
+    "history_event_types": {
+        "WorkflowStarted": 1,
+        "WorkflowCompleted": 1
+    },
+    "timeline_rows": 2,
+    "signals_received": 0,
+    "signals_applied": 0,
+    "signals_rejected": 0,
+    "open_tasks": 0,
+    "commands_accepted": 0,
+    "commands_rejected": 0,
+    "summary_event_count": 2,
+    "summary_size_bytes": 922,
+    "summary_pressure": "ok",
+    "summary_continue_as_new": false
+}
