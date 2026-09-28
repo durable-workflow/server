@@ -8,6 +8,9 @@ use Illuminate\Http\Request;
 use RuntimeException;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\RunTimelineProjector;
 
 final class WorkerTerminalEventAttribution
 {
@@ -73,5 +76,9 @@ final class WorkerTerminalEventAttribution
         ]), static fn (mixed $value): bool => $value !== null && $value !== '');
 
         $event->forceFill(['payload' => $payload])->save();
+
+        /** @var WorkflowRun $run */
+        $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)->findOrFail($runId);
+        RunTimelineProjector::projectWorkerTerminalEvent($run, $event);
     }
 }
