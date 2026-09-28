@@ -328,6 +328,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workflow-runs", type=int, default=int(os.environ.get("DW_PERF_WORKFLOW_RUNS", "0")))
     parser.add_argument("--start-concurrency", type=int, default=int(os.environ.get("DW_PERF_START_CONCURRENCY", "8")))
     parser.add_argument(
+        "--workflow-start-interval-ms",
+        type=int,
+        default=int(os.environ.get("DW_PERF_WORKFLOW_START_INTERVAL_MS", "0")),
+        help="Target interval between globally scheduled synthetic workflow starts; zero preserves the unpaced burst.",
+    )
+    parser.add_argument(
         "--min-workflow-completion-ratio",
         type=float,
         default=float(os.environ.get("DW_PERF_MIN_WORKFLOW_COMPLETION_RATIO", "0.98")),
@@ -952,16 +958,25 @@ def polling_activity_summary(samples: list[dict[str, Any]], minimum_fraction: fl
 
 def workflow_start_loop(
     stop_at: float,
+    load_started_at: float,
     base_url: str,
     token: str,
     workers: list[tuple[str, str, str]],
     target_runs: int,
     start_concurrency: int,
+    start_interval_ms: int,
     worker_index: int,
     endpoint_metrics: EndpointMetrics,
     errors_path: Path,
 ) -> None:
     for index in range(worker_index, target_runs, start_concurrency):
+        if start_interval_ms > 0:
+            planned_at = load_started_at + index * (start_interval_ms / 1000)
+            if planned_at >= stop_at:
+                return
+            delay = planned_at - time.monotonic()
+            if delay > 0:
+                time.sleep(delay)
         if time.monotonic() >= stop_at:
             return
 
@@ -1479,6 +1494,8 @@ def render_summary(summary: dict[str, Any]) -> str:
 
 def main() -> int:
     args = parse_args()
+    if not 0 <= args.workflow_start_interval_ms <= 1000:
+        raise ValueError("workflow start interval must be between 0 and 1000 ms")
 
     artifact_dir = Path(args.artifact_dir)
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -1524,7 +1541,8 @@ def main() -> int:
             f"registered {len(workers)} workers across {len(namespaces)} namespaces and {len(queues)} task queues"
         )
 
-        stop_at = time.monotonic() + max(1, args.duration_seconds)
+        load_started_at = time.monotonic()
+        stop_at = load_started_at + max(1, args.duration_seconds)
         futures = []
         samples: list[dict[str, Any]] = []
         periodic_sample_count = 0
@@ -1564,11 +1582,13 @@ def main() -> int:
                         executor.submit(
                             workflow_start_loop,
                             stop_at,
+                            load_started_at,
                             base_url,
                             args.token,
                             workers,
                             args.workflow_runs,
                             max(1, args.start_concurrency),
+                            args.workflow_start_interval_ms,
                             index,
                             endpoint_metrics,
                             errors_path,
@@ -1700,6 +1720,7 @@ def main() -> int:
             "synthetic_worker_registrations": len(workers),
             "workflow_runs_target": args.workflow_runs,
             "start_concurrency": args.start_concurrency,
+            "workflow_start_interval_ms": args.workflow_start_interval_ms,
             "namespaces": len(namespaces),
             "task_queues": len(queues),
             "sample_interval_seconds": args.sample_interval_seconds,
