@@ -157,6 +157,7 @@ trap cleanup EXIT INT TERM
 
 PREBUILT_HTTP_IMAGE_ID=""
 PREBUILT_HTTP_IMAGE_TAG=""
+PREBUILT_HTTP_ARCHIVE_SHA=""
 if [[ "$HTTP_VARIANT" == frankenphp ]]; then
   if [[ -z "${DW_PERF_COMPOSE_PROJECT:-}" ]]; then
     echo "FrankenPHP prebuild requires DW_PERF_COMPOSE_PROJECT." >&2
@@ -170,7 +171,8 @@ if [[ "$HTTP_VARIANT" == frankenphp ]]; then
     --tag "$PREBUILT_HTTP_IMAGE_TAG" .
   PREBUILT_HTTP_IMAGE_ID="$(docker image inspect "$PREBUILT_HTTP_IMAGE_TAG" --format '{{.Id}}')"
   docker save --output "$WORK_DIR/http-image.tar" "$PREBUILT_HTTP_IMAGE_TAG"
-  log "Prepared FrankenPHP image $PREBUILT_HTTP_IMAGE_ID for transfer"
+  PREBUILT_HTTP_ARCHIVE_SHA="$(sha256sum "$WORK_DIR/http-image.tar" | awk '{print $1}')"
+  log "Prepared FrankenPHP image $PREBUILT_HTTP_IMAGE_ID archive sha256:$PREBUILT_HTTP_ARCHIVE_SHA for transfer"
 fi
 export DW_PERF_PREBUILT_HTTP_IMAGE_ID="$PREBUILT_HTTP_IMAGE_ID"
 
@@ -321,16 +323,38 @@ test -z "$(git status --porcelain --untracked-files=no)"
 REMOTE
 
 if [[ -n "$PREBUILT_HTTP_IMAGE_ID" ]]; then
-  log "Transferring prebuilt FrankenPHP image $PREBUILT_HTTP_IMAGE_ID"
-  ssh "${ssh_options[@]}" "$SSH_USER@$INSTANCE_IP" 'docker load >/dev/null' \
-    < "$WORK_DIR/http-image.tar"
-  remote_http_image_id="$(ssh "${ssh_options[@]}" "$SSH_USER@$INSTANCE_IP" \
-    docker image inspect "$PREBUILT_HTTP_IMAGE_TAG" --format '{{.Id}}')"
-  if [[ "$remote_http_image_id" != "$PREBUILT_HTTP_IMAGE_ID" ]]; then
-    echo "Transferred FrankenPHP image ID does not match the prebuilt image." >&2
+  log "Transferring prebuilt FrankenPHP image archive"
+  scp "${ssh_options[@]}" "$WORK_DIR/http-image.tar" \
+    "$SSH_USER@$INSTANCE_IP:http-image.tar" >/dev/null
+  remote_archive_sha="$(ssh "${ssh_options[@]}" "$SSH_USER@$INSTANCE_IP" \
+    'sha256sum "$HOME/http-image.tar"' | awk 'END {print $1}')"
+  if [[ "$remote_archive_sha" != "$PREBUILT_HTTP_ARCHIVE_SHA" ]]; then
+    printf 'Transferred FrankenPHP archive checksum mismatch: expected %s, got %s.\n' \
+      "$PREBUILT_HTTP_ARCHIVE_SHA" "$remote_archive_sha" >&2
     exit 1
   fi
-  log "Verified transferred FrankenPHP image ID"
+  remote_http_image_id="$(ssh "${ssh_options[@]}" "$SSH_USER@$INSTANCE_IP" \
+    bash -s -- "$PREBUILT_HTTP_IMAGE_TAG" <<'REMOTE'
+set -euo pipefail
+tag="$1"
+trap 'rm -f "$HOME/http-image.tar"' EXIT
+docker load --input "$HOME/http-image.tar" >/dev/null
+docker image inspect "$tag" --format '{{.Id}}'
+REMOTE
+)"
+  if [[ ! "$remote_http_image_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    printf 'Unable to inspect the transferred FrankenPHP image tag: %q\n' \
+      "$remote_http_image_id" >&2
+    exit 1
+  fi
+  log "Verified transferred archive sha256:$remote_archive_sha; loaded image ID $remote_http_image_id (builder ID $PREBUILT_HTTP_IMAGE_ID)"
+  jq -n --arg archive_sha256 "$remote_archive_sha" \
+    --arg builder_image_id "$PREBUILT_HTTP_IMAGE_ID" \
+    --arg loaded_image_id "$remote_http_image_id" \
+    --arg image_tag "$PREBUILT_HTTP_IMAGE_TAG" \
+    '{archive_sha256:$archive_sha256,builder_image_id:$builder_image_id,loaded_image_id:$loaded_image_id,image_tag:$image_tag}' \
+    > "$(dirname "$PROVISION_LOG")/http-prebuilt-transfer.json"
+  export DW_PERF_PREBUILT_HTTP_IMAGE_ID="$remote_http_image_id"
 fi
 
 remote_env="$WORK_DIR/soak.env"
