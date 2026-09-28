@@ -10,6 +10,34 @@ SCRIPT = ROOT / "scripts/perf/run-vultr-soak.sh"
 
 
 class DisposableRunnerCleanupTest(unittest.TestCase):
+    def test_frankenphp_build_failure_spends_no_provider_host(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            docker = root / "docker"
+            docker.write_text("#!/bin/sh\nexit 17\n")
+            docker.chmod(0o755)
+            result = subprocess.run(
+                ["bash", str(SCRIPT)],
+                cwd=ROOT,
+                env={
+                    **os.environ,
+                    "PATH": str(root) + os.pathsep + os.environ["PATH"],
+                    "VULTR_API_KEY": "fixture-only",
+                    "GITHUB_SHA": "a" * 40,
+                    "GITHUB_RUN_ID": "1",
+                    "GITHUB_RUN_ATTEMPT": "1",
+                    "DW_PERF_HTTP_VARIANT": "frankenphp",
+                    "DW_PERF_FIXED_ENVELOPE": "1",
+                    "DW_PERF_COMPOSE_PROJECT": "fixture-frankenphp",
+                    "DW_PERF_ARTIFACT_DIR": str(root / "artifacts"),
+                    "DW_PERF_PUBLISHED_SERVER_IMAGE": "durableworkflow/server@sha256:" + "b" * 64,
+                },
+                text=True, capture_output=True, timeout=5,
+            )
+            self.assertEqual(17, result.returncode, result.stdout + result.stderr)
+            self.assertIn("Building FrankenPHP image before creating", result.stdout)
+            self.assertNotIn("Creating disposable Vultr instance", result.stdout)
+
     def test_rejects_unpinned_server_image_before_provider_request(self):
         result = subprocess.run(
             ["bash", str(SCRIPT)],
