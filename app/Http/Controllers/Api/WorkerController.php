@@ -47,6 +47,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Workflow\V2\Contracts\HistoryProjectionRole;
@@ -74,6 +75,8 @@ class WorkerController
     private const WORKFLOW_TASK_FAILURE_REASON_MAX_LENGTH = 191;
 
     private const WORKFLOW_TASK_FAILURE_TYPE_MAX_LENGTH = 512;
+
+    private const WORKFLOW_TASK_COMMAND_VALIDATION_BATCH_SIZE = 25;
 
     private const STRUCTURED_REPLAY_FAILURE_REASONS = [
         'activity_execution_mode_mismatch',
@@ -1447,7 +1450,7 @@ class WorkerController
             'message_stream_waits.*.after_position' => ['required', 'integer', 'min:0'],
         ]);
 
-        $validated = $request->validate([
+        $completionRules = [
             'lease_owner' => ['required', 'string'],
             'workflow_task_attempt' => ['required', 'integer', 'min:1'],
             'commands' => ['required', 'array', 'min:1'],
@@ -1578,7 +1581,46 @@ class WorkerController
             'sticky_cache.metrics.miss' => ['nullable', 'integer', 'min:0'],
             'sticky_cache.metrics.eviction' => ['nullable', 'integer', 'min:0'],
             'sticky_cache.metrics.forced_cold_replay' => ['nullable', 'integer', 'min:0'],
-        ]);
+        ];
+
+        $topLevelRules = [];
+        $commandRules = ['commands' => ['required', 'array', 'min:1']];
+        foreach ($completionRules as $field => $rules) {
+            if (str_starts_with($field, 'commands.*.')) {
+                $commandRules[$field] = $rules;
+            } else {
+                $topLevelRules[$field] = $rules;
+            }
+        }
+
+        $input = $request->all();
+        $topLevelValidator = Validator::make($input, $topLevelRules);
+        $validationErrors = $topLevelValidator->fails()
+            ? $topLevelValidator->errors()->messages()
+            : [];
+        // Laravel expands wildcard rules against the full input for each rule.
+        // Bound that expansion while preserving the original command indexes.
+        $validatedCommands = [];
+        if (is_array($input['commands'] ?? null)) {
+            foreach (array_chunk($input['commands'], self::WORKFLOW_TASK_COMMAND_VALIDATION_BATCH_SIZE, true) as $chunk) {
+                $chunkValidator = Validator::make(['commands' => $chunk], $commandRules);
+                if ($chunkValidator->fails()) {
+                    $validationErrors += $chunkValidator->errors()->messages();
+
+                    continue;
+                }
+
+                foreach ($chunkValidator->validated()['commands'] as $index => $command) {
+                    $validatedCommands[$index] = $command;
+                }
+            }
+        }
+        if ($validationErrors !== []) {
+            throw ValidationException::withMessages($validationErrors);
+        }
+
+        $validated = $topLevelValidator->validated();
+        $validated['commands'] = $validatedCommands;
 
         $commands = $this->normalizeWorkflowTaskCommandIntegerFields($validated['commands']);
         $commands = WorkflowCommandNormalizer::preflightParallelMetadata($commands);

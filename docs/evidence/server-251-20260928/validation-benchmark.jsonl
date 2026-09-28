@@ -1,0 +1,9 @@
+{"variant":"published-controller","commands":50,"shape":"flat","elapsed_seconds":0.4956,"peak_php_allocated_bytes":18874368,"status":404,"reason":"task_not_found"}
+{"variant":"candidate-controller","commands":50,"shape":"flat","elapsed_seconds":0.3771,"peak_php_allocated_bytes":18874368,"status":404,"reason":"task_not_found"}
+{"variant":"published-controller","commands":250,"shape":"flat","elapsed_seconds":6.9607,"peak_php_allocated_bytes":29360128,"status":404,"reason":"task_not_found"}
+{"variant":"candidate-controller","commands":250,"shape":"flat","elapsed_seconds":1.3432,"peak_php_allocated_bytes":18874368,"status":404,"reason":"task_not_found"}
+{"variant":"published-controller","commands":500,"shape":"flat","elapsed_seconds":62.668,"peak_php_allocated_bytes":40894464,"status":404,"reason":"task_not_found"}
+{"variant":"candidate-controller","commands":500,"shape":"flat","elapsed_seconds":2.5643,"peak_php_allocated_bytes":20971520,"status":404,"reason":"task_not_found"}
+{"variant":"published-controller","commands":250,"shape":"nested","elapsed_seconds":7.1827,"peak_php_allocated_bytes":29360128,"status":404,"reason":"task_not_found"}
+{"variant":"candidate-controller","commands":250,"shape":"nested","elapsed_seconds":1.3787,"peak_php_allocated_bytes":20971520,"status":404,"reason":"task_not_found"}
+{"variant":"candidate-controller","commands":500,"shape":"nested","elapsed_seconds":2.6545,"peak_php_allocated_bytes":20971520,"status":404,"reason":"task_not_found"}
