@@ -3,8 +3,8 @@
 This disposable fixture measures backend operation counters around the
 [DW Standard Workflow v1](../../benchmarks/capacity/README.md) canary. It is
 for finding hotspots, not for publishing workflows/second or qualifying an
-alternative HTTP runtime. The PHP SDK installation comes from the binding's
-locked Composer manifest; Server, MySQL and Redis must be exact published image
+alternative HTTP runtime. The PHP SDK installation comes from this profile's
+independent `scripts/perf/sdk-php` lock; Server, MySQL and Redis must be exact published image
 digests supplied by the caller.
 
 From the Server repository root, set a unique Compose project and the three

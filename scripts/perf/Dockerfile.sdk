@@ -2,13 +2,14 @@ ARG COMPOSER_IMAGE=composer:2
 ARG PHP_IMAGE=php:8.3-cli
 FROM ${COMPOSER_IMAGE} AS dependencies
 WORKDIR /sdk
-COPY benchmarks/capacity/v1/bindings/php/composer.json benchmarks/capacity/v1/bindings/php/composer.lock ./
+COPY scripts/perf/sdk-php/composer.json scripts/perf/sdk-php/composer.lock ./
 RUN composer install --no-dev --no-interaction --no-progress --prefer-dist
 
 FROM ${PHP_IMAGE}
 RUN docker-php-ext-install pcntl
 WORKDIR /app
-COPY benchmarks/capacity/v1/bindings/php benchmarks/capacity/v1/bindings/php
+COPY benchmarks/capacity/v1/bindings/php/capacity_adapter.php benchmarks/capacity/v1/bindings/php/capacity_adapter.php
+COPY scripts/perf/sdk-php/composer.json scripts/perf/sdk-php/composer.lock benchmarks/capacity/v1/bindings/php/
 COPY --from=dependencies /sdk/vendor benchmarks/capacity/v1/bindings/php/vendor
 COPY scripts/perf/standard_workflow_soak.php scripts/perf/standard_workflow_soak.php
 COPY scripts/perf/standard-workflow-burst.php scripts/perf/standard-workflow-burst.php
