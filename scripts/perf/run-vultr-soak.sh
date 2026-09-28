@@ -147,10 +147,32 @@ cleanup() {
     status=1
   fi
 
+  if [[ -n "${PREBUILT_HTTP_IMAGE_TAG:-}" ]]; then
+    docker image rm "$PREBUILT_HTTP_IMAGE_TAG" >/dev/null 2>&1 || true
+  fi
   rm -rf "$WORK_DIR"
   exit "$status"
 }
 trap cleanup EXIT INT TERM
+
+PREBUILT_HTTP_IMAGE_ID=""
+PREBUILT_HTTP_IMAGE_TAG=""
+if [[ "$HTTP_VARIANT" == frankenphp ]]; then
+  if [[ -z "${DW_PERF_COMPOSE_PROJECT:-}" ]]; then
+    echo "FrankenPHP prebuild requires DW_PERF_COMPOSE_PROJECT." >&2
+    exit 2
+  fi
+  PREBUILT_HTTP_IMAGE_TAG="${DW_PERF_COMPOSE_PROJECT}-octane-frankenphp:local"
+  log "Building FrankenPHP image before creating a disposable host"
+  docker build \
+    --file scripts/perf/Dockerfile.octane-frankenphp-experiment \
+    --build-arg "SERVER_IMAGE=$PUBLISHED_SERVER_IMAGE" \
+    --tag "$PREBUILT_HTTP_IMAGE_TAG" .
+  PREBUILT_HTTP_IMAGE_ID="$(docker image inspect "$PREBUILT_HTTP_IMAGE_TAG" --format '{{.Id}}')"
+  docker save --output "$WORK_DIR/http-image.tar" "$PREBUILT_HTTP_IMAGE_TAG"
+  log "Prepared FrankenPHP image $PREBUILT_HTTP_IMAGE_ID for transfer"
+fi
+export DW_PERF_PREBUILT_HTTP_IMAGE_ID="$PREBUILT_HTTP_IMAGE_ID"
 
 controller_ip="$(curl --fail --silent --show-error https://api.ipify.org)"
 if [[ ! "$controller_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
@@ -298,6 +320,19 @@ test "$(git rev-parse HEAD)" = "$sha"
 test -z "$(git status --porcelain --untracked-files=no)"
 REMOTE
 
+if [[ -n "$PREBUILT_HTTP_IMAGE_ID" ]]; then
+  log "Transferring prebuilt FrankenPHP image $PREBUILT_HTTP_IMAGE_ID"
+  ssh "${ssh_options[@]}" "$SSH_USER@$INSTANCE_IP" 'docker load >/dev/null' \
+    < "$WORK_DIR/http-image.tar"
+  remote_http_image_id="$(ssh "${ssh_options[@]}" "$SSH_USER@$INSTANCE_IP" \
+    docker image inspect "$PREBUILT_HTTP_IMAGE_TAG" --format '{{.Id}}')"
+  if [[ "$remote_http_image_id" != "$PREBUILT_HTTP_IMAGE_ID" ]]; then
+    echo "Transferred FrankenPHP image ID does not match the prebuilt image." >&2
+    exit 1
+  fi
+  log "Verified transferred FrankenPHP image ID"
+fi
+
 remote_env="$WORK_DIR/soak.env"
 : > "$remote_env"
 for name in \
@@ -306,6 +341,7 @@ for name in \
   DW_PERF_READINESS_DIAGNOSTICS \
   DW_PERF_PUBLISHED_SERVER_IMAGE \
   DW_PERF_HTTP_VARIANT \
+  DW_PERF_PREBUILT_HTTP_IMAGE_ID \
   DW_PERF_FIXED_ENVELOPE \
   DW_PERF_IMAGE_DISTRIBUTION_METRICS \
   DW_PERF_NAMESPACES \

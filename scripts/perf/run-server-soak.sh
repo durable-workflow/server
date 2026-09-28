@@ -35,6 +35,7 @@ POLL_SIGNAL_CHECK_INTERVAL_MS="${DW_PERF_POLL_SIGNAL_CHECK_INTERVAL_MS:-25}"
 READINESS_DIAGNOSTICS="${DW_PERF_READINESS_DIAGNOSTICS:-0}"
 PUBLISHED_SERVER_IMAGE="${DW_PERF_PUBLISHED_SERVER_IMAGE:-}"
 HTTP_VARIANT="${DW_PERF_HTTP_VARIANT:-apache}"
+PREBUILT_HTTP_IMAGE_ID="${DW_PERF_PREBUILT_HTTP_IMAGE_ID:-}"
 FIXED_ENVELOPE="${DW_PERF_FIXED_ENVELOPE:-0}"
 IMAGE_DISTRIBUTION_METRICS="${DW_PERF_IMAGE_DISTRIBUTION_METRICS:-0}"
 if [[ "$HTTP_VARIANT" != apache && "$HTTP_VARIANT" != nginx-fpm && "$HTTP_VARIANT" != apache-event-fpm \
@@ -60,6 +61,11 @@ if [[ "$HTTP_VARIANT" != apache && ( -z "$PUBLISHED_SERVER_IMAGE" || "$FIXED_ENV
 fi
 if [[ "$FIXED_ENVELOPE" == 1 && -z "$PUBLISHED_SERVER_IMAGE" ]]; then
   echo "The fixed comparison envelope requires an exact published Server image." >&2
+  exit 2
+fi
+if [[ -n "$PREBUILT_HTTP_IMAGE_ID" \
+  && ( "$HTTP_VARIANT" != frankenphp || ! "$PREBUILT_HTTP_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ) ]]; then
+  echo "A prebuilt HTTP image ID requires FrankenPHP and an exact sha256 image ID." >&2
   exit 2
 fi
 if [[ "$READINESS_DIAGNOSTICS" != 0 && "$READINESS_DIAGNOSTICS" != 1 ]]; then
@@ -399,7 +405,16 @@ if [[ "$IMAGE_DISTRIBUTION_METRICS" == 1 ]]; then
   "${compose[@]}" pull mysql redis
   stack_started_ns="$(date +%s%N)"
 fi
-"${compose[@]}" up -d --build --wait || setup_status=$?
+if [[ -n "$PREBUILT_HTTP_IMAGE_ID" ]]; then
+  loaded_http_image_id="$(docker image inspect "${PROJECT}-octane-frankenphp:local" --format '{{.Id}}')" || loaded_http_image_id=""
+  if [[ "$loaded_http_image_id" != "$PREBUILT_HTTP_IMAGE_ID" ]]; then
+    write_environment_setup_failure 1 "prebuilt_http_image_identity" "transferred FrankenPHP image ID differs from the prebuilt image"
+    exit 1
+  fi
+  "${compose[@]}" up -d --no-build --wait || setup_status=$?
+else
+  "${compose[@]}" up -d --build --wait || setup_status=$?
+fi
 if [[ "$IMAGE_DISTRIBUTION_METRICS" == 1 ]]; then
   stack_completed_ns="$(date +%s%N)"
   jq --argjson stack_setup_elapsed_ms "$(((stack_completed_ns - stack_started_ns) / 1000000))" \
