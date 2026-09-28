@@ -1,0 +1,41 @@
+2026-09-28T11:12:12Z
+dw-server237-jsonfix-20260928-probe-run-05e58fe28e0a	5.19%	30.96MiB / 1GiB	4
+dw-server237-jsonfix-20260928-worker-1	0.16%	46.94MiB / 15.48GiB	1
+dw-server237-jsonfix-20260928-server-1	61.73%	85.09MiB / 15.48GiB	12
+dw-server237-jsonfix-20260928-scheduler-1	88.26%	18.46MiB / 15.48GiB	3
+dw-server237-jsonfix-20260928-mysql-1	49.02%	539MiB / 15.48GiB	44
+dw-server237-jsonfix-20260928-redis-1	0.63%	2.988MiB / 15.48GiB	5
+2026-09-28T11:15:37Z
+dw-server237-jsonfix-20260928-probe-run-05e58fe28e0a	7.09%	31.25MiB / 1GiB	6
+dw-server237-jsonfix-20260928-worker-1	0.26%	48.09MiB / 15.48GiB	1
+dw-server237-jsonfix-20260928-server-1	75.81%	84.45MiB / 15.48GiB	12
+dw-server237-jsonfix-20260928-scheduler-1	3.39%	1.887MiB / 15.48GiB	3
+dw-server237-jsonfix-20260928-mysql-1	62.15%	571.4MiB / 15.48GiB	44
+dw-server237-jsonfix-20260928-redis-1	0.51%	2.992MiB / 15.48GiB	5
+2026-09-28T11:17:11Z
+dw-server237-jsonfix-20260928-probe-run-05e58fe28e0a	0.00%	84.96MiB / 1GiB	8
+dw-server237-jsonfix-20260928-worker-1	92.24%	108.9MiB / 15.48GiB	1
+dw-server237-jsonfix-20260928-server-1	65.37%	162.8MiB / 15.48GiB	7
+dw-server237-jsonfix-20260928-scheduler-1	85.38%	1.895MiB / 15.48GiB	3
+dw-server237-jsonfix-20260928-mysql-1	42.91%	594.9MiB / 15.48GiB	44
+dw-server237-jsonfix-20260928-redis-1	3.11%	18.96MiB / 15.48GiB	5
+2026-09-28T11:18:42Z
+dw-server237-jsonfix-20260928-probe-run-05e58fe28e0a	32.15%	91.81MiB / 1GiB	8
+dw-server237-jsonfix-20260928-worker-1	0.17%	123MiB / 15.48GiB	1
+dw-server237-jsonfix-20260928-server-1	77.52%	156.9MiB / 15.48GiB	7
+dw-server237-jsonfix-20260928-scheduler-1	0.00%	1.91MiB / 15.48GiB	3
+dw-server237-jsonfix-20260928-mysql-1	26.96%	634.5MiB / 15.48GiB	44
+dw-server237-jsonfix-20260928-redis-1	0.39%	26.96MiB / 15.48GiB	5
+2026-09-28T11:20:57Z
+dw-server237-jsonfix-20260928-probe-run-05e58fe28e0a	0.00%	113.8MiB / 1GiB	8
+dw-server237-jsonfix-20260928-worker-1	0.18%	123MiB / 15.48GiB	1
+dw-server237-jsonfix-20260928-server-1	73.55%	157.7MiB / 15.48GiB	7
+dw-server237-jsonfix-20260928-scheduler-1	97.63%	87.1MiB / 15.48GiB	3
+dw-server237-jsonfix-20260928-mysql-1	37.75%	647.5MiB / 15.48GiB	44
+dw-server237-jsonfix-20260928-redis-1	0.30%	19.09MiB / 15.48GiB	5
+2026-09-28T11:25:00Z
+dw-server237-jsonfix-20260928-worker-1	0.19%	123MiB / 15.48GiB	1
+dw-server237-jsonfix-20260928-server-1	19.08%	66.21MiB / 15.48GiB	5
+dw-server237-jsonfix-20260928-scheduler-1	94.17%	27.56MiB / 15.48GiB	3
+dw-server237-jsonfix-20260928-mysql-1	5.70%	659.8MiB / 15.48GiB	44
+dw-server237-jsonfix-20260928-redis-1	0.22%	3.156MiB / 15.48GiB	5
