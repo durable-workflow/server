@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "9d774966cf4ac7d2cb7b94857739fd02",
+    "content-hash": "5fedaf056450fa1021fdf93f0a319cef",
     "packages": [
         {
             "name": "apache/avro",
@@ -70,16 +70,16 @@
         },
         {
             "name": "durable-workflow/sdk",
-            "version": "2.0.10",
+            "version": "2.1.5",
             "source": {
                 "type": "git",
                 "url": "https://github.com/durable-workflow/sdk-php.git",
-                "reference": "19b2695d0bbfb37f0dd1ac54632bd5b1d5023b67"
+                "reference": "d664c865c8b9b352eb79abd27ee3141a87a1924f"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/durable-workflow/sdk-php/zipball/19b2695d0bbfb37f0dd1ac54632bd5b1d5023b67",
-                "reference": "19b2695d0bbfb37f0dd1ac54632bd5b1d5023b67",
+                "url": "https://api.github.com/repos/durable-workflow/sdk-php/zipball/d664c865c8b9b352eb79abd27ee3141a87a1924f",
+                "reference": "d664c865c8b9b352eb79abd27ee3141a87a1924f",
                 "shasum": ""
             },
             "require": {
@@ -120,7 +120,7 @@
                         "laravel": "^9.0|^10.0|^11.0|^12.0|^13.0",
                         "symfony": "^6.4|^7.0|^8.0"
                     },
-                    "product-train": "2.0.10",
+                    "product-train": "2.1.5",
                     "payload-codecs": [
                         "avro"
                     ],
@@ -148,7 +148,7 @@
                         "deprecatePatch"
                     ],
                     "worker-protocol-version": "1.19",
-                    "supported-server-versions": "2.1.0",
+                    "supported-server-versions": "2.4.0",
                     "version-marker-history-event": "VersionMarkerRecorded",
                     "message-streams-minimum-worker-protocol-version": "1.15",
                     "durable-selection-minimum-worker-protocol-version": "1.19"
@@ -186,7 +186,7 @@
                 "issues": "https://github.com/durable-workflow/sdk-php/issues",
                 "source": "https://github.com/durable-workflow/sdk-php"
             },
-            "time": "2026-09-11T15:26:39+00:00"
+            "time": "2026-09-27T02:36:20+00:00"
         },
         {
             "name": "guzzlehttp/guzzle",
