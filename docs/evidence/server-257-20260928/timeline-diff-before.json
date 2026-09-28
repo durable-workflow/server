@@ -1,0 +1,30 @@
+{
+    "run_id": "01m3maryb94sfm9x1x2x6bj9a3",
+    "canonical_count": 1006,
+    "projected_count": 1006,
+    "first_differences": [
+        {
+            "index": 1005,
+            "sequence": 1006,
+            "type": "WorkflowCompleted",
+            "fields": {
+                "command_type": {
+                    "actual_type": "null",
+                    "expected_type": "string",
+                    "actual_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+                    "expected_sha256": "76260fbca43bfdfa88973be0f6eb52176b194e21c84b27b20a23168a21d44129",
+                    "actual_scalar": null,
+                    "expected_scalar": "complete_workflow"
+                },
+                "command": {
+                    "actual_type": "null",
+                    "expected_type": "array",
+                    "actual_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+                    "expected_sha256": "135f56cda66b4f4cb4452f1647e5d7ebef8915a3a99f7ab4aa660c99850147a5",
+                    "actual_scalar": null,
+                    "expected_scalar": null
+                }
+            }
+        }
+    ]
+}
