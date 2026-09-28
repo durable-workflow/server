@@ -1,0 +1,7 @@
+{
+  "total_http_requests": 2010,
+  "external_payload_upload_201": 1000,
+  "signal_202": 1000,
+  "external_payload_get": 0,
+  "http_4xx_5xx": 0
+}
