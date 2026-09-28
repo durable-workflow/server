@@ -148,6 +148,15 @@ async def main(target):
                 "signal_api_p95_seconds": percentile(latencies, 0.95),
                 "signal_api_p99_seconds": percentile(latencies, 0.99),
             }, sort_keys=True), flush=True)
+            if os.environ.get("PROBE_OFFER_ONLY") == "1":
+                # Keep acknowledged signals pending for published-image cleanup checks.
+                print(json.dumps({
+                    "phase": "offered_only",
+                    "initial_run_id": handle.run_id,
+                    "workflow_id": workflow_id,
+                    "acknowledged_signals": len(latencies),
+                }, sort_keys=True), flush=True)
+                return
 
         worker = Worker(
             client, task_queue=queue, workflows=[SignalHistory], activities=[mixed_boundary]
