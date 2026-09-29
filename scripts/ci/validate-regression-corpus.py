@@ -878,6 +878,14 @@ def _run(command: Sequence[str], root: Path, *, check: bool = True) -> str:
     return result.stdout
 
 
+def _run_bytes(command: Sequence[str], root: Path) -> bytes:
+    result = subprocess.run(command, cwd=root, check=False, capture_output=True)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).decode(errors="replace").strip()
+        raise CorpusError(f"{' '.join(command)} failed: {detail}")
+    return result.stdout
+
+
 def _policy(document: Mapping[str, Any], path: str) -> Mapping[str, Any]:
     _string(document.get("$schema"), f"{path}.$schema")
     if document.get("schema") != POLICY_SCHEMA:
@@ -1067,7 +1075,7 @@ def _tracked_worktree_files(root: Path) -> dict[str, bytes]:
 def _ref_files(root: Path, ref: str) -> dict[str, bytes]:
     paths = _run(["git", "ls-tree", "-r", "--name-only", "-z", ref], root).split("\0")
     return {
-        path: _run(["git", "show", f"{ref}:{path}"], root).encode()
+        path: _run_bytes(["git", "show", f"{ref}:{path}"], root)
         for path in paths
         if path
     }
