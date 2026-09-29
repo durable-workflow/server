@@ -24,6 +24,7 @@ use Workflow\Serializers\AvroBinaryValue;
 use Workflow\Serializers\AvroMapValue;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\SignalStatus;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
@@ -135,6 +136,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         $this->createNamespace('default', [
             'driver' => 'local',
             'enabled' => true,
+            'threshold_bytes' => 32,
             'config' => [
                 'uri' => 'file://'.$this->externalStorageDirectory,
             ],
@@ -153,7 +155,8 @@ class PayloadEnvelopeIntegrationTest extends TestCase
 
         $this->runReadyWorkflowTask($runId);
 
-        $payload = Serializer::serializeWithCodec('avro', ['ExternalSignal']);
+        $signalValue = str_repeat('S', 2048);
+        $payload = Serializer::serializeWithCodec('avro', [$signalValue]);
         $signal = $this->withHeaders($this->apiHeaders())
             ->postJson('/api/workflows/wf-external-storage-signal/signal/advance', [
                 'input' => $this->externalStorageEnvelope('avro', $payload),
@@ -168,14 +171,39 @@ class PayloadEnvelopeIntegrationTest extends TestCase
             ->firstOrFail();
 
         $this->assertSame('avro', $recordedSignal->payload_codec);
-        $this->assertSame($payload, $recordedSignal->arguments);
+        $this->assertTrue(ExternalPayloads::isStoredReference($recordedSignal->arguments));
+        $this->assertSame(
+            hash('sha256', $payload),
+            ExternalPayloads::wireEnvelope($recordedSignal->arguments, 'avro', 'default')['external_storage']['sha256'],
+        );
+        $received = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::SignalReceived->value)
+            ->firstOrFail();
+        $this->assertSame(hash('sha256', $payload), $received->payload['arguments']['external_storage']['sha256']);
+        $command = WorkflowCommand::query()->findOrFail($recordedSignal->workflow_command_id);
+        $this->assertLessThan(1024, strlen($command->payload));
 
         $this->runReadyWorkflowTask($runId);
+        $this->assertSame(SignalStatus::Applied, $recordedSignal->fresh()->status);
+        $applied = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::SignalApplied->value)
+            ->firstOrFail();
+        $this->assertArrayHasKey('external_storage', $applied->payload['value']);
+        $this->assertLessThan(512, strlen(json_encode($applied->payload['value'], JSON_THROW_ON_ERROR)));
+        $this->assertStringNotContainsString($signalValue, json_encode($applied->payload, JSON_THROW_ON_ERROR));
+        $this->assertSame(2, RuntimeExternalPayload::query()->whereNotNull('retained_at')->count());
+
+        $history = $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/wf-external-storage-signal/runs/{$runId}/history")
+            ->assertOk();
+        $this->assertStringNotContainsString($this->externalStorageDirectory, $history->getContent());
 
         $this->withHeaders($this->apiHeaders())
             ->postJson('/api/workflows/wf-external-storage-signal/query/currentState')
             ->assertOk()
-            ->assertJsonPath('result.name', 'ExternalSignal')
+            ->assertJsonPath('result.name', $signalValue)
             ->assertJsonPath('result.stage', 'waiting-for-finish');
     }
 

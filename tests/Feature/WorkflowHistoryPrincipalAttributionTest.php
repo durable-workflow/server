@@ -18,7 +18,10 @@ use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimelineEntry;
+use Workflow\V2\Support\RunTimelineProjector;
 
 /**
  * Contract test for server-derived principal attribution on workflow
@@ -529,6 +532,11 @@ class WorkflowHistoryPrincipalAttributionTest extends TestCase
         $event = WorkflowHistoryEvent::query()->where('workflow_run_id', $start->json('run_id'))
             ->where('event_type', HistoryEventType::WorkflowCompleted->value)->firstOrFail();
         $this->assertSame('large-worker', $event->payload['command']['principal_id']);
+        $timelineEntry = WorkflowTimelineEntry::query()->where('history_event_id', $event->id)->firstOrFail();
+        $this->assertSame('large-worker', $timelineEntry->toTimelinePayload()['command']['principal_id']);
+        $this->assertFalse(RunTimelineProjector::driftStatusForRun(
+            WorkflowRun::query()->findOrFail($start->json('run_id')),
+        )['stale']);
         $this->withHeaders($this->principalHeaders('operator', 'operator'))
             ->getJson('/api/workflows/large-attributed-result/runs/'.$start->json('run_id'))
             ->assertOk()->assertJsonPath('output', $result);
@@ -644,6 +652,19 @@ class WorkflowHistoryPrincipalAttributionTest extends TestCase
             $this->assertSame('worker:principal-attribution', $principal['principal_id'] ?? null);
             $this->assertSame('Worker', $principal['principal_label'] ?? null);
             $this->assertNotSame('mallory', $principal['principal_id'] ?? null);
+
+            $timelineEntry = WorkflowTimelineEntry::query()
+                ->where('workflow_run_id', $runId)
+                ->where('history_event_id', $event->id)
+                ->firstOrFail();
+            $timeline = $timelineEntry->toTimelinePayload();
+            $this->assertSame($case['command']['type'], $timeline['command_type']);
+            $this->assertSame('auth:token', $timeline['command']['principal_type']);
+            $this->assertSame('worker:principal-attribution', $timeline['command']['principal_id']);
+            $this->assertSame('Worker', $timeline['command']['principal_label']);
+            $this->assertFalse(RunTimelineProjector::driftStatusForRun(
+                WorkflowRun::query()->findOrFail($runId),
+            )['stale']);
 
             $history = $this->withHeaders($this->bearerHeaders('operator-token'))
                 ->getJson("/api/workflows/{$case['workflow_id']}/runs/{$runId}/history");

@@ -1,0 +1,18 @@
+{
+  "artifact_sources": {
+    "cli": "github-release",
+    "sdk-php": "packagist",
+    "sdk-python": "pypi",
+    "server": "docker",
+    "waterline": "packagist",
+    "workflow": "packagist"
+  },
+  "cli": "2.1.2",
+  "cli_installer_url": "https://github.com/durable-workflow/cli/releases/download/2.1.2/install.sh",
+  "sdk-php": "2.1.5",
+  "sdk-python": "2.3.5",
+  "server": "2.4.23",
+  "server_image": "durableworkflow/server@sha256:33c59071952ab08d5b4be7c20862d53cc21e5aed56564ff8718a40b5f239f400",
+  "waterline": "2.0.7",
+  "workflow": "2.2.17"
+}

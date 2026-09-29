@@ -3,8 +3,8 @@
 This disposable fixture measures backend operation counters around the
 [DW Standard Workflow v1](../../benchmarks/capacity/README.md) canary. It is
 for finding hotspots, not for publishing workflows/second or qualifying an
-alternative HTTP runtime. The PHP SDK installation comes from the binding's
-locked Composer manifest; Server, MySQL and Redis must be exact published image
+alternative HTTP runtime. The PHP SDK installation comes from this profile's
+independent `scripts/perf/sdk-php` lock; Server, MySQL and Redis must be exact published image
 digests supplied by the caller.
 
 From the Server repository root, set a unique Compose project and the three
@@ -47,6 +47,30 @@ window. Record the Server image digest, SDK lock version, database/cache
 digests, runner commit, host identity, UTC times, raw counter deltas, completed
 workflow count, errors and idle-subtraction method on the owning issue. A
 capacity claim requires the separate capacity-suite workload and topology.
+
+### Prepared-statement profiling limit
+
+Check what MySQL Performance Schema actually records before ranking individual
+queries. The Server uses prepared statements. In MySQL 8.4, global `Com_select`
+can rise while `events_statements_summary_by_digest` contains mostly `COMMIT`,
+`SAVEPOINT`, and connection setup rows. `events_statements_history_long` then
+shows `statement/com/Prepare` and `statement/com/Execute` events with null
+`SQL_TEXT` and `DIGEST_TEXT`. A top-query list from that digest table alone would
+omit the application SELECTs and writes. Compare its covered statement count
+with the global counters, and report the coverage gap explicitly.
+
+For a separate diagnostic on a **disposable fixture only**, enable MySQL's
+slow-query table at a zero threshold, reconnect the Server and queue worker so
+their sessions inherit the setting, and run a small verified workflow sample.
+Take an adjacent idle sample with the same logging configuration. Normalize
+literal values before grouping the logged SQL, subtract the scaled idle rate,
+and report both raw and adjusted totals. Use `MICROSECOND(query_time)` when
+reading subsecond `TIME(6)` values; do not round them to zero through
+`TIME_TO_SEC()` alone. The logger changes database load and can retain payload
+values, so keep its raw rows out of the public repository and never use that
+traced window for a throughput comparison. Disable the logger and remove the
+isolated project and volumes after the diagnostic. Attribution to a particular
+Server request still needs request-scoped instrumentation.
 
 To exercise an alternative HTTP frontend with the same published application,
 set `COMPOSE_FILE` to the colon-separated base file plus

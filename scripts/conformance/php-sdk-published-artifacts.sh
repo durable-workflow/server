@@ -1018,9 +1018,23 @@ if [[ "$validate_definitions" != true ]]; then
     write_failure runner conformance_harness preflight 'DW_SERVER_VERSION, DW_SERVER_IMAGE, and DW_PHP_SDK_CONFORMANCE_SERVER_URL are required.'
     exit_after_setup_failure
   fi
-  if [[ "$server_image" != "durableworkflow/server:${server_version}" \
-    && "$server_image" != "docker.io/durableworkflow/server:${server_version}" \
-    && ! "$server_image" =~ ^(docker\.io/)?durableworkflow/server(@sha256:[0-9a-fA-F]{64})$ ]]; then
+  # A digest may follow the exact release tag; Docker then pulls the digest.
+  server_image_valid=false
+  if [[ "$server_image" == "durableworkflow/server:${server_version}" \
+    || "$server_image" == "docker.io/durableworkflow/server:${server_version}" ]]; then
+    server_image_valid=true
+  elif [[ "$server_image" == *@* ]]; then
+    server_image_ref="${server_image%@*}"
+    server_image_digest="${server_image##*@}"
+    if [[ "$server_image_digest" =~ ^sha256:[0-9a-fA-F]{64}$ ]] \
+      && [[ "$server_image_ref" == durableworkflow/server \
+        || "$server_image_ref" == docker.io/durableworkflow/server \
+        || "$server_image_ref" == "durableworkflow/server:${server_version}" \
+        || "$server_image_ref" == "docker.io/durableworkflow/server:${server_version}" ]]; then
+      server_image_valid=true
+    fi
+  fi
+  if [[ "$server_image_valid" != true ]]; then
     write_failure runner conformance_harness preflight 'DW_SERVER_IMAGE must be the exact requested durableworkflow/server tag or a digest pin.'
     exit_after_setup_failure
   fi

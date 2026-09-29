@@ -15,7 +15,9 @@ final class RuntimeLocalExternalPayloadStorage implements StreamingExternalPaylo
         $resolved = realpath($root);
 
         if ($resolved === false) {
-            if (! mkdir($root, 0775, true) && ! is_dir($root)) {
+            // Another writer may create the directory after realpath checks it.
+            // Suppress mkdir's warning so the final is_dir check can accept that race.
+            if (! @mkdir($root, 0775, true) && ! is_dir($root)) {
                 throw new RuntimeException(sprintf('Unable to create external payload storage root [%s].', $root));
             }
 
@@ -80,7 +82,7 @@ final class RuntimeLocalExternalPayloadStorage implements StreamingExternalPaylo
     {
         $path = rawurldecode((string) parse_url($uri, PHP_URL_PATH));
         $directory = dirname($path);
-        if (! is_dir($directory) && ! mkdir($directory, 0775, true) && ! is_dir($directory)) {
+        if (! is_dir($directory) && ! @mkdir($directory, 0775, true) && ! is_dir($directory)) {
             throw new RuntimeException('Unable to create external payload directory.');
         }
 

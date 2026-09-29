@@ -1392,7 +1392,7 @@ print(json.loads(Path(sys.argv[1]).read_text())["artifact_versions"]["server"])
 PY
 )"
 
-# Keep scratch Composer apps removable by the host after containers exit.
+# Keep scratch Composer apps and the PHP SDK probe caller-owned.
 container_user="$(id -u):$(id -g)"
 waterline_composer_cache="$run_root/waterline-composer-cache"
 mkdir -p "$waterline_composer_cache"
@@ -2007,6 +2007,7 @@ php_sdk_probe_dir="$result_dir/php-sdk-replay-probe"
 mkdir -p "$php_sdk_probe_dir"
 set +e
 docker run --rm --network host \
+  --user "$container_user" \
   -e DW_PHP_SDK_VERSION="$php_sdk_version" \
   -e DW_SERVER_VERSION="$server_version" \
   -e DW_SERVER_IMAGE="$server_image" \

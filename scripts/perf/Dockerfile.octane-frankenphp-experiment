@@ -1,9 +1,26 @@
 ARG SERVER_IMAGE=durableworkflow/server@sha256:998b9dffe1f8effb159af9660ac190ccbc9d0c954900e68e9946baa6bb4c6c42
+
+FROM composer:2 AS phpredis-source
+
+ARG PHPREDIS_VERSION=6.3.0
+ARG PHPREDIS_COMMIT=df4fab2de7fc327c54c94a13af2b9542e4fbd720
+
+RUN git clone --depth 1 --branch "${PHPREDIS_VERSION}" https://github.com/phpredis/phpredis.git /phpredis \
+    && test "$(git -C /phpredis rev-parse HEAD)" = "${PHPREDIS_COMMIT}"
+
 FROM ${SERVER_IMAGE} AS published
 
 FROM dunglas/frankenphp:php8.3@sha256:5918e1fce1e297eca32253a7dc95d5ab09ac156a127dc0eef354043d39ba97d3
 
-RUN install-php-extensions pdo_mysql pdo_pgsql pcntl redis zip bcmath
+RUN install-php-extensions pdo_mysql pdo_pgsql pcntl zip bcmath
+
+COPY --from=phpredis-source /phpredis /usr/src/php/ext/redis
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends $PHPIZE_DEPS \
+    && docker-php-ext-install redis \
+    && apt-get purge -y --auto-remove $PHPIZE_DEPS \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY --from=published /usr/bin/composer /usr/bin/composer
 COPY --from=published /usr/local/bin/server-* /usr/local/bin/
