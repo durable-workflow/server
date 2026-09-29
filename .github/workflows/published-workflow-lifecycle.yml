@@ -52,12 +52,14 @@ jobs:
       DW_RUST_SDK_VERSION: ${{ inputs.rust_sdk_version }}
       DW_CLI_VERSION: ${{ inputs.cli_version }}
       DW_WATERLINE_VERSION: ${{ inputs.waterline_version }}
+      DW_JOB_RESOURCE_PREFIX: ${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
       DW_WORKFLOW_LIFECYCLE_MYSQL_IMAGE: mysql@sha256:679e7e924f38a3cbb62a3d7df32924b83f7321a602d3f9f967c01b3df18495d6
       DW_WORKFLOW_LIFECYCLE_REDIS_IMAGE: redis@sha256:0637954999d01b7c9ce9167db2da50656e2590d3b884f1c600c5f63bb6e6773c
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Validate immutable artifact pins
+        id: validate
         run: |
           set -euo pipefail
           [[ "$DW_SERVER_IMAGE" =~ ^(docker.io/)?durableworkflow/server@sha256:[0-9a-f]{64}$ ]]
@@ -68,10 +70,21 @@ jobs:
           done
 
       - name: Run exact published-artifact lifecycle matrix
+        if: ${{ always() && steps.validate.outcome == 'success' }}
         run: |
           mkdir -p "$RUNNER_TEMP/published-workflow-lifecycle"
           bash scripts/conformance/workflow-lifecycle-host-published-artifacts.sh \
             --result-dir "$RUNNER_TEMP/published-workflow-lifecycle"
+
+      - name: Remove job-owned lifecycle containers and network
+        if: always()
+        run: |
+          docker rm -f "dw-lifecycle-mysql-${DW_JOB_RESOURCE_PREFIX}" >/dev/null 2>&1 || true
+          docker rm -f "dw-lifecycle-redis-${DW_JOB_RESOURCE_PREFIX}" >/dev/null 2>&1 || true
+          docker rm -f "dw-lifecycle-server-${DW_JOB_RESOURCE_PREFIX}" >/dev/null 2>&1 || true
+          docker rm -f "dw-lifecycle-scheduler-${DW_JOB_RESOURCE_PREFIX}" >/dev/null 2>&1 || true
+          docker rm -f "dw-lifecycle-extract-${DW_JOB_RESOURCE_PREFIX}" >/dev/null 2>&1 || true
+          docker network rm "dw-lifecycle-${DW_JOB_RESOURCE_PREFIX}" >/dev/null 2>&1 || true
 
       - name: Retain lifecycle results
         if: always()

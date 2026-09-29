@@ -85,7 +85,7 @@ if [[ "$server_image" != "durableworkflow/server:${DW_SERVER_VERSION}" \
   exit 2
 fi
 
-run_id="$(date -u +%s)-$$-${RANDOM}"
+run_id="${DW_JOB_RESOURCE_PREFIX:-${GITHUB_RUN_ID:-$(date -u +%s)}-${GITHUB_RUN_ATTEMPT:-$$}-${GITHUB_JOB:-${RANDOM}}}"
 network_name="dw-lifecycle-${run_id}"
 mysql_name="dw-lifecycle-mysql-${run_id}"
 redis_name="dw-lifecycle-redis-${run_id}"
@@ -109,9 +109,9 @@ cleanup() {
   for container in "$server_name" "$scheduler_name" "$mysql_name" "$redis_name"; do
     if docker inspect "$container" >/dev/null 2>&1; then
       docker logs "$container" >"$result_dir/${container}.log" 2>&1 || true
-      docker rm -f "$container" >/dev/null 2>&1 || true
     fi
   done
+  docker rm -f "$server_name" "$scheduler_name" "$mysql_name" "$redis_name" >/dev/null 2>&1 || true
   docker rm -f "$extractor_name" >/dev/null 2>&1 || true
   docker network rm "$network_name" >/dev/null 2>&1 || true
   exit "$exit_code"
