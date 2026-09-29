@@ -65,6 +65,7 @@ services:
   worker:
     image: *server_image
     command: ["php", "artisan", "queue:work", "--sleep=1", "--tries=3", "--max-time=3600"]
+    restart: unless-stopped
     environment: *server_env
     depends_on:
       server:
