@@ -33,14 +33,24 @@ class SignalHistory:
         self.seen.add(index)
         self.total += index
 
-    def run(self, ctx, target, mixed_interval=0, continue_new=False, stage=0, carried_total=0, payload_bytes=0):
+    def run(
+        self, ctx, target, mixed_interval=0, continue_new=False, stage=0,
+        carried_total=0, payload_bytes=0, side_effect_count=0,
+    ):
         self.payload_bytes = payload_bytes
         if stage == 1:
             return {"count": target, "total": carried_total}
 
         yield ctx.wait_condition(lambda: len(self.seen) == target, key="all-signals")
         if mixed_interval:
-            for index in range(mixed_interval, target + 1, mixed_interval):
+            for index in range(mixed_interval, (side_effect_count or target) + 1, mixed_interval):
+                if side_effect_count:
+                    for side_effect_index in range(index - mixed_interval, index):
+                        recorded = yield ctx.side_effect(lambda value=side_effect_index: value)
+                        if recorded != side_effect_index:
+                            raise ValueError(
+                                f"side effect {side_effect_index} replayed as {recorded!r}"
+                            )
                 acknowledged = yield ctx.schedule_activity("history-qualification-mixed-boundary", [index])
                 if acknowledged != index:
                     raise ValueError(f"activity boundary {index} returned {acknowledged!r}")
@@ -66,6 +76,13 @@ async def main(target):
     mixed_interval = int(os.environ.get("PROBE_MIXED_INTERVAL", "0"))
     if mixed_interval < 0 or mixed_interval > target:
         raise ValueError("PROBE_MIXED_INTERVAL must be in [0, target]")
+    side_effect_count = int(os.environ.get("PROBE_SIDE_EFFECTS", "0"))
+    if side_effect_count < 0 or side_effect_count > 6000:
+        raise ValueError("PROBE_SIDE_EFFECTS must be in [0, 6000]")
+    if side_effect_count and (
+        mixed_interval == 0 or side_effect_count % mixed_interval != 0
+    ):
+        raise ValueError("PROBE_SIDE_EFFECTS requires a dividing PROBE_MIXED_INTERVAL")
     continue_as_new = os.environ.get("PROBE_CONTINUE_AS_NEW") == "1"
     payload_bytes = int(os.environ.get("PROBE_SIGNAL_PAYLOAD_BYTES", "0"))
     if payload_bytes < 0 or payload_bytes > 1024 * 1024:
@@ -103,12 +120,16 @@ async def main(target):
             offer_seconds = None
             print(json.dumps({"phase": "resuming", "initial_run_id": resume_run_id}), flush=True)
         else:
+            workflow_input = [target]
+            if mixed_interval or continue_as_new or payload_bytes or side_effect_count:
+                workflow_input = [target, mixed_interval, continue_as_new, 0, 0, payload_bytes]
+            if side_effect_count:
+                workflow_input.append(side_effect_count)
             handle = await client.start_workflow(
                 workflow_type="history-qualification-signals",
                 task_queue=queue,
                 workflow_id=workflow_id,
-                input=[target, mixed_interval, continue_as_new, 0, 0, payload_bytes]
-                if mixed_interval or continue_as_new or payload_bytes else [target],
+                input=workflow_input,
                 execution_timeout_seconds=3600,
                 run_timeout_seconds=3600,
             )
@@ -230,7 +251,7 @@ async def main(target):
             raise ValueError(f"wrong signal event counts: {dict(types)}")
         if types["WorkflowContinuedAsNew"] != int(continue_as_new):
             raise ValueError(f"wrong continuation count: {dict(types)}")
-        expected_boundaries = target // mixed_interval if mixed_interval else 0
+        expected_boundaries = (side_effect_count or target) // mixed_interval if mixed_interval else 0
         for event_type in (
             "ActivityScheduled", "ActivityCompleted", "TimerScheduled", "TimerFired",
         ):
@@ -238,13 +259,16 @@ async def main(target):
                 raise ValueError(f"wrong {event_type} count: {dict(types)}")
         if types["ActivityStarted"] < expected_boundaries:
             raise ValueError(f"missing activity starts: {dict(types)}")
+        if types["SideEffectRecorded"] != side_effect_count:
+            raise ValueError(f"wrong side effect count: {dict(types)}")
         print(json.dumps({
-            "schema": "server-237-signal-history-probe-v2",
+            "schema": "server-237-signal-history-probe-v3",
             "workflow_id": workflow_id,
             "run_ids": run_ids,
             "target_signals": target,
             "signal_concurrency": fanout,
             "mixed_interval": mixed_interval,
+            "side_effect_count": side_effect_count,
             "signal_payload_bytes": payload_bytes,
             "continue_as_new": continue_as_new,
             "worker_window_seconds": worker_window,
