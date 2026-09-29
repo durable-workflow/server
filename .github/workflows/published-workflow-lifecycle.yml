@@ -86,11 +86,32 @@ jobs:
           docker rm -f "dw-lifecycle-extract-${DW_JOB_RESOURCE_PREFIX}" >/dev/null 2>&1 || true
           docker network rm "dw-lifecycle-${DW_JOB_RESOURCE_PREFIX}" >/dev/null 2>&1 || true
 
+      - name: Make lifecycle evidence readable
+        if: ${{ always() && steps.validate.outcome == 'success' }}
+        run: |
+          result_dir="$RUNNER_TEMP/published-workflow-lifecycle"
+          if [[ -d "$result_dir" ]]; then
+            docker run --rm --name "dw-lifecycle-evidence-${DW_JOB_RESOURCE_PREFIX}" \
+              --volume "$result_dir:/result" --entrypoint find "$DW_SERVER_IMAGE" \
+              /result -maxdepth 1 -type f -exec chmod a+r {} +
+          fi
+
       - name: Retain lifecycle results
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: published-workflow-lifecycle-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/published-workflow-lifecycle/
+          path: |
+            ${{ runner.temp }}/published-workflow-lifecycle/*.json
+            ${{ runner.temp }}/published-workflow-lifecycle/*.jsonl
+            ${{ runner.temp }}/published-workflow-lifecycle/*.log
+            ${{ runner.temp }}/published-workflow-lifecycle/*.txt
+            ${{ runner.temp }}/published-workflow-lifecycle/*.csv
+            ${{ runner.temp }}/published-workflow-lifecycle/*.tsv
+            ${{ runner.temp }}/published-workflow-lifecycle/*.sqlite
           if-no-files-found: error
           retention-days: 30
+
+      - name: Remove job-owned evidence container
+        if: always()
+        run: docker rm -f "dw-lifecycle-evidence-${DW_JOB_RESOURCE_PREFIX}" >/dev/null 2>&1 || true
