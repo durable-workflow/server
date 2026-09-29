@@ -1,0 +1,5 @@
+time="2026-09-29T06:34:47Z" level=warning msg="Found orphan containers ([dw237pg-recovery-first]) for this project. If you removed or renamed this service in your compose file, you can run this command with the --remove-orphans flag to clean it up."
+ Container dw237pgthreshold0929-pgsql-1  Starting
+ Container dw237pgthreshold0929-pgsql-1  Started
+ Container dw237pgthreshold0929-pgsql-1  Waiting
+ Container dw237pgthreshold0929-pgsql-1  Healthy

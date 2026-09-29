@@ -1,0 +1,27 @@
+runs
+01m3nxfv2rjrgqjpsrdbq1xt1j|1|waiting||4510|2026-09-29 06:26:31.639931|
+history_sequence_integrity
+01m3nxfv2rjrgqjpsrdbq1xt1j|1|4510|1|4510|4510
+event_types
+ActivityCompleted|1
+ActivityScheduled|1
+ActivityStarted|1
+ConditionWaitOpened|1
+ConditionWaitSatisfied|1
+MessageCursorAdvanced|1
+SideEffectRecorded|500
+SignalReceived|4000
+StartAccepted|1
+TimerFired|1
+TimerScheduled|1
+WorkflowStarted|1
+task_states
+activity|completed|1|1|1
+timer|completed|1|1|1
+workflow|completed|3|1|31
+workflow|ready|1|0|3
+pending_tasks
+1
+signal_records
+applied|1
+received|3999
