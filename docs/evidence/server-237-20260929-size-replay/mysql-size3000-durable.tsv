@@ -1,0 +1,57 @@
+section
+run
+id	status	last_history_sequence	history_event_count	history_size_bytes	history_budget_pressure	continue_as_new_recommended	started_at	closed_at
+01m3p2pbpgdhhrfv0g5554nrn8	completed	1030	1030	4600610	approaching	0	2026-09-29 07:57:28.143722	2026-09-29 07:58:04.564747
+section
+history_integrity
+COUNT(*)	MIN(e.sequence)	MAX(e.sequence)	COUNT(DISTINCT e.sequence)
+1030	1	1030	1030
+section
+event_types
+event_type	COUNT(*)
+ActivityCompleted	9
+ActivityScheduled	9
+ActivityStarted	9
+SideEffectRecorded	1000
+StartAccepted	1
+WorkflowCompleted	1
+WorkflowStarted	1
+section
+tasks
+task_type	status	attempt_count	repair_count	ROUND(TIMESTAMPDIFF(MICROSECOND, t.created_at, t.updated_at) / 1000000, 3)
+workflow	completed	1	0	1.765
+activity	completed	1	0	0.640
+workflow	completed	1	0	1.569
+activity	completed	1	0	0.778
+workflow	completed	1	0	1.901
+activity	completed	1	0	1.015
+workflow	completed	1	0	2.010
+activity	completed	1	0	1.156
+workflow	completed	1	0	2.436
+activity	completed	1	0	1.560
+workflow	completed	1	0	2.466
+activity	completed	1	0	1.405
+workflow	completed	1	0	3.037
+activity	completed	1	0	1.561
+workflow	completed	1	0	2.918
+activity	completed	1	0	1.793
+workflow	completed	1	0	3.082
+activity	completed	1	0	1.998
+workflow	completed	1	0	3.312
+section
+task_latency_seconds_p50_p95_p99
+task_type	MAX(n)	MAX(CASE WHEN rn = CEIL(n * 0.50) THEN seconds END)	MAX(CASE WHEN rn = CEIL(n * 0.95) THEN seconds END)	MAX(CASE WHEN rn = CEIL(n * 0.99) THEN seconds END)
+activity	9	1.4054	1.9983	1.9983
+workflow	10	2.4363	3.3123	3.3123
+section
+open_tasks
+COUNT(*)
+0
+section
+database_allocated_table_bytes
+SUM(data_length + index_length)
+2408448
+section
+failed_jobs
+COUNT(*)
+0

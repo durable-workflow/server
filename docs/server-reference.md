@@ -1082,6 +1082,35 @@ count, remaining capacity, cache-lock support, and whether the queue is
 - `POST /api/search-attributes` — Register custom attribute
 - `DELETE /api/search-attributes/{name}` — Remove custom attribute
 
+### Long-Lived History Operations
+
+Run detail exposes `history_event_count`, `history_size_bytes`,
+`history_fan_out`, `history_budget_pressure`, and the dimensions that caused
+pressure. The default warning is 8,000 events, 4 MiB of serialized history,
+or fan-out of 160. Continue-as-new is recommended at 10,000 events, 5 MiB,
+or fan-out of 200. Reaching any one dimension changes the pressure state.
+`DW_MAX_HISTORY_EVENTS=50000` is an enforcement ceiling, not the target for
+routine workflow code.
+
+Plan a continuation when a run reaches `approaching`. Carry the state needed
+by the next run explicitly through the SDK's continue-as-new command, and
+check the resulting run chain. Watch workflow-task latency, repairs and
+backlog alongside the budget. A growing history can increase task latency
+even while every result remains correct. If a backend outage interrupts a
+worker, restore database readiness and ensure a compatible worker is running
+on the recorded queue before considering manual intervention. Do not delete the
+run or referenced external payloads to clear a backlog. Retention applies
+to closed-run history and must preserve payloads still referenced by active
+runs.
+
+The [published-artifact qualification](evidence/server-237-20260929-size-replay/README.md)
+measured both event and serialized-size thresholds on MySQL and PostgreSQL,
+plus replay of an exported 10,010-event history. Its [recovery record](evidence/server-237-20260929-pg-recovery/README.md)
+covers a worker replacement after PostgreSQL interruption and a targeted
+retention pass. Those observations support the default guidance for the
+tested artifacts and limits; they do not set a capacity promise for other
+workflow shapes or hardware.
+
 ## Authentication
 
 Set the `X-Namespace` header to target a specific namespace (defaults to `default`).
@@ -1592,6 +1621,10 @@ inside the package's `config/workflows.php` via
 | `DW_V2_PIN_TO_RECORDED_FINGERPRINT` | `true` | Resolve in-flight runs from the fingerprint recorded at WorkflowStarted. |
 | `DW_V2_CONTINUE_AS_NEW_EVENT_THRESHOLD` | `10000` | History event count at which the package signals continue-as-new. |
 | `DW_V2_CONTINUE_AS_NEW_SIZE_BYTES_THRESHOLD` | `5242880` | Serialized-history byte count at which the package signals continue-as-new. |
+| `DW_V2_HISTORY_EVENT_WARNING_THRESHOLD` | `8000` | Event count at which history pressure becomes `approaching`. |
+| `DW_V2_HISTORY_SIZE_BYTES_WARNING_THRESHOLD` | `4194304` | Serialized-history byte count at which history pressure becomes `approaching`. |
+| `DW_V2_CONTINUE_AS_NEW_FAN_OUT_THRESHOLD` | `200` | Largest recorded parallel group size at which continue-as-new is recommended. |
+| `DW_V2_HISTORY_FAN_OUT_WARNING_THRESHOLD` | `160` | Largest recorded parallel group size at which history pressure becomes `approaching`. |
 | `DW_V2_HISTORY_EXPORT_SIGNING_KEY` | (unset) | Optional HMAC key authenticating history export archives. |
 | `DW_V2_HISTORY_EXPORT_SIGNING_KEY_ID` | (unset) | Optional key identifier recorded alongside signed exports. |
 | `DW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS` | `10` | Seconds the server waits for an update to reach a terminal stage. |
