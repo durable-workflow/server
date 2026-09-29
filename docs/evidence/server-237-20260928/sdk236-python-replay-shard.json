@@ -1,0 +1,1462 @@
+{
+  "adversarial_replay": {
+    "passed": 3,
+    "scenario_statuses": {
+      "malformed_history_refusal": "pass",
+      "python_code_divergence_refusal": "pass",
+      "server_history_mutation_refusal": "pass"
+    },
+    "total": 3
+  },
+  "artifact_sources": {
+    "cli": "github_release_asset",
+    "sdk-php": "packagist_package",
+    "sdk-python": "pypi_package",
+    "sdk-rust": "crates_io_package",
+    "server": "published_docker_image",
+    "waterline": "packagist_package",
+    "workflow-php": "packagist_package"
+  },
+  "artifact_versions": {
+    "cli": "2.1.2",
+    "sdk-php": "2.1.5",
+    "sdk-python": "2.3.6",
+    "sdk-rust": "2.1.1",
+    "server": "2.4.26",
+    "waterline": "2.0.7",
+    "workflow-php": "2.2.18"
+  },
+  "completed_history_replay": {
+    "passed": 5,
+    "scenario_statuses": {
+      "python_completed_history_activity_replay": "pass",
+      "python_completed_history_saga_compensation_replay": "pass",
+      "python_completed_history_signal_update_replay": "pass",
+      "python_completed_history_version_marker_replay": "pass",
+      "python_completed_history_wait_condition_replay": "pass"
+    },
+    "total": 5
+  },
+  "coverage_scope": "sdk-python-runtime-shard",
+  "finding_links": {},
+  "findings": [],
+  "finished_at": "2026-09-29T02:56:58.269282Z",
+  "in_flight_timing": {
+    "passed": 1,
+    "scenario_statuses": {
+      "python_in_flight_signal_restart_timing": "pass"
+    },
+    "total": 1
+  },
+  "outcome": "pass",
+  "runtime_matrix": {
+    "runtimes": [
+      "sdk-python"
+    ]
+  },
+  "scenario_results": [
+    {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-python",
+        "version": "2.3.6"
+      },
+      "observed_outputs": {
+        "artifact_sources": {
+          "cli": "github_release_asset",
+          "sdk-php": "packagist_package",
+          "sdk-python": "pypi_package",
+          "sdk-rust": "crates_io_package",
+          "server": "published_docker_image",
+          "waterline": "packagist_package",
+          "workflow-php": "packagist_package"
+        },
+        "artifact_versions_recorded": {
+          "cli": "2.1.2",
+          "sdk-php": "2.1.5",
+          "sdk-python": "2.3.6",
+          "sdk-rust": "2.1.1",
+          "server": "2.4.26",
+          "waterline": "2.0.7",
+          "workflow-php": "2.2.18"
+        },
+        "forbidden_sources": {},
+        "missing_artifact_sources": [],
+        "missing_artifact_versions": [],
+        "missing_artifacts": [],
+        "placeholder_versions": {},
+        "published_artifacts_only": true,
+        "published_install_tuple_proven": true,
+        "rejected_versions": {},
+        "untrusted_sources": {}
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.6",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.26",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "replay_diagnostics": {
+        "artifact_sources": {
+          "cli": "github_release_asset",
+          "sdk-php": "packagist_package",
+          "sdk-python": "pypi_package",
+          "sdk-rust": "crates_io_package",
+          "server": "published_docker_image",
+          "waterline": "packagist_package",
+          "workflow-php": "packagist_package"
+        },
+        "artifact_versions_recorded": {
+          "cli": "2.1.2",
+          "sdk-php": "2.1.5",
+          "sdk-python": "2.3.6",
+          "sdk-rust": "2.1.1",
+          "server": "2.4.26",
+          "waterline": "2.0.7",
+          "workflow-php": "2.2.18"
+        },
+        "forbidden_sources": {},
+        "missing_artifact_sources": [],
+        "missing_artifact_versions": [],
+        "missing_artifacts": [],
+        "placeholder_versions": {},
+        "published_artifacts_only": true,
+        "published_install_tuple_proven": true,
+        "rejected_versions": {},
+        "untrusted_sources": {}
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-python"
+        ]
+      },
+      "scenario_id": "published_artifact_install_only",
+      "status": "pass"
+    },
+    {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-python",
+        "version": "2.3.6"
+      },
+      "observed_outputs": {
+        "expected_state": {
+          "approved": false,
+          "events": [
+            "activity:Hello, Ada!"
+          ],
+          "greeting": "Hello, Ada!",
+          "name": null,
+          "reservation_id": null,
+          "stage": "completed",
+          "version": -1,
+          "version_result": null
+        },
+        "family": "activity",
+        "history_event_types": [
+          "ActivityCompleted"
+        ],
+        "replayed_command_sequence": [
+          {
+            "command_type": "CompleteWorkflow"
+          }
+        ],
+        "replayed_state": {
+          "approved": false,
+          "events": [
+            "activity:Hello, Ada!"
+          ],
+          "greeting": "Hello, Ada!",
+          "name": null,
+          "reservation_id": null,
+          "stage": "completed",
+          "version": -1,
+          "version_result": null
+        },
+        "state_matches_fixture": true
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.6",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.26",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "replay_diagnostics": {
+        "expected_state": {
+          "approved": false,
+          "events": [
+            "activity:Hello, Ada!"
+          ],
+          "greeting": "Hello, Ada!",
+          "name": null,
+          "reservation_id": null,
+          "stage": "completed",
+          "version": -1,
+          "version_result": null
+        },
+        "family": "activity",
+        "history_event_types": [
+          "ActivityCompleted"
+        ],
+        "replayed_command_sequence": [
+          {
+            "command_type": "CompleteWorkflow"
+          }
+        ],
+        "replayed_state": {
+          "approved": false,
+          "events": [
+            "activity:Hello, Ada!"
+          ],
+          "greeting": "Hello, Ada!",
+          "name": null,
+          "reservation_id": null,
+          "stage": "completed",
+          "version": -1,
+          "version_result": null
+        },
+        "state_matches_fixture": true
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-python"
+        ]
+      },
+      "scenario_id": "python_completed_history_activity_replay",
+      "status": "pass"
+    },
+    {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-python",
+        "version": "2.3.6"
+      },
+      "observed_outputs": {
+        "expected_state": {
+          "approved": false,
+          "events": [
+            "signal:Grace",
+            "activity:Hello, Grace!"
+          ],
+          "greeting": "Hello, Grace!",
+          "name": "Grace",
+          "reservation_id": null,
+          "stage": "completed",
+          "version": -1,
+          "version_result": null
+        },
+        "family": "signal-update",
+        "history_event_types": [
+          "ConditionWaitOpened",
+          "SignalReceived",
+          "ConditionWaitSatisfied",
+          "ActivityCompleted"
+        ],
+        "replayed_command_sequence": [
+          {
+            "command_type": "CompleteWorkflow"
+          }
+        ],
+        "replayed_state": {
+          "approved": false,
+          "events": [
+            "signal:Grace",
+            "activity:Hello, Grace!"
+          ],
+          "greeting": "Hello, Grace!",
+          "name": "Grace",
+          "reservation_id": null,
+          "stage": "completed",
+          "version": -1,
+          "version_result": null
+        },
+        "state_matches_fixture": true
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.6",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.26",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "replay_diagnostics": {
+        "expected_state": {
+          "approved": false,
+          "events": [
+            "signal:Grace",
+            "activity:Hello, Grace!"
+          ],
+          "greeting": "Hello, Grace!",
+          "name": "Grace",
+          "reservation_id": null,
+          "stage": "completed",
+          "version": -1,
+          "version_result": null
+        },
+        "family": "signal-update",
+        "history_event_types": [
+          "ConditionWaitOpened",
+          "SignalReceived",
+          "ConditionWaitSatisfied",
+          "ActivityCompleted"
+        ],
+        "replayed_command_sequence": [
+          {
+            "command_type": "CompleteWorkflow"
+          }
+        ],
+        "replayed_state": {
+          "approved": false,
+          "events": [
+            "signal:Grace",
+            "activity:Hello, Grace!"
+          ],
+          "greeting": "Hello, Grace!",
+          "name": "Grace",
+          "reservation_id": null,
+          "stage": "completed",
+          "version": -1,
+          "version_result": null
+        },
+        "state_matches_fixture": true
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-python"
+        ]
+      },
+      "scenario_id": "python_completed_history_signal_update_replay",
+      "status": "pass"
+    },
+    {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-python",
+        "version": "2.3.6"
+      },
+      "observed_outputs": {
+        "expected_state": {
+          "approved": true,
+          "events": [
+            "approved",
+            "condition-satisfied"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": null,
+          "stage": "approved",
+          "version": -1,
+          "version_result": null
+        },
+        "family": "wait-condition",
+        "history_event_types": [
+          "ConditionWaitOpened",
+          "UpdateApplied",
+          "ConditionWaitSatisfied"
+        ],
+        "replayed_command_sequence": [
+          {
+            "command_type": "CompleteWorkflow"
+          }
+        ],
+        "replayed_state": {
+          "approved": true,
+          "events": [
+            "approved",
+            "condition-satisfied"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": null,
+          "stage": "approved",
+          "version": -1,
+          "version_result": null
+        },
+        "state_matches_fixture": true
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.6",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.26",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "replay_diagnostics": {
+        "expected_state": {
+          "approved": true,
+          "events": [
+            "approved",
+            "condition-satisfied"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": null,
+          "stage": "approved",
+          "version": -1,
+          "version_result": null
+        },
+        "family": "wait-condition",
+        "history_event_types": [
+          "ConditionWaitOpened",
+          "UpdateApplied",
+          "ConditionWaitSatisfied"
+        ],
+        "replayed_command_sequence": [
+          {
+            "command_type": "CompleteWorkflow"
+          }
+        ],
+        "replayed_state": {
+          "approved": true,
+          "events": [
+            "approved",
+            "condition-satisfied"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": null,
+          "stage": "approved",
+          "version": -1,
+          "version_result": null
+        },
+        "state_matches_fixture": true
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-python"
+        ]
+      },
+      "scenario_id": "python_completed_history_wait_condition_replay",
+      "status": "pass"
+    },
+    {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-python",
+        "version": "2.3.6"
+      },
+      "observed_outputs": {
+        "expected_state": {
+          "approved": false,
+          "events": [
+            "version:2"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": null,
+          "stage": "completed",
+          "version": 2,
+          "version_result": "v3_result"
+        },
+        "family": "version-marker",
+        "history_event_types": [
+          "VersionMarkerRecorded",
+          "ActivityCompleted"
+        ],
+        "replayed_command_sequence": [
+          {
+            "command_type": "CompleteWorkflow"
+          }
+        ],
+        "replayed_state": {
+          "approved": false,
+          "events": [
+            "version:2"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": null,
+          "stage": "completed",
+          "version": 2,
+          "version_result": "v3_result"
+        },
+        "state_matches_fixture": true
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.6",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.26",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "replay_diagnostics": {
+        "expected_state": {
+          "approved": false,
+          "events": [
+            "version:2"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": null,
+          "stage": "completed",
+          "version": 2,
+          "version_result": "v3_result"
+        },
+        "family": "version-marker",
+        "history_event_types": [
+          "VersionMarkerRecorded",
+          "ActivityCompleted"
+        ],
+        "replayed_command_sequence": [
+          {
+            "command_type": "CompleteWorkflow"
+          }
+        ],
+        "replayed_state": {
+          "approved": false,
+          "events": [
+            "version:2"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": null,
+          "stage": "completed",
+          "version": 2,
+          "version_result": "v3_result"
+        },
+        "state_matches_fixture": true
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-python"
+        ]
+      },
+      "scenario_id": "python_completed_history_version_marker_replay",
+      "status": "pass"
+    },
+    {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-python",
+        "version": "2.3.6"
+      },
+      "observed_outputs": {
+        "expected_state": {
+          "approved": false,
+          "events": [
+            "compensated:payment declined"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": "inventory-id-456",
+          "stage": "compensated",
+          "version": -1,
+          "version_result": null
+        },
+        "family": "saga-compensation",
+        "history_event_types": [
+          "ActivityCompleted",
+          "ChildRunFailed",
+          "ActivityCompleted"
+        ],
+        "replayed_command_sequence": [
+          {
+            "command_type": "CompleteWorkflow"
+          }
+        ],
+        "replayed_state": {
+          "approved": false,
+          "events": [
+            "compensated:payment declined"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": "inventory-id-456",
+          "stage": "compensated",
+          "version": -1,
+          "version_result": null
+        },
+        "state_matches_fixture": true
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.6",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.26",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "replay_diagnostics": {
+        "expected_state": {
+          "approved": false,
+          "events": [
+            "compensated:payment declined"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": "inventory-id-456",
+          "stage": "compensated",
+          "version": -1,
+          "version_result": null
+        },
+        "family": "saga-compensation",
+        "history_event_types": [
+          "ActivityCompleted",
+          "ChildRunFailed",
+          "ActivityCompleted"
+        ],
+        "replayed_command_sequence": [
+          {
+            "command_type": "CompleteWorkflow"
+          }
+        ],
+        "replayed_state": {
+          "approved": false,
+          "events": [
+            "compensated:payment declined"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": "inventory-id-456",
+          "stage": "compensated",
+          "version": -1,
+          "version_result": null
+        },
+        "state_matches_fixture": true
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-python"
+        ]
+      },
+      "scenario_id": "python_completed_history_saga_compensation_replay",
+      "status": "pass"
+    },
+    {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-python",
+        "version": "2.3.6"
+      },
+      "observed_outputs": {
+        "family": "completed-query",
+        "history_event_types": [
+          "ActivityCompleted"
+        ],
+        "original_query_result": {
+          "approved": false,
+          "events": [
+            "activity:Hello, Ada!"
+          ],
+          "greeting": "Hello, Ada!",
+          "name": null,
+          "reservation_id": null,
+          "stage": "completed",
+          "version": -1,
+          "version_result": null
+        },
+        "query_result_matches_original": true,
+        "replay_query_result": {
+          "approved": false,
+          "events": [
+            "activity:Hello, Ada!"
+          ],
+          "greeting": "Hello, Ada!",
+          "name": null,
+          "reservation_id": null,
+          "stage": "completed",
+          "version": -1,
+          "version_result": null
+        },
+        "worker_restart_simulated": true
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.6",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.26",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "replay_diagnostics": {
+        "family": "completed-query",
+        "history_event_types": [
+          "ActivityCompleted"
+        ],
+        "original_query_result": {
+          "approved": false,
+          "events": [
+            "activity:Hello, Ada!"
+          ],
+          "greeting": "Hello, Ada!",
+          "name": null,
+          "reservation_id": null,
+          "stage": "completed",
+          "version": -1,
+          "version_result": null
+        },
+        "query_result_matches_original": true,
+        "replay_query_result": {
+          "approved": false,
+          "events": [
+            "activity:Hello, Ada!"
+          ],
+          "greeting": "Hello, Ada!",
+          "name": null,
+          "reservation_id": null,
+          "stage": "completed",
+          "version": -1,
+          "version_result": null
+        },
+        "worker_restart_simulated": true
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-python"
+        ]
+      },
+      "scenario_id": "python_worker_restart_completed_query",
+      "status": "pass"
+    },
+    {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-python",
+        "version": "2.3.6"
+      },
+      "observed_outputs": {
+        "family": "activity",
+        "history_event_types": [
+          "ActivityCompleted"
+        ],
+        "original_query_result": {
+          "approved": false,
+          "events": [
+            "activity:Hello, Ada!"
+          ],
+          "greeting": "Hello, Ada!",
+          "name": null,
+          "reservation_id": null,
+          "stage": "completed",
+          "version": -1,
+          "version_result": null
+        },
+        "query_result_matches_original": true,
+        "replay_query_result": {
+          "approved": false,
+          "events": [
+            "activity:Hello, Ada!"
+          ],
+          "greeting": "Hello, Ada!",
+          "name": null,
+          "reservation_id": null,
+          "stage": "completed",
+          "version": -1,
+          "version_result": null
+        },
+        "worker_restart_simulated": true
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.6",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.26",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "replay_diagnostics": {
+        "family": "activity",
+        "history_event_types": [
+          "ActivityCompleted"
+        ],
+        "original_query_result": {
+          "approved": false,
+          "events": [
+            "activity:Hello, Ada!"
+          ],
+          "greeting": "Hello, Ada!",
+          "name": null,
+          "reservation_id": null,
+          "stage": "completed",
+          "version": -1,
+          "version_result": null
+        },
+        "query_result_matches_original": true,
+        "replay_query_result": {
+          "approved": false,
+          "events": [
+            "activity:Hello, Ada!"
+          ],
+          "greeting": "Hello, Ada!",
+          "name": null,
+          "reservation_id": null,
+          "stage": "completed",
+          "version": -1,
+          "version_result": null
+        },
+        "worker_restart_simulated": true
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-python"
+        ]
+      },
+      "scenario_id": "python_worker_restart_activity_state",
+      "status": "pass"
+    },
+    {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-python",
+        "version": "2.3.6"
+      },
+      "observed_outputs": {
+        "family": "signal-update",
+        "history_event_types": [
+          "ConditionWaitOpened",
+          "SignalReceived",
+          "ConditionWaitSatisfied",
+          "ActivityCompleted"
+        ],
+        "original_query_result": {
+          "approved": false,
+          "events": [
+            "signal:Grace",
+            "activity:Hello, Grace!"
+          ],
+          "greeting": "Hello, Grace!",
+          "name": "Grace",
+          "reservation_id": null,
+          "stage": "completed",
+          "version": -1,
+          "version_result": null
+        },
+        "query_result_matches_original": true,
+        "replay_query_result": {
+          "approved": false,
+          "events": [
+            "signal:Grace",
+            "activity:Hello, Grace!"
+          ],
+          "greeting": "Hello, Grace!",
+          "name": "Grace",
+          "reservation_id": null,
+          "stage": "completed",
+          "version": -1,
+          "version_result": null
+        },
+        "worker_restart_simulated": true
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.6",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.26",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "replay_diagnostics": {
+        "family": "signal-update",
+        "history_event_types": [
+          "ConditionWaitOpened",
+          "SignalReceived",
+          "ConditionWaitSatisfied",
+          "ActivityCompleted"
+        ],
+        "original_query_result": {
+          "approved": false,
+          "events": [
+            "signal:Grace",
+            "activity:Hello, Grace!"
+          ],
+          "greeting": "Hello, Grace!",
+          "name": "Grace",
+          "reservation_id": null,
+          "stage": "completed",
+          "version": -1,
+          "version_result": null
+        },
+        "query_result_matches_original": true,
+        "replay_query_result": {
+          "approved": false,
+          "events": [
+            "signal:Grace",
+            "activity:Hello, Grace!"
+          ],
+          "greeting": "Hello, Grace!",
+          "name": "Grace",
+          "reservation_id": null,
+          "stage": "completed",
+          "version": -1,
+          "version_result": null
+        },
+        "worker_restart_simulated": true
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-python"
+        ]
+      },
+      "scenario_id": "python_worker_restart_signal_update_state",
+      "status": "pass"
+    },
+    {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-python",
+        "version": "2.3.6"
+      },
+      "observed_outputs": {
+        "family": "wait-condition",
+        "history_event_types": [
+          "ConditionWaitOpened",
+          "UpdateApplied",
+          "ConditionWaitSatisfied"
+        ],
+        "original_query_result": {
+          "approved": true,
+          "events": [
+            "approved",
+            "condition-satisfied"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": null,
+          "stage": "approved",
+          "version": -1,
+          "version_result": null
+        },
+        "query_result_matches_original": true,
+        "replay_query_result": {
+          "approved": true,
+          "events": [
+            "approved",
+            "condition-satisfied"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": null,
+          "stage": "approved",
+          "version": -1,
+          "version_result": null
+        },
+        "worker_restart_simulated": true
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.6",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.26",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "replay_diagnostics": {
+        "family": "wait-condition",
+        "history_event_types": [
+          "ConditionWaitOpened",
+          "UpdateApplied",
+          "ConditionWaitSatisfied"
+        ],
+        "original_query_result": {
+          "approved": true,
+          "events": [
+            "approved",
+            "condition-satisfied"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": null,
+          "stage": "approved",
+          "version": -1,
+          "version_result": null
+        },
+        "query_result_matches_original": true,
+        "replay_query_result": {
+          "approved": true,
+          "events": [
+            "approved",
+            "condition-satisfied"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": null,
+          "stage": "approved",
+          "version": -1,
+          "version_result": null
+        },
+        "worker_restart_simulated": true
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-python"
+        ]
+      },
+      "scenario_id": "python_worker_restart_wait_condition_state",
+      "status": "pass"
+    },
+    {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-python",
+        "version": "2.3.6"
+      },
+      "observed_outputs": {
+        "family": "version-marker",
+        "history_event_types": [
+          "VersionMarkerRecorded",
+          "ActivityCompleted"
+        ],
+        "original_query_result": {
+          "approved": false,
+          "events": [
+            "version:2"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": null,
+          "stage": "completed",
+          "version": 2,
+          "version_result": "v3_result"
+        },
+        "query_result_matches_original": true,
+        "replay_query_result": {
+          "approved": false,
+          "events": [
+            "version:2"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": null,
+          "stage": "completed",
+          "version": 2,
+          "version_result": "v3_result"
+        },
+        "worker_restart_simulated": true
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.6",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.26",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "replay_diagnostics": {
+        "family": "version-marker",
+        "history_event_types": [
+          "VersionMarkerRecorded",
+          "ActivityCompleted"
+        ],
+        "original_query_result": {
+          "approved": false,
+          "events": [
+            "version:2"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": null,
+          "stage": "completed",
+          "version": 2,
+          "version_result": "v3_result"
+        },
+        "query_result_matches_original": true,
+        "replay_query_result": {
+          "approved": false,
+          "events": [
+            "version:2"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": null,
+          "stage": "completed",
+          "version": 2,
+          "version_result": "v3_result"
+        },
+        "worker_restart_simulated": true
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-python"
+        ]
+      },
+      "scenario_id": "python_worker_restart_version_marker_state",
+      "status": "pass"
+    },
+    {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-python",
+        "version": "2.3.6"
+      },
+      "observed_outputs": {
+        "family": "saga-compensation",
+        "history_event_types": [
+          "ActivityCompleted",
+          "ChildRunFailed",
+          "ActivityCompleted"
+        ],
+        "original_query_result": {
+          "approved": false,
+          "events": [
+            "compensated:payment declined"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": "inventory-id-456",
+          "stage": "compensated",
+          "version": -1,
+          "version_result": null
+        },
+        "query_result_matches_original": true,
+        "replay_query_result": {
+          "approved": false,
+          "events": [
+            "compensated:payment declined"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": "inventory-id-456",
+          "stage": "compensated",
+          "version": -1,
+          "version_result": null
+        },
+        "worker_restart_simulated": true
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.6",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.26",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "replay_diagnostics": {
+        "family": "saga-compensation",
+        "history_event_types": [
+          "ActivityCompleted",
+          "ChildRunFailed",
+          "ActivityCompleted"
+        ],
+        "original_query_result": {
+          "approved": false,
+          "events": [
+            "compensated:payment declined"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": "inventory-id-456",
+          "stage": "compensated",
+          "version": -1,
+          "version_result": null
+        },
+        "query_result_matches_original": true,
+        "replay_query_result": {
+          "approved": false,
+          "events": [
+            "compensated:payment declined"
+          ],
+          "greeting": null,
+          "name": null,
+          "reservation_id": "inventory-id-456",
+          "stage": "compensated",
+          "version": -1,
+          "version_result": null
+        },
+        "worker_restart_simulated": true
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-python"
+        ]
+      },
+      "scenario_id": "python_worker_restart_saga_compensation_state",
+      "status": "pass"
+    },
+    {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-python",
+        "version": "2.3.6"
+      },
+      "observed_outputs": {
+        "expected_shape": "activity:python-replay.farewell",
+        "message": "workflow history at workflow sequence 1 recorded ['ActivityCompleted'], but the current workflow yielded activity:python-replay.farewell. Recorded activity_type 'python-replay.greet', but current workflow scheduled 'python-replay.farewell'. Keep yielded workflow steps stable across deployments or run this workflow on a compatible build.",
+        "observed_outcome": "non_determinism_error",
+        "recorded_event_types": [
+          "ActivityCompleted"
+        ],
+        "replay_diff": {
+          "divergence": {
+            "expected_shape": "activity:python-replay.farewell",
+            "message": "workflow history at workflow sequence 1 recorded ['ActivityCompleted'], but the current workflow yielded activity:python-replay.farewell. Recorded activity_type 'python-replay.greet', but current workflow scheduled 'python-replay.farewell'. Keep yielded workflow steps stable across deployments or run this workflow on a compatible build.",
+            "recorded_event_types": [
+              "ActivityCompleted"
+            ],
+            "workflow_sequence": 1
+          },
+          "error": {
+            "class": "NonDeterministicReplayError",
+            "expected_shape": "activity:python-replay.farewell",
+            "message": "workflow history at workflow sequence 1 recorded ['ActivityCompleted'], but the current workflow yielded activity:python-replay.farewell. Recorded activity_type 'python-replay.greet', but current workflow scheduled 'python-replay.farewell'. Keep yielded workflow steps stable across deployments or run this workflow on a compatible build.",
+            "recorded_event_types": [
+              "ActivityCompleted"
+            ],
+            "workflow_sequence": 1
+          },
+          "expected": null,
+          "family": null,
+          "id": "python_code_divergence_refusal",
+          "observed": null,
+          "promotion_decision": "block_until_compatible",
+          "reason": "shape_mismatch",
+          "source": null,
+          "status": "drifted",
+          "verdict": "drifted",
+          "workflow_type": "python-replay-conformance"
+        },
+        "workflow_sequence": 1
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.6",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.26",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "replay_diagnostics": {
+        "expected_shape": "activity:python-replay.farewell",
+        "message": "workflow history at workflow sequence 1 recorded ['ActivityCompleted'], but the current workflow yielded activity:python-replay.farewell. Recorded activity_type 'python-replay.greet', but current workflow scheduled 'python-replay.farewell'. Keep yielded workflow steps stable across deployments or run this workflow on a compatible build.",
+        "observed_outcome": "non_determinism_error",
+        "recorded_event_types": [
+          "ActivityCompleted"
+        ],
+        "replay_diff": {
+          "divergence": {
+            "expected_shape": "activity:python-replay.farewell",
+            "message": "workflow history at workflow sequence 1 recorded ['ActivityCompleted'], but the current workflow yielded activity:python-replay.farewell. Recorded activity_type 'python-replay.greet', but current workflow scheduled 'python-replay.farewell'. Keep yielded workflow steps stable across deployments or run this workflow on a compatible build.",
+            "recorded_event_types": [
+              "ActivityCompleted"
+            ],
+            "workflow_sequence": 1
+          },
+          "error": {
+            "class": "NonDeterministicReplayError",
+            "expected_shape": "activity:python-replay.farewell",
+            "message": "workflow history at workflow sequence 1 recorded ['ActivityCompleted'], but the current workflow yielded activity:python-replay.farewell. Recorded activity_type 'python-replay.greet', but current workflow scheduled 'python-replay.farewell'. Keep yielded workflow steps stable across deployments or run this workflow on a compatible build.",
+            "recorded_event_types": [
+              "ActivityCompleted"
+            ],
+            "workflow_sequence": 1
+          },
+          "expected": null,
+          "family": null,
+          "id": "python_code_divergence_refusal",
+          "observed": null,
+          "promotion_decision": "block_until_compatible",
+          "reason": "shape_mismatch",
+          "source": null,
+          "status": "drifted",
+          "verdict": "drifted",
+          "workflow_type": "python-replay-conformance"
+        },
+        "workflow_sequence": 1
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-python"
+        ]
+      },
+      "scenario_id": "python_code_divergence_refusal",
+      "status": "pass"
+    },
+    {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-python",
+        "version": "2.3.6"
+      },
+      "observed_outputs": {
+        "integrity": {
+          "path": null,
+          "rule": "integrity.checksum_mismatch",
+          "status": "failed"
+        },
+        "message": "integrity.checksum=[9c97ad2719a26245b75c390a4bd706c0fd885478bb434ddeb0a7a913089029c9] does not match recomputed sha256=[b622e6132ac1aec7d88ccb6d7b7b60c56a79e31703a506c474e15cc7f36c96c3]. Bundle has been tampered with or canonicalization disagrees.",
+        "observed_outcome": "bundle_invalid_or_drifted",
+        "replay_diff": {
+          "reason": "bundle_invalid",
+          "status": "failed"
+        }
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.6",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.26",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "replay_diagnostics": {
+        "integrity": {
+          "path": null,
+          "rule": "integrity.checksum_mismatch",
+          "status": "failed"
+        },
+        "message": "integrity.checksum=[9c97ad2719a26245b75c390a4bd706c0fd885478bb434ddeb0a7a913089029c9] does not match recomputed sha256=[b622e6132ac1aec7d88ccb6d7b7b60c56a79e31703a506c474e15cc7f36c96c3]. Bundle has been tampered with or canonicalization disagrees.",
+        "observed_outcome": "bundle_invalid_or_drifted",
+        "replay_diff": {
+          "reason": "bundle_invalid",
+          "status": "failed"
+        }
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-python"
+        ]
+      },
+      "scenario_id": "server_history_mutation_refusal",
+      "status": "pass"
+    },
+    {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-python",
+        "version": "2.3.6"
+      },
+      "observed_outputs": {
+        "integrity": {
+          "path": null,
+          "rule": "workflow.run_id_missing",
+          "status": "failed"
+        },
+        "message": "Bundle workflow.run_id must be a non-empty string.",
+        "observed_outcome": "bundle_invalid_or_failed"
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.6",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.26",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "replay_diagnostics": {
+        "integrity": {
+          "path": null,
+          "rule": "workflow.run_id_missing",
+          "status": "failed"
+        },
+        "message": "Bundle workflow.run_id must be a non-empty string.",
+        "observed_outcome": "bundle_invalid_or_failed"
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-python"
+        ]
+      },
+      "scenario_id": "malformed_history_refusal",
+      "status": "pass"
+    },
+    {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-python",
+        "version": "2.3.6"
+      },
+      "observed_outputs": {
+        "expected_next_decision": {
+          "activity_type": "python-replay.greet",
+          "arguments": [
+            "Grace"
+          ],
+          "command_type": "ScheduleActivity"
+        },
+        "history_event_types": [
+          "ConditionWaitOpened",
+          "SignalReceived",
+          "ConditionWaitSatisfied"
+        ],
+        "history_reloaded_at": "durable_workflow.workflow.replay",
+        "observed_outcome": "same_next_decision_after_replay",
+        "replayed_next_decision": {
+          "activity_type": "python-replay.greet",
+          "arguments": [
+            "Grace"
+          ],
+          "command_type": "ScheduleActivity"
+        },
+        "signal_sent_at": "history_event:SignalReceived",
+        "worker_restart_at": "after_signal_history_reload"
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.5",
+        "sdk-python": "2.3.6",
+        "sdk-rust": "2.1.1",
+        "server": "2.4.26",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "replay_diagnostics": {
+        "expected_next_decision": {
+          "activity_type": "python-replay.greet",
+          "arguments": [
+            "Grace"
+          ],
+          "command_type": "ScheduleActivity"
+        },
+        "history_event_types": [
+          "ConditionWaitOpened",
+          "SignalReceived",
+          "ConditionWaitSatisfied"
+        ],
+        "history_reloaded_at": "durable_workflow.workflow.replay",
+        "observed_outcome": "same_next_decision_after_replay",
+        "replayed_next_decision": {
+          "activity_type": "python-replay.greet",
+          "arguments": [
+            "Grace"
+          ],
+          "command_type": "ScheduleActivity"
+        },
+        "signal_sent_at": "history_event:SignalReceived",
+        "worker_restart_at": "after_signal_history_reload"
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-python"
+        ]
+      },
+      "scenario_id": "python_in_flight_signal_restart_timing",
+      "status": "pass"
+    }
+  ],
+  "schema": "durable-workflow.v2.replay-conformance.result",
+  "schema_version": 1,
+  "started_at": "2026-09-29T02:56:58.254362Z",
+  "worker_restart_replay": {
+    "passed": 6,
+    "scenario_statuses": {
+      "python_worker_restart_activity_state": "pass",
+      "python_worker_restart_completed_query": "pass",
+      "python_worker_restart_saga_compensation_state": "pass",
+      "python_worker_restart_signal_update_state": "pass",
+      "python_worker_restart_version_marker_state": "pass",
+      "python_worker_restart_wait_condition_state": "pass"
+    },
+    "total": 6
+  }
+}
