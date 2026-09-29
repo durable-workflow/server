@@ -21,8 +21,13 @@ docker compose run --rm --no-deps sdk-worker scripts/perf/standard_workflow_soak
 ```
 
 The last command is a warmup and checks each completed result, status and
-ordered semantic history. For each measured window, read MySQL global
-`Questions`, `Com_select`, `Com_insert`, `Com_update` and `Com_delete`, plus Redis
+ordered semantic history. The profile supervises its long-running SDK worker.
+Check that every intended SDK worker is running and that its container restart
+count is unchanged before and after a measured window. A restart during the
+window changes the load generator and invalidates that comparison.
+
+For each measured window, read MySQL global `Questions`, `Com_select`,
+`Com_insert`, `Com_update` and `Com_delete`, plus Redis
 `total_commands_processed`, immediately before and after the window:
 
 ```sh
