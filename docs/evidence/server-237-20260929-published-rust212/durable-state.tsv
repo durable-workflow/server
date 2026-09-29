@@ -1,0 +1,27 @@
+runs
+01m3ntmgx9tv4da09c06phb3gm	1	completed	8046	continued	2026-09-29 05:36:39.337598	2026-09-29 05:50:40.896864
+01m3nve6r3sejy6djv8dcyx8vb	2	completed	2	completed	2026-09-29 05:50:40.896864	2026-09-29 05:50:47.437437
+history_sequence_integrity
+01m3ntmgx9tv4da09c06phb3gm	1	8046	1	8046	8046
+01m3nve6r3sejy6djv8dcyx8vb	2	2	1	2	2
+event_types
+ActivityCompleted	8
+ActivityScheduled	8
+ActivityStarted	8
+ConditionWaitOpened	1
+ConditionWaitSatisfied	1
+MessageCursorAdvanced	1
+SideEffectRecorded	4000
+SignalReceived	4000
+StartAccepted	1
+TimerFired	8
+TimerScheduled	8
+WorkflowCompleted	1
+WorkflowContinuedAsNew	1
+WorkflowStarted	2
+task_states
+activity	completed	8	1
+timer	completed	8	1
+workflow	completed	19	1
+pending_tasks
+0

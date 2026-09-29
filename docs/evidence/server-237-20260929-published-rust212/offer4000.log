@@ -1,0 +1,5 @@
+{"phase": "offered", "signals": 1000}
+{"phase": "offered", "signals": 2000}
+{"phase": "offered", "signals": 3000}
+{"phase": "offered", "signals": 4000}
+{"offer_seconds": 344.37471260875463, "offered_signals": 4000, "phase": "offered_all", "signal_api_p50_seconds": 0.39588569989427924, "signal_api_p95_seconds": 0.7088190112262964, "signal_api_p99_seconds": 0.7749316738918424}
