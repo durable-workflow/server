@@ -1,0 +1,28 @@
+runs
+01m3ns9pqnktwfr4b15nw0t8er	1	completed	8049	continued
+01m3nt77h3aw209e7wjyfgb2dq	2	completed	2	completed
+history_sequence_integrity
+01m3ns9pqnktwfr4b15nw0t8er	1	8049	1	8049	8049
+01m3nt77h3aw209e7wjyfgb2dq	2	2	1	2	2
+event_types
+ActivityCompleted	8
+ActivityScheduled	8
+ActivityStarted	8
+ConditionWaitOpened	1
+ConditionWaitSatisfied	1
+MessageCursorAdvanced	2
+SideEffectRecorded	4000
+SignalApplied	2
+SignalReceived	4000
+StartAccepted	1
+TimerFired	8
+TimerScheduled	8
+WorkflowCompleted	1
+WorkflowContinuedAsNew	1
+WorkflowStarted	2
+task_states
+activity	completed	8	0
+timer	completed	8	0
+workflow	completed	20	0
+pending_tasks
+0
