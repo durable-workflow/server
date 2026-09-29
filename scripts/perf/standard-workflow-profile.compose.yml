@@ -76,6 +76,7 @@ services:
       context: ../..
       dockerfile: scripts/perf/Dockerfile.sdk
     command: ["benchmarks/capacity/v1/bindings/php/capacity_adapter.php", "worker"]
+    restart: unless-stopped
     environment:
       DURABLE_WORKFLOW_RUNTIME_URL: http://server:8080
       DURABLE_WORKFLOW_NAMESPACE: default
