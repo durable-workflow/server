@@ -41,6 +41,21 @@ The [durable state](durable-state.tsv) has two completed runs with contiguous se
 
 The [Server log](server.log.gz) has no HTTP 500 or PHP memory fatal for this run. The Server container had no OOM kill or restart; see [container identity](server-container-identity.txt). The older Python 2.3.6 run failed on a poll at 6,529 events. This published 2.3.7 worker crossed that boundary and completed on the unchanged Server image.
 
+## Published replay conformance
+
+The separate published-artifact replay suite passed **31/31 scenarios with zero findings** on the exact Server digest above and PHP SDK 2.1.6, Python SDK 2.3.7, Rust SDK 2.1.2, Workflow 2.2.18, Waterline 2.0.7 and CLI 2.1.2. The Python, PHP and Rust shards passed 16, 14 and three checks respectively; the aggregate contains 31 required scenarios. The selected package versions are in [pins.json](replay/pins.json), downloaded package checksums in [executed-distribution-identities.json](replay/executed-distribution-identities.json), and full scenario outcomes in [replay-conformance-result.json](replay/replay-conformance-result.json). The [record](replay/replay-conformance-record.json) gives the run interval and outcome. The [cleanup log](replay/docker-compose-cleanup.log) records removal of its isolated stack.
+
+```bash
+DW_SERVER_IMAGE='durableworkflow/server@sha256:d9d13157f91d5418ba74759bc1b32f1ba0fc649e165f6206faab55e0f4737a1e' \
+DW_SERVER_VERSION=2.4.26 DW_PHP_SDK_VERSION=2.1.6 \
+DW_PYTHON_SDK_VERSION=2.3.7 DW_RUST_SDK_VERSION=2.1.2 \
+DW_WORKFLOW_PHP_VERSION=2.2.18 DW_WATERLINE_VERSION=2.0.7 \
+DW_CLI_VERSION=2.1.2 DW_REPLAY_SKIP_DOCKER_PULL=1 \
+scripts/conformance/replay-published-artifacts.sh --result-dir "$RESULT_DIR"
+```
+
+The command ran in an ephemeral Ubuntu 24.04 container with Docker Compose 2.37.1, Python 3.12 with `venv`, and access to the local Docker socket. It created no paid host. This replay matrix checks ordinary deterministic and restart behavior; the PHP and Rust 4,000-signal long-history cases remain to be measured separately.
+
 ## Cleanup and remaining qualification
 
 The [cleanup log](stack-cleanup.log) records removal of the task-owned Compose containers, network and database volumes. The task-built probe image was also removed and the project had no remaining containers, volumes or network. Server #237 still needs the broader PostgreSQL, interruption, retention and repeated-observation matrix. PHP and Rust SDK long-history worker qualifications remain separate from this Python result.
