@@ -164,11 +164,6 @@ async def main(target):
                 }, sort_keys=True), flush=True)
                 return
 
-        print(json.dumps({
-            "phase": "worker_cache",
-            "external_cache_entries": cache_entries if cache_entries else 128,
-            "external_cache_bytes": 16 * 1024 * 1024,
-        }, sort_keys=True), flush=True)
         worker = Worker(
             client,
             task_queue=queue,
@@ -176,6 +171,11 @@ async def main(target):
             activities=[mixed_boundary],
             external_storage_cache=external_cache,
         )
+        print(json.dumps({
+            "phase": "worker_cache",
+            "external_cache_entries": worker.external_storage_cache.max_entries,
+            "external_cache_bytes": worker.external_storage_cache.max_bytes,
+        }, sort_keys=True), flush=True)
         resumed_at = time.monotonic()
         try:
             await worker.run_until(workflow_id=workflow_id, timeout=worker_window)
