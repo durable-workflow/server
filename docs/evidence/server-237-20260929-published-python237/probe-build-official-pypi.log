@@ -1,0 +1,63 @@
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+Sending build context to Docker daemon  15.05MB
+Step 1/7 : FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
+ ---> 9e87977b8678
+Step 2/7 : RUN python -m pip install --no-cache-dir --index-url https://pypi.org/simple "durable-workflow==2.3.7"
+ ---> Running in 9f2454fe2a98
+Collecting durable-workflow==2.3.7
+  Downloading durable_workflow-2.3.7-py3-none-any.whl.metadata (6.2 kB)
+Collecting httpx>=0.27 (from durable-workflow==2.3.7)
+  Downloading httpx-0.28.1-py3-none-any.whl.metadata (7.1 kB)
+Collecting fastavro<2,>=1.12.2 (from durable-workflow==2.3.7)
+  Downloading fastavro-1.12.2-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (5.8 kB)
+Collecting anyio (from httpx>=0.27->durable-workflow==2.3.7)
+  Downloading anyio-4.15.1-py3-none-any.whl.metadata (4.7 kB)
+Collecting certifi (from httpx>=0.27->durable-workflow==2.3.7)
+  Downloading certifi-2026.7.22-py3-none-any.whl.metadata (2.5 kB)
+Collecting httpcore==1.* (from httpx>=0.27->durable-workflow==2.3.7)
+  Downloading httpcore-1.0.9-py3-none-any.whl.metadata (21 kB)
+Collecting idna (from httpx>=0.27->durable-workflow==2.3.7)
+  Downloading idna-3.20-py3-none-any.whl.metadata (7.2 kB)
+Collecting h11>=0.16 (from httpcore==1.*->httpx>=0.27->durable-workflow==2.3.7)
+  Downloading h11-0.16.0-py3-none-any.whl.metadata (8.3 kB)
+Collecting typing_extensions>=4.16.0 (from anyio->httpx>=0.27->durable-workflow==2.3.7)
+  Downloading typing_extensions-4.16.0-py3-none-any.whl.metadata (3.3 kB)
+Downloading durable_workflow-2.3.7-py3-none-any.whl (208 kB)
+Downloading fastavro-1.12.2-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (3.4 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.4/3.4 MB 95.4 MB/s eta 0:00:00
+Downloading httpx-0.28.1-py3-none-any.whl (73 kB)
+Downloading httpcore-1.0.9-py3-none-any.whl (78 kB)
+Downloading anyio-4.15.1-py3-none-any.whl (132 kB)
+Downloading idna-3.20-py3-none-any.whl (69 kB)
+Downloading certifi-2026.7.22-py3-none-any.whl (136 kB)
+Downloading h11-0.16.0-py3-none-any.whl (37 kB)
+Downloading typing_extensions-4.16.0-py3-none-any.whl (45 kB)
+Installing collected packages: typing_extensions, idna, h11, fastavro, certifi, httpcore, anyio, httpx, durable-workflow
+Successfully installed anyio-4.15.1 certifi-2026.7.22 durable-workflow-2.3.7 fastavro-1.12.2 h11-0.16.0 httpcore-1.0.9 httpx-0.28.1 idna-3.20 typing_extensions-4.16.0
+[91mWARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
+[0m[91m
+[notice] A new release of pip is available: 25.0.1 -> 26.2.1
+[notice] To update, run: pip install --upgrade pip
+[0m ---> Removed intermediate container 9f2454fe2a98
+ ---> d75147f49a15
+Step 3/7 : WORKDIR /probe
+ ---> Running in d1a11ad75bb7
+ ---> Removed intermediate container d1a11ad75bb7
+ ---> e2a6a45a1ed4
+Step 4/7 : COPY docs/evidence/server-237-20260927/history_probe.py /probe/history_probe.py
+ ---> a86f0a6e8372
+Step 5/7 : COPY docs/evidence/server-237-20260927/signal_history_probe.py /probe/signal_history_probe.py
+ ---> 3b4eed846e23
+Step 6/7 : USER 1000:1000
+ ---> Running in 8ee0a7d2989d
+ ---> Removed intermediate container 8ee0a7d2989d
+ ---> 404bd7ad5e13
+Step 7/7 : ENTRYPOINT ["python", "/probe/history_probe.py"]
+ ---> Running in f0fa0392c868
+ ---> Removed intermediate container f0fa0392c868
+ ---> 1da96ab92b26
+Successfully built 1da96ab92b26
+Successfully tagged dw237py2370427-probe:latest

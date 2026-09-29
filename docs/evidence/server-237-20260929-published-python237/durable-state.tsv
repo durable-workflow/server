@@ -1,0 +1,31 @@
+runs
+01m3nq05kxcjxt11mmj52hh83t	1	completed	8046	continued
+01m3nqx967mme53m1njkq4pwkz	2	completed	2	completed
+history_sequence_integrity
+01m3nq05kxcjxt11mmj52hh83t	1	8046	1	8046	8046
+01m3nqx967mme53m1njkq4pwkz	2	2	1	2	2
+event_types
+ActivityCompleted	8
+ActivityScheduled	8
+ActivityStarted	8
+ConditionWaitOpened	1
+ConditionWaitSatisfied	1
+MessageCursorAdvanced	1
+SideEffectRecorded	4000
+SignalReceived	4000
+StartAccepted	1
+TimerFired	8
+TimerScheduled	8
+WorkflowCompleted	1
+WorkflowContinuedAsNew	1
+WorkflowStarted	2
+task_states
+activity	completed	8	0
+timer	completed	8	0
+workflow	completed	19	0
+pending_tasks
+0
+table_bytes
+workflow_history_events	16384	65536
+workflow_runs	16384	245760
+workflow_tasks	16384	114688
