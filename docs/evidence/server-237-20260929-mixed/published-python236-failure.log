@@ -1,0 +1,63 @@
+{"phase": "offered", "signals": 1000}
+{"phase": "offered", "signals": 2000}
+{"phase": "offered", "signals": 3000}
+{"phase": "offered", "signals": 4000}
+{"offer_seconds": 365.5862271860242, "offered_signals": 4000, "phase": "offered_all", "signal_api_p50_seconds": 0.415027542039752, "signal_api_p95_seconds": 0.7640571962110698, "signal_api_p99_seconds": 0.8312521809712052}
+{"external_cache_bytes": 16777216, "external_cache_entries": 1024, "phase": "worker_cache"}
+{"phase": "worker_stopped_before_terminal", "resume_elapsed_seconds": 361.47377297328785, "worker_peak_rss_kib": 140756, "workflow_id": "history-qualification-signals-4000-published236-mixed4000-side4000"}
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.12/site-packages/durable_workflow/client.py", line 1805, in _request
+    resp = await self.retry_policy.execute(_do_request)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/durable_workflow/retry_policy.py", line 296, in execute
+    raise last_exc
+  File "/usr/local/lib/python3.12/site-packages/durable_workflow/retry_policy.py", line 245, in execute
+    result = await fn()
+             ^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/durable_workflow/client.py", line 1800, in _do_request
+    resp.raise_for_status()
+  File "/usr/local/lib/python3.12/site-packages/httpx/_models.py", line 829, in raise_for_status
+    raise HTTPStatusError(message, request=request, response=self)
+httpx.HTTPStatusError: Server error '500 Internal Server Error' for url 'http://server:8080/api/worker/workflow-tasks/poll'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/probe/signal_history_probe.py", line 292, in <module>
+    asyncio.run(main(int(sys.argv[1])))
+  File "/usr/local/lib/python3.12/asyncio/runners.py", line 195, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/asyncio/base_events.py", line 691, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/probe/signal_history_probe.py", line 202, in main
+    await worker.run_until(workflow_id=workflow_id, timeout=worker_window)
+  File "/usr/local/lib/python3.12/site-packages/durable_workflow/worker.py", line 172, in run
+    return await fn(self, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/durable_workflow/worker.py", line 3179, in run_until
+    return await asyncio.wait_for(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/asyncio/tasks.py", line 520, in wait_for
+    return await fut
+           ^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/durable_workflow/worker.py", line 3221, in _run_until_loop
+    task = await self.client.poll_workflow_task(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/durable_workflow/client.py", line 4965, in poll_workflow_task
+    data = await self.poll_workflow_task_response(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/durable_workflow/client.py", line 4933, in poll_workflow_task_response
+    data = await self._request(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/durable_workflow/client.py", line 1814, in _request
+    _raise_for_status(exc.response.status_code, body, context=context)
+  File "/usr/local/lib/python3.12/site-packages/durable_workflow/errors.py", line 860, in _raise_for_status
+    raise ServerError(status, body)
+durable_workflow.errors.ServerError: server returned 500: {'message': 'Server Error'}
+

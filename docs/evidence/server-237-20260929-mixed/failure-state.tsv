@@ -1,0 +1,26 @@
+01m3nmg27rgcw2p5xffmy8hjc3	waiting	6529	6869993	continue_as_new_recommended	1
+workflow	ready	1	6	2026-09-29 04:00:41.870713	NULL	NULL	NULL
+activity	completed	1	1	2026-09-29 04:00:21.489406	2026-09-29 04:00:36.419605	NULL	NULL
+workflow	completed	1	0	2026-09-29 04:00:06.221120	2026-09-29 04:00:11.611008	NULL	NULL
+timer	completed	1	0	2026-09-29 03:59:53.876515	2026-09-29 04:00:00.592065	NULL	NULL
+workflow	completed	1	1	2026-09-29 03:59:26.733282	2026-09-29 03:59:45.375909	NULL	NULL
+activity	completed	1	1	2026-09-29 03:59:04.908427	2026-09-29 03:59:21.710422	NULL	NULL
+workflow	completed	1	0	2026-09-29 03:58:49.337564	2026-09-29 03:58:54.369745	NULL	NULL
+timer	completed	1	1	2026-09-29 03:58:33.612564	2026-09-29 03:58:44.340842	NULL	NULL
+workflow	completed	1	1	2026-09-29 03:58:11.454353	2026-09-29 03:58:29.125765	NULL	NULL
+activity	completed	1	1	2026-09-29 03:57:50.884043	2026-09-29 03:58:06.816752	NULL	NULL
+workflow	completed	1	0	2026-09-29 03:57:36.176719	2026-09-29 03:57:41.199018	NULL	NULL
+timer	completed	1	0	2026-09-29 03:57:25.809275	2026-09-29 03:57:31.368586	NULL	NULL
+ActivityCompleted	5
+ActivityScheduled	5
+ActivityStarted	5
+ConditionWaitOpened	1
+ConditionWaitSatisfied	1
+MessageCursorAdvanced	1
+RepairRequested	1
+SideEffectRecorded	2500
+SignalReceived	4000
+StartAccepted	1
+TimerFired	4
+TimerScheduled	4
+WorkflowStarted	1
