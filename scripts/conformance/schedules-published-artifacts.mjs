@@ -8669,6 +8669,16 @@ from durable_workflow import Client, ScheduleAction, ScheduleSpec, serializer
 from durable_workflow.client import PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST
 from durable_workflow.errors import InvalidArgument, ScheduleListError, ScheduleNotFound, ServerError
 
+# This probe polls and completes tasks directly. It has no affinity handlers.
+SCHEDULE_PROBE_CAPABILITY_MANIFEST = {
+    capability: {
+        "supported": False,
+        "minimum_protocol_version": entry["minimum_protocol_version"],
+        "reason": "schedule_probe_uses_direct_task_polling",
+    }
+    for capability, entry in PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST.items()
+}
+
 
 def as_dict(value: Any) -> dict[str, Any]:
     if value is None:
@@ -9131,7 +9141,7 @@ async def main() -> None:
                 workflow_type: f"schedules-conformance:{workflow_type}:python-lifecycle"
             },
             supported_activity_types=[],
-            capability_manifest=PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
+            capability_manifest=SCHEDULE_PROBE_CAPABILITY_MANIFEST,
             max_concurrent_workflow_tasks=10,
             max_concurrent_activity_tasks=10,
             runtime="python",
@@ -9255,6 +9265,16 @@ import time
 from durable_workflow import Client, ScheduleAction, ScheduleSpec, serializer
 from durable_workflow.client import PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST
 
+# This probe polls and completes tasks directly. It has no affinity handlers.
+SCHEDULE_PROBE_CAPABILITY_MANIFEST = {
+    capability: {
+        "supported": False,
+        "minimum_protocol_version": entry["minimum_protocol_version"],
+        "reason": "schedule_probe_uses_direct_task_polling",
+    }
+    for capability, entry in PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST.items()
+}
+
 
 def process_metrics():
     return {
@@ -9295,7 +9315,7 @@ async def run_action(client, payload, output_path):
                 payload["workflow_type"]: f"schedules-conformance:{payload['workflow_type']}:python"
             },
             supported_activity_types=payload.get("supported_activity_types") or [],
-            capability_manifest=PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST,
+            capability_manifest=SCHEDULE_PROBE_CAPABILITY_MANIFEST,
             max_concurrent_workflow_tasks=10,
             max_concurrent_activity_tasks=10,
             runtime="python",
