@@ -1,0 +1,77 @@
+section
+run
+id	status	last_history_sequence	history_event_count	history_size_bytes	history_budget_pressure	continue_as_new_recommended	started_at	closed_at
+01m3nzycb0nfxk8xh8gtcx2hqm	completed	10010	10010	5490506	continue_as_new_recommended	1	2026-09-29 07:09:25.216126	2026-09-29 07:16:07.197564
+section
+history_integrity
+COUNT(*)	MIN(e.sequence)	MAX(e.sequence)	COUNT(DISTINCT e.sequence)
+10010	1	10010	10010
+section
+event_types
+event_type	COUNT(*)
+ActivityCompleted	19
+ActivityScheduled	19
+ActivityStarted	19
+SideEffectRecorded	9950
+StartAccepted	1
+WorkflowCompleted	1
+WorkflowStarted	1
+section
+tasks
+task_type	status	attempt_count	repair_count	ROUND(TIMESTAMPDIFF(MICROSECOND, t.created_at, t.updated_at) / 1000000, 3)
+workflow	completed	1	0	5.626
+activity	completed	1	0	1.858
+workflow	completed	1	0	5.920
+activity	completed	1	0	2.650
+workflow	completed	1	0	7.593
+activity	completed	1	0	3.055
+workflow	completed	1	0	8.239
+activity	completed	1	0	3.542
+workflow	completed	1	0	8.717
+activity	completed	1	0	4.276
+workflow	completed	1	0	9.162
+activity	completed	1	0	4.961
+workflow	completed	1	0	10.223
+activity	completed	1	0	5.981
+workflow	completed	1	0	10.826
+activity	completed	1	0	6.057
+workflow	completed	1	0	11.780
+activity	completed	1	0	6.871
+workflow	completed	1	0	12.771
+activity	completed	1	0	7.434
+workflow	completed	1	0	13.445
+activity	completed	1	0	7.820
+workflow	completed	1	0	14.067
+activity	completed	1	0	8.685
+workflow	completed	1	0	15.335
+activity	completed	1	0	9.561
+workflow	completed	1	0	15.897
+activity	completed	1	0	10.175
+workflow	completed	1	0	16.328
+activity	completed	1	0	10.652
+workflow	completed	1	0	17.125
+activity	completed	1	0	11.339
+workflow	completed	1	0	18.143
+activity	completed	1	0	11.530
+workflow	completed	1	1	18.692
+activity	completed	1	0	12.680
+workflow	completed	1	0	20.284
+activity	completed	1	0	13.015
+workflow	completed	1	0	19.666
+section
+task_latency_seconds_p50_p95_p99
+task_type	MAX(n)	MAX(CASE WHEN rn = CEIL(n * 0.50) THEN seconds END)	MAX(CASE WHEN rn = CEIL(n * 0.95) THEN seconds END)	MAX(CASE WHEN rn = CEIL(n * 0.99) THEN seconds END)
+activity	19	7.4337	13.0150	13.0150
+workflow	20	12.7709	19.6665	20.2839
+section
+open_tasks
+COUNT(*)
+0
+section
+database_allocated_table_bytes
+SUM(data_length + index_length)
+2408448
+section
+failed_jobs
+COUNT(*)
+0

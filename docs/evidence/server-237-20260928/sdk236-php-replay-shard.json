@@ -1,0 +1,2610 @@
+{
+  "activity_callback_cardinality": {
+    "callback_records": [
+      {
+        "activity_attempt_id": "01M3NHMF9PM8G6PWXVHSEJ99R9",
+        "activity_type": "php.sdk.echo",
+        "attempt_number": 1,
+        "global_callback_count": 1,
+        "heartbeat_recorded": true,
+        "phase": "initial_execution",
+        "task_id": "01m3nhmf2wjtrx0305nkkwbc86",
+        "worker_id": "php-sdk-worker-1",
+        "worker_process_id": 95
+      },
+      {
+        "activity_attempt_id": "01M3NHMPG93ABVVF2HYEN2F23D",
+        "activity_type": "php.sdk.echo",
+        "attempt_number": 1,
+        "global_callback_count": 2,
+        "heartbeat_recorded": true,
+        "phase": "replay_matrix",
+        "task_id": "01m3nhmpanhmwewp0g08ybe557",
+        "worker_id": "php-sdk-worker-1",
+        "worker_process_id": 95
+      },
+      {
+        "activity_attempt_id": "01M3NHMTQVA84573SAM368CRP1",
+        "activity_type": "php.sdk.echo",
+        "attempt_number": 1,
+        "global_callback_count": 3,
+        "heartbeat_recorded": true,
+        "phase": "replay_matrix",
+        "task_id": "01m3nhmtkpgphwf3pbb60k72je",
+        "worker_id": "php-sdk-worker-1",
+        "worker_process_id": 95
+      },
+      {
+        "activity_attempt_id": "01M3NHMVWZ8SBMZ1VZ1XH4EY1J",
+        "activity_type": "php.sdk.echo",
+        "attempt_number": 1,
+        "global_callback_count": 4,
+        "heartbeat_recorded": true,
+        "phase": "replay_matrix",
+        "task_id": "01m3nhmvrejskn6tdff2ap4k8c",
+        "worker_id": "php-sdk-worker-1",
+        "worker_process_id": 95
+      },
+      {
+        "activity_attempt_id": "01M3NHMXWMRW8QNS0J9CZVSW7Y",
+        "activity_type": "php.sdk.echo",
+        "attempt_number": 1,
+        "global_callback_count": 5,
+        "heartbeat_recorded": true,
+        "phase": "durable_replay",
+        "task_id": "01m3nhmxr0acc70jzhbn50a7f0",
+        "worker_id": "php-sdk-worker-1",
+        "worker_process_id": 95
+      },
+      {
+        "activity_attempt_id": "01M3NHN4TC4Y4DV1Q2BXFX73RX",
+        "activity_type": "php.sdk.echo",
+        "attempt_number": 1,
+        "global_callback_count": 6,
+        "heartbeat_recorded": true,
+        "phase": "in_flight_replay",
+        "task_id": "01m3nhn4n1smwa7ehpf92121ej",
+        "worker_id": "php-sdk-worker-2",
+        "worker_process_id": 120
+      }
+    ],
+    "expected_callback_counts_by_phase": {
+      "durable_replay": 1,
+      "in_flight_replay": 1,
+      "initial_execution": 1,
+      "replay_matrix": 3
+    },
+    "observed_callback_counts_by_phase": {
+      "durable_replay": 1,
+      "in_flight_replay": 1,
+      "initial_execution": 1,
+      "replay_matrix": 3
+    },
+    "passed": true,
+    "phase_results": {
+      "durable_replay": {
+        "distinct_activity_attempt_ids": [
+          "01M3NHMXWMRW8QNS0J9CZVSW7Y"
+        ],
+        "distinct_task_ids": [
+          "01m3nhmxr0acc70jzhbn50a7f0"
+        ],
+        "expected_callback_count": 1,
+        "history_checkpoints": {
+          "after_worker_restart": {
+            "expected_event_counts": {
+              "ActivityCompleted": 1,
+              "ActivityScheduled": 1
+            },
+            "observed_event_counts": {
+              "ActivityCompleted": 1,
+              "ActivityHeartbeatRecorded": 1,
+              "ActivityScheduled": 1,
+              "ActivityStarted": 1,
+              "StartAccepted": 1,
+              "TimerFired": 1,
+              "TimerScheduled": 1,
+              "WorkflowCompleted": 1,
+              "WorkflowStarted": 1
+            },
+            "passed": true
+          },
+          "before_worker_restart": {
+            "expected_event_counts": {
+              "ActivityCompleted": 1,
+              "ActivityScheduled": 1
+            },
+            "observed_event_counts": {
+              "ActivityCompleted": 1,
+              "ActivityHeartbeatRecorded": 1,
+              "ActivityScheduled": 1,
+              "ActivityStarted": 1,
+              "StartAccepted": 1,
+              "TimerScheduled": 1,
+              "WorkflowStarted": 1
+            },
+            "passed": true
+          }
+        },
+        "observed_callback_count": 1,
+        "passed": true
+      },
+      "in_flight_replay": {
+        "distinct_activity_attempt_ids": [
+          "01M3NHN4TC4Y4DV1Q2BXFX73RX"
+        ],
+        "distinct_task_ids": [
+          "01m3nhn4n1smwa7ehpf92121ej"
+        ],
+        "expected_callback_count": 1,
+        "history_checkpoints": {
+          "after_worker_restart": {
+            "expected_event_counts": {
+              "ActivityCompleted": 1,
+              "ActivityScheduled": 1
+            },
+            "observed_event_counts": {
+              "ActivityCompleted": 1,
+              "ActivityHeartbeatRecorded": 1,
+              "ActivityScheduled": 1,
+              "ActivityStarted": 1,
+              "MessageCursorAdvanced": 1,
+              "SignalApplied": 1,
+              "SignalReceived": 1,
+              "StartAccepted": 1,
+              "TimerFired": 1,
+              "TimerScheduled": 1,
+              "WorkflowCompleted": 1,
+              "WorkflowStarted": 1
+            },
+            "passed": true
+          }
+        },
+        "observed_callback_count": 1,
+        "passed": true
+      },
+      "initial_execution": {
+        "distinct_activity_attempt_ids": [
+          "01M3NHMF9PM8G6PWXVHSEJ99R9"
+        ],
+        "distinct_task_ids": [
+          "01m3nhmf2wjtrx0305nkkwbc86"
+        ],
+        "expected_callback_count": 1,
+        "history_checkpoints": {
+          "completed": {
+            "expected_event_counts": {
+              "ActivityCompleted": 1,
+              "ActivityScheduled": 1
+            },
+            "observed_event_counts": {
+              "ActivityCompleted": 1,
+              "ActivityHeartbeatRecorded": 1,
+              "ActivityScheduled": 1,
+              "ActivityStarted": 1,
+              "StartAccepted": 1,
+              "WorkflowCompleted": 1,
+              "WorkflowStarted": 1
+            },
+            "passed": true
+          }
+        },
+        "observed_callback_count": 1,
+        "passed": true
+      },
+      "replay_matrix": {
+        "distinct_activity_attempt_ids": [
+          "01M3NHMPG93ABVVF2HYEN2F23D",
+          "01M3NHMTQVA84573SAM368CRP1",
+          "01M3NHMVWZ8SBMZ1VZ1XH4EY1J"
+        ],
+        "distinct_task_ids": [
+          "01m3nhmpanhmwewp0g08ybe557",
+          "01m3nhmtkpgphwf3pbb60k72je",
+          "01m3nhmvrejskn6tdff2ap4k8c"
+        ],
+        "expected_callback_count": 3,
+        "history_checkpoints": {
+          "after_worker_restart": {
+            "expected_event_counts": {
+              "ActivityCompleted": 3,
+              "ActivityFailed": 1,
+              "ActivityScheduled": 4
+            },
+            "observed_event_counts": {
+              "ActivityCompleted": 3,
+              "ActivityFailed": 1,
+              "ActivityHeartbeatRecorded": 3,
+              "ActivityScheduled": 4,
+              "ActivityStarted": 4,
+              "MessageCursorAdvanced": 2,
+              "SideEffectRecorded": 1,
+              "SignalApplied": 1,
+              "SignalReceived": 1,
+              "StartAccepted": 1,
+              "TimerFired": 1,
+              "TimerScheduled": 1,
+              "UpdateAccepted": 1,
+              "UpdateApplied": 1,
+              "UpdateCompleted": 1,
+              "WorkflowCompleted": 1,
+              "WorkflowStarted": 1
+            },
+            "passed": true
+          },
+          "completed": {
+            "expected_event_counts": {
+              "ActivityCompleted": 3,
+              "ActivityFailed": 1,
+              "ActivityScheduled": 4
+            },
+            "observed_event_counts": {
+              "ActivityCompleted": 3,
+              "ActivityFailed": 1,
+              "ActivityHeartbeatRecorded": 3,
+              "ActivityScheduled": 4,
+              "ActivityStarted": 4,
+              "MessageCursorAdvanced": 2,
+              "SideEffectRecorded": 1,
+              "SignalApplied": 1,
+              "SignalReceived": 1,
+              "StartAccepted": 1,
+              "TimerFired": 1,
+              "TimerScheduled": 1,
+              "UpdateAccepted": 1,
+              "UpdateApplied": 1,
+              "UpdateCompleted": 1,
+              "WorkflowCompleted": 1,
+              "WorkflowStarted": 1
+            },
+            "passed": true
+          }
+        },
+        "observed_callback_count": 3,
+        "passed": true
+      }
+    },
+    "unexpected_phases": []
+  },
+  "apache_avro_provenance": {
+    "dist": {
+      "reference": "8fa2067f70e3012cb3fd9a8839cd97e8c7cc1772",
+      "shasum": "",
+      "type": "zip",
+      "url": "https://api.github.com/repos/apache/avro/zipball/8fa2067f70e3012cb3fd9a8839cd97e8c7cc1772"
+    },
+    "package": "apache/avro",
+    "source_reference": {
+      "reference": "8fa2067f70e3012cb3fd9a8839cd97e8c7cc1772",
+      "type": "git",
+      "url": "https://github.com/apache/avro.git"
+    },
+    "version": "1.12.2"
+  },
+  "artifact_sources": {
+    "cli": "github_release_asset",
+    "sdk-php": "packagist_package",
+    "sdk-python": "pypi_package",
+    "sdk-rust": "crates_io_package",
+    "server": "published_docker_image",
+    "waterline": "packagist_package",
+    "workflow-php": "packagist_package"
+  },
+  "artifact_versions": {
+    "cli": "2.1.2",
+    "sdk-php": "2.1.5",
+    "sdk-python": "2.3.6",
+    "sdk-rust": "2.1.1",
+    "server": "2.4.26",
+    "waterline": "2.0.7",
+    "workflow-php": "2.2.18"
+  },
+  "callback_counts": {
+    "activity": 6,
+    "activity_heartbeat": 6,
+    "failure_workflow": 1,
+    "query": 1,
+    "replay_matrix_failed_activity": 1,
+    "replay_matrix_version_marker_callbacks": 1,
+    "replay_matrix_workflow_replays": 7,
+    "replay_workflow_replays": 3,
+    "search_workflow_replays": 1,
+    "simple_workflow_replays": 2,
+    "update": 1,
+    "waiting_workflow_replays": 3
+  },
+  "expanded_scenario_contract": {
+    "all_declared_scenarios_emitted": true,
+    "all_declared_scenarios_executed": true,
+    "declared_scenarios": [
+      "php_completed_history_activity_replay",
+      "php_completed_history_signal_update_replay",
+      "php_completed_history_wait_condition_replay",
+      "php_completed_history_version_marker_replay",
+      "php_completed_history_saga_compensation_replay",
+      "php_worker_restart_completed_query",
+      "php_worker_restart_activity_state",
+      "php_worker_restart_signal_update_state",
+      "php_worker_restart_wait_condition_state",
+      "php_worker_restart_version_marker_state",
+      "php_worker_restart_saga_compensation_state",
+      "php_code_divergence_refusal",
+      "php_in_flight_signal_restart_timing"
+    ],
+    "missing_executed_scenarios": [],
+    "reported_executed_scenarios": [
+      "php_completed_history_activity_replay",
+      "php_completed_history_signal_update_replay",
+      "php_completed_history_wait_condition_replay",
+      "php_completed_history_version_marker_replay",
+      "php_completed_history_saga_compensation_replay",
+      "php_worker_restart_completed_query",
+      "php_worker_restart_activity_state",
+      "php_worker_restart_signal_update_state",
+      "php_worker_restart_wait_condition_state",
+      "php_worker_restart_version_marker_state",
+      "php_worker_restart_saga_compensation_state",
+      "php_code_divergence_refusal",
+      "php_in_flight_signal_restart_timing"
+    ]
+  },
+  "findings": [],
+  "history_assertions": {
+    "activity_callback_cardinality_by_phase": true,
+    "activity_callback_once_during_durable_replay": true,
+    "activity_completed_before_restart": true,
+    "addressable_signal_inputs": [
+      3,
+      5
+    ],
+    "addressable_workflow_started_contract": {
+      "client_commands_released_after_snapshot_validation": true,
+      "client_commands_released_at": "2026-09-29T02:59:22Z",
+      "command_contract_source": "durable_history",
+      "history_reads": 1,
+      "required_workflow_command_contract": {
+        "queries": [
+          "current"
+        ],
+        "query_contracts": [
+          {
+            "name": "current",
+            "parameters": []
+          }
+        ],
+        "signal_contracts": [
+          {
+            "name": "increment",
+            "parameters": [
+              {
+                "allows_null": false,
+                "default": null,
+                "default_available": false,
+                "name": "amount",
+                "position": 0,
+                "required": true,
+                "type": "int",
+                "variadic": false
+              }
+            ]
+          }
+        ],
+        "signals": [
+          "increment"
+        ],
+        "update_contracts": [
+          {
+            "name": "set",
+            "parameters": [
+              {
+                "allows_null": false,
+                "default": null,
+                "default_available": false,
+                "name": "value",
+                "position": 0,
+                "required": true,
+                "type": "int",
+                "variadic": false
+              }
+            ]
+          }
+        ],
+        "updates": [
+          "set"
+        ],
+        "workflow_type": "php.sdk.waiting"
+      },
+      "run_id": "01m3nhmh8h1n88v8tzns940q30",
+      "snapshot_wait_after_start_ms": 22,
+      "start_response_observed_at": "2026-09-29T02:59:22Z",
+      "validated_before_client_commands": true,
+      "workflow_id": "php-sdk-addressable-1790650758-1-3125",
+      "workflow_started_event": {
+        "event_type": "WorkflowStarted",
+        "payload": {
+          "command": {
+            "accepted_at": "2026-09-29T02:59:22.514553Z",
+            "applied_at": "2026-09-29T02:59:22.514563Z",
+            "auth_method": "token",
+            "auth_status": "authorized",
+            "caller_label": "Standalone Server",
+            "context": {
+              "principal": {
+                "id": "legacy-token",
+                "label": "Admin",
+                "type": "auth:token"
+              }
+            },
+            "id": "01m3nhmh8prgqvfcjfdhrn4n9g",
+            "outcome": "started_new",
+            "payload": {
+              "blob": "wwHioz3/VYAiNwwA",
+              "codec": "avro"
+            },
+            "payload_codec": "avro",
+            "principal_id": "legacy-token",
+            "principal_label": "Admin",
+            "principal_type": "auth:token",
+            "request_fingerprint": "sha256:f434eff17a86de79370b916189c3b13b082ba496e63366ef2a9b81c721cad5fc",
+            "request_method": "POST",
+            "request_path": "/api/workflows",
+            "request_route_name": "generated::iixLVrgtmJSgyaal",
+            "resolved_run_id": "01m3nhmh8h1n88v8tzns940q30",
+            "sequence": 1,
+            "source": "control_plane",
+            "status": "accepted",
+            "target_scope": "instance",
+            "type": "start"
+          },
+          "declared_entry_declaring_class": "external:php.sdk.waiting",
+          "declared_entry_method": "handle",
+          "declared_entry_mode": "canonical",
+          "declared_queries": [
+            "current"
+          ],
+          "declared_query_contracts": [
+            {
+              "name": "current",
+              "parameters": []
+            }
+          ],
+          "declared_signal_contracts": [
+            {
+              "name": "increment",
+              "parameters": [
+                {
+                  "allows_null": false,
+                  "default": null,
+                  "default_available": false,
+                  "name": "amount",
+                  "position": 0,
+                  "required": true,
+                  "type": "int",
+                  "variadic": false
+                }
+              ]
+            }
+          ],
+          "declared_signals": [
+            "increment"
+          ],
+          "declared_update_contracts": [
+            {
+              "name": "set",
+              "parameters": [
+                {
+                  "allows_null": false,
+                  "default": null,
+                  "default_available": false,
+                  "name": "value",
+                  "position": 0,
+                  "required": true,
+                  "type": "int",
+                  "variadic": false
+                }
+              ]
+            }
+          ],
+          "declared_update_validators": [],
+          "declared_updates": [
+            "set"
+          ],
+          "execution_deadline_at": "2026-09-29T03:59:22+00:00",
+          "execution_timeout_seconds": 3600,
+          "run_deadline_at": "2026-09-29T03:09:22+00:00",
+          "run_timeout_seconds": 600,
+          "workflow_class": "php.sdk.waiting",
+          "workflow_command_id": "01m3nhmh8prgqvfcjfdhrn4n9g",
+          "workflow_definition_fingerprint": "sha256:35a004dae06ac7b2ef44e57c13ae3a8d5fe2895856898e0f3b8e2e7dd9d8fdbf",
+          "workflow_definition_fingerprint_source": "worker",
+          "workflow_instance_id": "php-sdk-addressable-1790650758-1-3125",
+          "workflow_run_id": "01m3nhmh8h1n88v8tzns940q30",
+          "workflow_type": "php.sdk.waiting"
+        },
+        "principal": {
+          "id": "legacy-token",
+          "label": "Admin",
+          "type": "auth:token"
+        },
+        "sequence": 2,
+        "timestamp": "2026-09-29T02:59:22.535770Z"
+      },
+      "workflow_started_event_fingerprint": "c7e624e4598141315a9ca92320c689edcf66a2da8bc5956a3e22d11535be38e4",
+      "workflow_started_snapshot_observed_at": "2026-09-29T02:59:22Z"
+    },
+    "checkpoint_event_types": [
+      "StartAccepted",
+      "WorkflowStarted",
+      "ActivityScheduled",
+      "ActivityStarted",
+      "ActivityHeartbeatRecorded",
+      "ActivityCompleted",
+      "TimerScheduled"
+    ],
+    "final_event_types": [
+      "StartAccepted",
+      "WorkflowStarted",
+      "ActivityScheduled",
+      "ActivityStarted",
+      "ActivityHeartbeatRecorded",
+      "ActivityCompleted",
+      "TimerScheduled",
+      "TimerFired",
+      "WorkflowCompleted"
+    ],
+    "timer_fired_after_restart": true,
+    "workflow_replay_signal_evidence": {
+      "inputs": [
+        3,
+        5
+      ],
+      "observed_during_workflow_replay": true,
+      "signal_name": "increment",
+      "total": 8
+    }
+  },
+  "outcome": "pass",
+  "package_provenance": {
+    "composer_content_hash": "b5e717d8f9f94d4eb359de52df102078",
+    "dist": {
+      "reference": "d664c865c8b9b352eb79abd27ee3141a87a1924f",
+      "shasum": "",
+      "type": "zip",
+      "url": "https://api.github.com/repos/durable-workflow/sdk-php/zipball/d664c865c8b9b352eb79abd27ee3141a87a1924f"
+    },
+    "install_preference": "dist",
+    "package": "durable-workflow/sdk",
+    "source": "packagist",
+    "source_reference": {
+      "reference": "d664c865c8b9b352eb79abd27ee3141a87a1924f",
+      "type": "git",
+      "url": "https://github.com/durable-workflow/sdk-php.git"
+    },
+    "version": "2.1.5"
+  },
+  "process_boundary": {
+    "client_processes": [
+      {
+        "host": "lab1",
+        "php_version": "8.3.35",
+        "process_id": 100,
+        "sdk_version": "2.1.5"
+      },
+      {
+        "host": "lab1",
+        "php_version": "8.3.35",
+        "process_id": 114,
+        "sdk_version": "2.1.5"
+      },
+      {
+        "host": "lab1",
+        "php_version": "8.3.35",
+        "process_id": 115,
+        "sdk_version": "2.1.5"
+      },
+      {
+        "host": "lab1",
+        "php_version": "8.3.35",
+        "process_id": 125,
+        "sdk_version": "2.1.5"
+      }
+    ],
+    "client_worker_distinct_processes": true,
+    "worker_processes": [
+      {
+        "host": "lab1",
+        "namespace": "replay-conformance",
+        "php_version": "8.3.35",
+        "process_id": 95,
+        "readiness": {
+          "attempts": 2,
+          "authoritative_registration_observed_at": "2026-09-29T02:59:18Z",
+          "client_release_after_authoritative_registration": true,
+          "contract_free_registration_observed": false,
+          "first_server_registration_observed_at": "2026-09-29T02:59:18Z",
+          "name_only_registration_observed": false,
+          "probe_started_at": "2026-09-29T02:59:18Z",
+          "required_workflow_command_contract": {
+            "queries": [
+              "current"
+            ],
+            "query_contracts": [
+              {
+                "name": "current",
+                "parameters": []
+              }
+            ],
+            "signal_contracts": [
+              {
+                "name": "increment",
+                "parameters": [
+                  {
+                    "allows_null": false,
+                    "default": null,
+                    "default_available": false,
+                    "name": "amount",
+                    "position": 0,
+                    "required": true,
+                    "type": "int",
+                    "variadic": false
+                  }
+                ]
+              }
+            ],
+            "signals": [
+              "increment"
+            ],
+            "update_contracts": [
+              {
+                "name": "set",
+                "parameters": [
+                  {
+                    "allows_null": false,
+                    "default": null,
+                    "default_available": false,
+                    "name": "value",
+                    "position": 0,
+                    "required": true,
+                    "type": "int",
+                    "variadic": false
+                  }
+                ]
+              }
+            ],
+            "updates": [
+              "set"
+            ],
+            "workflow_type": "php.sdk.waiting"
+          },
+          "server_visible_workflow_command_contracts": {
+            "php.sdk.replay-in-flight-signal": {
+              "queries": [],
+              "query_contracts": [],
+              "signal_contracts": [
+                {
+                  "name": "advance",
+                  "parameters": [
+                    {
+                      "allows_null": false,
+                      "default": null,
+                      "default_available": false,
+                      "name": "value",
+                      "position": 0,
+                      "required": true,
+                      "type": "int",
+                      "variadic": false
+                    }
+                  ]
+                }
+              ],
+              "signals": [
+                "advance"
+              ],
+              "update_contracts": [],
+              "update_validators": [],
+              "updates": []
+            },
+            "php.sdk.replay-matrix": {
+              "queries": [
+                "state"
+              ],
+              "query_contracts": [
+                {
+                  "name": "state",
+                  "parameters": []
+                }
+              ],
+              "signal_contracts": [
+                {
+                  "name": "release",
+                  "parameters": [
+                    {
+                      "allows_null": false,
+                      "default": null,
+                      "default_available": false,
+                      "name": "value",
+                      "position": 0,
+                      "required": true,
+                      "type": "int",
+                      "variadic": false
+                    }
+                  ]
+                }
+              ],
+              "signals": [
+                "release"
+              ],
+              "update_contracts": [
+                {
+                  "name": "set",
+                  "parameters": [
+                    {
+                      "allows_null": false,
+                      "default": null,
+                      "default_available": false,
+                      "name": "value",
+                      "position": 0,
+                      "required": true,
+                      "type": "int",
+                      "variadic": false
+                    }
+                  ]
+                }
+              ],
+              "update_validators": [],
+              "updates": [
+                "set"
+              ]
+            },
+            "php.sdk.waiting": {
+              "queries": [
+                "current"
+              ],
+              "query_contracts": [
+                {
+                  "name": "current",
+                  "parameters": []
+                }
+              ],
+              "signal_contracts": [
+                {
+                  "name": "increment",
+                  "parameters": [
+                    {
+                      "allows_null": false,
+                      "default": null,
+                      "default_available": false,
+                      "name": "amount",
+                      "position": 0,
+                      "required": true,
+                      "type": "int",
+                      "variadic": false
+                    }
+                  ]
+                }
+              ],
+              "signals": [
+                "increment"
+              ],
+              "update_contracts": [
+                {
+                  "name": "set",
+                  "parameters": [
+                    {
+                      "allows_null": false,
+                      "default": null,
+                      "default_available": false,
+                      "name": "value",
+                      "position": 0,
+                      "required": true,
+                      "type": "int",
+                      "variadic": false
+                    }
+                  ]
+                }
+              ],
+              "update_validators": [],
+              "updates": [
+                "set"
+              ]
+            }
+          },
+          "wait_ms": 269
+        },
+        "scope": "lifecycle",
+        "sdk_version": "2.1.5",
+        "server_visible_registration": {
+          "build_id": null,
+          "capabilities": [
+            "query_tasks",
+            "workflow_updates",
+            "durable_history_replay",
+            "graceful_shutdown",
+            "message_streams",
+            "memo_upserts",
+            "typed_search_attributes",
+            "durable_selection",
+            "local_activities",
+            "worker_sessions",
+            "sticky_execution",
+            "cross_kind_poll_wake"
+          ],
+          "capability_manifest": {
+            "local_activities": {
+              "implementation": "record_local_activity",
+              "minimum_protocol_version": "1.18",
+              "supported": true
+            },
+            "sticky_execution": {
+              "implementation": "bounded_exact_identity_cache",
+              "minimum_protocol_version": "1.18",
+              "supported": true
+            },
+            "worker_sessions": {
+              "implementation": "create_heartbeat_close",
+              "minimum_protocol_version": "1.18",
+              "supported": true
+            }
+          },
+          "heartbeat_interval_seconds": null,
+          "last_heartbeat_at": "2026-09-29T02:59:18.000000Z",
+          "max_concurrent_activity_tasks": 1,
+          "max_concurrent_worker_sessions": 10,
+          "max_concurrent_workflow_tasks": 1,
+          "namespace": "replay-conformance",
+          "process_metrics": null,
+          "registered_at": "2026-09-29T02:59:18.000000Z",
+          "runtime": "php",
+          "sdk_version": "durable-workflow-php/2.1.5",
+          "stale_after_seconds": 30,
+          "status": "active",
+          "supported_activity_types": [
+            "php.sdk.echo",
+            "php.sdk.replay-matrix-fail"
+          ],
+          "supported_workflow_types": [
+            "php.sdk.simple",
+            "php.sdk.search-attributes",
+            "php.sdk.replay",
+            "php.sdk.waiting",
+            "php.sdk.failure",
+            "php.sdk.search",
+            "php.sdk.replay-matrix",
+            "php.sdk.replay-in-flight-signal"
+          ],
+          "task_queue": "php-sdk-conformance-1790650758-1-3125",
+          "task_slots": {
+            "activity_available": null,
+            "activity_capacity": 1,
+            "session_available": null,
+            "session_capacity": 10,
+            "workflow_available": null,
+            "workflow_capacity": 1
+          },
+          "updated_at": "2026-09-29T02:59:18.000000Z",
+          "worker_id": "php-sdk-worker-1",
+          "workflow_command_contracts": {
+            "php.sdk.replay-in-flight-signal": {
+              "queries": [],
+              "query_contracts": [],
+              "signal_contracts": [
+                {
+                  "name": "advance",
+                  "parameters": [
+                    {
+                      "allows_null": false,
+                      "default": null,
+                      "default_available": false,
+                      "name": "value",
+                      "position": 0,
+                      "required": true,
+                      "type": "int",
+                      "variadic": false
+                    }
+                  ]
+                }
+              ],
+              "signals": [
+                "advance"
+              ],
+              "update_contracts": [],
+              "update_validators": [],
+              "updates": []
+            },
+            "php.sdk.replay-matrix": {
+              "queries": [
+                "state"
+              ],
+              "query_contracts": [
+                {
+                  "name": "state",
+                  "parameters": []
+                }
+              ],
+              "signal_contracts": [
+                {
+                  "name": "release",
+                  "parameters": [
+                    {
+                      "allows_null": false,
+                      "default": null,
+                      "default_available": false,
+                      "name": "value",
+                      "position": 0,
+                      "required": true,
+                      "type": "int",
+                      "variadic": false
+                    }
+                  ]
+                }
+              ],
+              "signals": [
+                "release"
+              ],
+              "update_contracts": [
+                {
+                  "name": "set",
+                  "parameters": [
+                    {
+                      "allows_null": false,
+                      "default": null,
+                      "default_available": false,
+                      "name": "value",
+                      "position": 0,
+                      "required": true,
+                      "type": "int",
+                      "variadic": false
+                    }
+                  ]
+                }
+              ],
+              "update_validators": [],
+              "updates": [
+                "set"
+              ]
+            },
+            "php.sdk.waiting": {
+              "queries": [
+                "current"
+              ],
+              "query_contracts": [
+                {
+                  "name": "current",
+                  "parameters": []
+                }
+              ],
+              "signal_contracts": [
+                {
+                  "name": "increment",
+                  "parameters": [
+                    {
+                      "allows_null": false,
+                      "default": null,
+                      "default_available": false,
+                      "name": "amount",
+                      "position": 0,
+                      "required": true,
+                      "type": "int",
+                      "variadic": false
+                    }
+                  ]
+                }
+              ],
+              "signals": [
+                "increment"
+              ],
+              "update_contracts": [
+                {
+                  "name": "set",
+                  "parameters": [
+                    {
+                      "allows_null": false,
+                      "default": null,
+                      "default_available": false,
+                      "name": "value",
+                      "position": 0,
+                      "required": true,
+                      "type": "int",
+                      "variadic": false
+                    }
+                  ]
+                }
+              ],
+              "update_validators": [],
+              "updates": [
+                "set"
+              ]
+            }
+          },
+          "workflow_definition_fingerprints": {
+            "php.sdk.failure": "sha256:c61041893b86fa66810a3ab62a563c0b89608fba2c6acfe248eeacf896a81799",
+            "php.sdk.replay": "sha256:04c367b8cfb08db1d9d0365bdd087d3e051443d40c601589eb1ebc30cce17162",
+            "php.sdk.replay-in-flight-signal": "sha256:944ba5734c895e70aa2a531a303b0f58541ef05bcd9c97e86ebf245702b6fdc1",
+            "php.sdk.replay-matrix": "sha256:452c30bc25001b17d2d1021c17cacb916ed56ea70c96bd49c241344b4d552449",
+            "php.sdk.search": "sha256:a2d3db5a0fe35c910a86d3faa488ca0aea82c6a6513307ec8325b04fb5ca8713",
+            "php.sdk.search-attributes": "sha256:41e62222fcc1303a530e827ec56374fd947b281581672e66995f952f129fd368",
+            "php.sdk.simple": "sha256:32626ccd27467347186914e919c8c3fb6f1c6e5d1c282f55b5c229cfc9dc06dc",
+            "php.sdk.waiting": "sha256:35a004dae06ac7b2ef44e57c13ae3a8d5fe2895856898e0f3b8e2e7dd9d8fdbf"
+          }
+        },
+        "worker_id": "php-sdk-worker-1"
+      },
+      {
+        "host": "lab1",
+        "namespace": "replay-conformance",
+        "php_version": "8.3.35",
+        "process_id": 120,
+        "readiness": {
+          "attempts": 2,
+          "authoritative_registration_observed_at": "2026-09-29T02:59:38Z",
+          "client_release_after_authoritative_registration": true,
+          "contract_free_registration_observed": false,
+          "first_server_registration_observed_at": "2026-09-29T02:59:38Z",
+          "name_only_registration_observed": false,
+          "probe_started_at": "2026-09-29T02:59:38Z",
+          "required_workflow_command_contract": {
+            "queries": [
+              "current"
+            ],
+            "query_contracts": [
+              {
+                "name": "current",
+                "parameters": []
+              }
+            ],
+            "signal_contracts": [
+              {
+                "name": "increment",
+                "parameters": [
+                  {
+                    "allows_null": false,
+                    "default": null,
+                    "default_available": false,
+                    "name": "amount",
+                    "position": 0,
+                    "required": true,
+                    "type": "int",
+                    "variadic": false
+                  }
+                ]
+              }
+            ],
+            "signals": [
+              "increment"
+            ],
+            "update_contracts": [
+              {
+                "name": "set",
+                "parameters": [
+                  {
+                    "allows_null": false,
+                    "default": null,
+                    "default_available": false,
+                    "name": "value",
+                    "position": 0,
+                    "required": true,
+                    "type": "int",
+                    "variadic": false
+                  }
+                ]
+              }
+            ],
+            "updates": [
+              "set"
+            ],
+            "workflow_type": "php.sdk.waiting"
+          },
+          "server_visible_workflow_command_contracts": {
+            "php.sdk.replay-in-flight-signal": {
+              "queries": [],
+              "query_contracts": [],
+              "signal_contracts": [
+                {
+                  "name": "advance",
+                  "parameters": [
+                    {
+                      "allows_null": false,
+                      "default": null,
+                      "default_available": false,
+                      "name": "value",
+                      "position": 0,
+                      "required": true,
+                      "type": "int",
+                      "variadic": false
+                    }
+                  ]
+                }
+              ],
+              "signals": [
+                "advance"
+              ],
+              "update_contracts": [],
+              "update_validators": [],
+              "updates": []
+            },
+            "php.sdk.replay-matrix": {
+              "queries": [
+                "state"
+              ],
+              "query_contracts": [
+                {
+                  "name": "state",
+                  "parameters": []
+                }
+              ],
+              "signal_contracts": [
+                {
+                  "name": "release",
+                  "parameters": [
+                    {
+                      "allows_null": false,
+                      "default": null,
+                      "default_available": false,
+                      "name": "value",
+                      "position": 0,
+                      "required": true,
+                      "type": "int",
+                      "variadic": false
+                    }
+                  ]
+                }
+              ],
+              "signals": [
+                "release"
+              ],
+              "update_contracts": [
+                {
+                  "name": "set",
+                  "parameters": [
+                    {
+                      "allows_null": false,
+                      "default": null,
+                      "default_available": false,
+                      "name": "value",
+                      "position": 0,
+                      "required": true,
+                      "type": "int",
+                      "variadic": false
+                    }
+                  ]
+                }
+              ],
+              "update_validators": [],
+              "updates": [
+                "set"
+              ]
+            },
+            "php.sdk.waiting": {
+              "queries": [
+                "current"
+              ],
+              "query_contracts": [
+                {
+                  "name": "current",
+                  "parameters": []
+                }
+              ],
+              "signal_contracts": [
+                {
+                  "name": "increment",
+                  "parameters": [
+                    {
+                      "allows_null": false,
+                      "default": null,
+                      "default_available": false,
+                      "name": "amount",
+                      "position": 0,
+                      "required": true,
+                      "type": "int",
+                      "variadic": false
+                    }
+                  ]
+                }
+              ],
+              "signals": [
+                "increment"
+              ],
+              "update_contracts": [
+                {
+                  "name": "set",
+                  "parameters": [
+                    {
+                      "allows_null": false,
+                      "default": null,
+                      "default_available": false,
+                      "name": "value",
+                      "position": 0,
+                      "required": true,
+                      "type": "int",
+                      "variadic": false
+                    }
+                  ]
+                }
+              ],
+              "update_validators": [],
+              "updates": [
+                "set"
+              ]
+            }
+          },
+          "wait_ms": 266
+        },
+        "scope": "lifecycle",
+        "sdk_version": "2.1.5",
+        "server_visible_registration": {
+          "build_id": null,
+          "capabilities": [
+            "query_tasks",
+            "workflow_updates",
+            "durable_history_replay",
+            "graceful_shutdown",
+            "message_streams",
+            "memo_upserts",
+            "typed_search_attributes",
+            "durable_selection",
+            "local_activities",
+            "worker_sessions",
+            "sticky_execution",
+            "cross_kind_poll_wake"
+          ],
+          "capability_manifest": {
+            "local_activities": {
+              "implementation": "record_local_activity",
+              "minimum_protocol_version": "1.18",
+              "supported": true
+            },
+            "sticky_execution": {
+              "implementation": "bounded_exact_identity_cache",
+              "minimum_protocol_version": "1.18",
+              "supported": true
+            },
+            "worker_sessions": {
+              "implementation": "create_heartbeat_close",
+              "minimum_protocol_version": "1.18",
+              "supported": true
+            }
+          },
+          "heartbeat_interval_seconds": null,
+          "last_heartbeat_at": "2026-09-29T02:59:38.000000Z",
+          "max_concurrent_activity_tasks": 1,
+          "max_concurrent_worker_sessions": 10,
+          "max_concurrent_workflow_tasks": 1,
+          "namespace": "replay-conformance",
+          "process_metrics": null,
+          "registered_at": "2026-09-29T02:59:38.000000Z",
+          "runtime": "php",
+          "sdk_version": "durable-workflow-php/2.1.5",
+          "stale_after_seconds": 30,
+          "status": "active",
+          "supported_activity_types": [
+            "php.sdk.echo",
+            "php.sdk.replay-matrix-fail"
+          ],
+          "supported_workflow_types": [
+            "php.sdk.simple",
+            "php.sdk.search-attributes",
+            "php.sdk.replay",
+            "php.sdk.waiting",
+            "php.sdk.failure",
+            "php.sdk.search",
+            "php.sdk.replay-matrix",
+            "php.sdk.replay-in-flight-signal"
+          ],
+          "task_queue": "php-sdk-conformance-1790650758-1-3125",
+          "task_slots": {
+            "activity_available": null,
+            "activity_capacity": 1,
+            "session_available": null,
+            "session_capacity": 10,
+            "workflow_available": null,
+            "workflow_capacity": 1
+          },
+          "updated_at": "2026-09-29T02:59:38.000000Z",
+          "worker_id": "php-sdk-worker-2",
+          "workflow_command_contracts": {
+            "php.sdk.replay-in-flight-signal": {
+              "queries": [],
+              "query_contracts": [],
+              "signal_contracts": [
+                {
+                  "name": "advance",
+                  "parameters": [
+                    {
+                      "allows_null": false,
+                      "default": null,
+                      "default_available": false,
+                      "name": "value",
+                      "position": 0,
+                      "required": true,
+                      "type": "int",
+                      "variadic": false
+                    }
+                  ]
+                }
+              ],
+              "signals": [
+                "advance"
+              ],
+              "update_contracts": [],
+              "update_validators": [],
+              "updates": []
+            },
+            "php.sdk.replay-matrix": {
+              "queries": [
+                "state"
+              ],
+              "query_contracts": [
+                {
+                  "name": "state",
+                  "parameters": []
+                }
+              ],
+              "signal_contracts": [
+                {
+                  "name": "release",
+                  "parameters": [
+                    {
+                      "allows_null": false,
+                      "default": null,
+                      "default_available": false,
+                      "name": "value",
+                      "position": 0,
+                      "required": true,
+                      "type": "int",
+                      "variadic": false
+                    }
+                  ]
+                }
+              ],
+              "signals": [
+                "release"
+              ],
+              "update_contracts": [
+                {
+                  "name": "set",
+                  "parameters": [
+                    {
+                      "allows_null": false,
+                      "default": null,
+                      "default_available": false,
+                      "name": "value",
+                      "position": 0,
+                      "required": true,
+                      "type": "int",
+                      "variadic": false
+                    }
+                  ]
+                }
+              ],
+              "update_validators": [],
+              "updates": [
+                "set"
+              ]
+            },
+            "php.sdk.waiting": {
+              "queries": [
+                "current"
+              ],
+              "query_contracts": [
+                {
+                  "name": "current",
+                  "parameters": []
+                }
+              ],
+              "signal_contracts": [
+                {
+                  "name": "increment",
+                  "parameters": [
+                    {
+                      "allows_null": false,
+                      "default": null,
+                      "default_available": false,
+                      "name": "amount",
+                      "position": 0,
+                      "required": true,
+                      "type": "int",
+                      "variadic": false
+                    }
+                  ]
+                }
+              ],
+              "signals": [
+                "increment"
+              ],
+              "update_contracts": [
+                {
+                  "name": "set",
+                  "parameters": [
+                    {
+                      "allows_null": false,
+                      "default": null,
+                      "default_available": false,
+                      "name": "value",
+                      "position": 0,
+                      "required": true,
+                      "type": "int",
+                      "variadic": false
+                    }
+                  ]
+                }
+              ],
+              "update_validators": [],
+              "updates": [
+                "set"
+              ]
+            }
+          },
+          "workflow_definition_fingerprints": {
+            "php.sdk.failure": "sha256:c61041893b86fa66810a3ab62a563c0b89608fba2c6acfe248eeacf896a81799",
+            "php.sdk.replay": "sha256:04c367b8cfb08db1d9d0365bdd087d3e051443d40c601589eb1ebc30cce17162",
+            "php.sdk.replay-in-flight-signal": "sha256:944ba5734c895e70aa2a531a303b0f58541ef05bcd9c97e86ebf245702b6fdc1",
+            "php.sdk.replay-matrix": "sha256:452c30bc25001b17d2d1021c17cacb916ed56ea70c96bd49c241344b4d552449",
+            "php.sdk.search": "sha256:a2d3db5a0fe35c910a86d3faa488ca0aea82c6a6513307ec8325b04fb5ca8713",
+            "php.sdk.search-attributes": "sha256:41e62222fcc1303a530e827ec56374fd947b281581672e66995f952f129fd368",
+            "php.sdk.simple": "sha256:32626ccd27467347186914e919c8c3fb6f1c6e5d1c282f55b5c229cfc9dc06dc",
+            "php.sdk.waiting": "sha256:35a004dae06ac7b2ef44e57c13ae3a8d5fe2895856898e0f3b8e2e7dd9d8fdbf"
+          }
+        },
+        "worker_id": "php-sdk-worker-2"
+      }
+    ],
+    "worker_restart_distinct_processes": true
+  },
+  "runner_blocked": false,
+  "runtime": "sdk-php",
+  "scenario_results": {
+    "php_code_divergence_refusal": {
+      "executed_runtime_cell": true,
+      "linked_findings": [],
+      "observed_outputs": {
+        "cell_id": "php-published-sdk-code-divergence",
+        "evidence_file": "php-sdk-client-replay-matrix.json",
+        "exception_type": "DurableWorkflow\\Exception\\NonDeterministicWorkflow",
+        "observed_outcome": "non_determinism_error",
+        "run_id": "01m3nhmnw1c5f35qq97g2qxxqm",
+        "runtime_cell_executed": true,
+        "worker_id": "php-sdk-worker-1",
+        "worker_process_id": 95,
+        "workflow_id": "php-sdk-replay-matrix-1790650758-1-3125"
+      },
+      "replay_diagnostics": {
+        "actual_shape": "php.sdk.divergent-activity",
+        "exception_type": "DurableWorkflow\\Exception\\NonDeterministicWorkflow",
+        "expected_shape": "php.sdk.echo",
+        "message": "Recorded activity detail changed from php.sdk.echo to php.sdk.divergent-activity.",
+        "observed_outcome": "non_determinism_error",
+        "recorded_event_types": [
+          "StartAccepted",
+          "WorkflowStarted",
+          "UpdateAccepted",
+          "ActivityScheduled",
+          "ActivityStarted",
+          "ActivityHeartbeatRecorded",
+          "ActivityCompleted",
+          "UpdateApplied",
+          "UpdateCompleted",
+          "MessageCursorAdvanced",
+          "SignalReceived",
+          "SideEffectRecorded",
+          "TimerScheduled",
+          "MessageCursorAdvanced",
+          "SignalApplied",
+          "TimerFired",
+          "ActivityScheduled",
+          "ActivityStarted",
+          "ActivityFailed",
+          "ActivityScheduled",
+          "ActivityStarted",
+          "ActivityHeartbeatRecorded",
+          "ActivityCompleted",
+          "ActivityScheduled",
+          "ActivityStarted",
+          "ActivityHeartbeatRecorded",
+          "ActivityCompleted",
+          "WorkflowCompleted"
+        ],
+        "workflow_sequence": 1
+      },
+      "runtime_cell": {
+        "artifact_source": "packagist",
+        "cell_id": "php-published-sdk-code-divergence",
+        "executed": true,
+        "server_source": "public_image"
+      },
+      "scenario_id": "php_code_divergence_refusal",
+      "status": "pass"
+    },
+    "php_completed_history_activity_replay": {
+      "executed_runtime_cell": true,
+      "linked_findings": [],
+      "observed_outputs": {
+        "activity_callback_cardinality": {
+          "callback_records": [
+            {
+              "activity_attempt_id": "01M3NHMF9PM8G6PWXVHSEJ99R9",
+              "activity_type": "php.sdk.echo",
+              "attempt_number": 1,
+              "global_callback_count": 1,
+              "heartbeat_recorded": true,
+              "phase": "initial_execution",
+              "task_id": "01m3nhmf2wjtrx0305nkkwbc86",
+              "worker_id": "php-sdk-worker-1",
+              "worker_process_id": 95
+            },
+            {
+              "activity_attempt_id": "01M3NHMPG93ABVVF2HYEN2F23D",
+              "activity_type": "php.sdk.echo",
+              "attempt_number": 1,
+              "global_callback_count": 2,
+              "heartbeat_recorded": true,
+              "phase": "replay_matrix",
+              "task_id": "01m3nhmpanhmwewp0g08ybe557",
+              "worker_id": "php-sdk-worker-1",
+              "worker_process_id": 95
+            },
+            {
+              "activity_attempt_id": "01M3NHMTQVA84573SAM368CRP1",
+              "activity_type": "php.sdk.echo",
+              "attempt_number": 1,
+              "global_callback_count": 3,
+              "heartbeat_recorded": true,
+              "phase": "replay_matrix",
+              "task_id": "01m3nhmtkpgphwf3pbb60k72je",
+              "worker_id": "php-sdk-worker-1",
+              "worker_process_id": 95
+            },
+            {
+              "activity_attempt_id": "01M3NHMVWZ8SBMZ1VZ1XH4EY1J",
+              "activity_type": "php.sdk.echo",
+              "attempt_number": 1,
+              "global_callback_count": 4,
+              "heartbeat_recorded": true,
+              "phase": "replay_matrix",
+              "task_id": "01m3nhmvrejskn6tdff2ap4k8c",
+              "worker_id": "php-sdk-worker-1",
+              "worker_process_id": 95
+            },
+            {
+              "activity_attempt_id": "01M3NHMXWMRW8QNS0J9CZVSW7Y",
+              "activity_type": "php.sdk.echo",
+              "attempt_number": 1,
+              "global_callback_count": 5,
+              "heartbeat_recorded": true,
+              "phase": "durable_replay",
+              "task_id": "01m3nhmxr0acc70jzhbn50a7f0",
+              "worker_id": "php-sdk-worker-1",
+              "worker_process_id": 95
+            },
+            {
+              "activity_attempt_id": "01M3NHN4TC4Y4DV1Q2BXFX73RX",
+              "activity_type": "php.sdk.echo",
+              "attempt_number": 1,
+              "global_callback_count": 6,
+              "heartbeat_recorded": true,
+              "phase": "in_flight_replay",
+              "task_id": "01m3nhn4n1smwa7ehpf92121ej",
+              "worker_id": "php-sdk-worker-2",
+              "worker_process_id": 120
+            }
+          ],
+          "expected_callback_counts_by_phase": {
+            "durable_replay": 1,
+            "in_flight_replay": 1,
+            "initial_execution": 1,
+            "replay_matrix": 3
+          },
+          "observed_callback_counts_by_phase": {
+            "durable_replay": 1,
+            "in_flight_replay": 1,
+            "initial_execution": 1,
+            "replay_matrix": 3
+          },
+          "passed": true,
+          "phase_results": {
+            "durable_replay": {
+              "distinct_activity_attempt_ids": [
+                "01M3NHMXWMRW8QNS0J9CZVSW7Y"
+              ],
+              "distinct_task_ids": [
+                "01m3nhmxr0acc70jzhbn50a7f0"
+              ],
+              "expected_callback_count": 1,
+              "history_checkpoints": {
+                "after_worker_restart": {
+                  "expected_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityScheduled": 1
+                  },
+                  "observed_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityHeartbeatRecorded": 1,
+                    "ActivityScheduled": 1,
+                    "ActivityStarted": 1,
+                    "StartAccepted": 1,
+                    "TimerFired": 1,
+                    "TimerScheduled": 1,
+                    "WorkflowCompleted": 1,
+                    "WorkflowStarted": 1
+                  },
+                  "passed": true
+                },
+                "before_worker_restart": {
+                  "expected_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityScheduled": 1
+                  },
+                  "observed_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityHeartbeatRecorded": 1,
+                    "ActivityScheduled": 1,
+                    "ActivityStarted": 1,
+                    "StartAccepted": 1,
+                    "TimerScheduled": 1,
+                    "WorkflowStarted": 1
+                  },
+                  "passed": true
+                }
+              },
+              "observed_callback_count": 1,
+              "passed": true
+            },
+            "in_flight_replay": {
+              "distinct_activity_attempt_ids": [
+                "01M3NHN4TC4Y4DV1Q2BXFX73RX"
+              ],
+              "distinct_task_ids": [
+                "01m3nhn4n1smwa7ehpf92121ej"
+              ],
+              "expected_callback_count": 1,
+              "history_checkpoints": {
+                "after_worker_restart": {
+                  "expected_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityScheduled": 1
+                  },
+                  "observed_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityHeartbeatRecorded": 1,
+                    "ActivityScheduled": 1,
+                    "ActivityStarted": 1,
+                    "MessageCursorAdvanced": 1,
+                    "SignalApplied": 1,
+                    "SignalReceived": 1,
+                    "StartAccepted": 1,
+                    "TimerFired": 1,
+                    "TimerScheduled": 1,
+                    "WorkflowCompleted": 1,
+                    "WorkflowStarted": 1
+                  },
+                  "passed": true
+                }
+              },
+              "observed_callback_count": 1,
+              "passed": true
+            },
+            "initial_execution": {
+              "distinct_activity_attempt_ids": [
+                "01M3NHMF9PM8G6PWXVHSEJ99R9"
+              ],
+              "distinct_task_ids": [
+                "01m3nhmf2wjtrx0305nkkwbc86"
+              ],
+              "expected_callback_count": 1,
+              "history_checkpoints": {
+                "completed": {
+                  "expected_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityScheduled": 1
+                  },
+                  "observed_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityHeartbeatRecorded": 1,
+                    "ActivityScheduled": 1,
+                    "ActivityStarted": 1,
+                    "StartAccepted": 1,
+                    "WorkflowCompleted": 1,
+                    "WorkflowStarted": 1
+                  },
+                  "passed": true
+                }
+              },
+              "observed_callback_count": 1,
+              "passed": true
+            },
+            "replay_matrix": {
+              "distinct_activity_attempt_ids": [
+                "01M3NHMPG93ABVVF2HYEN2F23D",
+                "01M3NHMTQVA84573SAM368CRP1",
+                "01M3NHMVWZ8SBMZ1VZ1XH4EY1J"
+              ],
+              "distinct_task_ids": [
+                "01m3nhmpanhmwewp0g08ybe557",
+                "01m3nhmtkpgphwf3pbb60k72je",
+                "01m3nhmvrejskn6tdff2ap4k8c"
+              ],
+              "expected_callback_count": 3,
+              "history_checkpoints": {
+                "after_worker_restart": {
+                  "expected_event_counts": {
+                    "ActivityCompleted": 3,
+                    "ActivityFailed": 1,
+                    "ActivityScheduled": 4
+                  },
+                  "observed_event_counts": {
+                    "ActivityCompleted": 3,
+                    "ActivityFailed": 1,
+                    "ActivityHeartbeatRecorded": 3,
+                    "ActivityScheduled": 4,
+                    "ActivityStarted": 4,
+                    "MessageCursorAdvanced": 2,
+                    "SideEffectRecorded": 1,
+                    "SignalApplied": 1,
+                    "SignalReceived": 1,
+                    "StartAccepted": 1,
+                    "TimerFired": 1,
+                    "TimerScheduled": 1,
+                    "UpdateAccepted": 1,
+                    "UpdateApplied": 1,
+                    "UpdateCompleted": 1,
+                    "WorkflowCompleted": 1,
+                    "WorkflowStarted": 1
+                  },
+                  "passed": true
+                },
+                "completed": {
+                  "expected_event_counts": {
+                    "ActivityCompleted": 3,
+                    "ActivityFailed": 1,
+                    "ActivityScheduled": 4
+                  },
+                  "observed_event_counts": {
+                    "ActivityCompleted": 3,
+                    "ActivityFailed": 1,
+                    "ActivityHeartbeatRecorded": 3,
+                    "ActivityScheduled": 4,
+                    "ActivityStarted": 4,
+                    "MessageCursorAdvanced": 2,
+                    "SideEffectRecorded": 1,
+                    "SignalApplied": 1,
+                    "SignalReceived": 1,
+                    "StartAccepted": 1,
+                    "TimerFired": 1,
+                    "TimerScheduled": 1,
+                    "UpdateAccepted": 1,
+                    "UpdateApplied": 1,
+                    "UpdateCompleted": 1,
+                    "WorkflowCompleted": 1,
+                    "WorkflowStarted": 1
+                  },
+                  "passed": true
+                }
+              },
+              "observed_callback_count": 3,
+              "passed": true
+            }
+          },
+          "unexpected_phases": []
+        },
+        "activity_completed_events": 3,
+        "activity_result": {
+          "activity_process_id": 95,
+          "echo": {
+            "matrix": "activity"
+          }
+        },
+        "cell_id": "php-completed-history-replay-matrix",
+        "evidence_file": "php-sdk-client-replay-matrix.json",
+        "run_id": "01m3nhmnw1c5f35qq97g2qxxqm",
+        "runtime_cell_executed": true,
+        "worker_id": "php-sdk-worker-1",
+        "worker_process_id": 95,
+        "workflow_id": "php-sdk-replay-matrix-1790650758-1-3125"
+      },
+      "runtime_cell": {
+        "artifact_source": "packagist",
+        "cell_id": "php-completed-history-replay-matrix",
+        "executed": true,
+        "server_source": "public_image"
+      },
+      "scenario_id": "php_completed_history_activity_replay",
+      "status": "pass"
+    },
+    "php_completed_history_saga_compensation_replay": {
+      "executed_runtime_cell": true,
+      "linked_findings": [],
+      "observed_outputs": {
+        "activity_failed_events": 1,
+        "cell_id": "php-completed-history-replay-matrix",
+        "compensation_result": {
+          "activity_process_id": 95,
+          "echo": {
+            "failure_type": "DomainException",
+            "matrix": "compensation"
+          }
+        },
+        "evidence_file": "php-sdk-client-replay-matrix.json",
+        "failed_activity_callback_count": 1,
+        "run_id": "01m3nhmnw1c5f35qq97g2qxxqm",
+        "runtime_cell_executed": true,
+        "worker_id": "php-sdk-worker-1",
+        "worker_process_id": 95,
+        "workflow_id": "php-sdk-replay-matrix-1790650758-1-3125"
+      },
+      "runtime_cell": {
+        "artifact_source": "packagist",
+        "cell_id": "php-completed-history-replay-matrix",
+        "executed": true,
+        "server_source": "public_image"
+      },
+      "scenario_id": "php_completed_history_saga_compensation_replay",
+      "status": "pass"
+    },
+    "php_completed_history_signal_update_replay": {
+      "executed_runtime_cell": true,
+      "linked_findings": [],
+      "observed_outputs": {
+        "cell_id": "php-completed-history-replay-matrix",
+        "evidence_file": "php-sdk-client-replay-matrix.json",
+        "history_event_counts": {
+          "ActivityCompleted": 3,
+          "ActivityFailed": 1,
+          "ActivityHeartbeatRecorded": 3,
+          "ActivityScheduled": 4,
+          "ActivityStarted": 4,
+          "MessageCursorAdvanced": 2,
+          "SideEffectRecorded": 1,
+          "SignalApplied": 1,
+          "SignalReceived": 1,
+          "StartAccepted": 1,
+          "TimerFired": 1,
+          "TimerScheduled": 1,
+          "UpdateAccepted": 1,
+          "UpdateApplied": 1,
+          "UpdateCompleted": 1,
+          "WorkflowCompleted": 1,
+          "WorkflowStarted": 1
+        },
+        "run_id": "01m3nhmnw1c5f35qq97g2qxxqm",
+        "runtime_cell_executed": true,
+        "signals": [
+          7
+        ],
+        "updates": [
+          19
+        ],
+        "worker_id": "php-sdk-worker-1",
+        "worker_process_id": 95,
+        "workflow_id": "php-sdk-replay-matrix-1790650758-1-3125"
+      },
+      "runtime_cell": {
+        "artifact_source": "packagist",
+        "cell_id": "php-completed-history-replay-matrix",
+        "executed": true,
+        "server_source": "public_image"
+      },
+      "scenario_id": "php_completed_history_signal_update_replay",
+      "status": "pass"
+    },
+    "php_completed_history_version_marker_replay": {
+      "executed_runtime_cell": true,
+      "linked_findings": [],
+      "observed_outputs": {
+        "cell_id": "php-completed-history-replay-matrix",
+        "evidence_file": "php-sdk-client-replay-matrix.json",
+        "run_id": "01m3nhmnw1c5f35qq97g2qxxqm",
+        "runtime_cell_executed": true,
+        "side_effect_recorded_events": 1,
+        "version_marker": {
+          "change_id": "php-replay-matrix",
+          "version": 1
+        },
+        "version_marker_callback_count": 1,
+        "worker_id": "php-sdk-worker-1",
+        "worker_process_id": 95,
+        "workflow_id": "php-sdk-replay-matrix-1790650758-1-3125"
+      },
+      "runtime_cell": {
+        "artifact_source": "packagist",
+        "cell_id": "php-completed-history-replay-matrix",
+        "executed": true,
+        "server_source": "public_image"
+      },
+      "scenario_id": "php_completed_history_version_marker_replay",
+      "status": "pass"
+    },
+    "php_completed_history_wait_condition_replay": {
+      "executed_runtime_cell": true,
+      "linked_findings": [],
+      "observed_outputs": {
+        "cell_id": "php-completed-history-replay-matrix",
+        "evidence_file": "php-sdk-client-replay-matrix.json",
+        "run_id": "01m3nhmnw1c5f35qq97g2qxxqm",
+        "runtime_cell_executed": true,
+        "timer_fired_events": 1,
+        "timer_scheduled_events": 1,
+        "wait_cycles": 1,
+        "worker_id": "php-sdk-worker-1",
+        "worker_process_id": 95,
+        "workflow_id": "php-sdk-replay-matrix-1790650758-1-3125"
+      },
+      "runtime_cell": {
+        "artifact_source": "packagist",
+        "cell_id": "php-completed-history-replay-matrix",
+        "executed": true,
+        "server_source": "public_image"
+      },
+      "scenario_id": "php_completed_history_wait_condition_replay",
+      "status": "pass"
+    },
+    "php_in_flight_signal_restart_timing": {
+      "executed_runtime_cell": true,
+      "linked_findings": [],
+      "observed_outputs": {
+        "cell_id": "php-in-flight-signal-worker-restart",
+        "history_event_counts": {
+          "ActivityCompleted": 1,
+          "ActivityHeartbeatRecorded": 1,
+          "ActivityScheduled": 1,
+          "ActivityStarted": 1,
+          "MessageCursorAdvanced": 1,
+          "SignalApplied": 1,
+          "SignalReceived": 1,
+          "StartAccepted": 1,
+          "TimerFired": 1,
+          "TimerScheduled": 1,
+          "WorkflowCompleted": 1,
+          "WorkflowStarted": 1
+        },
+        "history_reloaded_at": "2026-09-29T02:59:42.209600Z",
+        "observed_outcome": "same_next_decision_after_replay",
+        "replay_worker_id": "php-sdk-worker-2",
+        "replay_worker_process_id": 120,
+        "replayed_next_decision": "schedule_activity:php.sdk.echo",
+        "result": {
+          "next_decision_result": {
+            "activity_process_id": 120,
+            "echo": {
+              "matrix": "in-flight-after-signal"
+            }
+          },
+          "signals": [
+            23
+          ],
+          "wait_cycles": 1,
+          "workflow_process_id": 120
+        },
+        "run_id": "01m3nhmz5fyfj5nh897dq4x0vb",
+        "runtime_cell_executed": true,
+        "signal_inputs": [
+          23
+        ],
+        "signal_sent_at": "2026-09-29T02:59:37.218946Z",
+        "worker_restart_at": "2026-09-29T02:59:38.062075Z",
+        "workflow_id": "php-sdk-in-flight-1790650758-1-3125"
+      },
+      "replay_diagnostics": {
+        "history_reloaded_at": "2026-09-29T02:59:42.209600Z",
+        "observed_outcome": "same_next_decision_after_replay",
+        "replayed_next_decision": "schedule_activity:php.sdk.echo",
+        "signal_sent_at": "2026-09-29T02:59:37.218946Z",
+        "worker_restart_at": "2026-09-29T02:59:38.062075Z"
+      },
+      "runtime_cell": {
+        "artifact_source": "packagist",
+        "cell_id": "php-in-flight-signal-worker-restart",
+        "executed": true,
+        "server_source": "public_image"
+      },
+      "scenario_id": "php_in_flight_signal_restart_timing",
+      "status": "pass"
+    },
+    "php_worker_restart_activity_state": {
+      "executed_runtime_cell": true,
+      "linked_findings": [],
+      "observed_outputs": {
+        "activity_callback_cardinality": {
+          "callback_records": [
+            {
+              "activity_attempt_id": "01M3NHMF9PM8G6PWXVHSEJ99R9",
+              "activity_type": "php.sdk.echo",
+              "attempt_number": 1,
+              "global_callback_count": 1,
+              "heartbeat_recorded": true,
+              "phase": "initial_execution",
+              "task_id": "01m3nhmf2wjtrx0305nkkwbc86",
+              "worker_id": "php-sdk-worker-1",
+              "worker_process_id": 95
+            },
+            {
+              "activity_attempt_id": "01M3NHMPG93ABVVF2HYEN2F23D",
+              "activity_type": "php.sdk.echo",
+              "attempt_number": 1,
+              "global_callback_count": 2,
+              "heartbeat_recorded": true,
+              "phase": "replay_matrix",
+              "task_id": "01m3nhmpanhmwewp0g08ybe557",
+              "worker_id": "php-sdk-worker-1",
+              "worker_process_id": 95
+            },
+            {
+              "activity_attempt_id": "01M3NHMTQVA84573SAM368CRP1",
+              "activity_type": "php.sdk.echo",
+              "attempt_number": 1,
+              "global_callback_count": 3,
+              "heartbeat_recorded": true,
+              "phase": "replay_matrix",
+              "task_id": "01m3nhmtkpgphwf3pbb60k72je",
+              "worker_id": "php-sdk-worker-1",
+              "worker_process_id": 95
+            },
+            {
+              "activity_attempt_id": "01M3NHMVWZ8SBMZ1VZ1XH4EY1J",
+              "activity_type": "php.sdk.echo",
+              "attempt_number": 1,
+              "global_callback_count": 4,
+              "heartbeat_recorded": true,
+              "phase": "replay_matrix",
+              "task_id": "01m3nhmvrejskn6tdff2ap4k8c",
+              "worker_id": "php-sdk-worker-1",
+              "worker_process_id": 95
+            },
+            {
+              "activity_attempt_id": "01M3NHMXWMRW8QNS0J9CZVSW7Y",
+              "activity_type": "php.sdk.echo",
+              "attempt_number": 1,
+              "global_callback_count": 5,
+              "heartbeat_recorded": true,
+              "phase": "durable_replay",
+              "task_id": "01m3nhmxr0acc70jzhbn50a7f0",
+              "worker_id": "php-sdk-worker-1",
+              "worker_process_id": 95
+            },
+            {
+              "activity_attempt_id": "01M3NHN4TC4Y4DV1Q2BXFX73RX",
+              "activity_type": "php.sdk.echo",
+              "attempt_number": 1,
+              "global_callback_count": 6,
+              "heartbeat_recorded": true,
+              "phase": "in_flight_replay",
+              "task_id": "01m3nhn4n1smwa7ehpf92121ej",
+              "worker_id": "php-sdk-worker-2",
+              "worker_process_id": 120
+            }
+          ],
+          "expected_callback_counts_by_phase": {
+            "durable_replay": 1,
+            "in_flight_replay": 1,
+            "initial_execution": 1,
+            "replay_matrix": 3
+          },
+          "observed_callback_counts_by_phase": {
+            "durable_replay": 1,
+            "in_flight_replay": 1,
+            "initial_execution": 1,
+            "replay_matrix": 3
+          },
+          "passed": true,
+          "phase_results": {
+            "durable_replay": {
+              "distinct_activity_attempt_ids": [
+                "01M3NHMXWMRW8QNS0J9CZVSW7Y"
+              ],
+              "distinct_task_ids": [
+                "01m3nhmxr0acc70jzhbn50a7f0"
+              ],
+              "expected_callback_count": 1,
+              "history_checkpoints": {
+                "after_worker_restart": {
+                  "expected_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityScheduled": 1
+                  },
+                  "observed_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityHeartbeatRecorded": 1,
+                    "ActivityScheduled": 1,
+                    "ActivityStarted": 1,
+                    "StartAccepted": 1,
+                    "TimerFired": 1,
+                    "TimerScheduled": 1,
+                    "WorkflowCompleted": 1,
+                    "WorkflowStarted": 1
+                  },
+                  "passed": true
+                },
+                "before_worker_restart": {
+                  "expected_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityScheduled": 1
+                  },
+                  "observed_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityHeartbeatRecorded": 1,
+                    "ActivityScheduled": 1,
+                    "ActivityStarted": 1,
+                    "StartAccepted": 1,
+                    "TimerScheduled": 1,
+                    "WorkflowStarted": 1
+                  },
+                  "passed": true
+                }
+              },
+              "observed_callback_count": 1,
+              "passed": true
+            },
+            "in_flight_replay": {
+              "distinct_activity_attempt_ids": [
+                "01M3NHN4TC4Y4DV1Q2BXFX73RX"
+              ],
+              "distinct_task_ids": [
+                "01m3nhn4n1smwa7ehpf92121ej"
+              ],
+              "expected_callback_count": 1,
+              "history_checkpoints": {
+                "after_worker_restart": {
+                  "expected_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityScheduled": 1
+                  },
+                  "observed_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityHeartbeatRecorded": 1,
+                    "ActivityScheduled": 1,
+                    "ActivityStarted": 1,
+                    "MessageCursorAdvanced": 1,
+                    "SignalApplied": 1,
+                    "SignalReceived": 1,
+                    "StartAccepted": 1,
+                    "TimerFired": 1,
+                    "TimerScheduled": 1,
+                    "WorkflowCompleted": 1,
+                    "WorkflowStarted": 1
+                  },
+                  "passed": true
+                }
+              },
+              "observed_callback_count": 1,
+              "passed": true
+            },
+            "initial_execution": {
+              "distinct_activity_attempt_ids": [
+                "01M3NHMF9PM8G6PWXVHSEJ99R9"
+              ],
+              "distinct_task_ids": [
+                "01m3nhmf2wjtrx0305nkkwbc86"
+              ],
+              "expected_callback_count": 1,
+              "history_checkpoints": {
+                "completed": {
+                  "expected_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityScheduled": 1
+                  },
+                  "observed_event_counts": {
+                    "ActivityCompleted": 1,
+                    "ActivityHeartbeatRecorded": 1,
+                    "ActivityScheduled": 1,
+                    "ActivityStarted": 1,
+                    "StartAccepted": 1,
+                    "WorkflowCompleted": 1,
+                    "WorkflowStarted": 1
+                  },
+                  "passed": true
+                }
+              },
+              "observed_callback_count": 1,
+              "passed": true
+            },
+            "replay_matrix": {
+              "distinct_activity_attempt_ids": [
+                "01M3NHMPG93ABVVF2HYEN2F23D",
+                "01M3NHMTQVA84573SAM368CRP1",
+                "01M3NHMVWZ8SBMZ1VZ1XH4EY1J"
+              ],
+              "distinct_task_ids": [
+                "01m3nhmpanhmwewp0g08ybe557",
+                "01m3nhmtkpgphwf3pbb60k72je",
+                "01m3nhmvrejskn6tdff2ap4k8c"
+              ],
+              "expected_callback_count": 3,
+              "history_checkpoints": {
+                "after_worker_restart": {
+                  "expected_event_counts": {
+                    "ActivityCompleted": 3,
+                    "ActivityFailed": 1,
+                    "ActivityScheduled": 4
+                  },
+                  "observed_event_counts": {
+                    "ActivityCompleted": 3,
+                    "ActivityFailed": 1,
+                    "ActivityHeartbeatRecorded": 3,
+                    "ActivityScheduled": 4,
+                    "ActivityStarted": 4,
+                    "MessageCursorAdvanced": 2,
+                    "SideEffectRecorded": 1,
+                    "SignalApplied": 1,
+                    "SignalReceived": 1,
+                    "StartAccepted": 1,
+                    "TimerFired": 1,
+                    "TimerScheduled": 1,
+                    "UpdateAccepted": 1,
+                    "UpdateApplied": 1,
+                    "UpdateCompleted": 1,
+                    "WorkflowCompleted": 1,
+                    "WorkflowStarted": 1
+                  },
+                  "passed": true
+                },
+                "completed": {
+                  "expected_event_counts": {
+                    "ActivityCompleted": 3,
+                    "ActivityFailed": 1,
+                    "ActivityScheduled": 4
+                  },
+                  "observed_event_counts": {
+                    "ActivityCompleted": 3,
+                    "ActivityFailed": 1,
+                    "ActivityHeartbeatRecorded": 3,
+                    "ActivityScheduled": 4,
+                    "ActivityStarted": 4,
+                    "MessageCursorAdvanced": 2,
+                    "SideEffectRecorded": 1,
+                    "SignalApplied": 1,
+                    "SignalReceived": 1,
+                    "StartAccepted": 1,
+                    "TimerFired": 1,
+                    "TimerScheduled": 1,
+                    "UpdateAccepted": 1,
+                    "UpdateApplied": 1,
+                    "UpdateCompleted": 1,
+                    "WorkflowCompleted": 1,
+                    "WorkflowStarted": 1
+                  },
+                  "passed": true
+                }
+              },
+              "observed_callback_count": 3,
+              "passed": true
+            }
+          },
+          "unexpected_phases": []
+        },
+        "activity_completed_events": 3,
+        "activity_result": {
+          "activity_process_id": 95,
+          "echo": {
+            "matrix": "activity"
+          }
+        },
+        "activity_types_from_reloaded_history": [
+          "php.sdk.echo",
+          "php.sdk.replay-matrix-fail",
+          "php.sdk.echo",
+          "php.sdk.echo"
+        ],
+        "cell_id": "php-completed-query-after-worker-restart",
+        "evidence_file": "php-sdk-client-replay-matrix-restart.json",
+        "run_id": "01m3nhmnw1c5f35qq97g2qxxqm",
+        "runtime_cell_executed": true,
+        "worker_id": "php-sdk-worker-2",
+        "worker_process_id": 120,
+        "workflow_id": "php-sdk-replay-matrix-1790650758-1-3125"
+      },
+      "runtime_cell": {
+        "artifact_source": "packagist",
+        "cell_id": "php-completed-query-after-worker-restart",
+        "executed": true,
+        "server_source": "public_image"
+      },
+      "scenario_id": "php_worker_restart_activity_state",
+      "status": "pass"
+    },
+    "php_worker_restart_completed_query": {
+      "executed_runtime_cell": true,
+      "linked_findings": [],
+      "observed_outputs": {
+        "cell_id": "php-completed-query-after-worker-restart",
+        "completed_query": {
+          "activity_types": [
+            "php.sdk.echo",
+            "php.sdk.replay-matrix-fail",
+            "php.sdk.echo",
+            "php.sdk.echo"
+          ],
+          "event_counts": {
+            "ActivityCompleted": 3,
+            "ActivityFailed": 1,
+            "ActivityHeartbeatRecorded": 3,
+            "ActivityScheduled": 4,
+            "ActivityStarted": 4,
+            "MessageCursorAdvanced": 2,
+            "SideEffectRecorded": 1,
+            "SignalApplied": 1,
+            "SignalReceived": 1,
+            "StartAccepted": 1,
+            "TimerFired": 1,
+            "TimerScheduled": 1,
+            "UpdateAccepted": 1,
+            "UpdateApplied": 1,
+            "UpdateCompleted": 1,
+            "WorkflowCompleted": 1,
+            "WorkflowStarted": 1
+          },
+          "query_process_id": 120,
+          "signals": [
+            7
+          ],
+          "updates": [
+            19
+          ]
+        },
+        "evidence_file": "php-sdk-client-replay-matrix-restart.json",
+        "original_result": {
+          "activity": {
+            "activity_process_id": 95,
+            "echo": {
+              "matrix": "activity"
+            }
+          },
+          "after_signal": {
+            "activity_process_id": 95,
+            "echo": {
+              "matrix": "after-signal"
+            }
+          },
+          "compensation": {
+            "activity_process_id": 95,
+            "echo": {
+              "failure_type": "DomainException",
+              "matrix": "compensation"
+            }
+          },
+          "signals": [
+            7
+          ],
+          "updates": [
+            19
+          ],
+          "version_marker": {
+            "change_id": "php-replay-matrix",
+            "version": 1
+          },
+          "wait_cycles": 1,
+          "workflow_process_id": 95
+        },
+        "query_process_matches_restarted_worker": true,
+        "run_id": "01m3nhmnw1c5f35qq97g2qxxqm",
+        "runtime_cell_executed": true,
+        "worker_id": "php-sdk-worker-2",
+        "worker_process_id": 120,
+        "workflow_id": "php-sdk-replay-matrix-1790650758-1-3125"
+      },
+      "runtime_cell": {
+        "artifact_source": "packagist",
+        "cell_id": "php-completed-query-after-worker-restart",
+        "executed": true,
+        "server_source": "public_image"
+      },
+      "scenario_id": "php_worker_restart_completed_query",
+      "status": "pass"
+    },
+    "php_worker_restart_saga_compensation_state": {
+      "executed_runtime_cell": true,
+      "linked_findings": [],
+      "observed_outputs": {
+        "activity_completed_events": 3,
+        "activity_failed_events": 1,
+        "cell_id": "php-completed-query-after-worker-restart",
+        "compensation_result": {
+          "activity_process_id": 95,
+          "echo": {
+            "failure_type": "DomainException",
+            "matrix": "compensation"
+          }
+        },
+        "evidence_file": "php-sdk-client-replay-matrix-restart.json",
+        "run_id": "01m3nhmnw1c5f35qq97g2qxxqm",
+        "runtime_cell_executed": true,
+        "worker_id": "php-sdk-worker-2",
+        "worker_process_id": 120,
+        "workflow_id": "php-sdk-replay-matrix-1790650758-1-3125"
+      },
+      "runtime_cell": {
+        "artifact_source": "packagist",
+        "cell_id": "php-completed-query-after-worker-restart",
+        "executed": true,
+        "server_source": "public_image"
+      },
+      "scenario_id": "php_worker_restart_saga_compensation_state",
+      "status": "pass"
+    },
+    "php_worker_restart_signal_update_state": {
+      "executed_runtime_cell": true,
+      "linked_findings": [],
+      "observed_outputs": {
+        "cell_id": "php-completed-query-after-worker-restart",
+        "evidence_file": "php-sdk-client-replay-matrix-restart.json",
+        "run_id": "01m3nhmnw1c5f35qq97g2qxxqm",
+        "runtime_cell_executed": true,
+        "signals_from_reloaded_history": [
+          7
+        ],
+        "updates_from_reloaded_history": [
+          19
+        ],
+        "worker_id": "php-sdk-worker-2",
+        "worker_process_id": 120,
+        "workflow_id": "php-sdk-replay-matrix-1790650758-1-3125"
+      },
+      "runtime_cell": {
+        "artifact_source": "packagist",
+        "cell_id": "php-completed-query-after-worker-restart",
+        "executed": true,
+        "server_source": "public_image"
+      },
+      "scenario_id": "php_worker_restart_signal_update_state",
+      "status": "pass"
+    },
+    "php_worker_restart_version_marker_state": {
+      "executed_runtime_cell": true,
+      "linked_findings": [],
+      "observed_outputs": {
+        "cell_id": "php-completed-query-after-worker-restart",
+        "evidence_file": "php-sdk-client-replay-matrix-restart.json",
+        "run_id": "01m3nhmnw1c5f35qq97g2qxxqm",
+        "runtime_cell_executed": true,
+        "side_effect_recorded_events": 1,
+        "version_marker": {
+          "change_id": "php-replay-matrix",
+          "version": 1
+        },
+        "version_marker_callback_count": 1,
+        "worker_id": "php-sdk-worker-2",
+        "worker_process_id": 120,
+        "workflow_id": "php-sdk-replay-matrix-1790650758-1-3125"
+      },
+      "runtime_cell": {
+        "artifact_source": "packagist",
+        "cell_id": "php-completed-query-after-worker-restart",
+        "executed": true,
+        "server_source": "public_image"
+      },
+      "scenario_id": "php_worker_restart_version_marker_state",
+      "status": "pass"
+    },
+    "php_worker_restart_wait_condition_state": {
+      "executed_runtime_cell": true,
+      "linked_findings": [],
+      "observed_outputs": {
+        "cell_id": "php-completed-query-after-worker-restart",
+        "evidence_file": "php-sdk-client-replay-matrix-restart.json",
+        "run_id": "01m3nhmnw1c5f35qq97g2qxxqm",
+        "runtime_cell_executed": true,
+        "timer_fired_events": 1,
+        "timer_scheduled_events": 1,
+        "wait_cycles": 1,
+        "worker_id": "php-sdk-worker-2",
+        "worker_process_id": 120,
+        "workflow_id": "php-sdk-replay-matrix-1790650758-1-3125"
+      },
+      "runtime_cell": {
+        "artifact_source": "packagist",
+        "cell_id": "php-completed-query-after-worker-restart",
+        "executed": true,
+        "server_source": "public_image"
+      },
+      "scenario_id": "php_worker_restart_wait_condition_state",
+      "status": "pass"
+    },
+    "published_artifact_install_only": {
+      "linked_findings": [],
+      "observed_outputs": {
+        "local_product_source_checkouts_used": false,
+        "required_assertions": {
+          "apache_avro_dependency": null,
+          "exact_sdk_version": true,
+          "sdk_dist_provenance": true
+        },
+        "sdk_php_result_summary": {
+          "apache_avro_provenance": {
+            "dist": {
+              "reference": "8fa2067f70e3012cb3fd9a8839cd97e8c7cc1772",
+              "shasum": "",
+              "type": "zip",
+              "url": "https://api.github.com/repos/apache/avro/zipball/8fa2067f70e3012cb3fd9a8839cd97e8c7cc1772"
+            },
+            "package": "apache/avro",
+            "source_reference": {
+              "reference": "8fa2067f70e3012cb3fd9a8839cd97e8c7cc1772",
+              "type": "git",
+              "url": "https://github.com/apache/avro.git"
+            },
+            "version": "1.12.2"
+          },
+          "artifact_versions": {
+            "sdk-php": "2.1.5",
+            "server": "2.4.26"
+          },
+          "assertions": {
+            "activity_callback_cardinality_by_phase": true,
+            "activity_callback_once_for_replay": true,
+            "activity_heartbeat_callback": true,
+            "cancellation": true,
+            "distinct_client_worker_processes": true,
+            "distinct_worker_restart_processes": true,
+            "durable_replay_history": true,
+            "durable_replay_result": true,
+            "exact_sdk_version": true,
+            "exact_server_version": true,
+            "failure_envelope": true,
+            "local_product_source_checkouts_used_false": true,
+            "namespace_lifecycle": true,
+            "namespace_selection": true,
+            "official_apache_avro_dependency": true,
+            "replay_checkpoint": true,
+            "replay_matrix_activity_history": true,
+            "replay_matrix_activity_state_after_restart": true,
+            "replay_matrix_code_divergence_refusal": true,
+            "replay_matrix_completed_history": true,
+            "replay_matrix_completed_query_after_restart": true,
+            "replay_matrix_in_flight_signal_restart": true,
+            "replay_matrix_saga_compensation_history": true,
+            "replay_matrix_saga_compensation_state_after_restart": true,
+            "replay_matrix_signal_update_history": true,
+            "replay_matrix_signal_update_state_after_restart": true,
+            "replay_matrix_version_marker_history": true,
+            "replay_matrix_version_marker_state_after_restart": true,
+            "replay_matrix_wait_condition_history": true,
+            "replay_matrix_wait_condition_state_after_restart": true,
+            "schedule_lifecycle": true,
+            "sdk_dist_provenance": true,
+            "search_attributes": true,
+            "signal_negative_contracts": true,
+            "signal_query": true,
+            "signal_replay_visibility": true,
+            "source_free_composer_project": true,
+            "start_result": true,
+            "termination": true,
+            "update": true,
+            "worker_command_contract_readiness": true,
+            "worker_heartbeat": true,
+            "worker_registration": true,
+            "workflow_started_command_contract": true
+          },
+          "outcome": "pass",
+          "package_provenance": {
+            "composer_content_hash": "b5e717d8f9f94d4eb359de52df102078",
+            "dist": {
+              "reference": "d664c865c8b9b352eb79abd27ee3141a87a1924f",
+              "shasum": "",
+              "type": "zip",
+              "url": "https://api.github.com/repos/durable-workflow/sdk-php/zipball/d664c865c8b9b352eb79abd27ee3141a87a1924f"
+            },
+            "install_preference": "dist",
+            "package": "durable-workflow/sdk",
+            "source": "packagist",
+            "source_reference": {
+              "reference": "d664c865c8b9b352eb79abd27ee3141a87a1924f",
+              "type": "git",
+              "url": "https://github.com/durable-workflow/sdk-php.git"
+            },
+            "version": "2.1.5"
+          },
+          "runner_blocked": false,
+          "schema": "durable-workflow.v2.php-sdk-published-artifact-conformance",
+          "source_document": {
+            "bytes": 150765,
+            "sha256": "7d6361815ce3ce96daf8e8a5b59306712cbbfb3126b359ed41f56144aa9e74e3"
+          }
+        }
+      },
+      "scenario_id": "published_artifact_install_only",
+      "status": "pass"
+    }
+  },
+  "schema": "durable-workflow.v2.replay-conformance.sdk-php-shard",
+  "source_policy": {
+    "artifact_source": "published_artifacts",
+    "local_product_source_checkouts_used": false
+  }
+}

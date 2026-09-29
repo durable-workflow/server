@@ -1,0 +1,72 @@
+{
+  "cli": {
+    "artifacts": [
+      {
+        "name": "install.sh",
+        "sha256": "022f9c532d731aede3c9c6252a11b2cb8e5b6b4a0e8516399bfc214fbde530ca"
+      }
+    ],
+    "kind": "github-release",
+    "locator": "github-release:durable-workflow/cli@2.1.2"
+  },
+  "sdk-php": {
+    "artifacts": [
+      {
+        "name": "durable-workflow/sdk",
+        "sha256": "cf83e1b784ac20cd435341220c58ba108d7e74ac04a0e1f1ec5872d48d10ad38"
+      }
+    ],
+    "kind": "composer",
+    "locator": "composer:durable-workflow/sdk@2.1.5"
+  },
+  "sdk-python": {
+    "artifacts": [
+      {
+        "name": "durable_workflow-2.3.5-py3-none-any.whl",
+        "sha256": "1db40895ed81d6df44a6e62db3305fa6ec01fce41296acf2a0beafb17e6e685f"
+      }
+    ],
+    "kind": "pypi",
+    "locator": "pypi:durable-workflow@2.3.5"
+  },
+  "sdk-rust": {
+    "artifacts": [
+      {
+        "name": "durable-workflow-2.1.1.crate",
+        "sha256": "051437bb0e0b004038629e5ca7e44d11f1f24434b216f84b6d1516b218882eb8"
+      }
+    ],
+    "kind": "crates.io",
+    "locator": "crates.io:durable-workflow@2.1.1"
+  },
+  "server": {
+    "artifacts": [
+      {
+        "name": "manifest",
+        "sha256": "d9d13157f91d5418ba74759bc1b32f1ba0fc649e165f6206faab55e0f4737a1e"
+      }
+    ],
+    "kind": "oci",
+    "locator": "oci:docker.io/durableworkflow/server@2.4.26"
+  },
+  "waterline": {
+    "artifacts": [
+      {
+        "name": "durable-workflow/waterline",
+        "sha256": "6caa447d2ad001d4c3caf0535b770172fb1ccc57264f2887ba178db47195addb"
+      }
+    ],
+    "kind": "composer",
+    "locator": "composer:durable-workflow/waterline@2.0.7"
+  },
+  "workflow": {
+    "artifacts": [
+      {
+        "name": "durable-workflow/workflow",
+        "sha256": "0bf8483dc0c9719866650ede19fa5453cf2ddc7cd3c5a15f273bcc65fff8ee84"
+      }
+    ],
+    "kind": "composer",
+    "locator": "composer:durable-workflow/workflow@2.2.18"
+  }
+}

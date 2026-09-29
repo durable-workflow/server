@@ -1,0 +1,24 @@
+{
+  "artifactVersions": {
+    "cli": "2.1.2",
+    "sdk-php": "2.1.5",
+    "sdk-python": "2.3.5",
+    "sdk-rust": "2.1.1",
+    "server": "2.4.24",
+    "waterline": "2.0.7",
+    "workflow": "2.2.18"
+  },
+  "broadConfirmationRequired": true,
+  "broadPropertyClaimed": false,
+  "cell": "php-worker-cli-signal",
+  "classification": {
+    "category": "php_cli_signal_path_passed",
+    "owner": null,
+    "product_reached": true,
+    "summary": "The CLI signal command exited successfully against the running PHP workflow."
+  },
+  "experiment": "signals-queries",
+  "outcome": "pass",
+  "result_file": "signals-queries-php-cli-signal-result.json",
+  "runnerBlocked": false
+}

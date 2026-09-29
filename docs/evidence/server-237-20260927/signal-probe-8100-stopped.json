@@ -1,0 +1,18 @@
+{
+  "schema": "server-237-signal-history-stop-v1",
+  "workflow_id": "history-qualification-signals-8100-boundary8100",
+  "run_id": "01m3jkskpbq98z2mgw681xnwgz",
+  "target_signals": 8100,
+  "signal_concurrency": 8,
+  "started_at_utc": "2026-09-27T23:39:22.699025Z",
+  "stopped_at_utc": "2026-09-27T23:46:16.757205Z",
+  "incomplete": true,
+  "stop_reason": "signal admission slowed substantially before the history-budget threshold; bounded diagnostic ended to investigate",
+  "acknowledged_signal_events": 584,
+  "history_event_count": 587,
+  "history_size_bytes": 779995,
+  "workflow_status": "waiting",
+  "history_budget_pressure": "ok",
+  "continue_as_new_recommended": false,
+  "source": "workflow_run_summaries joined to workflow_runs and SignalReceived count from workflow_history_events in the isolated MySQL stack after the probe container was stopped"
+}

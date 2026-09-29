@@ -1,0 +1,17 @@
+01m3nmg27rgcw2p5xffmy8hjc3	1	completed	8047	continued
+01m3nnttd7rbbzj31vdxwhsfs3	2	completed	2	completed
+ActivityCompleted	8
+ActivityScheduled	8
+ActivityStarted	8
+ConditionWaitOpened	1
+ConditionWaitSatisfied	1
+MessageCursorAdvanced	1
+RepairRequested	1
+SideEffectRecorded	4000
+SignalReceived	4000
+StartAccepted	1
+TimerFired	8
+TimerScheduled	8
+WorkflowCompleted	1
+WorkflowContinuedAsNew	1
+WorkflowStarted	2

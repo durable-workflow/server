@@ -1,0 +1,12 @@
+{
+  "source": "published-2426-coldcache1024-recheck-server-access.log.gz",
+  "http_access_lines": 3093,
+  "external_upload_http_201": 1000,
+  "signal_offer_http_202": 1000,
+  "external_get_http_200": 1000,
+  "external_get_other_status": 0,
+  "workflow_task_completion_http_200": 11,
+  "activity_task_completion_http_200": 4,
+  "http_4xx": 0,
+  "http_5xx": 0
+}

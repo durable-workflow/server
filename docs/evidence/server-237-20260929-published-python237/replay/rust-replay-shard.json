@@ -1,0 +1,190 @@
+{
+  "artifact_versions": {
+    "cli": "2.1.2",
+    "sdk-php": "2.1.6",
+    "sdk-python": "2.3.7",
+    "sdk-rust": "2.1.2",
+    "server": "2.4.26",
+    "waterline": "2.0.7",
+    "workflow-php": "2.2.18"
+  },
+  "coverage_scope": "sdk-rust-runtime-shard",
+  "findings": [],
+  "finished_at_unix": 1790658123,
+  "outcome": "pass",
+  "runtime_matrix": {
+    "runtimes": [
+      "sdk-rust"
+    ]
+  },
+  "scenario_results": [
+    {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-rust",
+        "version": "2.1.2"
+      },
+      "linked_findings": [],
+      "observed_outputs": {
+        "callback_calls": 1,
+        "continue_as_new": {
+          "current_run_id": "01m3nrn0vzc5v5ym8p6xx23v7y",
+          "result": {
+            "links": 3,
+            "status": "completed"
+          },
+          "selected_closed_reason": "continued",
+          "selected_run_id": "01m3nrmzv4087qffzeqby4h4p9",
+          "workflow_id": "rust-continue-1790658116097449568"
+        },
+        "initial_supported_range": [
+          1,
+          2
+        ],
+        "original": {
+          "captured": "8aed71ac-541f-4e40-9b20-8aaa611624b2",
+          "version": 2
+        },
+        "replayed": {
+          "captured": "8aed71ac-541f-4e40-9b20-8aaa611624b2",
+          "version": 2
+        },
+        "run_id": "01m3nrmywy2f5g9a7d4v6fvms3",
+        "upgraded_supported_range": [
+          1,
+          3
+        ],
+        "workflow_id": "rust-replay-1790658116097449568"
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.6",
+        "sdk-python": "2.3.7",
+        "sdk-rust": "2.1.2",
+        "server": "2.4.26",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-rust"
+        ]
+      },
+      "scenario_id": "rust_side_effect_replay_after_worker_restart",
+      "status": "pass"
+    },
+    {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-rust",
+        "version": "2.1.2"
+      },
+      "linked_findings": [],
+      "observed_outputs": {
+        "callback_calls": 1,
+        "continue_as_new": {
+          "current_run_id": "01m3nrn0vzc5v5ym8p6xx23v7y",
+          "result": {
+            "links": 3,
+            "status": "completed"
+          },
+          "selected_closed_reason": "continued",
+          "selected_run_id": "01m3nrmzv4087qffzeqby4h4p9",
+          "workflow_id": "rust-continue-1790658116097449568"
+        },
+        "initial_supported_range": [
+          1,
+          2
+        ],
+        "original": {
+          "captured": "8aed71ac-541f-4e40-9b20-8aaa611624b2",
+          "version": 2
+        },
+        "replayed": {
+          "captured": "8aed71ac-541f-4e40-9b20-8aaa611624b2",
+          "version": 2
+        },
+        "run_id": "01m3nrmywy2f5g9a7d4v6fvms3",
+        "upgraded_supported_range": [
+          1,
+          3
+        ],
+        "workflow_id": "rust-replay-1790658116097449568"
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.6",
+        "sdk-python": "2.3.7",
+        "sdk-rust": "2.1.2",
+        "server": "2.4.26",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-rust"
+        ]
+      },
+      "scenario_id": "rust_version_marker_replay_after_code_upgrade",
+      "status": "pass"
+    },
+    {
+      "implementation_identity": {
+        "package": "durable-workflow",
+        "runtime": "sdk-rust",
+        "version": "2.1.2"
+      },
+      "linked_findings": [],
+      "observed_outputs": {
+        "callback_calls": 1,
+        "continue_as_new": {
+          "current_run_id": "01m3nrn0vzc5v5ym8p6xx23v7y",
+          "result": {
+            "links": 3,
+            "status": "completed"
+          },
+          "selected_closed_reason": "continued",
+          "selected_run_id": "01m3nrmzv4087qffzeqby4h4p9",
+          "workflow_id": "rust-continue-1790658116097449568"
+        },
+        "initial_supported_range": [
+          1,
+          2
+        ],
+        "original": {
+          "captured": "8aed71ac-541f-4e40-9b20-8aaa611624b2",
+          "version": 2
+        },
+        "replayed": {
+          "captured": "8aed71ac-541f-4e40-9b20-8aaa611624b2",
+          "version": 2
+        },
+        "run_id": "01m3nrmywy2f5g9a7d4v6fvms3",
+        "upgraded_supported_range": [
+          1,
+          3
+        ],
+        "workflow_id": "rust-replay-1790658116097449568"
+      },
+      "published_artifact_versions": {
+        "cli": "2.1.2",
+        "sdk-php": "2.1.6",
+        "sdk-python": "2.3.7",
+        "sdk-rust": "2.1.2",
+        "server": "2.4.26",
+        "waterline": "2.0.7",
+        "workflow-php": "2.2.18"
+      },
+      "runtime_matrix": {
+        "runtimes": [
+          "sdk-rust"
+        ]
+      },
+      "scenario_id": "rust_continue_as_new_chain_lifecycle",
+      "status": "pass"
+    }
+  ],
+  "schema": "durable-workflow.v2.replay-conformance.result",
+  "schema_version": 1,
+  "started_at_unix": 1790658116
+}

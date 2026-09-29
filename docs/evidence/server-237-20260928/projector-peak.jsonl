@@ -1,0 +1,4 @@
+{"schema":"server-237-projector-peak-v1","run_id":"01m3k31kv9karwkjdrner8hrjr","component":"budget","transaction":true,"elapsed_seconds":0.24693894386291504,"peak_php_allocated_bytes":23068672,"php_memory_limit":"256M"}
+{"schema":"server-237-projector-peak-v1","run_id":"01m3k31kv9karwkjdrner8hrjr","component":"timeline_map","transaction":true,"elapsed_seconds":1.2365329265594482,"peak_php_allocated_bytes":79691776,"php_memory_limit":"256M"}
+{"schema":"server-237-projector-peak-v1","run_id":"01m3k31kv9karwkjdrner8hrjr","component":"timeline_project","transaction":true,"elapsed_seconds":5.601831912994385,"peak_php_allocated_bytes":121634816,"php_memory_limit":"256M"}
+{"schema":"server-237-projector-peak-v1","run_id":"01m3k31kv9karwkjdrner8hrjr","component":"summary","transaction":true,"elapsed_seconds":6.596252918243408,"peak_php_allocated_bytes":121634816,"php_memory_limit":"256M"}

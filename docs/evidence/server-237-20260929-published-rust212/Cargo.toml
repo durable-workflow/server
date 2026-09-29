@@ -1,0 +1,8 @@
+[package]
+name = "server-237-rust-history-probe"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+durable-workflow = "=2.1.2"
+tokio = { version = "1", features = ["full"] }

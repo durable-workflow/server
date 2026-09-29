@@ -1,0 +1,17 @@
+{"phase": "resuming", "initial_run_id": "01m3kms9r9xrkhdyn4tq1hfc1q"}
+Traceback (most recent call last):
+  File "/probe/signal_history_probe.py", line 202, in <module>
+    asyncio.run(main(int(sys.argv[1])))
+  File "/usr/local/lib/python3.12/asyncio/runners.py", line 195, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/asyncio/base_events.py", line 691, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/probe/signal_history_probe.py", line 177, in main
+    raise ValueError(f"wrong {event_type} count: {dict(types)}")
+ValueError: wrong ActivityStarted count: {'StartAccepted': 1, 'WorkflowStarted': 2, 'ConditionWaitOpened': 1, 'SignalReceived': 4000, 'MessageCursorAdvanced': 1, 'ConditionWaitSatisfied': 1, 'ActivityScheduled': 8, 'ActivityStarted': 9, 'ActivityCompleted': 8, 'TimerScheduled': 8, 'TimerFired': 8, 'WorkflowContinuedAsNew': 1, 'WorkflowCompleted': 1}
+

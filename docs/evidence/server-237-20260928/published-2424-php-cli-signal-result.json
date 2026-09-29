@@ -1,0 +1,624 @@
+{
+  "artifactVersions": {
+    "cli": "2.1.2",
+    "sdk-php": "2.1.5",
+    "sdk-python": "2.3.5",
+    "sdk-rust": "2.1.1",
+    "server": "2.4.24",
+    "waterline": "2.0.7",
+    "workflow": "2.2.18"
+  },
+  "broad_confirmation_required": true,
+  "broad_property_claimed": false,
+  "cell": "php-worker-cli-signal",
+  "classification": {
+    "category": "php_cli_signal_path_passed",
+    "owner": null,
+    "product_reached": true,
+    "summary": "The CLI signal command exited successfully against the running PHP workflow."
+  },
+  "evidence_limits": {
+    "actionable_failure_fields": "retained_independently_of_unbounded_text",
+    "max_evidence_cell_bytes": 65536,
+    "max_failure_text_bytes": 1024,
+    "max_result_bytes": 262144,
+    "stdout_stderr_policy": "bounded_sanitized_tails"
+  },
+  "finished_at": "2026-09-28T20:25:31.526463Z",
+  "fixture_contract": {
+    "initial_query": "state",
+    "signal": "increment",
+    "workflow_handler_execution_model": "fiber",
+    "workflow_type": "conformance.counter.php"
+  },
+  "outcome": "pass",
+  "path": {
+    "cli_signal_attempt": {
+      "client": "cli",
+      "command": [
+        "dw",
+        "workflow:signal",
+        "wf-sq-sdk-php-270043799d",
+        "increment",
+        "--input",
+        "[3]",
+        "--output=json"
+      ],
+      "exit_code": 0,
+      "ok": true,
+      "operation_name": "increment",
+      "operation_surface": "workflow:signal",
+      "phase": "cli_signal",
+      "reason": null,
+      "sample": {
+        "client": "cli",
+        "command": "dw workflow:signal wf-sq-sdk-php-270043799d increment --input [3] --output=json",
+        "command_argv": [
+          "dw",
+          "workflow:signal",
+          "wf-sq-sdk-php-270043799d",
+          "increment",
+          "--input",
+          "[3]",
+          "--output=json"
+        ],
+        "exit_code": 0,
+        "ok": true,
+        "operation": "workflow:signal",
+        "operation_name": "increment",
+        "output": {
+          "command_id": "01m3mv30z4qg0jt5eynkj59pkr",
+          "command_sequence": 2,
+          "command_source": "control_plane",
+          "command_status": "accepted",
+          "control_plane": {
+            "command_id": "01m3mv30z4qg0jt5eynkj59pkr",
+            "command_source": "control_plane",
+            "command_status": "accepted",
+            "contract": {
+              "legacy_field_policy": "reject_non_canonical",
+              "legacy_fields": {
+                "query": "query_name",
+                "signal": "signal_name",
+                "update": "update_name",
+                "wait_policy": "wait_for"
+              },
+              "rejection_fields": [
+                "workflow_id",
+                "run_id",
+                "signal_name",
+                "command_status",
+                "command_source",
+                "target_scope",
+                "outcome",
+                "reason",
+                "rejection_reason",
+                "rejection_category",
+                "message",
+                "command_contract_source",
+                "command_contract_backfill_needed",
+                "command_contract_backfill_available",
+                "declared_signals",
+                "signal_admission",
+                "retryable",
+                "error_id"
+              ],
+              "rejection_reasons": [
+                "instance_not_found",
+                "historical_run_command_rejected",
+                "unknown_signal",
+                "invalid_signal_arguments",
+                "run_not_active",
+                "instance_not_started",
+                "selected_run_not_current",
+                "configured_workflow_type_invalid",
+                "v1_projection_read_only",
+                "backend_lock_pressure",
+                "control_plane_internal_error"
+              ],
+              "required_fields": [
+                "workflow_id",
+                "operation_name",
+                "operation_name_field"
+              ],
+              "schema": "durable-workflow.v2.control-plane-response.contract",
+              "success_fields": [
+                "outcome"
+              ],
+              "version": 1
+            },
+            "operation": "signal",
+            "operation_name": "increment",
+            "operation_name_field": "signal_name",
+            "outcome": "signal_received",
+            "reason": null,
+            "rejection_reason": null,
+            "run_id": "01m3mv2z9xbrxskq0r54jyxn4r",
+            "schema": "durable-workflow.v2.control-plane-response",
+            "target_scope": "instance",
+            "validation_errors": [],
+            "version": 1,
+            "workflow_id": "wf-sq-sdk-php-270043799d",
+            "workflow_type": "conformance.counter.php"
+          },
+          "control_plane_operation": "signal",
+          "control_plane_schema": "durable-workflow.v2.control-plane-response",
+          "control_plane_schema_version": 1,
+          "control_plane_version": "2",
+          "namespace": "default",
+          "operation": "signal",
+          "operation_name": "increment",
+          "operation_name_field": "signal_name",
+          "outcome": "signal_received",
+          "reason": null,
+          "rejection_reason": null,
+          "requested_run_id": null,
+          "resolved_run_id": "01m3mv2z9xbrxskq0r54jyxn4r",
+          "run_id": "01m3mv2z9xbrxskq0r54jyxn4r",
+          "signal_name": "increment",
+          "target_scope": "instance",
+          "validation_errors": [],
+          "workflow_id": "wf-sq-sdk-php-270043799d",
+          "workflow_type": "conformance.counter.php"
+        },
+        "reason": null,
+        "server_response": null,
+        "status_code": null,
+        "stderr_tail": "",
+        "stdout_tail": "... output truncated; retained tail follows ...\nmission\",\"retryable\",\"error_id\"],\"rejection_reasons\":[\"instance_not_found\",\"historical_run_command_rejected\",\"unknown_signal\",\"invalid_signal_arguments\",\"run_not_active\",\"instance_not_started\",\"selected_run_not_current\",\"configured_workflow_type_invalid\",\"v1_projection_read_only\",\"backend_lock_pressure\",\"control_plane_internal_error\"]},\"operation_name\":\"increment\",\"operation_name_field\":\"signal_name\",\"run_id\":\"01m3mv2z9xbrxskq0r54jyxn4r\",\"workflow_type\":\"conformance.counter.php\",\"command_id\":\"01m3mv30z4qg0jt5eynkj59pkr\",\"command_status\":\"accepted\",\"command_source\":\"control_plane\",\"target_scope\":\"instance\",\"outcome\":\"signal_received\",\"reason\":null,\"rejection_reason\":null,\"validation_errors\":[]},\"control_plane_schema\":\"durable-workflow.v2.control-plane-response\",\"control_plane_schema_version\":1,\"control_plane_operation\":\"signal\",\"operation\":\"signal\",\"operation_name\":\"increment\",\"operation_name_field\":\"signal_name\",\"control_plane_version\":\"2\",\"namespace\":\"default\"}",
+        "validation_errors": [],
+        "workflow_id": "wf-sq-sdk-php-270043799d"
+      },
+      "sequence": 3,
+      "status": null,
+      "status_code": null,
+      "stderr_tail": "",
+      "stdout_tail": "... output truncated; retained tail follows ...\nmission\",\"retryable\",\"error_id\"],\"rejection_reasons\":[\"instance_not_found\",\"historical_run_command_rejected\",\"unknown_signal\",\"invalid_signal_arguments\",\"run_not_active\",\"instance_not_started\",\"selected_run_not_current\",\"configured_workflow_type_invalid\",\"v1_projection_read_only\",\"backend_lock_pressure\",\"control_plane_internal_error\"]},\"operation_name\":\"increment\",\"operation_name_field\":\"signal_name\",\"run_id\":\"01m3mv2z9xbrxskq0r54jyxn4r\",\"workflow_type\":\"conformance.counter.php\",\"command_id\":\"01m3mv30z4qg0jt5eynkj59pkr\",\"command_status\":\"accepted\",\"command_source\":\"control_plane\",\"target_scope\":\"instance\",\"outcome\":\"signal_received\",\"reason\":null,\"rejection_reason\":null,\"validation_errors\":[]},\"control_plane_schema\":\"durable-workflow.v2.control-plane-response\",\"control_plane_schema_version\":1,\"control_plane_operation\":\"signal\",\"operation\":\"signal\",\"operation_name\":\"increment\",\"operation_name_field\":\"signal_name\",\"control_plane_version\":\"2\",\"namespace\":\"default\"}",
+      "validation_details": [],
+      "workflow_identity": {
+        "run_id": "01m3mv2z9xbrxskq0r54jyxn4r",
+        "task_queue": "signals-queries-sdk-php-270043799d",
+        "worker_id": "signals-queries-sdk-php-worker-270043799d",
+        "workflow_id": "wf-sq-sdk-php-270043799d"
+      }
+    },
+    "initial_query": {
+      "client": "cli",
+      "command": [
+        "dw",
+        "workflow:query",
+        "wf-sq-sdk-php-270043799d",
+        "state",
+        "--output=json"
+      ],
+      "exit_code": 0,
+      "ok": true,
+      "operation_name": "state",
+      "operation_surface": "workflow:query",
+      "phase": "initial_query",
+      "reason": null,
+      "sample": {
+        "client": "cli",
+        "command": "dw workflow:query wf-sq-sdk-php-270043799d state --output=json",
+        "command_argv": [
+          "dw",
+          "workflow:query",
+          "wf-sq-sdk-php-270043799d",
+          "state",
+          "--output=json"
+        ],
+        "exit_code": 0,
+        "ok": true,
+        "operation": "workflow:query",
+        "operation_name": "state",
+        "output": {
+          "control_plane": {
+            "contract": {
+              "legacy_field_policy": "reject_non_canonical",
+              "legacy_fields": {
+                "query": "query_name",
+                "signal": "signal_name",
+                "update": "update_name",
+                "wait_policy": "wait_for"
+              },
+              "rejection_fields": [
+                "workflow_id",
+                "run_id",
+                "query_name",
+                "target_scope",
+                "result",
+                "reason",
+                "message",
+                "run_status",
+                "is_terminal",
+                "blocked_reason",
+                "validation_errors"
+              ],
+              "rejection_reasons": [
+                "instance_not_found",
+                "historical_run_command_rejected",
+                "run_not_active",
+                "query_not_found",
+                "rejected_unknown_query",
+                "invalid_query_arguments",
+                "workflow_definition_unavailable",
+                "query_rejected",
+                "query_worker_unavailable",
+                "query_worker_incompatible",
+                "query_task_queue_full",
+                "query_task_queue_unavailable",
+                "query_task_not_claimed",
+                "query_worker_execution_timeout",
+                "query_worker_timeout",
+                "v1_projection_read_only"
+              ],
+              "required_fields": [
+                "workflow_id",
+                "operation_name",
+                "operation_name_field"
+              ],
+              "schema": "durable-workflow.v2.control-plane-response.contract",
+              "success_fields": [
+                "result",
+                "result_envelope"
+              ],
+              "version": 1
+            },
+            "operation": "query",
+            "operation_name": "state",
+            "operation_name_field": "query_name",
+            "principal": {
+              "id": "legacy-token",
+              "label": "Admin",
+              "type": "auth:<redacted>"
+            },
+            "query_name": "state",
+            "reason": null,
+            "result": 0,
+            "result_envelope": {
+              "blob": "wwHioz3/VYAiNwQA",
+              "codec": "avro"
+            },
+            "run_id": "01m3mv2z9xbrxskq0r54jyxn4r",
+            "schema": "durable-workflow.v2.control-plane-response",
+            "target_scope": "instance",
+            "version": 1,
+            "workflow_id": "wf-sq-sdk-php-270043799d"
+          },
+          "control_plane_operation": "query",
+          "control_plane_schema": "durable-workflow.v2.control-plane-response",
+          "control_plane_schema_version": 1,
+          "control_plane_version": "2",
+          "namespace": "default",
+          "operation": "query",
+          "operation_name": "state",
+          "operation_name_field": "query_name",
+          "principal": {
+            "id": "legacy-token",
+            "label": "Admin",
+            "type": "auth:<redacted>"
+          },
+          "query_name": "state",
+          "reason": null,
+          "result": 0,
+          "result_envelope": {
+            "blob": "wwHioz3/VYAiNwQA",
+            "codec": "avro"
+          },
+          "run_id": "01m3mv2z9xbrxskq0r54jyxn4r",
+          "target_scope": "instance",
+          "workflow_id": "wf-sq-sdk-php-270043799d"
+        },
+        "reason": null,
+        "server_response": null,
+        "status_code": null,
+        "stderr_tail": "",
+        "stdout_tail": "... output truncated; retained tail follows ...\ntance_not_found\",\"historical_run_command_rejected\",\"run_not_active\",\"query_not_found\",\"rejected_unknown_query\",\"invalid_query_arguments\",\"workflow_definition_unavailable\",\"query_rejected\",\"query_worker_unavailable\",\"query_worker_incompatible\",\"query_task_queue_full\",\"query_task_queue_unavailable\",\"query_task_not_claimed\",\"query_worker_execution_timeout\",\"query_worker_timeout\",\"v1_projection_read_only\"]},\"operation_name\":\"state\",\"operation_name_field\":\"query_name\",\"run_id\":\"01m3mv2z9xbrxskq0r54jyxn4r\",\"target_scope\":\"instance\",\"query_name\":\"state\",\"reason\":null,\"result\":0,\"result_envelope\":{\"codec\":\"avro\",\"blob\":\"wwHioz3/VYAiNwQA\"},\"principal\":{\"type\":\"auth:<redacted>,\"id\":\"legacy-token\",\"label\":\"Admin\"}},\"control_plane_schema\":\"durable-workflow.v2.control-plane-response\",\"control_plane_schema_version\":1,\"control_plane_operation\":\"query\",\"operation\":\"query\",\"operation_name\":\"state\",\"operation_name_field\":\"query_name\",\"control_plane_version\":\"2\",\"namespace\":\"default\"}",
+        "validation_errors": null,
+        "workflow_id": "wf-sq-sdk-php-270043799d"
+      },
+      "sequence": 2,
+      "status": null,
+      "status_code": null,
+      "stderr_tail": "",
+      "stdout_tail": {
+        "original_bytes": 1024,
+        "reason": "bounded_sanitized_failure_summary",
+        "retained": true,
+        "sha256": "b1bb3bdabcbabd2a8cb0f2c070dc81fa3ac211226f766ab84717e14580bcbd71",
+        "summary": "... output truncated; retained tail follows ...\ntance_not_found\",\"historical_run_command_rejected\",\"run_not_active\",\"query_not_found\",\"rejected_unknown_query\",\"invalid_query_arguments\",\"workflow_definition_unavailable\",\"query_rejected\",\"query_worker_unavailable\",\"query_worker_incompatible\",\"query_task_queue_full\",\"query_task_queue_unavailable\",\"query_task_not_claimed\",\"query_worker_execution_timeout\",\"query_worker_timeout\",\"v1_projection_read_only\"]},\"operation_name\":\"state\",\"operation_name_field\":\"query_na\n... 100 bytes omitted ...\nll,\"result\":0,\"result_envelope\":{\"codec\":\"avro\",\"blob\":\"wwHioz3/VYAiNwQA\"},\"principal\":{\"type\":\"auth:<redacted>,\"id\":\"legacy-token\",\"label\":\"Admin\"}},\"control_plane_schema\":\"durable-workflow.v2.control-plane-response\",\"control_plane_schema_version\":1,\"control_plane_operation\":\"query\",\"operation\":\"query\",\"operation_name\":\"state\",\"operation_name_field\":\"query_name\",\"control_plane_version\":\"2\",\"namespace\":\"default\"}"
+      },
+      "validation_details": null,
+      "workflow_identity": {
+        "run_id": "01m3mv2z9xbrxskq0r54jyxn4r",
+        "task_queue": "signals-queries-sdk-php-270043799d",
+        "worker_id": "signals-queries-sdk-php-worker-270043799d",
+        "workflow_id": "wf-sq-sdk-php-270043799d"
+      }
+    },
+    "initial_query_result": 0,
+    "worker_registration": {
+      "build_id": null,
+      "capabilities": [
+        "query_tasks",
+        "workflow_updates",
+        "durable_history_replay",
+        "graceful_shutdown",
+        "message_streams",
+        "memo_upserts",
+        "typed_search_attributes",
+        "durable_selection",
+        "local_activities",
+        "worker_sessions",
+        "sticky_execution",
+        "cross_kind_poll_wake"
+      ],
+      "capability_manifest": {
+        "local_activities": {
+          "implementation": "record_local_activity",
+          "minimum_protocol_version": "1.18",
+          "supported": true
+        },
+        "sticky_execution": {
+          "implementation": "bounded_exact_identity_cache",
+          "minimum_protocol_version": "1.18",
+          "supported": true
+        },
+        "worker_sessions": {
+          "implementation": "create_heartbeat_close",
+          "minimum_protocol_version": "1.18",
+          "supported": true
+        }
+      },
+      "heartbeat_interval_seconds": null,
+      "last_heartbeat_at": "2026-09-28T20:25:17.000000Z",
+      "max_concurrent_activity_tasks": 1,
+      "max_concurrent_worker_sessions": 10,
+      "max_concurrent_workflow_tasks": 1,
+      "namespace": "default",
+      "process_metrics": null,
+      "registered_at": "2026-09-28T20:25:17.000000Z",
+      "runtime": "php",
+      "sdk_version": "durable-workflow-php/2.1.5",
+      "stale_after_seconds": 30,
+      "status": "active",
+      "supported_activity_types": [],
+      "supported_workflow_types": [
+        "conformance.counter.php"
+      ],
+      "task_queue": "signals-queries-sdk-php-270043799d",
+      "task_slots": {
+        "activity_available": null,
+        "activity_capacity": 1,
+        "session_available": null,
+        "session_capacity": 10,
+        "workflow_available": null,
+        "workflow_capacity": 1
+      },
+      "updated_at": "2026-09-28T20:25:17.000000Z",
+      "worker_id": "signals-queries-sdk-php-worker-270043799d",
+      "workflow_command_contracts": {
+        "conformance.counter.php": {
+          "queries": [
+            "current",
+            "state"
+          ],
+          "query_contracts": [
+            {
+              "name": "state",
+              "parameters": []
+            },
+            {
+              "name": "current",
+              "parameters": []
+            }
+          ],
+          "signal_contracts": [
+            {
+              "name": "increment",
+              "parameters": [
+                {
+                  "allows_null": false,
+                  "default": null,
+                  "default_available": false,
+                  "name": "amount",
+                  "position": 0,
+                  "required": true,
+                  "type": "int",
+                  "variadic": false
+                }
+              ]
+            }
+          ],
+          "signals": [
+            "increment"
+          ],
+          "update_contracts": [],
+          "update_validators": [],
+          "updates": []
+        }
+      },
+      "workflow_definition_fingerprints": {
+        "conformance.counter.php": "sha256:adff3ff5ba31d420ccf8d41a8eaa349326d2512be45d0d100ed90dab18d456f0"
+      }
+    },
+    "workflow_start": {
+      "client": "sdk-php",
+      "command": null,
+      "exit_code": 0,
+      "ok": true,
+      "operation_name": "start",
+      "operation_surface": "start",
+      "phase": "workflow_start",
+      "reason": null,
+      "sample": {
+        "api_sample": {
+          "arguments": [],
+          "client": "sdk-php",
+          "operation": "start",
+          "operation_name": "start",
+          "result_shape": "decoded-result-or-exact-error-body",
+          "task_queue": "signals-queries-sdk-php-270043799d",
+          "wire_input_shape": "durable-workflow.v2.payload-envelope",
+          "workflow_id": "wf-sq-sdk-php-270043799d",
+          "workflow_type": "conformance.counter.php"
+        },
+        "client": "sdk-php",
+        "exit_code": 0,
+        "ok": true,
+        "operation": "start",
+        "operation_name": "start",
+        "process_id": 1,
+        "raw_stdout": "Warning: The use statement with non-compound name 'Throwable' has no effect in /app/php-workflow-client.php on line 10\n{\"client\":\"sdk-php\",\"operation\":\"start\",\"operation_name\":\"start\",\"workflow_id\":\"wf-sq-sdk-php-270043799d\",\"workflow_type\":\"conformance.counter.php\",\"sdk_version\":\"2.1.5\",\"process_id\":1,\"result\":{\"workflow_id\":\"wf-sq-sdk-php-270043799d\",\"run_id\":\"01m3mv2z9xbrxskq0r54jyxn4r\",\"workflow_type\":\"conformance.counter.php\"},\"ok\":true}",
+        "result": {
+          "run_id": "01m3mv2z9xbrxskq0r54jyxn4r",
+          "workflow_id": "wf-sq-sdk-php-270043799d",
+          "workflow_type": "conformance.counter.php"
+        },
+        "sdk_version": "2.1.5",
+        "workflow_id": "wf-sq-sdk-php-270043799d",
+        "workflow_type": "conformance.counter.php"
+      },
+      "sequence": 1,
+      "status": null,
+      "status_code": null,
+      "stderr_tail": null,
+      "stdout_tail": null,
+      "validation_details": null,
+      "workflow_identity": {
+        "run_id": null,
+        "task_queue": "signals-queries-sdk-php-270043799d",
+        "worker_id": "signals-queries-sdk-php-worker-270043799d",
+        "workflow_id": "wf-sq-sdk-php-270043799d"
+      }
+    }
+  },
+  "post_attempt_state": {
+    "captured_at": "2026-09-28T20:25:20.323860Z",
+    "run_id": "01m3mv2z9xbrxskq0r54jyxn4r",
+    "worker": {
+      "capabilities": [
+        "query_tasks",
+        "workflow_updates",
+        "durable_history_replay",
+        "graceful_shutdown",
+        "message_streams",
+        "memo_upserts",
+        "typed_search_attributes",
+        "durable_selection",
+        "local_activities",
+        "worker_sessions",
+        "sticky_execution",
+        "cross_kind_poll_wake"
+      ],
+      "last_heartbeat_at": "2026-09-28T20:25:17.000000Z",
+      "process_metrics": {
+        "sticky_cache": {
+          "eviction": 0,
+          "forced_cold_replay": 0,
+          "hit": 0,
+          "miss": 1
+        }
+      },
+      "registered_at": "2026-09-28T20:25:17.000000Z",
+      "runtime": "php",
+      "sdk_version": "durable-workflow-php/2.1.5",
+      "status": "active",
+      "status_code": 200,
+      "supported_workflow_types": [
+        "conformance.counter.php"
+      ],
+      "task_queue": "signals-queries-sdk-php-270043799d",
+      "worker_id": "signals-queries-sdk-php-worker-270043799d"
+    },
+    "worker_id": "signals-queries-sdk-php-worker-270043799d",
+    "worker_process": {
+      "container_name": "dw-sq-php-270043799d",
+      "inspect": {
+        "command": [
+          "docker",
+          "inspect",
+          "--format",
+          "{{json .State}}",
+          "dw-sq-php-270043799d"
+        ],
+        "exit_code": 0,
+        "stderr_tail": "",
+        "stdout_tail": "{\"Status\":\"running\",\"Running\":true,\"Paused\":false,\"Restarting\":false,\"OOMKilled\":false,\"Dead\":false,\"Pid\":3528514,\"ExitCode\":0,\"Error\":\"\",\"StartedAt\":\"2026-09-28T20:25:16.266310651Z\",\"FinishedAt\":\"0001-01-01T00:00:00Z\"}"
+      },
+      "logs": {
+        "command": [
+          "docker",
+          "logs",
+          "--tail",
+          "40",
+          "dw-sq-php-270043799d"
+        ],
+        "exit_code": 0,
+        "stderr_tail": "",
+        "stdout_tail": "{\"event\":\"worker_starting\",\"worker_id\":\"signals-queries-sdk-php-worker-270043799d\",\"task_queue\":\"signals-queries-sdk-php-270043799d\",\"workflow_type\":\"conformance.counter.php\",\"sdk_version\":\"2.1.5\",\"process_id\":1}"
+      }
+    },
+    "workflow": {
+      "closed_at": null,
+      "history_event_count": 4,
+      "history_event_types": [
+        "StartAccepted",
+        "WorkflowStarted",
+        "TimerScheduled",
+        "SignalReceived"
+      ],
+      "output": null,
+      "ready_or_leased_workflow_task_count": 1,
+      "ready_or_leased_workflow_task_set_sha256": "c60cfa1c2145a7b093cc76905737567b0cf23127fce671c659ebdfe6f58af6b7",
+      "ready_or_leased_workflow_tasks": [
+        {
+          "lease_owner": "signals-queries-sdk-php-worker-270043799d",
+          "status": "leased",
+          "task_id": "01m3mv30zkef9209q3q12h6d94",
+          "transport_state": "leased",
+          "workflow_resume_source_id": "01m3mv30z6y8wxpy33r4fz6wys",
+          "workflow_resume_source_kind": "workflow_signal",
+          "workflow_wait_kind": "signal"
+        }
+      ],
+      "run_id": "01m3mv2z9xbrxskq0r54jyxn4r",
+      "status": "waiting",
+      "status_code": 200,
+      "task_queue": "signals-queries-sdk-php-270043799d",
+      "workflow_command_count": 2,
+      "workflow_commands": [
+        {
+          "accepted_at": "2026-09-28T20:25:18.399209Z",
+          "applied_at": "2026-09-28T20:25:18.399216Z",
+          "id": "01m3mv2za24xys7z0fhb25y7rp",
+          "outcome": "started_new",
+          "resolved_run_id": "01m3mv2z9xbrxskq0r54jyxn4r",
+          "sequence": 1,
+          "status": "accepted",
+          "target_scope": "instance",
+          "type": "start"
+        },
+        {
+          "accepted_at": "2026-09-28T20:25:20.097030Z",
+          "id": "01m3mv30z4qg0jt5eynkj59pkr",
+          "outcome": "signal_received",
+          "resolved_run_id": "01m3mv2z9xbrxskq0r54jyxn4r",
+          "sequence": 2,
+          "status": "accepted",
+          "target_name": "increment",
+          "target_scope": "instance",
+          "type": "signal"
+        }
+      ],
+      "workflow_id": "wf-sq-sdk-php-270043799d",
+      "workflow_type": "conformance.counter.php"
+    },
+    "workflow_id": "wf-sq-sdk-php-270043799d"
+  },
+  "probe_error": null,
+  "result_bytes": 25569,
+  "runner_blocked": false,
+  "schema": "durable-workflow.v2.signal-query-runtime.php-cli-signal-focused-result",
+  "started_at": "2026-09-28T20:22:57Z"
+}

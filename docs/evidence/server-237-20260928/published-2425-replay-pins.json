@@ -1,0 +1,23 @@
+{
+  "artifact_sources": {
+    "cli": "github_release_asset",
+    "sdk-php": "packagist_package",
+    "sdk-python": "pypi_package",
+    "sdk-rust": "crates_io_package",
+    "server": "published_docker_image",
+    "waterline": "packagist_package",
+    "workflow-php": "packagist_package"
+  },
+  "artifact_versions": {
+    "cli": "2.1.2",
+    "sdk-php": "2.1.5",
+    "sdk-python": "2.3.5",
+    "sdk-rust": "2.1.1",
+    "server": "2.4.25",
+    "waterline": "2.0.7",
+    "workflow-php": "2.2.18"
+  },
+  "cli_install_url": "https://github.com/durable-workflow/cli/releases/download/2.1.2/install.sh",
+  "schema": "durable-workflow.v2.replay-conformance.pins",
+  "server_image": "durableworkflow/server@sha256:4bd97a895175ceaed2dd39705bc0446acc5c330ba60830657d449f875b9f66e5"
+}

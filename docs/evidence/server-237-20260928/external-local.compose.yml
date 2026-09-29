@@ -1,0 +1,13 @@
+services:
+  probe:
+    environment:
+      DRILL_ADMIN_TOKEN: ${DW_ADMIN_TOKEN:?Set synthetic admin token}
+  server:
+    volumes:
+      - ${PROBE_EXTERNAL_PAYLOAD_ROOT:?Set isolated payload root}:/app/storage/app/external-payloads
+  worker:
+    volumes:
+      - ${PROBE_EXTERNAL_PAYLOAD_ROOT:?Set isolated payload root}:/app/storage/app/external-payloads
+  scheduler:
+    volumes:
+      - ${PROBE_EXTERNAL_PAYLOAD_ROOT:?Set isolated payload root}:/app/storage/app/external-payloads

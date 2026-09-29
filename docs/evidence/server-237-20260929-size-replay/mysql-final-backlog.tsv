@@ -1,0 +1,7 @@
+status	COUNT(*)
+completed	3
+task_type	status	attempt_count	repair_count	COUNT(*)
+workflow	completed	1	0	30
+activity	completed	1	0	27
+COUNT(*)
+0

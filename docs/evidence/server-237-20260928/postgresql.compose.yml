@@ -1,0 +1,67 @@
+services:
+  bootstrap:
+    environment:
+      DB_CONNECTION: pgsql
+      DB_HOST: pgsql
+      DB_PORT: 5432
+    depends_on: !override
+      pgsql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+  server:
+    environment:
+      DB_CONNECTION: pgsql
+      DB_HOST: pgsql
+      DB_PORT: 5432
+    depends_on: !override
+      bootstrap:
+        condition: service_completed_successfully
+      pgsql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+  worker:
+    environment:
+      DB_CONNECTION: pgsql
+      DB_HOST: pgsql
+      DB_PORT: 5432
+    depends_on: !override
+      bootstrap:
+        condition: service_completed_successfully
+      server:
+        condition: service_healthy
+      pgsql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+  scheduler:
+    environment:
+      DB_CONNECTION: pgsql
+      DB_HOST: pgsql
+      DB_PORT: 5432
+    depends_on: !override
+      bootstrap:
+        condition: service_completed_successfully
+      pgsql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+  mysql:
+    profiles: [mysql]
+  pgsql:
+    image: postgres@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+    environment:
+      POSTGRES_DB: ${DB_DATABASE:-durable_workflow}
+      POSTGRES_USER: ${DB_USERNAME:-workflow}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-workflow}
+    volumes:
+      - pgsql_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  pgsql_data:

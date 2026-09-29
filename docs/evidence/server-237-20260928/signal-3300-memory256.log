@@ -1,0 +1,5 @@
+{"phase": "offered", "signals": 1000}
+{"phase": "offered", "signals": 2000}
+{"phase": "offered", "signals": 3000}
+{"phase": "offered", "signals": 3300}
+{"event_count": 3306, "event_types": {"ConditionWaitOpened": 1, "ConditionWaitSatisfied": 1, "MessageCursorAdvanced": 1, "SignalReceived": 3300, "StartAccepted": 1, "WorkflowCompleted": 1, "WorkflowStarted": 1}, "history_pages": 4, "offer_seconds": 338.8872702117078, "offered_signals": 3300, "result": {"count": 3300, "total": 5443350}, "resume_to_complete_seconds": 28.28776034200564, "run_id": "01m3k31kv9karwkjdrner8hrjr", "schema": "server-237-signal-history-probe-v1", "signal_api_p50_seconds": 0.4375171922147274, "signal_api_p95_seconds": 0.8274586638435721, "signal_api_p99_seconds": 1.8443147637881339, "signal_concurrency": 8, "target_signals": 3300, "worker_peak_rss_kib": 91324, "workflow_id": "history-qualification-signals-3300-pub2420n3300m256"}

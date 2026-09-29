@@ -1,0 +1,5 @@
+/dw-server237-pg-20260928-server-1|0|false|running
+/dw-server237-pg-20260928-worker-1|0|false|running
+/dw-server237-pg-20260928-scheduler-1|0|false|running
+/dw-server237-pg-20260928-pgsql-1|0|false|running
+/dw-server237-pg-20260928-redis-1|0|false|running

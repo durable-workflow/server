@@ -1,0 +1,5 @@
+server237-ext-20260928-worker-1|Up 4 minutes (healthy)|running
+server237-ext-20260928-server-1|Up 4 minutes (healthy)|running
+server237-ext-20260928-scheduler-1|Up 4 minutes (healthy)|running
+server237-ext-20260928-redis-1|Up 7 minutes (healthy)|running
+server237-ext-20260928-mysql-1|Up 7 minutes (healthy)|running

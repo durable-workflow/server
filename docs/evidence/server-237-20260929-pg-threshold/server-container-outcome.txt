@@ -1,0 +1,3 @@
+/dw237pgthreshold0929-server-1|running=true|health=healthy|oom_killed=false|restart_count=0
+/dw237pgthreshold0929-worker-1|running=true|health=healthy|oom_killed=false|restart_count=0
+/dw237pgthreshold0929-scheduler-1|running=true|health=healthy|oom_killed=false|restart_count=0

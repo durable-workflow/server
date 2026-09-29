@@ -1,0 +1,8 @@
+[Mon Sep 28 04:05:54.314134 2026] [php:notice] [pid 43:tid 43] [client 172.19.0.7:49662] qualification_complete_peak_bytes=4194304 final_bytes=4194304
+172.19.0.7 - - [28/Sep/2026:04:05:54 +0000] "POST /api/worker/workflow-tasks/01m3k31kw9bad23kcsn2gk7ajx/complete HTTP/1.1" 200 7712 "-" "python-httpx/0.28.1"
+[Mon Sep 28 04:11:55.328779 2026] [php:notice] [pid 243:tid 243] [client 172.19.0.7:35346] qualification_complete_peak_bytes=146800640 final_bytes=146800640
+172.19.0.7 - - [28/Sep/2026:04:11:44 +0000] "POST /api/worker/workflow-tasks/01m3k31mpkqf6x6n38g2pevz6j/complete HTTP/1.1" 200 7711 "-" "python-httpx/0.28.1"
+[Mon Sep 28 04:12:39.276727 2026] [php:notice] [pid 316:tid 316] [client 172.19.0.7:42628] qualification_complete_peak_bytes=4194304 final_bytes=4194304
+172.19.0.7 - - [28/Sep/2026:04:12:39 +0000] "POST /api/worker/workflow-tasks/01m3k3dze46gw50vfjkx09b0sj/complete HTTP/1.1" 200 7714 "-" "python-httpx/0.28.1"
+[Mon Sep 28 04:20:27.393101 2026] [php:notice] [pid 386:tid 386] [client 172.19.0.7:47688] qualification_complete_peak_bytes=176160768 final_bytes=176160768
+172.19.0.7 - - [28/Sep/2026:04:20:10 +0000] "POST /api/worker/workflow-tasks/01m3k3e073w4v98xyz1z5a9wzq/complete HTTP/1.1" 200 7677 "-" "python-httpx/0.28.1"

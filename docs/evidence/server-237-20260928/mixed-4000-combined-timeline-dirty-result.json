@@ -1,0 +1,11 @@
+{
+    "run_id": "01m3krcyd85dhvwrwk02jgt385",
+    "entry_limit": 100,
+    "updated_rows": 100,
+    "dirty_columns": {
+        "payload": 100
+    },
+    "payload_semantically_equal": 100,
+    "payload_semantically_different": 0,
+    "elapsed_seconds": 0.14867186546325684
+}

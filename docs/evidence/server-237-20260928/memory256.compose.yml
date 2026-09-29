@@ -1,0 +1,5 @@
+services:
+  server:
+    volumes:
+      - ./docs/evidence/server-237-20260928/memory256.ini:/usr/local/etc/php/conf.d/zz-memory-qualification.ini:ro
+      - ./docs/evidence/server-237-20260928/qualification-peak.php:/usr/local/etc/php/qualification-peak.php:ro

@@ -1,0 +1,15 @@
+services:
+  bootstrap:
+    volumes:
+      - ${WORKFLOW_CANDIDATE_ROOT:?Set the Workflow candidate checkout}:/app/vendor/durable-workflow/workflow:ro
+  server:
+    volumes:
+      - ${WORKFLOW_CANDIDATE_ROOT:?Set the Workflow candidate checkout}:/app/vendor/durable-workflow/workflow:ro
+      - ./docs/evidence/server-237-20260928/memory128.ini:/usr/local/etc/php/conf.d/zz-memory-qualification.ini:ro
+      - ./docs/evidence/server-237-20260928/qualification-peak.php:/usr/local/etc/php/qualification-peak.php:ro
+  worker:
+    volumes:
+      - ${WORKFLOW_CANDIDATE_ROOT:?Set the Workflow candidate checkout}:/app/vendor/durable-workflow/workflow:ro
+  scheduler:
+    volumes:
+      - ${WORKFLOW_CANDIDATE_ROOT:?Set the Workflow candidate checkout}:/app/vendor/durable-workflow/workflow:ro

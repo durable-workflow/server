@@ -1,0 +1,27 @@
+2026-09-28T11:10:06.859596639Z [Mon Sep 28 11:10:06.859440 2026] [php:notice] [pid 35:tid 35] [client 172.19.0.7:58458] qualification_complete_peak_bytes=4194304 final_bytes=4194304
+2026-09-28T11:16:26.473661968Z [Mon Sep 28 11:16:26.473536 2026] [php:notice] [pid 25:tid 25] [client 172.19.0.7:59856] qualification_complete_peak_bytes=94371840 final_bytes=94371840
+2026-09-28T11:16:45.430773002Z 172.19.0.7 - - [28/Sep/2026:11:16:37 +0000] "POST /api/worker/activity-tasks/01m3kvnv9hj8wry7hkm4r3p3ty/complete HTTP/1.1" 200 7730 "-" "python-httpx/0.28.1"
+2026-09-28T11:17:01.394408176Z [Mon Sep 28 11:17:01.394303 2026] [php:notice] [pid 26:tid 26] [client 172.19.0.7:36292] qualification_complete_peak_bytes=94371840 final_bytes=94371840
+2026-09-28T11:17:19.157587679Z [Mon Sep 28 11:17:19.157382 2026] [php:notice] [pid 26:tid 26] [client 172.19.0.7:36292] qualification_complete_peak_bytes=94371840 final_bytes=94371840
+2026-09-28T11:17:39.572194829Z 172.19.0.7 - - [28/Sep/2026:11:17:31 +0000] "POST /api/worker/activity-tasks/01m3kvqerfr344tgyxa8e8wdsv/complete HTTP/1.1" 200 7730 "-" "python-httpx/0.28.1"
+2026-09-28T11:17:55.730568901Z [Mon Sep 28 11:17:55.730366 2026] [php:notice] [pid 26:tid 26] [client 172.19.0.7:36292] qualification_complete_peak_bytes=94371840 final_bytes=94371840
+2026-09-28T11:18:13.258775894Z [Mon Sep 28 11:18:13.258597 2026] [php:notice] [pid 26:tid 26] [client 172.19.0.7:36292] qualification_complete_peak_bytes=94371840 final_bytes=94371840
+2026-09-28T11:18:32.485749381Z 172.19.0.7 - - [28/Sep/2026:11:18:24 +0000] "POST /api/worker/activity-tasks/01m3kvs3f52y4499qv9z320zmk/complete HTTP/1.1" 200 7731 "-" "python-httpx/0.28.1"
+2026-09-28T11:18:48.494123256Z [Mon Sep 28 11:18:48.494003 2026] [php:notice] [pid 26:tid 26] [client 172.19.0.7:36292] qualification_complete_peak_bytes=94371840 final_bytes=94371840
+2026-09-28T11:19:05.702397759Z [Mon Sep 28 11:19:05.702205 2026] [php:notice] [pid 26:tid 26] [client 172.19.0.7:36292] qualification_complete_peak_bytes=94371840 final_bytes=94371840
+2026-09-28T11:19:26.621575010Z 172.19.0.7 - - [28/Sep/2026:11:19:18 +0000] "POST /api/worker/activity-tasks/01m3kvtpsnyxf7trmt3h9x71mg/complete HTTP/1.1" 200 7730 "-" "python-httpx/0.28.1"
+2026-09-28T11:19:42.570746808Z [Mon Sep 28 11:19:42.570646 2026] [php:notice] [pid 26:tid 26] [client 172.19.0.7:36292] qualification_complete_peak_bytes=94371840 final_bytes=94371840
+2026-09-28T11:20:00.202150052Z [Mon Sep 28 11:20:00.201966 2026] [php:notice] [pid 26:tid 26] [client 172.19.0.7:36292] qualification_complete_peak_bytes=94371840 final_bytes=94371840
+2026-09-28T11:20:19.820084504Z 172.19.0.7 - - [28/Sep/2026:11:20:11 +0000] "POST /api/worker/activity-tasks/01m3kvwbzavg28r9rtddvckn9p/complete HTTP/1.1" 200 7731 "-" "python-httpx/0.28.1"
+2026-09-28T11:20:35.774659202Z [Mon Sep 28 11:20:35.774497 2026] [php:notice] [pid 26:tid 26] [client 172.19.0.7:36292] qualification_complete_peak_bytes=94371840 final_bytes=94371840
+2026-09-28T11:20:53.844982221Z [Mon Sep 28 11:20:53.844822 2026] [php:notice] [pid 26:tid 26] [client 172.19.0.7:36292] qualification_complete_peak_bytes=94371840 final_bytes=94371840
+2026-09-28T11:21:14.062595040Z 172.19.0.7 - - [28/Sep/2026:11:21:05 +0000] "POST /api/worker/activity-tasks/01m3kvy0bxbsewx3rz7jjz8t6s/complete HTTP/1.1" 200 7731 "-" "python-httpx/0.28.1"
+2026-09-28T11:21:29.936391444Z [Mon Sep 28 11:21:29.936241 2026] [php:notice] [pid 26:tid 26] [client 172.19.0.7:36292] qualification_complete_peak_bytes=94371840 final_bytes=94371840
+2026-09-28T11:21:47.563755879Z [Mon Sep 28 11:21:47.563533 2026] [php:notice] [pid 26:tid 26] [client 172.19.0.7:36292] qualification_complete_peak_bytes=94371840 final_bytes=94371840
+2026-09-28T11:22:07.136124132Z 172.19.0.7 - - [28/Sep/2026:11:21:58 +0000] "POST /api/worker/activity-tasks/01m3kvzms2jz6h0wsy57fma92x/complete HTTP/1.1" 200 7733 "-" "python-httpx/0.28.1"
+2026-09-28T11:22:23.106585166Z [Mon Sep 28 11:22:23.106455 2026] [php:notice] [pid 26:tid 26] [client 172.19.0.7:36292] qualification_complete_peak_bytes=94371840 final_bytes=94371840
+2026-09-28T11:22:41.388741650Z [Mon Sep 28 11:22:41.388578 2026] [php:notice] [pid 26:tid 26] [client 172.19.0.7:36292] qualification_complete_peak_bytes=94371840 final_bytes=94371840
+2026-09-28T11:23:01.797037815Z 172.19.0.7 - - [28/Sep/2026:11:22:53 +0000] "POST /api/worker/activity-tasks/01m3kw19cd7y0km2ght8dy8j83/complete HTTP/1.1" 200 7731 "-" "python-httpx/0.28.1"
+2026-09-28T11:23:17.857647965Z [Mon Sep 28 11:23:17.857492 2026] [php:notice] [pid 26:tid 26] [client 172.19.0.7:36292] qualification_complete_peak_bytes=94371840 final_bytes=94371840
+2026-09-28T11:23:34.868665484Z [Mon Sep 28 11:23:34.868470 2026] [php:notice] [pid 26:tid 26] [client 172.19.0.7:36292] qualification_complete_peak_bytes=88080384 final_bytes=88080384
+2026-09-28T11:23:35.187283725Z [Mon Sep 28 11:23:35.187126 2026] [php:notice] [pid 26:tid 26] [client 172.19.0.7:36292] qualification_complete_peak_bytes=23068672 final_bytes=23068672

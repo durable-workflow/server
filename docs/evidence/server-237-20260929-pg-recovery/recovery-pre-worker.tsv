@@ -1,0 +1,16 @@
+runs
+01m3nxfv2rjrgqjpsrdbq1xt1j|1|waiting||4003|2026-09-29 06:26:31.639931|
+history_sequence_integrity
+01m3nxfv2rjrgqjpsrdbq1xt1j|1|4003|1|4003|4003
+event_types
+ConditionWaitOpened|1
+SignalReceived|4000
+StartAccepted|1
+WorkflowStarted|1
+task_states
+workflow|completed|1|1|0
+workflow|ready|1|0|29
+pending_tasks
+1
+signal_records
+received|4000

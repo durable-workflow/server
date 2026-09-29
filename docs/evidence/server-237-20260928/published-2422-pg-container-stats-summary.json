@@ -1,0 +1,57 @@
+{
+  "pgsql": {
+    "cpu_mean_percent": 47.42,
+    "cpu_peak_percent": 93.86,
+    "first_at": "2026-09-28T14:29:09Z",
+    "last_at": "2026-09-28T14:44:00Z",
+    "memory_last_mib": 74.68,
+    "memory_median_mib": 78.64,
+    "memory_peak_mib": 86.14,
+    "pids_peak": 15,
+    "samples": 75
+  },
+  "redis": {
+    "cpu_mean_percent": 1.06,
+    "cpu_peak_percent": 5.86,
+    "first_at": "2026-09-28T14:29:09Z",
+    "last_at": "2026-09-28T14:44:00Z",
+    "memory_last_mib": 19.32,
+    "memory_median_mib": 18.99,
+    "memory_peak_mib": 21.65,
+    "pids_peak": 11,
+    "samples": 75
+  },
+  "scheduler": {
+    "cpu_mean_percent": 21.69,
+    "cpu_peak_percent": 97.57,
+    "first_at": "2026-09-28T14:29:09Z",
+    "last_at": "2026-09-28T14:44:00Z",
+    "memory_last_mib": 2.13,
+    "memory_median_mib": 2.13,
+    "memory_peak_mib": 102.6,
+    "pids_peak": 3,
+    "samples": 75
+  },
+  "server": {
+    "cpu_mean_percent": 66.22,
+    "cpu_peak_percent": 112.64,
+    "first_at": "2026-09-28T14:29:09Z",
+    "last_at": "2026-09-28T14:44:00Z",
+    "memory_last_mib": 73.39,
+    "memory_median_mib": 140.2,
+    "memory_peak_mib": 211.4,
+    "pids_peak": 14,
+    "samples": 75
+  },
+  "worker": {
+    "cpu_mean_percent": 11.64,
+    "cpu_peak_percent": 96.54,
+    "first_at": "2026-09-28T14:29:09Z",
+    "last_at": "2026-09-28T14:44:00Z",
+    "memory_last_mib": 107.4,
+    "memory_median_mib": 105.3,
+    "memory_peak_mib": 109.4,
+    "pids_peak": 7,
+    "samples": 75
+  }
+}

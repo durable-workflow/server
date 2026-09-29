@@ -1,0 +1,13 @@
+signal_external_references
+history-qualification-signals-1-payload-prune-completed|7b88dee8776e3365f13047fa38c9e1efe43db0fd9d73612e68f54e39d5acf7c2|file:///app/storage/app/external-payloads/default/avro/7b/7b88dee8776e3365f13047fa38c9e1efe43db0fd9d73612e68f54e39d5acf7c2|1
+history-qualification-signals-2-payload-retained-active|52b2ebb40fbc7c1a8b55f6c070e081d18b032bd27b8cca0b9744c2253ac9c882|file:///app/storage/app/external-payloads/default/avro/52/52b2ebb40fbc7c1a8b55f6c070e081d18b032bd27b8cca0b9744c2253ac9c882|1
+history-qualification-signals-2-payload-retained-active|7b88dee8776e3365f13047fa38c9e1efe43db0fd9d73612e68f54e39d5acf7c2|file:///app/storage/app/external-payloads/default/avro/7b/7b88dee8776e3365f13047fa38c9e1efe43db0fd9d73612e68f54e39d5acf7c2|1
+stored_objects
+52b2ebb40fbc7c1a8b55f6c070e081d18b032bd27b8cca0b9744c2253ac9c882|file:///app/storage/app/external-payloads/default/avro/52/52b2ebb40fbc7c1a8b55f6c070e081d18b032bd27b8cca0b9744c2253ac9c882|2756|ready
+7b88dee8776e3365f13047fa38c9e1efe43db0fd9d73612e68f54e39d5acf7c2|file:///app/storage/app/external-payloads/default/avro/7b/7b88dee8776e3365f13047fa38c9e1efe43db0fd9d73612e68f54e39d5acf7c2|2756|ready
+runs
+history-qualification-signals-1-payload-prune-completed|01m3nyqbvcr15g2tqnnyrpc67a|completed|7
+history-qualification-signals-2-payload-retained-active|01m3nypyk37hn42dxy53p6hke6|waiting|5
+history_rows
+history-qualification-signals-1-payload-prune-completed|7
+history-qualification-signals-2-payload-retained-active|5
