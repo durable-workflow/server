@@ -87,13 +87,13 @@ jobs:
           docker network rm "dw-lifecycle-${DW_JOB_RESOURCE_PREFIX}" >/dev/null 2>&1 || true
 
       - name: Make lifecycle evidence readable
-        if: always()
+        if: ${{ always() && steps.validate.outcome == 'success' }}
         run: |
           result_dir="$RUNNER_TEMP/published-workflow-lifecycle"
           if [[ -d "$result_dir" ]]; then
-            sudo find "$result_dir" -maxdepth 1 -type f \
-              -exec chown "$(id -u):$(id -g)" {} + \
-              -exec chmod u+r {} +
+            docker run --rm --name "dw-lifecycle-evidence-${DW_JOB_RESOURCE_PREFIX}" \
+              --volume "$result_dir:/result" --entrypoint find "$DW_SERVER_IMAGE" \
+              /result -maxdepth 1 -type f -exec chmod a+r {} +
           fi
 
       - name: Retain lifecycle results
@@ -111,3 +111,7 @@ jobs:
             ${{ runner.temp }}/published-workflow-lifecycle/*.sqlite
           if-no-files-found: error
           retention-days: 30
+
+      - name: Remove job-owned evidence container
+        if: always()
+        run: docker rm -f "dw-lifecycle-evidence-${DW_JOB_RESOURCE_PREFIX}" >/dev/null 2>&1 || true
