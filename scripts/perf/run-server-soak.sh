@@ -167,29 +167,74 @@ services:
 YAML
   if [[ "$IMAGE_DISTRIBUTION_METRICS" == 1 ]]; then
     docker_root="$(docker info --format '{{.DockerRootDir}}')"
+    containerd_root="${DW_PERF_CONTAINERD_ROOT:-/var/lib/containerd}"
     image_count_before="$(docker image ls -q | wc -l | tr -d ' ')"
     if [[ "$image_count_before" != 0 ]]; then
       echo "Image distribution measurements require a host with no cached Docker images." >&2
       exit 1
     fi
     docker_bytes_before="$(sudo du -s -B1 "$docker_root" | awk '{print $1}')"
+    containerd_bytes_before=0
+    if [[ -d "$containerd_root" ]]; then
+      containerd_bytes_before="$(sudo du -s -B1 "$containerd_root" | awk '{print $1}')"
+    fi
     pull_started_ns="$(date +%s%N)"
   fi
   docker image pull "$PUBLISHED_SERVER_IMAGE"
   if [[ "$IMAGE_DISTRIBUTION_METRICS" == 1 ]]; then
     pull_completed_ns="$(date +%s%N)"
     docker_bytes_after="$(sudo du -s -B1 "$docker_root" | awk '{print $1}')"
+    containerd_bytes_after=0
+    if [[ -d "$containerd_root" ]]; then
+      containerd_bytes_after="$(sudo du -s -B1 "$containerd_root" | awk '{print $1}')"
+    fi
+    docker_bytes_delta="$((docker_bytes_after - docker_bytes_before))"
+    containerd_bytes_delta="$((containerd_bytes_after - containerd_bytes_before))"
+    if (( docker_bytes_delta <= 0 && containerd_bytes_delta <= 0 )); then
+      echo "Image pull caused no measured allocation in Docker or containerd roots; inspect the engine store before using disk results." >&2
+      exit 1
+    fi
+    rootfs_allocated_bytes="$(docker run --rm --network none --read-only --user 0:0 --entrypoint du "$PUBLISHED_SERVER_IMAGE" -sx --block-size=1 / | awk 'NR == 1 {print $1}')"
+    image_inspect_size_bytes="$(docker image inspect "$PUBLISHED_SERVER_IMAGE" --format '{{.Size}}')"
+    if [[ ! "$rootfs_allocated_bytes" =~ ^[0-9]+$ || "$rootfs_allocated_bytes" == 0 || ! "$image_inspect_size_bytes" =~ ^[0-9]+$ ]]; then
+      echo "Image rootfs or engine-reported size is missing." >&2
+      exit 1
+    fi
     jq -n \
       --arg image "$PUBLISHED_SERVER_IMAGE" \
       --arg platform "$(docker image inspect "$PUBLISHED_SERVER_IMAGE" --format '{{.Os}}/{{.Architecture}}')" \
       --arg storage_driver "$(docker info --format '{{.Driver}}')" \
+      --arg docker_root "$docker_root" \
+      --arg containerd_root "$containerd_root" \
       --argjson image_count_before "$image_count_before" \
       --argjson pull_elapsed_ms "$(((pull_completed_ns - pull_started_ns) / 1000000))" \
       --argjson docker_root_allocated_bytes_before "$docker_bytes_before" \
       --argjson docker_root_allocated_bytes_after "$docker_bytes_after" \
-      --argjson docker_root_allocated_bytes_delta "$((docker_bytes_after - docker_bytes_before))" \
-      --argjson virtual_uncompressed_bytes "$(docker image inspect "$PUBLISHED_SERVER_IMAGE" --format '{{.Size}}')" \
-      '{image:$image,platform:$platform,storage_driver:$storage_driver,image_count_before:$image_count_before,pull_elapsed_ms:$pull_elapsed_ms,docker_root_allocated_bytes_before:$docker_root_allocated_bytes_before,docker_root_allocated_bytes_after:$docker_root_allocated_bytes_after,docker_root_allocated_bytes_delta:$docker_root_allocated_bytes_delta,virtual_uncompressed_bytes:$virtual_uncompressed_bytes,stack_ready_scope:"compose up --wait after backend image pulls"}' \
+      --argjson docker_root_allocated_bytes_delta "$docker_bytes_delta" \
+      --argjson containerd_root_allocated_bytes_before "$containerd_bytes_before" \
+      --argjson containerd_root_allocated_bytes_after "$containerd_bytes_after" \
+      --argjson containerd_root_allocated_bytes_delta "$containerd_bytes_delta" \
+      --argjson docker_image_inspect_size_bytes "$image_inspect_size_bytes" \
+      --argjson rootfs_visible_allocated_bytes "$rootfs_allocated_bytes" \
+      '{
+        image: $image,
+        platform: $platform,
+        storage_driver: $storage_driver,
+        image_count_before: $image_count_before,
+        pull_elapsed_ms: $pull_elapsed_ms,
+        docker_root: $docker_root,
+        docker_root_allocated_bytes_before: $docker_root_allocated_bytes_before,
+        docker_root_allocated_bytes_after: $docker_root_allocated_bytes_after,
+        docker_root_allocated_bytes_delta: $docker_root_allocated_bytes_delta,
+        containerd_root: $containerd_root,
+        containerd_root_allocated_bytes_before: $containerd_root_allocated_bytes_before,
+        containerd_root_allocated_bytes_after: $containerd_root_allocated_bytes_after,
+        containerd_root_allocated_bytes_delta: $containerd_root_allocated_bytes_delta,
+        docker_image_inspect_size_bytes: $docker_image_inspect_size_bytes,
+        rootfs_visible_allocated_bytes: $rootfs_visible_allocated_bytes,
+        rootfs_measurement: "du -sx --block-size=1 / inside a read-only container",
+        stack_ready_scope: "compose up --wait after backend image pulls"
+      }' \
       > "$ARTIFACT_DIR/image-distribution.json"
   fi
   docker image inspect "$PUBLISHED_SERVER_IMAGE" | jq -e --arg image "$PUBLISHED_SERVER_IMAGE" \
