@@ -15,10 +15,15 @@ FROM php:8.3-apache AS base
 
 COPY --from=phpredis-source /phpredis /usr/src/php/ext/redis
 
+# Published conformance runners execute from the exact Server image.
+# Keep their Node and Python runtimes available alongside the service.
 RUN apt-get update && apt-get install -y \
     curl \
     libpq-dev \
     libzip-dev \
+    nodejs \
+    python3 \
+    python3-venv \
     unzip \
     && docker-php-ext-install opcache redis pdo pdo_mysql pdo_pgsql pcntl zip bcmath \
     && groupmod --gid 1000 www-data \

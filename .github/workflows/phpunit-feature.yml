@@ -159,10 +159,12 @@ jobs:
             exit 1
           fi
           docker build --target base -t durable-workflow-server-phpunit-base .
+          docker run --rm --entrypoint sh durable-workflow-server-phpunit-base \
+            -c 'node --version >/dev/null && python3 -m venv /tmp/dw-conformance-venv && test -x /tmp/dw-conformance-venv/bin/python3'
           docker build -t durable-workflow-server-corpus-validator - <<'DOCKERFILE'
           FROM durable-workflow-server-phpunit-base
           RUN apt-get update \
-              && apt-get install -y --no-install-recommends git python3 \
+              && apt-get install -y --no-install-recommends git \
               && rm -rf /var/lib/apt/lists/*
           DOCKERFILE
           docker network create \
