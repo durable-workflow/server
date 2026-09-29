@@ -19,9 +19,6 @@ RUN apt-get update && apt-get install -y \
     curl \
     libpq-dev \
     libzip-dev \
-    nodejs \
-    python3 \
-    python3-venv \
     unzip \
     && docker-php-ext-install opcache redis pdo pdo_mysql pdo_pgsql pcntl zip bcmath \
     && groupmod --gid 1000 www-data \
@@ -66,13 +63,17 @@ RUN apt-get update \
          "${WORKFLOW_PACKAGE_SOURCE}" \
          "${WORKFLOW_PACKAGE_REF}" \
          "${RESOLVED_COMMIT}" \
-         > /workflow/.package-provenance
+         > /workflow/.package-provenance \
+    && rm -rf /workflow/.git \
+    && apt-get purge -y git \
+    && apt-get autoremove -y --purge \
+    && rm -rf /var/lib/apt/lists/*
 
 RUN php scripts/ci/prepare-release-workflow-composer-metadata.php \
     && composer update durable-workflow/workflow --no-dev --no-scripts --no-autoloader --prefer-dist --no-interaction --no-progress \
     && cp composer.json /tmp/release-composer.json \
     && cp composer.lock /tmp/release-composer.lock \
-    && rm -rf /workflow/.git
+    && test -f /workflow/.package-provenance
 
 COPY . .
 RUN cp /tmp/release-composer.json composer.json \
