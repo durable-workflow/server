@@ -1,6 +1,6 @@
 # Server #237 published long-history signal probe, 2026-09-28
 
-This is a local qualification slice with synthetic workflows and credentials. It exercises signal admission, a cold SDK worker restart, replay, workflow-task completion, exact result, and paginated history. Later runs add activities, timers, continue-as-new, and recovery from an expired activity lease. Published-image MySQL and PostgreSQL mixed runs, plus one external-payload signal run, are below. Retention cleanup, backend interruption, and the 8,000/10,000-event thresholds remain open.
+This is a local qualification slice with synthetic workflows and credentials. It exercises signal admission, a cold SDK worker restart, replay, workflow-task completion, exact result, and paginated history. Later runs add activities, timers, continue-as-new, and recovery from an expired activity lease. Published-image MySQL and PostgreSQL mixed runs, plus one external-payload signal run, are below. A later [published-artifact MySQL side-effect slice](../server-237-20260929/README.md) completed at 7,648, 8,101 and 10,010 events. Retention cleanup, backend interruption and mixed-history qualification at those event counts remain open.
 
 ## Frozen inputs
 
@@ -413,4 +413,4 @@ The Server repository's `scripts/conformance/replay-published-artifacts.sh` ran 
 
 ## Remaining qualification
 
-Qualify backend interruption and histories around and beyond the 8,000/10,000-event guidance. Record active SDK-worker steady memory and repeat latency samples for those larger-history workloads, then run affected non-replay service conformance. The Python SDK cache-default work has its own owning issue.
+Qualify backend interruption, retention, and mixed histories around and beyond the 8,000/10,000-event guidance on MySQL and PostgreSQL. The [side-effect-only MySQL slice](../server-237-20260929/README.md) verifies three budget states and exact completion on published artifacts. Record active SDK-worker steady memory and repeat latency samples for the broader workloads, then run affected non-replay service conformance. The Python SDK cache-default work has its own owning issue.

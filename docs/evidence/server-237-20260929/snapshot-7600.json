@@ -1,0 +1,27 @@
+{
+    "run_id": "01m3nk1jmvayxvdjfnj7nwt041",
+    "status": "completed",
+    "last_history_sequence": 7648,
+    "message_cursor_position": 0,
+    "history_event_rows": 7648,
+    "history_event_types": {
+        "StartAccepted": 1,
+        "WorkflowStarted": 1,
+        "SideEffectRecorded": 7600,
+        "ActivityScheduled": 15,
+        "ActivityStarted": 15,
+        "ActivityCompleted": 15,
+        "WorkflowCompleted": 1
+    },
+    "timeline_rows": 7648,
+    "signals_received": 0,
+    "signals_applied": 0,
+    "signals_rejected": 0,
+    "open_tasks": 0,
+    "commands_accepted": 1,
+    "commands_rejected": 0,
+    "summary_event_count": 7648,
+    "summary_size_bytes": 4165084,
+    "summary_pressure": "ok",
+    "summary_continue_as_new": false
+}

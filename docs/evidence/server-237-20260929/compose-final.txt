@@ -1,0 +1,6 @@
+NAME                             IMAGE                                                                                            COMMAND                  SERVICE     CREATED          STATUS                    PORTS
+dw237threshold0307-mysql-1       mysql@sha256:679e7e924f38a3cbb62a3d7df32924b83f7321a602d3f9f967c01b3df18495d6                    "docker-entrypoint.s…"   mysql       23 minutes ago   Up 23 minutes (healthy)   3306/tcp, 33060/tcp
+dw237threshold0307-redis-1       redis@sha256:0637954999d01b7c9ce9167db2da50656e2590d3b884f1c600c5f63bb6e6773c                    "docker-entrypoint.s…"   redis       23 minutes ago   Up 23 minutes (healthy)   6379/tcp
+dw237threshold0307-scheduler-1   durableworkflow/server@sha256:d9d13157f91d5418ba74759bc1b32f1ba0fc649e165f6206faab55e0f4737a1e   "server-entrypoint s…"   scheduler   23 minutes ago   Up 22 minutes (healthy)   80/tcp, 8080/tcp
+dw237threshold0307-server-1      durableworkflow/server@sha256:d9d13157f91d5418ba74759bc1b32f1ba0fc649e165f6206faab55e0f4737a1e   "server-entrypoint a…"   server      23 minutes ago   Up 22 minutes (healthy)   80/tcp, 127.0.0.1:18249->8080/tcp
+dw237threshold0307-worker-1      durableworkflow/server@sha256:d9d13157f91d5418ba74759bc1b32f1ba0fc649e165f6206faab55e0f4737a1e   "server-entrypoint p…"   worker      23 minutes ago   Up 22 minutes (healthy)   80/tcp, 8080/tcp
