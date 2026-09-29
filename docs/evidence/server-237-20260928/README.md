@@ -343,6 +343,54 @@ Namespace deletion returned [HTTP 200 in 4.02 seconds](published-2426-namespace-
 
 The exact 2.4.26 published-artifact [replay conformance result](published-2426-replay-conformance-result.json) passed all 31 scenarios with zero findings across [PHP](published-2426-php-replay-shard.json), [Python](published-2426-python-replay-shard.json) and [Rust](published-2426-rust-replay-shard.json). Its [record](published-2426-replay-conformance-record.json), [executed distribution identities](published-2426-executed-distribution-identities.json) and [pins](published-2426-pins.json) identify the exact Server 2.4.26, Workflow 2.2.18, PHP SDK 2.1.5, Python SDK 2.3.5, Rust SDK 2.1.1, CLI 2.1.2 and Waterline 2.0.7 tuple. The runner used published distributions, no local product source checkouts, and removed its isolated containers and volumes.
 
+## Published Server 2.4.26 fresh-worker payload-cache comparison
+
+Three new isolated MySQL/Redis stacks ran on the same four-core, 15 GiB x86_64 host against the exact published Server 2.4.26 index `sha256:d9d13157f91d5418ba74759bc1b32f1ba0fc649e165f6206faab55e0f4737a1e` and published Python SDK 2.3.5. The probe image was `sha256:746054265cdaa0084d276551cfdaa0ad16283010144c4d54f2d5827cb76fe051`, built from the digest-pinned Python 3.12 base and `durable-workflow==2.3.5`. MySQL and Redis used the exact digests in [the existing overlay](digests.compose.yml). The probe had 1 CPU and 1 GiB RAM. Server, queue worker, MySQL, and Redis used the published Compose defaults without CPU or memory caps. The local external-payload threshold was 1 KiB. These were synthetic single-node local-storage runs.
+
+Each offer process started the same workflow shape, stopped its first SDK worker before offers, and acknowledged 1,000 distinct 2 KiB external-payload signals at concurrency eight. It then exited. A **separate new Python process** resumed the pending run with an empty verified-payload cache. The sole replay setting varied was `PROBE_EXTERNAL_CACHE_ENTRIES`: 1,024, SDK default 128, then 1,024 again. All three retained the cache's 16 MiB byte ceiling. The workflow ran an activity and timer after every 250 signals and continued as new once. Run labels were `pub-2426-coldcache-1024-20260929-a`, `pub-2426-coldcache-default-20260929-b`, and `pub-2426-coldcache-1024-20260929-c`; initial run IDs are in the offer logs.
+
+The command sequence for each fresh project was the published Compose, [probe overlay](../server-237-20260927/compose.yml), [digest overlay](digests.compose.yml), and [local-storage overlay](external-local.compose.yml), with a unique project, loopback port, writable isolated payload root, published Server image digest, and synthetic role tokens in `$RUN_ENV`:
+
+```bash
+# The probe image was built once with:
+docker compose --env-file "$RUN_ENV" -f docker-compose.published.yml \
+  -f docs/evidence/server-237-20260927/compose.yml \
+  -f docs/evidence/server-237-20260928/digests.compose.yml \
+  -f docs/evidence/server-237-20260928/external-local.compose.yml \
+  build --build-arg PYTHON_SDK_VERSION=2.3.5 probe
+docker compose --env-file "$RUN_ENV" -f docker-compose.published.yml \
+  -f docs/evidence/server-237-20260927/compose.yml \
+  -f docs/evidence/server-237-20260928/digests.compose.yml \
+  -f docs/evidence/server-237-20260928/external-local.compose.yml \
+  up -d --wait server worker scheduler
+docker compose --env-file "$RUN_ENV" run --rm --no-deps --entrypoint python \
+  -e PROBE_RUN_ID="$RUN_LABEL" -e PROBE_SIGNAL_CONCURRENCY=8 \
+  -e PROBE_SIGNAL_PAYLOAD_BYTES=2048 -e PROBE_MIXED_INTERVAL=250 \
+  -e PROBE_CONTINUE_AS_NEW=1 -e PROBE_WORKER_WINDOW_SECONDS=900 \
+  -e PROBE_OFFER_ONLY=1 probe /probe/signal_history_probe.py 1000
+docker compose --env-file "$RUN_ENV" run --rm --no-deps --entrypoint python \
+  -e PROBE_RUN_ID="$RUN_LABEL" -e PROBE_RESUME_INITIAL_RUN_ID="$INITIAL_RUN_ID" \
+  -e PROBE_EXTERNAL_CACHE_ENTRIES="$CACHE_ENTRIES" \
+  -e PROBE_SIGNAL_CONCURRENCY=8 -e PROBE_SIGNAL_PAYLOAD_BYTES=2048 \
+  -e PROBE_MIXED_INTERVAL=250 -e PROBE_CONTINUE_AS_NEW=1 \
+  -e PROBE_WORKER_WINDOW_SECONDS=900 probe /probe/signal_history_probe.py 1000
+docker compose --env-file "$RUN_ENV" down -v --remove-orphans
+```
+
+`CACHE_ENTRIES=0` selects the published 128-entry default; the other runs used `1024`. The actual local `COMPOSE_FILE` environment contained those four files, so the `run` commands used the same overlays as `up`. Each run's offer and worker logs retain the exact run IDs and inputs.
+
+| Fresh-worker run | Cache entries | Offer seconds | Resume to completion seconds | External GET 200 | Peak worker RSS KiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| First larger-cache run | 1,024 | 113.53 | 448.78 | 1,000 | 93,792 |
+| Published default | 128 | 112.76 | 771.46 | 10,000 | 90,916 |
+| Larger-cache recheck | 1,024 | 114.49 | 448.10 | 1,000 | 97,828 |
+
+Every run verified `{"count":1000,"total":499500}`, 1,028 ordered events across three history pages and two completed runs, four completed activities and timers, one continuation, and zero activity retries. Durable snapshots show 19 completed tasks, zero queued or failed jobs, 1,000 retained payload records and 2,756,000 encoded payload bytes in each fresh stack. The initial history summaries were about 1.94 MiB, below the documented 5 MiB continuation advice. Each access log contains exactly 1,000 successful external uploads and 1,000 acknowledged signals, with zero HTTP 4xx/5xx. Worker swap spot checks were zero. The two 1,024-entry completion times differ by 0.68 seconds; the intervening default run took 323 seconds longer than their mean. These times are diagnostic observations on a shared host, not a capacity or service-latency guarantee. The tenfold GET difference directly shows the replay-fetch amplification for this workload.
+
+Raw artifacts for the [first larger-cache run](published-2426-coldcache1024-offer.log): [worker result](published-2426-coldcache1024-worker.log), [request counts](published-2426-coldcache1024-request-counts.json), [access log](published-2426-coldcache1024-server-access.log.gz), [durable state](published-2426-coldcache1024-final-db.tsv), [cleanup](published-2426-coldcache1024-stack-cleanup.log). For the [default run](published-2426-defaultcache128-offer.log): [worker result](published-2426-defaultcache128-worker.log), [request counts](published-2426-defaultcache128-request-counts.json), [access log](published-2426-defaultcache128-server-access.log.gz), [durable state](published-2426-defaultcache128-final-db.tsv), [cleanup](published-2426-defaultcache128-stack-cleanup.log). For the [larger-cache recheck](published-2426-coldcache1024-recheck-offer.log): [worker result](published-2426-coldcache1024-recheck-worker.log), [request counts](published-2426-coldcache1024-recheck-request-counts.json), [access log](published-2426-coldcache1024-recheck-server-access.log.gz), [durable state](published-2426-coldcache1024-recheck-final-db.tsv), [cleanup](published-2426-coldcache1024-recheck-stack-cleanup.log). The three task-local payload directories were removed after the evidence copy.
+
+This supports a focused Python SDK cache-default follow-up. The 16 MiB verified-byte bound must remain in force; broader histories and SDK conformance still need qualification before releasing a change.
+
 ## Remaining qualification
 
-Measure a genuinely fresh SDK worker process with a bounded shared cache before recommending a new default for long-lived workflows. Qualify backend interruption and around/beyond the 8,000/10,000-event guidance. Record active SDK-worker steady memory and repeat latency observations under the same load, then run affected non-replay service conformance for the wider history qualification.
+Qualify backend interruption and histories around and beyond the 8,000/10,000-event guidance. Record active SDK-worker steady memory and repeat latency samples for those larger-history workloads, then run affected non-replay service conformance. The Python SDK cache-default work has its own owning issue.
