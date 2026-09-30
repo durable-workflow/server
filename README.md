@@ -43,6 +43,9 @@ credentials and pin the Server image by version or digest. See the
 Compose, authentication, backup, upgrade, API, and configuration guidance.
 For a tested recovery sequence, see the
 [self-hosted backup and restore procedure](docs/self-hosted-backup-and-restore.md).
+Readiness checks database connectivity and setup. A successful check does not
+verify database write capacity. See [database storage recovery](docs/database-storage-recovery.md)
+for full disks, tablespaces and temporary storage.
 
 Install the current CLI for server administration and workflow inspection:
 

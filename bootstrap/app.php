@@ -8,6 +8,7 @@ use App\Support\BackendUnavailable;
 use App\Support\ControlPlaneFailureDiagnostics;
 use App\Support\ControlPlaneOperation;
 use App\Support\ControlPlaneProtocol;
+use App\Support\DatabaseStorageExhausted;
 use App\Support\NamespaceDurableStateException;
 use App\Support\RuntimeExternalPayloadAudit;
 use App\Support\RuntimeExternalPayloadException;
@@ -41,6 +42,12 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {
+        $exceptions->render(function (Throwable $exception, Request $request) {
+            return DatabaseStorageExhausted::is($exception)
+                ? DatabaseStorageExhausted::response($request)
+                : null;
+        });
+
         $exceptions->render(function (Throwable $exception, Request $request) {
             if (! BackendUnavailable::is($exception)) {
                 return null;
