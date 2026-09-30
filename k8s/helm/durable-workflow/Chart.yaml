@@ -36,4 +36,4 @@ annotations:
   # Free-form changelog for the current chart release shown by Artifact Hub.
   artifacthub.io/changes: |
     - kind: changed
-      description: Update the default Server image to 2.4.29 with UTC archive timestamps in non-UTC applications.
+      description: Update the default Server image to 2.4.33 with the patched CommonMark dependency.
