@@ -73,6 +73,7 @@ final class CooperativeCancellationPolicy
             'cleanup_deadline_at' => $run->cancellation_deadline_at?->toISOString(),
             'delivery_sequence' => $run->cancellation_delivery_sequence,
             'delivered_at' => $run->cancellation_delivered_at?->toISOString(),
+            'history_refresh_page_token' => WorkflowHistoryPageToken::encode(0),
         ];
     }
 }

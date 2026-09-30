@@ -1305,13 +1305,17 @@ components:
     CooperativeCancellationRequest:
       type: object
       additionalProperties: false
-      required: [request_id, requested_at, cleanup_deadline_at, delivery_sequence, delivered_at]
+      required: [request_id, requested_at, cleanup_deadline_at, delivery_sequence, delivered_at, history_refresh_page_token]
       properties:
         request_id: { type: string, minLength: 1 }
         requested_at: { type: string, format: date-time }
         cleanup_deadline_at: { type: string, format: date-time }
         delivery_sequence: { type: [integer, "null"], minimum: 1 }
         delivered_at: { type: [string, "null"], format: date-time }
+        history_refresh_page_token:
+          type: string
+          minLength: 1
+          description: Server-issued token for the first bounded history page. Reload canonical history after delivery using this token and the same task ownership fence.
     CooperativeCancellationDeliveryRequest:
       type: object
       additionalProperties: true
@@ -1595,9 +1599,13 @@ components:
     HistoryPageRequest:
       type: object
       additionalProperties: true
+      required: [lease_owner, workflow_task_attempt, next_history_page_token]
       properties:
-        page_token: { type: [string, "null"] }
-        page_size: { type: integer, minimum: 1 }
+        lease_owner: { type: string, minLength: 1 }
+        workflow_task_attempt: { type: integer, minimum: 1 }
+        next_history_page_token: { type: string, minLength: 1 }
+        history_page_size: { type: [integer, "null"], minimum: 1 }
+        accept_history_encoding: { type: [string, "null"] }
     TaskHeartbeatRequest:
       type: object
       additionalProperties: true

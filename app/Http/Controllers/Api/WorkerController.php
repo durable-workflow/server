@@ -37,6 +37,7 @@ use App\Support\WorkerPollFence;
 use App\Support\WorkerProtocol;
 use App\Support\WorkerProtocolMutationRetrier;
 use App\Support\WorkerTerminalEventAttribution;
+use App\Support\WorkflowHistoryPageToken;
 use App\Support\WorkflowMetadataCapabilityPolicy;
 use App\Support\WorkflowQueryTaskBroker;
 use App\Support\WorkflowStreamCommandProcessor;
@@ -4126,22 +4127,12 @@ class WorkerController
 
     private static function encodeHistoryPageToken(int $sequence): string
     {
-        return base64_encode((string) $sequence);
+        return WorkflowHistoryPageToken::encode($sequence);
     }
 
     private static function decodeHistoryPageToken(?string $token): ?int
     {
-        if (! is_string($token) || trim($token) === '') {
-            return null;
-        }
-
-        $decoded = base64_decode($token, true);
-
-        if (! is_string($decoded) || ! ctype_digit($decoded)) {
-            return null;
-        }
-
-        return (int) $decoded;
+        return WorkflowHistoryPageToken::decode($token);
     }
 
     /**

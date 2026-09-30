@@ -136,6 +136,27 @@ class CooperativeCancellationProtocolTest extends TestCase
         $this->assertSame(0, $this->eventCount($runId, HistoryEventType::CooperativeCancellationDelivered));
     }
 
+    public function test_worker_reloads_canonical_delivery_after_acknowledgment_loss_with_the_observed_token(): void
+    {
+        [$workflowId] = $this->start();
+        $this->register('new', true);
+        $task = $this->poll('new')->json('task');
+        $pending = $this->requestCancellation($workflowId)->assertStatus(202)->json('cancellation_request');
+        $this->deliver($task, $pending['request_id'])->assertOk();
+        // The old task payload predates the request and marker. Read their
+        // real canonical history rather than constructing an event locally.
+        $history = $this->withHeaders($this->headers())->postJson("/api/worker/workflow-tasks/{$task['task_id']}/history", [
+            'lease_owner' => 'new',
+            'workflow_task_attempt' => $task['workflow_task_attempt'],
+            'next_history_page_token' => $pending['history_refresh_page_token'],
+        ])->assertOk();
+        $markers = array_values(array_filter($history->json('history_events'), static fn ($event) => $event['event_type'] === HistoryEventType::CooperativeCancellationDelivered->value));
+        $this->assertCount(1, $markers);
+        $this->assertSame($pending['request_id'], $markers[0]['workflow_command_id']);
+        $this->assertSame(1, $markers[0]['payload']['sequence']);
+        $this->assertNotContains(HistoryEventType::CooperativeCancellationDelivered->value, array_column($task['history_events'], 'event_type'));
+    }
+
     public function test_cleanup_deadline_revokes_delivery_authority(): void
     {
         [$workflowId, $runId] = $this->start();

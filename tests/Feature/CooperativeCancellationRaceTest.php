@@ -10,6 +10,8 @@ use Illuminate\Support\Facades\Queue;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
+use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 
@@ -78,10 +80,19 @@ class CooperativeCancellationRaceTest extends TestCase
             ]);
 
             [$request, $poll] = $this->race($workflowId, $workerId, $queue, $capable ? '1.20' : '1.19');
+            foreach ([$request, $poll] as $result) {
+                foreach (array_slice($result['attempts'], 0, -1) as $retry) {
+                    $this->assertSame(['status' => 503, 'reason' => 'backend_lock_pressure'], $retry);
+                }
+            }
             $this->assertSame(200, $poll['status'], json_encode($poll));
             $this->assertContains($request['status'], [202, 409], json_encode($request));
             $run = WorkflowRun::query()->findOrFail($runId);
             $task = $poll['body']['task'];
+            $this->assertSame($request['status'] === 202 ? 1 : 0, WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $runId)
+                ->where('event_type', HistoryEventType::CooperativeCancellationRequested->value)
+                ->count());
 
             if ($request['status'] === 202) {
                 $this->assertNotNull($run->cancellation_request_command_id);
