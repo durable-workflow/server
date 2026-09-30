@@ -9,6 +9,7 @@ use App\Models\WorkerRegistration;
 use App\Support\AvroPayloadEnvelopeResolver;
 use App\Support\BackendLockPressure;
 use App\Support\CachedPollTaskKindConflict;
+use App\Support\CooperativeCancellationPolicy;
 use App\Support\ExternalPayloadStorageUnavailable;
 use App\Support\HistoryRetentionEnforcer;
 use App\Support\LongPollCapacityExhaustedException;
@@ -3226,6 +3227,15 @@ class WorkerController
             );
         }
 
+        $observation = [];
+        if (($status['renewed'] ?? false) === true) {
+            $task = NamespaceWorkflowScope::task($namespace, $taskId);
+            if ($task?->run instanceof WorkflowRun
+                && ($pending = CooperativeCancellationPolicy::pending($task->run)) !== null) {
+                $observation['cancellation_request'] = $pending;
+            }
+        }
+
         return WorkerProtocol::json([
             'task_id' => $taskId,
             'workflow_task_attempt' => (int) $validated['workflow_task_attempt'],
@@ -3235,6 +3245,7 @@ class WorkerController
             'run_status' => $status['run_status'],
             'task_status' => $status['task_status'],
             'reason' => $status['reason'],
+            ...$observation,
         ], $this->workflowOutcomeStatus($status['reason']));
     }
 

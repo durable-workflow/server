@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\ActivityController;
 use App\Http\Controllers\Api\ActivityTaskController;
 use App\Http\Controllers\Api\BridgeAdapterController;
+use App\Http\Controllers\Api\CooperativeCancellationController;
 use App\Http\Controllers\Api\DeploymentController;
 use App\Http\Controllers\Api\EmbeddedV2ImportController;
 use App\Http\Controllers\Api\HealthController;
@@ -140,6 +141,7 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
         Route::post('/{workflowId}/query/{queryName}', [WorkflowController::class, 'query']);
         Route::post('/{workflowId}/update/{updateName}', [WorkflowController::class, 'update']);
         Route::post('/{workflowId}/cancel', [WorkflowController::class, 'cancel']);
+        Route::post('/{workflowId}/request-cancellation', [CooperativeCancellationController::class, 'request']);
         Route::post('/{workflowId}/terminate', [WorkflowController::class, 'terminate']);
         Route::post('/{workflowId}/repair', [WorkflowController::class, 'repair']);
         Route::post('/{workflowId}/archive', [WorkflowController::class, 'archive']);
@@ -149,6 +151,7 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
         Route::post('/{workflowId}/runs/{runId}/query/{queryName}', [WorkflowController::class, 'queryRun']);
         Route::post('/{workflowId}/runs/{runId}/update/{updateName}', [WorkflowController::class, 'updateRun']);
         Route::post('/{workflowId}/runs/{runId}/cancel', [WorkflowController::class, 'cancelRun']);
+        Route::post('/{workflowId}/runs/{runId}/request-cancellation', [CooperativeCancellationController::class, 'request']);
         Route::post('/{workflowId}/runs/{runId}/terminate', [WorkflowController::class, 'terminateRun']);
         Route::post('/{workflowId}/runs/{runId}/repair', [WorkflowController::class, 'repairRun']);
         Route::post('/{workflowId}/runs/{runId}/redrive', [WorkflowController::class, 'redriveRun']);
@@ -230,6 +233,7 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
         Route::post('/workflow-tasks/poll', [WorkerController::class, 'pollWorkflowTasks']);
         Route::post('/workflow-tasks/{taskId}/history', [WorkerController::class, 'workflowTaskHistory']);
         Route::post('/workflow-tasks/{taskId}/heartbeat', [WorkerController::class, 'heartbeatWorkflowTask']);
+        Route::post('/workflow-tasks/{taskId}/deliver-cancellation', [CooperativeCancellationController::class, 'deliver']);
         Route::post('/workflow-tasks/{taskId}/complete', [WorkerController::class, 'completeWorkflowTask']);
         Route::post('/workflow-tasks/{taskId}/fail', [WorkerController::class, 'failWorkflowTask']);
 

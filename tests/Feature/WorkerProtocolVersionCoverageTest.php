@@ -42,6 +42,7 @@ class WorkerProtocolVersionCoverageTest extends TestCase
             'workflow-tasks.poll' => ['method' => 'post', 'path' => '/api/worker/workflow-tasks/poll'],
             'workflow-tasks.history' => ['method' => 'post', 'path' => '/api/worker/workflow-tasks/task-1/history'],
             'workflow-tasks.heartbeat' => ['method' => 'post', 'path' => '/api/worker/workflow-tasks/task-1/heartbeat'],
+            'workflow-tasks.deliver-cancellation' => ['method' => 'post', 'path' => '/api/worker/workflow-tasks/task-1/deliver-cancellation'],
             'workflow-tasks.complete' => ['method' => 'post', 'path' => '/api/worker/workflow-tasks/task-1/complete'],
             'workflow-tasks.fail' => ['method' => 'post', 'path' => '/api/worker/workflow-tasks/task-1/fail'],
             'query-tasks.poll' => ['method' => 'post', 'path' => '/api/worker/query-tasks/poll'],
