@@ -6,7 +6,9 @@ namespace Tests\Feature;
 
 use App\Support\DirectConformanceWorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Queue;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
 use Workflow\Serializers\Avro;
@@ -16,6 +18,7 @@ use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\WorkflowStub;
 
 final class DirectConformanceWorkerProtocolTest extends TestCase
 {
@@ -28,6 +31,92 @@ final class DirectConformanceWorkerProtocolTest extends TestCase
 
         Queue::fake();
         $this->createNamespace('default');
+    }
+
+    #[DataProvider('expiredCleanupBoundaries')]
+    public function test_cooperative_cleanup_deadline_revokes_portable_http_authority(
+        string $boundary,
+        int $secondsAfterDeadline,
+    ): void {
+        $workflowId = 'direct-cleanup-deadline';
+        $workflowType = 'direct.cleanup.deadline';
+        $taskQueue = 'direct-cleanup';
+        $workerId = 'direct-cleanup-worker';
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', DirectConformanceWorkerProtocol::registration(
+                $workerId,
+                $taskQueue,
+                'php',
+                'durable-workflow/server:published-artifact',
+                [$workflowType],
+                [],
+            ))->assertCreated();
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => $workflowId,
+                'workflow_type' => $workflowType,
+                'task_queue' => $taskQueue,
+                'input' => ['probe'],
+            ])->assertCreated();
+        $runId = (string) $start->json('run_id');
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => $workerId,
+                'task_queue' => $taskQueue,
+                'timeout_seconds' => 0,
+            ])->assertOk();
+        $task = $poll->json('task');
+        $this->assertIsArray($task);
+        $request = WorkflowStub::load($workflowId)->requestCancellation('cleanup deadline test', 1);
+        $this->assertTrue($request->accepted());
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $deadline = $run->cancellation_deadline_at;
+        $this->assertNotNull($deadline);
+        $completion = DirectConformanceWorkerProtocol::workflowTaskCompletion($task, [[
+            'type' => 'complete_workflow',
+            'result' => Avro::envelope('late result'),
+        ]]);
+
+        try {
+            Carbon::setTestNow($deadline->copy()->addSeconds($secondsAfterDeadline));
+            $response = $this->withHeaders($this->workerHeaders())->postJson(
+                '/api/worker/workflow-tasks/'.$task['task_id'].'/'.$boundary,
+                $boundary === 'heartbeat' ? [
+                    'lease_owner' => $task['lease_owner'],
+                    'workflow_task_attempt' => $task['workflow_task_attempt'],
+                ] : $completion,
+            );
+        } finally {
+            Carbon::setTestNow();
+        }
+
+        $response->assertStatus(409)
+            ->assertJsonPath($boundary === 'heartbeat' ? 'renewed' : 'recorded', false)
+            ->assertJsonPath('run_status', 'cancelled')
+            ->assertJsonPath('reason', $boundary === 'heartbeat' ? 'run_closed' : 'run_cancelled');
+        $this->assertSame('cancelled', $run->refresh()->status->value);
+        $this->assertNull($run->output);
+        $this->assertSame(1, $run->historyEvents()
+            ->where('event_type', HistoryEventType::WorkflowCancelled->value)
+            ->where('workflow_command_id', $request->commandId())
+            ->count());
+        $this->assertSame(0, $run->historyEvents()
+            ->where('event_type', HistoryEventType::WorkflowCompleted->value)
+            ->count());
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/'.$task['task_id'].'/complete', $completion)
+            ->assertStatus(409);
+        $this->assertSame(1, $run->historyEvents()
+            ->where('event_type', HistoryEventType::WorkflowCancelled->value)
+            ->count());
+    }
+
+    public static function expiredCleanupBoundaries(): iterable
+    {
+        yield 'heartbeat at deadline' => ['heartbeat', 0];
+        yield 'heartbeat after deadline' => ['heartbeat', 1];
+        yield 'completion at deadline' => ['complete', 0];
+        yield 'completion after deadline' => ['complete', 1];
     }
 
     public function test_current_direct_probe_completion_survives_cold_run_and_history_reads(): void
