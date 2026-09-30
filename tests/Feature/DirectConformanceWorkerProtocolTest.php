@@ -67,7 +67,7 @@ final class DirectConformanceWorkerProtocolTest extends TestCase
             ])->assertOk();
         $task = $poll->json('task');
         $this->assertIsArray($task);
-        $request = WorkflowStub::load($workflowId)->requestCancellation('cleanup deadline test', 60);
+        $request = WorkflowStub::load($workflowId)->requestCancellation('cleanup deadline test', 1);
         $this->assertTrue($request->accepted());
         $run = WorkflowRun::query()->findOrFail($runId);
         $deadline = $run->cancellation_deadline_at;
