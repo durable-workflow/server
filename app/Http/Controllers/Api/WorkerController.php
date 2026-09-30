@@ -224,6 +224,16 @@ class WorkerController
         ]);
 
         $workerCapabilities = $this->nonEmptyStringArray($validated['capabilities'] ?? []);
+        if (in_array(CooperativeCancellationPolicy::CAPABILITY, $workerCapabilities, true)
+            && ! CooperativeCancellationPolicy::supports($workerCapabilities, WorkerProtocol::requestVersion($request))) {
+            return WorkerProtocol::json([
+                'registered' => false,
+                'reason' => 'cooperative_cancellation_protocol_mismatch',
+                'minimum_protocol_version' => CooperativeCancellationPolicy::MINIMUM_PROTOCOL_VERSION,
+                'requested_version' => WorkerProtocol::requestVersion($request),
+            ], 409);
+        }
+
         $capabilityManifest = $this->portableWorkerCapabilityManifest(
             is_array($validated['capability_manifest'] ?? null) ? $validated['capability_manifest'] : [],
         );

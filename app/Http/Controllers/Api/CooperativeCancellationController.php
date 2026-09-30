@@ -2,12 +2,14 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Models\WorkerRegistration;
 use App\Support\ControlPlaneMutationRetrier;
 use App\Support\ControlPlaneProtocol;
 use App\Support\CooperativeCancellationPolicy;
 use App\Support\LegacyV1Projection;
 use App\Support\LongPollSignalStore;
 use App\Support\NamespaceWorkflowScope;
+use App\Support\WorkerPollFence;
 use App\Support\WorkerProtocol;
 use App\Support\WorkerProtocolMutationRetrier;
 use App\Support\WorkflowCommandContextFactory;
@@ -42,6 +44,7 @@ final class CooperativeCancellationController
             CooperativeCancellationPolicy::MINIMUM_PROTOCOL_VERSION,
         )) {
             return ControlPlaneProtocol::jsonForRequest($request, [
+                'message' => 'This Server does not support cooperative cancellation requests.',
                 'reason' => 'cooperative_cancellation_not_supported',
                 'minimum_protocol_version' => CooperativeCancellationPolicy::MINIMUM_PROTOCOL_VERSION,
             ], 409);
@@ -49,7 +52,7 @@ final class CooperativeCancellationController
 
         $namespace = (string) $request->attributes->get('namespace');
         if (! NamespaceWorkflowScope::workflowBound($namespace, $workflowId)) {
-            return ControlPlaneProtocol::jsonForRequest($request, ['reason' => 'instance_not_found'], 404);
+            return ControlPlaneProtocol::jsonForRequest($request, ['message' => 'Workflow not found.', 'reason' => 'instance_not_found'], 404);
         }
 
         $validated = $request->validate([
@@ -130,13 +133,23 @@ final class CooperativeCancellationController
                 'reason' => $command->rejectionReason(),
                 'http_status' => $command->accepted() ? 202 : 409,
             ];
-        }));
+        }), allBackends: true);
 
         if (($result['accepted'] ?? false) === true) {
             app(LongPollSignalStore::class)->signalWorkflowTaskQueuesForWorkflow($workflowId, $namespace);
         }
         $status = $result['http_status'];
         unset($result['http_status']);
+        if (($result['accepted'] ?? false) !== true) {
+            $result['message'] = match ($result['reason'] ?? null) {
+                'active_claim_cancellation_not_supported' => 'The active workflow-task claim cannot perform cooperative cancellation. Retry after a capable worker claims the task.',
+                'selected_run_not_current' => 'The selected run is no longer the current run.',
+                'run_not_active' => 'The workflow run is already closed.',
+                'legacy_v1_operation_not_supported' => 'Imported legacy workflows do not support cooperative cancellation.',
+                'run_not_found' => 'Workflow run not found.',
+                default => 'Workflow not found.',
+            };
+        }
 
         return ControlPlaneProtocol::jsonForRequest($request, $result, $status);
     }
@@ -185,6 +198,12 @@ final class CooperativeCancellationController
             }
             if (! CooperativeCancellationPolicy::claimSupportsCancellation($task)) {
                 return ['delivered' => false, 'reason' => 'active_claim_cancellation_not_supported'];
+            }
+
+            $worker = WorkerRegistration::query()->where('namespace', $namespace)
+                ->where('worker_id', $validated['lease_owner'])->first();
+            if (! $worker instanceof WorkerRegistration || ! WorkerPollFence::isFresh($worker)) {
+                return ['delivered' => false, 'reason' => 'stale_worker_registration'];
             }
 
             return $bridge->deliverCancellation(

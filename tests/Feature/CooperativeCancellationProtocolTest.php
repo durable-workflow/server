@@ -10,12 +10,15 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Testing\TestResponse;
 use Tests\Fixtures\ExternalGreetingWorkflow;
+use Tests\Support\OpenApiSchema;
 use Tests\TestCase;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimer;
 
 class CooperativeCancellationProtocolTest extends TestCase
 {
@@ -78,22 +81,25 @@ class CooperativeCancellationProtocolTest extends TestCase
         $this->assertSame($before, WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->count());
     }
 
-    public function test_reregistration_cannot_upgrade_an_old_claim(): void
+    public function test_mutating_registration_cannot_upgrade_an_old_claim(): void
     {
         [$workflowId] = $this->start();
         $this->register('same-id', false);
         $this->poll('same-id', '1.19')->assertOk();
-        $this->register('same-id', true);
+        WorkerRegistration::query()->where('worker_id', 'same-id')->firstOrFail()->forceFill([
+            'capabilities' => [CooperativeCancellationPolicy::CAPABILITY],
+        ])->save();
         $this->requestCancellation($workflowId)->assertStatus(409)
             ->assertJsonPath('reason', 'active_claim_cancellation_not_supported');
     }
 
-    public function test_reregistration_does_not_erase_a_capable_claims_original_proof(): void
+    public function test_mutating_registration_does_not_erase_a_capable_claims_original_proof(): void
     {
         [$workflowId] = $this->start();
         $this->register('same-id', true);
         $task = $this->poll('same-id')->json('task');
-        $this->register('same-id', false);
+        WorkerRegistration::query()->where('worker_id', 'same-id')->firstOrFail()
+            ->forceFill(['capabilities' => []])->save();
         $this->requestCancellation($workflowId)->assertStatus(202);
         $this->assertTrue(CooperativeCancellationPolicy::claimSupportsCancellation(
             WorkflowTask::query()->findOrFail($task['task_id']),
@@ -160,6 +166,167 @@ class CooperativeCancellationProtocolTest extends TestCase
             ->assertJsonPath('reason', 'cooperative_cancellation_not_supported');
     }
 
+    public function test_waiting_timer_is_interrupted_only_when_delivery_is_committed(): void
+    {
+        [$workflowId, $runId] = $this->start();
+        $this->register('new', true);
+        $task = $this->poll('new')->json('task');
+        $this->complete($task, [['type' => 'start_timer', 'delay_seconds' => 300]])
+            ->assertOk()->assertJsonPath('run_status', 'waiting');
+        $requestId = $this->requestCancellation($workflowId)->assertStatus(202)->json('cancellation_request.request_id');
+        $this->assertSame('pending', WorkflowTimer::query()->where('workflow_run_id', $runId)->firstOrFail()->status->value);
+        $resumed = $this->poll('new')->assertOk()->json('task');
+        $this->deliver($resumed, $requestId, ['call_kind' => 'timer'])->assertOk();
+        $this->assertSame('cancelled', WorkflowTimer::query()->where('workflow_run_id', $runId)->firstOrFail()->status->value);
+        $this->assertSame(1, $this->eventCount($runId, HistoryEventType::TimerCancelled));
+        $this->complete($resumed, [['type' => 'complete_workflow']])->assertOk()->assertJsonPath('run_status', 'cancelled');
+        $event = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::WorkflowCancelled->value)->firstOrFail();
+        $this->assertSame($requestId, $event->workflow_command_id);
+        $this->assertSame(0, $this->eventCount($runId, HistoryEventType::WorkflowCompleted));
+    }
+
+    public function test_prior_committed_result_cannot_become_the_cancellation_boundary(): void
+    {
+        [$workflowId, $runId] = $this->start();
+        $this->register('new', true);
+        $task = $this->poll('new')->json('task');
+        $run = WorkflowRun::query()->findOrFail($runId);
+        // A completed timer represents a durable call resolved before the request.
+        WorkflowHistoryEvent::record($run, HistoryEventType::TimerScheduled, [
+            'sequence' => 1, 'timer_id' => 'completed-timer', 'delay_seconds' => 1,
+        ]);
+        WorkflowHistoryEvent::record($run, HistoryEventType::TimerFired, [
+            'sequence' => 1, 'timer_id' => 'completed-timer',
+        ]);
+        $requestId = $this->requestCancellation($workflowId)->json('cancellation_request.request_id');
+        $this->deliver($task, $requestId, ['call_kind' => 'timer'])->assertStatus(409)
+            ->assertJsonPath('reason', 'cancellation_delivery_not_eligible');
+        $this->deliver($task, $requestId, ['sequence' => 2])->assertOk()->assertJsonPath('sequence', 2);
+        $this->assertSame(1, $this->eventCount($runId, HistoryEventType::CooperativeCancellationDelivered));
+    }
+
+    public function test_termination_during_cleanup_revokes_late_delivery_and_completion(): void
+    {
+        [$workflowId, $runId] = $this->start();
+        $this->register('new', true);
+        $task = $this->poll('new')->json('task');
+        $requestId = $this->requestCancellation($workflowId)->json('cancellation_request.request_id');
+        $this->deliver($task, $requestId)->assertOk();
+        $this->withHeaders($this->controlHeaders())->postJson("/api/workflows/{$workflowId}/terminate", [])->assertOk();
+        $this->deliver($task, $requestId)->assertStatus(409)->assertJsonPath('reason', 'task_not_leased');
+        $this->complete($task, [['type' => 'complete_workflow']])->assertStatus(409)->assertJsonPath('can_continue', false);
+        $this->assertSame('terminated', WorkflowRun::query()->findOrFail($runId)->status->value);
+        $this->assertSame(1, $this->eventCount($runId, HistoryEventType::WorkflowTerminated));
+        $this->assertSame(0, $this->eventCount($runId, HistoryEventType::WorkflowCompleted));
+    }
+
+    public function test_claim_proof_cannot_be_reused_for_another_attempt(): void
+    {
+        [$workflowId] = $this->start();
+        $this->register('new', true);
+        $task = $this->poll('new')->json('task');
+        WorkflowTask::query()->findOrFail($task['task_id'])->increment('attempt_count');
+        $this->requestCancellation($workflowId)->assertStatus(409)
+            ->assertJsonPath('reason', 'active_claim_cancellation_not_supported');
+    }
+
+    public function test_real_reregistration_requires_a_new_claim_and_fences_the_old_attempt(): void
+    {
+        [$workflowId] = $this->start();
+        $this->register('same-id', false);
+        $oldTask = $this->poll('same-id', '1.19')->json('task');
+        $this->register('same-id', true, '2026-09-30T00:01:00Z');
+        $requestId = $this->requestCancellation($workflowId)->assertStatus(202)->json('cancellation_request.request_id');
+        $newTask = $this->poll('same-id')->assertOk()->json('task');
+        $this->assertSame($oldTask['task_id'], $newTask['task_id']);
+        $this->assertSame(2, $newTask['workflow_task_attempt']);
+        $this->deliver($oldTask, $requestId)->assertStatus(409)
+            ->assertJsonPath('reason', 'workflow_task_attempt_mismatch');
+        $this->deliver($newTask, $requestId)->assertOk();
+    }
+
+    public function test_cold_reclaim_preserves_delivery_and_can_commit_bounded_cleanup(): void
+    {
+        [$workflowId, $runId] = $this->start();
+        $this->register('same-id', true);
+        $task = $this->poll('same-id')->json('task');
+        $requestId = $this->requestCancellation($workflowId)->json('cancellation_request.request_id');
+        $this->deliver($task, $requestId)->assertOk();
+        // The process dies after the marker commits, before the acknowledgment
+        // or any cleanup submission. Re-registration is the real recovery path.
+        $this->register('same-id', true, '2026-09-30T00:01:00Z');
+        $cold = $this->poll('same-id')->assertOk()->json('task');
+        $this->assertSame(2, $cold['workflow_task_attempt']);
+        $markers = array_values(array_filter($cold['history_events'], static fn ($event) => $event['event_type'] === HistoryEventType::CooperativeCancellationDelivered->value));
+        $this->assertCount(1, $markers);
+        $this->assertSame(1, $markers[0]['payload']['sequence']);
+        $this->deliver($cold, $requestId)->assertOk();
+        $this->complete($cold, [['type' => 'start_timer', 'delay_seconds' => 1]])
+            ->assertOk()->assertJsonPath('run_status', 'waiting');
+        $timerTask = WorkflowTask::query()->where('workflow_run_id', $runId)->where('task_type', 'timer')
+            ->where('status', TaskStatus::Ready->value)->firstOrFail();
+        $this->travel(2)->seconds();
+        (new RunTimerTask($timerTask->id))->handle();
+        $resumed = $this->poll('same-id')->assertOk()->json('task');
+        $this->complete($resumed, [['type' => 'complete_workflow']])->assertOk()->assertJsonPath('run_status', 'cancelled');
+        $this->assertSame(1, $this->eventCount($runId, HistoryEventType::CooperativeCancellationDelivered));
+        $this->assertSame(1, $this->eventCount($runId, HistoryEventType::TimerScheduled));
+        $this->assertSame(1, $this->eventCount($runId, HistoryEventType::WorkflowCancelled));
+        $this->assertSame(0, $this->eventCount($runId, HistoryEventType::WorkflowCompleted));
+    }
+
+    public function test_registration_cannot_advertise_cooperation_below_its_protocol_floor(): void
+    {
+        $this->withHeaders($this->headers('1.19'))->postJson('/api/worker/register', [
+            'worker_id' => 'invalid', 'task_queue' => 'cooperative', 'runtime' => 'php',
+            'capabilities' => [CooperativeCancellationPolicy::CAPABILITY],
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
+        ])->assertStatus(409)->assertJsonPath('reason', 'cooperative_cancellation_protocol_mismatch');
+        $this->assertFalse(WorkerRegistration::query()->where('worker_id', 'invalid')->exists());
+    }
+
+    public function test_new_admission_observation_and_delivery_fields_match_the_versioned_schemas(): void
+    {
+        [$workflowId] = $this->start();
+        $this->register('new', true);
+        $accepted = $this->requestCancellation($workflowId)->assertStatus(202);
+        $specDirectory = dirname(__DIR__, 2).'/resources/platform-protocol-specs/';
+        OpenApiSchema::fromFile($specDirectory.'control-plane-api.openapi.yaml')
+            ->assertReferenceMatches('#/components/schemas/CooperativeCancellationAdmission', json_decode($accepted->getContent(), flags: JSON_THROW_ON_ERROR));
+        $workerSpec = OpenApiSchema::fromFile($specDirectory.'worker-protocol-api.openapi.yaml');
+        $poll = $this->poll('new')->assertOk();
+        $task = $poll->json('task');
+        $workerSpec->assertReferenceMatches('#/components/schemas/WorkflowTask', json_decode($poll->getContent(), flags: JSON_THROW_ON_ERROR)->task);
+        $heartbeat = $this->withHeaders($this->headers())->postJson("/api/worker/workflow-tasks/{$task['task_id']}/heartbeat", [
+            'lease_owner' => 'new', 'workflow_task_attempt' => $task['workflow_task_attempt'],
+        ])->assertOk();
+        $workerSpec->assertReferenceMatches('#/components/schemas/WorkflowTaskHeartbeatResponse/allOf/1', json_decode($heartbeat->getContent(), flags: JSON_THROW_ON_ERROR));
+        $delivery = $this->deliver($task, $accepted->json('cancellation_request.request_id'))->assertOk();
+        $workerSpec->assertReferenceMatches('#/components/schemas/CooperativeCancellationDeliveryResponse/allOf/1', json_decode($delivery->getContent(), flags: JSON_THROW_ON_ERROR));
+    }
+
+    public function test_run_target_and_namespace_are_checked_before_request_admission(): void
+    {
+        [$workflowId, $runId] = $this->start();
+        $this->withHeaders($this->controlHeaders())->postJson(
+            "/api/workflows/{$workflowId}/runs/missing/request-cancellation", [],
+        )->assertNotFound()->assertJsonPath('reason', 'run_not_found');
+        $accepted = $this->withHeaders($this->controlHeaders())->postJson(
+            "/api/workflows/{$workflowId}/runs/{$runId}/request-cancellation", [],
+        )->assertStatus(202);
+        $this->assertSame($runId, $accepted->json('run_id'));
+        $this->requestCancellation('missing')->assertNotFound()->assertJsonPath('reason', 'instance_not_found');
+    }
+
+    private function complete(array $task, array $commands): TestResponse
+    {
+        return $this->withHeaders($this->headers())->postJson("/api/worker/workflow-tasks/{$task['task_id']}/complete", [
+            'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
+            'commands' => $commands,
+        ]);
+    }
+
     private function start(): array
     {
         $response = $this->withHeaders($this->controlHeaders())->postJson('/api/workflows', [
@@ -169,13 +336,16 @@ class CooperativeCancellationProtocolTest extends TestCase
         return [$response->json('workflow_id'), $response->json('run_id')];
     }
 
-    private function register(string $workerId, bool $capable): void
+    private function register(string $workerId, bool $capable, string $processStart = '2026-09-30T00:00:00Z'): void
     {
-        WorkerRegistration::query()->updateOrCreate(['namespace' => 'default', 'worker_id' => $workerId], [
+        $this->withHeaders($this->headers($capable ? '1.20' : '1.19'))->postJson('/api/worker/register', [
+            'worker_id' => $workerId,
             'task_queue' => 'cooperative', 'runtime' => 'php', 'supported_workflow_types' => ['tests.external-greeting-workflow'],
             'capabilities' => $capable ? [CooperativeCancellationPolicy::CAPABILITY] : [],
-            'max_concurrent_workflow_tasks' => 1, 'last_heartbeat_at' => now(), 'status' => 'active',
-        ]);
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
+            'max_concurrent_workflow_tasks' => 1,
+            'process_metrics' => ['host' => 'test-worker', 'process_started_at' => $processStart, 'process_id' => 10],
+        ])->assertCreated();
     }
 
     private function poll(string $workerId, string $version = '1.20', ?string $pollRequestId = null): TestResponse

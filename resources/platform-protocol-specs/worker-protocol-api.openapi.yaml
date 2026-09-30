@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "23"
+  version: "24"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -23,6 +23,22 @@ x-durable-workflow-catalog-entry: worker_protocol_api
 x-durable-workflow-catalog-schema: durable-workflow.v2.platform-protocol-specs.catalog
 x-durable-workflow-catalog-version: 16
 x-durable-workflow-evolution-rule: additive_minor_breaking_major
+x-durable-workflow-cooperative-cancellation-contract:
+  minimum_protocol_version: "1.20"
+  worker_capability: cooperative_cancellation
+  request_operation: POST /workflows/{workflowId}/request-cancellation
+  observation_field: cancellation_request
+  observation_surfaces: [workflow_task_claim, successful_workflow_task_heartbeat]
+  delivery_operation: POST /worker/workflow-tasks/{taskId}/deliver-cancellation
+  canonical_history_event: CooperativeCancellationDelivered
+  delivery_identity: [request_id, sequence, call_kind, sequence_span, operation_sequence, operation_sequence_span]
+  claim_proof: immutable_registration_snapshot_bound_to_task_run_owner_and_attempt
+  request_against_incompatible_active_claim: { status: 409, reason: active_claim_cancellation_not_supported, history_appended: false }
+  request_claim_race: serialized_on_workflow_run_lock
+  prior_completed_calls: replay_normally_before_canonical_delivery_boundary
+  cleanup_deadline: immutable_original_request_deadline
+  cleanup_completion: cancelled_with_original_request_id
+  terminal_cancel_and_terminate: unchanged
 x-durable-workflow-message-streams-contract:
   discovery_path: /cluster/info#/message_streams_contract
   minimum_protocol_version: "1.15"
@@ -342,12 +358,39 @@ paths:
         required: false
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/TaskHeartbeatRequest" }
+            schema: { $ref: "#/components/schemas/WorkflowTaskHeartbeatRequest" }
       responses:
-        "200": { $ref: "#/components/responses/WorkerEnvelope" }
+        "200":
+          description: Lease renewal with optional durable cancellation observation.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkflowTaskHeartbeatResponse" }
         "404": { $ref: "#/components/responses/WorkerError" }
         "409": { $ref: "#/components/responses/WorkerError" }
         "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
+  /worker/workflow-tasks/{taskId}/deliver-cancellation:
+    post:
+      operationId: deliverWorkflowCancellation
+      tags: [workflow-tasks]
+      x-durable-workflow-minimum-protocol-version: "1.20"
+      x-durable-workflow-worker-capability: cooperative_cancellation
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CooperativeCancellationDeliveryRequest" }
+      responses:
+        "200":
+          description: Canonical delivery committed or an identical acknowledgment retried.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CooperativeCancellationDeliveryResponse" }
+        "404": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+        "422": { $ref: "#/components/responses/WorkerError" }
   /worker/workflow-tasks/{taskId}/complete:
     post:
       operationId: completeWorkflowTask
@@ -1124,6 +1167,7 @@ components:
             local_activities: "1.18"
             worker_sessions: "1.18"
             sticky_execution: "1.18"
+            cooperative_cancellation: "1.20"
         capability_manifest:
           $ref: "#/components/schemas/PortableWorkerCapabilityManifest"
     WorkerHeartbeatRequest:
@@ -1255,6 +1299,48 @@ components:
         lease_owner: { type: string, minLength: 1 }
         lease_expires_at: { type: string, format: date-time }
         history_events: { type: array, items: { $ref: "#/components/schemas/WorkerHistoryEvent" } }
+        cancellation_request:
+          $ref: "#/components/schemas/CooperativeCancellationRequest"
+          x-durable-workflow-minimum-protocol-version: "1.20"
+    CooperativeCancellationRequest:
+      type: object
+      additionalProperties: false
+      required: [request_id, requested_at, cleanup_deadline_at, delivery_sequence, delivered_at]
+      properties:
+        request_id: { type: string, minLength: 1 }
+        requested_at: { type: string, format: date-time }
+        cleanup_deadline_at: { type: string, format: date-time }
+        delivery_sequence: { type: [integer, "null"], minimum: 1 }
+        delivered_at: { type: [string, "null"], format: date-time }
+    CooperativeCancellationDeliveryRequest:
+      type: object
+      additionalProperties: true
+      required: [lease_owner, workflow_task_attempt, request_id, sequence, call_kind]
+      properties:
+        lease_owner: { type: string, minLength: 1 }
+        workflow_task_attempt: { type: integer, minimum: 1 }
+        request_id: { type: string, minLength: 1 }
+        sequence: { type: integer, minimum: 1 }
+        call_kind: { type: string, enum: [activity, local_activity, timer, condition, signal, child, parallel, selection_handle] }
+        sequence_span: { type: [integer, "null"], minimum: 1, default: 1 }
+        operation_sequence: { type: [integer, "null"], minimum: 1 }
+        operation_sequence_span: { type: [integer, "null"], minimum: 1, default: 1 }
+    CooperativeCancellationDeliveryResponse:
+      allOf:
+        - $ref: "#/components/schemas/WorkerEnvelope"
+        - type: object
+          required: [delivered, task_id, workflow_run_id, request_id, sequence, call_kind, sequence_span, operation_sequence, operation_sequence_span, reason]
+          properties:
+            delivered: { type: boolean, const: true }
+            task_id: { type: string, minLength: 1 }
+            workflow_run_id: { type: string, minLength: 1 }
+            request_id: { type: string, minLength: 1 }
+            sequence: { type: integer, minimum: 1 }
+            call_kind: { type: string, enum: [activity, local_activity, timer, condition, signal, child, parallel, selection_handle] }
+            sequence_span: { type: integer, minimum: 1 }
+            operation_sequence: { type: [integer, "null"], minimum: 1 }
+            operation_sequence_span: { type: integer, minimum: 1 }
+            reason: { type: "null" }
     WorkerHistoryEvent:
       type: object
       additionalProperties: true
@@ -1518,6 +1604,30 @@ components:
       properties:
         worker_id: { type: string }
         progress: true
+    WorkflowTaskHeartbeatRequest:
+      type: object
+      additionalProperties: true
+      required: [lease_owner, workflow_task_attempt]
+      properties:
+        lease_owner: { type: string, minLength: 1 }
+        workflow_task_attempt: { type: integer, minimum: 1 }
+    WorkflowTaskHeartbeatResponse:
+      allOf:
+        - $ref: "#/components/schemas/WorkerEnvelope"
+        - type: object
+          required: [task_id, workflow_task_attempt, lease_owner, renewed, lease_expires_at, run_status, task_status, reason]
+          properties:
+            task_id: { type: string, minLength: 1 }
+            workflow_task_attempt: { type: integer, minimum: 1 }
+            lease_owner: { type: string, minLength: 1 }
+            renewed: { type: boolean }
+            lease_expires_at: { type: [string, "null"], format: date-time }
+            run_status: { type: [string, "null"] }
+            task_status: { type: [string, "null"] }
+            reason: { type: [string, "null"] }
+            cancellation_request:
+              $ref: "#/components/schemas/CooperativeCancellationRequest"
+              x-durable-workflow-minimum-protocol-version: "1.20"
     WorkflowTaskCompleteRequest:
       type: object
       additionalProperties: true

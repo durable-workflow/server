@@ -71,6 +71,7 @@ final class PollRequestLeaseBinding
         }
     }
 
+    /** @param array<string, mixed> $workerClaim */
     public function bindClaimedTask(
         string $namespace,
         string $taskId,
