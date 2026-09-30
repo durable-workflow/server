@@ -98,7 +98,12 @@ final class ServerReadiness
         try {
             DB::connection()->getPdo();
 
-            return ['status' => 'ok'];
+            return [
+                'status' => 'ok',
+                'check_scope' => 'connection_only',
+                'write_capacity_verified' => false,
+                'message' => 'The database connection is available. Write capacity has not been verified.',
+            ];
         } catch (\Throwable $exception) {
             return [
                 'status' => 'unavailable',
