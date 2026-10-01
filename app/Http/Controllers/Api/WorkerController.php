@@ -1792,7 +1792,7 @@ class WorkerController
                             ->where('worker_id', $validated['lease_owner'])
                             ->lockForUpdate()
                             ->first();
-                        NamespaceWorkflowScope::taskQuery((string) $namespace)
+                        $claimedTask = NamespaceWorkflowScope::taskQuery((string) $namespace)
                             ->whereKey($taskId)
                             ->lockForUpdate()
                             ->first();
@@ -1843,6 +1843,12 @@ class WorkerController
                             WorkerProtocol::requestVersion($request),
                         );
                         $outcome = $bridge->complete($taskId, $commands);
+                        if (($outcome['completed'] ?? false) === true && $claimedTask instanceof WorkflowTask) {
+                            $successor = CooperativeCancellationPolicy::resumeUndeliveredRequest($claimedTask->refresh());
+                            if ($successor instanceof WorkflowTask) {
+                                $outcome['created_task_ids'][] = $successor->id;
+                            }
+                        }
                         $this->applyStickyCacheClaim(
                             $taskId,
                             $validated['lease_owner'],

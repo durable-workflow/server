@@ -3,6 +3,8 @@
 namespace App\Support;
 
 use App\Models\WorkerRegistration;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 
@@ -66,6 +68,52 @@ final class CooperativeCancellationPolicy
     {
         return in_array(self::CAPABILITY, $capabilities, true)
             && WorkerProtocol::versionMeetsMinimum($protocolVersion, self::MINIMUM_PROTOCOL_VERSION);
+    }
+
+    /**
+     * Keep an undelivered request runnable when a worker commits the commands
+     * preceding its cancellation boundary. Call inside the fenced completion
+     * transaction so the prefix and its successor commit together.
+     */
+    public static function resumeUndeliveredRequest(WorkflowTask $completedTask): ?WorkflowTask
+    {
+        if ($completedTask->status !== TaskStatus::Completed
+            || ! self::claimSupportsCancellation($completedTask)) {
+            return null;
+        }
+
+        $run = WorkflowRun::query()->where('namespace', $completedTask->namespace)
+            ->lockForUpdate()->find($completedTask->workflow_run_id);
+        if (! $run instanceof WorkflowRun
+            || $run->status->isTerminal()
+            || ! is_string($run->cancellation_request_command_id)
+            || $run->cancellation_delivery_sequence !== null
+            || $run->cancellation_deadline_at === null
+            || ! $run->cancellation_deadline_at->isFuture()) {
+            return null;
+        }
+
+        if (WorkflowTask::query()->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])->exists()) {
+            return null;
+        }
+
+        return WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'namespace' => $run->namespace,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now(),
+            'payload' => [
+                'resume_source_kind' => 'cancellation_request',
+                'resume_source_id' => $run->cancellation_request_command_id,
+                'workflow_command_id' => $run->cancellation_request_command_id,
+            ],
+            'connection' => $run->connection,
+            'queue' => $run->queue,
+            'compatibility' => $run->compatibility,
+        ]);
     }
 
     /** @return array<string, mixed>|null */

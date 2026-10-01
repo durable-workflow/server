@@ -9,9 +9,11 @@ use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Testing\TestResponse;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\Support\OpenApiSchema;
 use Tests\TestCase;
+use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Jobs\RunTimerTask;
@@ -118,6 +120,55 @@ class CooperativeCancellationProtocolTest extends TestCase
         $this->assertSame(TaskStatus::Leased, WorkflowTask::query()->findOrFail($task['task_id'])->status);
         $this->deliver($task, $requestId, ['call_kind' => 'timer'])->assertStatus(409)
             ->assertJsonPath('reason', 'cancellation_delivery_mismatch');
+    }
+
+    public static function cancellationRequestTiming(): array
+    {
+        return ['before claim' => [true], 'after claim' => [false]];
+    }
+
+    #[DataProvider('cancellationRequestTiming')]
+    public function test_prefix_completion_keeps_pending_cancellation_deliverable(bool $beforeClaim): void
+    {
+        [$workflowId, $runId] = $this->start();
+        $this->register('original', true);
+        $requestId = $beforeClaim
+            ? $this->requestCancellation($workflowId)->assertStatus(202)->json('cancellation_request.request_id')
+            : null;
+        $task = $this->poll('original')->assertOk()->json('task');
+        $requestId ??= $this->requestCancellation($workflowId)->assertStatus(202)->json('cancellation_request.request_id');
+
+        $completed = $this->complete($task, [
+            ['type' => 'record_side_effect', 'result' => Serializer::serializeWithCodec('avro', 7)],
+            ['type' => 'record_side_effect', 'result' => Serializer::serializeWithCodec('avro', 8)],
+        ])->assertOk()->assertJsonPath('recorded', true)->assertJsonPath('run_status', 'waiting');
+        $this->assertCount(1, $completed->json('created_task_ids'));
+        $this->assertSame(2, $this->eventCount($runId, HistoryEventType::SideEffectRecorded));
+        $this->assertSame(0, $this->eventCount($runId, HistoryEventType::CooperativeCancellationDelivered));
+        $this->assertSame(1, WorkflowTask::query()->where('workflow_run_id', $runId)
+            ->where('task_type', 'workflow')->whereIn('status', ['ready', 'leased'])->count());
+        $successor = WorkflowTask::query()->findOrFail($completed->json('created_task_ids.0'));
+        $this->assertSame($requestId, $successor->payload['resume_source_id']);
+        $this->assertSame('cancellation_request', $successor->payload['resume_source_kind']);
+
+        // A repeated completion cannot publish a second successor or prefix.
+        $this->complete($task, [
+            ['type' => 'record_side_effect', 'result' => Serializer::serializeWithCodec('avro', 7)],
+        ])->assertStatus(409);
+        $this->assertSame(2, WorkflowTask::query()->where('workflow_run_id', $runId)
+            ->where('task_type', 'workflow')->count());
+        $this->assertSame(2, $this->eventCount($runId, HistoryEventType::SideEffectRecorded));
+
+        $this->register('successor', true);
+        $resumed = $this->poll('successor')->assertOk()->json('task');
+        $this->assertSame($successor->id, $resumed['task_id']);
+        $this->assertSame($requestId, $resumed['cancellation_request']['request_id']);
+        $this->deliver($resumed, $requestId, ['sequence' => 3])->assertOk()->assertJsonPath('delivered', true);
+        $this->complete($resumed, [['type' => 'complete_workflow']])->assertOk()
+            ->assertJsonPath('run_status', 'cancelled')->assertJsonPath('created_task_ids', []);
+        $this->assertSame(1, $this->eventCount($runId, HistoryEventType::CooperativeCancellationDelivered));
+        $this->assertSame(0, WorkflowTask::query()->where('workflow_run_id', $runId)
+            ->where('task_type', 'workflow')->whereIn('status', ['ready', 'leased'])->count());
     }
 
     public function test_delivery_fences_the_actual_claim_attempt_owner_and_request(): void
