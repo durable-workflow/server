@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "26"
+  version: "27"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -595,6 +595,43 @@ paths:
         "409": { $ref: "#/components/responses/WorkerError" }
         "422": { $ref: "#/components/responses/WorkerError" }
         "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
+  /worker/activity-tasks/{taskId}/acknowledge-cancellation:
+    post:
+      operationId: acknowledgeActivityCancellation
+      tags: [activity-tasks]
+      x-durable-workflow-minimum-protocol-version: "1.20"
+      description: >
+        Report that the original remote callback has stopped and been joined.
+        Requires the immutable cooperative worker claim, original task, attempt,
+        owner and local cancellation request, plus matching canonical cancellation
+        history. Cancelled rows, lease expiry and a disconnected worker are not
+        stop reports. Duplicates return the original receipt event. This report
+        never renews leases, records application heartbeats, restores publication
+        authority or extends the cleanup deadline. Late receipt remains late.
+        A worker report does not undo external effects. Local activities require
+        separate workflow claim authority and cannot use this endpoint. Installed
+        runtimes without this primitive return explicit capability diagnostics.
+        Available during draining storage admission. Fenced storage refuses writes.
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ActivityCancellationAcknowledgementRequest" }
+      responses:
+        "200":
+          description: Original callback-stop receipt, including an idempotent duplicate.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ActivityCancellationAcknowledgementResponse" }
+        "400": { $ref: "#/components/responses/WorkerError" }
+        "403": { $ref: "#/components/responses/WorkerError" }
+        "404": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+        "422": { $ref: "#/components/responses/WorkerError" }
+        "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
   /worker/activity-tasks/{taskId}/heartbeat:
     post:
       operationId: heartbeatActivityTask
@@ -1037,6 +1074,9 @@ components:
         cooperative_cancellation:
           type: boolean
           description: Explicit support for claim-bound cooperative request delivery, requiring worker protocol 1.20 or newer in the same major version. False at the default protocol 1.19.
+        activity_cancellation_acknowledgement:
+          type: boolean
+          description: Original remote callback-stop receipts require an installed runtime primitive and worker protocol 1.20. False for the default protocol and for runtimes without that primitive.
         supported_workflow_task_commands:
           type: array
           uniqueItems: true
@@ -1672,6 +1712,45 @@ components:
       properties:
         activity_attempt_id: { type: string, minLength: 1 }
         lease_owner: { type: string, minLength: 1 }
+    ActivityCancellationAcknowledgementRequest:
+      type: object
+      additionalProperties: true
+      required: [activity_attempt_id, lease_owner, request_id]
+      properties:
+        activity_attempt_id: { type: string, minLength: 1, maxLength: 255 }
+        lease_owner: { type: string, minLength: 1, maxLength: 255 }
+        request_id: { type: string, minLength: 1, maxLength: 255 }
+    ActivityCancellationAcknowledgementResponse:
+      allOf:
+        - $ref: "#/components/schemas/WorkerEnvelope"
+        - type: object
+          required: [task_id, activity_attempt_id, lease_owner, request_id, acknowledged, duplicate, reason, history_event_id, heartbeat_recorded]
+          properties:
+            task_id: { type: string, minLength: 1 }
+            activity_attempt_id: { type: string, minLength: 1 }
+            lease_owner: { type: string, minLength: 1 }
+            request_id: { type: string, minLength: 1 }
+            acknowledged: { type: boolean, const: true }
+            duplicate: { type: boolean }
+            reason: { type: "null" }
+            history_event_id: { type: string, minLength: 1 }
+            heartbeat_recorded: { type: boolean, const: false }
+    ActivityCancellationReceipt:
+      type: object
+      description: >
+        Canonical cooperative request and callback-stop receipt. Unknown means no
+        original worker stop report has been recorded, even when publication is
+        already fenced. The deadline is the original immutable cleanup budget.
+      required: [request_id, root_request_id, cleanup_deadline_at, cancellation_history_event_id, callback_state, history_event_id, acknowledged_at, received_after_deadline]
+      properties:
+        request_id: { type: string, minLength: 1 }
+        root_request_id: { type: string, minLength: 1 }
+        cleanup_deadline_at: { type: string, format: date-time }
+        cancellation_history_event_id: { type: string, minLength: 1 }
+        callback_state: { type: string, enum: [unknown, stopped] }
+        history_event_id: { type: [string, "null"] }
+        acknowledged_at: { type: [string, "null"], format: date-time }
+        received_after_deadline: { type: [boolean, "null"] }
     ActivityTaskStatusResponse:
       allOf:
         - $ref: "#/components/schemas/WorkerEnvelope"
@@ -1693,6 +1772,9 @@ components:
             activity_status: { type: [string, "null"] }
             attempt_status: { type: [string, "null"] }
             task_status: { type: [string, "null"] }
+            cancellation_acknowledgement:
+              $ref: "#/components/schemas/ActivityCancellationReceipt"
+              x-durable-workflow-minimum-protocol-version: "1.20"
             deadlines:
               type: [object, "null"]
               description: Existing execution deadlines. Null when no deadline is configured.

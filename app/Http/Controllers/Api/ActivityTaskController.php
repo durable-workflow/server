@@ -27,12 +27,19 @@ use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use Workflow\V2\Contracts\ActivityTaskBridge as ActivityTaskBridgeContract;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
 use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Support\ActivityCancellationAcknowledgement;
+use Workflow\V2\Support\ActivityRowLockOrder;
+use Workflow\V2\Support\CooperativeCancellationDelivery;
 use Workflow\V2\Support\WorkerProtocolVersion;
 
 class ActivityTaskController
@@ -121,6 +128,7 @@ class ActivityTaskController
                     $request,
                 ),
                 timeoutSeconds: $timeoutSeconds,
+                protocolVersion: WorkerProtocol::requestVersion($request),
             );
         } catch (\Throwable $exception) {
             if ($exception instanceof InvalidArgumentException
@@ -449,6 +457,15 @@ class ActivityTaskController
             }
             $deadlines = $this->executionDeadlines($status['activity_execution_id'] ?? null) ?? [];
             $workerSession = $this->workerSessions->workerSessionForExecution($status['activity_execution_id'] ?? null);
+            $cancellation = $status['cancel_requested'] === true
+                ? $this->activityCancellationReceipt(
+                    (string) $request->attributes->get('namespace'),
+                    $taskId,
+                    $validated['activity_attempt_id'],
+                    $validated['lease_owner'],
+                    $status['activity_execution_id'] ?? null,
+                )
+                : null;
         } catch (\Throwable $exception) {
             if (! BackendLockPressure::is($exception)) {
                 throw $exception;
@@ -501,7 +518,135 @@ class ActivityTaskController
             'task_status' => $status['task_status'],
             'deadlines' => $deadlines === [] ? null : $deadlines,
             'worker_session' => $workerSession,
+            ...($cancellation === null ? [] : ['cancellation_acknowledgement' => $cancellation]),
         ]);
+    }
+
+    /** Record an original owner's report after its remote callback has stopped and joined. */
+    public function acknowledgeCancellation(Request $request, string $taskId): JsonResponse
+    {
+        if ($response = WorkerProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+        if (! CooperativeCancellationPolicy::serverSupported()
+            || ! WorkerProtocol::versionMeetsMinimum(WorkerProtocol::requestVersion($request), '1.20')) {
+            return WorkerProtocol::json([
+                'acknowledged' => false,
+                'reason' => 'activity_cancellation_acknowledgement_not_supported',
+                'minimum_protocol_version' => '1.20',
+                'unavailable' => ['worker_protocol'],
+            ], 422);
+        }
+        $validated = $request->validate([
+            'activity_attempt_id' => ['required', 'string', 'max:255'],
+            'lease_owner' => ['required', 'string', 'max:255'],
+            'request_id' => ['required', 'string', 'max:255'],
+        ]);
+        $namespace = (string) $request->attributes->get('namespace');
+        try {
+            if ($response = $this->guardAttemptOwnership(
+                $namespace, $taskId, $validated['activity_attempt_id'], $validated['lease_owner'],
+            )) {
+                return $response;
+            }
+            if (! CooperativeCancellationPolicy::activityAcknowledgementBackendSupported()) {
+                return $this->activityAcknowledgementUnavailable($validated['lease_owner'], ['installed_runtime_activity_acknowledgement']);
+            }
+            return $this->storageMutations->run(fn (): JsonResponse => DB::transaction(function () use ($namespace, $taskId, $validated): JsonResponse {
+                // Acquire the package's activity lock order before checking the
+                // immutable claim and calling the nested package transaction.
+                $rows = ActivityRowLockOrder::lockForAttempt($validated['activity_attempt_id']);
+                $attempt = $rows['attempt'];
+                if ($attempt === null || $attempt->workflow_task_id !== $taskId) {
+                    return WorkerProtocol::json(['acknowledged' => false, 'reason' => 'activity_attempt_not_found'], 404);
+                }
+                $run = WorkflowRun::query()->where('namespace', $namespace)->lockForUpdate()->find($attempt->workflow_run_id);
+                $task = NamespaceWorkflowScope::taskQuery($namespace)->lockForUpdate()->find($taskId);
+                if ($run === null || $task === null || $task->workflow_run_id !== $run->id) {
+                    return WorkerProtocol::json(['acknowledged' => false, 'reason' => 'task_not_found'], 404);
+                }
+                if (! CooperativeCancellationPolicy::claimSupportsCancellation($task)) {
+                    return $this->activityAcknowledgementUnavailable($validated['lease_owner'], ['worker_claim_capability']);
+                }
+                $outcome = ActivityCancellationAcknowledgement::recordStopped(
+                    $validated['activity_attempt_id'], $validated['lease_owner'], $validated['request_id'],
+                );
+                return WorkerProtocol::json([
+                    'task_id' => $taskId,
+                    'activity_attempt_id' => $validated['activity_attempt_id'],
+                    'lease_owner' => $validated['lease_owner'],
+                    'request_id' => $validated['request_id'],
+                    ...$outcome,
+                    'heartbeat_recorded' => false,
+                ], $outcome['acknowledged'] ? 200 : ($outcome['reason'] === 'activity_attempt_not_found' ? 404 : 409));
+            }));
+        } catch (\Throwable $exception) {
+            if (! BackendLockPressure::is($exception)) {
+                throw $exception;
+            }
+            return BackendLockPressure::workerOperationResponse($request, false);
+        }
+    }
+
+    /** @param list<string> $unavailable */
+    private function activityAcknowledgementUnavailable(string $workerId, array $unavailable): JsonResponse
+    {
+        return WorkerProtocol::json([
+            'acknowledged' => false,
+            'reason' => 'activity_cancellation_acknowledgement_not_supported',
+            'required_capability' => CooperativeCancellationPolicy::CAPABILITY,
+            'minimum_protocol_version' => '1.20',
+            'worker_id' => $workerId,
+            'unavailable' => $unavailable,
+            'remediation' => 'Use a runtime with activity stop acknowledgements and an original claim from a cooperative worker on protocol 1.20 or newer.',
+        ], 409);
+    }
+
+    /** @return array<string, mixed>|null */
+    private function activityCancellationReceipt(
+        string $namespace, string $taskId, string $attemptId, string $leaseOwner, ?string $executionId,
+    ): ?array {
+        if (! CooperativeCancellationPolicy::activityAcknowledgementBackendSupported() || $executionId === null) {
+            return null;
+        }
+        $execution = ActivityExecution::query()->find($executionId);
+        if ($execution === null || $execution->current_attempt_id !== $attemptId) {
+            return null;
+        }
+        $run = WorkflowRun::query()->where('namespace', $namespace)->find($execution->workflow_run_id);
+        if ($run === null || ! is_string($run->cancellation_request_command_id)) {
+            return null;
+        }
+        $context = CooperativeCancellationDelivery::context($run);
+        if ($context === null || $context->requestId !== $run->cancellation_request_command_id) {
+            return null;
+        }
+        $events = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)
+            ->where('workflow_command_id', $context->requestId)
+            ->where('payload->activity_execution_id', $executionId)
+            ->whereIn('event_type', [HistoryEventType::ActivityCancelled->value, HistoryEventType::ActivityCancellationAcknowledged->value])
+            ->get();
+        $cancelled = $events->first(fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ActivityCancelled
+            && ($event->payload['activity_attempt_id'] ?? null) === $attemptId);
+        $snapshot = $cancelled?->payload['activity_attempt'] ?? null;
+        if (! is_array($snapshot) || ($snapshot['id'] ?? null) !== $attemptId
+            || ($snapshot['task_id'] ?? null) !== $taskId || ($snapshot['lease_owner'] ?? null) !== $leaseOwner
+            || ($snapshot['activity_execution_id'] ?? null) !== $executionId || ($snapshot['status'] ?? null) !== 'cancelled') {
+            return null;
+        }
+        $ack = $events->first(fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ActivityCancellationAcknowledged
+            && ($event->payload['cancellation_history_event_id'] ?? null) === $cancelled->id
+            && ($event->payload['activity_attempt_id'] ?? null) === $attemptId);
+        return [
+            'request_id' => $context->requestId,
+            'root_request_id' => $context->rootRequestId,
+            'cleanup_deadline_at' => $context->deadline()->toISOString(),
+            'cancellation_history_event_id' => $cancelled->id,
+            'callback_state' => $ack === null ? 'unknown' : 'stopped',
+            'history_event_id' => $ack?->id,
+            'acknowledged_at' => $ack?->payload['acknowledged_at'] ?? null,
+            'received_after_deadline' => $ack?->payload['received_after_deadline'] ?? null,
+        ];
     }
 
     /**

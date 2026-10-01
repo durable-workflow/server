@@ -25,6 +25,7 @@ final class EnforceStorageAdmission
         'ActivityTaskController@complete',
         'ActivityTaskController@fail',
         'ActivityTaskController@heartbeat',
+        'ActivityTaskController@acknowledgeCancellation',
         'WorkerSessionController@heartbeat',
     ];
 

@@ -46,6 +46,7 @@ final class ActivityTaskPoller
         array $supportedActivityTypes = [],
         bool $workerSessionsAvailable = true,
         ?int $timeoutSeconds = null,
+        ?string $protocolVersion = null,
     ): array {
         $pollRequestId = $this->nonEmptyString($pollRequestId);
 
@@ -87,6 +88,7 @@ final class ActivityTaskPoller
                 supportedActivityTypes: $supportedActivityTypes,
                 workerSessionsAvailable: $workerSessionsAvailable,
                 timeoutSeconds: $timeoutSeconds,
+                protocolVersion: $protocolVersion,
             );
         }
 
@@ -100,6 +102,7 @@ final class ActivityTaskPoller
             supportedActivityTypes: $supportedActivityTypes,
             workerSessionsAvailable: $workerSessionsAvailable,
             timeoutSeconds: $timeoutSeconds,
+            protocolVersion: $protocolVersion,
         );
     }
 
@@ -117,6 +120,7 @@ final class ActivityTaskPoller
         array $supportedActivityTypes = [],
         bool $workerSessionsAvailable = true,
         ?int $timeoutSeconds = null,
+        ?string $protocolVersion = null,
     ): array {
         $workerPollFence = WorkerPollFence::snapshot($worker);
 
@@ -161,6 +165,7 @@ final class ActivityTaskPoller
                     supportedActivityTypes: $supportedActivityTypes,
                     workerSessionsAvailable: $workerSessionsAvailable,
                     timeoutSeconds: $timeoutSeconds,
+                    protocolVersion: $protocolVersion,
                 );
             }
 
@@ -380,6 +385,7 @@ final class ActivityTaskPoller
         array $supportedActivityTypes = [],
         bool $workerSessionsAvailable = true,
         ?int $timeoutSeconds = null,
+        ?string $protocolVersion = null,
     ): array {
         try {
             $task = $this->performPoll(
@@ -392,6 +398,7 @@ final class ActivityTaskPoller
                 supportedActivityTypes: $supportedActivityTypes,
                 workerSessionsAvailable: $workerSessionsAvailable,
                 timeoutSeconds: $timeoutSeconds,
+                protocolVersion: $protocolVersion,
             );
         } catch (\Throwable $exception) {
             $this->pollRequests->forgetPending(
@@ -432,6 +439,7 @@ final class ActivityTaskPoller
         array $supportedActivityTypes = [],
         bool $workerSessionsAvailable = true,
         ?int $timeoutSeconds = null,
+        ?string $protocolVersion = null,
     ): array {
         $limit = max(10, max(1, (int) config('server.polling.max_tasks_per_poll', 1)) * 10);
         $nextProbeAt = null;
@@ -440,7 +448,7 @@ final class ActivityTaskPoller
             'poll_status' => 'empty',
             'next_probe_at' => null,
         ];
-        $workerPollFence = WorkerPollFence::snapshot($worker);
+        $workerPollFence = CooperativeCancellationPolicy::workerSnapshot($worker, $protocolVersion);
 
         $crossKindWake = WorkerProtocol::supportsCrossKindPollWake($worker);
 
@@ -932,6 +940,7 @@ final class ActivityTaskPoller
                         $taskId,
                         $leaseOwner,
                         $pollRequestId,
+                        $workerPollFence,
                     );
 
                     return $claim;

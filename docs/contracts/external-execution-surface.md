@@ -77,3 +77,31 @@ Stable adjacent contract docs live in:
 - `docs/contracts/bridge-adapters.md`
 - `docs/contracts/external-task-input.md`
 - `docs/contracts/external-task-result.md`
+
+## Candidate cooperative activity stop receipts
+
+The cooperative cancellation draft adds remote callback-stop receipts at worker
+protocol 1.20. The default remains 1.19 and the candidate contract is not frozen.
+The installed Native runtime must provide the acknowledgment primitive. Discovery
+advertises `server_capabilities.activity_cancellation_acknowledgement` only when
+both conditions hold.
+
+`POST /api/worker/activity-tasks/{taskId}/status` remains read-only. After canonical
+cooperative cancellation it reports the original request, root identity, immutable
+cleanup deadline and cancellation history event. `callback_state: unknown` means
+that the worker has not reported an actual stop. A cancelled durable row or
+expired lease does not make that state `stopped`.
+
+The original cooperative worker may post `activity_attempt_id`, `lease_owner`
+and `request_id` to `/acknowledge-cancellation` after stopping and joining the
+remote callback. The Server checks the namespace, task, original claim capability,
+attempt and canonical cancellation snapshot in a fenced transaction. A later
+registration or request protocol cannot upgrade an old claim. Duplicates return
+the original receipt event and late receipt remains explicitly late.
+
+This report grants no renewed lease, application heartbeat, result authority or
+cleanup budget. It describes the worker's stopped callback, not reversal of
+external effects. Local activities require separate workflow claim authority.
+Receipt writes are admitted during storage draining and refused when storage is
+fenced. SDK stop/join emission, local receipts and activity waiting policies still
+need connected qualification before this candidate is published.

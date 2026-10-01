@@ -6,6 +6,7 @@ use App\Models\WorkerRegistration;
 use App\Models\WorkerSessionLease;
 use App\Models\WorkflowNamespace;
 use App\Support\BackendLockPressureException;
+use App\Support\CooperativeCancellationPolicy;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -18,6 +19,7 @@ use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\Support\OpenApiSchema;
 use Tests\TestCase;
 use Workflow\V2\Contracts\ActivityTaskBridge;
+use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
@@ -272,7 +274,169 @@ class ActivityAttemptStatusTest extends TestCase
             ->assertStatus(422)->assertJsonPath('reason', 'activity_attempt_status_unavailable');
     }
 
-    private function lease(string $suffix = 'one'): array
+    public function test_stop_acknowledgement_requires_a_capable_installed_runtime(): void
+    {
+        $this->assertSame(CooperativeCancellationPolicy::activityAcknowledgementBackendSupported(), WorkerProtocol::serverCapabilities()['activity_cancellation_acknowledgement']);
+        config(['server.worker_protocol.version' => '1.19']);
+        $this->assertFalse(WorkerProtocol::serverCapabilities()['activity_cancellation_acknowledgement']);
+        config(['server.worker_protocol.version' => '1.20']);
+        $task = $this->lease(capable: true);
+        $response = $this->acknowledge($task, 'not-yet-requested');
+        if (! CooperativeCancellationPolicy::activityAcknowledgementBackendSupported()) {
+            $response->assertStatus(409)->assertJsonPath('acknowledged', false)
+                ->assertJsonPath('unavailable', ['installed_runtime_activity_acknowledgement']);
+        } else {
+            $response->assertStatus(409)->assertJsonPath('reason', 'cancellation_request_mismatch');
+        }
+    }
+
+    public function test_stop_receipt_is_distinct_from_fencing_and_duplicate_keeps_original_history(): void
+    {
+        $this->requireAcknowledgementBackend();
+        $task = $this->lease(capable: true);
+        $request = $this->cancelCooperatively($task);
+        $before = $this->snapshot($task);
+        $observed = $this->observe($task)->assertOk()->assertJsonPath('can_continue', false)
+            ->assertJsonPath('cancellation_acknowledgement.callback_state', 'unknown')
+            ->assertJsonPath('cancellation_acknowledgement.request_id', $request['request_id'])
+            ->assertJsonPath('cancellation_acknowledgement.root_request_id', $request['request_id'])
+            ->assertJsonPath('cancellation_acknowledgement.cleanup_deadline_at', $request['cleanup_deadline_at']);
+        $this->assertSame($before, $this->snapshot($task));
+        $response = $this->acknowledge($task, $request['request_id'])->assertOk()
+            ->assertJsonPath('acknowledged', true)->assertJsonPath('duplicate', false)
+            ->assertJsonPath('heartbeat_recorded', false);
+        $eventId = $response->json('history_event_id');
+        $schema = OpenApiSchema::fromFile(base_path('resources/platform-protocol-specs/worker-protocol-api.openapi.yaml'));
+        $schema->assertReferenceMatches('#/components/schemas/ActivityCancellationAcknowledgementResponse/allOf/1', json_decode($response->getContent(), flags: JSON_THROW_ON_ERROR));
+        $schema->assertReferenceMatches('#/components/schemas/ActivityCancellationReceipt', json_decode($observed->getContent(), flags: JSON_THROW_ON_ERROR)->cancellation_acknowledgement);
+        $this->travel(40)->seconds();
+        $this->acknowledge($task, $request['request_id'])->assertOk()
+            ->assertJsonPath('duplicate', true)->assertJsonPath('history_event_id', $eventId);
+        $this->observe($task)->assertOk()->assertJsonPath('cancellation_acknowledgement.callback_state', 'stopped')
+            ->assertJsonPath('cancellation_acknowledgement.history_event_id', $eventId)
+            ->assertJsonPath('cancellation_acknowledgement.received_after_deadline', false)
+            ->assertJsonPath('cancellation_acknowledgement.cleanup_deadline_at', $request['cleanup_deadline_at']);
+        $after = $this->snapshot($task);
+        $this->assertSame($before[4] + 1, $after[4]);
+        unset($before[4], $after[4]);
+        $this->assertSame($before, $after);
+        $this->withHeaders($this->headers())->postJson($this->path($task, 'complete'), $this->fence($task) + ['result' => null])
+            ->assertJsonPath('recorded', false);
+    }
+
+    public function test_late_stop_receipt_cannot_renew_original_deadline(): void
+    {
+        $this->requireAcknowledgementBackend();
+        $task = $this->lease(capable: true);
+        $request = $this->cancelCooperatively($task);
+        $this->travel(31)->seconds();
+        $this->acknowledge($task, $request['request_id'])->assertOk()->assertJsonPath('acknowledged', true);
+        $this->observe($task)->assertOk()->assertJsonPath('cancellation_acknowledgement.received_after_deadline', true)
+            ->assertJsonPath('cancellation_acknowledgement.cleanup_deadline_at', $request['cleanup_deadline_at']);
+        $this->assertSame($request['cleanup_deadline_at'], WorkflowRun::query()->findOrFail($task['run_id'])->cancellation_deadline_at->toISOString());
+    }
+
+    public function test_changed_registration_cannot_upgrade_or_erase_original_activity_claim(): void
+    {
+        $this->requireAcknowledgementBackend();
+        foreach ([false, true] as $originallyCapable) {
+            $task = $this->lease($originallyCapable ? 'capable' : 'legacy', capable: $originallyCapable);
+            $request = $this->cancelCooperatively($task);
+            WorkerRegistration::query()->where('worker_id', $task['lease_owner'])->firstOrFail()->forceFill([
+                'capabilities' => $originallyCapable ? [] : [CooperativeCancellationPolicy::CAPABILITY],
+            ])->save();
+            $response = $this->acknowledge($task, $request['request_id']);
+            if ($originallyCapable) {
+                $response->assertOk()->assertJsonPath('acknowledged', true);
+            } else {
+                $response->assertStatus(409)->assertJsonPath('unavailable', ['worker_claim_capability']);
+            }
+        }
+    }
+
+    public function test_acknowledgement_requires_original_request_owner_task_attempt_and_namespace(): void
+    {
+        $this->requireAcknowledgementBackend();
+        $task = $this->lease(capable: true);
+        $other = $this->lease('other', capable: true);
+        $request = $this->cancelCooperatively($task);
+        $before = $this->snapshot($task);
+        $this->acknowledge($task, 'different')->assertStatus(409)->assertJsonPath('reason', 'cancellation_request_mismatch');
+        $this->acknowledge($task, $request['request_id'], ['lease_owner' => 'different'])->assertStatus(409)->assertJsonPath('reason', 'lease_owner_mismatch');
+        $this->acknowledge($task, $request['request_id'], ['activity_attempt_id' => $other['activity_attempt_id']])
+            ->assertStatus(409)->assertJsonPath('reason', 'task_mismatch');
+        WorkflowNamespace::query()->create(['name' => 'isolated', 'description' => 'Other', 'retention_days' => 30, 'status' => 'active']);
+        $this->withHeaders($this->headers('isolated'))->postJson($this->path($task, 'acknowledge-cancellation'),
+            $this->fence($task) + ['request_id' => $request['request_id']])->assertNotFound();
+        $this->assertSame($before, $this->snapshot($task));
+    }
+
+    public function test_new_request_protocol_cannot_upgrade_a_legacy_activity_claim(): void
+    {
+        $this->requireAcknowledgementBackend();
+        $task = $this->lease(capable: true, protocolVersion: '1.19');
+        $request = $this->cancelCooperatively($task);
+        $before = $this->snapshot($task);
+        $this->acknowledge($task, $request['request_id'])->assertStatus(409)
+            ->assertJsonPath('unavailable', ['worker_claim_capability']);
+        $this->assertSame($before, $this->snapshot($task));
+    }
+
+    public function test_acknowledgement_accepts_drain_but_fenced_storage_preserves_unknown_stop_state(): void
+    {
+        $this->requireAcknowledgementBackend();
+        $task = $this->lease(capable: true);
+        $request = $this->cancelCooperatively($task);
+        $this->configureStoragePressure();
+        $this->observeStoragePressure('fenced');
+        $before = $this->snapshot($task);
+        $this->acknowledge($task, $request['request_id'])->assertStatus(503)->assertJsonPath('request_admitted', false);
+        $this->observe($task)->assertOk()->assertJsonPath('cancellation_acknowledgement.callback_state', 'unknown');
+        $this->assertSame($before, $this->snapshot($task));
+        $this->observeStoragePressure('draining');
+        $this->acknowledge($task, $request['request_id'])->assertOk()->assertJsonPath('acknowledged', true);
+    }
+
+    public function test_old_protocol_and_operator_role_cannot_acknowledge_callbacks(): void
+    {
+        $task = $this->lease(capable: true);
+        $old = $this->headers();
+        $old[WorkerProtocol::HEADER] = '1.19';
+        $this->withHeaders($old)->postJson($this->path($task, 'acknowledge-cancellation'), $this->fence($task) + ['request_id' => 'request'])
+            ->assertStatus(422)->assertJsonPath('reason', 'activity_cancellation_acknowledgement_not_supported');
+        config(['server.auth.driver' => 'token', 'server.auth.role_tokens' => ['operator' => 'fixture-operator', 'worker' => 'fixture-worker']]);
+        $this->withHeaders($this->headers() + ['Authorization' => 'Bearer fixture-operator'])
+            ->postJson($this->path($task, 'acknowledge-cancellation'), $this->fence($task) + ['request_id' => 'request'])
+            ->assertForbidden()->assertJsonPath('reason', 'forbidden');
+    }
+
+    private function requireAcknowledgementBackend(): void
+    {
+        if (! CooperativeCancellationPolicy::activityAcknowledgementBackendSupported()) {
+            $this->markTestSkipped('Requires the candidate Native acknowledgement primitive for source qualification.');
+        }
+    }
+
+    private function cancelCooperatively(array $task): array
+    {
+        $result = WorkflowStub::load($task['workflow_id'])->requestCancellation('cleanup', 30);
+        $this->assertTrue($result->accepted());
+        $run = WorkflowRun::query()->findOrFail($task['run_id']);
+        $ready = $run->tasks()->where('task_type', 'workflow')->where('status', 'ready')->sole();
+        $bridge = app(WorkflowTaskBridge::class);
+        $claim = $bridge->claimStatus($ready->id, 'cleanup-owner');
+        $this->assertTrue($claim['claimed']);
+        $this->assertTrue($bridge->deliverCancellation($ready->id, $run->cancellation_request_command_id, 1, 'activity')['delivered']);
+        return ['request_id' => $run->cancellation_request_command_id, 'cleanup_deadline_at' => $run->cancellation_deadline_at->toISOString()];
+    }
+
+    private function acknowledge(array $task, string $requestId, array $overrides = []): TestResponse
+    {
+        return $this->withHeaders($this->headers())->postJson($this->path($task, 'acknowledge-cancellation'),
+            array_replace($this->fence($task) + ['request_id' => $requestId], $overrides));
+    }
+
+    private function lease(string $suffix = 'one', bool $capable = false, string $protocolVersion = '1.20'): array
     {
         $workflow = WorkflowStub::make(ExternalGreetingWorkflow::class, 'status-'.$suffix);
         $start = $workflow->start('Ada');
@@ -283,10 +447,11 @@ class ActivityAttemptStatusTest extends TestCase
         WorkerRegistration::query()->updateOrCreate(['worker_id' => 'status-worker-'.$suffix, 'namespace' => 'default'], [
             'task_queue' => 'external-activities', 'runtime' => 'php',
             'supported_activity_types' => ['tests.external-greeting-activity'],
+            'capabilities' => $capable ? [CooperativeCancellationPolicy::CAPABILITY] : [],
             'last_heartbeat_at' => now(), 'status' => 'active',
         ]);
 
-        return $this->withHeaders($this->headers())->postJson('/api/worker/activity-tasks/poll', [
+        return $this->withHeaders(array_replace($this->headers(), [WorkerProtocol::HEADER => $protocolVersion]))->postJson('/api/worker/activity-tasks/poll', [
             'worker_id' => 'status-worker-'.$suffix, 'task_queue' => 'external-activities',
         ])->assertOk()->json('task');
     }

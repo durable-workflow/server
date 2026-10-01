@@ -9,6 +9,7 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\ActivityCancellationAcknowledgement;
 use Workflow\V2\Support\ChildCancellation;
 use Workflow\V2\WorkflowStub;
 
@@ -34,6 +35,12 @@ final class CooperativeCancellationPolicy
             && defined(ParentClosePolicy::class.'::RequestCancellation')
             && class_exists(ChildCancellation::class)
             && method_exists(WorkflowStub::class, 'attemptRequestCancellationFromParent');
+    }
+
+    public static function activityAcknowledgementBackendSupported(): bool
+    {
+        return class_exists(ActivityCancellationAcknowledgement::class)
+            && method_exists(ActivityCancellationAcknowledgement::class, 'recordStopped');
     }
 
     /** @return list<string> */

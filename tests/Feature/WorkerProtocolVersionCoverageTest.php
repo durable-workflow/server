@@ -49,6 +49,8 @@ class WorkerProtocolVersionCoverageTest extends TestCase
             'query-tasks.complete' => ['method' => 'post', 'path' => '/api/worker/query-tasks/task-1/complete'],
             'query-tasks.fail' => ['method' => 'post', 'path' => '/api/worker/query-tasks/task-1/fail'],
             'activity-tasks.poll' => ['method' => 'post', 'path' => '/api/worker/activity-tasks/poll'],
+            'activity-tasks.status' => ['method' => 'post', 'path' => '/api/worker/activity-tasks/task-1/status'],
+            'activity-tasks.acknowledge-cancellation' => ['method' => 'post', 'path' => '/api/worker/activity-tasks/task-1/acknowledge-cancellation'],
             'activity-tasks.complete' => ['method' => 'post', 'path' => '/api/worker/activity-tasks/task-1/complete'],
             'activity-tasks.fail' => ['method' => 'post', 'path' => '/api/worker/activity-tasks/task-1/fail'],
             'activity-tasks.heartbeat' => ['method' => 'post', 'path' => '/api/worker/activity-tasks/task-1/heartbeat'],

@@ -414,6 +414,7 @@ class WorkerProtocol
      *     activity_retry_policy: bool,
      *     activity_timeouts: bool,
      *     cooperative_cancellation: bool,
+     *     activity_cancellation_acknowledgement: bool,
      *     local_activities: array<string, mixed>,
      *     worker_session_verbs: list<string>,
      *     worker_sessions: array<string, mixed>,
@@ -546,6 +547,8 @@ class WorkerProtocol
             'activity_retry_policy' => true,
             'activity_timeouts' => true,
             'cooperative_cancellation' => CooperativeCancellationPolicy::serverSupported(),
+            'activity_cancellation_acknowledgement' => CooperativeCancellationPolicy::serverSupported()
+                && CooperativeCancellationPolicy::activityAcknowledgementBackendSupported(),
             'local_activities' => [
                 ...WorkerProtocolVersion::localActivitySemantics(),
                 'supported' => $portableWorkerAffinitySupported,
