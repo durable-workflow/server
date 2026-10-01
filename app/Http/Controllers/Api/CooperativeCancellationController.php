@@ -211,7 +211,8 @@ final class CooperativeCancellationController
             );
         }));
 
-        return WorkerProtocol::json($result, ($result['delivered'] ?? false) ? 200
+        return WorkerProtocol::json($result, (($result['delivered'] ?? false)
+            || ($result['reason'] ?? null) === 'cancellation_waiting_for_child') ? 200
             : (($result['reason'] ?? null) === 'task_not_found' ? 404 : 409));
     }
 }

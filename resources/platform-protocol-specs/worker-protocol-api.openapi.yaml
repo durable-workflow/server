@@ -32,6 +32,7 @@ x-durable-workflow-cooperative-cancellation-contract:
   delivery_operation: POST /worker/workflow-tasks/{taskId}/deliver-cancellation
   canonical_history_event: CooperativeCancellationDelivered
   delivery_identity: [request_id, sequence, call_kind, sequence_span, operation_sequence, operation_sequence_span]
+  pending_child_delivery: { status: 200, delivered: false, reason: cancellation_waiting_for_child, lease_released: false, canonical_delivery_recorded: false }
   claim_proof: immutable_registration_snapshot_bound_to_task_run_owner_and_attempt
   request_against_incompatible_active_claim: { status: 409, reason: active_claim_cancellation_not_supported, history_appended: false }
   request_claim_race: serialized_on_workflow_run_lock
@@ -384,7 +385,7 @@ paths:
             schema: { $ref: "#/components/schemas/CooperativeCancellationDeliveryRequest" }
       responses:
         "200":
-          description: Canonical delivery committed or an identical acknowledgment retried.
+          description: Canonical delivery committed, an identical acknowledgment retried, or child cancellation completion still pending.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/CooperativeCancellationDeliveryResponse" }
@@ -1370,19 +1371,33 @@ components:
     CooperativeCancellationDeliveryResponse:
       allOf:
         - $ref: "#/components/schemas/WorkerEnvelope"
-        - type: object
-          required: [delivered, task_id, workflow_run_id, request_id, sequence, call_kind, sequence_span, operation_sequence, operation_sequence_span, reason]
-          properties:
-            delivered: { type: boolean, const: true }
-            task_id: { type: string, minLength: 1 }
-            workflow_run_id: { type: string, minLength: 1 }
-            request_id: { type: string, minLength: 1 }
-            sequence: { type: integer, minimum: 1 }
-            call_kind: { type: string, enum: [activity, local_activity, timer, condition, signal, child, parallel, selection_handle] }
-            sequence_span: { type: integer, minimum: 1 }
-            operation_sequence: { type: [integer, "null"], minimum: 1 }
-            operation_sequence_span: { type: integer, minimum: 1 }
-            reason: { type: "null" }
+        - oneOf:
+            - type: object
+              required: [delivered, task_id, workflow_run_id, request_id, sequence, call_kind, sequence_span, operation_sequence, operation_sequence_span, reason]
+              properties:
+                delivered: { type: boolean, const: true }
+                task_id: { type: string, minLength: 1 }
+                workflow_run_id: { type: string, minLength: 1 }
+                request_id: { type: string, minLength: 1 }
+                sequence: { type: integer, minimum: 1 }
+                call_kind: { type: string, enum: [activity, local_activity, timer, condition, signal, child, parallel, selection_handle] }
+                sequence_span: { type: integer, minimum: 1 }
+                operation_sequence: { type: [integer, "null"], minimum: 1 }
+                operation_sequence_span: { type: integer, minimum: 1 }
+                reason: { type: "null" }
+            - type: object
+              required: [delivered, task_id, workflow_run_id, request_id, sequence, call_kind, sequence_span, operation_sequence, operation_sequence_span, reason]
+              properties:
+                delivered: { type: boolean, const: false }
+                task_id: { type: string, minLength: 1 }
+                workflow_run_id: { type: string, minLength: 1 }
+                request_id: { type: "null" }
+                sequence: { type: "null" }
+                call_kind: { type: "null" }
+                sequence_span: { type: "null" }
+                operation_sequence: { type: "null" }
+                operation_sequence_span: { type: "null" }
+                reason: { type: string, const: cancellation_waiting_for_child }
     WorkerHistoryEvent:
       type: object
       additionalProperties: true
