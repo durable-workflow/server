@@ -1843,7 +1843,9 @@ class WorkerController
                             WorkerProtocol::requestVersion($request),
                         );
                         $outcome = $bridge->complete($taskId, $commands);
-                        if (($outcome['completed'] ?? false) === true && $claimedTask instanceof WorkflowTask) {
+                        if (($outcome['completed'] ?? false) === true
+                            && $claimedTask instanceof WorkflowTask
+                            && CooperativeCancellationPolicy::claimSupportsCancellation($claimedTask)) {
                             $successor = CooperativeCancellationPolicy::resumeUndeliveredRequest($claimedTask->refresh());
                             if ($successor instanceof WorkflowTask) {
                                 $outcome['created_task_ids'][] = $successor->id;
