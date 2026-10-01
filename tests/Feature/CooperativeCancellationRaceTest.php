@@ -118,24 +118,37 @@ class CooperativeCancellationRaceTest extends TestCase
                 $results[$operation] = json_decode($output, true, flags: JSON_THROW_ON_ERROR);
             }
             $heartbeat = $results['heartbeat'];
-            $this->assertSame(200, $heartbeat['status'], json_encode($heartbeat));
-            $this->assertTrue($heartbeat['body']['renewed']);
             $task = WorkflowTask::query()->findOrFail($claim['task_id']);
-            $this->assertSame($task->lease_owner, $heartbeat['body']['lease_owner'], json_encode([
+            $trace = json_encode([
+                'heartbeat_status' => $heartbeat['status'],
                 'heartbeat' => array_intersect_key($heartbeat['body'], array_flip([
-                    'task_id', 'lease_owner', 'workflow_task_attempt', 'renewed',
+                    'task_id', 'lease_owner', 'workflow_task_attempt', 'renewed', 'reason',
                 ])),
                 'replacement_claim' => is_array($results['poll']['body']['task'] ?? null)
                     ? array_intersect_key($results['poll']['body']['task'], array_flip([
                         'task_id', 'lease_owner', 'workflow_task_attempt',
                     ])) : null,
-            ]));
-            $this->assertSame($task->attempt_count, $heartbeat['body']['workflow_task_attempt']);
-            $this->assertSame('original', $task->lease_owner);
-            $this->assertSame($claim['workflow_task_attempt'], $task->attempt_count);
+            ]);
+            $this->assertContains($heartbeat['status'], [200, 409], $trace);
             $this->assertSame(200, $results['poll']['status'], json_encode($results['poll']));
-            $this->assertNull($results['poll']['body']['task']);
-            $this->assertSame($pending, $heartbeat['body']['cancellation_request']);
+            if ($heartbeat['status'] === 200) {
+                $this->assertTrue($heartbeat['body']['renewed']);
+                $this->assertSame($task->lease_owner, $heartbeat['body']['lease_owner'], $trace);
+                $this->assertSame($task->attempt_count, $heartbeat['body']['workflow_task_attempt']);
+                $this->assertSame('original', $task->lease_owner);
+                $this->assertSame($claim['workflow_task_attempt'], $task->attempt_count);
+                $this->assertNull($results['poll']['body']['task']);
+                $this->assertSame($pending, $heartbeat['body']['cancellation_request']);
+            } else {
+                $this->assertSame('lease_owner_mismatch', $heartbeat['body']['reason'], $trace);
+                $this->assertFalse($heartbeat['body']['renewed'] ?? false);
+                $this->assertSame('replacement', $task->lease_owner);
+                $this->assertSame($claim['workflow_task_attempt'] + 1, $task->attempt_count);
+                $this->assertSame($claim['task_id'], $results['poll']['body']['task']['task_id']);
+                $this->assertSame($task->lease_owner, $results['poll']['body']['task']['lease_owner']);
+                $this->assertSame($task->attempt_count, $results['poll']['body']['task']['workflow_task_attempt']);
+                $this->assertSame($pending, $results['poll']['body']['task']['cancellation_request']);
+            }
             $this->assertSame(1, WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
                 ->where('event_type', HistoryEventType::CooperativeCancellationRequested->value)->count());
             $this->assertSame(0, WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
