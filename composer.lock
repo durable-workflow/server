@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "66b0af23693134536eae568dcd1351e1",
+    "content-hash": "8d09f9cdaff3132f1ff742f0f6766340",
     "packages": [
         {
             "name": "apache/avro",
@@ -659,12 +659,12 @@
             "source": {
                 "type": "git",
                 "url": "https://github.com/durable-workflow/workflow.git",
-                "reference": "c092dd41a5b0aef1df06420759ad6b5185a61226"
+                "reference": "9118311fb36ed7bd6ecd4023e00a7bc9025c47e3"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/durable-workflow/workflow/zipball/c092dd41a5b0aef1df06420759ad6b5185a61226",
-                "reference": "c092dd41a5b0aef1df06420759ad6b5185a61226"
+                "url": "https://api.github.com/repos/durable-workflow/workflow/zipball/9118311fb36ed7bd6ecd4023e00a7bc9025c47e3",
+                "reference": "9118311fb36ed7bd6ecd4023e00a7bc9025c47e3"
             },
             "require": {
                 "apache/avro": "^1.12",
