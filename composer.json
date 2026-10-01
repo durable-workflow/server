@@ -122,6 +122,69 @@
                 "source": {
                     "type": "git",
                     "url": "https://github.com/durable-workflow/workflow.git",
+                    "reference": "c092dd41a5b0aef1df06420759ad6b5185a61226"
+                },
+                "dist": {
+                    "type": "zip",
+                    "url": "https://api.github.com/repos/durable-workflow/workflow/zipball/c092dd41a5b0aef1df06420759ad6b5185a61226",
+                    "reference": "c092dd41a5b0aef1df06420759ad6b5185a61226"
+                }
+            }
+        },
+        {
+            "type": "package",
+            "package": {
+                "name": "durable-workflow/workflow",
+                "description": "Embedded durable workflow runtime and orchestration engine for Laravel applications.",
+                "type": "library",
+                "license": "MIT",
+                "replace": {
+                    "laravel-workflow/laravel-workflow": "self.version"
+                },
+                "autoload": {
+                    "psr-4": {
+                        "Workflow\\": "src/"
+                    },
+                    "files": [
+                        "src/functions.php",
+                        "src/V2/functions.php"
+                    ]
+                },
+                "authors": [
+                    {
+                        "name": "Durable Workflow",
+                        "email": "support@durable-workflow.com"
+                    }
+                ],
+                "require": {
+                    "php": "^8.1",
+                    "laravel/framework": "^9.52.17|^10.48.29|^11.44.1|^12.69.0|^13.30.0",
+                    "react/promise": "^2.9|^3.0",
+                    "apache/avro": "^1.12",
+                    "symfony/yaml": "^6.0|^7.0|^8.0"
+                },
+                "suggest": {
+                    "durable-workflow/sdk": "Framework-neutral client and remote-worker SDK for the standalone Durable Workflow server."
+                },
+                "extra": {
+                    "branch-alias": {
+                        "dev-main": "2.0.x-dev"
+                    },
+                    "durable-workflow": {
+                        "product-train": "2.3.1",
+                        "laravel-embedded-upgrade-contract": "resources/laravel-embedded-upgrade-contract.json",
+                        "laravel-dependency-security-policy": "resources/laravel-dependency-security-policy.json"
+                    },
+                    "laravel": {
+                        "providers": [
+                            "Workflow\\Providers\\WorkflowServiceProvider"
+                        ]
+                    }
+                },
+                "version": "2.3.2-alpha.601",
+                "source": {
+                    "type": "git",
+                    "url": "https://github.com/durable-workflow/workflow.git",
                     "reference": "fc4ef6d5c29d219e595ad4d4f37f004b55b60585"
                 },
                 "dist": {
