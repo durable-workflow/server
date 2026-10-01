@@ -32,7 +32,7 @@ x-durable-workflow-cooperative-cancellation-contract:
   delivery_operation: POST /worker/workflow-tasks/{taskId}/deliver-cancellation
   canonical_history_event: CooperativeCancellationDelivered
   delivery_identity: [request_id, sequence, call_kind, sequence_span, operation_sequence, operation_sequence_span]
-  pending_child_delivery: { status: 200, delivered: false, reason: cancellation_waiting_for_child, lease_released: false, canonical_delivery_recorded: false }
+  pending_child_delivery: { status: 200, delivered: false, reason: cancellation_waiting_for_child, claim_released: true, canonical_delivery_recorded: false, resume_source: child_terminal_history }
   claim_proof: immutable_registration_snapshot_bound_to_task_run_owner_and_attempt
   request_against_incompatible_active_claim: { status: 409, reason: active_claim_cancellation_not_supported, history_appended: false }
   request_claim_race: serialized_on_workflow_run_lock
@@ -1386,9 +1386,10 @@ components:
                 operation_sequence_span: { type: integer, minimum: 1 }
                 reason: { type: "null" }
             - type: object
-              required: [delivered, task_id, workflow_run_id, request_id, sequence, call_kind, sequence_span, operation_sequence, operation_sequence_span, reason]
+              required: [delivered, task_id, workflow_run_id, request_id, sequence, call_kind, sequence_span, operation_sequence, operation_sequence_span, reason, claim_released]
               properties:
                 delivered: { type: boolean, const: false }
+                claim_released: { type: boolean, const: true }
                 task_id: { type: string, minLength: 1 }
                 workflow_run_id: { type: string, minLength: 1 }
                 request_id: { type: "null" }

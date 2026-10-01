@@ -124,7 +124,7 @@ class CooperativeCancellationProtocolTest extends TestCase
             ->assertJsonPath('reason', 'cancellation_delivery_mismatch');
     }
 
-    public function test_child_acknowledgement_pending_is_a_valid_reply_and_keeps_the_exact_claim(): void
+    public function test_child_acknowledgement_pending_is_a_valid_reply_with_explicit_claim_release(): void
     {
         [$workflowId, $runId] = $this->start();
         $this->register('new', true);
@@ -133,7 +133,7 @@ class CooperativeCancellationProtocolTest extends TestCase
         $pending = ['delivered' => false, 'task_id' => $task['task_id'], 'workflow_run_id' => $runId,
             'request_id' => null, 'sequence' => null, 'call_kind' => null, 'sequence_span' => null,
             'operation_sequence' => null, 'operation_sequence_span' => null,
-            'reason' => 'cancellation_waiting_for_child'];
+            'reason' => 'cancellation_waiting_for_child', 'claim_released' => true];
         $bridge = \Mockery::mock(CooperativeWorkflowTaskBridge::class);
         $bridge->shouldReceive('deliverCancellation')->once()->with(
             $task['task_id'], $requestId, 1, 'child', 1, null, 1,
@@ -141,14 +141,11 @@ class CooperativeCancellationProtocolTest extends TestCase
         $this->app->instance(WorkflowTaskBridge::class, $bridge);
 
         $response = $this->deliver($task, $requestId, ['call_kind' => 'child'])->assertOk()
-            ->assertJsonPath('delivered', false)->assertJsonPath('reason', 'cancellation_waiting_for_child');
+            ->assertJsonPath('delivered', false)->assertJsonPath('reason', 'cancellation_waiting_for_child')
+            ->assertJsonPath('claim_released', true);
         OpenApiSchema::fromFile(resource_path('platform-protocol-specs/worker-protocol-api.openapi.yaml'))
             ->assertReferenceMatches('#/components/schemas/CooperativeCancellationDeliveryResponse/allOf/1', json_decode($response->getContent(), flags: JSON_THROW_ON_ERROR));
         $this->assertSame(0, $this->eventCount($runId, HistoryEventType::CooperativeCancellationDelivered));
-        $claim = WorkflowTask::query()->findOrFail($task['task_id']);
-        $this->assertSame(TaskStatus::Leased, $claim->status);
-        $this->assertSame($task['lease_owner'], $claim->lease_owner);
-        $this->assertSame($task['workflow_task_attempt'], $claim->attempt_count);
     }
 
     public static function cancellationRequestTiming(): array
