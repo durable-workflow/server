@@ -3197,22 +3197,27 @@ class WorkerController
             'workflow_task_attempt' => ['required', 'integer', 'min:1'],
         ]);
 
-        if ($response = $this->guardWorkflowTaskOwnership(
-            $request,
-            $namespace,
-            $taskId,
-            (int) $validated['workflow_task_attempt'],
-            $validated['lease_owner'],
-        )) {
-            return $response;
-        }
-
         /** @var WorkflowTaskBridge $bridge */
         $bridge = app(WorkflowTaskBridge::class);
 
         try {
             $status = $this->storageMutations->run(
-                static fn (): array => $bridge->heartbeat($taskId),
+                fn (): array|JsonResponse => DB::transaction(function () use ($request, $namespace, $taskId, $validated, $bridge): array|JsonResponse {
+                    // Ownership must remain valid until renewal commits. A
+                    // check before this lock can acknowledge a reclaimed lease.
+                    NamespaceWorkflowScope::taskQuery($namespace)->lockForUpdate()->find($taskId);
+                    if ($response = $this->guardWorkflowTaskOwnership(
+                        $request,
+                        $namespace,
+                        $taskId,
+                        (int) $validated['workflow_task_attempt'],
+                        $validated['lease_owner'],
+                    )) {
+                        return $response;
+                    }
+
+                    return $bridge->heartbeat($taskId);
+                }),
             );
         } catch (\Throwable $exception) {
             if (! BackendLockPressure::is($exception)) {
@@ -3224,6 +3229,10 @@ class WorkerController
                 (int) $validated['workflow_task_attempt'],
                 $validated['lease_owner'],
             );
+        }
+
+        if ($status instanceof JsonResponse) {
+            return $status;
         }
 
         return WorkerProtocol::json([
