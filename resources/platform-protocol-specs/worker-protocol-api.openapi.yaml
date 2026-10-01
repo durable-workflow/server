@@ -993,6 +993,9 @@ components:
       additionalProperties: true
       required: [supported_workflow_task_commands, workflow_task_poll_request_idempotency, workflow_memo_updates, message_streams, typed_search_attributes, condition_wait_occurrence_identity, update_validation_tasks, synchronous_update_validation, local_activities, sticky_execution]
       properties:
+        cooperative_cancellation:
+          type: boolean
+          description: Explicit support for claim-bound cooperative request delivery, requiring worker protocol 1.20 or newer in the same major version. False at the default protocol 1.19.
         supported_workflow_task_commands:
           type: array
           uniqueItems: true

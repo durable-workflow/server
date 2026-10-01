@@ -39,10 +39,7 @@ final class CooperativeCancellationController
             return $response;
         }
 
-        if (! WorkerProtocol::versionMeetsMinimum(
-            config('server.worker_protocol.version', WorkerProtocol::VERSION),
-            CooperativeCancellationPolicy::MINIMUM_PROTOCOL_VERSION,
-        )) {
+        if (! CooperativeCancellationPolicy::serverSupported()) {
             return ControlPlaneProtocol::jsonForRequest($request, [
                 'message' => 'This Server does not support cooperative cancellation requests.',
                 'reason' => 'cooperative_cancellation_not_supported',

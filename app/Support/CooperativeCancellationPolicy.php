@@ -14,6 +14,14 @@ final class CooperativeCancellationPolicy
 
     private const CLAIM_KEY = '_server_workflow_claim';
 
+    public static function serverSupported(): bool
+    {
+        return WorkerProtocol::versionMeetsMinimum(
+            (string) config('server.worker_protocol.version', WorkerProtocol::VERSION),
+            self::MINIMUM_PROTOCOL_VERSION,
+        );
+    }
+
     /** @return array<string, mixed> */
     public static function workerSnapshot(WorkerRegistration $worker, ?string $protocolVersion): array
     {
