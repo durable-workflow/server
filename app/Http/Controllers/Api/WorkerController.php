@@ -1535,6 +1535,7 @@ class WorkerController
             'commands.*.entries' => ['nullable', 'array'],
             'commands.*.non_retryable' => ['nullable', 'boolean'],
             'commands.*.parent_close_policy' => ['nullable', 'string'],
+            'commands.*.cancellation_policy' => ['nullable', 'string', 'in:try_cancel,wait_cancellation_completed,abandon'],
             'commands.*.condition_key' => ['nullable', 'string'],
             'commands.*.condition_definition_fingerprint' => ['nullable', 'string'],
             'commands.*.condition_wait_occurrence_id' => ['nullable', 'string'],
@@ -1652,6 +1653,16 @@ class WorkerController
 
         if ($response = $this->guardConditionWaitOccurrenceIdentityAvailable(
             $request,
+            $taskId,
+            (int) $validated['workflow_task_attempt'],
+            $commands,
+        )) {
+            return $response;
+        }
+
+        if ($response = $this->guardChildCancellationPoliciesAvailable(
+            $request,
+            (string) $namespace,
             $taskId,
             (int) $validated['workflow_task_attempt'],
             $commands,
@@ -1818,6 +1829,17 @@ class WorkerController
                             return $response;
                         }
 
+                        if ($response = $this->guardChildCancellationPoliciesAvailable(
+                            $request,
+                            (string) $namespace,
+                            $taskId,
+                            (int) $validated['workflow_task_attempt'],
+                            $commands,
+                            $claimedTask,
+                        )) {
+                            return $response;
+                        }
+
                         if ($response = $this->guardPortableWorkerAffinityCompletion(
                             $request,
                             (string) $namespace,
@@ -1980,9 +2002,52 @@ class WorkerController
         ], $this->workflowOutcomeStatus($outcome['reason']));
     }
 
-    /**
-     * @param  list<array<string, mixed>>  $commands
-     */
+    /** @param array<int, array<string, mixed>> $commands */
+    private function guardChildCancellationPoliciesAvailable(
+        Request $request,
+        string $namespace,
+        string $taskId,
+        int $workflowTaskAttempt,
+        array $commands,
+        ?WorkflowTask $claimedTask = null,
+    ): ?JsonResponse {
+        $usesPolicy = false;
+        foreach ($commands as $command) {
+            if (($command['type'] ?? null) === 'start_child_workflow'
+                && (($command['parent_close_policy'] ?? null) === 'request_cancellation'
+                    || in_array($command['cancellation_policy'] ?? null, ['try_cancel', 'wait_cancellation_completed'], true))) {
+                $usesPolicy = true;
+                break;
+            }
+        }
+        if (! $usesPolicy) {
+            return null;
+        }
+        $task = $claimedTask ?? NamespaceWorkflowScope::taskQuery($namespace)->whereKey($taskId)->first();
+        $unavailable = CooperativeCancellationPolicy::childPolicyUnavailableReasons(
+            $task,
+            WorkerProtocol::requestVersion($request),
+        );
+        if ($unavailable === []) {
+            return null;
+        }
+
+        return WorkerProtocol::json([
+            'task_id' => $taskId,
+            'workflow_task_attempt' => $workflowTaskAttempt,
+            'worker_id' => $task?->lease_owner,
+            'outcome' => 'rejected',
+            'recorded' => false,
+            'reason' => 'child_cancellation_policy_not_supported',
+            'required_capability' => CooperativeCancellationPolicy::CAPABILITY,
+            'minimum_protocol_version' => CooperativeCancellationPolicy::MINIMUM_PROTOCOL_VERSION,
+            'requested_version' => WorkerProtocol::requestVersion($request),
+            'unavailable' => $unavailable,
+            'remediation' => 'Use a runtime with child cancellation policies and a claim from a cooperative worker on protocol 1.20 or newer.',
+        ], 409);
+    }
+
+    /** @param list<array<string, mixed>> $commands */
     private function guardWorkerSessionCommandsAvailable(
         Request $request,
         string $taskId,
@@ -2683,6 +2748,11 @@ class WorkerController
                     $errors["commands.{$index}.{$field}"][] =
                         "{$field} is only supported for start_child_workflow commands.";
                 }
+            }
+
+            if ($this->hasCommandValue($command, 'cancellation_policy') && $type !== 'start_child_workflow') {
+                $errors["commands.{$index}.cancellation_policy"][] =
+                    'cancellation_policy is only supported for start_child_workflow commands.';
             }
 
             if ($this->hasCommandValue($command, 'non_retryable')

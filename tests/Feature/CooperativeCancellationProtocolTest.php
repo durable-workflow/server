@@ -20,6 +20,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
@@ -429,6 +430,106 @@ class CooperativeCancellationProtocolTest extends TestCase
         )->assertStatus(202);
         $this->assertSame($runId, $accepted->json('run_id'));
         $this->requestCancellation('missing')->assertNotFound()->assertJsonPath('reason', 'instance_not_found');
+    }
+
+    public function test_child_policy_is_preserved_or_reports_the_missing_installed_runtime(): void
+    {
+        [, $runId] = $this->start();
+        $this->register('new', true);
+        $task = $this->poll('new')->json('task');
+        $response = $this->complete($task, [[
+            'type' => 'start_child_workflow',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'arguments' => Serializer::serialize(['child']),
+            'cancellation_policy' => 'wait_cancellation_completed',
+            'parent_close_policy' => 'request_cancellation',
+        ]]);
+        if (! CooperativeCancellationPolicy::childPolicyBackendSupported()) {
+            $response->assertStatus(409)->assertJsonPath('reason', 'child_cancellation_policy_not_supported')
+                ->assertJsonPath('unavailable', ['installed_runtime_child_policy'])->assertJsonPath('recorded', false);
+            $this->assertSame(0, $this->eventCount($runId, HistoryEventType::ChildWorkflowScheduled));
+            $this->assertSame(TaskStatus::Leased, WorkflowTask::query()->findOrFail($task['task_id'])->status);
+
+            return;
+        }
+        $response->assertOk()->assertJsonPath('outcome', 'completed');
+        $event = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::ChildWorkflowScheduled)->sole();
+        $this->assertSame('wait_cancellation_completed', $event->payload['cancellation_policy']);
+        $this->assertSame('request_cancellation', $event->payload['parent_close_policy']);
+        $this->assertSame('request_cancellation', WorkflowLink::query()
+            ->where('parent_workflow_run_id', $runId)->where('link_type', 'child_workflow')->sole()->parent_close_policy);
+    }
+
+    public function test_old_claim_cannot_acquire_child_policy_support_from_a_changed_registration(): void
+    {
+        [, $runId] = $this->start();
+        $this->register('old', false);
+        $task = $this->poll('old', '1.19')->json('task');
+        WorkerRegistration::query()->where('worker_id', 'old')->sole()->forceFill([
+            'capabilities' => [CooperativeCancellationPolicy::CAPABILITY],
+        ])->save();
+        $this->complete($task, [[
+            'type' => 'start_child_workflow', 'workflow_type' => 'tests.external-greeting-workflow',
+            'cancellation_policy' => 'try_cancel',
+        ]])->assertStatus(409)->assertJsonPath('reason', 'child_cancellation_policy_not_supported')
+            ->assertJsonPath('worker_id', 'old')->assertJsonPath('recorded', false)
+            ->assertJsonFragment(['worker_claim_capability']);
+        $this->assertSame(0, $this->eventCount($runId, HistoryEventType::ChildWorkflowScheduled));
+        $this->assertSame(TaskStatus::Leased, WorkflowTask::query()->findOrFail($task['task_id'])->status);
+    }
+
+    public function test_capable_claim_still_requires_a_cooperative_completion_protocol(): void
+    {
+        [, $runId] = $this->start();
+        $this->register('new', true);
+        $task = $this->poll('new')->json('task');
+        $this->withHeaders($this->headers('1.19'))
+            ->postJson("/api/worker/workflow-tasks/{$task['task_id']}/complete", [
+                'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
+                'commands' => [[
+                    'type' => 'start_child_workflow', 'workflow_type' => 'tests.external-greeting-workflow',
+                    'parent_close_policy' => 'request_cancellation',
+                ]],
+            ])->assertStatus(409)->assertJsonPath('reason', 'child_cancellation_policy_not_supported')
+            ->assertJsonFragment(['request_protocol']);
+        $this->assertSame(0, $this->eventCount($runId, HistoryEventType::ChildWorkflowScheduled));
+    }
+
+    public function test_invalid_or_misplaced_child_cancellation_policy_is_rejected_before_completion(): void
+    {
+        [, $runId] = $this->start();
+        $this->register('new', true);
+        $task = $this->poll('new')->json('task');
+        foreach ([
+            ['type' => 'start_child_workflow', 'workflow_type' => 'tests.external-greeting-workflow', 'cancellation_policy' => 'unknown'],
+            ['type' => 'start_child_workflow', 'workflow_type' => 'tests.external-greeting-workflow', 'cancellation_policy' => []],
+            ['type' => 'start_timer', 'delay_seconds' => 1, 'cancellation_policy' => 'try_cancel'],
+        ] as $command) {
+            $this->complete($task, [$command])->assertStatus(422)
+                ->assertJsonValidationErrors('commands.0.cancellation_policy');
+        }
+        $this->assertSame(0, $this->eventCount($runId, HistoryEventType::ChildWorkflowScheduled));
+        $this->assertSame(0, $this->eventCount($runId, HistoryEventType::TimerScheduled));
+        $this->assertSame(TaskStatus::Leased, WorkflowTask::query()->findOrFail($task['task_id'])->status);
+    }
+
+    public function test_legacy_terminal_parent_close_policy_keeps_its_old_protocol_path(): void
+    {
+        [, $runId] = $this->start();
+        $this->register('old', false);
+        $task = $this->poll('old', '1.19')->json('task');
+        $this->withHeaders($this->headers('1.19'))
+            ->postJson("/api/worker/workflow-tasks/{$task['task_id']}/complete", [
+                'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
+                'commands' => [[
+                    'type' => 'start_child_workflow', 'workflow_type' => 'tests.external-greeting-workflow',
+                    'parent_close_policy' => 'request_cancel',
+                ]],
+            ])->assertOk()->assertJsonPath('outcome', 'completed');
+        $event = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::ChildWorkflowScheduled)->sole();
+        $this->assertSame('request_cancel', $event->payload['parent_close_policy']);
     }
 
     private function complete(array $task, array $commands): TestResponse

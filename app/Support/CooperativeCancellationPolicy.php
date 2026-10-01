@@ -3,10 +3,14 @@
 namespace App\Support;
 
 use App\Models\WorkerRegistration;
+use Workflow\V2\Enums\CancellationPolicy;
+use Workflow\V2\Enums\ParentClosePolicy;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\ChildCancellation;
+use Workflow\V2\WorkflowStub;
 
 final class CooperativeCancellationPolicy
 {
@@ -22,6 +26,34 @@ final class CooperativeCancellationPolicy
             (string) config('server.worker_protocol.version', WorkerProtocol::VERSION),
             self::MINIMUM_PROTOCOL_VERSION,
         );
+    }
+
+    public static function childPolicyBackendSupported(): bool
+    {
+        return enum_exists(CancellationPolicy::class)
+            && defined(ParentClosePolicy::class.'::RequestCancellation')
+            && class_exists(ChildCancellation::class)
+            && method_exists(WorkflowStub::class, 'attemptRequestCancellationFromParent');
+    }
+
+    /** @return list<string> */
+    public static function childPolicyUnavailableReasons(?WorkflowTask $task, ?string $requestVersion): array
+    {
+        $reasons = [];
+        if (! self::serverSupported()) {
+            $reasons[] = 'server_protocol';
+        }
+        if (! WorkerProtocol::versionMeetsMinimum($requestVersion, self::MINIMUM_PROTOCOL_VERSION)) {
+            $reasons[] = 'request_protocol';
+        }
+        if ($task === null || ! self::claimSupportsCancellation($task)) {
+            $reasons[] = 'worker_claim_capability';
+        }
+        if (! self::childPolicyBackendSupported()) {
+            $reasons[] = 'installed_runtime_child_policy';
+        }
+
+        return $reasons;
     }
 
     /** @return array<string, mixed> */
