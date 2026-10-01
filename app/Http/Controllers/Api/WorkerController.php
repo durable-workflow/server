@@ -3209,22 +3209,36 @@ class WorkerController
             'workflow_task_attempt' => ['required', 'integer', 'min:1'],
         ]);
 
-        if ($response = $this->guardWorkflowTaskOwnership(
-            $request,
-            $namespace,
-            $taskId,
-            (int) $validated['workflow_task_attempt'],
-            $validated['lease_owner'],
-        )) {
-            return $response;
-        }
-
         /** @var WorkflowTaskBridge $bridge */
         $bridge = app(WorkflowTaskBridge::class);
 
         try {
             $status = $this->storageMutations->run(
-                static fn (): array => $bridge->heartbeat($taskId),
+                fn (): array|JsonResponse => DB::transaction(function () use ($request, $namespace, $taskId, $validated, $bridge): array|JsonResponse {
+                    // Ownership must remain valid until renewal commits. A
+                    // check before this lock can acknowledge a reclaimed lease.
+                    NamespaceWorkflowScope::taskQuery($namespace)->lockForUpdate()->find($taskId);
+                    if ($response = $this->guardWorkflowTaskOwnership(
+                        $request,
+                        $namespace,
+                        $taskId,
+                        (int) $validated['workflow_task_attempt'],
+                        $validated['lease_owner'],
+                    )) {
+                        return $response;
+                    }
+
+                    $status = $bridge->heartbeat($taskId);
+                    if (($status['renewed'] ?? false) === true) {
+                        $task = NamespaceWorkflowScope::task($namespace, $taskId);
+                        if ($task?->run instanceof WorkflowRun
+                            && ($pending = CooperativeCancellationPolicy::pending($task->run)) !== null) {
+                            $status['cancellation_request'] = $pending;
+                        }
+                    }
+
+                    return $status;
+                }),
             );
         } catch (\Throwable $exception) {
             if (! BackendLockPressure::is($exception)) {
@@ -3238,13 +3252,8 @@ class WorkerController
             );
         }
 
-        $observation = [];
-        if (($status['renewed'] ?? false) === true) {
-            $task = NamespaceWorkflowScope::task($namespace, $taskId);
-            if ($task?->run instanceof WorkflowRun
-                && ($pending = CooperativeCancellationPolicy::pending($task->run)) !== null) {
-                $observation['cancellation_request'] = $pending;
-            }
+        if ($status instanceof JsonResponse) {
+            return $status;
         }
 
         return WorkerProtocol::json([
@@ -3256,7 +3265,7 @@ class WorkerController
             'run_status' => $status['run_status'],
             'task_status' => $status['task_status'],
             'reason' => $status['reason'],
-            ...$observation,
+            ...(isset($status['cancellation_request']) ? ['cancellation_request' => $status['cancellation_request']] : []),
         ], $this->workflowOutcomeStatus($status['reason']));
     }
 

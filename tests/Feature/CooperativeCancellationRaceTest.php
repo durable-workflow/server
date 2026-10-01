@@ -59,6 +59,102 @@ class CooperativeCancellationRaceTest extends TestCase
         return ['old worker' => [false], 'cooperative worker' => [true]];
     }
 
+    public function test_heartbeat_cannot_acknowledge_an_old_claim_after_concurrent_reclaim(): void
+    {
+        $clock = now()->startOfSecond();
+        $this->travelTo($clock);
+        config(['workflows.v2.workflow_task_lease_seconds' => 1]);
+        $start = $this->withHeaders($this->controlHeaders())->postJson('/api/workflows', [
+            'workflow_type' => 'tests.external-greeting-workflow', 'task_queue' => 'heartbeat-race', 'input' => ['Ada'],
+        ])->assertCreated();
+        $runId = $start->json('run_id');
+        foreach (['original', 'replacement'] as $workerId) {
+            WorkerRegistration::query()->create([
+                'namespace' => 'default', 'worker_id' => $workerId, 'task_queue' => 'heartbeat-race',
+                'runtime' => 'php', 'supported_workflow_types' => ['tests.external-greeting-workflow'],
+                'capabilities' => [CooperativeCancellationPolicy::CAPABILITY],
+                'max_concurrent_workflow_tasks' => 1, 'last_heartbeat_at' => now(), 'status' => 'active',
+            ]);
+        }
+        $pending = $this->withHeaders($this->controlHeaders())
+            ->postJson('/api/workflows/'.$start->json('workflow_id').'/request-cancellation', [])
+            ->assertStatus(202)->json('cancellation_request');
+        $claim = $this->withHeaders([
+            'X-Namespace' => 'default', 'X-Durable-Workflow-Protocol-Version' => '1.20',
+        ])->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'original', 'task_queue' => 'heartbeat-race', 'poll_request_id' => 'original-poll',
+        ])->assertOk()->json('task');
+        $this->assertIsArray($claim);
+
+        $children = [];
+        try {
+            foreach (['heartbeat' => 'original', 'poll' => 'replacement'] as $operation => $workerId) {
+                $process = proc_open([
+                    PHP_BINARY, dirname(__DIR__).'/Fixtures/CooperativeCancellationRaceRequest.php',
+                    $this->databasePath, $operation, $claim['task_id'], $workerId, 'heartbeat-race', '1.20',
+                    $clock->toIso8601String(), (string) $claim['workflow_task_attempt'],
+                ], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+                $this->assertIsResource($process);
+                stream_set_timeout($pipes[1], 10);
+                $children[$operation] = ['process' => $process, 'pipes' => $pipes];
+                $this->assertSame("ready\n", fgets($pipes[1]));
+            }
+            fwrite($children['heartbeat']['pipes'][0], "go\n");
+            $this->assertSame("checked\n", fgets($children['heartbeat']['pipes'][1]));
+            // The original guard passed before expiry. Advance both actual
+            // HTTP kernels beyond expiry and let Native try a replacement
+            // claim while renewal is paused, without editing any lease row.
+            fwrite($children['poll']['pipes'][0], "go\n");
+            $read = [$children['poll']['pipes'][1]];
+            $write = $except = null;
+            stream_select($read, $write, $except, 1);
+            fwrite($children['heartbeat']['pipes'][0], "go\n");
+
+            $results = [];
+            foreach ($children as $operation => $child) {
+                fclose($child['pipes'][0]);
+                $output = stream_get_contents($child['pipes'][1]);
+                $this->assertFalse(stream_get_meta_data($child['pipes'][1])['timed_out'], 'Heartbeat race timed out.');
+                $results[$operation] = json_decode($output, true, flags: JSON_THROW_ON_ERROR);
+            }
+            $heartbeat = $results['heartbeat'];
+            $this->assertSame(200, $heartbeat['status'], json_encode($heartbeat));
+            $this->assertTrue($heartbeat['body']['renewed']);
+            $task = WorkflowTask::query()->findOrFail($claim['task_id']);
+            $this->assertSame($task->lease_owner, $heartbeat['body']['lease_owner'], json_encode([
+                'heartbeat' => array_intersect_key($heartbeat['body'], array_flip([
+                    'task_id', 'lease_owner', 'workflow_task_attempt', 'renewed',
+                ])),
+                'replacement_claim' => is_array($results['poll']['body']['task'] ?? null)
+                    ? array_intersect_key($results['poll']['body']['task'], array_flip([
+                        'task_id', 'lease_owner', 'workflow_task_attempt',
+                    ])) : null,
+            ]));
+            $this->assertSame($task->attempt_count, $heartbeat['body']['workflow_task_attempt']);
+            $this->assertSame('original', $task->lease_owner);
+            $this->assertSame($claim['workflow_task_attempt'], $task->attempt_count);
+            $this->assertSame(200, $results['poll']['status'], json_encode($results['poll']));
+            $this->assertNull($results['poll']['body']['task']);
+            $this->assertSame($pending, $heartbeat['body']['cancellation_request']);
+            $this->assertSame(1, WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+                ->where('event_type', HistoryEventType::CooperativeCancellationRequested->value)->count());
+            $this->assertSame(0, WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+                ->where('event_type', HistoryEventType::CooperativeCancellationDelivered->value)->count());
+        } finally {
+            foreach ($children as $child) {
+                if (proc_get_status($child['process'])['running']) {
+                    proc_terminate($child['process']);
+                }
+                foreach ($child['pipes'] as $pipe) {
+                    if (is_resource($pipe)) {
+                        fclose($pipe);
+                    }
+                }
+                proc_close($child['process']);
+            }
+        }
+    }
+
     #[DataProvider('workerCapabilities')]
     public function test_concurrent_request_and_claim_cannot_accept_an_incompatible_lease(bool $capable): void
     {

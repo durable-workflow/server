@@ -3,9 +3,12 @@
 use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\ExternalGreetingWorkflow;
+use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Support\WorkflowTaskOwnership;
 
 // Separate HTTP kernels and database connections exercise the request/claim
 // race. The parent supplies only a disposable database and fixture identities.
@@ -37,6 +40,34 @@ DB::purge('sqlite');
 // exercises the durable mutations rather than connection setup PRAGMAs.
 DB::connection()->getPdo();
 Queue::fake();
+if (isset($argv[7])) {
+    Carbon::setTestNow(Carbon::parse($argv[7]));
+    config(['workflows.v2.workflow_task_lease_seconds' => 1]);
+    if ($argv[2] === 'poll') {
+        Carbon::setTestNow(Carbon::parse($argv[7])->addSeconds(2));
+    } elseif ($argv[2] === 'heartbeat') {
+        $native = $app->make(WorkflowTaskBridge::class);
+        // Only add an IPC barrier. Both ownership status and renewal still
+        // execute the published Native implementation against the real DB.
+        $bridge = Mockery::mock(WorkflowTaskBridge::class);
+        $bridge->shouldReceive('status')->andReturnUsing($native->status(...));
+        $paused = false;
+        $bridge->shouldReceive('heartbeat')->andReturnUsing(static function (string $taskId) use ($native, &$paused, $argv): array {
+            if (! $paused) {
+                $paused = true;
+                Carbon::setTestNow(Carbon::parse($argv[7])->addSeconds(2));
+                fwrite(STDOUT, "checked\n");
+                if (trim((string) fgets(STDIN)) !== 'go') {
+                    exit(2);
+                }
+            }
+
+            return $native->heartbeat($taskId);
+        });
+        $app->instance(WorkflowTaskBridge::class, $bridge);
+        $app->instance(WorkflowTaskOwnership::class, new WorkflowTaskOwnership($bridge));
+    }
+}
 register_shutdown_function(static function (): void {
     (new Filesystem)->deleteDirectory(
         sys_get_temp_dir().'/dw-cooperative-race-'.getmypid(),
@@ -49,12 +80,16 @@ if (trim((string) fgets(STDIN)) !== 'go') {
 }
 
 $operation = $argv[2];
-$path = $operation === 'request'
-    ? '/api/workflows/'.$argv[3].'/request-cancellation'
-    : '/api/worker/workflow-tasks/poll';
-$body = $operation === 'request' ? [] : [
-    'worker_id' => $argv[4], 'task_queue' => $argv[5], 'poll_request_id' => 'race-poll',
-];
+$path = match ($operation) {
+    'request' => '/api/workflows/'.$argv[3].'/request-cancellation',
+    'heartbeat' => '/api/worker/workflow-tasks/'.$argv[3].'/heartbeat',
+    default => '/api/worker/workflow-tasks/poll',
+};
+$body = match ($operation) {
+    'request' => [],
+    'heartbeat' => ['lease_owner' => $argv[4], 'workflow_task_attempt' => (int) $argv[8]],
+    default => ['worker_id' => $argv[4], 'task_queue' => $argv[5], 'poll_request_id' => 'race-poll'],
+};
 $attempts = [];
 for ($attempt = 1; $attempt <= 3; $attempt++) {
     $request = Request::create($path, 'POST', server: [
