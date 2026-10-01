@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "24"
+  version: "25"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -553,6 +553,41 @@ paths:
                   - $ref: "#/components/schemas/EmptyPoll"
                   - $ref: "#/components/schemas/DrainingPoll"
         "429": { $ref: "#/components/responses/WorkerPollBackpressure" }
+        "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
+  /worker/activity-tasks/{taskId}/status:
+    post:
+      operationId: observeActivityTask
+      tags: [activity-tasks]
+      x-durable-workflow-minimum-protocol-version: "1.20"
+      description: >
+        Observe an activity attempt using its namespace, task, attempt and owner
+        fence. This call never renews an attempt lease, worker session or user
+        heartbeat and never writes history. An expired lease or execution/heartbeat
+        deadline refuses continuation even before timeout repair. A required
+        worker session must remain active, owned and within its lease and TTL.
+        Observation
+        remains available under draining or fenced storage admission. User
+        heartbeats retain the existing ownership
+        renewal contract. A successful observation is not a reservation for later
+        publication, which must independently validate the same attempt fence.
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ActivityTaskStatusRequest" }
+      responses:
+        "200":
+          description: Observed continuation or stop state, with no ownership or progress renewal.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ActivityTaskStatusResponse" }
+        "400": { $ref: "#/components/responses/WorkerError" }
+        "404": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+        "422": { $ref: "#/components/responses/WorkerError" }
         "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
   /worker/activity-tasks/{taskId}/heartbeat:
     post:
@@ -1609,6 +1644,46 @@ components:
         next_history_page_token: { type: string, minLength: 1 }
         history_page_size: { type: [integer, "null"], minimum: 1 }
         accept_history_encoding: { type: [string, "null"] }
+    ActivityTaskStatusRequest:
+      type: object
+      additionalProperties: true
+      required: [activity_attempt_id, lease_owner]
+      properties:
+        activity_attempt_id: { type: string, minLength: 1 }
+        lease_owner: { type: string, minLength: 1 }
+    ActivityTaskStatusResponse:
+      allOf:
+        - $ref: "#/components/schemas/WorkerEnvelope"
+        - type: object
+          required: [task_id, activity_attempt_id, lease_owner, can_continue, cancel_requested, reason, heartbeat_recorded, lease_expires_at, last_heartbeat_at, run_status, activity_status, attempt_status, task_status]
+          properties:
+            task_id: { type: string, minLength: 1 }
+            activity_attempt_id: { type: string, minLength: 1 }
+            lease_owner: { type: string, minLength: 1 }
+            can_continue: { type: boolean }
+            cancel_requested: { type: boolean }
+            reason: { type: [string, "null"] }
+            heartbeat_recorded: { type: boolean, const: false }
+            lease_expires_at: { type: [string, "null"], format: date-time }
+            last_heartbeat_at: { type: [string, "null"], format: date-time }
+            run_status: { type: [string, "null"] }
+            run_closed_reason: { type: [string, "null"] }
+            run_closed_at: { type: [string, "null"], format: date-time }
+            activity_status: { type: [string, "null"] }
+            attempt_status: { type: [string, "null"] }
+            task_status: { type: [string, "null"] }
+            deadlines:
+              type: [object, "null"]
+              description: Existing execution deadlines. Null when no deadline is configured.
+              properties:
+                schedule_to_start: { type: string, format: date-time }
+                start_to_close: { type: string, format: date-time }
+                schedule_to_close: { type: string, format: date-time }
+                heartbeat: { type: string, format: date-time }
+            worker_session:
+              type: [object, "null"]
+              additionalProperties: true
+              description: Existing required-session observation, never a renewal.
     TaskHeartbeatRequest:
       type: object
       additionalProperties: true

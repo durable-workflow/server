@@ -249,6 +249,7 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
 
         // Activity tasks (long-poll)
         Route::post('/activity-tasks/poll', [ActivityTaskController::class, 'poll']);
+        Route::post('/activity-tasks/{taskId}/status', [ActivityTaskController::class, 'status']);
         Route::post('/activity-tasks/{taskId}/complete', [ActivityTaskController::class, 'complete']);
         Route::post('/activity-tasks/{taskId}/fail', [ActivityTaskController::class, 'fail']);
         Route::post('/activity-tasks/{taskId}/heartbeat', [ActivityTaskController::class, 'heartbeat']);

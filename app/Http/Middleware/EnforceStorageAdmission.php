@@ -58,6 +58,7 @@ final class EnforceStorageAdmission
         }
         if ($snapshot['state'] === 'normal' || $request->isMethodSafe()
             || $action === 'WorkerController@workflowTaskHistory'
+            || $action === 'ActivityTaskController@status'
             || ($snapshot['state'] === 'draining' && in_array($action, self::DRAIN_ACTIONS, true))) {
             return $next($request);
         }

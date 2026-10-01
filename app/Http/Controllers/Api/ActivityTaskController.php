@@ -8,6 +8,7 @@ use App\Support\ActivityHeartbeatRecorder;
 use App\Support\ActivityTaskPoller;
 use App\Support\AvroPayloadEnvelopeResolver;
 use App\Support\BackendLockPressure;
+use App\Support\CooperativeCancellationPolicy;
 use App\Support\ExternalExecutorConfigContract;
 use App\Support\ExternalPayloadEnvelopeService;
 use App\Support\ExternalPayloadStorageUnavailable;
@@ -22,6 +23,7 @@ use App\Support\WorkerPollBackpressure;
 use App\Support\WorkerProtocol;
 use App\Support\WorkerProtocolMutationRetrier;
 use App\Support\WorkerSessionRegistry;
+use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -414,6 +416,94 @@ class ActivityTaskController
         ], $stopStatus), $this->outcomeStatus($outcome['reason']));
     }
 
+    /** Observe an owned attempt without renewing its lease or recording progress. */
+    public function status(Request $request, string $taskId): JsonResponse
+    {
+        if ($response = WorkerProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        if (! CooperativeCancellationPolicy::serverSupported()
+            || ! WorkerProtocol::versionMeetsMinimum(WorkerProtocol::requestVersion($request), '1.20')) {
+            return WorkerProtocol::json([
+                'error' => 'Activity attempt observation requires worker protocol 1.20.',
+                'reason' => 'activity_attempt_status_unavailable',
+                'minimum_protocol_version' => '1.20',
+            ], 422);
+        }
+
+        $validated = $request->validate([
+            'activity_attempt_id' => ['required', 'string'],
+            'lease_owner' => ['required', 'string'],
+        ]);
+        $status = null;
+        try {
+            if ($response = $this->guardAttemptOwnership(
+                $request->attributes->get('namespace'),
+                $taskId,
+                $validated['activity_attempt_id'],
+                $validated['lease_owner'],
+                $status,
+            )) {
+                return $response;
+            }
+            $deadlines = $this->executionDeadlines($status['activity_execution_id'] ?? null) ?? [];
+            $workerSession = $this->workerSessions->workerSessionForExecution($status['activity_execution_id'] ?? null);
+        } catch (\Throwable $exception) {
+            if (! BackendLockPressure::is($exception)) {
+                throw $exception;
+            }
+
+            return BackendLockPressure::workerOperationResponse($request, false);
+        }
+
+        if ($status['can_continue'] === true) {
+            $expiresAt = $status['lease_expires_at'] ?? null;
+            if (! is_string($expiresAt) || ! CarbonImmutable::parse($expiresAt)->isAfter(now())) {
+                $status['can_continue'] = false;
+                $status['reason'] = 'lease_expired';
+            }
+            foreach (['heartbeat', 'start_to_close', 'schedule_to_close'] as $kind) {
+                if ($status['can_continue'] === true && isset($deadlines[$kind])
+                    && ! CarbonImmutable::parse($deadlines[$kind])->isAfter(now())) {
+                    $status['can_continue'] = false;
+                    $status['reason'] = $kind.'_timeout';
+                }
+            }
+            if ($status['can_continue'] === true && $workerSession !== null) {
+                $sessionLease = $workerSession['lease_expires_at'] ?? null;
+                $sessionTtl = $workerSession['ttl_expires_at'] ?? null;
+                if (($workerSession['status'] ?? null) !== 'active'
+                    || ($workerSession['lease_owner'] ?? null) !== $validated['lease_owner']
+                    || ! is_string($sessionLease) || ! CarbonImmutable::parse($sessionLease)->isAfter(now())
+                    || ! is_string($sessionTtl) || ! CarbonImmutable::parse($sessionTtl)->isAfter(now())) {
+                    $status['can_continue'] = false;
+                    $status['reason'] = 'worker_session_unavailable';
+                }
+            }
+        }
+
+        return WorkerProtocol::json([
+            'task_id' => $taskId,
+            'activity_attempt_id' => $validated['activity_attempt_id'],
+            'lease_owner' => $status['lease_owner'],
+            'can_continue' => $status['can_continue'],
+            'cancel_requested' => $status['cancel_requested'],
+            'reason' => $status['reason'],
+            'heartbeat_recorded' => false,
+            'lease_expires_at' => $status['lease_expires_at'],
+            'last_heartbeat_at' => $status['last_heartbeat_at'],
+            'run_status' => $status['run_status'],
+            'run_closed_reason' => $status['run_closed_reason'] ?? null,
+            'run_closed_at' => $status['run_closed_at'] ?? null,
+            'activity_status' => $status['activity_status'],
+            'attempt_status' => $status['attempt_status'],
+            'task_status' => $status['task_status'],
+            'deadlines' => $deadlines === [] ? null : $deadlines,
+            'worker_session' => $workerSession,
+        ]);
+    }
+
     /**
      * Heartbeat an in-progress activity task.
      *
@@ -686,6 +776,7 @@ class ActivityTaskController
         string $taskId,
         string $attemptId,
         string $leaseOwner,
+        ?array &$status = null,
     ): ?JsonResponse {
         $task = NamespaceWorkflowScope::task($namespace, $taskId);
 
