@@ -308,6 +308,7 @@ jobs:
           set -euo pipefail
           test "$(git -C prepared-workflow-source rev-parse HEAD)" = "$DW_PREPARED_WORKFLOW_COMMIT"
           mkdir -p prepared-local-evidence
+          chmod 0777 prepared-local-evidence
           {
             echo "Candidate source qualification only. No image, release or SDK conformance claim."
             echo "Server commit: $(git rev-parse HEAD)"
@@ -316,7 +317,7 @@ jobs:
           } > prepared-local-evidence/provenance.txt
           docker build --target base -t dw-server-prepared-local-base .
           tar --exclude=vendor --exclude='*/vendor' --exclude=build --exclude='*/build' \
-            --exclude=prepared-local-evidence -cf - . > "$RUNNER_TEMP/prepared-local-source.tar"
+            --exclude=prepared-local-evidence -cf ../prepared-local-source.tar .
           for database in sqlite mysql pgsql; do
             database_name=prepared_local_test
             database_user=root
@@ -324,9 +325,9 @@ jobs:
             if [ "$database" = sqlite ]; then database_name=:memory:; fi
             if [ "$database" = pgsql ]; then database_user=postgres; database_port=5439; fi
             docker run --rm --init --network host \
-              --user "$(id -u):$(id -g)" \
-              --tmpfs "/app:rw,uid=$(id -u),gid=$(id -g),mode=0755" \
-              --volume "$RUNNER_TEMP/prepared-local-source.tar:/source.tar:ro" \
+              --user 1000:1000 \
+              --tmpfs /app:rw,uid=1000,gid=1000,mode=0755 \
+              --volume "$PWD/../prepared-local-source.tar:/source.tar:ro" \
               --volume "$PWD/prepared-local-evidence:/evidence" \
               --env COMPOSER_HOME=/tmp/dw-prepared-composer \
               --env DB_CONNECTION="$database" --env DB_DATABASE="$database_name" \
@@ -338,11 +339,9 @@ jobs:
                 composer install --no-interaction --no-progress --prefer-dist
                 mv vendor/durable-workflow/workflow /tmp/locked-workflow-package
                 cp -a prepared-workflow-source vendor/durable-workflow/workflow
-                php -r '\''require "vendor/autoload.php"; if (!interface_exists(Workflow\V2\Contracts\PreparedLocalActivityTaskBridge::class)) { exit(1); }'\''
-                vendor/bin/phpunit tests/Feature/PreparedLocalActivityProtocolTest.php --log-junit "/evidence/$DW_PREPARED_DATABASE.xml" --colors=never
-                php -r '\''$xml = simplexml_load_file("/evidence/".getenv("DW_PREPARED_DATABASE").".xml"); if ($xml === false || count($xml->xpath("//testcase/skipped")) > 0) { exit(1); }'\''
+                php vendor/bin/phpunit tests/Feature/PreparedLocalActivityProtocolTest.php --fail-on-skipped --log-junit "/evidence/$DW_PREPARED_DATABASE.xml" --colors=never
                 if [ "$DW_PREPARED_DATABASE" = sqlite ]; then
-                  vendor/bin/phpunit tests/Feature/CooperativeCancellationProtocolTest.php tests/Feature/WorkflowWorkerProtocolTest.php tests/Feature/ActivityWorkerProtocolTest.php tests/Feature/SearchAttributeValueValidationTest.php tests/Feature/NamespaceDurableStateQuotaTest.php tests/Feature/RuntimeExternalPayloadTransportTest.php tests/Unit/WorkerProtocolOpenApiContractTest.php --log-junit /evidence/affected-regression.xml --colors=never
+                  php vendor/bin/phpunit tests/Feature/CooperativeCancellationProtocolTest.php tests/Feature/WorkflowWorkerProtocolTest.php tests/Feature/ActivityWorkerProtocolTest.php tests/Feature/SearchAttributeValueValidationTest.php tests/Feature/NamespaceDurableStateQuotaTest.php tests/Feature/RuntimeExternalPayloadTransportTest.php tests/Unit/WorkerProtocolOpenApiContractTest.php --log-junit /evidence/affected-regression.xml --colors=never
                 fi
               ' > "prepared-local-evidence/$database.log" 2>&1
           done

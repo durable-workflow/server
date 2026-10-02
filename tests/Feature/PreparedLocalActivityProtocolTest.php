@@ -12,6 +12,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Testing\TestResponse;
+use Tests\Feature\Concerns\StoragePressureFixture;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\Support\OpenApiSchema;
 use Tests\TestCase;
@@ -28,6 +29,7 @@ use Workflow\V2\Models\WorkflowTask;
 final class PreparedLocalActivityProtocolTest extends TestCase
 {
     use RefreshDatabase;
+    use StoragePressureFixture;
 
     private ?string $payloadDirectory = null;
 
@@ -47,6 +49,7 @@ final class PreparedLocalActivityProtocolTest extends TestCase
 
     protected function tearDown(): void
     {
+        $this->removeStoragePressure();
         if ($this->payloadDirectory !== null) {
             File::deleteDirectory($this->payloadDirectory);
         }
@@ -426,6 +429,48 @@ final class PreparedLocalActivityProtocolTest extends TestCase
         $this->assertSame($before, WorkflowHistoryEvent::query()->count());
         $this->assertSame(0, ActivityAttempt::query()->count());
         $this->assertArrayNotHasKey('_server_prepared_local_activity_claims', WorkflowTask::query()->findOrFail($task['task_id'])->payload);
+    }
+
+    public function test_draining_allows_an_existing_claim_to_commit_prefix_prepare_and_finish(): void
+    {
+        $task = $this->claim();
+        $this->configureStoragePressure('draining');
+        $this->localRequest($task, 'checkpoint', ['checkpoint_id' => 'drain', 'start_sequence' => 1, 'commands' => [[
+            'type' => 'record_side_effect', 'result' => Serializer::serializeWithCodec('avro', 7),
+        ]]])->assertOk()->assertJsonPath('checkpointed', true);
+        $prepared = $this->prepare($task, ['sequence' => 2])->assertOk()->json();
+        $this->localRequest($task, "{$prepared['activity_attempt_id']}/control", ['renew_lease' => true])
+            ->assertOk()->assertJsonPath('renewed', true);
+        $this->localRequest($task, "{$prepared['activity_attempt_id']}/outcome", ['report' => $this->success()])
+            ->assertOk()->assertJsonPath('recorded', true);
+    }
+
+    public function test_draining_preserves_original_cancellation_observation_and_join_receipt(): void
+    {
+        $task = $this->claim();
+        $attempt = $this->prepare($task)->assertOk()->json('activity_attempt_id');
+        $pending = $this->withHeaders($this->controlHeaders())->postJson("/api/workflows/{$task['workflow_id']}/request-cancellation", [])
+            ->assertStatus(202)->json('cancellation_request');
+        $this->configureStoragePressure('draining');
+        $this->localRequest($task, "{$attempt}/control")->assertOk()->assertJsonPath('stop_required', true)
+            ->assertJsonPath('cancellation_request.request_id', $pending['request_id']);
+        $this->localRequest($task, "{$attempt}/acknowledge-cancellation", ['request_id' => $pending['request_id']])
+            ->assertOk()->assertJsonPath('acknowledged', true);
+    }
+
+    public function test_storage_fence_refuses_all_local_mutations_without_changing_leases_or_history(): void
+    {
+        $task = $this->claim();
+        $attemptId = $this->prepare($task)->assertOk()->json('activity_attempt_id');
+        $attempt = ActivityAttempt::query()->findOrFail($attemptId);
+        $before = $attempt->getAttributes();
+        $history = WorkflowHistoryEvent::query()->count();
+        $this->configureStoragePressure('fenced');
+        foreach (['prepare', 'recover', 'checkpoint', "{$attemptId}/control", "{$attemptId}/outcome", "{$attemptId}/acknowledge-cancellation"] as $path) {
+            $this->localRequest($task, $path)->assertStatus(503)->assertJsonPath('request_admitted', false);
+        }
+        $this->assertSame($before, $attempt->refresh()->getAttributes());
+        $this->assertSame($history, WorkflowHistoryEvent::query()->count());
     }
 
     private function claim(bool $prepared = true, array $extraCapabilities = []): array

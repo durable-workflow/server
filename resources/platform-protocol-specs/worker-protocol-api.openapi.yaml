@@ -61,6 +61,8 @@ x-durable-workflow-prepared-local-activity-contract:
   retry: durable_workflow_task_backoff_and_original_total_deadline
   outcome: immutable_duplicate_receipt_and_stale_publication_refusal
   history_refresh_page_token: opaque_cursor_from_first_event_with_current_claim_authority_still_required
+  storage_draining: existing_issued_claim_may_finish_and_report_join
+  storage_fenced: all_six_local_mutation_endpoints_refused_before_handler
   published_protocol_1_19: unchanged
 x-durable-workflow-message-streams-contract:
   discovery_path: /cluster/info#/message_streams_contract
