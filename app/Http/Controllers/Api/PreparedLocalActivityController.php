@@ -27,7 +27,6 @@ use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\WorkflowHistoryEvent;
-use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 
 final class PreparedLocalActivityController
@@ -121,6 +120,11 @@ final class PreparedLocalActivityController
         return $this->attemptOperation($request, $taskId, $attemptId, 'outcome');
     }
 
+    public function heartbeat(Request $request, string $taskId, string $attemptId): JsonResponse
+    {
+        return $this->attemptOperation($request, $taskId, $attemptId, 'heartbeat');
+    }
+
     public function acknowledgeCancellation(Request $request, string $taskId, string $attemptId): JsonResponse
     {
         return $this->attemptOperation($request, $taskId, $attemptId, 'acknowledge');
@@ -136,6 +140,7 @@ final class PreparedLocalActivityController
             'renew_lease' => ['nullable', 'boolean'],
             'report' => [$operation === 'outcome' ? 'required' : 'nullable', 'array'],
             'request_id' => [$operation === 'acknowledge' ? 'required' : 'nullable', 'string', 'max:255'],
+            'progress' => ['nullable', 'array'],
         ]);
         $namespace = (string) $request->attributes->get('namespace');
         $task = NamespaceWorkflowScope::task($namespace, $taskId);
@@ -175,17 +180,26 @@ final class PreparedLocalActivityController
                         ->where('workflow_run_id', $claim['run_id'])
                         ->where('payload->activity_attempt_id', $attemptId)
                         ->whereNotNull('payload->local_outcome')->exists()
-                        && WorkflowRun::query()->find($claim['run_id'])?->cancellation_request_command_id === null) {
-                        return ['recorded' => false, 'reason' => 'stale_worker_registration'];
+                    ) {
+                        // A stale registration can observe and fence its old
+                        // cancelled callback. It cannot publish shielded
+                        // cleanup merely because cancellation was accepted.
+                        $control = $bridge->controlLocalActivity($attemptId, $owner, $epoch, false, $version);
+                        if (! in_array($control['reason'] ?? null, ['cancellation_requested', 'cancellation_deadline_expired'], true)) {
+                            return ['recorded' => false, 'reason' => 'stale_worker_registration'];
+                        }
                     }
                     $reply = $bridge->recordLocalActivityOutcome($attemptId, $owner, $epoch, $validated['report'], $version);
                     $this->quota->assertNoIncreasePastLimit($quotaSnapshot);
 
                     return $reply;
                 }
-                $reply = $bridge->controlLocalActivity($attemptId, $owner, $epoch, $current && ($validated['renew_lease'] ?? false), $version);
+                $reply = $operation === 'heartbeat' && $current
+                    ? $bridge->heartbeatLocalActivity($attemptId, $owner, $epoch, $validated['progress'] ?? [], $version)
+                    : $bridge->controlLocalActivity($attemptId, $owner, $epoch, $current && ($validated['renew_lease'] ?? false), $version);
                 if (! $current && ($reply['active'] ?? false)) {
-                    $reply = [...$reply, 'active' => false, 'renewed' => false, 'stop_required' => true, 'reason' => 'stale_worker_registration'];
+                    $reply = [...$reply, 'active' => false, 'renewed' => false, 'heartbeat_recorded' => false,
+                        'stop_required' => true, 'reason' => 'stale_worker_registration'];
                 }
                 $this->quota->assertNoIncreasePastLimit($quotaSnapshot);
 

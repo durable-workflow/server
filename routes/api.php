@@ -239,6 +239,7 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
         Route::post('/workflow-tasks/{taskId}/local-activities/checkpoint', [WorkerController::class, 'checkpointLocalActivityPrefix']);
         Route::post('/workflow-tasks/{taskId}/local-activities/recover', [PreparedLocalActivityController::class, 'recover']);
         Route::post('/workflow-tasks/{taskId}/local-activities/{attemptId}/control', [PreparedLocalActivityController::class, 'control']);
+        Route::post('/workflow-tasks/{taskId}/local-activities/{attemptId}/heartbeat', [PreparedLocalActivityController::class, 'heartbeat']);
         Route::post('/workflow-tasks/{taskId}/local-activities/{attemptId}/outcome', [PreparedLocalActivityController::class, 'outcome']);
         Route::post('/workflow-tasks/{taskId}/local-activities/{attemptId}/acknowledge-cancellation', [PreparedLocalActivityController::class, 'acknowledgeCancellation']);
         Route::post('/workflow-tasks/{taskId}/complete', [WorkerController::class, 'completeWorkflowTask']);

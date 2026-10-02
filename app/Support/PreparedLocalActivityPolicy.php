@@ -21,7 +21,8 @@ final class PreparedLocalActivityPolicy
     public static function backendSupported(): bool
     {
         return interface_exists(PreparedLocalActivityTaskBridge::class)
-            && app(WorkflowTaskBridge::class) instanceof PreparedLocalActivityTaskBridge;
+            && app(WorkflowTaskBridge::class) instanceof PreparedLocalActivityTaskBridge
+            && method_exists(app(WorkflowTaskBridge::class), 'heartbeatLocalActivity');
     }
 
     public static function serverSupported(): bool

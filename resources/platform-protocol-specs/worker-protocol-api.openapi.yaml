@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "28"
+  version: "29"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -55,6 +55,8 @@ x-durable-workflow-prepared-local-activity-contract:
   prefix: ordinary_command_validation_authorization_and_quota_with_retained_claim
   supervisor: original_issued_claim_bound_to_namespace_task_run_owner_epoch_and_attempt
   renewal: atomic_workflow_and_local_attempt_leases_without_application_heartbeat
+  application_heartbeat: canonical_progress_and_heartbeat_timeout_without_lease_renewal
+  shielded_cleanup: canonical_request_and_delivery_identity_with_runtime_owned_original_deadline
   cancellation: original_root_identity_and_deadline_without_releasing_cleanup_claim
   stop_acknowledgement: original_supervisor_reports_only_after_callback_is_stopped_and_joined
   expired_callback_stop: unknown_until_original_supervisor_reports_join
@@ -62,7 +64,7 @@ x-durable-workflow-prepared-local-activity-contract:
   outcome: immutable_duplicate_receipt_and_stale_publication_refusal
   history_refresh_page_token: opaque_cursor_from_first_event_with_current_claim_authority_still_required
   storage_draining: existing_issued_claim_may_finish_and_report_join
-  storage_fenced: all_six_local_mutation_endpoints_refused_before_handler
+  storage_fenced: all_seven_local_mutation_endpoints_refused_before_handler
   published_protocol_1_19: unchanged
 x-durable-workflow-message-streams-contract:
   discovery_path: /cluster/info#/message_streams_contract
@@ -526,6 +528,37 @@ paths:
       responses:
         "200":
           description: The durable control result.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/WorkerEnvelope"
+                  - $ref: "#/components/schemas/PreparedLocalControlResult"
+        "404": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+        "422": { $ref: "#/components/responses/WorkerError" }
+        "429": { $ref: "#/components/responses/WorkerError" }
+        "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
+  /worker/workflow-tasks/{taskId}/local-activities/{attemptId}/heartbeat:
+    post:
+      operationId: heartbeatLocalActivity
+      tags: [workflow-tasks]
+      x-durable-workflow-minimum-protocol-version: "1.20"
+      x-durable-workflow-worker-capability: prepared_local_activities
+      description: >-
+        Record an application heartbeat and bounded progress under the original prepared claim. Update the heartbeat timeout without renewing either lease or moving fixed execution or root cleanup deadlines. Stale workers can observe cancellation but cannot record a heartbeat.
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskIdPath"
+        - $ref: "#/components/parameters/PreparedLocalAttemptIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PreparedLocalHeartbeatRequest" }
+      responses:
+        "200":
+          description: The durable heartbeat or stop result.
           content:
             application/json:
               schema:
@@ -1287,7 +1320,7 @@ components:
           description: Original remote callback-stop receipts require an installed runtime primitive and worker protocol 1.20. False for the default protocol and for runtimes without that primitive.
         prepared_local_activities:
           type: boolean
-          description: Candidate preparation, prefix checkpoint, supervisor control, outcome, recovery and joined-stop receipts. Requires protocol 1.20 and the actual bound PreparedLocalActivityTaskBridge role. False at the default protocol 1.19.
+          description: Candidate preparation, prefix checkpoint, supervisor control, application heartbeat, outcome, recovery and joined-stop receipts. Requires protocol 1.20 and the actual bound PreparedLocalActivityTaskBridge role including heartbeat support. False at the default protocol 1.19.
         supported_workflow_task_commands:
           type: array
           uniqueItems: true
@@ -1678,12 +1711,20 @@ components:
         start_to_close_timeout: { type: [integer, "null"], minimum: 1 }
         schedule_to_close_timeout: { type: [integer, "null"], minimum: 1 }
         heartbeat_timeout: { type: [integer, "null"], minimum: 1 }
+        cancellation_cleanup:
+          type: object
+          additionalProperties: false
+          required: [request_id, delivery_history_event_id]
+          description: Explicit shielded cleanup after canonical delivery. The runtime supplies the original root identity and deadline.
+          properties:
+            request_id: { type: string, minLength: 1 }
+            delivery_history_event_id: { type: string, minLength: 1 }
         retry_policy:
           type: [object, "null"]
           properties:
             max_attempts: { type: [integer, "null"], minimum: 1 }
             backoff_seconds: { type: array, items: { type: integer, minimum: 0 } }
-            non_retryable_exceptions: { type: array, items: { type: string } }
+            non_retryable_error_types: { type: array, items: { type: string } }
     PreparedLocalRecoverRequest:
       allOf:
         - $ref: "#/components/schemas/PreparedLocalClaimRequest"
@@ -1722,6 +1763,29 @@ components:
         - type: object
           properties:
             renew_lease: { type: boolean, default: false }
+    PreparedLocalHeartbeatRequest:
+      allOf:
+        - $ref: "#/components/schemas/PreparedLocalClaimRequest"
+        - type: object
+          properties:
+            progress:
+              type: [object, "null"]
+              additionalProperties: false
+              properties:
+                message: { type: string, minLength: 1, maxLength: 280 }
+                current: { type: [number, string], description: Nonnegative finite number or numeric string. }
+                total: { type: [number, string], description: Nonnegative finite number or numeric string. }
+                unit: { type: string, minLength: 1, maxLength: 64 }
+                details: { type: object, maxProperties: 20 }
+    PreparedLocalCleanupSnapshot:
+      type: [object, "null"]
+      additionalProperties: false
+      required: [request_id, root_request_id, delivery_history_event_id, cleanup_deadline_at]
+      properties:
+        request_id: { type: string, minLength: 1 }
+        root_request_id: { type: string, minLength: 1 }
+        delivery_history_event_id: { type: string, minLength: 1 }
+        cleanup_deadline_at: { type: string, format: date-time }
     PreparedLocalOutcomeRequest:
       allOf:
         - $ref: "#/components/schemas/PreparedLocalClaimRequest"
@@ -1779,6 +1843,7 @@ components:
         start_to_close_deadline_at: { type: [string, "null"], format: date-time }
         schedule_to_close_deadline_at: { type: [string, "null"], format: date-time }
         heartbeat_deadline_at: { type: [string, "null"], format: date-time }
+        cancellation_cleanup: { $ref: "#/components/schemas/PreparedLocalCleanupSnapshot" }
     PreparedLocalCheckpointResult:
       type: object
       required: [checkpointed, duplicate, reason, checkpoint_id, task_id, workflow_run_id, workflow_task_attempt, start_sequence, next_sequence, fingerprint, created_task_ids, recorded_at]
@@ -1838,6 +1903,9 @@ components:
         workflow_task_id: { type: string, minLength: 1 }
         workflow_task_attempt: { type: integer, minimum: 1 }
         server_time: { type: string, format: date-time }
+        heartbeat_recorded: { type: boolean }
+        heartbeat_history_event_id: { type: [string, "null"] }
+        cancellation_cleanup: { $ref: "#/components/schemas/PreparedLocalCleanupSnapshot" }
         cancellation_request:
           type: object
           required: [request_id, root_request_id, cleanup_deadline_at]

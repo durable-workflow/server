@@ -286,6 +286,87 @@ final class PreparedLocalActivityProtocolTest extends TestCase
         $this->assertSame(TaskStatus::Completed, WorkflowTask::query()->findOrFail($task['task_id'])->status);
     }
 
+    public function test_application_heartbeat_records_progress_without_renewing_either_lease(): void
+    {
+        $task = $this->claim();
+        $prepared = $this->prepare($task, ['descriptor' => $this->descriptor([
+            'heartbeat_timeout' => 3, 'start_to_close_timeout' => 60, 'schedule_to_close_timeout' => 120,
+        ])])->assertOk()->json();
+        $lease = $prepared['lease_expires_at'];
+        $this->travel(2)->seconds();
+        $heartbeat = $this->localRequest($task, "{$prepared['activity_attempt_id']}/heartbeat", ['progress' => ['message' => 'working']])
+            ->assertOk()->assertJsonPath('active', true)->assertJsonPath('heartbeat_recorded', true)
+            ->assertJsonPath('renewed', false)->json();
+        $this->assertSame($lease, $heartbeat['lease_expires_at']);
+        $this->assertSame($lease, $heartbeat['workflow_lease_expires_at']);
+        $this->assertSame($prepared['start_to_close_deadline_at'], $heartbeat['start_to_close_deadline_at']);
+        $this->assertSame($prepared['schedule_to_close_deadline_at'], $heartbeat['schedule_to_close_deadline_at']);
+        $this->assertNotSame($prepared['heartbeat_deadline_at'], $heartbeat['heartbeat_deadline_at']);
+        $event = WorkflowHistoryEvent::query()->whereKey($heartbeat['heartbeat_history_event_id'])->firstOrFail();
+        $this->assertSame(['message' => 'working'], $event->payload['progress']);
+        $this->assertSame($task['run_id'], $event->workflow_run_id);
+        $this->travel(2)->seconds();
+        $this->localRequest($task, "{$prepared['activity_attempt_id']}/control", ['renew_lease' => true])->assertOk()->assertJsonPath('active', true);
+        $this->assertSame(1, $this->eventCount($task, HistoryEventType::ActivityHeartbeatRecorded));
+    }
+
+    public function test_expired_or_stale_claims_cannot_record_application_heartbeats(): void
+    {
+        $task = $this->claim();
+        $prepared = $this->prepare($task, ['descriptor' => $this->descriptor(['heartbeat_timeout' => 3])])->assertOk()->json();
+        WorkerRegistration::query()->where('worker_id', 'original')->sole()->forceFill(['status' => 'draining'])->save();
+        $this->localRequest($task, "{$prepared['activity_attempt_id']}/heartbeat", ['progress' => ['message' => 'stale']])
+            ->assertStatus(409)->assertJsonPath('reason', 'stale_worker_registration')->assertJsonPath('heartbeat_recorded', false);
+        WorkerRegistration::query()->where('worker_id', 'original')->sole()->forceFill(['status' => 'active'])->save();
+        $this->travel(3)->seconds();
+        $this->localRequest($task, "{$prepared['activity_attempt_id']}/heartbeat")->assertStatus(409)
+            ->assertJsonPath('reason', 'local_activity_deadline_expired')->assertJsonPath('heartbeat_recorded', false);
+        $this->assertSame(0, $this->eventCount($task, HistoryEventType::ActivityHeartbeatRecorded));
+    }
+
+    public function test_shielded_cleanup_is_bound_to_canonical_delivery_and_original_budget(): void
+    {
+        [$task, $descriptor, $accepted] = $this->cleanupClaim();
+        $this->prepare($task, ['sequence' => 2])->assertStatus(409)->assertJsonPath('reason', 'cancellation_requested');
+        $this->localRequest($task, 'checkpoint', ['checkpoint_id' => 'cleanup-prefix', 'start_sequence' => 2, 'commands' => [[
+            'type' => 'record_side_effect', 'marker_id' => 'cleanup', 'result' => $this->success()['result'], 'payload_codec' => 'avro',
+        ]]])->assertOk()->assertJsonPath('next_sequence', 3);
+        $response = $this->prepare($task, ['sequence' => 3, 'descriptor' => $descriptor]);
+        $this->assertSame(200, $response->status(), json_encode($response->json('reason'), JSON_THROW_ON_ERROR));
+        $prepared = $response->assertOk()
+            ->assertJsonPath('cancellation_cleanup.request_id', $accepted['request_id'])
+            ->assertJsonPath('cancellation_cleanup.root_request_id', $accepted['request_id'])
+            ->assertJsonPath('cancellation_cleanup.cleanup_deadline_at', $accepted['cleanup_deadline_at'])->json();
+        $this->assertSame($accepted['cleanup_deadline_at'], $prepared['schedule_to_close_deadline_at']);
+        $this->localRequest($task, "{$prepared['activity_attempt_id']}/heartbeat", ['progress' => ['message' => 'cleaning']])
+            ->assertOk()->assertJsonPath('active', true)->assertJsonPath('heartbeat_recorded', true);
+        $this->localRequest($task, "{$prepared['activity_attempt_id']}/control", ['renew_lease' => true])->assertOk()->assertJsonPath('active', true);
+        $this->localRequest($task, "{$prepared['activity_attempt_id']}/outcome", ['report' => $this->success()])->assertOk()->assertJsonPath('recorded', true);
+        $this->withHeaders($this->headers())->postJson("/api/worker/workflow-tasks/{$task['task_id']}/complete", [
+            'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
+            'commands' => [['type' => 'complete_workflow']],
+        ])->assertOk()->assertJsonPath('run_status', 'cancelled');
+        $this->assertSame(1, $this->eventCount($task, HistoryEventType::CooperativeCancellationDelivered));
+        $this->assertSame(1, $this->eventCount($task, HistoryEventType::ActivityCompleted));
+    }
+
+    public function test_stale_registration_cannot_publish_cleanup_despite_accepted_cancellation(): void
+    {
+        [$task, $descriptor] = $this->cleanupClaim();
+        $response = $this->prepare($task, ['sequence' => 2, 'descriptor' => $descriptor]);
+        $this->assertSame(200, $response->status(), json_encode($response->json('reason'), JSON_THROW_ON_ERROR));
+        $prepared = $response->assertOk()->json();
+        $attempt = $prepared['activity_attempt_id'];
+        $before = ActivityAttempt::query()->findOrFail($attempt)->getAttributes();
+        WorkerRegistration::query()->where('worker_id', 'original')->sole()->forceFill(['status' => 'draining'])->save();
+        $this->localRequest($task, "{$attempt}/outcome", ['report' => $this->success()])->assertStatus(409)
+            ->assertJsonPath('reason', 'stale_worker_registration')->assertJsonPath('recorded', false);
+        $this->localRequest($task, "{$attempt}/heartbeat")->assertStatus(409)->assertJsonPath('heartbeat_recorded', false);
+        $this->assertSame($before, ActivityAttempt::query()->findOrFail($attempt)->getAttributes());
+        $this->assertSame(0, $this->eventCount($task, HistoryEventType::ActivityCompleted));
+        $this->assertSame(0, $this->eventCount($task, HistoryEventType::ActivityHeartbeatRecorded));
+    }
+
     public function test_changed_registration_cannot_renew_or_publish_a_fresh_result(): void
     {
         $task = $this->claim();
@@ -443,6 +524,8 @@ final class PreparedLocalActivityProtocolTest extends TestCase
         $prepared = $this->prepare($task, ['sequence' => 2])->assertOk()->json();
         $this->localRequest($task, "{$prepared['activity_attempt_id']}/control", ['renew_lease' => true])
             ->assertOk()->assertJsonPath('renewed', true);
+        $this->localRequest($task, "{$prepared['activity_attempt_id']}/heartbeat", ['progress' => ['message' => 'draining']])
+            ->assertOk()->assertJsonPath('heartbeat_recorded', true)->assertJsonPath('renewed', false);
         $this->localRequest($task, "{$prepared['activity_attempt_id']}/outcome", ['report' => $this->success()])
             ->assertOk()->assertJsonPath('recorded', true);
     }
@@ -468,11 +551,29 @@ final class PreparedLocalActivityProtocolTest extends TestCase
         $before = $attempt->getAttributes();
         $history = WorkflowHistoryEvent::query()->count();
         $this->configureStoragePressure('fenced');
-        foreach (['prepare', 'recover', 'checkpoint', "{$attemptId}/control", "{$attemptId}/outcome", "{$attemptId}/acknowledge-cancellation"] as $path) {
+        foreach (['prepare', 'recover', 'checkpoint', "{$attemptId}/control", "{$attemptId}/heartbeat", "{$attemptId}/outcome", "{$attemptId}/acknowledge-cancellation"] as $path) {
             $this->localRequest($task, $path)->assertStatus(503)->assertJsonPath('request_admitted', false);
         }
         $this->assertSame($before, $attempt->refresh()->getAttributes());
         $this->assertSame($history, WorkflowHistoryEvent::query()->count());
+    }
+
+    private function cleanupClaim(): array
+    {
+        $task = $this->claim();
+        $accepted = $this->withHeaders($this->controlHeaders())->postJson("/api/workflows/{$task['workflow_id']}/request-cancellation", [
+            'cleanup_timeout_seconds' => 30,
+        ])->assertStatus(202)->json('cancellation_request');
+        $this->withHeaders($this->headers())->postJson("/api/worker/workflow-tasks/{$task['task_id']}/deliver-cancellation", [
+            'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
+            'request_id' => $accepted['request_id'], 'sequence' => 1, 'call_kind' => 'timer',
+        ])->assertOk()->assertJsonPath('delivered', true);
+        $delivery = WorkflowHistoryEvent::query()->where('workflow_run_id', $task['run_id'])
+            ->where('event_type', HistoryEventType::CooperativeCancellationDelivered)->sole();
+
+        return [$task, $this->descriptor(['cancellation_cleanup' => [
+            'request_id' => $accepted['request_id'], 'delivery_history_event_id' => $delivery->id,
+        ]]), $accepted];
     }
 
     private function claim(bool $prepared = true, array $extraCapabilities = []): array
@@ -543,7 +644,7 @@ final class PreparedLocalActivityProtocolTest extends TestCase
             $operation = substr($path, strrpos('/'.$path, '/'));
             $schema = match ($operation) {
                 'prepare' => 'PreparedLocalPreparationResult', 'recover' => 'PreparedLocalRecoveryResult',
-                'checkpoint' => 'PreparedLocalCheckpointResult', 'control' => 'PreparedLocalControlResult',
+                'checkpoint' => 'PreparedLocalCheckpointResult', 'control', 'heartbeat' => 'PreparedLocalControlResult',
                 'outcome' => 'PreparedLocalOutcomeResult', 'acknowledge-cancellation' => 'PreparedLocalStopResult',
             };
             OpenApiSchema::fromFile(resource_path('platform-protocol-specs/worker-protocol-api.openapi.yaml'))

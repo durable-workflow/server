@@ -21,6 +21,7 @@ final class EnforceStorageAdmission
         'PreparedLocalActivityController@prepare',
         'PreparedLocalActivityController@recover',
         'PreparedLocalActivityController@control',
+        'PreparedLocalActivityController@heartbeat',
         'PreparedLocalActivityController@outcome',
         'PreparedLocalActivityController@acknowledgeCancellation',
         'WorkerController@failWorkflowTask',
