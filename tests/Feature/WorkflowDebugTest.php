@@ -21,6 +21,7 @@ use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\CancellationCascadeView;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 class WorkflowDebugTest extends TestCase
@@ -86,6 +87,8 @@ class WorkflowDebugTest extends TestCase
             ->assertJsonPath('workflow_id', 'wf-debug')
             ->assertJsonPath('run_id', $runId)
             ->assertJsonPath('namespace', 'default')
+            ->assertJsonPath('cancellation_cascade_supported', class_exists(CancellationCascadeView::class))
+            ->assertJsonPath('cancellation_cascade', null)
             ->assertJsonPath('diagnostic_status', 'pending_work')
             ->assertJsonPath('execution.status', 'pending')
             ->assertJsonPath('execution.task_queue', 'debug-queue')

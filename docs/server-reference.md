@@ -638,6 +638,31 @@ metadata by default; add `include_last_event_payload=true` to include at most a
 4 KiB JSON preview. Use the history endpoints when a full replay/debug archive
 is needed.
 
+The candidate cooperative-cancellation runtime adds `cancellation_cascade_supported`
+and `cancellation_cascade` to both debug responses. A supported runtime returns
+`null` when the selected run has no cooperative request. An older installed
+runtime reports support as `false`. This read-only view does not require worker
+protocol 1.20 to inspect already recorded evidence.
+
+The `durable-workflow.cancellation-cascade/v1` view joins the original root
+request, its immutable cleanup deadline, each visible run's local request and
+lifecycle, child propagation, activity fencing and matching stop receipts,
+cleanup lease recovery, and the recorded terminal cleanup outcome. Selecting a
+historical run keeps that run selected. Every related run is checked against
+the namespace before its identity or history is returned. Activity fencing
+alone does not prove that its callback stopped. Recovery records identify the
+old and replacement grants without guessing why a worker lost its lease.
+
+The view inspects at most 20 runs, 100 relationship edges, 128 recent relevant
+history events per run and 512 recent history events in total. Original request
+events are loaded separately so clipping recent history does not change the
+root budget. Each request text field is capped at 8192 bytes. Missing,
+inaccessible, inconsistent or clipped evidence is explained in `findings` and
+sets `inspection_complete` to `false`. `inspection_complete` describes the
+evidence inventory, not whether cleanup succeeded. Use the history endpoints
+for evidence outside these bounds. This candidate contract is not a claim
+about the currently published Server image.
+
 ### History
 - `GET /api/workflows/{id}/runs/{runId}/history` — Get event history
 - `GET /api/workflows/{id}/runs/{runId}/history/export` — Export replay bundle

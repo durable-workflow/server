@@ -16,6 +16,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\CancellationCascadeView;
 use Workflow\V2\Support\StandaloneWorkerVisibility;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskRepairPolicy;
@@ -72,6 +73,10 @@ class WorkflowRunDiagnostics
             'recent_failures' => $recentFailures,
             'latest_workflow_task_failure' => $latestWorkflowTaskFailure,
             'compatibility' => $this->compatibility($namespace, $run, $summary, $taskQueue),
+            'cancellation_cascade_supported' => class_exists(CancellationCascadeView::class),
+            'cancellation_cascade' => class_exists(CancellationCascadeView::class) && $run->namespace === $namespace
+                ? CancellationCascadeView::forRun($run)
+                : null,
         ];
 
         $payload['findings'] = $this->findings($payload);
