@@ -73,6 +73,7 @@ x-durable-workflow-prepared-local-activity-contract:
     attempt: original_workflow_task_attempt
     operations:
       local_activity_checkpoint: { identity: checkpoint_id, slots: ordinary_workflow_command_payload_slots }
+      local_activity_group_checkpoint: { identity: checkpoint_id, slots: ordinary_workflow_command_payload_slots }
       local_activity_prepare: { identity: sequence, slots: [[descriptor, arguments]] }
       local_activity_recover: { identity: sequence, slots: [[descriptor, arguments]] }
       local_activity_outcome: { identity: activity_attempt_id, slots: [[report, result]] }
@@ -81,7 +82,7 @@ x-durable-workflow-prepared-local-activity-contract:
     allowance: shared_with_legacy_v1_completion_across_every_operation_and_slot_of_one_workflow_claim
     duplicate: exact_stored_reference_may_be_read_after_claim_closes_without_object_or_retention_mutation
     lifetime: no_workflow_or_activity_lease_or_application_heartbeat_or_cleanup_deadline_renewal
-  storage_fenced: all_seven_local_mutation_endpoints_refused_before_handler
+  storage_fenced: every_local_mutation_endpoint_refused_before_handler
   published_protocol_1_19: unchanged
 x-durable-workflow-message-streams-contract:
   discovery_path: /cluster/info#/message_streams_contract
@@ -490,6 +491,36 @@ paths:
                 allOf:
                   - $ref: "#/components/schemas/WorkerEnvelope"
                   - $ref: "#/components/schemas/PreparedLocalCheckpointResult"
+        "404": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+        "422": { $ref: "#/components/responses/WorkerError" }
+        "429": { $ref: "#/components/responses/WorkerError" }
+        "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
+  /worker/workflow-tasks/{taskId}/local-activities/checkpoint-group:
+    post:
+      operationId: checkpointLocalActivityGroup
+      tags: [workflow-tasks]
+      x-durable-workflow-minimum-protocol-version: "1.20"
+      x-durable-workflow-worker-capability: prepared_local_activity_groups
+      description: >-
+        Atomically commit every member of a complete all group, including prepare_local_activity descriptors without outcomes. Local executions are pending without attempts until separate preparation. Retain the original workflow claim, total deadlines and immutable group receipt. Partial and selection groups are refused.
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PreparedLocalGroupCheckpointRequest" }
+      responses:
+        "200":
+          description: The durable complete-group checkpoint result. Callback execution is not admitted.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/WorkerEnvelope"
+                  - $ref: "#/components/schemas/PreparedLocalGroupCheckpointResult"
         "404": { $ref: "#/components/responses/WorkerError" }
         "409": { $ref: "#/components/responses/WorkerError" }
         "422": { $ref: "#/components/responses/WorkerError" }
@@ -1338,6 +1369,9 @@ components:
         prepared_local_activities:
           type: boolean
           description: Candidate preparation, prefix checkpoint, supervisor control, application heartbeat, outcome, recovery and joined-stop receipts. Requires protocol 1.20 and the actual bound PreparedLocalActivityTaskBridge role including heartbeat support. False at the default protocol 1.19.
+        prepared_local_activity_groups:
+          type: boolean
+          description: Candidate atomic complete-all-group admission. Requires prepared local activities, protocol 1.20 and the actual bound PreparedLocalActivityGroupTaskBridge. Existing custom prepared bridges do not acquire this role.
         supported_workflow_task_commands:
           type: array
           uniqueItems: true
@@ -1736,6 +1770,16 @@ components:
           properties:
             request_id: { type: string, minLength: 1 }
             delivery_history_event_id: { type: string, minLength: 1 }
+        parallel_group_id: { type: string, minLength: 1 }
+        parallel_group_kind: { type: string, enum: [activity, mixed] }
+        parallel_group_mode: { type: string, const: all }
+        parallel_group_base_sequence: { type: integer, minimum: 1 }
+        parallel_group_size: { type: integer, minimum: 1 }
+        parallel_group_index: { type: integer, minimum: 0 }
+        parallel_group_path:
+          type: array
+          minItems: 1
+          items: { type: object }
         retry_policy:
           type: [object, "null"]
           properties:
@@ -1773,6 +1817,17 @@ components:
               type: array
               maxItems: 100
               description: Nonterminal prefix commands. Turn-closing waits, local outcome reports and selection cancellation are excluded. Nonempty completion-only message cursor, wait and sticky cache metadata are rejected.
+              items: { $ref: "#/components/schemas/WorkflowCommand" }
+    PreparedLocalGroupCheckpointRequest:
+      allOf:
+        - $ref: "#/components/schemas/PreparedLocalCheckpointRequest"
+        - type: object
+          properties:
+            commands:
+              type: array
+              minItems: 1
+              maxItems: 100
+              description: Complete all groups with at least one prepare_local_activity. Local descriptors use the PreparedLocalDescriptor fields with type prepare_local_activity and an authored parallel group path. They contain no outcome, result, routing or attempt reports. Cleanup proof is validated before any sibling is created.
               items: { $ref: "#/components/schemas/WorkflowCommand" }
     PreparedLocalControlRequest:
       allOf:
@@ -1877,6 +1932,23 @@ components:
         fingerprint: { type: string, pattern: "^[0-9a-f]{64}$" }
         created_task_ids: { type: array, items: { type: string } }
         recorded_at: { type: string, format: date-time }
+    PreparedLocalGroupCheckpointResult:
+      allOf:
+        - $ref: "#/components/schemas/PreparedLocalCheckpointResult"
+        - type: object
+          required: [local_activities]
+          properties:
+            local_activities:
+              type: array
+              minItems: 1
+              maxItems: 100
+              items:
+                type: object
+                additionalProperties: false
+                required: [sequence, activity_execution_id]
+                properties:
+                  sequence: { type: integer, minimum: 1 }
+                  activity_execution_id: { type: string, minLength: 1 }
     PreparedLocalOutcomeResult:
       type: object
       required: [recorded, duplicate, reason, event_id, event_type, workflow_run_id, workflow_task_id, workflow_task_attempt, activity_execution_id, activity_attempt_id, worker_attempt_id, recorded_at, claim_released, created_task_ids]

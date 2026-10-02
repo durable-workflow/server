@@ -23,6 +23,7 @@ use Tests\TestCase;
 use Workflow\Serializers\AvroBinaryValue;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Contracts\PreparedLocalActivityTaskBridge;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Models\ActivityAttempt;
@@ -30,6 +31,7 @@ use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ExternalPayloads;
+use Workflow\V2\Support\ParallelChildGroup;
 
 final class PreparedLocalActivityProtocolTest extends TestCase
 {
@@ -728,16 +730,16 @@ final class PreparedLocalActivityProtocolTest extends TestCase
         $before = $attempt->getAttributes();
         $history = WorkflowHistoryEvent::query()->count();
         $this->configureStoragePressure('fenced');
-        foreach (['prepare', 'recover', 'checkpoint', "{$attemptId}/control", "{$attemptId}/heartbeat", "{$attemptId}/outcome", "{$attemptId}/acknowledge-cancellation"] as $path) {
+        foreach (['prepare', 'recover', 'checkpoint', 'checkpoint-group', "{$attemptId}/control", "{$attemptId}/heartbeat", "{$attemptId}/outcome", "{$attemptId}/acknowledge-cancellation"] as $path) {
             $this->localRequest($task, $path)->assertStatus(503)->assertJsonPath('request_admitted', false);
         }
         $this->assertSame($before, $attempt->refresh()->getAttributes());
         $this->assertSame($history, WorkflowHistoryEvent::query()->count());
     }
 
-    private function cleanupClaim(): array
+    private function cleanupClaim(bool $group = false): array
     {
-        $task = $this->claim();
+        $task = $group ? $this->groupClaim() : $this->claim();
         $accepted = $this->withHeaders($this->controlHeaders())->postJson("/api/workflows/{$task['workflow_id']}/request-cancellation", [
             'cleanup_timeout_seconds' => 30,
         ])->assertStatus(202)->json('cancellation_request');
@@ -751,6 +753,252 @@ final class PreparedLocalActivityProtocolTest extends TestCase
         return [$task, $this->descriptor(['cancellation_cleanup' => [
             'request_id' => $accepted['request_id'], 'delivery_history_event_id' => $delivery->id,
         ]]), $accepted];
+    }
+
+    public function test_group_capability_requires_preparation_cooperation_and_protocol(): void
+    {
+        foreach ([['1.19', [CooperativeCancellationPolicy::CAPABILITY, PreparedLocalActivityPolicy::CAPABILITY]],
+            ['1.20', [CooperativeCancellationPolicy::CAPABILITY]], ['1.20', [PreparedLocalActivityPolicy::CAPABILITY]]] as [$version, $capabilities]) {
+            $this->withHeaders($this->headers($version))->postJson('/api/worker/register', [
+                'worker_id' => 'incorrect-group', 'task_queue' => 'prepared', 'runtime' => 'php',
+                'capabilities' => [...$capabilities, PreparedLocalActivityPolicy::GROUP_CAPABILITY],
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
+            ])->assertStatus(409)->assertJsonPath('reason', 'prepared_local_activity_group_capability_mismatch');
+        }
+        $this->assertSame(0, WorkerRegistration::query()->count());
+    }
+
+    public function test_default_protocol_refuses_group_admission_with_capability_diagnostics(): void
+    {
+        config(['server.worker_protocol.version' => '1.19']);
+        $this->withHeaders($this->headers('1.19'))->postJson('/api/worker/workflow-tasks/missing/local-activities/checkpoint-group', [])
+            ->assertStatus(409)->assertJsonPath('reason', 'prepared_local_activity_groups_not_supported')
+            ->assertJsonPath('required_capability', PreparedLocalActivityPolicy::GROUP_CAPABILITY)
+            ->assertJsonPath('server_capabilities.prepared_local_activity_groups', false);
+    }
+
+    public function test_existing_custom_prepared_bridge_does_not_acquire_group_capability(): void
+    {
+        $task = $this->groupClaim();
+        $this->app->instance(WorkflowTaskBridge::class, \Mockery::mock(PreparedLocalActivityTaskBridge::class));
+        $this->localRequest($task, 'checkpoint-group', $this->groupBody())->assertStatus(409)
+            ->assertJsonFragment(['installed_runtime_prepared_local_activity_groups'])
+            ->assertJsonPath('server_capabilities.prepared_local_activity_groups', false);
+        $this->assertDatabaseCount('activity_executions', 0);
+    }
+
+    public function test_child_and_local_group_commit_before_callback_preparation_and_duplicate_is_immutable(): void
+    {
+        $task = $this->groupClaim();
+        $hosting = WorkflowTask::query()->findOrFail($task['task_id']);
+        $expiry = $hosting->lease_expires_at->toISOString();
+        $body = $this->groupBody();
+        $this->localRequest($task, 'checkpoint-group', $body)->assertOk()->assertJsonPath('checkpointed', true)
+            ->assertJsonPath('next_sequence', 3)->assertJsonCount(1, 'local_activities');
+        $this->assertDatabaseCount('workflow_runs', 2);
+        $this->assertDatabaseCount('activity_attempts', 0);
+        $execution = ActivityExecution::query()->sole();
+        $this->assertSame('pending', $execution->status->value);
+        $this->assertSame(0, $execution->attempt_count);
+        $before = $execution->getAttributes();
+        $events = WorkflowHistoryEvent::query()->count();
+        $this->travel(2)->seconds();
+        $this->localRequest($task, 'checkpoint-group', $body)->assertOk()->assertJsonPath('duplicate', true);
+        $this->assertSame($before, $execution->refresh()->getAttributes());
+        $this->assertSame($events, WorkflowHistoryEvent::query()->count());
+        $this->assertSame($expiry, $hosting->refresh()->lease_expires_at->toISOString());
+        $prepared = $this->prepare($task, ['sequence' => 2, 'descriptor' => [...$body['commands'][1], 'type' => 'record_local_activity']])
+            ->assertOk()->assertJsonPath('activity_execution_id', $execution->id)->json();
+        $this->localRequest($task, "{$prepared['activity_attempt_id']}/outcome", ['report' => $this->success()])
+            ->assertOk()->assertJsonPath('recorded', true)->assertJsonPath('claim_released', false);
+        $this->assertSame(1, $this->eventCount($task, HistoryEventType::ActivityCompleted));
+    }
+
+    public function test_group_claim_cannot_be_upgraded_after_issue_and_is_namespace_bound(): void
+    {
+        $task = $this->claim();
+        WorkerRegistration::query()->where('worker_id', 'original')->sole()->forceFill([
+            'capabilities' => [CooperativeCancellationPolicy::CAPABILITY, PreparedLocalActivityPolicy::CAPABILITY, PreparedLocalActivityPolicy::GROUP_CAPABILITY],
+        ])->save();
+        $this->localRequest($task, 'checkpoint-group', $this->groupBody())->assertStatus(409)->assertJsonFragment(['worker_claim_capability']);
+        WorkflowNamespace::query()->create(['name' => 'other', 'description' => 'Other', 'retention_days' => 30, 'status' => 'active']);
+        $this->withHeaders([...$this->headers(), 'X-Namespace' => 'other'])
+            ->postJson("/api/worker/workflow-tasks/{$task['task_id']}/local-activities/checkpoint-group", $this->groupBody())
+            ->assertNotFound()->assertJsonPath('reason', 'task_not_found');
+        $this->assertDatabaseCount('workflow_runs', 1);
+        $this->assertDatabaseCount('activity_executions', 0);
+    }
+
+    public function test_partial_group_and_terminal_report_do_not_create_any_sibling(): void
+    {
+        $task = $this->groupClaim();
+        $body = $this->groupBody();
+        $before = WorkflowHistoryEvent::query()->count();
+        $this->localRequest($task, 'checkpoint-group', [...$body, 'commands' => [$body['commands'][1]]])
+            ->assertStatus(409)->assertJsonPath('reason', 'invalid_local_activity_checkpoint_commands');
+        $this->localRequest($task, 'checkpoint-group', [...$body, 'commands' => [...$body['commands'], ['type' => 'complete_workflow']]])
+            ->assertStatus(409)->assertJsonPath('reason', 'invalid_local_activity_checkpoint_commands');
+        $this->assertSame($before, WorkflowHistoryEvent::query()->count());
+        $this->assertDatabaseCount('workflow_runs', 1);
+        $this->assertDatabaseCount('activity_executions', 0);
+    }
+
+    public function test_group_quota_refusal_rolls_back_child_local_and_receipt(): void
+    {
+        $task = $this->groupClaim();
+        $before = WorkflowHistoryEvent::query()->count();
+        config(['server.namespace_durable_state.limits' => ['max_workflow_history_events' => $before + 1]]);
+        $this->localRequest($task, 'checkpoint-group', $this->groupBody())->assertStatus(429);
+        $this->assertSame($before, WorkflowHistoryEvent::query()->count());
+        $this->assertDatabaseCount('workflow_runs', 1);
+        $this->assertDatabaseCount('activity_executions', 0);
+        $this->assertArrayNotHasKey('portable_local_group_checkpoint', WorkflowTask::query()->findOrFail($task['task_id'])->payload);
+    }
+
+    public function test_local_group_descriptor_cannot_hide_unknown_fields_routing_or_a_fabricated_outcome(): void
+    {
+        $task = $this->groupClaim();
+        $before = WorkflowHistoryEvent::query()->count();
+        foreach ([['unknown_field' => true], ['queue' => 'remote'], ['outcome' => 'completed']] as $changes) {
+            $body = $this->groupBody();
+            $body['commands'][1] = [...$body['commands'][1], ...$changes];
+            $this->localRequest($task, 'checkpoint-group', $body)->assertStatus(422);
+        }
+        $this->assertSame($before, WorkflowHistoryEvent::query()->count());
+        $this->assertDatabaseCount('workflow_runs', 1);
+        $this->assertDatabaseCount('activity_executions', 0);
+    }
+
+    public function test_draining_group_uploads_and_admission_share_one_original_claim_budget(): void
+    {
+        $task = $this->groupClaim();
+        $this->enableCompletionPayloads();
+        $this->configureStoragePressure('draining');
+        $expiry = WorkflowTask::query()->findOrFail($task['task_id'])->lease_expires_at->toISOString();
+        $body = $this->groupBody();
+        $contexts = [];
+        foreach ([0, 1] as $index) {
+            $contexts[$index] = ['schema' => RuntimePayloadCompletionContext::PREPARED_SCHEMA, 'kind' => 'workflow',
+                'task_id' => $task['task_id'], 'attempt' => $task['workflow_task_attempt'], 'lease_owner' => $task['lease_owner'],
+                'operation' => 'local_activity_group_checkpoint', 'checkpoint_id' => $body['checkpoint_id'],
+                'slot' => ['commands', $index, 'arguments']];
+            $bytes = $body['commands'][$index]['arguments'];
+            $reference = $this->completionUpload($bytes, $contexts[$index])->assertCreated()->json('reference');
+            $body['commands'][$index]['arguments'] = ['codec' => 'avro', 'external_payload' => $reference];
+        }
+        $this->localRequest($task, 'checkpoint-group', $body)->assertOk()->assertJsonPath('checkpointed', true);
+        $this->assertSame($expiry, WorkflowTask::query()->findOrFail($task['task_id'])->lease_expires_at->toISOString());
+        $this->assertDatabaseCount('runtime_payload_completion_budgets', 1);
+        $this->assertCount(2, RuntimePayloadCompletionBudget::query()->sole()->slots);
+        $prepared = $this->prepare($task, ['sequence' => 2, 'descriptor' => [...$body['commands'][1], 'type' => 'record_local_activity']])
+            ->assertOk()->json();
+        $this->localRequest($task, "{$prepared['activity_attempt_id']}/outcome", ['report' => $this->success()])->assertOk();
+    }
+
+    public function test_prepared_claim_without_group_capability_cannot_upload_group_payloads(): void
+    {
+        $task = $this->claim();
+        $this->enableCompletionPayloads();
+        $this->configureStoragePressure('draining');
+        $context = ['schema' => RuntimePayloadCompletionContext::PREPARED_SCHEMA, 'kind' => 'workflow',
+            'task_id' => $task['task_id'], 'attempt' => $task['workflow_task_attempt'], 'lease_owner' => $task['lease_owner'],
+            'operation' => 'local_activity_group_checkpoint', 'checkpoint_id' => 'group-1', 'slot' => ['commands', 1, 'arguments']];
+        $this->completionUpload('bytes', $context)->assertStatus(409)->assertJsonPath('reason', 'external_payload_completion_lease_rejected');
+        $this->assertDatabaseCount('runtime_external_payloads', 0);
+    }
+
+    public function test_replacement_can_prepare_the_committed_group_without_inventing_an_old_attempt(): void
+    {
+        $task = $this->groupClaim();
+        $body = $this->groupBody();
+        $body['commands'][0]['queue'] = 'children';
+        $this->localRequest($task, 'checkpoint-group', $body)->assertOk();
+        $execution = ActivityExecution::query()->sole();
+        $deadline = $execution->schedule_to_close_deadline_at->toISOString();
+        WorkflowTask::query()->findOrFail($task['task_id'])->forceFill(['lease_expires_at' => now()->subSecond()])->save();
+        $this->register('replacement', extraCapabilities: [PreparedLocalActivityPolicy::GROUP_CAPABILITY]);
+        $replacement = $this->poll('replacement')->assertOk()->json('task');
+        $this->assertSame($task['task_id'], $replacement['task_id']);
+        $this->assertSame($task['workflow_task_attempt'] + 1, $replacement['workflow_task_attempt']);
+        $this->prepare($task, ['sequence' => 2, 'descriptor' => [...$body['commands'][1], 'type' => 'record_local_activity']])->assertStatus(409);
+        $prepared = $this->prepare($replacement, ['sequence' => 2, 'descriptor' => [...$body['commands'][1], 'type' => 'record_local_activity']])
+            ->assertOk()->assertJsonPath('activity_execution_id', $execution->id)->assertJsonPath('attempt_number', 1)
+            ->assertJsonPath('workflow_task_attempt', $replacement['workflow_task_attempt'])->json();
+        $this->assertSame($deadline, $prepared['schedule_to_close_deadline_at']);
+        $this->assertDatabaseCount('activity_attempts', 1);
+        $this->assertSame(0, $this->eventCount($task, HistoryEventType::ActivityCancellationAcknowledged));
+        $this->assertSame(0, $this->eventCount($task, HistoryEventType::ActivityRetryScheduled));
+    }
+
+    public function test_cleanup_group_members_preserve_the_one_original_root_budget(): void
+    {
+        [$task, $descriptor, $accepted] = $this->cleanupClaim(group: true);
+        $commands = [];
+        foreach ([0, 1] as $index) {
+            $commands[] = [...$descriptor, 'type' => 'prepare_local_activity',
+                ...ParallelChildGroup::itemMetadata(2, 2, $index, 'activity')];
+        }
+        $this->localRequest($task, 'checkpoint-group', ['checkpoint_id' => 'cleanup-group', 'start_sequence' => 2, 'commands' => $commands])
+            ->assertOk()->assertJsonCount(2, 'local_activities');
+        $this->assertDatabaseCount('activity_attempts', 0);
+        $this->travel(3)->seconds();
+        foreach ($commands as $index => $command) {
+            $prepared = $this->prepare($task, ['sequence' => $index + 2, 'worker_attempt_id' => 'cleanup-'.$index,
+                'descriptor' => [...$command, 'type' => 'record_local_activity']])->assertOk()
+                ->assertJsonPath('cancellation_cleanup.root_request_id', $accepted['request_id'])
+                ->assertJsonPath('cancellation_cleanup.cleanup_deadline_at', $accepted['cleanup_deadline_at'])->json();
+            $this->localRequest($task, "{$prepared['activity_attempt_id']}/outcome", ['report' => $this->success()])->assertOk();
+        }
+        $this->assertSame(1, $this->eventCount($task, HistoryEventType::CooperativeCancellationDelivered));
+        $this->assertSame(2, $this->eventCount($task, HistoryEventType::ActivityCompleted));
+    }
+
+    public function test_typed_search_history_identity_survives_a_group_checkpoint_then_completion(): void
+    {
+        if (! PreparedLocalActivityPolicy::groupsSupported()) {
+            $this->markTestSkipped('Prepared-group source binding required.');
+        }
+        SearchAttributeDefinition::query()->create(['namespace' => 'default', 'name' => 'Tier', 'type' => 'keyword']);
+        $task = $this->claim(extraCapabilities: [PreparedLocalActivityPolicy::GROUP_CAPABILITY, 'typed_search_attributes']);
+        $body = $this->groupBody();
+        foreach ([0, 1] as $index) {
+            $body['commands'][$index] = [...$body['commands'][$index], ...ParallelChildGroup::itemMetadata(2, 2, $index, 'mixed')];
+        }
+        array_unshift($body['commands'], ['type' => 'upsert_search_attributes', 'attributes' => ['Tier' => 'basic'], 'attribute_types' => ['Tier' => 'keyword']]);
+        $this->localRequest($task, 'checkpoint-group', $body)->assertOk()->assertJsonPath('next_sequence', 4);
+        $prepared = $this->prepare($task, ['sequence' => 3, 'descriptor' => [...$body['commands'][2], 'type' => 'record_local_activity']])->assertOk()->json();
+        $this->localRequest($task, "{$prepared['activity_attempt_id']}/outcome", ['report' => $this->success()])->assertOk();
+        $this->withHeaders($this->headers())->postJson("/api/worker/workflow-tasks/{$task['task_id']}/complete", [
+            'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
+            'commands' => [['type' => 'upsert_search_attributes', 'attributes' => ['Tier' => 'pro'], 'attribute_types' => ['Tier' => 'keyword']],
+                ['type' => 'complete_workflow']],
+        ])->assertOk()->assertJsonPath('run_status', 'completed');
+        $events = WorkflowHistoryEvent::query()->where('workflow_run_id', $task['run_id'])
+            ->where('event_type', HistoryEventType::SearchAttributesUpserted)->orderBy('sequence')->get();
+        $this->assertCount(2, $events);
+        $this->assertSame([1, 4], $events->map(fn ($event) => $event->payload['sequence'])->all());
+        foreach ($events as $event) {
+            $this->assertSame(['Tier' => 'keyword'], $event->payload['attribute_types']);
+        }
+    }
+
+    private function groupClaim(): array
+    {
+        if (! PreparedLocalActivityPolicy::groupsSupported()) {
+            $this->markTestSkipped('Prepared-group source binding required.');
+        }
+
+        return $this->claim(extraCapabilities: [PreparedLocalActivityPolicy::GROUP_CAPABILITY]);
+    }
+
+    private function groupBody(): array
+    {
+        return ['checkpoint_id' => 'group-1', 'start_sequence' => 1, 'commands' => [[
+            'type' => 'start_child_workflow', 'workflow_type' => 'tests.external-greeting-workflow',
+            'arguments' => Serializer::serializeWithCodec('avro', ['child']), 'payload_codec' => 'avro',
+            ...ParallelChildGroup::itemMetadata(1, 2, 0, 'mixed'),
+        ], [...$this->descriptor(['schedule_to_close_timeout' => 30]), 'type' => 'prepare_local_activity',
+            ...ParallelChildGroup::itemMetadata(1, 2, 1, 'mixed')]]];
     }
 
     private function claim(bool $prepared = true, array $extraCapabilities = []): array
@@ -821,7 +1069,8 @@ final class PreparedLocalActivityProtocolTest extends TestCase
             $operation = substr($path, strrpos('/'.$path, '/'));
             $schema = match ($operation) {
                 'prepare' => 'PreparedLocalPreparationResult', 'recover' => 'PreparedLocalRecoveryResult',
-                'checkpoint' => 'PreparedLocalCheckpointResult', 'control', 'heartbeat' => 'PreparedLocalControlResult',
+                'checkpoint' => 'PreparedLocalCheckpointResult', 'checkpoint-group' => 'PreparedLocalGroupCheckpointResult',
+                'control', 'heartbeat' => 'PreparedLocalControlResult',
                 'outcome' => 'PreparedLocalOutcomeResult', 'acknowledge-cancellation' => 'PreparedLocalStopResult',
             };
             OpenApiSchema::fromFile(resource_path('platform-protocol-specs/worker-protocol-api.openapi.yaml'))

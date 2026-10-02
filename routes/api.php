@@ -237,6 +237,7 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
         Route::post('/workflow-tasks/{taskId}/deliver-cancellation', [CooperativeCancellationController::class, 'deliver']);
         Route::post('/workflow-tasks/{taskId}/local-activities/prepare', [PreparedLocalActivityController::class, 'prepare']);
         Route::post('/workflow-tasks/{taskId}/local-activities/checkpoint', [WorkerController::class, 'checkpointLocalActivityPrefix']);
+        Route::post('/workflow-tasks/{taskId}/local-activities/checkpoint-group', [WorkerController::class, 'checkpointLocalActivityGroup']);
         Route::post('/workflow-tasks/{taskId}/local-activities/recover', [PreparedLocalActivityController::class, 'recover']);
         Route::post('/workflow-tasks/{taskId}/local-activities/{attemptId}/control', [PreparedLocalActivityController::class, 'control']);
         Route::post('/workflow-tasks/{taskId}/local-activities/{attemptId}/heartbeat', [PreparedLocalActivityController::class, 'heartbeat']);

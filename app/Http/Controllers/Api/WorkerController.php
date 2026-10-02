@@ -55,6 +55,7 @@ use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Workflow\V2\Contracts\HistoryProjectionRole;
+use Workflow\V2\Contracts\PreparedLocalActivityGroupTaskBridge;
 use Workflow\V2\Contracts\PreparedLocalActivityTaskBridge;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\ActivityAttemptStatus;
@@ -71,6 +72,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowServiceCall;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\StickyExecution;
+use Workflow\V2\Support\PortableLocalActivityPreparation;
 use Workflow\V2\Support\WorkerProtocolVersion;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
 use Workflow\V2\Support\WorkflowTaskOwnership;
@@ -228,6 +230,17 @@ class WorkerController
         ]);
 
         $workerCapabilities = $this->nonEmptyStringArray($validated['capabilities'] ?? []);
+        if (in_array(PreparedLocalActivityPolicy::GROUP_CAPABILITY, $workerCapabilities, true)
+            && (! in_array(PreparedLocalActivityPolicy::CAPABILITY, $workerCapabilities, true)
+                || ! CooperativeCancellationPolicy::supports($workerCapabilities, WorkerProtocol::requestVersion($request)))) {
+            return WorkerProtocol::json([
+                'registered' => false,
+                'reason' => 'prepared_local_activity_group_capability_mismatch',
+                'required_capabilities' => [CooperativeCancellationPolicy::CAPABILITY, PreparedLocalActivityPolicy::CAPABILITY],
+                'minimum_protocol_version' => PreparedLocalActivityPolicy::MINIMUM_PROTOCOL_VERSION,
+                'requested_version' => WorkerProtocol::requestVersion($request),
+            ], 409);
+        }
         if (in_array(PreparedLocalActivityPolicy::CAPABILITY, $workerCapabilities, true)
             && ! CooperativeCancellationPolicy::supports($workerCapabilities, WorkerProtocol::requestVersion($request))) {
             return WorkerProtocol::json([
@@ -1479,7 +1492,27 @@ class WorkerController
         return $this->mutateWorkflowTaskCommands($request, $taskId, true);
     }
 
-    private function mutateWorkflowTaskCommands(Request $request, string $taskId, bool $checkpoint = false): JsonResponse
+    public function checkpointLocalActivityGroup(Request $request, string $taskId): JsonResponse
+    {
+        if ($response = WorkerProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+        $reasons = PreparedLocalActivityPolicy::groupUnavailableReasons(WorkerProtocol::requestVersion($request));
+        if ($reasons !== []) {
+            return PreparedLocalActivityController::refused((string) $request->input('lease_owner', ''), $reasons, PreparedLocalActivityPolicy::GROUP_CAPABILITY);
+        }
+        $task = NamespaceWorkflowScope::task((string) $request->attributes->get('namespace'), $taskId);
+        if ($task === null) {
+            return WorkerProtocol::json(['reason' => 'task_not_found'], 404);
+        }
+        if (PreparedLocalActivityPolicy::currentGroupClaim($task) === null) {
+            return PreparedLocalActivityController::refused((string) $request->input('lease_owner', ''), ['worker_claim_capability'], PreparedLocalActivityPolicy::GROUP_CAPABILITY);
+        }
+
+        return $this->mutateWorkflowTaskCommands($request, $taskId, true, true);
+    }
+
+    private function mutateWorkflowTaskCommands(Request $request, string $taskId, bool $checkpoint = false, bool $group = false): JsonResponse
     {
         if ($response = WorkerProtocol::rejectUnsupported($request)) {
             return $response;
@@ -1639,6 +1672,12 @@ class WorkerController
         ];
 
         $topLevelRules = [];
+        if ($group) {
+            $completionRules['commands'] = ['required', 'array', 'min:1', 'max:100'];
+            $completionRules['commands.*.cancellation_cleanup'] = ['nullable', 'array:request_id,delivery_history_event_id'];
+            $completionRules['commands.*.cancellation_cleanup.request_id'] = ['required_with:commands.*.cancellation_cleanup', 'string', 'max:255'];
+            $completionRules['commands.*.cancellation_cleanup.delivery_history_event_id'] = ['required_with:commands.*.cancellation_cleanup', 'string', 'max:255'];
+        }
         $commandRules = ['commands' => ['required', 'array', 'min:1']];
         foreach ($completionRules as $field => $rules) {
             if (str_starts_with($field, 'commands.*.')) {
@@ -1666,7 +1705,11 @@ class WorkerController
                 }
 
                 foreach ($chunkValidator->validated()['commands'] as $index => $command) {
-                    $validatedCommands[$index] = $command;
+                    // Prepared descriptors have a closed Native grammar. Keep
+                    // original keys so transport validation cannot silently
+                    // discard routing, fabricated reports or unknown fields.
+                    $validatedCommands[$index] = $group && ($command['type'] ?? null) === 'prepare_local_activity'
+                        ? $chunk[$index] : $command;
                 }
             }
         }
@@ -1678,7 +1721,8 @@ class WorkerController
         $validated['commands'] = $validatedCommands;
 
         $commands = $this->normalizeWorkflowTaskCommandIntegerFields($validated['commands']);
-        $commands = WorkflowCommandNormalizer::preflightParallelMetadata($commands);
+        $commands = $group ? $this->preflightPreparedLocalGroupMetadata($commands)
+            : WorkflowCommandNormalizer::preflightParallelMetadata($commands);
         $commands = $this->applyWorkerSessionRoutingDefaults($commands);
 
         $this->validateWorkflowTaskCommandScopes($commands);
@@ -1823,6 +1867,7 @@ class WorkerController
                     $messageStreamWaits,
                     $checkpoint,
                     $checkpointInput,
+                    $group,
                 ): array|JsonResponse {
                     return DB::transaction(function () use (
                         $bridge,
@@ -1835,6 +1880,7 @@ class WorkerController
                         $messageStreamWaits,
                         $checkpoint,
                         $checkpointInput,
+                        $group,
                     ): array|JsonResponse {
                         $quotaSnapshot = $this->durableStateQuota->snapshotForMutation(
                             (string) $namespace,
@@ -1906,16 +1952,17 @@ class WorkerController
                             (string) $namespace,
                             $commands,
                         );
-                        $commands = WorkflowCommandNormalizer::normalize(
-                            $commands,
-                            WorkerProtocol::requestVersion($request),
-                        );
+                        $commands = $group ? $this->normalizePreparedLocalGroupCommands($commands, WorkerProtocol::requestVersion($request))
+                            : WorkflowCommandNormalizer::normalize($commands, WorkerProtocol::requestVersion($request));
                         if ($checkpoint) {
                             if (PreparedLocalActivityPolicy::currentClaim($claimedTask) === null
-                                || ! $bridge instanceof PreparedLocalActivityTaskBridge) {
+                                || ! $bridge instanceof PreparedLocalActivityTaskBridge
+                                || ($group && (PreparedLocalActivityPolicy::currentGroupClaim($claimedTask) === null
+                                    || ! $bridge instanceof PreparedLocalActivityGroupTaskBridge))) {
                                 throw new PreparedLocalActivityAdmissionRefused;
                             }
-                            $outcome = $bridge->checkpointLocalActivityPrefix(
+                            $method = $group ? 'checkpointLocalActivityGroup' : 'checkpointLocalActivityPrefix';
+                            $outcome = $bridge->$method(
                                 $taskId, $validated['lease_owner'], (int) $validated['workflow_task_attempt'],
                                 $checkpointInput['checkpoint_id'], (int) $checkpointInput['start_sequence'], $commands,
                                 WorkerProtocol::requestVersion($request),
@@ -1979,7 +2026,8 @@ class WorkerController
                 'configured_limit' => $e->configuredLimit,
             ], 422);
         } catch (PreparedLocalActivityAdmissionRefused) {
-            return PreparedLocalActivityController::refused($validated['lease_owner'], ['worker_claim_capability']);
+            return PreparedLocalActivityController::refused($validated['lease_owner'], ['worker_claim_capability'],
+                $group ? PreparedLocalActivityPolicy::GROUP_CAPABILITY : PreparedLocalActivityPolicy::CAPABILITY);
         } catch (ExternalPayloadStorageUnavailable $exception) {
             return $this->externalPayloadFailure($taskId, (int) $validated['workflow_task_attempt'], $exception, 503);
         } catch (StreamFullException $exception) {
@@ -2070,6 +2118,45 @@ class WorkerController
             'created_task_ids' => $outcome['created_task_ids'] ?? [],
             'reason' => $outcome['reason'],
         ], $this->workflowOutcomeStatus($outcome['reason']));
+    }
+
+    /** @param array<int, array<string, mixed>> $commands */
+    private function preflightPreparedLocalGroupMetadata(array $commands): array
+    {
+        $locals = [];
+        foreach ($commands as $index => $command) {
+            if (($command['type'] ?? null) === 'prepare_local_activity') {
+                $locals[] = $index;
+                $commands[$index]['type'] = 'schedule_activity';
+            }
+        }
+        $commands = WorkflowCommandNormalizer::preflightParallelMetadata($commands);
+        foreach ($locals as $index) {
+            $commands[$index]['type'] = 'prepare_local_activity';
+        }
+
+        return $commands;
+    }
+
+    /** @param array<int, array<string, mixed>> $commands */
+    private function normalizePreparedLocalGroupCommands(array $commands, string $protocolVersion): array
+    {
+        $locals = [];
+        foreach ($commands as $index => $command) {
+            if (($command['type'] ?? null) !== 'prepare_local_activity') {
+                continue;
+            }
+            $descriptor = PortableLocalActivityPreparation::normalizeDescriptor([...$command, 'type' => 'record_local_activity']);
+            $locals[$index] = [...$descriptor, 'type' => 'prepare_local_activity'];
+            unset($descriptor['execution_mode'], $descriptor['cancellation_cleanup']);
+            $commands[$index] = [...$descriptor, 'type' => 'schedule_activity'];
+        }
+        $commands = WorkflowCommandNormalizer::normalize($commands, $protocolVersion);
+        foreach ($locals as $index => $descriptor) {
+            $commands[$index] = $descriptor;
+        }
+
+        return $commands;
     }
 
     /** @param array<int, array<string, mixed>> $commands */
@@ -2571,7 +2658,9 @@ class WorkerController
             $eventQuery->where('payload->sequence', '>=', $outcome['start_sequence'])
                 ->where('payload->sequence', '<', $outcome['next_sequence']);
         } else {
-            $prefixEnd = WorkflowTask::query()->find($taskId)?->payload['portable_local_checkpoint']['next_sequence'] ?? null;
+            $payload = WorkflowTask::query()->find($taskId)?->payload ?? [];
+            $prefixEnd = max($payload['portable_local_checkpoint']['next_sequence'] ?? 0,
+                $payload['portable_local_group_checkpoint']['next_sequence'] ?? 0);
             if (is_int($prefixEnd) && $prefixEnd > 0) {
                 $eventQuery->where('payload->sequence', '>=', $prefixEnd);
             }
@@ -2801,7 +2890,7 @@ class WorkerController
             }
 
             if ($this->hasCommandValue($command, 'retry_policy')
-                && ! in_array($type, ['schedule_activity', 'record_local_activity', 'start_child_workflow'], true)
+                && ! in_array($type, ['schedule_activity', 'record_local_activity', 'prepare_local_activity', 'start_child_workflow'], true)
             ) {
                 $errors["commands.{$index}.retry_policy"][] =
                     'retry_policy is only supported for schedule_activity and start_child_workflow commands.';
@@ -2809,7 +2898,7 @@ class WorkerController
 
             foreach (['start_to_close_timeout', 'schedule_to_start_timeout', 'schedule_to_close_timeout', 'heartbeat_timeout'] as $field) {
                 if ($this->hasCommandValue($command, $field)
-                    && ! in_array($type, ['schedule_activity', 'record_local_activity'], true)
+                    && ! in_array($type, ['schedule_activity', 'record_local_activity', 'prepare_local_activity'], true)
                 ) {
                     $errors["commands.{$index}.{$field}"][] =
                         "{$field} is only supported for schedule_activity commands.";
@@ -2864,7 +2953,7 @@ class WorkerController
                 $this->validateActivityTimeoutEnvelope($command, $index, $errors);
             }
 
-            if ($type === 'record_local_activity') {
+            if (in_array($type, ['record_local_activity', 'prepare_local_activity'], true)) {
                 $this->validateActivityTimeoutEnvelope($command, $index, $errors);
             }
 
@@ -3146,7 +3235,8 @@ class WorkerController
                 }
             }
 
-            $payloadFields = WorkflowCommandNormalizer::payloadEnvelopeFields()[$commandType] ?? [];
+            $payloadFields = $commandType === 'prepare_local_activity' ? ['arguments']
+                : (WorkflowCommandNormalizer::payloadEnvelopeFields()[$commandType] ?? []);
             foreach ($payloadFields as $field) {
                 if (is_string($command[$field] ?? null)) {
                     AvroPayloadEnvelopeResolver::assertSerializedPayload($command[$field], "commands.{$index}.{$field}");
@@ -3163,6 +3253,13 @@ class WorkerController
                     $driver,
                     retainExternal: in_array($commandType, ['complete_workflow', 'schedule_activity'], true),
                 );
+
+                if ($commandType === 'prepare_local_activity') {
+                    $commands[$index][$field] = $resolved['payload'];
+                    $commands[$index]['payload_codec'] ??= $resolved['codec'];
+
+                    continue;
+                }
 
                 if ($resolved['codec'] === null) {
                     $commands[$index][$field] = $resolved['payload'];

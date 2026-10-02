@@ -86,6 +86,9 @@ class RuntimePayloadCompletionContextTest extends TestCase
         foreach ([
             ['local_activity_checkpoint', ['commands', 0, 'result'], ['checkpoint_id' => 'prefix-1']],
             ['local_activity_checkpoint', ['commands', 0, 'result'], ['checkpoint_id' => 'prefix-2']],
+            ['local_activity_group_checkpoint', ['commands', 0, 'arguments'], ['checkpoint_id' => 'group-1']],
+            ['local_activity_group_checkpoint', ['commands', 1, 'arguments'], ['checkpoint_id' => 'group-1']],
+            ['local_activity_group_checkpoint', ['commands', 0, 'arguments'], ['checkpoint_id' => 'group-2']],
             ['local_activity_prepare', ['descriptor', 'arguments'], ['sequence' => 2]],
             ['local_activity_prepare', ['descriptor', 'arguments'], ['sequence' => 3]],
             ['local_activity_recover', ['descriptor', 'arguments'], ['sequence' => 2]],

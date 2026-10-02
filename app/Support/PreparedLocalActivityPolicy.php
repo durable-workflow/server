@@ -2,6 +2,7 @@
 
 namespace App\Support;
 
+use Workflow\V2\Contracts\PreparedLocalActivityGroupTaskBridge;
 use Workflow\V2\Contracts\PreparedLocalActivityTaskBridge;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Models\ActivityAttempt;
@@ -11,6 +12,8 @@ use Workflow\V2\Models\WorkflowTask;
 final class PreparedLocalActivityPolicy
 {
     public const CAPABILITY = 'prepared_local_activities';
+
+    public const GROUP_CAPABILITY = 'prepared_local_activity_groups';
 
     public const MINIMUM_PROTOCOL_VERSION = '1.20';
 
@@ -28,6 +31,24 @@ final class PreparedLocalActivityPolicy
     public static function serverSupported(): bool
     {
         return CooperativeCancellationPolicy::serverSupported() && self::backendSupported();
+    }
+
+    public static function groupsSupported(): bool
+    {
+        return self::serverSupported() && interface_exists(PreparedLocalActivityGroupTaskBridge::class)
+            && app(WorkflowTaskBridge::class) instanceof PreparedLocalActivityGroupTaskBridge;
+    }
+
+    /** @return list<string> */
+    public static function groupUnavailableReasons(?string $requestVersion): array
+    {
+        $reasons = self::unavailableReasons($requestVersion);
+        if (! interface_exists(PreparedLocalActivityGroupTaskBridge::class)
+            || ! app(WorkflowTaskBridge::class) instanceof PreparedLocalActivityGroupTaskBridge) {
+            $reasons[] = 'installed_runtime_prepared_local_activity_groups';
+        }
+
+        return $reasons;
     }
 
     /** @return list<string> */
@@ -57,6 +78,14 @@ final class PreparedLocalActivityPolicy
         }
 
         return $claim;
+    }
+
+    /** @return array<string, mixed>|null */
+    public static function currentGroupClaim(WorkflowTask $task): ?array
+    {
+        $claim = self::currentClaim($task);
+
+        return $claim !== null && in_array(self::GROUP_CAPABILITY, $claim['capabilities'] ?? [], true) ? $claim : null;
     }
 
     /**

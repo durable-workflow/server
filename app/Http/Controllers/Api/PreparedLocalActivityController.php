@@ -285,11 +285,12 @@ final class PreparedLocalActivityController
     }
 
     /** @param list<string> $reasons */
-    public static function refused(string $workerId, array $reasons): JsonResponse
+    public static function refused(string $workerId, array $reasons, string $capability = PreparedLocalActivityPolicy::CAPABILITY): JsonResponse
     {
         return WorkerProtocol::json([
-            'reason' => 'prepared_local_activity_not_supported',
-            'required_capability' => PreparedLocalActivityPolicy::CAPABILITY,
+            'reason' => $capability === PreparedLocalActivityPolicy::GROUP_CAPABILITY
+                ? 'prepared_local_activity_groups_not_supported' : 'prepared_local_activity_not_supported',
+            'required_capability' => $capability,
             'minimum_protocol_version' => PreparedLocalActivityPolicy::MINIMUM_PROTOCOL_VERSION,
             'worker_id' => $workerId,
             'unavailable' => $reasons,

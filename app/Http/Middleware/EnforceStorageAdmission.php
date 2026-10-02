@@ -18,6 +18,7 @@ final class EnforceStorageAdmission
         'WorkerController@heartbeatWorkflowTask',
         'WorkerController@completeWorkflowTask',
         'WorkerController@checkpointLocalActivityPrefix',
+        'WorkerController@checkpointLocalActivityGroup',
         'PreparedLocalActivityController@prepare',
         'PreparedLocalActivityController@recover',
         'PreparedLocalActivityController@control',

@@ -112,6 +112,10 @@ final class RuntimePayloadCompletionLease
             if (! PreparedLocalActivityPolicy::serverSupported() || $claim === null || ! WorkerPollFence::isCurrent($claim)) {
                 throw self::rejected();
             }
+            if ($context->operation === 'local_activity_group_checkpoint'
+                && (! PreparedLocalActivityPolicy::groupsSupported() || PreparedLocalActivityPolicy::currentGroupClaim($task) === null)) {
+                throw self::rejected();
+            }
             $expires = [$guard['status']['lease_expires_at'] ?? null];
             $run = WorkflowRun::query()->find($task->workflow_run_id);
             if (! $run instanceof WorkflowRun) {
