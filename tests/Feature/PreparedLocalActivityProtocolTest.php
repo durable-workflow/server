@@ -89,7 +89,9 @@ final class PreparedLocalActivityProtocolTest extends TestCase
     public function test_preparation_records_admission_before_callback_and_duplicate_keeps_authority(): void
     {
         $task = $this->claim();
-        $prepared = $this->prepare($task)->assertOk()->assertJsonPath('prepared', true)->json();
+        $response = $this->prepare($task);
+        $this->assertSame(200, $response->status(), json_encode($response->json('reason'), JSON_THROW_ON_ERROR));
+        $prepared = $response->assertJsonPath('prepared', true)->json();
         $attempt = ActivityAttempt::query()->findOrFail($prepared['activity_attempt_id']);
         $this->assertNotSame('sdk-local-1', $attempt->id);
         $this->assertSame('sdk-local-1', $attempt->worker_attempt_id);

@@ -318,13 +318,14 @@ jobs:
           docker build --target base -t dw-server-prepared-local-base .
           tar --exclude=vendor --exclude='*/vendor' --exclude=build --exclude='*/build' \
             --exclude=prepared-local-evidence -cf ../prepared-local-source.tar .
+          qualification_status=0
           for database in sqlite mysql pgsql; do
             database_name=prepared_local_test
             database_user=root
             database_port=3317
             if [ "$database" = sqlite ]; then database_name=:memory:; fi
             if [ "$database" = pgsql ]; then database_user=postgres; database_port=5439; fi
-            docker run --rm --init --network host \
+            if ! docker run --rm --init --network host \
               --user 1000:1000 \
               --tmpfs /app:rw,uid=1000,gid=1000,mode=0755 \
               --volume "$PWD/../prepared-local-source.tar:/source.tar:ro" \
@@ -339,12 +340,15 @@ jobs:
                 composer install --no-interaction --no-progress --prefer-dist
                 mv vendor/durable-workflow/workflow /tmp/locked-workflow-package
                 cp -a prepared-workflow-source vendor/durable-workflow/workflow
-                php vendor/bin/phpunit tests/Feature/PreparedLocalActivityProtocolTest.php --fail-on-skipped --log-junit "/evidence/$DW_PREPARED_DATABASE.xml" --colors=never
+                php vendor/bin/phpunit tests/Feature/PreparedLocalActivityProtocolTest.php tests/Unit/WorkerPollFenceTest.php --fail-on-skipped --log-junit "/evidence/$DW_PREPARED_DATABASE.xml" --colors=never
                 if [ "$DW_PREPARED_DATABASE" = sqlite ]; then
                   php vendor/bin/phpunit tests/Feature/CooperativeCancellationProtocolTest.php tests/Feature/WorkflowWorkerProtocolTest.php tests/Feature/ActivityWorkerProtocolTest.php tests/Feature/SearchAttributeValueValidationTest.php tests/Feature/NamespaceDurableStateQuotaTest.php tests/Feature/RuntimeExternalPayloadTransportTest.php tests/Unit/WorkerProtocolOpenApiContractTest.php --log-junit /evidence/affected-regression.xml --colors=never
                 fi
-              ' > "prepared-local-evidence/$database.log" 2>&1
+              ' > "prepared-local-evidence/$database.log" 2>&1; then
+              qualification_status=1
+            fi
           done
+          test "$qualification_status" = 0
       - name: Retain exact source qualification evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
