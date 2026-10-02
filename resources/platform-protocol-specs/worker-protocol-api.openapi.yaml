@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "27"
+  version: "28"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -45,6 +45,23 @@ x-durable-workflow-cooperative-cancellation-contract:
   cleanup_deadline: immutable_original_request_deadline
   cleanup_completion: cancelled_with_original_request_id
   terminal_cancel_and_terminate: unchanged
+x-durable-workflow-prepared-local-activity-contract:
+  status: candidate
+  minimum_protocol_version: "1.20"
+  worker_capabilities: [cooperative_cancellation, prepared_local_activities]
+  backend_role: Workflow\V2\Contracts\PreparedLocalActivityTaskBridge
+  advertised_support: configured_protocol_and_actual_bound_optional_role
+  preparation: canonical_scheduled_and_started_commit_before_callback_admission
+  prefix: ordinary_command_validation_authorization_and_quota_with_retained_claim
+  supervisor: original_issued_claim_bound_to_namespace_task_run_owner_epoch_and_attempt
+  renewal: atomic_workflow_and_local_attempt_leases_without_application_heartbeat
+  cancellation: original_root_identity_and_deadline_without_releasing_cleanup_claim
+  stop_acknowledgement: original_supervisor_reports_only_after_callback_is_stopped_and_joined
+  expired_callback_stop: unknown_until_original_supervisor_reports_join
+  retry: durable_workflow_task_backoff_and_original_total_deadline
+  outcome: immutable_duplicate_receipt_and_stale_publication_refusal
+  history_refresh_page_token: opaque_cursor_from_first_event_with_current_claim_authority_still_required
+  published_protocol_1_19: unchanged
 x-durable-workflow-message-streams-contract:
   discovery_path: /cluster/info#/message_streams_contract
   minimum_protocol_version: "1.15"
@@ -397,6 +414,189 @@ paths:
         "404": { $ref: "#/components/responses/WorkerError" }
         "409": { $ref: "#/components/responses/WorkerError" }
         "422": { $ref: "#/components/responses/WorkerError" }
+  /worker/workflow-tasks/{taskId}/local-activities/prepare:
+    post:
+      operationId: prepareLocalActivity
+      tags: [workflow-tasks]
+      x-durable-workflow-minimum-protocol-version: "1.20"
+      x-durable-workflow-worker-capability: prepared_local_activities
+      description: >-
+        Commit callback admission before application code starts. Retry an identical preparation with the same workflow claim and SDK attempt nonce.
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PreparedLocalPrepareRequest" }
+      responses:
+        "200":
+          description: The durable prepare result.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/WorkerEnvelope"
+                  - $ref: "#/components/schemas/PreparedLocalPreparationResult"
+        "404": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+        "422": { $ref: "#/components/responses/WorkerError" }
+        "429": { $ref: "#/components/responses/WorkerError" }
+        "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
+  /worker/workflow-tasks/{taskId}/local-activities/checkpoint:
+    post:
+      operationId: checkpointLocalActivityPrefix
+      tags: [workflow-tasks]
+      x-durable-workflow-minimum-protocol-version: "1.20"
+      x-durable-workflow-worker-capability: prepared_local_activities
+      description: >-
+        Commit the preceding command prefix using ordinary completion validation, authorization and quota. Retain the hosting claim. Checkpoint commit grants no callback admission.
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PreparedLocalCheckpointRequest" }
+      responses:
+        "200":
+          description: The durable checkpoint result.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/WorkerEnvelope"
+                  - $ref: "#/components/schemas/PreparedLocalCheckpointResult"
+        "404": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+        "422": { $ref: "#/components/responses/WorkerError" }
+        "429": { $ref: "#/components/responses/WorkerError" }
+        "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
+  /worker/workflow-tasks/{taskId}/local-activities/recover:
+    post:
+      operationId: recoverLocalActivity
+      tags: [workflow-tasks]
+      x-durable-workflow-minimum-protocol-version: "1.20"
+      x-durable-workflow-worker-capability: prepared_local_activities
+      description: >-
+        A replacement workflow claim recovers an expired original local attempt. Durable recovery records callback stop as unknown and preserves the original total timeout budget.
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PreparedLocalRecoverRequest" }
+      responses:
+        "200":
+          description: The durable recover result.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/WorkerEnvelope"
+                  - $ref: "#/components/schemas/PreparedLocalRecoveryResult"
+        "404": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+        "422": { $ref: "#/components/responses/WorkerError" }
+        "429": { $ref: "#/components/responses/WorkerError" }
+        "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
+  /worker/workflow-tasks/{taskId}/local-activities/{attemptId}/control:
+    post:
+      operationId: controlLocalActivity
+      tags: [workflow-tasks]
+      x-durable-workflow-minimum-protocol-version: "1.20"
+      x-durable-workflow-worker-capability: prepared_local_activities
+      description: >-
+        Observe the original local attempt and optionally renew both workflow and attempt leases atomically. No application heartbeat is recorded. Accepted cancellation returns its original identity and deadline even after workflow claim takeover.
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskIdPath"
+        - $ref: "#/components/parameters/PreparedLocalAttemptIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PreparedLocalControlRequest" }
+      responses:
+        "200":
+          description: The durable control result.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/WorkerEnvelope"
+                  - $ref: "#/components/schemas/PreparedLocalControlResult"
+        "404": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+        "422": { $ref: "#/components/responses/WorkerError" }
+        "429": { $ref: "#/components/responses/WorkerError" }
+        "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
+  /worker/workflow-tasks/{taskId}/local-activities/{attemptId}/outcome:
+    post:
+      operationId: recordLocalActivityOutcome
+      tags: [workflow-tasks]
+      x-durable-workflow-minimum-protocol-version: "1.20"
+      x-durable-workflow-worker-capability: prepared_local_activities
+      description: >-
+        Commit an original callback outcome under its issued authority. An identical committed receipt remains readable after takeover. A stale worker cannot publish a fresh result.
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskIdPath"
+        - $ref: "#/components/parameters/PreparedLocalAttemptIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PreparedLocalOutcomeRequest" }
+      responses:
+        "200":
+          description: The durable outcome result.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/WorkerEnvelope"
+                  - $ref: "#/components/schemas/PreparedLocalOutcomeResult"
+        "404": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+        "422": { $ref: "#/components/responses/WorkerError" }
+        "429": { $ref: "#/components/responses/WorkerError" }
+        "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
+  /worker/workflow-tasks/{taskId}/local-activities/{attemptId}/acknowledge-cancellation:
+    post:
+      operationId: acknowledgeLocalActivityCancellation
+      tags: [workflow-tasks]
+      x-durable-workflow-minimum-protocol-version: "1.20"
+      x-durable-workflow-worker-capability: prepared_local_activities
+      description: >-
+        Report only after the original supervisor has stopped and joined the callback. A surviving supervisor may report after registration drain or claim takeover without gaining result or lease authority.
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskIdPath"
+        - $ref: "#/components/parameters/PreparedLocalAttemptIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PreparedLocalStopRequest" }
+      responses:
+        "200":
+          description: The durable acknowledge-cancellation result.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/WorkerEnvelope"
+                  - $ref: "#/components/schemas/PreparedLocalStopResult"
+        "404": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+        "422": { $ref: "#/components/responses/WorkerError" }
+        "429": { $ref: "#/components/responses/WorkerError" }
+        "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
   /worker/workflow-tasks/{taskId}/complete:
     post:
       operationId: completeWorkflowTask
@@ -703,6 +903,12 @@ components:
       name: taskId
       in: path
       required: true
+      schema: { type: string, minLength: 1 }
+    PreparedLocalAttemptIdPath:
+      name: attemptId
+      in: path
+      required: true
+      description: Canonical durable attempt ID returned by preparation, distinct from worker_attempt_id.
       schema: { type: string, minLength: 1 }
     SessionIdPath:
       name: sessionId
@@ -1077,6 +1283,9 @@ components:
         activity_cancellation_acknowledgement:
           type: boolean
           description: Original remote callback-stop receipts require an installed runtime primitive and worker protocol 1.20. False for the default protocol and for runtimes without that primitive.
+        prepared_local_activities:
+          type: boolean
+          description: Candidate preparation, prefix checkpoint, supervisor control, outcome, recovery and joined-stop receipts. Requires protocol 1.20 and the actual bound PreparedLocalActivityTaskBridge role. False at the default protocol 1.19.
         supported_workflow_task_commands:
           type: array
           uniqueItems: true
@@ -1444,6 +1653,204 @@ components:
                 operation_sequence: { type: "null" }
                 operation_sequence_span: { type: "null" }
                 reason: { type: string, const: cancellation_waiting_for_child }
+    PreparedLocalClaimRequest:
+      type: object
+      required: [lease_owner, workflow_task_attempt]
+      properties:
+        lease_owner: { type: string, minLength: 1, maxLength: 255 }
+        workflow_task_attempt: { type: integer, minimum: 1 }
+    PreparedLocalDescriptor:
+      type: object
+      additionalProperties: false
+      required: [type, activity_type, arguments]
+      properties:
+        type: { type: string, const: record_local_activity }
+        activity_type: { type: string, minLength: 1 }
+        arguments:
+          description: Encoded Avro or a standard Avro envelope resolved by this namespace's configured runtime storage.
+          oneOf:
+            - { type: string, minLength: 1 }
+            - { type: object, required: [codec], properties: { codec: { const: avro } } }
+        payload_codec: { type: string, const: avro }
+        execution_mode: { type: string, const: local }
+        start_to_close_timeout: { type: [integer, "null"], minimum: 1 }
+        schedule_to_close_timeout: { type: [integer, "null"], minimum: 1 }
+        heartbeat_timeout: { type: [integer, "null"], minimum: 1 }
+        retry_policy:
+          type: [object, "null"]
+          properties:
+            max_attempts: { type: [integer, "null"], minimum: 1 }
+            backoff_seconds: { type: array, items: { type: integer, minimum: 0 } }
+            non_retryable_exceptions: { type: array, items: { type: string } }
+    PreparedLocalRecoverRequest:
+      allOf:
+        - $ref: "#/components/schemas/PreparedLocalClaimRequest"
+        - type: object
+          required: [sequence, descriptor]
+          properties:
+            sequence: { type: integer, minimum: 1 }
+            descriptor: { $ref: "#/components/schemas/PreparedLocalDescriptor" }
+    PreparedLocalPrepareRequest:
+      allOf:
+        - $ref: "#/components/schemas/PreparedLocalRecoverRequest"
+        - type: object
+          required: [worker_attempt_id]
+          properties:
+            worker_attempt_id:
+              type: string
+              minLength: 1
+              maxLength: 255
+              description: Stable SDK nonce for this callback admission. It is distinct from the durable activity_attempt_id.
+    PreparedLocalCheckpointRequest:
+      allOf:
+        - $ref: "#/components/schemas/PreparedLocalClaimRequest"
+        - type: object
+          required: [checkpoint_id, start_sequence, commands]
+          properties:
+            checkpoint_id: { type: string, minLength: 1, maxLength: 255 }
+            start_sequence: { type: integer, minimum: 1 }
+            commands:
+              type: array
+              maxItems: 100
+              description: Nonterminal prefix commands. Turn-closing waits, local outcome reports and selection cancellation are excluded. Nonempty completion-only message cursor, wait and sticky cache metadata are rejected.
+              items: { $ref: "#/components/schemas/WorkflowCommand" }
+    PreparedLocalControlRequest:
+      allOf:
+        - $ref: "#/components/schemas/PreparedLocalClaimRequest"
+        - type: object
+          properties:
+            renew_lease: { type: boolean, default: false }
+    PreparedLocalOutcomeRequest:
+      allOf:
+        - $ref: "#/components/schemas/PreparedLocalClaimRequest"
+        - type: object
+          required: [report]
+          properties:
+            report:
+              oneOf:
+                - type: object
+                  additionalProperties: false
+                  required: [outcome, result]
+                  properties:
+                    outcome: { const: completed }
+                    result:
+                      oneOf:
+                        - { type: string, minLength: 1 }
+                        - { type: object, required: [codec], properties: { codec: { const: avro } } }
+                    payload_codec: { const: avro }
+                - type: object
+                  additionalProperties: false
+                  required: [outcome, message]
+                  properties:
+                    outcome: { const: failed }
+                    message: { type: string }
+                    exception_type: { type: string, minLength: 1, maxLength: 255 }
+                    non_retryable: { type: boolean, default: false }
+                - type: object
+                  additionalProperties: false
+                  required: [outcome]
+                  properties:
+                    outcome: { const: timed_out }
+    PreparedLocalStopRequest:
+      allOf:
+        - $ref: "#/components/schemas/PreparedLocalClaimRequest"
+        - type: object
+          required: [request_id]
+          properties:
+            request_id: { type: string, minLength: 1, maxLength: 255 }
+    PreparedLocalPreparationResult:
+      type: object
+      required: [prepared, duplicate, reason, activity_execution_id, activity_attempt_id, worker_attempt_id, attempt_number, workflow_task_id, workflow_task_attempt, lease_owner, lease_expires_at, server_time]
+      properties:
+        prepared: { const: true }
+        duplicate: { type: boolean }
+        reason: { type: "null" }
+        activity_execution_id: { type: string, minLength: 1 }
+        activity_attempt_id: { type: string, minLength: 1 }
+        worker_attempt_id: { type: string, minLength: 1 }
+        attempt_number: { type: integer, minimum: 1 }
+        workflow_task_id: { type: string, minLength: 1 }
+        workflow_task_attempt: { type: integer, minimum: 1 }
+        lease_owner: { type: string, minLength: 1 }
+        lease_expires_at: { type: string, format: date-time }
+        server_time: { type: string, format: date-time }
+        start_to_close_deadline_at: { type: [string, "null"], format: date-time }
+        schedule_to_close_deadline_at: { type: [string, "null"], format: date-time }
+        heartbeat_deadline_at: { type: [string, "null"], format: date-time }
+    PreparedLocalCheckpointResult:
+      type: object
+      required: [checkpointed, duplicate, reason, checkpoint_id, task_id, workflow_run_id, workflow_task_attempt, start_sequence, next_sequence, fingerprint, created_task_ids, recorded_at]
+      properties:
+        checkpointed: { const: true }
+        duplicate: { type: boolean }
+        reason: { type: "null" }
+        checkpoint_id: { type: string, minLength: 1 }
+        task_id: { type: string, minLength: 1 }
+        workflow_run_id: { type: string, minLength: 1 }
+        workflow_task_attempt: { type: integer, minimum: 1 }
+        start_sequence: { type: integer, minimum: 1 }
+        next_sequence: { type: integer, minimum: 1 }
+        fingerprint: { type: string, pattern: "^[0-9a-f]{64}$" }
+        created_task_ids: { type: array, items: { type: string } }
+        recorded_at: { type: string, format: date-time }
+    PreparedLocalOutcomeResult:
+      type: object
+      required: [recorded, duplicate, reason, event_id, event_type, workflow_run_id, workflow_task_id, workflow_task_attempt, activity_execution_id, activity_attempt_id, worker_attempt_id, recorded_at, claim_released, created_task_ids]
+      properties:
+        recorded: { const: true }
+        duplicate: { type: boolean }
+        reason: { type: "null" }
+        event_id: { type: string, minLength: 1 }
+        event_type: { type: string, enum: [ActivityCompleted, ActivityFailed, ActivityTimedOut, ActivityRetryScheduled] }
+        workflow_run_id: { type: string, minLength: 1 }
+        workflow_task_id: { type: string, minLength: 1 }
+        workflow_task_attempt: { type: integer, minimum: 1 }
+        activity_execution_id: { type: string, minLength: 1 }
+        activity_attempt_id: { type: string, minLength: 1 }
+        worker_attempt_id: { type: string, minLength: 1 }
+        recorded_at: { type: string, format: date-time }
+        claim_released: { type: boolean }
+        created_task_ids: { type: array, items: { type: string } }
+    PreparedLocalRecoveryResult:
+      type: object
+      required: [recovered, duplicate, reason, event_id, event_type, callback_stop_state, claim_released, created_task_ids]
+      properties:
+        recovered: { const: true }
+        duplicate: { type: boolean }
+        reason: { type: "null" }
+        event_id: { type: string, minLength: 1 }
+        event_type: { type: string, enum: [ActivityFailed, ActivityTimedOut, ActivityRetryScheduled] }
+        callback_stop_state: { const: unknown }
+        claim_released: { type: boolean }
+        created_task_ids: { type: array, items: { type: string } }
+    PreparedLocalControlResult:
+      type: object
+      required: [active, renewed, stop_required, reason, activity_execution_id, activity_attempt_id, workflow_task_id, workflow_task_attempt, server_time]
+      properties:
+        active: { type: boolean }
+        renewed: { type: boolean }
+        stop_required: { type: boolean }
+        reason: { type: [string, "null"] }
+        activity_execution_id: { type: string, minLength: 1 }
+        activity_attempt_id: { type: string, minLength: 1 }
+        workflow_task_id: { type: string, minLength: 1 }
+        workflow_task_attempt: { type: integer, minimum: 1 }
+        server_time: { type: string, format: date-time }
+        cancellation_request:
+          type: object
+          required: [request_id, root_request_id, cleanup_deadline_at]
+          properties:
+            request_id: { type: string, minLength: 1 }
+            root_request_id: { type: string, minLength: 1 }
+            cleanup_deadline_at: { type: string, format: date-time }
+    PreparedLocalStopResult:
+      type: object
+      required: [acknowledged, duplicate, reason, history_event_id]
+      properties:
+        acknowledged: { const: true }
+        duplicate: { type: boolean }
+        reason: { type: "null" }
+        history_event_id: { type: string, minLength: 1 }
     WorkerHistoryEvent:
       type: object
       additionalProperties: true

@@ -27,6 +27,16 @@ class RuntimeExternalPayloadTransport
         'ScheduleController@update' => [['action', 'input']],
         'ServiceCatalogController@executeOperation' => [['arguments']],
         'WorkerController@completeQueryTask' => [['result_envelope']],
+        'PreparedLocalActivityController@prepare' => [['descriptor', 'arguments']],
+        'PreparedLocalActivityController@recover' => [['descriptor', 'arguments']],
+        'PreparedLocalActivityController@outcome' => [['report', 'result']],
+        'WorkerController@checkpointLocalActivityPrefix' => [
+            ['commands', '*', 'arguments'],
+            ['commands', '*', 'entries'],
+            ['commands', '*', 'exception', 'details'],
+            ['commands', '*', 'request_payload'],
+            ['commands', '*', 'result'],
+        ],
         'WorkerController@completeWorkflowTask' => [
             ['commands', '*', 'arguments'],
             ['commands', '*', 'entries'],
@@ -45,6 +55,9 @@ class RuntimeExternalPayloadTransport
 
     /** @var array<string, list<list<string>>> */
     private const INCOMING_REFERENCE_PATHS = [
+        'WorkerController@checkpointLocalActivityPrefix' => [
+            ['commands', '*', 'workflow_stream', 'items', '*', 'payload_reference'],
+        ],
         'WorkerController@completeWorkflowTask' => [
             ['commands', '*', 'workflow_stream', 'items', '*', 'payload_reference'],
         ],

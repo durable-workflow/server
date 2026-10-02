@@ -20,6 +20,8 @@ use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\PayloadCodecContract;
 use App\Support\PollRequestTaskKindsConflict;
+use App\Support\PreparedLocalActivityAdmissionRefused;
+use App\Support\PreparedLocalActivityPolicy;
 use App\Support\QueryTaskQueueUnavailableException;
 use App\Support\RouteAuthorizationResource;
 use App\Support\RuntimeExternalPayloadAudit;
@@ -53,6 +55,7 @@ use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Workflow\V2\Contracts\HistoryProjectionRole;
+use Workflow\V2\Contracts\PreparedLocalActivityTaskBridge;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\HistoryEventType;
@@ -225,6 +228,16 @@ class WorkerController
         ]);
 
         $workerCapabilities = $this->nonEmptyStringArray($validated['capabilities'] ?? []);
+        if (in_array(PreparedLocalActivityPolicy::CAPABILITY, $workerCapabilities, true)
+            && ! CooperativeCancellationPolicy::supports($workerCapabilities, WorkerProtocol::requestVersion($request))) {
+            return WorkerProtocol::json([
+                'registered' => false,
+                'reason' => 'prepared_local_activity_capability_mismatch',
+                'required_capability' => CooperativeCancellationPolicy::CAPABILITY,
+                'minimum_protocol_version' => PreparedLocalActivityPolicy::MINIMUM_PROTOCOL_VERSION,
+                'requested_version' => WorkerProtocol::requestVersion($request),
+            ], 409);
+        }
         if (in_array(CooperativeCancellationPolicy::CAPABILITY, $workerCapabilities, true)
             && ! CooperativeCancellationPolicy::supports($workerCapabilities, WorkerProtocol::requestVersion($request))) {
             return WorkerProtocol::json([
@@ -1447,11 +1460,40 @@ class WorkerController
      */
     public function completeWorkflowTask(Request $request, string $taskId): JsonResponse
     {
+        return $this->mutateWorkflowTaskCommands($request, $taskId);
+    }
+
+    public function checkpointLocalActivityPrefix(Request $request, string $taskId): JsonResponse
+    {
+        if ($response = PreparedLocalActivityController::unavailable($request)) {
+            return $response;
+        }
+        $task = NamespaceWorkflowScope::task((string) $request->attributes->get('namespace'), $taskId);
+        if ($task === null) {
+            return WorkerProtocol::json(['reason' => 'task_not_found'], 404);
+        }
+        if (PreparedLocalActivityPolicy::currentClaim($task) === null) {
+            return PreparedLocalActivityController::refused((string) $request->input('lease_owner', ''), ['worker_claim_capability']);
+        }
+
+        return $this->mutateWorkflowTaskCommands($request, $taskId, true);
+    }
+
+    private function mutateWorkflowTaskCommands(Request $request, string $taskId, bool $checkpoint = false): JsonResponse
+    {
         if ($response = WorkerProtocol::rejectUnsupported($request)) {
             return $response;
         }
 
         $namespace = $request->attributes->get('namespace');
+
+        $checkpointInput = $checkpoint ? $request->validate([
+            'checkpoint_id' => ['required', 'string', 'max:255'],
+            'start_sequence' => ['required', 'integer', 'min:1'],
+            'message_stream_cursors' => ['prohibited'],
+            'message_stream_waits' => ['prohibited'],
+            'sticky_cache' => ['prohibited'],
+        ]) : [];
 
         $messageStreamCompletion = $request->validate([
             'message_stream_cursors' => ['nullable', 'array', 'max:100'],
@@ -1779,6 +1821,8 @@ class WorkerController
                     $validated,
                     $messageStreamCursors,
                     $messageStreamWaits,
+                    $checkpoint,
+                    $checkpointInput,
                 ): array|JsonResponse {
                     return DB::transaction(function () use (
                         $bridge,
@@ -1789,6 +1833,8 @@ class WorkerController
                         $validated,
                         $messageStreamCursors,
                         $messageStreamWaits,
+                        $checkpoint,
+                        $checkpointInput,
                     ): array|JsonResponse {
                         $quotaSnapshot = $this->durableStateQuota->snapshotForMutation(
                             (string) $namespace,
@@ -1864,7 +1910,22 @@ class WorkerController
                             $commands,
                             WorkerProtocol::requestVersion($request),
                         );
-                        $outcome = $bridge->complete($taskId, $commands);
+                        if ($checkpoint) {
+                            if (PreparedLocalActivityPolicy::currentClaim($claimedTask) === null
+                                || ! $bridge instanceof PreparedLocalActivityTaskBridge) {
+                                throw new PreparedLocalActivityAdmissionRefused;
+                            }
+                            $outcome = $bridge->checkpointLocalActivityPrefix(
+                                $taskId, $validated['lease_owner'], (int) $validated['workflow_task_attempt'],
+                                $checkpointInput['checkpoint_id'], (int) $checkpointInput['start_sequence'], $commands,
+                                WorkerProtocol::requestVersion($request),
+                            );
+                            // Shared post-processing must not release this claim
+                            // or attribute a terminal event to a prefix receipt.
+                            $outcome['completed'] = false;
+                        } else {
+                            $outcome = $bridge->complete($taskId, $commands);
+                        }
                         if (($outcome['completed'] ?? false) === true
                             && $claimedTask instanceof WorkflowTask
                             && CooperativeCancellationPolicy::claimSupportsCancellation($claimedTask)) {
@@ -1917,6 +1978,8 @@ class WorkerController
                 'current_value' => $e->currentValue,
                 'configured_limit' => $e->configuredLimit,
             ], 422);
+        } catch (PreparedLocalActivityAdmissionRefused) {
+            return PreparedLocalActivityController::refused($validated['lease_owner'], ['worker_claim_capability']);
         } catch (ExternalPayloadStorageUnavailable $exception) {
             return $this->externalPayloadFailure($taskId, (int) $validated['workflow_task_attempt'], $exception, 503);
         } catch (StreamFullException $exception) {
@@ -1988,6 +2051,13 @@ class WorkerController
             }
 
             return BackendLockPressure::workerOperationResponse($request, true);
+        }
+
+        if ($checkpoint) {
+            unset($outcome['completed']);
+            $outcome['history_refresh_page_token'] = WorkflowHistoryPageToken::encode(0);
+
+            return WorkerProtocol::json($outcome, $this->workflowOutcomeStatus($outcome['reason']));
         }
 
         return WorkerProtocol::json([
@@ -2481,7 +2551,7 @@ class WorkerController
         array $commands,
         array $outcome,
     ): void {
-        if (($outcome['completed'] ?? false) !== true) {
+        if (($outcome['completed'] ?? false) !== true && ($outcome['checkpointed'] ?? false) !== true) {
             return;
         }
 
@@ -2494,11 +2564,19 @@ class WorkerController
             return;
         }
 
-        $events = WorkflowHistoryEvent::query()
+        $eventQuery = WorkflowHistoryEvent::query()
             ->where('workflow_task_id', $taskId)
-            ->where('event_type', HistoryEventType::SearchAttributesUpserted->value)
-            ->orderBy('sequence')
-            ->get();
+            ->where('event_type', HistoryEventType::SearchAttributesUpserted->value);
+        if (($outcome['checkpointed'] ?? false) === true) {
+            $eventQuery->where('payload->sequence', '>=', $outcome['start_sequence'])
+                ->where('payload->sequence', '<', $outcome['next_sequence']);
+        } else {
+            $prefixEnd = WorkflowTask::query()->find($taskId)?->payload['portable_local_checkpoint']['next_sequence'] ?? null;
+            if (is_int($prefixEnd) && $prefixEnd > 0) {
+                $eventQuery->where('payload->sequence', '>=', $prefixEnd);
+            }
+        }
+        $events = $eventQuery->orderBy('sequence')->get();
 
         if ($events->count() !== count($upserts)) {
             throw new \RuntimeException('Typed search-attribute commands did not produce a one-to-one history event set.');

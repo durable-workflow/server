@@ -11,6 +11,7 @@ use App\Http\Controllers\Api\HistoryController;
 use App\Http\Controllers\Api\LegacyV1ProjectionController;
 use App\Http\Controllers\Api\MessageStreamController;
 use App\Http\Controllers\Api\NamespaceController;
+use App\Http\Controllers\Api\PreparedLocalActivityController;
 use App\Http\Controllers\Api\RuntimeCredentialController;
 use App\Http\Controllers\Api\RuntimeExternalPayloadController;
 use App\Http\Controllers\Api\ScheduleController;
@@ -234,6 +235,12 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
         Route::post('/workflow-tasks/{taskId}/history', [WorkerController::class, 'workflowTaskHistory']);
         Route::post('/workflow-tasks/{taskId}/heartbeat', [WorkerController::class, 'heartbeatWorkflowTask']);
         Route::post('/workflow-tasks/{taskId}/deliver-cancellation', [CooperativeCancellationController::class, 'deliver']);
+        Route::post('/workflow-tasks/{taskId}/local-activities/prepare', [PreparedLocalActivityController::class, 'prepare']);
+        Route::post('/workflow-tasks/{taskId}/local-activities/checkpoint', [WorkerController::class, 'checkpointLocalActivityPrefix']);
+        Route::post('/workflow-tasks/{taskId}/local-activities/recover', [PreparedLocalActivityController::class, 'recover']);
+        Route::post('/workflow-tasks/{taskId}/local-activities/{attemptId}/control', [PreparedLocalActivityController::class, 'control']);
+        Route::post('/workflow-tasks/{taskId}/local-activities/{attemptId}/outcome', [PreparedLocalActivityController::class, 'outcome']);
+        Route::post('/workflow-tasks/{taskId}/local-activities/{attemptId}/acknowledge-cancellation', [PreparedLocalActivityController::class, 'acknowledgeCancellation']);
         Route::post('/workflow-tasks/{taskId}/complete', [WorkerController::class, 'completeWorkflowTask']);
         Route::post('/workflow-tasks/{taskId}/fail', [WorkerController::class, 'failWorkflowTask']);
 

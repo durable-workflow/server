@@ -547,6 +547,7 @@ class WorkerProtocol
             'activity_retry_policy' => true,
             'activity_timeouts' => true,
             'cooperative_cancellation' => CooperativeCancellationPolicy::serverSupported(),
+            'prepared_local_activities' => PreparedLocalActivityPolicy::serverSupported(),
             'activity_cancellation_acknowledgement' => CooperativeCancellationPolicy::serverSupported()
                 && CooperativeCancellationPolicy::activityAcknowledgementBackendSupported(),
             'local_activities' => [
