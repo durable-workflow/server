@@ -589,7 +589,7 @@ final class PreparedLocalActivityProtocolTest extends TestCase
         $this->assertCount(3, $budget->objects);
         $rows = RuntimeExternalPayload::query()->orderBy('id')->get()->map->getAttributes()->all();
         $budgetBefore = $budget->getAttributes();
-        $this->completionUpload($result, $context)->assertCreated()->assertJsonPath('reference', $reference);
+        $this->assertSame($reference, RuntimeExternalPayloadReference::validate($this->completionUpload($result, $context)->assertCreated()->json('reference')));
         $this->assertSame($rows, RuntimeExternalPayload::query()->orderBy('id')->get()->map->getAttributes()->all());
         $this->assertSame($budgetBefore, $budget->refresh()->getAttributes());
         $this->completionUpload('new bytes', $context)->assertStatus(409)->assertJsonPath('reason', 'external_payload_completion_lease_rejected');
