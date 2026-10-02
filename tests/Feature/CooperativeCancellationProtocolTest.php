@@ -469,6 +469,83 @@ class CooperativeCancellationProtocolTest extends TestCase
             ->where('parent_workflow_run_id', $runId)->where('link_type', 'child_workflow')->sole()->parent_close_policy);
     }
 
+    #[DataProvider('remoteActivityPolicies')]
+    public function test_remote_activity_policy_is_canonical_or_reports_the_missing_installed_runtime(string $policy): void
+    {
+        [, $runId] = $this->start();
+        $this->register('new', true);
+        $task = $this->poll('new')->json('task');
+        $response = $this->complete($task, [['type' => 'schedule_activity',
+            'activity_type' => 'tests.remote', 'arguments' => Serializer::serialize(['work']),
+            'cancellation_policy' => $policy, 'schedule_to_close_timeout' => 180]]);
+        if (! CooperativeCancellationPolicy::remoteActivityPolicyBackendSupported()) {
+            $response->assertStatus(409)->assertJsonPath('reason', 'activity_cancellation_policy_not_supported')
+                ->assertJsonPath('unavailable', ['installed_runtime_activity_policy'])->assertJsonPath('recorded', false);
+            $this->assertSame(0, $this->eventCount($runId, HistoryEventType::ActivityScheduled));
+            $this->assertSame(TaskStatus::Leased, WorkflowTask::query()->findOrFail($task['task_id'])->status);
+
+            return;
+        }
+        $response->assertOk()->assertJsonPath('outcome', 'completed');
+        $event = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::ActivityScheduled)->sole();
+        $this->assertSame($policy, $event->payload['activity']['cancellation_policy']);
+        if ($policy === 'abandon') {
+            $this->assertNotNull($event->payload['activity']['schedule_to_close_deadline_at']);
+        }
+    }
+
+    public static function remoteActivityPolicies(): array
+    {
+        return [['try_cancel'], ['wait_cancellation_completed'], ['abandon']];
+    }
+
+    public function test_remote_activity_policy_cannot_upgrade_an_old_claim_from_a_changed_registration(): void
+    {
+        [, $runId] = $this->start();
+        $this->register('old', false);
+        $task = $this->poll('old', '1.19')->json('task');
+        WorkerRegistration::query()->where('worker_id', 'old')->sole()->forceFill([
+            'capabilities' => [CooperativeCancellationPolicy::CAPABILITY],
+        ])->save();
+        $this->complete($task, [['type' => 'schedule_activity', 'activity_type' => 'tests.remote',
+            'cancellation_policy' => 'wait_cancellation_completed']])->assertStatus(409)
+            ->assertJsonPath('reason', 'activity_cancellation_policy_not_supported')->assertJsonPath('worker_id', 'old')
+            ->assertJsonPath('recorded', false)->assertJsonFragment(['worker_claim_capability']);
+        $this->assertSame(0, $this->eventCount($runId, HistoryEventType::ActivityScheduled));
+        $this->assertSame(TaskStatus::Leased, WorkflowTask::query()->findOrFail($task['task_id'])->status);
+    }
+
+    public function test_remote_abandon_requires_a_total_lifetime_before_scheduling(): void
+    {
+        [, $runId] = $this->start();
+        $this->register('new', true);
+        $task = $this->poll('new')->json('task');
+        $response = $this->complete($task, [['type' => 'schedule_activity', 'activity_type' => 'tests.remote',
+            'cancellation_policy' => 'abandon']]);
+        if (CooperativeCancellationPolicy::remoteActivityPolicyBackendSupported()) {
+            $response->assertStatus(422)->assertJsonValidationErrors('commands.0.schedule_to_close_timeout');
+        } else {
+            $response->assertStatus(409)->assertJsonPath('reason', 'activity_cancellation_policy_not_supported');
+        }
+        $this->assertSame(0, $this->eventCount($runId, HistoryEventType::ActivityScheduled));
+        $this->assertSame(TaskStatus::Leased, WorkflowTask::query()->findOrFail($task['task_id'])->status);
+    }
+
+    public function test_remote_activity_policy_refuses_completion_on_the_legacy_protocol(): void
+    {
+        [, $runId] = $this->start();
+        $this->register('new', true);
+        $task = $this->poll('new')->json('task');
+        $this->withHeaders($this->headers('1.19'))->postJson("/api/worker/workflow-tasks/{$task['task_id']}/complete", [
+            'lease_owner' => 'new', 'workflow_task_attempt' => $task['workflow_task_attempt'],
+            'commands' => [['type' => 'schedule_activity', 'activity_type' => 'tests.remote',
+                'cancellation_policy' => 'try_cancel']],
+        ])->assertStatus(409)->assertJsonPath('reason', 'activity_cancellation_policy_not_supported')
+            ->assertJsonFragment(['request_protocol'])->assertJsonPath('recorded', false);
+        $this->assertSame(0, $this->eventCount($runId, HistoryEventType::ActivityScheduled));
+    }
+
     public function test_old_claim_cannot_acquire_child_policy_support_from_a_changed_registration(): void
     {
         [, $runId] = $this->start();

@@ -3,6 +3,7 @@
 namespace App\Support;
 
 use App\Models\WorkerRegistration;
+use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\CancellationPolicy;
 use Workflow\V2\Enums\ParentClosePolicy;
 use Workflow\V2\Enums\TaskStatus;
@@ -41,6 +42,35 @@ final class CooperativeCancellationPolicy
     {
         return class_exists(ActivityCancellationAcknowledgement::class)
             && method_exists(ActivityCancellationAcknowledgement::class, 'recordStopped');
+    }
+
+    public static function remoteActivityPolicyBackendSupported(): bool
+    {
+        $bridge = app(WorkflowTaskBridge::class);
+
+        return method_exists($bridge, 'supportsRemoteActivityCancellationPolicies')
+            && is_callable([$bridge, 'supportsRemoteActivityCancellationPolicies'])
+            && $bridge->supportsRemoteActivityCancellationPolicies() === true;
+    }
+
+    /** @return list<string> */
+    public static function remoteActivityPolicyUnavailableReasons(?WorkflowTask $task, ?string $requestVersion): array
+    {
+        $reasons = [];
+        if (! self::serverSupported()) {
+            $reasons[] = 'server_protocol';
+        }
+        if (! WorkerProtocol::versionMeetsMinimum($requestVersion, self::MINIMUM_PROTOCOL_VERSION)) {
+            $reasons[] = 'request_protocol';
+        }
+        if ($task === null || ! self::claimSupportsCancellation($task)) {
+            $reasons[] = 'worker_claim_capability';
+        }
+        if (! self::remoteActivityPolicyBackendSupported()) {
+            $reasons[] = 'installed_runtime_activity_policy';
+        }
+
+        return $reasons;
     }
 
     /** @return list<string> */

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "31"
+  version: "32"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -39,6 +39,13 @@ x-durable-workflow-cooperative-cancellation-contract:
   legacy_terminal_parent_close_policy: request_cancel
   child_policy_admission: [server_protocol, request_protocol, immutable_worker_claim_capability, installed_runtime_child_policy]
   unsupported_child_policy: { status: 409, reason: child_cancellation_policy_not_supported, recorded: false }
+  remote_activity_operation_policies: [try_cancel, wait_cancellation_completed, abandon]
+  remote_activity_policy_admission: [server_protocol, request_protocol, immutable_worker_claim_capability, installed_runtime_activity_policy]
+  remote_activity_policy_default: try_cancel
+  remote_activity_abandon_lifetime: original_finite_schedule_to_close_timeout
+  unsupported_remote_activity_policy: { status: 409, reason: activity_cancellation_policy_not_supported, recorded: false }
+  local_activity_policy_authoring: refused_pending_portable_admission
+  local_activity_abandon: refused_pending_independent_callback_lifetime
   claim_proof: immutable_registration_snapshot_bound_to_task_run_owner_and_attempt
   request_against_incompatible_active_claim: { status: 409, reason: active_claim_cancellation_not_supported, history_appended: false }
   request_claim_race: serialized_on_workflow_run_lock
@@ -2456,7 +2463,7 @@ components:
           type: [string, "null"]
           enum: [try_cancel, wait_cancellation_completed, abandon, null]
           x-durable-workflow-minimum-protocol-version: "1.20"
-          description: Per-operation child cancellation policy. Absent or null retains abandon. Cooperative policies require a capable immutable worker claim and an installed runtime implementation.
+          description: Per-operation child or remote Activity cancellation policy. Absent or null retains child abandon and Activity try_cancel. Explicit remote policies require protocol 1.20, a capable immutable worker claim and an installed runtime implementation. Remote abandon requires a finite schedule_to_close_timeout. Explicit local Activity policies are not admitted.
       allOf:
         - if:
             properties:
@@ -2541,6 +2548,15 @@ components:
                     outcome: { const: timed_out }
                 then:
                   required: [timeout_kind]
+        - if:
+            properties:
+              type: { const: schedule_activity }
+              cancellation_policy: { const: abandon }
+            required: [type, cancellation_policy]
+          then:
+            required: [schedule_to_close_timeout]
+            properties:
+              schedule_to_close_timeout: { type: integer, minimum: 1 }
     LocalActivityAttemptReport:
       type: object
       additionalProperties: false

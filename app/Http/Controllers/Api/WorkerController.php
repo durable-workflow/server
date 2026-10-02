@@ -71,8 +71,8 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowServiceCall;
 use Workflow\V2\Models\WorkflowTask;
-use Workflow\V2\Support\StickyExecution;
 use Workflow\V2\Support\PortableLocalActivityPreparation;
+use Workflow\V2\Support\StickyExecution;
 use Workflow\V2\Support\WorkerProtocolVersion;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
 use Workflow\V2\Support\WorkflowTaskOwnership;
@@ -1746,6 +1746,16 @@ class WorkerController
             return $response;
         }
 
+        if ($response = $this->guardRemoteActivityCancellationPoliciesAvailable(
+            $request,
+            (string) $namespace,
+            $taskId,
+            (int) $validated['workflow_task_attempt'],
+            $commands,
+        )) {
+            return $response;
+        }
+
         if ($response = $this->guardChildCancellationPoliciesAvailable(
             $request,
             (string) $namespace,
@@ -1917,6 +1927,17 @@ class WorkerController
                             (int) $validated['workflow_task_attempt'],
                             $commands,
                             $leaseWorker,
+                        )) {
+                            return $response;
+                        }
+
+                        if ($response = $this->guardRemoteActivityCancellationPoliciesAvailable(
+                            $request,
+                            (string) $namespace,
+                            $taskId,
+                            (int) $validated['workflow_task_attempt'],
+                            $commands,
+                            $claimedTask,
                         )) {
                             return $response;
                         }
@@ -2157,6 +2178,50 @@ class WorkerController
         }
 
         return $commands;
+    }
+
+    /** @param array<int, array<string, mixed>> $commands */
+    private function guardRemoteActivityCancellationPoliciesAvailable(
+        Request $request,
+        string $namespace,
+        string $taskId,
+        int $workflowTaskAttempt,
+        array $commands,
+        ?WorkflowTask $claimedTask = null,
+    ): ?JsonResponse {
+        $usesPolicy = false;
+        foreach ($commands as $command) {
+            if (($command['type'] ?? null) === 'schedule_activity'
+                && $this->hasCommandValue($command, 'cancellation_policy')) {
+                $usesPolicy = true;
+                break;
+            }
+        }
+        if (! $usesPolicy) {
+            return null;
+        }
+        $task = $claimedTask ?? NamespaceWorkflowScope::taskQuery($namespace)->whereKey($taskId)->first();
+        $unavailable = CooperativeCancellationPolicy::remoteActivityPolicyUnavailableReasons(
+            $task,
+            WorkerProtocol::requestVersion($request),
+        );
+        if ($unavailable === []) {
+            return null;
+        }
+
+        return WorkerProtocol::json([
+            'task_id' => $taskId,
+            'workflow_task_attempt' => $workflowTaskAttempt,
+            'worker_id' => $task?->lease_owner,
+            'outcome' => 'rejected',
+            'recorded' => false,
+            'reason' => 'activity_cancellation_policy_not_supported',
+            'required_capability' => CooperativeCancellationPolicy::CAPABILITY,
+            'minimum_protocol_version' => CooperativeCancellationPolicy::MINIMUM_PROTOCOL_VERSION,
+            'requested_version' => WorkerProtocol::requestVersion($request),
+            'unavailable' => $unavailable,
+            'remediation' => 'Use a runtime with remote activity cancellation policies and a cooperative worker claim on protocol 1.20 or newer.',
+        ], 409);
     }
 
     /** @param array<int, array<string, mixed>> $commands */
@@ -2917,9 +2982,10 @@ class WorkerController
                 }
             }
 
-            if ($this->hasCommandValue($command, 'cancellation_policy') && $type !== 'start_child_workflow') {
+            if ($this->hasCommandValue($command, 'cancellation_policy')
+                && ! in_array($type, ['start_child_workflow', 'schedule_activity'], true)) {
                 $errors["commands.{$index}.cancellation_policy"][] =
-                    'cancellation_policy is only supported for start_child_workflow commands.';
+                    'cancellation_policy is only supported for start_child_workflow or schedule_activity commands.';
             }
 
             if ($this->hasCommandValue($command, 'non_retryable')
