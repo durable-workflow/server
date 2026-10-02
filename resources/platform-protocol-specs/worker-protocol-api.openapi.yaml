@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "30"
+  version: "31"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -33,6 +33,7 @@ x-durable-workflow-cooperative-cancellation-contract:
   canonical_history_event: CooperativeCancellationDelivered
   delivery_identity: [request_id, sequence, call_kind, sequence_span, operation_sequence, operation_sequence_span]
   pending_child_delivery: { status: 200, delivered: false, reason: cancellation_waiting_for_child, claim_released: true, canonical_delivery_recorded: false, resume_source: child_terminal_history }
+  pending_activity_delivery: { status: 200, delivered: false, reason: cancellation_waiting_for_activity, claim_released: true, canonical_delivery_recorded: false, resume_source: canonical_callback_outcome_or_original_stop_receipt_or_fenced_never_started_operation }
   child_operation_policies: [try_cancel, wait_cancellation_completed, abandon]
   cooperative_parent_close_policy: request_cancellation
   legacy_terminal_parent_close_policy: request_cancel
@@ -1738,7 +1739,7 @@ components:
                 sequence_span: { type: "null" }
                 operation_sequence: { type: "null" }
                 operation_sequence_span: { type: "null" }
-                reason: { type: string, const: cancellation_waiting_for_child }
+                reason: { type: string, enum: [cancellation_waiting_for_child, cancellation_waiting_for_activity] }
     PreparedLocalClaimRequest:
       type: object
       required: [lease_owner, workflow_task_attempt]
