@@ -889,10 +889,13 @@ class WorkflowRunDiagnostics
         }
 
         if ((bool) data_get($payload, 'execution.task_problem', false)) {
+            $historical = data_get($payload, 'execution.task_problem_badge.code') === 'history';
             $findings[] = [
-                'severity' => 'warning',
-                'code' => 'task_problem',
-                'message' => 'The run summary has a task problem flag.',
+                'severity' => $historical ? 'info' : 'warning',
+                'code' => $historical ? 'task_recovery_history' : 'task_problem',
+                'message' => $historical
+                    ? 'The run previously needed workflow-task repair or replay recovery.'
+                    : 'The run summary has a task problem flag.',
             ];
         }
 
