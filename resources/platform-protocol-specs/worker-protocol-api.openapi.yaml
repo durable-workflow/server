@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "32"
+  version: "33"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -44,7 +44,11 @@ x-durable-workflow-cooperative-cancellation-contract:
   remote_activity_policy_default: try_cancel
   remote_activity_abandon_lifetime: original_finite_schedule_to_close_timeout
   unsupported_remote_activity_policy: { status: 409, reason: activity_cancellation_policy_not_supported, recorded: false }
-  local_activity_policy_authoring: refused_pending_portable_admission
+  local_activity_operation_policies: [try_cancel, wait_cancellation_completed]
+  local_activity_policy_admission: [server_protocol, request_protocol, immutable_worker_claim_capability, installed_runtime_local_policy_list]
+  local_activity_policy_worker_capability: prepared_local_activity_cancellation_policies
+  local_activity_policy_authoring: prepared_admission_only
+  unsupported_local_activity_policy: { status: 409, reason: prepared_local_activity_cancellation_policy_not_supported, recorded: false }
   local_activity_abandon: refused_pending_independent_callback_lifetime
   claim_proof: immutable_registration_snapshot_bound_to_task_run_owner_and_attempt
   request_against_incompatible_active_claim: { status: 409, reason: active_claim_cancellation_not_supported, history_appended: false }
@@ -1380,6 +1384,11 @@ components:
         prepared_local_activity_groups:
           type: boolean
           description: Candidate atomic complete-all-group admission. Requires prepared local activities, protocol 1.20 and the actual bound PreparedLocalActivityGroupTaskBridge. Existing custom prepared bridges do not acquire this role.
+        prepared_local_activity_cancellation_policies:
+          type: array
+          uniqueItems: true
+          items: { type: string, enum: [try_cancel, wait_cancellation_completed] }
+          description: Explicit policies supported by the actual installed prepared-local bridge's optional supportedLocalActivityCancellationPolicies method. Empty at default protocol 1.19 or for older optional-role bridges. Workers need a new immutable claim with the separately named worker capability before admission or replay.
         supported_workflow_task_commands:
           type: array
           uniqueItems: true
@@ -1555,6 +1564,9 @@ components:
             worker_sessions: "1.18"
             sticky_execution: "1.18"
             cooperative_cancellation: "1.20"
+            prepared_local_activities: "1.20"
+            prepared_local_activity_groups: "1.20"
+            prepared_local_activity_cancellation_policies: "1.20"
         capability_manifest:
           $ref: "#/components/schemas/PortableWorkerCapabilityManifest"
     WorkerHeartbeatRequest:
@@ -1767,6 +1779,10 @@ components:
             - { type: object, required: [codec], properties: { codec: { const: avro } } }
         payload_codec: { type: string, const: avro }
         execution_mode: { type: string, const: local }
+        cancellation_policy:
+          type: string
+          enum: [try_cancel, wait_cancellation_completed]
+          description: Explicit candidate prepared-local policy. Requires the installed backend policy list and prepared_local_activity_cancellation_policies on the original issued claim. Omission retains historical TryCancel. Null and Abandon are refused before payload resolution or admission.
         start_to_close_timeout: { type: [integer, "null"], minimum: 1 }
         schedule_to_close_timeout: { type: [integer, "null"], minimum: 1 }
         heartbeat_timeout: { type: [integer, "null"], minimum: 1 }
@@ -2463,7 +2479,7 @@ components:
           type: [string, "null"]
           enum: [try_cancel, wait_cancellation_completed, abandon, null]
           x-durable-workflow-minimum-protocol-version: "1.20"
-          description: Per-operation child or remote Activity cancellation policy. Absent or null retains child abandon and Activity try_cancel. Explicit remote policies require protocol 1.20, a capable immutable worker claim and an installed runtime implementation. Remote abandon requires a finite schedule_to_close_timeout. Explicit local Activity policies are not admitted.
+          description: Per-operation child, remote Activity or prepared local Activity cancellation policy. Absent or null retains child abandon and remote Activity try_cancel. Explicit remote policies require protocol 1.20, a capable immutable worker claim and an installed runtime implementation. Remote abandon requires a finite schedule_to_close_timeout. Prepared local descriptors accept only explicit TryCancel or WaitCancellationCompleted under their separate installed-backend and original-claim capability checks, including atomic group admission. Null and local Abandon are refused.
       allOf:
         - if:
             properties:

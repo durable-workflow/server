@@ -102,6 +102,35 @@ the original receipt event and late receipt remains explicitly late.
 This report grants no renewed lease, application heartbeat, result authority or
 cleanup budget. It describes the worker's stopped callback, not reversal of
 external effects. Local activities require separate workflow claim authority.
+
+## Candidate prepared local cancellation policies
+
+An explicit prepared local Activity policy requires candidate protocol 1.20,
+the installed bridge's `supportedLocalActivityCancellationPolicies()` list,
+and `prepared_local_activity_cancellation_policies` on the original issued
+workflow claim. Discovery reports the actual supported policy list in
+`server_capabilities.prepared_local_activity_cancellation_policies`. Older
+custom prepared bridges do not acquire this support from their optional role.
+The list is empty at default protocol 1.19.
+
+`try_cancel` fences publication and releases the durable await without claiming
+the callback has stopped. `wait_cancellation_completed` parks delivery until an
+original-owner stopped-and-joined receipt or canonical callback outcome exists.
+Both retain the original root request and immutable cleanup deadline. Omission
+preserves historical TryCancel. Explicit null and local `abandon` are refused.
+Independent work should use a remote Activity with a qualified bounded lifetime.
+
+The prepare, recover and atomic group endpoints reject unsupported policies
+before resolving payloads or recording any sibling. Refusals identify the
+requested policy, installed supported list, original worker claim, missing
+capability and remediation. Re-registering a worker cannot upgrade its existing
+claim. Replacement polling checks the explicit policy in canonical Scheduled
+history before probing and again under the run lock. An incompatible worker
+cannot reinterpret that policy through replay.
+
+SDK policy authoring, replay and physical callback supervision need separate
+qualification. The installed backend's policy list does not establish those
+SDK capabilities or change the default published protocol.
 Receipt writes are admitted during storage draining and refused when storage is
 fenced. SDK stop/join emission, local receipts and activity waiting policies still
 need connected qualification before this candidate is published.

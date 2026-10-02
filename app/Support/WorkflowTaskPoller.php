@@ -2339,11 +2339,12 @@ final class WorkflowTaskPoller
             return false;
         }
 
-        return WorkflowMetadataCapabilityPolicy::canReplayRun(
-            $runId,
-            $capabilities,
-            $protocolVersion,
-        );
+        return PreparedLocalActivityPolicy::canReplayRun($runId, $capabilities, $protocolVersion)
+            && WorkflowMetadataCapabilityPolicy::canReplayRun(
+                $runId,
+                $capabilities,
+                $protocolVersion,
+            );
     }
 
     /** @param array<string, string> $workflowDefinitionFingerprints */

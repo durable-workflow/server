@@ -5,7 +5,9 @@ namespace App\Support;
 use Workflow\V2\Contracts\PreparedLocalActivityGroupTaskBridge;
 use Workflow\V2\Contracts\PreparedLocalActivityTaskBridge;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\ActivityAttempt;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowTask;
 
 /** Candidate protocol 1.20 admission and original issued local authority. */
@@ -14,6 +16,8 @@ final class PreparedLocalActivityPolicy
     public const CAPABILITY = 'prepared_local_activities';
 
     public const GROUP_CAPABILITY = 'prepared_local_activity_groups';
+
+    public const CANCELLATION_POLICIES_CAPABILITY = 'prepared_local_activity_cancellation_policies';
 
     public const MINIMUM_PROTOCOL_VERSION = '1.20';
 
@@ -37,6 +41,72 @@ final class PreparedLocalActivityPolicy
     {
         return self::serverSupported() && interface_exists(PreparedLocalActivityGroupTaskBridge::class)
             && app(WorkflowTaskBridge::class) instanceof PreparedLocalActivityGroupTaskBridge;
+    }
+
+    /** @return list<string> */
+    public static function cancellationPolicies(): array
+    {
+        $bridge = app(WorkflowTaskBridge::class);
+        if (! self::serverSupported() || ! method_exists($bridge, 'supportedLocalActivityCancellationPolicies')
+            || ! is_callable([$bridge, 'supportedLocalActivityCancellationPolicies'])) {
+            return [];
+        }
+
+        $policies = $bridge->supportedLocalActivityCancellationPolicies();
+
+        return is_array($policies)
+            ? array_values(array_filter(['try_cancel', 'wait_cancellation_completed'], static fn (string $policy): bool => in_array($policy, $policies, true)))
+            : [];
+    }
+
+    /** @param list<string> $capabilities */
+    public static function supportsCancellationPolicies(array $capabilities, ?string $protocolVersion): bool
+    {
+        return CooperativeCancellationPolicy::supports($capabilities, $protocolVersion)
+            && in_array(self::CAPABILITY, $capabilities, true)
+            && in_array(self::CANCELLATION_POLICIES_CAPABILITY, $capabilities, true);
+    }
+
+    /** @return list<string> */
+    public static function cancellationPolicyUnavailableReasons(?WorkflowTask $task, mixed $policy, ?string $requestVersion): array
+    {
+        $reasons = self::unavailableReasons($requestVersion);
+        if (! in_array($policy, ['try_cancel', 'wait_cancellation_completed'], true)) {
+            $reasons[] = 'local_activity_cancellation_policy';
+        } elseif (! in_array($policy, self::cancellationPolicies(), true)) {
+            $reasons[] = 'installed_runtime_local_activity_cancellation_policy';
+        }
+        $claim = $task instanceof WorkflowTask ? self::currentClaim($task) : null;
+        if ($claim === null || ! self::supportsCancellationPolicies($claim['capabilities'] ?? [], $claim['protocol_version'] ?? null)) {
+            $reasons[] = 'worker_claim_cancellation_policy_capability';
+        }
+
+        return $reasons;
+    }
+
+    /**
+     * Canonical admission determines replay compatibility. Registration cannot
+     * upgrade the authority of an existing claim, and a legacy worker cannot
+     * reinterpret an explicitly authored policy during takeover.
+     *
+     * @param  list<string>  $capabilities
+     */
+    public static function canReplayRun(string $runId, array $capabilities, ?string $protocolVersion): bool
+    {
+        $policies = self::cancellationPolicies();
+        $workerSupported = self::supportsCancellationPolicies($capabilities, $protocolVersion);
+        if ($workerSupported && count($policies) === 2) {
+            return true;
+        }
+        $events = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::ActivityScheduled)
+            ->where('payload->execution_mode', 'local')
+            ->whereNotNull('payload->activity->cancellation_policy');
+        if ($workerSupported && $policies !== []) {
+            $events->whereNotIn('payload->activity->cancellation_policy', $policies);
+        }
+
+        return ! $events->exists();
     }
 
     /** @return list<string> */

@@ -549,6 +549,7 @@ class WorkerProtocol
             'cooperative_cancellation' => CooperativeCancellationPolicy::serverSupported(),
             'prepared_local_activities' => PreparedLocalActivityPolicy::serverSupported(),
             'prepared_local_activity_groups' => PreparedLocalActivityPolicy::groupsSupported(),
+            'prepared_local_activity_cancellation_policies' => PreparedLocalActivityPolicy::cancellationPolicies(),
             'activity_cancellation_acknowledgement' => CooperativeCancellationPolicy::serverSupported()
                 && CooperativeCancellationPolicy::activityAcknowledgementBackendSupported(),
             'local_activities' => [

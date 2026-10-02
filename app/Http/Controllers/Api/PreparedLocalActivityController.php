@@ -62,6 +62,10 @@ final class PreparedLocalActivityController
         if ($task === null) {
             return WorkerProtocol::json(['reason' => 'task_not_found'], 404);
         }
+        if (array_key_exists('cancellation_policy', $validated['descriptor'])
+            && ($response = self::cancellationPolicyRefusal($request, $task, $validated['descriptor']['cancellation_policy']))) {
+            return $response;
+        }
         $claim = PreparedLocalActivityPolicy::currentClaim($task);
         if ($claim === null) {
             return self::refused($validated['lease_owner'], ['worker_claim_capability']);
@@ -74,6 +78,10 @@ final class PreparedLocalActivityController
                 // locks. Do not lock the hosting task before entering Native.
                 if (! WorkerPollFence::isCurrentForUpdate($claim)) {
                     return WorkerProtocol::json(['reason' => 'stale_worker_registration'], 409);
+                }
+                if (array_key_exists('cancellation_policy', $validated['descriptor'])
+                    && ($response = self::cancellationPolicyRefusal($request, NamespaceWorkflowScope::task($namespace, $taskId), $validated['descriptor']['cancellation_policy']))) {
+                    return $response;
                 }
                 /** @var PreparedLocalActivityTaskBridge $bridge */
                 $bridge = app(WorkflowTaskBridge::class);
@@ -282,6 +290,27 @@ final class PreparedLocalActivityController
         $reasons = PreparedLocalActivityPolicy::unavailableReasons(WorkerProtocol::requestVersion($request));
 
         return $reasons === [] ? null : self::refused((string) $request->input('lease_owner', ''), $reasons);
+    }
+
+    public static function cancellationPolicyRefusal(Request $request, ?WorkflowTask $task, mixed $policy): ?JsonResponse
+    {
+        $reasons = PreparedLocalActivityPolicy::cancellationPolicyUnavailableReasons($task, $policy, WorkerProtocol::requestVersion($request));
+        if ($reasons === []) {
+            return null;
+        }
+
+        return WorkerProtocol::json([
+            'reason' => 'prepared_local_activity_cancellation_policy_not_supported',
+            'recorded' => false,
+            'worker_id' => $task?->lease_owner ?? (string) $request->input('lease_owner', ''),
+            'requested_policy' => $policy,
+            'supported_policies' => PreparedLocalActivityPolicy::cancellationPolicies(),
+            'required_capability' => PreparedLocalActivityPolicy::CANCELLATION_POLICIES_CAPABILITY,
+            'minimum_protocol_version' => PreparedLocalActivityPolicy::MINIMUM_PROTOCOL_VERSION,
+            'requested_version' => WorkerProtocol::requestVersion($request),
+            'unavailable' => $reasons,
+            'remediation' => 'Use an installed backend with the requested local policy and a new protocol 1.20 claim issued with prepared_local_activity_cancellation_policies. Local abandon requires independently bounded remote work.',
+        ], 409);
     }
 
     /** @param list<string> $reasons */

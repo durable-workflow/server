@@ -230,6 +230,16 @@ class WorkerController
         ]);
 
         $workerCapabilities = $this->nonEmptyStringArray($validated['capabilities'] ?? []);
+        if (in_array(PreparedLocalActivityPolicy::CANCELLATION_POLICIES_CAPABILITY, $workerCapabilities, true)
+            && ! PreparedLocalActivityPolicy::supportsCancellationPolicies($workerCapabilities, WorkerProtocol::requestVersion($request))) {
+            return WorkerProtocol::json([
+                'registered' => false,
+                'reason' => 'prepared_local_activity_cancellation_policy_capability_mismatch',
+                'required_capabilities' => [CooperativeCancellationPolicy::CAPABILITY, PreparedLocalActivityPolicy::CAPABILITY],
+                'minimum_protocol_version' => PreparedLocalActivityPolicy::MINIMUM_PROTOCOL_VERSION,
+                'requested_version' => WorkerProtocol::requestVersion($request),
+            ], 409);
+        }
         if (in_array(PreparedLocalActivityPolicy::GROUP_CAPABILITY, $workerCapabilities, true)
             && (! in_array(PreparedLocalActivityPolicy::CAPABILITY, $workerCapabilities, true)
                 || ! CooperativeCancellationPolicy::supports($workerCapabilities, WorkerProtocol::requestVersion($request)))) {
@@ -1727,6 +1737,10 @@ class WorkerController
 
         $this->validateWorkflowTaskCommandScopes($commands);
 
+        if ($response = $this->guardPreparedLocalCancellationPoliciesAvailable($request, (string) $namespace, $taskId, $commands)) {
+            return $response;
+        }
+
         if ($response = $this->guardWorkflowTaskOwnership(
             $request,
             $namespace,
@@ -1939,6 +1953,10 @@ class WorkerController
                             $commands,
                             $claimedTask,
                         )) {
+                            return $response;
+                        }
+
+                        if ($response = $this->guardPreparedLocalCancellationPoliciesAvailable($request, (string) $namespace, $taskId, $commands, $claimedTask)) {
                             return $response;
                         }
 
@@ -2178,6 +2196,22 @@ class WorkerController
         }
 
         return $commands;
+    }
+
+    /** @param array<int, array<string, mixed>> $commands */
+    private function guardPreparedLocalCancellationPoliciesAvailable(Request $request, string $namespace, string $taskId, array $commands, ?WorkflowTask $claimedTask = null): ?JsonResponse
+    {
+        foreach ($commands as $command) {
+            if (($command['type'] ?? null) !== 'prepare_local_activity' || ! array_key_exists('cancellation_policy', $command)) {
+                continue;
+            }
+            $task = $claimedTask ?? NamespaceWorkflowScope::task($namespace, $taskId);
+            if ($response = PreparedLocalActivityController::cancellationPolicyRefusal($request, $task, $command['cancellation_policy'])) {
+                return $response;
+            }
+        }
+
+        return null;
     }
 
     /** @param array<int, array<string, mixed>> $commands */
@@ -2983,9 +3017,9 @@ class WorkerController
             }
 
             if ($this->hasCommandValue($command, 'cancellation_policy')
-                && ! in_array($type, ['start_child_workflow', 'schedule_activity'], true)) {
+                && ! in_array($type, ['start_child_workflow', 'schedule_activity', 'prepare_local_activity'], true)) {
                 $errors["commands.{$index}.cancellation_policy"][] =
-                    'cancellation_policy is only supported for start_child_workflow or schedule_activity commands.';
+                    'cancellation_policy is only supported for start_child_workflow, schedule_activity or prepared local Activity commands.';
             }
 
             if ($this->hasCommandValue($command, 'non_retryable')
