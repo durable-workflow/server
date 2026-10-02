@@ -220,6 +220,41 @@ must not replace the last verified recovery point. A restored database may
 contain the historical hold; release it after validating the restored copy or
 allow its original deadline to expire.
 
+## Payload completion while storage drains
+
+An existing worker claim can retry a draining upload refusal once using the
+completion schema and header advertised in namespace discovery. Every slot of
+the same claim shares one byte allowance and a maximum of 128 slots. New client
+work remains subject to ordinary storage admission.
+
+The prepared local activity candidate on explicit protocol 1.20 additionally
+advertises `completion_context.prepared_schema` as
+`durable-workflow.v2.payload-completion-context.v2`. Its exact header object
+contains `schema`, `kind: workflow`, `task_id`, the original workflow `attempt`,
+`lease_owner`, `operation` and `slot`, plus one operation identity:
+
+| Operation | Identity | Payload slot |
+| --- | --- | --- |
+| `local_activity_checkpoint` | `checkpoint_id` | Ordinary command payload slot |
+| `local_activity_prepare` | `sequence` | `["descriptor", "arguments"]` |
+| `local_activity_recover` | `sequence` | `["descriptor", "arguments"]` |
+| `local_activity_outcome` | `activity_attempt_id` | `["report", "result"]` |
+
+All prepared operations and legacy completion uploads share the original
+workflow claim's allowance. A new sequence, checkpoint or activity attempt
+does not reset it. Prepared uploads require the original issued registration,
+current workflow epoch and live authority. Results additionally require the
+matching admitted activity attempt and its live execution deadlines. Accepted
+cancellation fences results from ordinary callbacks. Shielded cleanup keeps
+the original root deadline.
+
+An upload does not renew workflow or activity leases, application heartbeats,
+or cancellation deadlines. An exact stored reference can be read after the
+claim closes without rewriting its object or extending retention. Changed
+bytes still require live authority. Fenced or stale storage admission refuses
+both ordinary and completion uploads. Default published protocol 1.19 keeps
+its existing completion schema.
+
 ## Typed outcomes and retryability
 
 The transport returns a stable

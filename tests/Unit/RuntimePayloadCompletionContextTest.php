@@ -79,6 +79,51 @@ class RuntimePayloadCompletionContextTest extends TestCase
         RuntimePayloadCompletionContext::parse(str_repeat(' ', 4097));
     }
 
+    public function test_prepared_operations_and_legacy_completion_share_one_workflow_allowance(): void
+    {
+        $legacy = RuntimePayloadCompletionContext::parse(json_encode($this->value('workflow', 'complete', ['commands', 0, 'result']), JSON_THROW_ON_ERROR));
+        $identities = [];
+        foreach ([
+            ['local_activity_checkpoint', ['commands', 0, 'result'], ['checkpoint_id' => 'prefix-1']],
+            ['local_activity_checkpoint', ['commands', 0, 'result'], ['checkpoint_id' => 'prefix-2']],
+            ['local_activity_prepare', ['descriptor', 'arguments'], ['sequence' => 2]],
+            ['local_activity_prepare', ['descriptor', 'arguments'], ['sequence' => 3]],
+            ['local_activity_recover', ['descriptor', 'arguments'], ['sequence' => 2]],
+            ['local_activity_outcome', ['report', 'result'], ['activity_attempt_id' => 'attempt-1']],
+            ['local_activity_outcome', ['report', 'result'], ['activity_attempt_id' => 'attempt-2']],
+        ] as [$operation, $slot, $identity]) {
+            $value = array_replace($this->value('workflow', $operation, $slot), ['schema' => RuntimePayloadCompletionContext::PREPARED_SCHEMA], $identity);
+            $context = RuntimePayloadCompletionContext::parse(json_encode($value, JSON_THROW_ON_ERROR));
+            $this->assertSame($value, $context->toArray());
+            $this->assertSame($legacy->scope('default'), $context->scope('default'));
+            $this->assertNotSame($context->scope('default'), $context->scope('other'));
+            $this->assertSame($context->slotIdentity(), RuntimePayloadCompletionContext::parse(json_encode(array_reverse($value, true), JSON_THROW_ON_ERROR))->slotIdentity());
+            $identities[] = $context->slotIdentity();
+        }
+        $this->assertCount(count($identities), array_unique($identities));
+    }
+
+    #[DataProvider('invalidPreparedContexts')]
+    public function test_prepared_context_requires_exact_claim_identity_and_operation_slot(array $changes): void
+    {
+        $this->expectException(RuntimeExternalPayloadException::class);
+        $value = array_replace($this->value('workflow', 'local_activity_prepare', ['descriptor', 'arguments']),
+            ['schema' => RuntimePayloadCompletionContext::PREPARED_SCHEMA, 'sequence' => 2], $changes);
+        RuntimePayloadCompletionContext::parse(json_encode($value, JSON_THROW_ON_ERROR));
+    }
+
+    public static function invalidPreparedContexts(): array
+    {
+        return array_map(static fn (array $changes): array => [$changes], [
+            ['sequence' => 0], ['sequence' => '2'], ['sequence' => null], ['sequence' => []],
+            ['kind' => 'activity'], ['kind' => 'query'], ['operation' => 'complete'],
+            ['slot' => ['report', 'result']], ['attempt' => '1'], ['attempt' => 0],
+            ['checkpoint_id' => 'extra'], ['activity_attempt_id' => 'extra'],
+            ['operation' => 'local_activity_checkpoint'], ['operation' => 'local_activity_outcome'],
+            ['schema' => RuntimePayloadCompletionContext::SCHEMA],
+        ]);
+    }
+
     private function value(string $kind = 'activity', string $operation = 'complete', array $slot = ['result']): array
     {
         return ['schema' => RuntimePayloadCompletionContext::SCHEMA, 'kind' => $kind,

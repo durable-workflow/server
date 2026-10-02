@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "29"
+  version: "30"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -64,6 +64,23 @@ x-durable-workflow-prepared-local-activity-contract:
   outcome: immutable_duplicate_receipt_and_stale_publication_refusal
   history_refresh_page_token: opaque_cursor_from_first_event_with_current_claim_authority_still_required
   storage_draining: existing_issued_claim_may_finish_and_report_join
+  external_payload_completion:
+    discovery: namespace.external_payload_storage.transport.upload.completion_context.prepared_schema
+    header: X-Durable-Workflow-Payload-Completion
+    schema: durable-workflow.v2.payload-completion-context.v2
+    required: [schema, kind, task_id, attempt, lease_owner, operation, slot]
+    kind: workflow
+    attempt: original_workflow_task_attempt
+    operations:
+      local_activity_checkpoint: { identity: checkpoint_id, slots: ordinary_workflow_command_payload_slots }
+      local_activity_prepare: { identity: sequence, slots: [[descriptor, arguments]] }
+      local_activity_recover: { identity: sequence, slots: [[descriptor, arguments]] }
+      local_activity_outcome: { identity: activity_attempt_id, slots: [[report, result]] }
+    exact_shape: operation_identity_is_required_and_other_extra_fields_are_refused
+    admission: current_original_issued_prepared_claim_and_unexpired_execution_and_root_budget
+    allowance: shared_with_legacy_v1_completion_across_every_operation_and_slot_of_one_workflow_claim
+    duplicate: exact_stored_reference_may_be_read_after_claim_closes_without_object_or_retention_mutation
+    lifetime: no_workflow_or_activity_lease_or_application_heartbeat_or_cleanup_deadline_renewal
   storage_fenced: all_seven_local_mutation_endpoints_refused_before_handler
   published_protocol_1_19: unchanged
 x-durable-workflow-message-streams-contract:

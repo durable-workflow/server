@@ -2,11 +2,15 @@
 
 namespace Tests\Feature;
 
+use App\Models\RuntimeExternalPayload;
+use App\Models\RuntimePayloadCompletionBudget;
 use App\Models\SearchAttributeDefinition;
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
 use App\Support\CooperativeCancellationPolicy;
 use App\Support\PreparedLocalActivityPolicy;
+use App\Support\RuntimeExternalPayloadReference;
+use App\Support\RuntimePayloadCompletionContext;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
@@ -25,6 +29,7 @@ use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\ExternalPayloads;
 
 final class PreparedLocalActivityProtocolTest extends TestCase
 {
@@ -59,6 +64,7 @@ final class PreparedLocalActivityProtocolTest extends TestCase
     public function test_default_protocol_does_not_advertise_or_admit_prepared_callbacks(): void
     {
         config(['server.worker_protocol.version' => '1.19']);
+        $this->assertNull(RuntimeExternalPayloadReference::transportManifest()['upload']['completion_context']['prepared_schema']);
         $this->withHeaders($this->headers('1.19'))->postJson('/api/worker/workflow-tasks/missing/local-activities/prepare', [])
             ->assertStatus(409)->assertJsonPath('reason', 'prepared_local_activity_not_supported')
             ->assertJsonPath('server_capabilities.prepared_local_activities', false)
@@ -68,6 +74,7 @@ final class PreparedLocalActivityProtocolTest extends TestCase
     public function test_actual_bound_bridge_must_supply_the_optional_role(): void
     {
         $this->app->instance(WorkflowTaskBridge::class, \Mockery::mock(WorkflowTaskBridge::class));
+        $this->assertNull(RuntimeExternalPayloadReference::transportManifest()['upload']['completion_context']['prepared_schema']);
         $this->withHeaders($this->headers())->postJson('/api/worker/workflow-tasks/missing/local-activities/prepare', [])
             ->assertStatus(409)->assertJsonPath('reason', 'prepared_local_activity_not_supported')
             ->assertJsonPath('server_capabilities.prepared_local_activities', false)
@@ -543,6 +550,176 @@ final class PreparedLocalActivityProtocolTest extends TestCase
             ->assertOk()->assertJsonPath('acknowledged', true);
     }
 
+    public function test_draining_external_prefix_arguments_recovery_and_result_complete_without_extending_authority(): void
+    {
+        $task = $this->claim();
+        $this->enableCompletionPayloads();
+        $this->withHeaders($this->controlHeaders())->getJson('/api/cluster/info')->assertOk()
+            ->assertJsonPath('namespace.external_payload_storage.transport.upload.completion_context.prepared_schema', RuntimePayloadCompletionContext::PREPARED_SCHEMA);
+        $before = WorkflowTask::query()->findOrFail($task['task_id'])->lease_expires_at->toISOString();
+        $this->configureStoragePressure('draining');
+        $prefix = Serializer::serializeWithCodec('avro', str_repeat('prefix', 30));
+        $prefixReference = $this->completionUpload($prefix, $this->completionContext($task, 'checkpoint', 'prefix-1'))
+            ->assertCreated()->json('reference');
+        $this->localRequest($task, 'checkpoint', ['checkpoint_id' => 'prefix-1', 'start_sequence' => 1, 'commands' => [[
+            'type' => 'record_side_effect', 'result' => ['codec' => 'avro', 'external_payload' => $prefixReference],
+        ]]])->assertOk();
+        $arguments = Serializer::serializeWithCodec('avro', [str_repeat('arguments', 30)]);
+        $argumentReference = $this->completionUpload($arguments, $this->completionContext($task, 'prepare', 2))
+            ->assertCreated()->json('reference');
+        $prepared = $this->prepare($task, ['sequence' => 2, 'descriptor' => $this->descriptor([
+            'arguments' => ['codec' => 'avro', 'external_payload' => $argumentReference],
+        ])])->assertOk()->json();
+        $this->completionUpload($arguments, $this->completionContext($task, 'recover', 2))->assertCreated();
+        $result = Serializer::serializeWithCodec('avro', str_repeat('result', 30));
+        $context = $this->completionContext($task, 'outcome', $prepared['activity_attempt_id']);
+        $reference = $this->completionUpload($result, $context)->assertCreated()->json('reference');
+        $this->assertSame($before, WorkflowTask::query()->findOrFail($task['task_id'])->lease_expires_at->toISOString());
+        $this->localRequest($task, "{$prepared['activity_attempt_id']}/outcome", ['report' => [
+            'outcome' => 'completed', 'result' => ['codec' => 'avro', 'external_payload' => $reference],
+        ]])->assertOk()->assertJsonPath('recorded', true);
+        $this->withHeaders($this->headers())->postJson("/api/worker/workflow-tasks/{$task['task_id']}/complete", [
+            'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
+            'commands' => [['type' => 'complete_workflow']],
+        ])->assertOk()->assertJsonPath('run_status', 'completed');
+        $this->assertSame($result, ExternalPayloads::resolveStoredPayload(ActivityExecution::query()->findOrFail($prepared['activity_execution_id'])->result, 'avro', 'default'));
+        $this->assertDatabaseCount('runtime_payload_completion_budgets', 1);
+        $budget = RuntimePayloadCompletionBudget::query()->sole();
+        $this->assertCount(4, $budget->slots);
+        $this->assertCount(3, $budget->objects);
+        $rows = RuntimeExternalPayload::query()->orderBy('id')->get()->map->getAttributes()->all();
+        $budgetBefore = $budget->getAttributes();
+        $this->completionUpload($result, $context)->assertCreated()->assertJsonPath('reference', $reference);
+        $this->assertSame($rows, RuntimeExternalPayload::query()->orderBy('id')->get()->map->getAttributes()->all());
+        $this->assertSame($budgetBefore, $budget->refresh()->getAttributes());
+        $this->completionUpload('new bytes', $context)->assertStatus(409)->assertJsonPath('reason', 'external_payload_completion_lease_rejected');
+    }
+
+    public function test_prepared_operations_cannot_multiply_the_legacy_workflow_byte_allowance(): void
+    {
+        $task = $this->claim();
+        $this->enableCompletionPayloads();
+        config(['server.external_payload_transport.completion_max_bytes' => 8]);
+        $this->configureStoragePressure('draining');
+        $legacy = ['schema' => RuntimePayloadCompletionContext::SCHEMA, 'kind' => 'workflow',
+            'task_id' => $task['task_id'], 'attempt' => $task['workflow_task_attempt'], 'lease_owner' => $task['lease_owner'],
+            'operation' => 'complete', 'slot' => ['commands', 0, 'result']];
+        $this->completionUpload('aaaa', $legacy)->assertCreated();
+        $this->completionUpload('bbbb', $this->completionContext($task, 'prepare', 1))->assertCreated();
+        foreach ([$this->completionContext($task, 'prepare', 2), $this->completionContext($task, 'checkpoint', 'prefix-2')] as $context) {
+            $this->completionUpload('cccc', $context)->assertStatus(503)->assertJsonPath('request_admitted', false);
+        }
+        $this->assertDatabaseCount('runtime_external_payloads', 2);
+        $this->assertDatabaseCount('runtime_payload_completion_budgets', 1);
+        $budget = RuntimePayloadCompletionBudget::query()->sole();
+        $this->assertCount(2, $budget->slots);
+        $this->assertSame(8, array_sum($budget->objects));
+    }
+
+    public function test_prepared_upload_refuses_unissued_claim_protocol_namespace_and_attempt(): void
+    {
+        $task = $this->claim();
+        $this->enableCompletionPayloads();
+        $prepared = $this->prepare($task)->assertOk()->json();
+        $this->configureStoragePressure('draining');
+        $context = $this->completionContext($task, 'prepare', 2);
+        foreach ([['attempt' => 99], ['lease_owner' => 'different']] as $changes) {
+            $this->completionUpload('bytes', array_replace($context, $changes))->assertStatus(409);
+        }
+        $this->completionUpload('bytes', $context, 'other')->assertStatus(409);
+        $this->completionUpload('bytes', $this->completionContext($task, 'outcome', 'unknown'))->assertStatus(409);
+        config(['server.worker_protocol.version' => '1.19']);
+        $this->completionUpload('bytes', $context)->assertStatus(409);
+        config(['server.worker_protocol.version' => '1.20']);
+        $this->observeStoragePressure('normal');
+        $this->register('original');
+        $this->observeStoragePressure('draining');
+        foreach ([$context, $this->completionContext($task, 'outcome', $prepared['activity_attempt_id'])] as $value) {
+            $this->completionUpload('bytes', $value)->assertStatus(409);
+        }
+        $this->assertDatabaseCount('runtime_external_payloads', 0);
+        $this->assertDatabaseCount('runtime_payload_completion_budgets', 0);
+    }
+
+    public function test_cooperative_only_worker_cannot_claim_prepared_upload_authority(): void
+    {
+        $task = $this->claim(false);
+        $this->enableCompletionPayloads();
+        $this->configureStoragePressure('draining');
+        $this->completionUpload('bytes', $this->completionContext($task, 'prepare', 1))
+            ->assertStatus(409)->assertJsonPath('reason', 'external_payload_completion_lease_rejected');
+        $this->assertDatabaseCount('runtime_external_payloads', 0);
+        $this->assertDatabaseCount('runtime_payload_completion_budgets', 0);
+    }
+
+    public function test_accepted_cancellation_fences_old_callback_result_upload(): void
+    {
+        $task = $this->claim();
+        $this->enableCompletionPayloads();
+        $prepared = $this->prepare($task)->assertOk()->json();
+        $this->withHeaders($this->controlHeaders())->postJson("/api/workflows/{$task['workflow_id']}/request-cancellation", [])
+            ->assertStatus(202);
+        $this->configureStoragePressure('draining');
+        $this->completionUpload('bytes', $this->completionContext($task, 'outcome', $prepared['activity_attempt_id']))
+            ->assertStatus(409)->assertJsonPath('reason', 'external_payload_completion_lease_rejected');
+        $this->assertDatabaseCount('runtime_external_payloads', 0);
+        $this->assertSame(0, $this->eventCount($task, HistoryEventType::ActivityCompleted));
+    }
+
+    public function test_cleanup_upload_does_not_extend_original_root_budget_or_heartbeat(): void
+    {
+        [$task, $descriptor, $accepted] = $this->cleanupClaim();
+        $this->enableCompletionPayloads();
+        $prepared = $this->prepare($task, ['sequence' => 2, 'descriptor' => $descriptor])->assertOk()->json();
+        $this->configureStoragePressure('draining');
+        $attempt = ActivityAttempt::query()->findOrFail($prepared['activity_attempt_id']);
+        $before = $attempt->getAttributes();
+        $context = $this->completionContext($task, 'outcome', $attempt->id);
+        $result = Serializer::serializeWithCodec('avro', str_repeat('cleanup', 30));
+        $reference = $this->completionUpload($result, $context)->assertCreated()->json('reference');
+        $this->assertSame($before, $attempt->refresh()->getAttributes());
+        $this->localRequest($task, "{$attempt->id}/outcome", ['report' => [
+            'outcome' => 'completed', 'result' => ['codec' => 'avro', 'external_payload' => $reference],
+        ]])->assertOk()->assertJsonPath('recorded', true);
+        $this->withHeaders($this->headers())->postJson("/api/worker/workflow-tasks/{$task['task_id']}/complete", [
+            'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
+            'commands' => [['type' => 'complete_workflow']],
+        ])->assertOk()->assertJsonPath('run_status', 'cancelled');
+        $this->assertSame($accepted['cleanup_deadline_at'], $prepared['cancellation_cleanup']['cleanup_deadline_at']);
+    }
+
+    public function test_result_upload_is_fenced_by_fixed_activity_deadline_even_with_live_workflow_lease(): void
+    {
+        $task = $this->claim();
+        $this->enableCompletionPayloads();
+        $prepared = $this->prepare($task, ['descriptor' => $this->descriptor(['start_to_close_timeout' => 1])])->assertOk()->json();
+        $this->configureStoragePressure('draining');
+        $this->travel(2)->seconds();
+        $this->observeStoragePressure('draining');
+        $this->assertTrue(WorkflowTask::query()->findOrFail($task['task_id'])->lease_expires_at->isFuture());
+        $this->completionUpload('bytes', $this->completionContext($task, 'outcome', $prepared['activity_attempt_id']))
+            ->assertStatus(409)->assertJsonPath('reason', 'external_payload_completion_lease_rejected');
+        $this->assertDatabaseCount('runtime_external_payloads', 0);
+        $this->assertSame(0, $this->eventCount($task, HistoryEventType::ActivityCompleted));
+    }
+
+    public function test_expired_root_budget_refuses_new_preparation_upload_with_live_workflow_lease(): void
+    {
+        $task = $this->claim();
+        $this->enableCompletionPayloads();
+        $this->withHeaders($this->controlHeaders())->postJson("/api/workflows/{$task['workflow_id']}/request-cancellation", [
+            'cleanup_timeout_seconds' => 1,
+        ])->assertStatus(202);
+        $this->configureStoragePressure('draining');
+        $this->travel(2)->seconds();
+        $this->observeStoragePressure('draining');
+        $this->assertTrue(WorkflowTask::query()->findOrFail($task['task_id'])->lease_expires_at->isFuture());
+        $this->completionUpload('bytes', $this->completionContext($task, 'prepare', 2))
+            ->assertStatus(409)->assertJsonPath('reason', 'external_payload_completion_lease_rejected');
+        $this->assertDatabaseCount('runtime_external_payloads', 0);
+        $this->assertDatabaseCount('runtime_payload_completion_budgets', 0);
+    }
+
     public function test_storage_fence_refuses_all_local_mutations_without_changing_leases_or_history(): void
     {
         $task = $this->claim();
@@ -662,6 +839,42 @@ final class PreparedLocalActivityProtocolTest extends TestCase
             'HTTP_X_DURABLE_WORKFLOW_PAYLOAD_SIZE' => (string) strlen($payload),
             'HTTP_X_DURABLE_WORKFLOW_PAYLOAD_SHA256' => hash('sha256', $payload),
         ], $payload)->assertCreated()->json('reference');
+    }
+
+    private function enableCompletionPayloads(): void
+    {
+        $this->payloadDirectory = sys_get_temp_dir().'/dw-prepared-completion-'.getmypid();
+        foreach (['default', 'other'] as $namespace) {
+            WorkflowNamespace::query()->updateOrCreate(['name' => $namespace], [
+                'description' => 'Fixture', 'retention_days' => 30, 'status' => 'active',
+                'external_payload_storage' => ['driver' => 'local', 'enabled' => true, 'threshold_bytes' => 32,
+                    'config' => ['uri' => 'file://'.$this->payloadDirectory.'/'.$namespace]],
+            ]);
+        }
+    }
+
+    private function completionContext(array $task, string $operation, int|string $identity): array
+    {
+        return ['schema' => RuntimePayloadCompletionContext::PREPARED_SCHEMA, 'kind' => 'workflow',
+            'task_id' => $task['task_id'], 'attempt' => $task['workflow_task_attempt'], 'lease_owner' => $task['lease_owner'],
+            'operation' => 'local_activity_'.$operation,
+            'slot' => match ($operation) {
+                'checkpoint' => ['commands', 0, 'result'], 'outcome' => ['report', 'result'], default => ['descriptor', 'arguments'],
+            },
+            match ($operation) {
+                'checkpoint' => 'checkpoint_id', 'outcome' => 'activity_attempt_id', default => 'sequence',
+            } => $identity];
+    }
+
+    private function completionUpload(string $bytes, array $context, string $namespace = 'default'): TestResponse
+    {
+        return $this->call('POST', '/api/external-payloads/v1', [], [], [], [
+            'CONTENT_TYPE' => 'application/octet-stream', 'HTTP_X_NAMESPACE' => $namespace,
+            'HTTP_X_DURABLE_WORKFLOW_PAYLOAD_CODEC' => 'avro',
+            'HTTP_X_DURABLE_WORKFLOW_PAYLOAD_SIZE' => (string) strlen($bytes),
+            'HTTP_X_DURABLE_WORKFLOW_PAYLOAD_SHA256' => hash('sha256', $bytes),
+            'HTTP_X_DURABLE_WORKFLOW_PAYLOAD_COMPLETION' => json_encode($context, JSON_THROW_ON_ERROR),
+        ], $bytes);
     }
 
     private function eventCount(array $task, HistoryEventType $type): int

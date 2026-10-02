@@ -74,6 +74,8 @@ final class RuntimeExternalPayloadReference
                 'idempotency' => 'content_addressed_per_namespace',
                 'completion_context' => [
                     'schema' => RuntimePayloadCompletionContext::SCHEMA,
+                    'prepared_schema' => PreparedLocalActivityPolicy::serverSupported()
+                        ? RuntimePayloadCompletionContext::PREPARED_SCHEMA : null,
                     'header' => RuntimePayloadCompletionContext::HEADER,
                     'use' => 'retry_draining_refusal_for_current_worker_completion_only',
                     'max_bytes_per_lease' => RuntimePayloadCompletionUploads::maxBytes(),
