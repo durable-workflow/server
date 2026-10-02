@@ -200,6 +200,11 @@ class HistoryRetentionEnforcer
             return self::skippedRetentionResult('run_archived');
         }
 
+        $reason = DetachedActivityRetentionHold::forRuns($namespace, [$runId]);
+        if ($reason !== null) {
+            return self::skippedRetentionResult($reason);
+        }
+
         $messageStreams = app(MessageStreamRetentionCleanup::class);
         $streamPlan = $messageStreams->planForRun(
             $namespace,
