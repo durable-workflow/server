@@ -552,6 +552,7 @@ class ActivityTaskController
             if (! CooperativeCancellationPolicy::activityAcknowledgementBackendSupported()) {
                 return $this->activityAcknowledgementUnavailable($validated['lease_owner'], ['installed_runtime_activity_acknowledgement']);
             }
+
             return $this->storageMutations->run(fn (): JsonResponse => DB::transaction(function () use ($namespace, $taskId, $validated): JsonResponse {
                 // Acquire the package's activity lock order before checking the
                 // immutable claim and calling the nested package transaction.
@@ -571,6 +572,7 @@ class ActivityTaskController
                 $outcome = ActivityCancellationAcknowledgement::recordStopped(
                     $validated['activity_attempt_id'], $validated['lease_owner'], $validated['request_id'],
                 );
+
                 return WorkerProtocol::json([
                     'task_id' => $taskId,
                     'activity_attempt_id' => $validated['activity_attempt_id'],
@@ -584,6 +586,7 @@ class ActivityTaskController
             if (! BackendLockPressure::is($exception)) {
                 throw $exception;
             }
+
             return BackendLockPressure::workerOperationResponse($request, false);
         }
     }
@@ -637,6 +640,7 @@ class ActivityTaskController
         $ack = $events->first(fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ActivityCancellationAcknowledged
             && ($event->payload['cancellation_history_event_id'] ?? null) === $cancelled->id
             && ($event->payload['activity_attempt_id'] ?? null) === $attemptId);
+
         return [
             'request_id' => $context->requestId,
             'root_request_id' => $context->rootRequestId,

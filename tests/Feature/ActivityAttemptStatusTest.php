@@ -427,6 +427,7 @@ class ActivityAttemptStatusTest extends TestCase
         $claim = $bridge->claimStatus($ready->id, 'cleanup-owner');
         $this->assertTrue($claim['claimed']);
         $this->assertTrue($bridge->deliverCancellation($ready->id, $run->cancellation_request_command_id, 1, 'activity')['delivered']);
+
         return ['request_id' => $run->cancellation_request_command_id, 'cleanup_deadline_at' => $run->cancellation_deadline_at->toISOString()];
     }
 
