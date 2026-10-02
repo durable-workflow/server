@@ -309,6 +309,13 @@ class ActivityAttemptStatusTest extends TestCase
         $schema = OpenApiSchema::fromFile(base_path('resources/platform-protocol-specs/worker-protocol-api.openapi.yaml'));
         $schema->assertReferenceMatches('#/components/schemas/ActivityCancellationAcknowledgementResponse/allOf/1', json_decode($response->getContent(), flags: JSON_THROW_ON_ERROR));
         $schema->assertReferenceMatches('#/components/schemas/ActivityCancellationReceipt', json_decode($observed->getContent(), flags: JSON_THROW_ON_ERROR)->cancellation_acknowledgement);
+        $this->withHeaders($this->headers())->getJson("/api/workflows/{$task['workflow_id']}/runs/{$task['run_id']}")->assertOk();
+        $this->withHeaders($this->headers())->getJson("/api/workflows/{$task['workflow_id']}/runs/{$task['run_id']}/debug")->assertOk();
+        $this->withHeaders($this->headers())->postJson($this->path($task, 'complete'), $this->fence($task) + ['result' => null])
+            ->assertStatus(409)->assertJsonPath('recorded', false);
+        $this->withHeaders($this->headers())->postJson($this->path($task, 'fail'), $this->fence($task) + ['failure' => ['message' => 'stale callback failure', 'non_retryable' => true]])
+            ->assertStatus(409)->assertJsonPath('recorded', false);
+        $this->assertSame($before[4] + 1, $this->snapshot($task)[4]);
         $this->travel(40)->seconds();
         $this->acknowledge($task, $request['request_id'])->assertOk()
             ->assertJsonPath('duplicate', true)->assertJsonPath('history_event_id', $eventId);
