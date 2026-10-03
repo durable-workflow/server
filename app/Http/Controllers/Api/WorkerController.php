@@ -1821,16 +1821,16 @@ class WorkerController
 
                         $this->authorizeServiceOperationReplays($request, (string) $namespace, $taskId, $commands);
                         $commands = $this->canonicalizeWorkflowStreamPayloadCodecs($commands);
-                        $commands = app(WorkflowStreamCommandProcessor::class)->process(
-                            $taskId,
-                            (string) $namespace,
-                            $commands,
-                        );
+                        $streamCommands = $commands;
+                        $commands = app(WorkflowStreamCommandProcessor::class)->withoutDirectives($commands);
                         $commands = WorkflowCommandNormalizer::normalize(
                             $commands,
                             WorkerProtocol::requestVersion($request),
                         );
                         $outcome = $bridge->complete($taskId, $commands);
+                        if (($outcome['completed'] ?? false) === true) {
+                            app(WorkflowStreamCommandProcessor::class)->process($taskId, (string) $namespace, $streamCommands);
+                        }
                         $this->applyStickyCacheClaim(
                             $taskId,
                             $validated['lease_owner'],
