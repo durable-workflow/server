@@ -5,7 +5,7 @@ namespace Tests\Source;
 use App\Models\WorkflowNamespace;
 use App\Support\CooperativeCancellationPolicy;
 use App\Support\WorkerProtocol;
-use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Testing\TestResponse;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -27,7 +27,7 @@ use Workflow\V2\WorkflowStub;
 /** Exact Native Source qualification. The HTTP receipt does not prove physical callback exit. */
 final class ScopedActivityCancellationReceiptTest extends TestCase
 {
-    use RefreshDatabase;
+    use DatabaseMigrations;
 
     protected function setUp(): void
     {
@@ -86,6 +86,34 @@ final class ScopedActivityCancellationReceiptTest extends TestCase
         $this->assertSame($before, $after);
         $run = WorkflowRun::query()->findOrFail($target['run_id']);
         $this->assertTrue(ActivityCancellationCompletion::resolved($run, $target['activity_execution_id'], CancellationScopeRequests::context($run, $fence['scope_id'])));
+    }
+
+    public function test_delivery_waits_for_original_owner_receipt_and_preserves_the_prepared_frame(): void
+    {
+        [$task, $target, $sibling, $request, , $fence] = $this->scopedPair();
+        $path = "/api/worker/workflow-tasks/{$task['task_id']}/cancellation-scopes/deliver";
+        $body = ['lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
+            'scope_id' => $fence['scope_id'], 'request_id' => $request->payload['request_id'], 'sequence' => 4, 'call_kind' => 'activity'];
+        $before = $this->snapshot($task, $target, $sibling);
+        $pending = $this->withHeaders($this->headers())->postJson($path, $body)->assertOk()
+            ->assertJsonPath('delivered', false)->assertJsonPath('prepared', true)
+            ->assertJsonPath('reason', 'cancellation_scope_activity_stop_not_acknowledged')
+            ->assertJsonPath('claim_released', false)->json();
+        $this->assertSame($before, $this->snapshot($task, $target, $sibling));
+        $ack = $this->acknowledge($target, $request->payload['request_id'])->assertOk()->json('history_event_id');
+        $delivered = $this->withHeaders($this->headers())->postJson($path, $body)->assertOk()
+            ->assertJsonPath('delivered', true)
+            ->assertJsonPath('preparation_history_event_id', $pending['preparation_history_event_id'])
+            ->assertJsonPath('cancellation', $pending['cancellation'])
+            ->assertJsonPath('authority_deadline_at', $pending['authority_deadline_at'])->json();
+        $this->withHeaders($this->headers())->postJson($path, $body)->assertOk()->assertJsonPath('history_event_id', $delivered['history_event_id']);
+        $this->assertSame($before[0], WorkflowTask::query()->findOrFail($task['task_id'])->getRawOriginal());
+        $this->assertSame($before[1][1], $this->snapshot($task, $target, $sibling)[1][1]);
+        $this->assertLessThan(WorkflowHistoryEvent::query()->findOrFail($delivered['history_event_id'])->sequence,
+            WorkflowHistoryEvent::query()->findOrFail($ack)->sequence);
+        OpenApiSchema::fromFile(resource_path('platform-protocol-specs/worker-protocol-api.openapi.yaml'))
+            ->assertReferenceMatches('#/components/schemas/CancellationScopeDeliveryResponse/allOf/1',
+                json_decode(json_encode($pending, JSON_THROW_ON_ERROR), flags: JSON_THROW_ON_ERROR));
     }
 
     public function test_later_whole_run_request_and_late_receipt_preserve_original_scoped_identity_and_deadline(): void
@@ -236,6 +264,10 @@ final class ScopedActivityCancellationReceiptTest extends TestCase
         $run = WorkflowRun::query()->findOrFail($task['run_id']);
         $root = CancellationScopeRequests::request($run, $scopes[0], '1.20', 30, 'original scoped cleanup');
         $request = CancellationScopeRequests::request($run, $scopes[1], '1.20', 300, parentScopeId: $scopes[0]);
+        $this->withHeaders($this->headers())->postJson("/api/worker/workflow-tasks/{$task['task_id']}/cancellation-scopes/prepare", [
+            'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
+            'scope_id' => $scopes[1], 'request_id' => $request->payload['request_id'], 'sequence' => 4, 'call_kind' => 'activity',
+        ])->assertOk()->assertJsonPath('prepared', true)->assertJsonPath('delivered', false);
         $fence = ScopedActivityCancellation::fence($run, WorkflowTask::query()->findOrFail($task['task_id']),
             $activities[0]['activity_execution_id'], $scopes[1], $request->payload['request_id'], '1.20');
         $this->assertTrue($fence['fenced']);

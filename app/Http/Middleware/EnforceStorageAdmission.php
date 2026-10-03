@@ -21,6 +21,8 @@ final class EnforceStorageAdmission
         'WorkerController@checkpointLocalActivityGroup',
         'WorkerController@checkpointCancellationScopePrefix',
         'CancellationScopeController@open',
+        'CancellationScopeController@prepare',
+        'CancellationScopeController@deliver',
         'PreparedLocalActivityController@prepare',
         'PreparedLocalActivityController@recover',
         'PreparedLocalActivityController@control',

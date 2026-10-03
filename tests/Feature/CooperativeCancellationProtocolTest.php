@@ -59,6 +59,18 @@ class CooperativeCancellationProtocolTest extends TestCase
         $this->assertSame(1, $this->eventCount($runId, HistoryEventType::CooperativeCancellationRequested));
     }
 
+    public function test_scoped_transport_refuses_an_installed_bridge_without_the_optional_role(): void
+    {
+        $this->app->instance(WorkflowTaskBridge::class, \Mockery::mock(WorkflowTaskBridge::class));
+        $before = WorkflowHistoryEvent::query()->count();
+        foreach (['prepare', 'deliver'] as $phase) {
+            $this->withHeaders($this->headers())->postJson("/api/worker/workflow-tasks/absent/cancellation-scopes/{$phase}", [])
+                ->assertConflict()->assertJsonPath('reason', 'cancellation_scope_delivery_unavailable')
+                ->assertJsonPath('unavailable', ['installed_runtime_scope_preparation_delivery']);
+        }
+        $this->assertSame($before, WorkflowHistoryEvent::query()->count());
+    }
+
     public function test_active_claim_observes_request_on_heartbeat_and_cached_poll_without_losing_lease(): void
     {
         [$workflowId] = $this->start();

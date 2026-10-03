@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "38"
+  version: "39"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -507,6 +507,65 @@ paths:
         "404": { $ref: "#/components/responses/WorkerError" }
         "409": { $ref: "#/components/responses/WorkerError" }
         "422": { $ref: "#/components/responses/WorkerError" }
+  /worker/workflow-tasks/{taskId}/cancellation-scopes/prepare:
+    post:
+      operationId: prepareWorkflowCancellationScopeDelivery
+      tags: [workflow-tasks]
+      x-durable-workflow-minimum-protocol-version: "1.20"
+      x-durable-workflow-worker-capability: cooperative_cancellation
+      description: >-
+        Unfrozen candidate preparation. Authenticate the namespace, issued capable workflow claim and fresh registration.
+        The optional PreparedCancellationScopeTaskBridge independently commits the first context, call/range,
+        deadline and whole direct-scope Activity member set before operation effects. Retry reuses that preparation.
+        This route does not fence operations, stop callbacks or advertise scope execution. The claim remains leased.
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CancellationScopeDeliveryRequest" }
+      responses:
+        "200":
+          description: Original preparation committed or reused, without renewing or releasing the claim.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CancellationScopeDeliveryResponse" }
+        "404": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+        "422": { $ref: "#/components/responses/WorkerError" }
+        "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
+  /worker/workflow-tasks/{taskId}/cancellation-scopes/deliver:
+    post:
+      operationId: recordWorkflowCancellationScopeDelivery
+      tags: [workflow-tasks]
+      x-durable-workflow-minimum-protocol-version: "1.20"
+      x-durable-workflow-worker-capability: cooperative_cancellation
+      description: >-
+        Unfrozen candidate recording. Recheck the original issued claim and require the retained preparation.
+        Record the delivery only after every original member's policy proof exists. A pending original-owner stop
+        receipt returns HTTP200 with delivered=false and the original prepared context. Missing operation actors
+        return HTTP409 with explicit unavailable diagnostics and no delivery marker. No effect dispatch or callback
+        supervision is implied. Refresh canonical history through the returned cursor before injecting cancellation.
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CancellationScopeDeliveryRequest" }
+      responses:
+        "200":
+          description: Original delivery recorded/reused or original-owner stop proof still pending. The claim remains leased.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CancellationScopeDeliveryResponse" }
+        "404": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+        "422": { $ref: "#/components/responses/WorkerError" }
+        "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
   /worker/workflow-tasks/{taskId}/cancellation-scopes/checkpoint:
     post:
       operationId: checkpointCancellationScopePrefix
@@ -1849,6 +1908,83 @@ components:
                 operation_sequence: { type: "null" }
                 operation_sequence_span: { type: "null" }
                 reason: { type: string, enum: [cancellation_waiting_for_child, cancellation_waiting_for_activity] }
+    CancellationScopeDeliveryRequest:
+      allOf:
+        - $ref: "#/components/schemas/CooperativeCancellationDeliveryRequest"
+        - type: object
+          required: [scope_id]
+          properties:
+            scope_id: { type: string, minLength: 1, maxLength: 255 }
+            lease_owner: { type: string, minLength: 1, maxLength: 255 }
+            request_id: { type: string, minLength: 1, maxLength: 255 }
+            sequence_span: { type: integer, minimum: 1, default: 1 }
+            operation_sequence_span: { type: integer, minimum: 1, default: 1 }
+    CancellationScopeDeliveryResponse:
+      allOf:
+        - $ref: "#/components/schemas/WorkerEnvelope"
+        - type: object
+          required: [prepared, delivered, claim_released, task_id, created_task_ids, reason]
+          properties:
+            prepared: { type: boolean }
+            delivered: { type: boolean }
+            claim_released: { type: boolean, const: false }
+            task_id: { type: string, minLength: 1 }
+            created_task_ids: { type: array, maxItems: 0 }
+            reason: { type: [string, "null"] }
+            unavailable: { type: array, items: { type: string, minLength: 1 } }
+          if:
+            required: [prepared]
+            properties:
+              prepared: { const: true }
+          then:
+            required: [workflow_run_id, preparation_history_event_id, scope_id, request_id, cancellation, sequence, call_kind, sequence_span, operation_sequence, operation_sequence_span, authority_deadline_at, activity_members, lease_owner, workflow_task_attempt, history_refresh_page_token]
+            properties:
+              workflow_run_id: { type: string, minLength: 1 }
+              preparation_history_event_id: { type: string, minLength: 1 }
+              history_event_id: { type: string, minLength: 1 }
+              scope_id: { type: string, minLength: 1 }
+              request_id: { type: string, minLength: 1 }
+              cancellation:
+                type: object
+                required: [schema, root_context, lineage]
+                properties:
+                  schema: { const: durable-workflow.scoped-cancellation-context/v1 }
+                  root_context:
+                    type: object
+                    required: [request_id, cleanup_deadline_at]
+                    properties:
+                      request_id: { type: string, minLength: 1 }
+                      cleanup_deadline_at: { type: string, format: date-time }
+                  lineage:
+                    type: array
+                    minItems: 1
+                    items:
+                      type: object
+                      required: [request_id, workflow_instance_id, workflow_run_id, scope_id, cleanup_deadline_at]
+                      properties:
+                        request_id: { type: string, minLength: 1 }
+                        workflow_instance_id: { type: string, minLength: 1 }
+                        workflow_run_id: { type: string, minLength: 1 }
+                        scope_id: { type: string, minLength: 1 }
+                        cleanup_deadline_at: { type: string, format: date-time }
+              sequence: { type: integer, minimum: 1 }
+              call_kind: { type: string, enum: [activity, local_activity, timer, condition, signal, child, parallel, selection_handle] }
+              sequence_span: { type: integer, minimum: 1 }
+              operation_sequence: { type: [integer, "null"], minimum: 1 }
+              operation_sequence_span: { type: integer, minimum: 1 }
+              authority_deadline_at: { type: string, format: date-time }
+              activity_members:
+                type: array
+                items:
+                  type: object
+                  required: [sequence, activity_execution_id, descriptor_hash]
+                  properties:
+                    sequence: { type: integer, minimum: 1 }
+                    activity_execution_id: { type: string, minLength: 1 }
+                    descriptor_hash: { type: string, pattern: "^[a-f0-9]{64}$" }
+              lease_owner: { type: string, minLength: 1 }
+              workflow_task_attempt: { type: integer, minimum: 1 }
+              history_refresh_page_token: { type: string, minLength: 1 }
     CancellationScopeOpeningRequest:
       type: object
       required: [lease_owner, workflow_task_attempt, sequence]
