@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "34"
+  version: "35"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -30,6 +30,8 @@ x-durable-workflow-cancellation-scope-admission:
   scope_execution_capability: false
   checks: [before_payload_resolution, under_run_lock_before_admission]
   unknown_scope: { status: 409, reason: operation_scope_not_recorded, recorded: false }
+  unknown_local_scope: { status: 409, reason: local_activity_scope_not_recorded, recorded: false }
+  prepared_local_surfaces: [single_prepare, single_recover, atomic_group_checkpoint]
   unsupported_backend: { status: 409, reason: cancellation_scope_membership_unavailable, recorded: false }
   stream_effects: successful_admission_only_in_same_outer_transaction
 x-durable-workflow-cooperative-cancellation-contract:
@@ -1788,6 +1790,12 @@ components:
             - { type: object, required: [codec], properties: { codec: { const: avro } } }
         payload_codec: { type: string, const: avro }
         execution_mode: { type: string, const: local }
+        cancellation_scope_id:
+          type: string
+          minLength: 1
+          maxLength: 255
+          x-durable-workflow-minimum-protocol-version: "1.20"
+          description: Optional exact-run canonical scope for prepared local admission and recovery. Requires the installed CancellationScopeAdmission backend. The scope must be recorded before this descriptor's sequence. Syntax and membership are checked before payload resolution, and Native validates canonical history under its existing admission locks. Omission retains root membership. This does not advertise scope execution or supervision.
         cancellation_policy:
           type: string
           enum: [try_cancel, wait_cancellation_completed]

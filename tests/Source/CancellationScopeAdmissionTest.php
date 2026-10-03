@@ -4,6 +4,7 @@ namespace Tests\Source;
 
 use App\Models\WorkflowNamespace;
 use App\Support\CooperativeCancellationPolicy;
+use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\PreparedLocalActivityPolicy;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -13,7 +14,9 @@ use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\CancellationScopeAdmission;
+use Workflow\V2\Contracts\PreparedLocalActivityTaskBridge;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
@@ -198,12 +201,148 @@ final class CancellationScopeAdmissionTest extends TestCase
         }
     }
 
-    private function claim(): array
+    public static function singleLocalOperations(): array
+    {
+        return [['prepare'], ['recover']];
+    }
+
+    #[DataProvider('singleLocalOperations')]
+    public function test_single_local_rejects_unknown_scope_before_payload_resolution(string $operation): void
+    {
+        $task = $this->claim();
+        $storage = \Mockery::mock(NamespaceExternalPayloadStorage::class);
+        $storage->shouldNotReceive('driverFor');
+        $this->app->instance(NamespaceExternalPayloadStorage::class, $storage);
+        $before = WorkflowHistoryEvent::query()->count();
+        $this->singleLocal($task, $operation, 'unknown-scope', arguments: ['codec' => 'avro', 'invalid_reference' => true])
+            ->assertConflict()->assertJsonPath('recorded', false)->assertJsonPath('reason', 'local_activity_scope_not_recorded');
+        $this->assertSame($before, WorkflowHistoryEvent::query()->count());
+        $this->assertDatabaseCount('activity_executions', 0);
+        $this->assertDatabaseCount('activity_attempts', 0);
+    }
+
+    public static function malformedSingleLocalScopes(): array
+    {
+        $cases = [];
+        foreach (self::singleLocalOperations() as [$operation]) {
+            foreach (self::malformedScopes() as [$scope]) {
+                $cases[] = [$operation, $scope];
+            }
+        }
+
+        return $cases;
+    }
+
+    #[DataProvider('malformedSingleLocalScopes')]
+    public function test_single_local_validates_scope_syntax_before_payload_resolution(string $operation, mixed $scope): void
+    {
+        $task = $this->claim();
+        $this->singleLocal($task, $operation, $scope, arguments: ['codec' => 'avro', 'invalid_reference' => true])
+            ->assertUnprocessable()->assertJsonValidationErrors('descriptor.cancellation_scope_id');
+        $this->assertDatabaseCount('activity_executions', 0);
+        $this->assertDatabaseCount('activity_attempts', 0);
+    }
+
+    #[DataProvider('singleLocalOperations')]
+    public function test_single_local_rejects_a_legacy_request_before_payload_resolution(string $operation): void
+    {
+        $task = $this->claim();
+        $this->singleLocal($task, $operation, 'root', arguments: ['codec' => 'avro', 'invalid_reference' => true], version: '1.19')
+            ->assertConflict()->assertJsonPath('reason', 'prepared_local_activity_not_supported')
+            ->assertJsonPath('unavailable', ['request_protocol']);
+        $this->assertDatabaseCount('activity_executions', 0);
+    }
+
+    #[DataProvider('singleLocalOperations')]
+    public function test_single_local_rejects_a_backend_without_scope_admission_before_payload_resolution(string $operation): void
+    {
+        $task = $this->claim();
+        $older = \Mockery::mock(PreparedLocalActivityTaskBridge::class);
+        $older->shouldNotReceive('prepareLocalActivity');
+        $older->shouldNotReceive('recoverLocalActivity');
+        $this->app->instance(WorkflowTaskBridge::class, $older);
+        $this->singleLocal($task, $operation, 'root', arguments: ['codec' => 'avro', 'invalid_reference' => true])
+            ->assertConflict()->assertJsonPath('reason', 'cancellation_scope_membership_unavailable')
+            ->assertJsonPath('unavailable', ['installed_runtime_scope_admission']);
+        $this->assertDatabaseCount('activity_executions', 0);
+    }
+
+    #[DataProvider('singleLocalOperations')]
+    public function test_single_local_cannot_use_a_scope_before_its_recorded_sequence(string $operation): void
+    {
+        $task = $this->claim();
+        $scope = CancellationScopeHistory::open(WorkflowRun::query()->findOrFail($task['run_id']),
+            WorkflowTask::query()->findOrFail($task['task_id']), 1, '1.20')->payload['scope_id'];
+        $this->singleLocal($task, $operation, $scope, sequence: 1, arguments: ['codec' => 'avro', 'invalid_reference' => true])
+            ->assertConflict()->assertJsonPath('reason', 'local_activity_scope_not_recorded');
+        $this->assertDatabaseCount('activity_executions', 0);
+    }
+
+    #[DataProvider('singleLocalOperations')]
+    public function test_single_local_cannot_use_a_scope_from_another_run(string $operation): void
+    {
+        $other = $this->claim();
+        $scope = CancellationScopeHistory::open(WorkflowRun::query()->findOrFail($other['run_id']),
+            WorkflowTask::query()->findOrFail($other['task_id']), 1, '1.20')->payload['scope_id'];
+        $task = $this->claim('other-scope-worker');
+        $this->singleLocal($task, $operation, $scope, arguments: ['codec' => 'avro', 'invalid_reference' => true])
+            ->assertConflict()->assertJsonPath('reason', 'local_activity_scope_not_recorded');
+        $this->assertDatabaseCount('activity_executions', 0);
+    }
+
+    public function test_single_local_records_scope_and_recovers_once_after_claim_replacement(): void
+    {
+        $task = $this->claim();
+        $scope = CancellationScopeHistory::open(WorkflowRun::query()->findOrFail($task['run_id']),
+            WorkflowTask::query()->findOrFail($task['task_id']), 1, '1.20')->payload['scope_id'];
+        $first = $this->singleLocal($task, 'prepare', $scope)->assertOk()->assertJsonPath('prepared', true)->json();
+        $before = WorkflowHistoryEvent::query()->count();
+        $this->singleLocal($task, 'prepare', $scope)->assertOk()->assertJsonPath('duplicate', true)
+            ->assertJsonPath('activity_attempt_id', $first['activity_attempt_id']);
+        $this->assertSame($before, WorkflowHistoryEvent::query()->count());
+        $this->assertSame($scope, ActivityExecution::query()->sole()->activity_options['cancellation_scope_id']);
+        ActivityAttempt::query()->findOrFail($first['activity_attempt_id'])->forceFill(['lease_expires_at' => now()->subSecond()])->save();
+        WorkflowTask::query()->findOrFail($task['task_id'])->forceFill(['lease_expires_at' => now()->subSecond()])->save();
+        $replacement = $this->withHeaders($this->headers())->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'scope-worker', 'task_queue' => 'scope-admission',
+        ])->assertOk()->json('task');
+        $this->assertSame($task['task_id'], $replacement['task_id']);
+        $this->assertSame($task['workflow_task_attempt'] + 1, $replacement['workflow_task_attempt']);
+        $recovered = $this->singleLocal($replacement, 'recover', $scope)->assertOk()->assertJsonPath('recovered', true)
+            ->assertJsonPath('claim_released', true)->assertJsonPath('callback_stop_state', 'unknown')->json();
+        $before = WorkflowHistoryEvent::query()->count();
+        $this->singleLocal($replacement, 'recover', $scope)->assertOk()->assertJsonPath('duplicate', true)
+            ->assertJsonPath('event_id', $recovered['event_id']);
+        $this->assertSame($before, WorkflowHistoryEvent::query()->count());
+        $this->assertSame($scope, ActivityExecution::query()->sole()->activity_options['cancellation_scope_id']);
+    }
+
+    public function test_single_local_omitted_scope_keeps_preparation_compatible(): void
+    {
+        $task = $this->claim();
+        $this->singleLocal($task, 'prepare', sequence: 1, includeScope: false)->assertOk()->assertJsonPath('prepared', true);
+        $this->assertArrayNotHasKey('cancellation_scope_id', ActivityExecution::query()->sole()->activity_options);
+    }
+
+    private function singleLocal(array $task, string $operation, mixed $scope = null, int $sequence = 2, mixed $arguments = null, string $version = '1.20', bool $includeScope = true)
+    {
+        return $this->withHeaders(['X-Namespace' => 'default', WorkerProtocol::HEADER => $version])
+            ->postJson("/api/worker/workflow-tasks/{$task['task_id']}/local-activities/{$operation}", [
+                'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
+                'worker_attempt_id' => 'scope-local-attempt', 'sequence' => $sequence,
+                'descriptor' => ['type' => 'record_local_activity', 'activity_type' => 'opaque-local', 'payload_codec' => 'avro',
+                    'arguments' => $arguments ?? Serializer::serializeWithCodec('avro', ['Ada']),
+                    'retry_policy' => ['max_attempts' => 2, 'backoff_seconds' => [2]],
+                    ...($includeScope ? ['cancellation_scope_id' => $scope] : [])],
+            ]);
+    }
+
+    private function claim(string $worker = 'scope-worker'): array
     {
         $this->withHeaders(['X-Namespace' => 'default', 'X-Durable-Workflow-Control-Plane-Version' => '2'])
             ->postJson('/api/workflows', ['workflow_type' => 'tests.external-greeting-workflow', 'task_queue' => 'scope-admission', 'input' => ['Ada']])->assertCreated();
         $this->withHeaders($this->headers())->postJson('/api/worker/register', [
-            'worker_id' => 'scope-worker', 'task_queue' => 'scope-admission', 'runtime' => 'php',
+            'worker_id' => $worker, 'task_queue' => 'scope-admission', 'runtime' => 'php',
             'supported_workflow_types' => ['tests.external-greeting-workflow'],
             'capabilities' => [CooperativeCancellationPolicy::CAPABILITY, PreparedLocalActivityPolicy::CAPABILITY, PreparedLocalActivityPolicy::GROUP_CAPABILITY],
             'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(), 'max_concurrent_workflow_tasks' => 1,
@@ -211,7 +350,7 @@ final class CancellationScopeAdmissionTest extends TestCase
         ])->assertCreated();
 
         return $this->withHeaders($this->headers())->postJson('/api/worker/workflow-tasks/poll', [
-            'worker_id' => 'scope-worker', 'task_queue' => 'scope-admission',
+            'worker_id' => $worker, 'task_queue' => 'scope-admission',
         ])->assertOk()->json('task');
     }
 

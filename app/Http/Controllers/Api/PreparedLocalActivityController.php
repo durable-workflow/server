@@ -21,12 +21,14 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use Workflow\V2\Contracts\CancellationScopeAdmission;
 use Workflow\V2\Contracts\PreparedLocalActivityTaskBridge;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 
 final class PreparedLocalActivityController
@@ -57,6 +59,11 @@ final class PreparedLocalActivityController
             'worker_attempt_id' => [$recover ? 'nullable' : 'required', 'string', 'max:255'],
             'descriptor' => ['required', 'array'],
         ]);
+        // Validate membership separately so Laravel retains the complete
+        // opaque descriptor for Native's canonical descriptor validation.
+        $request->validate([
+            'descriptor.cancellation_scope_id' => ['sometimes', 'required', 'string', 'max:255'],
+        ]);
         $namespace = (string) $request->attributes->get('namespace');
         $task = NamespaceWorkflowScope::task($namespace, $taskId);
         if ($task === null) {
@@ -71,6 +78,9 @@ final class PreparedLocalActivityController
             return self::refused($validated['lease_owner'], ['worker_claim_capability']);
         }
         try {
+            if ($response = $this->cancellationScopeRefusal($request, $task, $validated['descriptor'], (int) $validated['sequence'])) {
+                return $response;
+            }
             $validated['descriptor'] = $this->resolvePayload($validated['descriptor'], 'arguments', 'descriptor', $namespace);
             $reply = $this->mutations->run(fn (): array|JsonResponse => DB::transaction(function () use ($request, $namespace, $taskId, $validated, $claim, $recover): array|JsonResponse {
                 $quotaSnapshot = $this->quota->snapshotForMutation($namespace, self::quotaResources());
@@ -116,6 +126,38 @@ final class PreparedLocalActivityController
         }
 
         return $this->reply($request, $reply);
+    }
+
+    private function cancellationScopeRefusal(Request $request, WorkflowTask $task, array $descriptor, int $sequence): ?JsonResponse
+    {
+        if (! array_key_exists('cancellation_scope_id', $descriptor)) {
+            return null;
+        }
+        $bridge = app(WorkflowTaskBridge::class);
+        $unavailable = [];
+        if (! $bridge instanceof CancellationScopeAdmission) {
+            $reason = 'cancellation_scope_membership_unavailable';
+            $unavailable[] = 'installed_runtime_scope_admission';
+        } else {
+            $run = WorkflowRun::query()->whereKey($task->workflow_run_id)->where('namespace', $task->namespace)->first();
+            if (! $run instanceof WorkflowRun) {
+                return WorkerProtocol::json(['reason' => 'task_not_found'], 404);
+            }
+            // Payload resolution follows this preflight. Native rechecks
+            // canonical membership under its attempt/execution/run/task locks.
+            $reason = $bridge->validateCancellationScopeMembership($run, [[
+                'type' => 'prepare_local_activity', 'cancellation_scope_id' => $descriptor['cancellation_scope_id'],
+            ]], $sequence);
+        }
+        if ($reason === null) {
+            return null;
+        }
+
+        return WorkerProtocol::json([
+            'task_id' => $task->id, 'workflow_task_attempt' => (int) $request->input('workflow_task_attempt'),
+            'outcome' => 'rejected', 'recorded' => false, 'reason' => $reason, 'unavailable' => $unavailable,
+            'requested_version' => WorkerProtocol::requestVersion($request), 'minimum_protocol_version' => '1.20',
+        ], 409);
     }
 
     public function control(Request $request, string $taskId, string $attemptId): JsonResponse
