@@ -8,6 +8,7 @@ use App\Support\NamespaceWorkflowScope;
 use App\Support\WorkerPollFence;
 use App\Support\WorkerProtocol;
 use App\Support\WorkerProtocolMutationRetrier;
+use App\Support\WorkflowHistoryPageToken;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -86,6 +87,12 @@ final class CancellationScopeController
                 (bool) ($validated['shield_parent'] ?? false), $version,
             );
         }));
+
+        if (($result['opened'] ?? false) === true) {
+            $result['lease_owner'] = $validated['lease_owner'];
+            $result['workflow_task_attempt'] = (int) $validated['workflow_task_attempt'];
+            $result['history_refresh_page_token'] = WorkflowHistoryPageToken::encode(0);
+        }
 
         return WorkerProtocol::json($result, ($result['opened'] ?? false) ? 200
             : (($result['reason'] ?? null) === 'task_not_found' ? 404 : 409));

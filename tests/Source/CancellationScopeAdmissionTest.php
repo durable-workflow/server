@@ -217,6 +217,58 @@ final class CancellationScopeAdmissionTest extends TestCase
         $this->assertSame($opened['scope_id'], WorkflowHistoryEvent::query()->where('event_type', 'TimerScheduled')->sole()->payload['cancellation_scope_id']);
     }
 
+    public function test_scope_opening_refresh_cursor_replays_canonical_history_on_only_the_live_claim(): void
+    {
+        $task = $this->claim(capabilities: [CooperativeCancellationPolicy::CAPABILITY]);
+        $claim = WorkflowTask::query()->findOrFail($task['task_id']);
+        $originalLease = $claim->lease_expires_at->toISOString();
+        $opened = $this->openScope($task)->assertOk()
+            ->assertJsonPath('lease_owner', $task['lease_owner'])
+            ->assertJsonPath('workflow_task_attempt', $task['workflow_task_attempt'])->json();
+        $this->assertIsString($opened['history_refresh_page_token']);
+        $read = function (array $authority, string $token, string $namespace = 'default') use ($task) {
+            return $this->withHeaders(['X-Namespace' => $namespace, WorkerProtocol::HEADER => '1.20'])
+                ->postJson("/api/worker/workflow-tasks/{$task['task_id']}/history", [
+                    'lease_owner' => $authority['lease_owner'], 'workflow_task_attempt' => $authority['workflow_task_attempt'],
+                    'next_history_page_token' => $token, 'history_page_size' => 1,
+                ]);
+        };
+        $token = $opened['history_refresh_page_token'];
+        $events = [];
+        $seen = [];
+        do {
+            $this->assertArrayNotHasKey($token, $seen);
+            $seen[$token] = true;
+            $page = $read($task, $token)->assertOk()->json();
+            $events = [...$events, ...$page['history_events']];
+            $token = $page['next_history_page_token'];
+        } while ($token !== null);
+        $this->assertSame('StartAccepted', $events[0]['event_type']);
+        $this->assertContains('WorkflowStarted', array_column($events, 'event_type'));
+        $scope = array_values(array_filter($events, fn (array $event): bool => $event['event_type'] === 'CancellationScopeOpened'));
+        $this->assertCount(1, $scope);
+        $this->assertSame($opened['history_event_id'], $scope[0]['id']);
+        $this->assertSame($opened['scope_id'], $scope[0]['payload']['scope_id']);
+        $this->assertSame($originalLease, $claim->refresh()->lease_expires_at->toISOString());
+        $this->assertSame('leased', $claim->status->value);
+
+        WorkflowNamespace::query()->create(['name' => 'other', 'retention_days' => 30, 'status' => 'active']);
+        $read($task, $opened['history_refresh_page_token'], 'other')->assertNotFound();
+        $read(array_replace($task, ['lease_owner' => 'other-worker']), $opened['history_refresh_page_token'])
+            ->assertStatus(409)->assertJsonPath('reason', 'lease_owner_mismatch');
+        $claim->forceFill(['lease_expires_at' => now()->subSecond()])->save();
+        $replacement = $this->withHeaders($this->headers())->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => $task['lease_owner'], 'task_queue' => 'scope-admission',
+        ])->assertOk()->json('task');
+        $read($task, $opened['history_refresh_page_token'])->assertStatus(409)
+            ->assertJsonPath('reason', 'workflow_task_attempt_mismatch');
+        $replayed = $this->openScope($replacement)->assertOk()->assertJsonPath('duplicate', true)
+            ->assertJsonPath('scope_id', $opened['scope_id'])->assertJsonPath('history_event_id', $opened['history_event_id'])
+            ->assertJsonPath('workflow_task_attempt', $replacement['workflow_task_attempt'])->json();
+        $read($replacement, $replayed['history_refresh_page_token'])->assertOk();
+        $this->assertSame(1, WorkflowHistoryEvent::query()->where('event_type', 'CancellationScopeOpened')->count());
+    }
+
     public function test_nested_shield_is_recorded_and_changed_replay_is_refused(): void
     {
         $task = $this->claim();

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "37"
+  version: "38"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -1862,19 +1862,25 @@ components:
       allOf:
         - $ref: "#/components/schemas/WorkerEnvelope"
         - type: object
-          required: [opened, duplicate, claim_released, task_id, workflow_run_id, history_event_id, scope_id, parent_scope_id, shield_parent, sequence, created_task_ids, reason]
+          required: [opened, duplicate, claim_released, task_id, workflow_run_id, workflow_task_attempt, lease_owner, history_event_id, scope_id, parent_scope_id, shield_parent, sequence, created_task_ids, history_refresh_page_token, reason]
           properties:
             opened: { type: boolean, const: true }
             duplicate: { type: boolean }
             claim_released: { type: boolean, const: false }
             task_id: { type: string, minLength: 1 }
             workflow_run_id: { type: string, minLength: 1 }
+            workflow_task_attempt: { type: integer, minimum: 1 }
+            lease_owner: { type: string, minLength: 1 }
             history_event_id: { type: string, minLength: 1 }
             scope_id: { type: string, minLength: 1 }
             parent_scope_id: { type: string, minLength: 1 }
             shield_parent: { type: boolean }
             sequence: { type: integer, minimum: 1 }
             created_task_ids: { type: array, maxItems: 0 }
+            history_refresh_page_token:
+              type: string
+              minLength: 1
+              description: Opaque cursor from the original run's start. Fetch every page through the claim-bound history endpoint before entering the scope body. This cursor grants no claim authority and does not renew or release the task.
             reason: { type: "null" }
     CancellationScopeCheckpointRequest:
       description: Ordinary retained prefix before scope opening. Does not admit local callbacks.
