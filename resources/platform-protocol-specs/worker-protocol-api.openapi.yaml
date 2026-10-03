@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "39"
+  version: "40"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -538,16 +538,18 @@ paths:
         "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
   /worker/workflow-tasks/{taskId}/cancellation-scopes/deliver:
     post:
-      operationId: recordWorkflowCancellationScopeDelivery
+      operationId: deliverWorkflowCancellationScope
       tags: [workflow-tasks]
       x-durable-workflow-minimum-protocol-version: "1.20"
       x-durable-workflow-worker-capability: cooperative_cancellation
       description: >-
-        Unfrozen candidate recording. Recheck the original issued claim and require the retained preparation.
-        Record the delivery only after every original member's policy proof exists. A pending original-owner stop
-        receipt returns HTTP200 with delivered=false and the original prepared context. Missing operation actors
-        return HTTP409 with explicit unavailable diagnostics and no delivery marker. No effect dispatch or callback
-        supervision is implied. Refresh canonical history through the returned cursor before injecting cancellation.
+        Unfrozen candidate dispatch. Validate the retained preparation's exact boundary and live claim before effects.
+        Dispatch every original direct-scope Activity through its policy actor, with independently committed progress
+        and claim rechecks. Retry after partial progress reuses the same members, context and deadline. Record delivery
+        only after every original member's policy proof exists. A pending original-owner stop receipt returns HTTP200
+        with delivered=false. Missing operation actors return HTTP409 before Activity dispatch. Activity fences deny
+        stale publication and do not prove physical callback exit. Refresh canonical history through the returned
+        cursor before injecting cancellation. Scope execution remains unadvertised.
       parameters:
         - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
         - $ref: "#/components/parameters/TaskIdPath"
@@ -1932,6 +1934,19 @@ components:
             created_task_ids: { type: array, maxItems: 0 }
             reason: { type: [string, "null"] }
             unavailable: { type: array, items: { type: string, minLength: 1 } }
+            activity_cancellations:
+              type: array
+              description: Committed results for original prepared members. Partial progress may be present on a refusal. A fence is publication denial, and waiting_for_stop is the policy barrier rather than a physical exit assertion.
+              items:
+                type: object
+                required: [sequence, activity_execution_id, fenced, abandoned, waiting_for_stop, history_event_id]
+                properties:
+                  sequence: { type: integer, minimum: 1 }
+                  activity_execution_id: { type: string, minLength: 1 }
+                  fenced: { type: boolean }
+                  abandoned: { type: boolean }
+                  waiting_for_stop: { type: boolean }
+                  history_event_id: { type: [string, "null"], minLength: 1 }
           if:
             required: [prepared]
             properties:

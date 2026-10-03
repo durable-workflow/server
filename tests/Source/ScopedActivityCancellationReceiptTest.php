@@ -218,7 +218,7 @@ final class ScopedActivityCancellationReceiptTest extends TestCase
         $this->assertSame($before, $this->snapshot($workflowTask, $target, $sibling));
     }
 
-    /** Canonical open/checkpoint/claims use HTTP. Scoped request/fence are still internal Native primitives. */
+    /** Scope request remains internal; admission, preparation, dispatch and receipts use HTTP. */
     private function scopedPair(): array
     {
         $this->withHeaders($this->headers(role: 'operator'))
@@ -268,8 +268,18 @@ final class ScopedActivityCancellationReceiptTest extends TestCase
             'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
             'scope_id' => $scopes[1], 'request_id' => $request->payload['request_id'], 'sequence' => 4, 'call_kind' => 'activity',
         ])->assertOk()->assertJsonPath('prepared', true)->assertJsonPath('delivered', false);
-        $fence = ScopedActivityCancellation::fence($run, WorkflowTask::query()->findOrFail($task['task_id']),
-            $activities[0]['activity_execution_id'], $scopes[1], $request->payload['request_id'], '1.20');
+        $this->assertSame('running', ActivityExecution::query()->findOrFail($activities[0]['activity_execution_id'])->status->value);
+        $this->assertSame(0, WorkflowHistoryEvent::query()->where('event_type', 'ActivityCancelled')->count());
+        $response = $this->withHeaders($this->headers())->postJson("/api/worker/workflow-tasks/{$task['task_id']}/cancellation-scopes/deliver", [
+            'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
+            'scope_id' => $scopes[1], 'request_id' => $request->payload['request_id'], 'sequence' => 4, 'call_kind' => 'activity',
+        ])->assertOk()->assertJsonPath('prepared', true)->assertJsonPath('delivered', false)
+            ->assertJsonPath('reason', 'cancellation_scope_activity_stop_not_acknowledged');
+        OpenApiSchema::fromFile(resource_path('platform-protocol-specs/worker-protocol-api.openapi.yaml'))
+            ->assertReferenceMatches('#/components/schemas/CancellationScopeDeliveryResponse/allOf/1',
+                json_decode($response->getContent(), flags: JSON_THROW_ON_ERROR));
+        $fence = $response->json('activity_cancellations.0');
+        $this->assertSame($activities[0]['activity_execution_id'], $fence['activity_execution_id']);
         $this->assertTrue($fence['fenced']);
         $this->assertTrue($fence['waiting_for_stop']);
 
