@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "40"
+  version: "41"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -544,10 +544,11 @@ paths:
       x-durable-workflow-worker-capability: cooperative_cancellation
       description: >-
         Unfrozen candidate dispatch. Validate the retained preparation's exact boundary and live claim before effects.
-        Dispatch every original direct-scope Activity through its policy actor, with independently committed progress
+        Dispatch every original direct-scope timer and Activity through its actor, with independently committed progress
         and claim rechecks. Retry after partial progress reuses the same members, context and deadline. Record delivery
         only after every original member's policy proof exists. A pending original-owner stop receipt returns HTTP200
-        with delivered=false. Missing operation actors return HTTP409 before Activity dispatch. Activity fences deny
+        with delivered=false. Missing operation actors return HTTP409 before timer or Activity dispatch. Timer fences
+        prevent a late job from firing or creating a workflow resumption. Activity fences deny
         stale publication and do not prove physical callback exit. Refresh canonical history through the returned
         cursor before injecting cancellation. Scope execution remains unadvertised.
       parameters:
@@ -1947,12 +1948,23 @@ components:
                   abandoned: { type: boolean }
                   waiting_for_stop: { type: boolean }
                   history_event_id: { type: [string, "null"], minLength: 1 }
+            timer_cancellations:
+              type: array
+              description: Committed results for original prepared timers. A natural fire retains its outcome with fenced=false. A fence prevents a late fire or resumption. Partial progress may be present on a refusal.
+              items:
+                type: object
+                required: [sequence, timer_id, fenced, history_event_id]
+                properties:
+                  sequence: { type: integer, minimum: 1 }
+                  timer_id: { type: string, minLength: 1 }
+                  fenced: { type: boolean }
+                  history_event_id: { type: [string, "null"], minLength: 1 }
           if:
             required: [prepared]
             properties:
               prepared: { const: true }
           then:
-            required: [workflow_run_id, preparation_history_event_id, scope_id, request_id, cancellation, sequence, call_kind, sequence_span, operation_sequence, operation_sequence_span, authority_deadline_at, activity_members, lease_owner, workflow_task_attempt, history_refresh_page_token]
+            required: [workflow_run_id, preparation_history_event_id, scope_id, request_id, cancellation, sequence, call_kind, sequence_span, operation_sequence, operation_sequence_span, authority_deadline_at, activity_members, timer_members, lease_owner, workflow_task_attempt, history_refresh_page_token]
             properties:
               workflow_run_id: { type: string, minLength: 1 }
               preparation_history_event_id: { type: string, minLength: 1 }
@@ -1996,6 +2008,15 @@ components:
                   properties:
                     sequence: { type: integer, minimum: 1 }
                     activity_execution_id: { type: string, minLength: 1 }
+                    descriptor_hash: { type: string, pattern: "^[a-f0-9]{64}$" }
+              timer_members:
+                type: array
+                items:
+                  type: object
+                  required: [sequence, timer_id, descriptor_hash]
+                  properties:
+                    sequence: { type: integer, minimum: 1 }
+                    timer_id: { type: string, minLength: 1 }
                     descriptor_hash: { type: string, pattern: "^[a-f0-9]{64}$" }
               lease_owner: { type: string, minLength: 1 }
               workflow_task_attempt: { type: integer, minimum: 1 }

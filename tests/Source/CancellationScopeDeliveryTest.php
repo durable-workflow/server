@@ -16,6 +16,10 @@ use Tests\Support\OpenApiSchema;
 use Tests\TestCase;
 use Workflow\V2\Contracts\PreparedCancellationScopeTaskBridge;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Enums\TimerStatus;
+use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
@@ -193,18 +197,37 @@ final class CancellationScopeDeliveryTest extends TestCase
         $this->assertSame(1, WorkflowHistoryEvent::query()->where('event_type', 'CancellationScopeDeliveryPrepared')->count());
     }
 
-    public function test_missing_timer_actor_keeps_preparation_and_returns_explicit_diagnostic(): void
+    public function test_timer_dispatch_reuses_original_preparation_and_fences_late_jobs(): void
     {
         [$task, $scope, $request] = $this->claim(timer: true);
         $prepared = $this->mutate('prepare', $task, $scope, $request, ['call_kind' => 'timer'])->assertOk()->json();
-        $response = $this->mutate('deliver', $task, $scope, $request, ['call_kind' => 'timer'])->assertConflict()
-            ->assertJsonPath('delivered', false)->assertJsonPath('prepared', true)
-            ->assertJsonPath('reason', 'cancellation_scope_operation_delivery_unavailable')
-            ->assertJsonPath('unavailable', ['scoped_timer_delivery'])
+        $before = WorkflowTask::query()->findOrFail($task['task_id'])->getRawOriginal();
+        $timer = WorkflowTimer::query()->sole();
+        $this->assertSame($timer->id, $prepared['timer_members'][0]['timer_id']);
+        $response = $this->mutate('deliver', $task, $scope, $request, ['call_kind' => 'timer'])->assertOk()
+            ->assertJsonPath('delivered', true)->assertJsonPath('prepared', true)
+            ->assertJsonPath('timer_cancellations.0.fenced', true)
+            ->assertJsonPath('timer_cancellations.0.timer_id', $timer->id)
             ->assertJsonPath('preparation_history_event_id', $prepared['preparation_history_event_id'])->json();
         $this->assertContract($response);
-        $this->assertSame(0, WorkflowHistoryEvent::query()->where('event_type', 'CancellationScopeDelivered')->count());
-        $this->assertSame('pending', WorkflowTimer::query()->sole()->status->value);
+        $this->assertContract($prepared);
+        $this->assertSame($before, WorkflowTask::query()->findOrFail($task['task_id'])->getRawOriginal());
+        $duplicate = $this->mutate('deliver', $task, $scope, $request, ['call_kind' => 'timer'])->assertOk()->json();
+        $this->assertSame($response['timer_cancellations'], $duplicate['timer_cancellations']);
+        $this->assertSame($response['history_event_id'], $duplicate['history_event_id']);
+        $this->assertSame($prepared['authority_deadline_at'], $duplicate['authority_deadline_at']);
+        $this->assertSame(1, WorkflowHistoryEvent::query()->where('event_type', 'CancellationScopeDelivered')->count());
+        $this->assertSame(TimerStatus::Cancelled, $timer->fresh()->status);
+        $timerTask = WorkflowTask::query()->where('task_type', TaskType::Timer)->sole();
+        $timerTask->forceFill(['status' => TaskStatus::Ready, 'available_at' => now()->subSecond()])->save();
+        $timer->refresh()->forceFill(['status' => TimerStatus::Pending])->save();
+        $historyBefore = WorkflowHistoryEvent::query()->count();
+        $this->app->call([new RunTimerTask($timerTask->id), 'handle']);
+        $this->assertSame($historyBefore, WorkflowHistoryEvent::query()->count());
+        $this->assertSame(TaskStatus::Cancelled, $timerTask->fresh()->status);
+        $this->assertSame(TimerStatus::Cancelled, $timer->fresh()->status);
+        $this->assertSame(1, WorkflowTask::query()->where('task_type', TaskType::Workflow)->count());
+        $this->assertSame(0, WorkflowHistoryEvent::query()->where('event_type', 'TimerFired')->count());
     }
 
     private function claim(bool $timer = false): array
