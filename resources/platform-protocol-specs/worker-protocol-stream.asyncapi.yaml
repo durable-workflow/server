@@ -2,7 +2,7 @@ asyncapi: 2.6.0
 id: durable-workflow.v2.worker-protocol-stream
 info:
   title: Durable Workflow worker-protocol long-poll stream semantics
-  version: "12"
+  version: "13"
   description: >
     Normative AsyncAPI description of the public worker-protocol stream
     semantics. Durable uses HTTP long-poll request/response rather than a
@@ -21,6 +21,38 @@ x-durable-workflow-catalog-entry: worker_protocol_stream
 x-durable-workflow-catalog-schema: durable-workflow.v2.platform-protocol-specs.catalog
 x-durable-workflow-catalog-version: 16
 x-durable-workflow-evolution-rule: additive_minor_breaking_major
+x-durable-workflow-cooperative-cancellation-contract:
+  minimum_protocol_version: "1.20"
+  worker_capability: cooperative_cancellation
+  request:
+    path: /workflows/{workflowId}/request-cancellation
+    run_remains_active: true
+    duplicates: return_original_request_and_deadline
+    incompatible_active_claim: reject_without_history_or_command
+    request_claim_race: serialized_on_workflow_run_lock
+  observation:
+    field: cancellation_request
+    surfaces: [workflow_task_claim, successful_workflow_task_heartbeat]
+    identity: [request_id, requested_at, cleanup_deadline_at]
+    history_refresh_page_token: server_issued_first_bounded_history_page
+    observation_alone: does_not_throw_before_authored_delivery_boundary
+  delivery:
+    path: /worker/workflow-tasks/{taskId}/deliver-cancellation
+    lease_fences: [namespace, task_id, lease_owner, workflow_task_attempt, unexpired_lease]
+    capability_proof: immutable_registration_snapshot_at_claim
+    history_event: CooperativeCancellationDelivered
+    retry_identity: [request_id, sequence, call_kind, sequence_span, operation_sequence, operation_sequence_span]
+    prior_completed_calls: replay_normally
+    marker_retry: exactly_one_canonical_event
+    workflow_lease: retained_for_bounded_cleanup
+    affected_open_wait: cancelled_on_committed_delivery
+  cleanup:
+    deadline: original_immutable_cleanup_deadline_at
+    cold_restart: replay_canonical_delivery_and_completed_cleanup_work
+    completion_outcome: cancelled_with_original_request_id
+    expiry_or_termination: revoke_remaining_authority
+    external_effects: at_least_once_with_application_idempotency_or_reconciliation
+  terminal_cancel_and_terminate: unchanged
 x-durable-workflow-message-streams-contract:
   discovery_path: /cluster/info#/message_streams_contract
   minimum_protocol_version: "1.15"

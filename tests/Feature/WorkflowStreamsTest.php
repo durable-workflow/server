@@ -583,6 +583,17 @@ class WorkflowStreamsTest extends TestCase
         $this->assertSame('completed', WorkflowRun::query()->findOrFail($task['run_id'])->status->value);
     }
 
+    public function test_legacy_request_refuses_explicit_scope_before_stream_output(): void
+    {
+        $task = $this->claimStreamCompletionTask();
+        $this->withHeaders($this->workerHeaders())->postJson("/api/worker/workflow-tasks/{$task['task_id']}/complete", [
+            'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
+            'commands' => [$this->streamCompletionCommand($task), ['type' => 'start_timer', 'delay_seconds' => 10, 'cancellation_scope_id' => 'root']],
+        ])->assertConflict()->assertJsonPath('recorded', false)->assertJsonPath('reason', 'cancellation_scope_membership_unavailable');
+        $this->assertDatabaseCount('workflow_durable_stream_items', 0);
+        $this->assertDatabaseCount('workflow_run_timers', 0);
+    }
+
     public function test_stream_failure_rolls_back_successful_native_admission(): void
     {
         $task = $this->claimStreamCompletionTask();

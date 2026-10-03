@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.control-plane-api
-  version: "10"
+  version: "11"
   summary: Durable Workflow control-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the standalone Durable Workflow
@@ -318,6 +318,47 @@ paths:
       requestBody: { $ref: "#/components/requestBodies/ReasonObject" }
       responses:
         "202": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+  /workflows/{workflowId}/request-cancellation:
+    post:
+      tags: [workflows]
+      operationId: requestWorkflowCancellation
+      summary: Request cooperative cancellation with bounded workflow cleanup.
+      x-durable-workflow-minimum-worker-protocol-version: "1.20"
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/WorkflowIdPath"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CooperativeCancellationAdmissionRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/CooperativeCancellationAdmission" }
+        "202": { $ref: "#/components/responses/CooperativeCancellationAdmission" }
+        "404": { $ref: "#/components/responses/ControlPlaneError" }
+        "409": { $ref: "#/components/responses/ControlPlaneError" }
+        "422": { $ref: "#/components/responses/ControlPlaneError" }
+  /workflows/{workflowId}/runs/{runId}/request-cancellation:
+    post:
+      tags: [workflows]
+      operationId: requestWorkflowRunCancellation
+      summary: Request cooperative cancellation of the selected current run.
+      x-durable-workflow-minimum-worker-protocol-version: "1.20"
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/WorkflowIdPath"
+        - $ref: "#/components/parameters/RunIdPath"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CooperativeCancellationAdmissionRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/CooperativeCancellationAdmission" }
+        "202": { $ref: "#/components/responses/CooperativeCancellationAdmission" }
+        "404": { $ref: "#/components/responses/ControlPlaneError" }
+        "409": { $ref: "#/components/responses/ControlPlaneError" }
+        "422": { $ref: "#/components/responses/ControlPlaneError" }
   /workflows/{workflowId}/terminate:
     post:
       tags: [workflows]
@@ -900,6 +941,14 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/JsonObject" }
+    CooperativeCancellationAdmission:
+      description: The original request and immutable cleanup deadline, including duplicate acceptance.
+      headers:
+        X-Durable-Workflow-Control-Plane-Version:
+          schema: { type: string, const: "2" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/CooperativeCancellationAdmission" }
     ControlPlaneEnvelope:
       description: Successful control-plane response.
       headers:
@@ -933,6 +982,25 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/ScheduleListError" }
   schemas:
+    CooperativeCancellationAdmissionRequest:
+      type: object
+      additionalProperties: true
+      properties:
+        reason: { type: [string, "null"], maxLength: 1000 }
+        cleanup_timeout_seconds: { type: [integer, "null"], minimum: 1, maximum: 3600, default: 600 }
+    CooperativeCancellationAdmission:
+      allOf:
+        - $ref: "#/components/schemas/ControlPlaneEnvelope"
+        - type: object
+          required: [workflow_id, run_id, accepted, duplicate, run_status, cancellation_request]
+          properties:
+            workflow_id: { type: string, minLength: 1 }
+            run_id: { type: string, minLength: 1 }
+            accepted: { type: boolean, const: true }
+            duplicate: { type: boolean }
+            run_status: { type: string }
+            cancellation_request:
+              $ref: "./worker-protocol-api.openapi.yaml#/components/schemas/CooperativeCancellationRequest"
     JsonObject:
       type: object
       additionalProperties: true

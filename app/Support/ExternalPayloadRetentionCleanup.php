@@ -59,6 +59,10 @@ class ExternalPayloadRetentionCleanup
             array_map(static fn (mixed $itemId): int => (int) $itemId, $releasedInboundStreamItemIds),
             static fn (int $itemId): bool => $itemId > 0,
         )));
+        $reason = DetachedActivityRetentionHold::forRuns($namespace, $runIds);
+        if ($reason !== null) {
+            return ['found' => 0, 'deleted' => 0, 'blocked' => true, 'reason' => $reason];
+        }
         $references = $this->referencesForRuns($namespace, $runIds);
         $this->collectPayloadColumn(
             WorkflowInboundStreamItem::query()->whereIn('id', $releasedInboundStreamItemIds),

@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\AwaitApprovalWorkflow;
 use Tests\TestCase;
@@ -21,6 +22,8 @@ use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\CancellationCascadeView;
+use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 class WorkflowDebugTest extends TestCase
@@ -38,6 +41,85 @@ class WorkflowDebugTest extends TestCase
         $this->configureWorkflowTypes([
             'tests.await-approval-workflow' => AwaitApprovalWorkflow::class,
         ]);
+    }
+
+    #[DataProvider('recoveredTerminalOutcomes')]
+    public function test_recovered_tasks_are_informational_history_after_a_run_closes(string $outcome): void
+    {
+        $workflowId = 'debug-recovered-'.$outcome;
+        [$runId, $task, $workerId, $attempt] = $this->diagnosticTask($workflowId);
+        $task->forceFill(['repair_count' => 1])->save();
+
+        if ($outcome === 'cancelled') {
+            $this->postJson("/api/workflows/{$workflowId}/cancel", [], $this->controlPlaneHeadersWithWorkerProtocol())
+                ->assertOk();
+        } else {
+            $this->postJson("/api/worker/workflow-tasks/{$task->id}/complete", [
+                'lease_owner' => $workerId,
+                'workflow_task_attempt' => $attempt,
+                'commands' => [['type' => 'complete_workflow']],
+            ], $this->workerHeaders())->assertOk()->assertJsonPath('run_status', 'completed');
+        }
+
+        $this->getJson("/api/workflows/{$workflowId}/debug", $this->controlPlaneHeadersWithWorkerProtocol())
+            ->assertOk()
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('diagnostic_status', 'terminal')
+            ->assertJsonPath('execution.status', $outcome)
+            ->assertJsonPath('execution.task_problem', true)
+            ->assertJsonPath('execution.task_problem_badge.code', 'history')
+            ->assertJsonPath('findings.0.code', 'task_recovery_history')
+            ->assertJsonPath('findings.0.severity', 'info')
+            ->assertJsonPath('findings.0.message', 'The run previously needed workflow-task repair or replay recovery.')
+            ->assertJsonMissing(['code' => 'task_problem']);
+    }
+
+    public static function recoveredTerminalOutcomes(): array
+    {
+        return ['completed' => ['completed'], 'cancelled' => ['cancelled']];
+    }
+
+    public function test_active_replay_failure_keeps_its_warning_and_error(): void
+    {
+        $workflowId = 'debug-active-replay';
+        [$runId, $task] = $this->diagnosticTask($workflowId);
+        $task->forceFill([
+            'status' => TaskStatus::Failed,
+            'payload' => [...($task->payload ?? []), 'replay_blocked' => true],
+            'last_error' => 'Recorded workflow commands changed.',
+        ])->save();
+        RunSummaryProjector::project(WorkflowRun::query()->findOrFail($runId));
+
+        $debug = $this->getJson("/api/workflows/{$workflowId}/debug", $this->controlPlaneHeadersWithWorkerProtocol())
+            ->assertOk()
+            ->assertJsonPath('diagnostic_status', 'needs_attention')
+            ->assertJsonPath('execution.task_problem_badge.code', 'replay_blocked');
+        $findings = collect($debug->json('findings'))->keyBy('code');
+        $this->assertSame('warning', $findings['task_problem']['severity']);
+        $this->assertSame('error', $findings['workflow_replay_blocked']['severity']);
+        $this->assertFalse($findings->has('task_recovery_history'));
+    }
+
+    private function diagnosticTask(string $workflowId): array
+    {
+        $workerId = $workflowId.'-worker';
+        $queue = $workflowId.'-queue';
+        $this->registerWorker($workerId, $queue, supportedWorkflowTypes: ['tests.await-approval-workflow']);
+        $started = $this->postJson('/api/workflows', [
+            'workflow_id' => $workflowId,
+            'workflow_type' => 'tests.await-approval-workflow',
+            'task_queue' => $queue,
+        ], $this->controlPlaneHeadersWithWorkerProtocol())->assertCreated();
+        $polled = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => $workerId, 'task_queue' => $queue,
+        ], $this->workerHeaders())->assertOk();
+
+        return [
+            $started->json('run_id'),
+            WorkflowTask::query()->findOrFail($polled->json('task.task_id')),
+            $workerId,
+            (int) $polled->json('task.workflow_task_attempt'),
+        ];
     }
 
     public function test_it_aggregates_a_one_shot_workflow_debug_diagnostic(): void
@@ -86,6 +168,8 @@ class WorkflowDebugTest extends TestCase
             ->assertJsonPath('workflow_id', 'wf-debug')
             ->assertJsonPath('run_id', $runId)
             ->assertJsonPath('namespace', 'default')
+            ->assertJsonPath('cancellation_cascade_supported', class_exists(CancellationCascadeView::class))
+            ->assertJsonPath('cancellation_cascade', null)
             ->assertJsonPath('diagnostic_status', 'pending_work')
             ->assertJsonPath('execution.status', 'pending')
             ->assertJsonPath('execution.task_queue', 'debug-queue')

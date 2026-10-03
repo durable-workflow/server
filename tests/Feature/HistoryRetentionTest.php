@@ -8,6 +8,7 @@ use App\Models\RuntimeExternalPayload;
 use App\Models\WorkflowInboundStream;
 use App\Models\WorkflowInboundStreamItem;
 use App\Models\WorkflowNamespace;
+use App\Support\ExternalPayloadRetentionCleanup;
 use App\Support\MessageStreamService;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\RuntimeExternalPayloadRegistry;
@@ -35,12 +36,85 @@ use Workflow\V2\Models\WorkflowRunTimerEntry;
 use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ExternalPayloads;
+use Workflow\V2\Support\WorkflowRunRetentionCleanup;
 use Workflow\V2\WorkflowStub;
 
 class HistoryRetentionTest extends TestCase
 {
     use RefreshDatabase;
     use ServerTestHelpers;
+
+    public function test_retention_holds_detached_activity_history_and_payload_bytes_until_it_closes(): void
+    {
+        Queue::fake();
+        config(['filesystems.disks.detached-retention-payloads' => [
+            'driver' => 'local', 'root' => storage_path('framework/testing/detached-retention-payloads'),
+        ]]);
+        Storage::fake('detached-retention-payloads');
+        $this->createNamespace('default');
+        WorkflowNamespace::where('name', 'default')->update(['external_payload_storage' => [
+            'driver' => 's3', 'enabled' => true, 'config' => [
+                'disk' => 'detached-retention-payloads', 'bucket' => 'dw-payloads', 'prefix' => 'retention/',
+            ],
+        ]]);
+        $expectedReason = method_exists(WorkflowRunRetentionCleanup::class, 'retentionHoldReason')
+            ? 'detached_activity_still_open' : 'activity_policy_backend_unsupported';
+        foreach ([ActivityStatus::Pending, ActivityStatus::Running] as $status) {
+            $runId = $this->createExpiredClosedRun('default', 'wf-detached-retention-'.$status->value);
+            $run = WorkflowRun::findOrFail($runId);
+            $payload = "independent detached bytes\0".$status->value;
+            $key = 'retention/avro/'.substr(hash('sha256', $payload), 0, 2).'/'.hash('sha256', $payload);
+            Storage::disk('detached-retention-payloads')->put($key, $payload);
+            $execution = ActivityExecution::query()->create([
+                'workflow_run_id' => $runId, 'sequence' => 999,
+                'activity_class' => 'detached-fixture-activity', 'activity_type' => 'detached-fixture-activity',
+                'status' => $status, 'arguments' => $this->storedExternalPayloadReference('s3://dw-payloads/'.$key, $payload),
+                'activity_options' => ['cancellation_policy' => 'abandon'],
+                'schedule_to_close_deadline_at' => now()->addMinutes(3),
+            ]);
+            WorkflowHistoryEvent::query()->create([
+                'workflow_run_id' => $runId, 'sequence' => ($run->historyEvents()->max('sequence') ?? 0) + 1,
+                'event_type' => HistoryEventType::ActivityScheduled,
+                'payload' => ['sequence' => 999, 'activity_execution_id' => $execution->id,
+                    'activity' => ['id' => $execution->id, 'cancellation_policy' => 'abandon']],
+                'recorded_at' => now(),
+            ]);
+            $historyCount = $run->historyEvents()->count();
+            $this->withHeaders($this->apiHeaders())->postJson('/api/system/retention/pass', ['run_ids' => [$runId]])
+                ->assertOk()->assertJsonPath('pruned', 0)->assertJsonPath('skipped', 1)
+                ->assertJsonPath('results.0.reason', $expectedReason);
+            $direct = app(ExternalPayloadRetentionCleanup::class)->deleteForRun('default', $runId);
+            $this->assertTrue($direct['blocked']);
+            $this->assertSame($expectedReason, $direct['reason']);
+            $this->assertSame(0, $direct['deleted']);
+            $this->assertSame($payload, Storage::disk('detached-retention-payloads')->get($key));
+            $this->assertSame($historyCount, $run->historyEvents()->count());
+            $this->assertNull($run->refresh()->details_pruned_at);
+            $execution->forceFill(['status' => ActivityStatus::Completed, 'closed_at' => now()])->save();
+            $this->withHeaders($this->apiHeaders())->postJson('/api/system/retention/pass', ['run_ids' => [$runId]])
+                ->assertOk()->assertJsonPath('pruned', 0)->assertJsonPath('results.0.reason', $expectedReason);
+            $this->assertSame($payload, Storage::disk('detached-retention-payloads')->get($key));
+            WorkflowHistoryEvent::query()->create([
+                'workflow_run_id' => $runId, 'sequence' => $run->historyEvents()->max('sequence') + 1,
+                'event_type' => HistoryEventType::ActivityCancelled,
+                'payload' => ['sequence' => 999, 'activity_execution_id' => $execution->id, 'activity_attempt_id' => null],
+                'recorded_at' => now(),
+            ]);
+            $execution->forceFill(['status' => ActivityStatus::Cancelled])->save();
+            if (! method_exists(WorkflowRunRetentionCleanup::class, 'retentionHoldReason')) {
+                $this->withHeaders($this->apiHeaders())->postJson('/api/system/retention/pass', ['run_ids' => [$runId]])
+                    ->assertOk()->assertJsonPath('pruned', 0)->assertJsonPath('results.0.reason', $expectedReason);
+                $this->assertSame($payload, Storage::disk('detached-retention-payloads')->get($key));
+
+                continue;
+            }
+            $this->withHeaders($this->apiHeaders())->postJson('/api/system/retention/pass', ['run_ids' => [$runId]])
+                ->assertOk()->assertJsonPath('pruned', 1)->assertJsonPath('results.0.external_payloads_deleted', 1);
+            Storage::disk('detached-retention-payloads')->assertMissing($key);
+            $this->assertSame(0, ActivityExecution::query()->whereKey($execution->id)->count());
+            $this->assertNull(WorkflowRunSummary::find($runId));
+        }
+    }
 
     // ── Retention Status Endpoint ──────────────────────────────────
 

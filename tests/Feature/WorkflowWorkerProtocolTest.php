@@ -2473,6 +2473,16 @@ class WorkflowWorkerProtocolTest extends TestCase
             'run_count' => 0,
         ]);
 
+        WorkflowRun::query()->create([
+            'id' => 'run-bridge-missing-task',
+            'workflow_instance_id' => 'wf-bridge-missing-task',
+            'workflow_class' => ExternalGreetingWorkflow::class,
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'namespace' => 'default',
+            'run_number' => 1,
+            'status' => 'pending',
+        ]);
+
         $recordedAt = now()->toJSON();
 
         $this->mock(WorkflowTaskBridge::class, function (MockInterface $mock) use ($recordedAt): void {
@@ -5870,6 +5880,16 @@ class WorkflowWorkerProtocolTest extends TestCase
             'workflow_type' => 'tests.external-greeting-workflow',
             'namespace' => 'default',
             'run_count' => 0,
+        ]);
+
+        WorkflowRun::query()->create([
+            'id' => 'run-compress',
+            'workflow_instance_id' => 'wf-compress-mock',
+            'workflow_class' => ExternalGreetingWorkflow::class,
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'namespace' => 'default',
+            'run_number' => 1,
+            'status' => 'pending',
         ]);
 
         $recordedAt = now()->toJSON();

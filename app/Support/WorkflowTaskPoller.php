@@ -458,10 +458,10 @@ final class WorkflowTaskPoller
             'poll_status' => 'empty',
             'next_probe_at' => null,
         ];
-        $workerPollFence = [
-            ...WorkerPollFence::snapshot($worker),
-            'protocol_version' => WorkerProtocol::requestVersion($request),
-        ];
+        $workerPollFence = CooperativeCancellationPolicy::workerSnapshot(
+            $worker,
+            WorkerProtocol::requestVersion($request),
+        );
         $supportsQueryTasks = in_array('workflow', $taskKinds, true)
             && $this->cache->available()
             && $this->queryTasks->workerSupportsQueryTasks($namespace, $worker);
@@ -1070,6 +1070,16 @@ final class WorkflowTaskPoller
                     return ['claimed' => false, 'reason' => 'stale_worker_registration'];
                 }
 
+                // Request admission takes the same run lock before inspecting
+                // leases. Either it observes this claim's immutable proof, or
+                // this claim observes the newly accepted request.
+                $run = WorkflowRun::query()->where('namespace', $namespace)
+                    ->lockForUpdate()->find($runId);
+
+                if (! $run instanceof WorkflowRun) {
+                    return ['claimed' => false, 'reason' => 'run_not_found'];
+                }
+
                 if (! $this->workerCanReplayRun(
                     $namespace,
                     $leaseOwner,
@@ -1096,6 +1106,7 @@ final class WorkflowTaskPoller
                         $taskId,
                         $leaseOwner,
                         $pollRequestId,
+                        $workerPollFence,
                     );
                 }
 
@@ -1912,6 +1923,11 @@ final class WorkflowTaskPoller
         $payload['lease_expires_at'] = $workflowTask->lease_expires_at?->toJSON()
             ?? ($payload['lease_expires_at'] ?? null);
 
+        if ($workflowTask->run instanceof WorkflowRun
+            && ($pending = CooperativeCancellationPolicy::pending($workflowTask->run)) !== null) {
+            $payload['cancellation_request'] = $pending;
+        }
+
         return $payload;
     }
 
@@ -2061,6 +2077,11 @@ final class WorkflowTaskPoller
         ];
 
         $payload = array_merge($payload, $this->workflowTaskResumeContext($namespace, (string) $claim['task_id']));
+
+        $run = WorkflowRun::query()->where('namespace', $namespace)->find($claim['workflow_run_id']);
+        if ($run instanceof WorkflowRun && ($pending = CooperativeCancellationPolicy::pending($run)) !== null) {
+            $payload['cancellation_request'] = $pending;
+        }
 
         // Include pagination metadata when history was fetched via
         // historyPayloadPaginated() so the controller can build page tokens.
@@ -2312,11 +2333,18 @@ final class WorkflowTaskPoller
             ))
             : [];
 
-        return WorkflowMetadataCapabilityPolicy::canReplayRun(
-            $runId,
-            $capabilities,
-            $protocolVersion,
-        );
+        $run = WorkflowRun::query()->where('namespace', $namespace)->find($runId);
+        if ($run instanceof WorkflowRun && is_string($run->cancellation_request_command_id)
+            && ! CooperativeCancellationPolicy::supports($capabilities, $protocolVersion)) {
+            return false;
+        }
+
+        return PreparedLocalActivityPolicy::canReplayRun($runId, $capabilities, $protocolVersion)
+            && WorkflowMetadataCapabilityPolicy::canReplayRun(
+                $runId,
+                $capabilities,
+                $protocolVersion,
+            );
     }
 
     /** @param array<string, string> $workflowDefinitionFingerprints */

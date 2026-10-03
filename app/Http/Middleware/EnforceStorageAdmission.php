@@ -17,6 +17,18 @@ final class EnforceStorageAdmission
         'WorkerController@heartbeat',
         'WorkerController@heartbeatWorkflowTask',
         'WorkerController@completeWorkflowTask',
+        'WorkerController@checkpointLocalActivityPrefix',
+        'WorkerController@checkpointLocalActivityGroup',
+        'WorkerController@checkpointCancellationScopePrefix',
+        'CancellationScopeController@open',
+        'CancellationScopeController@prepare',
+        'CancellationScopeController@deliver',
+        'PreparedLocalActivityController@prepare',
+        'PreparedLocalActivityController@recover',
+        'PreparedLocalActivityController@control',
+        'PreparedLocalActivityController@heartbeat',
+        'PreparedLocalActivityController@outcome',
+        'PreparedLocalActivityController@acknowledgeCancellation',
         'WorkerController@failWorkflowTask',
         'WorkerController@completeQueryTask',
         'WorkerController@failQueryTask',
@@ -25,6 +37,7 @@ final class EnforceStorageAdmission
         'ActivityTaskController@complete',
         'ActivityTaskController@fail',
         'ActivityTaskController@heartbeat',
+        'ActivityTaskController@acknowledgeCancellation',
         'WorkerSessionController@heartbeat',
     ];
 
@@ -58,6 +71,7 @@ final class EnforceStorageAdmission
         }
         if ($snapshot['state'] === 'normal' || $request->isMethodSafe()
             || $action === 'WorkerController@workflowTaskHistory'
+            || $action === 'ActivityTaskController@status'
             || ($snapshot['state'] === 'draining' && in_array($action, self::DRAIN_ACTIONS, true))) {
             return $next($request);
         }

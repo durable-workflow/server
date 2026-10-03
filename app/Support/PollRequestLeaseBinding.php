@@ -71,11 +71,13 @@ final class PollRequestLeaseBinding
         }
     }
 
+    /** @param array<string, mixed> $workerClaim */
     public function bindClaimedTask(
         string $namespace,
         string $taskId,
         string $leaseOwner,
         ?string $pollRequestId,
+        array $workerClaim = [],
     ): void {
         /** @var WorkflowTask|null $task */
         $task = NamespaceWorkflowScope::taskQuery($namespace)
@@ -100,5 +102,9 @@ final class PollRequestLeaseBinding
         $task->forceFill([
             'payload' => $payload === [] ? null : $payload,
         ])->save();
+
+        if ($workerClaim !== []) {
+            CooperativeCancellationPolicy::bindClaim($task, $workerClaim);
+        }
     }
 }

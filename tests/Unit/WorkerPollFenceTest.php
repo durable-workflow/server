@@ -73,6 +73,27 @@ class WorkerPollFenceTest extends TestCase
         $this->assertFalse(WorkerPollFence::isCurrent($snapshot));
     }
 
+    public function test_persisted_process_identity_ignores_key_order_and_preserves_strict_fencing(): void
+    {
+        $worker = $this->createWorker('php-worker-json-fence');
+        $worker->forceFill(['process_metrics' => [
+            'host' => 'worker-host', 'process_started_at' => now()->toISOString(), 'process_id' => 123,
+        ]])->save();
+        $snapshot = WorkerPollFence::snapshot($worker);
+        $snapshot['process_identity'] = array_reverse($snapshot['process_identity'], true);
+
+        $this->assertTrue(WorkerPollFence::isCurrent($snapshot));
+        $this->assertTrue(WorkerPollFence::isCurrentForUpdate($snapshot));
+        foreach ([
+            [...$snapshot['process_identity'], 'process_id' => 124],
+            [...$snapshot['process_identity'], 'process_id' => '123'],
+            [...$snapshot['process_identity'], 'extra' => 'unissued'],
+            array_diff_key($snapshot['process_identity'], ['host' => true]),
+        ] as $changedIdentity) {
+            $this->assertFalse(WorkerPollFence::isCurrent([...$snapshot, 'process_identity' => $changedIdentity]));
+        }
+    }
+
     private function createWorker(string $workerId): WorkerRegistration
     {
         return WorkerRegistration::query()->create([
