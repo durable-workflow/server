@@ -340,7 +340,7 @@ jobs:
                 composer install --no-interaction --no-progress --prefer-dist
                 mv vendor/durable-workflow/workflow /tmp/locked-workflow-package
                 cp -a prepared-workflow-source vendor/durable-workflow/workflow
-                php vendor/bin/phpunit tests/Feature/PreparedLocalActivityProtocolTest.php tests/Feature/HistoryRetentionTest.php tests/Unit/WorkerPollFenceTest.php tests/Source/CancellationCascadeDiagnosticsTest.php tests/Source/PreparedLocalCancellationPolicyTest.php tests/Feature/WorkflowDebugTest.php --fail-on-skipped --log-junit "/evidence/$DW_PREPARED_DATABASE.xml" --colors=never
+                php vendor/bin/phpunit tests/Feature/PreparedLocalActivityProtocolTest.php tests/Feature/HistoryRetentionTest.php tests/Unit/WorkerPollFenceTest.php tests/Source/CancellationCascadeDiagnosticsTest.php tests/Source/PreparedLocalCancellationPolicyTest.php tests/Source/CancellationScopeAdmissionTest.php tests/Feature/WorkflowStreamsTest.php tests/Feature/WorkflowDebugTest.php --fail-on-skipped --log-junit "/evidence/$DW_PREPARED_DATABASE.xml" --colors=never
                 if [ "$DW_PREPARED_DATABASE" = sqlite ]; then
                   php vendor/bin/phpunit tests/Feature/CooperativeCancellationProtocolTest.php tests/Feature/WorkflowWorkerProtocolTest.php tests/Feature/ActivityWorkerProtocolTest.php tests/Feature/SearchAttributeValueValidationTest.php tests/Feature/NamespaceDurableStateQuotaTest.php tests/Feature/RuntimeExternalPayloadTransportTest.php tests/Feature/RuntimePayloadCompletionUploadsTest.php tests/Unit/RuntimePayloadCompletionContextTest.php tests/Unit/WorkerProtocolOpenApiContractTest.php --log-junit /evidence/affected-regression.xml --colors=never
                 fi

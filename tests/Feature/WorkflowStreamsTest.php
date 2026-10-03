@@ -553,6 +553,91 @@ class WorkflowStreamsTest extends TestCase
             ->count());
     }
 
+    public function test_timed_out_completion_records_timeout_without_committing_stream_output(): void
+    {
+        $task = $this->claimStreamCompletionTask(1);
+        $this->travel(2)->seconds();
+        $this->withHeaders($this->workerHeaders())->postJson("/api/worker/workflow-tasks/{$task['task_id']}/complete", [
+            'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
+            'commands' => [$this->streamCompletionCommand($task)],
+        ])->assertConflict()->assertJsonPath('recorded', false)->assertJsonPath('reason', 'run_timed_out');
+        $this->assertDatabaseCount('workflow_durable_stream_items', 0);
+        $this->assertDatabaseCount('workflow_durable_streams', 0);
+        $this->assertDatabaseHas('workflow_history_events', ['workflow_run_id' => $task['run_id'], 'event_type' => 'WorkflowTimedOut']);
+        $this->assertDatabaseMissing('workflow_history_events', ['workflow_run_id' => $task['run_id'], 'event_type' => 'SideEffectRecorded']);
+        $this->assertSame('failed', WorkflowRun::query()->findOrFail($task['run_id'])->status->value);
+    }
+
+    public function test_terminal_completion_commits_its_last_stream_item_and_close(): void
+    {
+        $task = $this->claimStreamCompletionTask();
+        $close = $this->streamCompletionCommand($task);
+        $close['workflow_stream'] = [...$close['workflow_stream'], 'operation' => 'close', 'command_ordinal' => 1];
+        unset($close['workflow_stream']['items']);
+        $this->withHeaders($this->workerHeaders())->postJson("/api/worker/workflow-tasks/{$task['task_id']}/complete", [
+            'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
+            'commands' => [$this->streamCompletionCommand($task), $close, ['type' => 'complete_workflow', 'result' => Serializer::serializeWithCodec('avro', 'done')]],
+        ])->assertOk()->assertJsonPath('recorded', true);
+        $this->assertDatabaseCount('workflow_durable_stream_items', 1);
+        $this->assertSame('closed', WorkflowDurableStream::query()->sole()->status);
+        $this->assertSame('completed', WorkflowRun::query()->findOrFail($task['run_id'])->status->value);
+    }
+
+    public function test_legacy_request_refuses_explicit_scope_before_stream_output(): void
+    {
+        $task = $this->claimStreamCompletionTask();
+        $this->withHeaders($this->workerHeaders())->postJson("/api/worker/workflow-tasks/{$task['task_id']}/complete", [
+            'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
+            'commands' => [$this->streamCompletionCommand($task), ['type' => 'start_timer', 'delay_seconds' => 10, 'cancellation_scope_id' => 'root']],
+        ])->assertConflict()->assertJsonPath('recorded', false)->assertJsonPath('reason', 'cancellation_scope_membership_unavailable');
+        $this->assertDatabaseCount('workflow_durable_stream_items', 0);
+        $this->assertDatabaseCount('workflow_run_timers', 0);
+    }
+
+    public function test_stream_failure_rolls_back_successful_native_admission(): void
+    {
+        $task = $this->claimStreamCompletionTask();
+        $before = WorkflowRun::query()->findOrFail($task['run_id'])->status;
+        $command = $this->streamCompletionCommand($task);
+        $command['workflow_stream']['max_pending_items'] = 1;
+        $second = $command['workflow_stream']['items'][0];
+        $second['idempotency_key'] = substr($second['idempotency_key'], 0, -1).'1';
+        $command['workflow_stream']['items'][] = $second;
+        $this->withHeaders($this->workerHeaders())->postJson("/api/worker/workflow-tasks/{$task['task_id']}/complete", [
+            'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
+            'commands' => [$command, ['type' => 'complete_workflow', 'result' => Serializer::serializeWithCodec('avro', 'done')]],
+        ])->assertStatus(429);
+        $this->assertDatabaseCount('workflow_durable_stream_items', 0);
+        $this->assertDatabaseMissing('workflow_history_events', ['workflow_run_id' => $task['run_id'], 'event_type' => 'SideEffectRecorded']);
+        $this->assertSame($before, WorkflowRun::query()->findOrFail($task['run_id'])->status);
+        $this->assertSame(TaskStatus::Leased, WorkflowTask::query()->findOrFail($task['task_id'])->status);
+    }
+
+    private function claimStreamCompletionTask(?int $timeout = null): array
+    {
+        config()->set('workflows.v2.types.workflows', ['tests.external-greeting-workflow' => ExternalGreetingWorkflow::class]);
+        $this->withHeaders($this->apiHeaders())->postJson('/api/workflows', [
+            'workflow_type' => 'tests.external-greeting-workflow', 'task_queue' => 'stream-command-queue',
+            'input' => ['codec' => 'avro', 'blob' => Serializer::serializeWithCodec('avro', ['Ada'])],
+            ...($timeout === null ? [] : ['run_timeout_seconds' => $timeout]),
+        ])->assertCreated();
+        $this->registerWorker('stream-command-worker', 'stream-command-queue', supportedWorkflowTypes: ['tests.external-greeting-workflow']);
+
+        return $this->withHeaders($this->workerHeaders())->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'stream-command-worker', 'task_queue' => 'stream-command-queue',
+        ])->assertOk()->json('task');
+    }
+
+    private function streamCompletionCommand(array $task): array
+    {
+        $identity = $task['workflow_command_id'] ?: $task['task_id'];
+
+        return ['type' => 'record_side_effect', 'result' => Serializer::serializeWithCodec('avro', null),
+            'workflow_stream' => ['operation' => 'append', 'stream_name' => 'tokens', 'command_identity' => $identity,
+                'command_ordinal' => 0, 'items' => [['payload' => Serializer::serializeWithCodec('avro', ['token']),
+                    'payload_codec' => 'avro', 'idempotency_key' => "dw-stream:{$identity}:0:0"]]]];
+    }
+
     /**
      * @param  list<array<string, mixed>>  $items
      */

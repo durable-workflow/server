@@ -7,17 +7,31 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 
 /**
- * Applies replay-safe Workflow Stream directives before task completion.
+ * Applies replay-safe Workflow Stream directives after successful admission.
  *
  * The directive rides a record_side_effect command so the append/close and
  * SideEffectRecorded event commit in one outer database transaction. The
- * directive is stripped before the package command normalizer sees it.
+ * directive is stripped before the package command normalizer sees it. Effects
+ * are applied only after admission succeeds, inside the same outer transaction.
  */
 final class WorkflowStreamCommandProcessor
 {
     public function __construct(
         private readonly WorkflowStreamService $streams,
     ) {}
+
+    /**
+     * @param  list<array<string, mixed>>  $commands
+     * @return list<array<string, mixed>>
+     */
+    public function withoutDirectives(array $commands): array
+    {
+        foreach ($commands as &$command) {
+            unset($command['workflow_stream']);
+        }
+
+        return $commands;
+    }
 
     /**
      * @param  list<array<string, mixed>>  $commands

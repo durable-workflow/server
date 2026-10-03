@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "33"
+  version: "34"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -23,6 +23,15 @@ x-durable-workflow-catalog-entry: worker_protocol_api
 x-durable-workflow-catalog-schema: durable-workflow.v2.platform-protocol-specs.catalog
 x-durable-workflow-catalog-version: 16
 x-durable-workflow-evolution-rule: additive_minor_breaking_major
+x-durable-workflow-cancellation-scope-admission:
+  minimum_protocol_version: "1.20"
+  status: unfrozen_candidate_membership_only
+  required_backend_role: CancellationScopeAdmission
+  scope_execution_capability: false
+  checks: [before_payload_resolution, under_run_lock_before_admission]
+  unknown_scope: { status: 409, reason: operation_scope_not_recorded, recorded: false }
+  unsupported_backend: { status: 409, reason: cancellation_scope_membership_unavailable, recorded: false }
+  stream_effects: successful_admission_only_in_same_outer_transaction
 x-durable-workflow-cooperative-cancellation-contract:
   minimum_protocol_version: "1.20"
   worker_capability: cooperative_cancellation
@@ -2472,6 +2481,12 @@ components:
       required: [type]
       properties:
         type: { type: string }
+        cancellation_scope_id:
+          type: string
+          minLength: 1
+          maxLength: 255
+          x-durable-workflow-minimum-protocol-version: "1.20"
+          description: Optional exact-run canonical membership for schedule_activity, start_timer, start_child_workflow and prepare_local_activity commands in the unfrozen candidate. Requires an installed CancellationScopeAdmission backend. The named scope must already be recorded before admission. Invalid membership is refused before payload resolution and rechecked under the run lock. Omission preserves historical root membership. This field does not advertise scope execution or supervision.
         parent_close_policy:
           type: [string, "null"]
           description: Child parent-close policy. request_cancel retains legacy terminal cancellation. request_cancellation requests cooperative cleanup under protocol 1.20 and the original shared budget.

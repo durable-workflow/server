@@ -54,6 +54,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use Workflow\V2\Contracts\CancellationScopeAdmission;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\PreparedLocalActivityGroupTaskBridge;
 use Workflow\V2\Contracts\PreparedLocalActivityTaskBridge;
@@ -75,6 +76,7 @@ use Workflow\V2\Support\PortableLocalActivityPreparation;
 use Workflow\V2\Support\StickyExecution;
 use Workflow\V2\Support\WorkerProtocolVersion;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
+use Workflow\V2\Support\WorkflowStepHistory;
 use Workflow\V2\Support\WorkflowTaskOwnership;
 
 class WorkerController
@@ -1552,6 +1554,7 @@ class WorkerController
             'workflow_task_attempt' => ['required', 'integer', 'min:1'],
             'commands' => ['required', 'array', 'min:1'],
             'commands.*.type' => ['required', 'string'],
+            'commands.*.cancellation_scope_id' => ['sometimes', 'string', 'min:1', 'max:255'],
             'commands.*.result' => ['nullable'],
             'commands.*.activity_type' => ['nullable', 'string'],
             'commands.*.arguments' => ['nullable'],
@@ -1757,6 +1760,11 @@ class WorkerController
             (int) $validated['workflow_task_attempt'],
             $commands,
         )) {
+            return $response;
+        }
+
+        if ($response = $this->guardCancellationScopeAdmission($request, (string) $namespace, $taskId,
+            (int) $validated['workflow_task_attempt'], $commands)) {
             return $response;
         }
 
@@ -1985,12 +1993,13 @@ class WorkerController
                         }
 
                         $this->authorizeServiceOperationReplays($request, (string) $namespace, $taskId, $commands);
+                        if ($response = $this->guardCancellationScopeAdmission($request, (string) $namespace, $taskId,
+                            (int) $validated['workflow_task_attempt'], $commands, true)) {
+                            return $response;
+                        }
                         $commands = $this->canonicalizeWorkflowStreamPayloadCodecs($commands);
-                        $commands = app(WorkflowStreamCommandProcessor::class)->process(
-                            $taskId,
-                            (string) $namespace,
-                            $commands,
-                        );
+                        $streamCommands = $commands;
+                        $commands = app(WorkflowStreamCommandProcessor::class)->withoutDirectives($commands);
                         $commands = $group ? $this->normalizePreparedLocalGroupCommands($commands, WorkerProtocol::requestVersion($request))
                             : WorkflowCommandNormalizer::normalize($commands, WorkerProtocol::requestVersion($request));
                         if ($checkpoint) {
@@ -2011,6 +2020,9 @@ class WorkerController
                             $outcome['completed'] = false;
                         } else {
                             $outcome = $bridge->complete($taskId, $commands);
+                        }
+                        if (($outcome[$checkpoint ? 'checkpointed' : 'completed'] ?? false) === true) {
+                            app(WorkflowStreamCommandProcessor::class)->process($taskId, (string) $namespace, $streamCommands);
                         }
                         if (($outcome['completed'] ?? false) === true
                             && $claimedTask instanceof WorkflowTask
@@ -2882,6 +2894,54 @@ class WorkerController
                 'Author condition-wait occurrence identity only with worker protocol %s or newer.',
                 WorkerProtocol::CONDITION_WAIT_OCCURRENCE_MINIMUM_PROTOCOL_VERSION,
             ),
+        ], 409);
+    }
+
+    /** @param  list<array<string, mixed>>  $commands */
+    private function guardCancellationScopeAdmission(
+        Request $request,
+        string $namespace,
+        string $taskId,
+        int $workflowTaskAttempt,
+        array $commands,
+        bool $lock = false,
+    ): ?JsonResponse {
+        if (! collect($commands)->contains(static fn (array $command): bool => array_key_exists('cancellation_scope_id', $command))) {
+            return null;
+        }
+        $reason = null;
+        $unavailable = [];
+        if (! WorkerProtocol::versionMeetsMinimum(WorkerProtocol::requestVersion($request), '1.20')) {
+            $reason = 'cancellation_scope_membership_unavailable';
+            $unavailable[] = 'request_protocol';
+        }
+        $bridge = app(WorkflowTaskBridge::class);
+        if (! $bridge instanceof CancellationScopeAdmission) {
+            $reason = 'cancellation_scope_membership_unavailable';
+            $unavailable[] = 'installed_runtime_scope_admission';
+        }
+        foreach ($commands as $command) {
+            if (array_key_exists('cancellation_scope_id', $command)
+                && ! in_array($command['type'], ['schedule_activity', 'start_timer', 'start_child_workflow', 'prepare_local_activity'], true)) {
+                $reason = 'invalid_cancellation_scope_command';
+            }
+        }
+        if ($reason === null) {
+            $task = WorkflowTask::query()->whereKey($taskId)->where('namespace', $namespace)->first();
+            $runQuery = WorkflowRun::query()->whereKey($task?->workflow_run_id)->where('namespace', $namespace);
+            $run = ($lock ? $runQuery->lockForUpdate() : $runQuery)->first();
+            if ($run instanceof WorkflowRun) {
+                $reason = $bridge->validateCancellationScopeMembership($run, $commands, WorkflowStepHistory::nextDurableCommandSequence($run));
+            }
+        }
+        if ($reason === null) {
+            return null;
+        }
+
+        return WorkerProtocol::json([
+            'task_id' => $taskId, 'workflow_task_attempt' => $workflowTaskAttempt, 'outcome' => 'rejected',
+            'recorded' => false, 'reason' => $reason, 'unavailable' => $unavailable,
+            'requested_version' => WorkerProtocol::requestVersion($request), 'minimum_protocol_version' => '1.20',
         ], 409);
     }
 
