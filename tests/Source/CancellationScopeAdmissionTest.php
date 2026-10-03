@@ -2,15 +2,19 @@
 
 namespace Tests\Source;
 
+use App\Models\RuntimePayloadCompletionBudget;
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
 use App\Support\CooperativeCancellationPolicy;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\PreparedLocalActivityPolicy;
+use App\Support\RuntimePayloadCompletionContext;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Feature\Concerns\StoragePressureFixture;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\Support\OpenApiSchema;
 use Tests\TestCase;
@@ -31,6 +35,7 @@ use Workflow\V2\Support\ParallelChildGroup;
 final class CancellationScopeAdmissionTest extends TestCase
 {
     use RefreshDatabase;
+    use StoragePressureFixture;
 
     protected function setUp(): void
     {
@@ -43,6 +48,150 @@ final class CancellationScopeAdmissionTest extends TestCase
         ]);
         WorkflowNamespace::query()->create(['name' => 'default', 'retention_days' => 30, 'status' => 'active']);
         $this->assertTrue(class_exists(CancellationScopeHistory::class));
+    }
+
+    public function test_scope_prefix_requires_no_local_activity_capability_and_replays_before_opening(): void
+    {
+        $task = $this->claim(capabilities: [CooperativeCancellationPolicy::CAPABILITY]);
+        $claim = WorkflowTask::query()->findOrFail($task['task_id']);
+        $originalLease = $claim->lease_expires_at->toISOString();
+        $first = $this->scopePrefix($task)->assertOk()->assertJsonPath('checkpointed', true)
+            ->assertJsonPath('duplicate', false)->assertJsonPath('start_sequence', 1)->assertJsonPath('next_sequence', 2)->json();
+        OpenApiSchema::fromFile(resource_path('platform-protocol-specs/worker-protocol-api.openapi.yaml'))
+            ->assertReferenceMatches('#/components/schemas/CancellationScopeCheckpointResponse/allOf/1', json_decode(json_encode($first, JSON_THROW_ON_ERROR), flags: JSON_THROW_ON_ERROR));
+        $this->assertIsString($first['history_refresh_page_token']);
+        $before = WorkflowHistoryEvent::query()->count();
+        $this->scopePrefix($task)->assertOk()->assertJsonPath('duplicate', true)
+            ->assertJsonPath('fingerprint', $first['fingerprint']);
+        $this->assertSame($before, WorkflowHistoryEvent::query()->count());
+        $this->openScope($task, ['sequence' => 2])->assertOk()->assertJsonPath('opened', true);
+        $this->assertSame($originalLease, $claim->refresh()->lease_expires_at->toISOString());
+        $this->assertSame('leased', $claim->status->value);
+        $this->assertArrayHasKey('portable_scope_checkpoint', $claim->payload);
+        $this->assertArrayNotHasKey('portable_local_checkpoint', $claim->payload);
+        $this->assertSame(0, ActivityExecution::query()->count());
+    }
+
+    public static function refusedScopePrefixes(): array
+    {
+        return [
+            'wrong owner' => [['lease_owner' => 'other-worker'], 'lease_owner_mismatch'],
+            'wrong attempt' => [['workflow_task_attempt' => 99], 'workflow_task_attempt_mismatch'],
+            'future sequence' => [['start_sequence' => 2], 'cancellation_scope_checkpoint_sequence_mismatch'],
+            'terminal command' => [['commands' => [['type' => 'complete_workflow', 'result' => Serializer::serializeWithCodec('avro', 'done')]]], 'invalid_cancellation_scope_checkpoint_commands'],
+        ];
+    }
+
+    #[DataProvider('refusedScopePrefixes')]
+    public function test_scope_prefix_refuses_before_committing_history(array $overrides, string $reason): void
+    {
+        $task = $this->claim(capabilities: [CooperativeCancellationPolicy::CAPABILITY]);
+        $before = WorkflowHistoryEvent::query()->count();
+        $this->scopePrefix($task, $overrides)->assertStatus(409)->assertJsonPath('reason', $reason);
+        $this->assertSame($before, WorkflowHistoryEvent::query()->count());
+    }
+
+    public function test_scope_prefix_changed_retry_and_replaced_claim_are_fenced(): void
+    {
+        $task = $this->claim(capabilities: [CooperativeCancellationPolicy::CAPABILITY]);
+        $this->scopePrefix($task)->assertOk();
+        $before = WorkflowHistoryEvent::query()->count();
+        $this->scopePrefix($task, ['commands' => [['type' => 'record_side_effect', 'result' => Serializer::serializeWithCodec('avro', 'changed')]]])
+            ->assertStatus(409)->assertJsonPath('reason', 'cancellation_scope_checkpoint_mismatch');
+        WorkflowTask::query()->findOrFail($task['task_id'])->forceFill(['lease_expires_at' => now()->subSecond()])->save();
+        $replacement = $this->withHeaders($this->headers())->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => $task['lease_owner'], 'task_queue' => 'scope-admission',
+        ])->assertOk()->json('task');
+        $this->scopePrefix($task)->assertStatus(409)->assertJsonPath('reason', 'workflow_task_attempt_mismatch');
+        $this->openScope($replacement, ['sequence' => 2])->assertOk()->assertJsonPath('opened', true);
+        $this->assertSame(1, WorkflowHistoryEvent::query()->where('event_type', 'SideEffectRecorded')->count());
+        $this->assertSame(1, WorkflowHistoryEvent::query()->where('event_type', 'CancellationScopeOpened')->count());
+    }
+
+    public function test_scope_prefix_rejects_legacy_missing_backend_and_incompatible_issued_claim(): void
+    {
+        $task = $this->claim(capabilities: [CooperativeCancellationPolicy::CAPABILITY]);
+        $this->scopePrefix($task, version: '1.19')->assertStatus(409)->assertJsonPath('reason', 'cancellation_scope_checkpoint_requires_protocol_1_20');
+        $bridge = app(WorkflowTaskBridge::class);
+        $this->app->instance(WorkflowTaskBridge::class, $this->createMock(WorkflowTaskBridge::class));
+        $this->scopePrefix($task)->assertStatus(409)->assertJsonPath('reason', 'cancellation_scope_checkpoint_unavailable');
+        $this->app->instance(WorkflowTaskBridge::class, $bridge);
+        $claim = WorkflowTask::query()->findOrFail($task['task_id']);
+        $payload = $claim->payload;
+        $payload['_server_workflow_claim']['capabilities'] = [];
+        $claim->forceFill(['payload' => $payload])->save();
+        $this->scopePrefix($task)->assertStatus(409)->assertJsonPath('reason', 'active_claim_cancellation_not_supported');
+    }
+
+    public function test_scope_prefix_hides_other_namespaces_and_refuses_stale_workers(): void
+    {
+        $task = $this->claim(capabilities: [CooperativeCancellationPolicy::CAPABILITY]);
+        WorkflowNamespace::query()->create(['name' => 'other', 'retention_days' => 30, 'status' => 'active']);
+        $before = WorkflowHistoryEvent::query()->count();
+        $this->scopePrefix($task, namespace: 'other')->assertNotFound();
+        WorkerRegistration::query()->where('worker_id', $task['lease_owner'])->update(['last_heartbeat_at' => now()->subMinutes(10)]);
+        $this->scopePrefix($task)->assertStatus(409)->assertJsonPath('reason', 'stale_worker_registration');
+        $this->assertSame($before, WorkflowHistoryEvent::query()->count());
+    }
+
+    private function scopePrefix(array $task, array $overrides = [], string $version = '1.20', string $namespace = 'default')
+    {
+        return $this->withHeaders(['X-Namespace' => $namespace, WorkerProtocol::HEADER => $version])
+            ->postJson("/api/worker/workflow-tasks/{$task['task_id']}/cancellation-scopes/checkpoint", array_replace([
+                'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
+                'checkpoint_id' => 'scope-prefix', 'start_sequence' => 1,
+                'commands' => [['type' => 'record_side_effect', 'result' => Serializer::serializeWithCodec('avro', 'before-scope')]],
+            ], $overrides));
+    }
+
+    public function test_scope_prefix_uploads_during_draining_share_one_fenced_claim_allowance(): void
+    {
+        $task = $this->claim(capabilities: [CooperativeCancellationPolicy::CAPABILITY]);
+        $directory = storage_path('framework/testing/scope-prefix-uploads');
+        WorkflowNamespace::query()->where('name', 'default')->update(['external_payload_storage' => [
+            'driver' => 'local', 'enabled' => true, 'threshold_bytes' => 32,
+            'config' => ['uri' => 'file://'.$directory],
+        ]]);
+        $this->configureStoragePressure('draining');
+        $payload = Serializer::serializeWithCodec('avro', str_repeat('before-scope', 200));
+        $context = [
+            'schema' => RuntimePayloadCompletionContext::PREPARED_SCHEMA, 'kind' => 'workflow',
+            'task_id' => $task['task_id'], 'attempt' => $task['workflow_task_attempt'], 'lease_owner' => $task['lease_owner'],
+            'operation' => 'cancellation_scope_checkpoint', 'checkpoint_id' => 'scope-prefix', 'slot' => ['commands', 0, 'result'],
+        ];
+        $upload = fn (array $value) => $this->call('POST', '/api/external-payloads/v1', [], [], [], [
+            'CONTENT_TYPE' => 'application/octet-stream', 'HTTP_X_NAMESPACE' => 'default',
+            'HTTP_X_DURABLE_WORKFLOW_PAYLOAD_CODEC' => 'avro', 'HTTP_X_DURABLE_WORKFLOW_PAYLOAD_SIZE' => (string) strlen($payload),
+            'HTTP_X_DURABLE_WORKFLOW_PAYLOAD_SHA256' => hash('sha256', $payload),
+            'HTTP_X_DURABLE_WORKFLOW_PAYLOAD_COMPLETION' => json_encode($value, JSON_THROW_ON_ERROR),
+        ], $payload);
+        try {
+            $reference = $upload($context)->assertCreated()->json('reference');
+            $this->scopePrefix($task, ['commands' => [['type' => 'record_side_effect', 'result' => ['codec' => 'avro', 'external_payload' => $reference]]]])
+                ->assertOk()->assertJsonPath('checkpointed', true);
+            $stored = WorkflowHistoryEvent::query()->where('event_type', 'SideEffectRecorded')->sole()->payload['result'];
+            $this->assertSame('avro', $stored['codec']);
+            $this->assertSame(hash('sha256', $payload), $stored['external_storage']['sha256']);
+            $fetch = $this->withHeaders([
+                'X-Namespace' => 'default', 'X-Durable-Workflow-Payload-Codec' => $reference['codec'],
+                'X-Durable-Workflow-Payload-Size' => (string) $reference['size_bytes'],
+                'X-Durable-Workflow-Payload-SHA256' => $reference['sha256'],
+            ])->get('/api/external-payloads/v1/'.$reference['reference_id'])->assertOk();
+            $this->assertSame($payload, $fetch->streamedContent());
+            $legacy = array_diff_key($context, ['checkpoint_id' => true]);
+            $legacy['schema'] = RuntimePayloadCompletionContext::SCHEMA;
+            $legacy['operation'] = 'complete';
+            $upload($legacy)->assertCreated();
+            $this->assertSame(1, RuntimePayloadCompletionBudget::query()->count());
+            $this->openScope($task, ['sequence' => 2])->assertOk()->assertJsonPath('opened', true);
+            $claim = WorkflowTask::query()->findOrFail($task['task_id']);
+            $claim->forceFill(['lease_owner' => 'replacement', 'attempt_count' => $task['workflow_task_attempt'] + 1])->save();
+            $context['checkpoint_id'] = 'new-prefix';
+            $upload($context)->assertStatus(409);
+        } finally {
+            $this->removeStoragePressure();
+            File::deleteDirectory($directory);
+        }
     }
 
     public function test_scope_opening_records_once_and_preserves_the_live_claim(): void
@@ -498,14 +647,14 @@ final class CancellationScopeAdmissionTest extends TestCase
             ]);
     }
 
-    private function claim(string $worker = 'scope-worker'): array
+    private function claim(string $worker = 'scope-worker', ?array $capabilities = null): array
     {
         $this->withHeaders(['X-Namespace' => 'default', 'X-Durable-Workflow-Control-Plane-Version' => '2'])
             ->postJson('/api/workflows', ['workflow_type' => 'tests.external-greeting-workflow', 'task_queue' => 'scope-admission', 'input' => ['Ada']])->assertCreated();
         $this->withHeaders($this->headers())->postJson('/api/worker/register', [
             'worker_id' => $worker, 'task_queue' => 'scope-admission', 'runtime' => 'php',
             'supported_workflow_types' => ['tests.external-greeting-workflow'],
-            'capabilities' => [CooperativeCancellationPolicy::CAPABILITY, PreparedLocalActivityPolicy::CAPABILITY, PreparedLocalActivityPolicy::GROUP_CAPABILITY],
+            'capabilities' => $capabilities ?? [CooperativeCancellationPolicy::CAPABILITY, PreparedLocalActivityPolicy::CAPABILITY, PreparedLocalActivityPolicy::GROUP_CAPABILITY],
             'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(), 'max_concurrent_workflow_tasks' => 1,
             'process_metrics' => ['host' => 'test-worker', 'process_started_at' => now()->toISOString(), 'process_id' => 10],
         ])->assertCreated();

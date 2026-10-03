@@ -19,6 +19,8 @@ final class EnforceStorageAdmission
         'WorkerController@completeWorkflowTask',
         'WorkerController@checkpointLocalActivityPrefix',
         'WorkerController@checkpointLocalActivityGroup',
+        'WorkerController@checkpointCancellationScopePrefix',
+        'CancellationScopeController@open',
         'PreparedLocalActivityController@prepare',
         'PreparedLocalActivityController@recover',
         'PreparedLocalActivityController@control',

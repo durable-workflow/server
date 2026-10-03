@@ -5,6 +5,7 @@ namespace App\Support;
 use App\Models\WorkerRegistration;
 use Carbon\CarbonImmutable;
 use Workflow\V2\Contracts\ActivityTaskBridge;
+use Workflow\V2\Contracts\CancellationScopeTaskBridge;
 use Workflow\V2\Contracts\PreparedLocalActivityTaskBridge;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\TaskType;
@@ -108,9 +109,18 @@ final class RuntimePayloadCompletionLease
 
         if ($context->schema === RuntimePayloadCompletionContext::PREPARED_SCHEMA) {
             $task = $guard['task'];
-            $claim = PreparedLocalActivityPolicy::currentClaim($task);
-            if (! PreparedLocalActivityPolicy::serverSupported() || $claim === null || ! WorkerPollFence::isCurrent($claim)) {
-                throw self::rejected();
+            if ($context->operation === 'cancellation_scope_checkpoint') {
+                if (! CooperativeCancellationPolicy::serverSupported()
+                    || ! app(WorkflowTaskBridge::class) instanceof CancellationScopeTaskBridge
+                    || ! CooperativeCancellationPolicy::claimSupportsCancellation($task)) {
+                    throw self::rejected();
+                }
+                $claim = null;
+            } else {
+                $claim = PreparedLocalActivityPolicy::currentClaim($task);
+                if (! PreparedLocalActivityPolicy::serverSupported() || $claim === null || ! WorkerPollFence::isCurrent($claim)) {
+                    throw self::rejected();
+                }
             }
             if ($context->operation === 'local_activity_group_checkpoint'
                 && (! PreparedLocalActivityPolicy::groupsSupported() || PreparedLocalActivityPolicy::currentGroupClaim($task) === null)) {

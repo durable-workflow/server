@@ -41,7 +41,7 @@ final readonly class RuntimePayloadCompletionContext
         if ($prepared) {
             $keys[] = match ($value['operation'] ?? null) {
                 'local_activity_outcome' => 'activity_attempt_id',
-                'local_activity_checkpoint', 'local_activity_group_checkpoint' => 'checkpoint_id',
+                'local_activity_checkpoint', 'local_activity_group_checkpoint', 'cancellation_scope_checkpoint' => 'checkpoint_id',
                 default => 'sequence',
             };
         }
@@ -56,7 +56,7 @@ final readonly class RuntimePayloadCompletionContext
         }
         if ($prepared && ($value['kind'] !== 'workflow' || ! match ($value['operation'] ?? null) {
             'local_activity_outcome' => self::identifier($value['activity_attempt_id']),
-            'local_activity_checkpoint', 'local_activity_group_checkpoint' => self::identifier($value['checkpoint_id']),
+            'local_activity_checkpoint', 'local_activity_group_checkpoint', 'cancellation_scope_checkpoint' => self::identifier($value['checkpoint_id']),
             default => is_int($value['sequence']) && $value['sequence'] > 0,
         })) {
             throw self::invalid();
@@ -67,7 +67,7 @@ final readonly class RuntimePayloadCompletionContext
             throw self::invalid();
         }
         $validSlot = $prepared ? match ($value['operation']) {
-            'local_activity_checkpoint', 'local_activity_group_checkpoint' => self::workflowSlot($value['slot']),
+            'local_activity_checkpoint', 'local_activity_group_checkpoint', 'cancellation_scope_checkpoint' => self::workflowSlot($value['slot']),
             'local_activity_prepare', 'local_activity_recover' => $value['slot'] === ['descriptor', 'arguments'],
             'local_activity_outcome' => $value['slot'] === ['report', 'result'],
             default => false,

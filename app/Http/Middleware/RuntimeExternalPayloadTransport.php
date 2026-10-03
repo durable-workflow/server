@@ -44,6 +44,13 @@ class RuntimeExternalPayloadTransport
             ['commands', '*', 'request_payload'],
             ['commands', '*', 'result'],
         ],
+        'WorkerController@checkpointCancellationScopePrefix' => [
+            ['commands', '*', 'arguments'],
+            ['commands', '*', 'entries'],
+            ['commands', '*', 'exception', 'details'],
+            ['commands', '*', 'request_payload'],
+            ['commands', '*', 'result'],
+        ],
         'WorkerController@completeWorkflowTask' => [
             ['commands', '*', 'arguments'],
             ['commands', '*', 'entries'],
@@ -66,6 +73,9 @@ class RuntimeExternalPayloadTransport
             ['commands', '*', 'workflow_stream', 'items', '*', 'payload_reference'],
         ],
         'WorkerController@checkpointLocalActivityGroup' => [
+            ['commands', '*', 'workflow_stream', 'items', '*', 'payload_reference'],
+        ],
+        'WorkerController@checkpointCancellationScopePrefix' => [
             ['commands', '*', 'workflow_stream', 'items', '*', 'payload_reference'],
         ],
         'WorkerController@completeWorkflowTask' => [

@@ -3,6 +3,8 @@
 namespace App\Support;
 
 use InvalidArgumentException;
+use Workflow\V2\Contracts\CancellationScopeTaskBridge;
+use Workflow\V2\Contracts\WorkflowTaskBridge;
 
 final class RuntimeExternalPayloadReference
 {
@@ -75,6 +77,9 @@ final class RuntimeExternalPayloadReference
                 'completion_context' => [
                     'schema' => RuntimePayloadCompletionContext::SCHEMA,
                     'prepared_schema' => PreparedLocalActivityPolicy::serverSupported()
+                        ? RuntimePayloadCompletionContext::PREPARED_SCHEMA : null,
+                    'scope_schema' => CooperativeCancellationPolicy::serverSupported()
+                        && app(WorkflowTaskBridge::class) instanceof CancellationScopeTaskBridge
                         ? RuntimePayloadCompletionContext::PREPARED_SCHEMA : null,
                     'header' => RuntimePayloadCompletionContext::HEADER,
                     'use' => 'retry_draining_refusal_for_current_worker_completion_only',

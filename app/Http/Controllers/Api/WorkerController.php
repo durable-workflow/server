@@ -55,6 +55,7 @@ use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Workflow\V2\Contracts\CancellationScopeAdmission;
+use Workflow\V2\Contracts\CancellationScopeTaskBridge;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\PreparedLocalActivityGroupTaskBridge;
 use Workflow\V2\Contracts\PreparedLocalActivityTaskBridge;
@@ -1524,7 +1525,23 @@ class WorkerController
         return $this->mutateWorkflowTaskCommands($request, $taskId, true, true);
     }
 
-    private function mutateWorkflowTaskCommands(Request $request, string $taskId, bool $checkpoint = false, bool $group = false): JsonResponse
+    public function checkpointCancellationScopePrefix(Request $request, string $taskId): JsonResponse
+    {
+        if ($response = WorkerProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+        if (! WorkerProtocol::versionMeetsMinimum(WorkerProtocol::requestVersion($request), CooperativeCancellationPolicy::MINIMUM_PROTOCOL_VERSION)) {
+            return WorkerProtocol::json(['checkpointed' => false, 'reason' => 'cancellation_scope_checkpoint_requires_protocol_1_20'], 409);
+        }
+        if (! app(WorkflowTaskBridge::class) instanceof CancellationScopeTaskBridge) {
+            return WorkerProtocol::json(['checkpointed' => false, 'reason' => 'cancellation_scope_checkpoint_unavailable',
+                'unavailable' => ['installed_runtime_scope_checkpoint']], 409);
+        }
+
+        return $this->mutateWorkflowTaskCommands($request, $taskId, true, scopePrefix: true);
+    }
+
+    private function mutateWorkflowTaskCommands(Request $request, string $taskId, bool $checkpoint = false, bool $group = false, bool $scopePrefix = false): JsonResponse
     {
         if ($response = WorkerProtocol::rejectUnsupported($request)) {
             return $response;
@@ -1900,6 +1917,7 @@ class WorkerController
                     $checkpoint,
                     $checkpointInput,
                     $group,
+                    $scopePrefix,
                 ): array|JsonResponse {
                     return DB::transaction(function () use (
                         $bridge,
@@ -1913,6 +1931,7 @@ class WorkerController
                         $checkpoint,
                         $checkpointInput,
                         $group,
+                        $scopePrefix,
                     ): array|JsonResponse {
                         $quotaSnapshot = $this->durableStateQuota->snapshotForMutation(
                             (string) $namespace,
@@ -2003,13 +2022,20 @@ class WorkerController
                         $commands = $group ? $this->normalizePreparedLocalGroupCommands($commands, WorkerProtocol::requestVersion($request))
                             : WorkflowCommandNormalizer::normalize($commands, WorkerProtocol::requestVersion($request));
                         if ($checkpoint) {
-                            if (PreparedLocalActivityPolicy::currentClaim($claimedTask) === null
+                            if ($scopePrefix) {
+                                if (! $bridge instanceof CancellationScopeTaskBridge
+                                    || ! $claimedTask instanceof WorkflowTask
+                                    || ! CooperativeCancellationPolicy::claimSupportsCancellation($claimedTask)) {
+                                    return WorkerProtocol::json(['checkpointed' => false, 'reason' => 'active_claim_cancellation_not_supported'], 409);
+                                }
+                            } elseif (PreparedLocalActivityPolicy::currentClaim($claimedTask) === null
                                 || ! $bridge instanceof PreparedLocalActivityTaskBridge
                                 || ($group && (PreparedLocalActivityPolicy::currentGroupClaim($claimedTask) === null
                                     || ! $bridge instanceof PreparedLocalActivityGroupTaskBridge))) {
                                 throw new PreparedLocalActivityAdmissionRefused;
                             }
-                            $method = $group ? 'checkpointLocalActivityGroup' : 'checkpointLocalActivityPrefix';
+                            $method = $scopePrefix ? 'checkpointCancellationScopePrefix'
+                                : ($group ? 'checkpointLocalActivityGroup' : 'checkpointLocalActivityPrefix');
                             $outcome = $bridge->$method(
                                 $taskId, $validated['lease_owner'], (int) $validated['workflow_task_attempt'],
                                 $checkpointInput['checkpoint_id'], (int) $checkpointInput['start_sequence'], $commands,
@@ -2771,7 +2797,8 @@ class WorkerController
         } else {
             $payload = WorkflowTask::query()->find($taskId)?->payload ?? [];
             $prefixEnd = max($payload['portable_local_checkpoint']['next_sequence'] ?? 0,
-                $payload['portable_local_group_checkpoint']['next_sequence'] ?? 0);
+                $payload['portable_local_group_checkpoint']['next_sequence'] ?? 0,
+                $payload['portable_scope_checkpoint']['next_sequence'] ?? 0);
             if (is_int($prefixEnd) && $prefixEnd > 0) {
                 $eventQuery->where('payload->sequence', '>=', $prefixEnd);
             }

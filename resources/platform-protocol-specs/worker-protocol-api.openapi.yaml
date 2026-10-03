@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "36"
+  version: "37"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -42,6 +42,18 @@ x-durable-workflow-cancellation-scope-opening:
   authority: [authenticated_namespace, original_capable_workflow_claim, fresh_worker_registration]
   lock_order: [run, task, worker_registration]
   claim_released: false
+  prefix_checkpoint:
+    path: /worker/workflow-tasks/{taskId}/cancellation-scopes/checkpoint
+    admission: same_original_cooperative_claim_without_local_activity_capability
+    history: replay_canonical_prefix_before_opening
+    receipt: immutable_latest_scope_checkpoint_on_this_claim
+    external_payload_completion:
+      discovery: namespace.external_payload_storage.transport.upload.completion_context.scope_schema
+      schema: durable-workflow.v2.payload-completion-context.v2
+      operation: cancellation_scope_checkpoint
+      identity: checkpoint_id
+      slots: ordinary_workflow_command_payload_slots
+      allowance: shares_existing_workflow_claim_budget
   replay: identical_parent_and_shield_reuses_canonical_history_identity
 x-durable-workflow-cooperative-cancellation-contract:
   minimum_protocol_version: "1.20"
@@ -495,6 +507,37 @@ paths:
         "404": { $ref: "#/components/responses/WorkerError" }
         "409": { $ref: "#/components/responses/WorkerError" }
         "422": { $ref: "#/components/responses/WorkerError" }
+  /worker/workflow-tasks/{taskId}/cancellation-scopes/checkpoint:
+    post:
+      operationId: checkpointCancellationScopePrefix
+      tags: [workflow-tasks]
+      x-durable-workflow-minimum-protocol-version: "1.20"
+      x-durable-workflow-worker-capability: cooperative_cancellation
+      description: >-
+        Unfrozen candidate admission. Commit the ordinary command prefix preceding a scope through the same
+        validation, authorization and quota path as workflow completion, retaining the original claim.
+        Replay the returned canonical history before opening the scope. An identical retry reuses the original
+        checkpoint receipt. This requires the optional installed CancellationScopeTaskBridge.
+        No local Activity capability, callback admission or scope execution advertisement is implied.
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CancellationScopeCheckpointRequest" }
+      responses:
+        "200":
+          description: Canonical prefix committed or identical receipt reused. The claim remains leased.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CancellationScopeCheckpointResponse" }
+        "404": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+        "422": { $ref: "#/components/responses/WorkerError" }
+        "429": { $ref: "#/components/responses/WorkerError" }
+        "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
   /worker/workflow-tasks/{taskId}/local-activities/prepare:
     post:
       operationId: prepareLocalActivity
@@ -1833,6 +1876,14 @@ components:
             sequence: { type: integer, minimum: 1 }
             created_task_ids: { type: array, maxItems: 0 }
             reason: { type: "null" }
+    CancellationScopeCheckpointRequest:
+      description: Ordinary retained prefix before scope opening. Does not admit local callbacks.
+      allOf:
+        - $ref: "#/components/schemas/PreparedLocalCheckpointRequest"
+    CancellationScopeCheckpointResponse:
+      allOf:
+        - $ref: "#/components/schemas/WorkerEnvelope"
+        - $ref: "#/components/schemas/PreparedLocalCheckpointResult"
     PreparedLocalClaimRequest:
       type: object
       required: [lease_owner, workflow_task_attempt]
