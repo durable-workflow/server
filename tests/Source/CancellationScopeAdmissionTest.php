@@ -406,7 +406,7 @@ final class CancellationScopeAdmissionTest extends TestCase
 
     public static function operations(): array
     {
-        return [['schedule_activity'], ['start_timer'], ['start_child_workflow']];
+        return [['schedule_activity'], ['start_timer'], ['start_child_workflow'], ['open_signal_wait'], ['open_condition_wait']];
     }
 
     #[DataProvider('operations')]
@@ -433,6 +433,7 @@ final class CancellationScopeAdmissionTest extends TestCase
         $this->assertDatabaseCount('workflow_durable_stream_items', 1);
         $eventType = match ($type) {
             'schedule_activity' => 'ActivityScheduled', 'start_timer' => 'TimerScheduled', 'start_child_workflow' => 'ChildWorkflowScheduled',
+            'open_signal_wait' => 'SignalWaitOpened', 'open_condition_wait' => 'ConditionWaitOpened',
         };
         $event = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->where('event_type', $eventType)->sole();
         $this->assertSame($scopeId, $type === 'schedule_activity' ? $event->payload['activity']['cancellation_scope_id'] : $event->payload['cancellation_scope_id']);
@@ -731,6 +732,8 @@ final class CancellationScopeAdmissionTest extends TestCase
             'schedule_activity' => ['activity_type' => 'opaque-activity', 'arguments' => $arguments ?? Serializer::serializeWithCodec('avro', ['Ada']), 'payload_codec' => 'avro'],
             'start_timer' => ['delay_seconds' => 60],
             'start_child_workflow' => ['workflow_type' => 'tests.external-greeting-workflow', 'arguments' => Serializer::serializeWithCodec('avro', ['child']), 'payload_codec' => 'avro'],
+            'open_signal_wait' => ['signal_name' => 'ready', 'timeout_seconds' => 5],
+            'open_condition_wait' => ['condition_key' => 'ready', 'timeout_seconds' => 5],
             'record_side_effect' => ['result' => Serializer::serializeWithCodec('avro', null)],
         };
 

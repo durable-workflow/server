@@ -2786,7 +2786,7 @@ components:
           minLength: 1
           maxLength: 255
           x-durable-workflow-minimum-protocol-version: "1.20"
-          description: Optional exact-run canonical membership for schedule_activity, start_timer, start_child_workflow and prepare_local_activity commands in the unfrozen candidate. Requires an installed CancellationScopeAdmission backend. The named scope must already be recorded before admission. Invalid membership is refused before payload resolution and rechecked under the run lock. Omission preserves historical root membership. This field does not advertise scope execution or supervision.
+          description: Optional exact-run canonical membership for schedule_activity, start_timer, start_child_workflow, prepare_local_activity, open_signal_wait and open_condition_wait commands in the unfrozen candidate. Requires an installed CancellationScopeAdmission backend. The named scope must already be recorded before admission. Invalid membership is refused before payload resolution and rechecked under the run lock. Omission preserves historical root membership. Wait commands close a turn and cannot enter a retained-claim prefix. This field does not advertise scope execution or supervision.
         parent_close_policy:
           type: [string, "null"]
           description: Child parent-close policy. request_cancel retains legacy terminal cancellation. request_cancellation requests cooperative cleanup under protocol 1.20 and the original shared budget.

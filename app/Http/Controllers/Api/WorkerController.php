@@ -2949,7 +2949,7 @@ class WorkerController
         }
         foreach ($commands as $command) {
             if (array_key_exists('cancellation_scope_id', $command)
-                && ! in_array($command['type'], ['schedule_activity', 'start_timer', 'start_child_workflow', 'prepare_local_activity'], true)) {
+                && ! in_array($command['type'], ['schedule_activity', 'start_timer', 'start_child_workflow', 'prepare_local_activity', 'open_signal_wait', 'open_condition_wait'], true)) {
                 $reason = 'invalid_cancellation_scope_command';
             }
         }
