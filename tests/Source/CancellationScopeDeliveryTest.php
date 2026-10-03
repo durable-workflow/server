@@ -279,7 +279,40 @@ final class CancellationScopeDeliveryTest extends TestCase
         }
     }
 
-    private function claim(bool $timer = false): array
+    #[DataProvider('childPolicies')]
+    public function test_child_preparation_freezes_original_targets_without_claiming_delivery(string $policy): void
+    {
+        [$task, $scope, $request] = $this->claim(childPolicy: $policy);
+        $before = WorkflowTask::query()->findOrFail($task['task_id'])->getRawOriginal();
+        $prepared = $this->mutate('prepare', $task, $scope, $request, ['call_kind' => 'child'])->assertOk()->json();
+        $this->assertContract($prepared);
+        $this->assertCount(1, $prepared['child_members']);
+        $scheduled = WorkflowHistoryEvent::query()->where('event_type', 'ChildWorkflowScheduled')->sole();
+        $member = $prepared['child_members'][0];
+        $this->assertSame($scheduled->payload['child_call_id'], $member['child_call_id']);
+        $this->assertSame($scheduled->payload['child_workflow_instance_id'], $member['child_workflow_instance_id']);
+        $this->assertSame($scheduled->payload['child_workflow_run_id'], $member['child_workflow_run_id']);
+        $this->assertSame($policy, $member['cancellation_policy']);
+        $this->assertSame($prepared['child_members'], $this->mutate('prepare', $task, $scope, $request,
+            ['call_kind' => 'child'])->assertOk()->json('child_members'));
+        $historyBefore = WorkflowHistoryEvent::query()->count();
+        $this->mutate('deliver', $task, $scope, $request, ['call_kind' => 'child'])->assertConflict()
+            ->assertJsonPath('reason', 'cancellation_scope_operation_delivery_unavailable')
+            ->assertJsonPath('unavailable', ['scoped_child_delivery']);
+        $this->assertSame($historyBefore, WorkflowHistoryEvent::query()->count());
+        $this->assertSame($before, WorkflowTask::query()->findOrFail($task['task_id'])->getRawOriginal());
+        $this->assertNull(WorkflowRun::query()->findOrFail($member['child_workflow_run_id'])->cancellation_request_command_id);
+        $this->assertSame(0, WorkflowHistoryEvent::query()->where('event_type', 'CancellationScopeDelivered')->count());
+    }
+
+    public static function childPolicies(): iterable
+    {
+        foreach (['try_cancel', 'wait_cancellation_completed', 'abandon'] as $policy) {
+            yield $policy => [$policy];
+        }
+    }
+
+    private function claim(bool $timer = false, ?string $childPolicy = null): array
     {
         $this->withHeaders($this->headers('operator'))->postJson('/api/workflows', [
             'workflow_type' => 'tests.external-greeting-workflow', 'task_queue' => 'scoped-delivery', 'input' => ['Ada'],
@@ -301,6 +334,15 @@ final class CancellationScopeDeliveryTest extends TestCase
                 'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
                 'checkpoint_id' => 'timer-prefix', 'start_sequence' => 2,
                 'commands' => [['type' => 'start_timer', 'delay_seconds' => 60, 'cancellation_scope_id' => $scope]],
+            ])->assertOk()->assertJsonPath('checkpointed', true);
+        }
+        if ($childPolicy !== null) {
+            $this->withHeaders($this->headers())->postJson("/api/worker/workflow-tasks/{$task['task_id']}/cancellation-scopes/checkpoint", [
+                'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
+                'checkpoint_id' => 'child-prefix', 'start_sequence' => 2,
+                'commands' => [['type' => 'start_child_workflow', 'workflow_type' => 'tests.external-greeting-workflow',
+                    'arguments' => \Workflow\Serializers\Serializer::serializeWithCodec('avro', ['child']),
+                    'payload_codec' => 'avro', 'cancellation_scope_id' => $scope, 'cancellation_policy' => $childPolicy]],
             ])->assertOk()->assertJsonPath('checkpointed', true);
         }
         $request = CancellationScopeRequests::request(WorkflowRun::query()->findOrFail($task['run_id']), $scope, '1.20', 30);

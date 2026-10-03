@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "42"
+  version: "43"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -1976,7 +1976,7 @@ components:
             properties:
               prepared: { const: true }
           then:
-            required: [workflow_run_id, preparation_history_event_id, scope_id, request_id, cancellation, sequence, call_kind, sequence_span, operation_sequence, operation_sequence_span, authority_deadline_at, activity_members, timer_members, wait_members, lease_owner, workflow_task_attempt, history_refresh_page_token]
+            required: [workflow_run_id, preparation_history_event_id, scope_id, request_id, cancellation, sequence, call_kind, sequence_span, operation_sequence, operation_sequence_span, authority_deadline_at, activity_members, timer_members, wait_members, child_members, lease_owner, workflow_task_attempt, history_refresh_page_token]
             properties:
               workflow_run_id: { type: string, minLength: 1 }
               preparation_history_event_id: { type: string, minLength: 1 }
@@ -2035,7 +2035,7 @@ components:
               history_refresh_page_token: { type: string, minLength: 1 }
               wait_members:
                 type: array
-                description: Preparation v3 freezes original wait occurrences, including untimed waits, and their timeout association without application payload bytes.
+                description: Preparation freezes original wait occurrences, including untimed waits, and their timeout association without application payload bytes.
                 items:
                   type: object
                   required: [kind, sequence, wait_id, timer_id, descriptor_hash]
@@ -2044,6 +2044,20 @@ components:
                     sequence: { type: integer, minimum: 1 }
                     wait_id: { type: string, minLength: 1 }
                     timer_id: { type: [string, "null"], minLength: 1 }
+                    descriptor_hash: { type: string, pattern: "^[a-f0-9]{64}$" }
+              child_members:
+                type: array
+                description: Preparation v4 freezes child call identity, instance, original typed-history run target and cancellation policy. The snapshot grants no child effect or delivery authority. Child dispatch remains unavailable until its committed receipt barrier is implemented.
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [sequence, child_call_id, child_workflow_instance_id, child_workflow_run_id, cancellation_policy, descriptor_hash]
+                  properties:
+                    sequence: { type: integer, minimum: 1 }
+                    child_call_id: { type: string, minLength: 1 }
+                    child_workflow_instance_id: { type: string, minLength: 1 }
+                    child_workflow_run_id: { type: string, minLength: 1 }
+                    cancellation_policy: { type: string, enum: [try_cancel, wait_cancellation_completed, abandon] }
                     descriptor_hash: { type: string, pattern: "^[a-f0-9]{64}$" }
     CancellationScopeOpeningRequest:
       type: object
