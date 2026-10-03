@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "35"
+  version: "36"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -34,6 +34,15 @@ x-durable-workflow-cancellation-scope-admission:
   prepared_local_surfaces: [single_prepare, single_recover, atomic_group_checkpoint]
   unsupported_backend: { status: 409, reason: cancellation_scope_membership_unavailable, recorded: false }
   stream_effects: successful_admission_only_in_same_outer_transaction
+x-durable-workflow-cancellation-scope-opening:
+  minimum_protocol_version: "1.20"
+  status: unfrozen_candidate_opening_only
+  required_backend_role: CancellationScopeTaskBridge
+  scope_execution_capability: false
+  authority: [authenticated_namespace, original_capable_workflow_claim, fresh_worker_registration]
+  lock_order: [run, task, worker_registration]
+  claim_released: false
+  replay: identical_parent_and_shield_reuses_canonical_history_identity
 x-durable-workflow-cooperative-cancellation-contract:
   minimum_protocol_version: "1.20"
   worker_capability: cooperative_cancellation
@@ -456,6 +465,33 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/CooperativeCancellationDeliveryResponse" }
+        "404": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+        "422": { $ref: "#/components/responses/WorkerError" }
+  /worker/workflow-tasks/{taskId}/cancellation-scopes/open:
+    post:
+      operationId: openWorkflowCancellationScope
+      tags: [workflow-tasks]
+      x-durable-workflow-minimum-protocol-version: "1.20"
+      x-durable-workflow-worker-capability: cooperative_cancellation
+      description: >-
+        Unfrozen candidate admission. Commit a canonical scope before entering its body under the original issued workflow claim.
+        An identical retry reuses its history and scope identities without releasing or renewing the claim.
+        This requires the optional installed CancellationScopeTaskBridge and does not advertise scope execution or delivery support.
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CancellationScopeOpeningRequest" }
+      responses:
+        "200":
+          description: Canonical opening committed or identical replay reused.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CancellationScopeOpeningResponse" }
         "404": { $ref: "#/components/responses/WorkerError" }
         "409": { $ref: "#/components/responses/WorkerError" }
         "422": { $ref: "#/components/responses/WorkerError" }
@@ -1770,6 +1806,33 @@ components:
                 operation_sequence: { type: "null" }
                 operation_sequence_span: { type: "null" }
                 reason: { type: string, enum: [cancellation_waiting_for_child, cancellation_waiting_for_activity] }
+    CancellationScopeOpeningRequest:
+      type: object
+      required: [lease_owner, workflow_task_attempt, sequence]
+      properties:
+        lease_owner: { type: string, minLength: 1, maxLength: 255 }
+        workflow_task_attempt: { type: integer, minimum: 1 }
+        sequence: { type: integer, minimum: 1 }
+        parent_scope_id: { type: string, minLength: 1, maxLength: 255, default: root }
+        shield_parent: { type: boolean, default: false }
+    CancellationScopeOpeningResponse:
+      allOf:
+        - $ref: "#/components/schemas/WorkerEnvelope"
+        - type: object
+          required: [opened, duplicate, claim_released, task_id, workflow_run_id, history_event_id, scope_id, parent_scope_id, shield_parent, sequence, created_task_ids, reason]
+          properties:
+            opened: { type: boolean, const: true }
+            duplicate: { type: boolean }
+            claim_released: { type: boolean, const: false }
+            task_id: { type: string, minLength: 1 }
+            workflow_run_id: { type: string, minLength: 1 }
+            history_event_id: { type: string, minLength: 1 }
+            scope_id: { type: string, minLength: 1 }
+            parent_scope_id: { type: string, minLength: 1 }
+            shield_parent: { type: boolean }
+            sequence: { type: integer, minimum: 1 }
+            created_task_ids: { type: array, maxItems: 0 }
+            reason: { type: "null" }
     PreparedLocalClaimRequest:
       type: object
       required: [lease_owner, workflow_task_attempt]

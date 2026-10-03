@@ -2,6 +2,7 @@
 
 namespace Tests\Source;
 
+use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
 use App\Support\CooperativeCancellationPolicy;
 use App\Support\NamespaceExternalPayloadStorage;
@@ -11,9 +12,11 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\ExternalGreetingWorkflow;
+use Tests\Support\OpenApiSchema;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\CancellationScopeAdmission;
+use Workflow\V2\Contracts\CancellationScopeTaskBridge;
 use Workflow\V2\Contracts\PreparedLocalActivityTaskBridge;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Models\ActivityAttempt;
@@ -40,6 +43,164 @@ final class CancellationScopeAdmissionTest extends TestCase
         ]);
         WorkflowNamespace::query()->create(['name' => 'default', 'retention_days' => 30, 'status' => 'active']);
         $this->assertTrue(class_exists(CancellationScopeHistory::class));
+    }
+
+    public function test_scope_opening_records_once_and_preserves_the_live_claim(): void
+    {
+        $task = $this->claim();
+        $claim = WorkflowTask::query()->findOrFail($task['task_id']);
+        $originalLease = $claim->lease_expires_at->toISOString();
+        $before = WorkflowHistoryEvent::query()->count();
+        $response = $this->openScope($task)->assertOk()->assertJsonPath('opened', true)
+            ->assertJsonPath('duplicate', false)->assertJsonPath('claim_released', false)
+            ->assertJsonPath('parent_scope_id', 'root')->assertJsonPath('shield_parent', false)
+            ->assertJsonPath('created_task_ids', []);
+        OpenApiSchema::fromFile(resource_path('platform-protocol-specs/worker-protocol-api.openapi.yaml'))
+            ->assertReferenceMatches('#/components/schemas/CancellationScopeOpeningResponse/allOf/1', json_decode($response->getContent(), flags: JSON_THROW_ON_ERROR));
+        $opened = $response->json();
+        $this->assertSame($before + 1, WorkflowHistoryEvent::query()->count());
+        $this->openScope($task)->assertOk()->assertJsonPath('duplicate', true)
+            ->assertJsonPath('history_event_id', $opened['history_event_id'])->assertJsonPath('scope_id', $opened['scope_id']);
+        $this->assertSame($before + 1, WorkflowHistoryEvent::query()->count());
+        $this->assertSame('leased', $claim->refresh()->status->value);
+        $this->assertSame($originalLease, $claim->lease_expires_at->toISOString());
+        $this->complete($task, $opened['scope_id'], 'start_timer')->assertOk()->assertJsonPath('recorded', true);
+        $this->assertSame($opened['scope_id'], WorkflowHistoryEvent::query()->where('event_type', 'TimerScheduled')->sole()->payload['cancellation_scope_id']);
+    }
+
+    public function test_nested_shield_is_recorded_and_changed_replay_is_refused(): void
+    {
+        $task = $this->claim();
+        $parent = $this->openScope($task)->assertOk()->json('scope_id');
+        $nested = $this->openScope($task, ['sequence' => 2, 'parent_scope_id' => $parent, 'shield_parent' => true])
+            ->assertOk()->assertJsonPath('parent_scope_id', $parent)->assertJsonPath('shield_parent', true)->json('scope_id');
+        $this->assertNotSame($parent, $nested);
+        $before = WorkflowHistoryEvent::query()->count();
+        $this->openScope($task, ['sequence' => 2, 'parent_scope_id' => $parent, 'shield_parent' => false])
+            ->assertStatus(409)->assertJsonPath('reason', 'cancellation_scope_replay_mismatch');
+        $this->assertSame($before, WorkflowHistoryEvent::query()->count());
+    }
+
+    public function test_replacement_claim_reuses_the_scope_boundary_and_fences_the_old_attempt(): void
+    {
+        $task = $this->claim();
+        $opened = $this->openScope($task)->assertOk()->json();
+        WorkflowTask::query()->findOrFail($task['task_id'])->forceFill(['lease_expires_at' => now()->subSecond()])->save();
+        $replacement = $this->withHeaders($this->headers())->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => $task['lease_owner'], 'task_queue' => 'scope-admission',
+        ])->assertOk()->json('task');
+        $this->assertSame($task['task_id'], $replacement['task_id']);
+        $this->assertSame($task['workflow_task_attempt'] + 1, $replacement['workflow_task_attempt']);
+        $before = WorkflowHistoryEvent::query()->count();
+        $this->openScope($replacement)->assertOk()->assertJsonPath('duplicate', true)
+            ->assertJsonPath('history_event_id', $opened['history_event_id'])->assertJsonPath('scope_id', $opened['scope_id']);
+        $this->openScope($task)->assertStatus(409)->assertJsonPath('reason', 'workflow_task_attempt_mismatch');
+        $this->assertSame($before, WorkflowHistoryEvent::query()->count());
+    }
+
+    public static function refusedScopeOpenings(): array
+    {
+        return [
+            'wrong owner' => [['lease_owner' => 'other-worker'], 'lease_owner_mismatch'],
+            'wrong attempt' => [['workflow_task_attempt' => 99], 'workflow_task_attempt_mismatch'],
+            'unknown parent' => [['parent_scope_id' => 'foreign-scope'], 'cancellation_scope_parent_not_recorded'],
+            'future sequence' => [['sequence' => 2], 'cancellation_scope_sequence_mismatch'],
+        ];
+    }
+
+    #[DataProvider('refusedScopeOpenings')]
+    public function test_invalid_scope_opening_cannot_mutate_history(array $overrides, string $reason): void
+    {
+        $task = $this->claim();
+        $before = WorkflowHistoryEvent::query()->count();
+        $this->openScope($task, $overrides)->assertStatus(409)->assertJsonPath('opened', false)->assertJsonPath('reason', $reason);
+        $this->assertSame($before, WorkflowHistoryEvent::query()->count());
+    }
+
+    public function test_foreign_namespace_scope_opening_does_not_reveal_or_mutate_the_task(): void
+    {
+        $task = $this->claim();
+        WorkflowNamespace::query()->create(['name' => 'other', 'retention_days' => 30, 'status' => 'active']);
+        $before = WorkflowHistoryEvent::query()->count();
+        $this->openScope($task, namespace: 'other')->assertNotFound()->assertJsonPath('reason', 'task_not_found');
+        $this->assertSame($before, WorkflowHistoryEvent::query()->count());
+    }
+
+    public function test_stale_worker_cannot_open_a_scope_with_a_live_task_lease(): void
+    {
+        $task = $this->claim();
+        WorkerRegistration::query()->where('worker_id', $task['lease_owner'])->update(['status' => 'inactive']);
+        $before = WorkflowHistoryEvent::query()->count();
+        $this->openScope($task)->assertStatus(409)->assertJsonPath('reason', 'stale_worker_registration');
+        $this->assertSame($before, WorkflowHistoryEvent::query()->count());
+    }
+
+    public function test_expired_claim_cannot_open_or_replay_a_scope(): void
+    {
+        $task = $this->claim();
+        $this->openScope($task)->assertOk();
+        $before = WorkflowHistoryEvent::query()->count();
+        WorkflowTask::query()->findOrFail($task['task_id'])->forceFill(['lease_expires_at' => now()->subSecond()])->save();
+        $this->openScope($task)->assertStatus(409)->assertJsonPath('reason', 'cancellation_scope_workflow_claim_mismatch');
+        $this->assertSame($before, WorkflowHistoryEvent::query()->count());
+    }
+
+    public function test_incompatible_issued_claim_cannot_be_upgraded_by_current_registration(): void
+    {
+        $task = $this->claim();
+        $claim = WorkflowTask::query()->findOrFail($task['task_id']);
+        $payload = $claim->payload;
+        $payload['_server_workflow_claim']['capabilities'] = [];
+        $claim->forceFill(['payload' => $payload])->save();
+        $before = WorkflowHistoryEvent::query()->count();
+        $this->openScope($task)->assertStatus(409)->assertJsonPath('reason', 'active_claim_cancellation_not_supported');
+        $this->assertSame($before, WorkflowHistoryEvent::query()->count());
+    }
+
+    public function test_scope_opening_rejects_legacy_protocol_and_missing_optional_backend(): void
+    {
+        $task = $this->claim();
+        $this->openScope($task, version: '1.19')->assertStatus(409)->assertJsonPath('reason', 'cancellation_scope_requires_protocol_1_20');
+        $this->assertInstanceOf(CancellationScopeTaskBridge::class, app(WorkflowTaskBridge::class));
+        $this->app->instance(WorkflowTaskBridge::class, \Mockery::mock(WorkflowTaskBridge::class));
+        $this->openScope($task)->assertStatus(409)->assertJsonPath('reason', 'cancellation_scope_opening_unavailable')
+            ->assertJsonPath('unavailable', ['installed_runtime_scope_opening']);
+    }
+
+    public function test_scope_opening_requires_authenticated_worker_authority(): void
+    {
+        $task = $this->claim();
+        config(['server.auth.driver' => 'token', 'server.auth.token' => 'scope-test-token']);
+        $before = WorkflowHistoryEvent::query()->count();
+        $this->openScope($task)->assertUnauthorized();
+        $this->assertSame($before, WorkflowHistoryEvent::query()->count());
+        $this->withHeaders(['Authorization' => 'Bearer scope-test-token']);
+        $this->openScope($task)->assertOk()->assertJsonPath('opened', true);
+    }
+
+    public static function malformedScopeOpenings(): array
+    {
+        return [
+            [['sequence' => 0]], [['workflow_task_attempt' => null]], [['lease_owner' => '']],
+            [['parent_scope_id' => '']], [['parent_scope_id' => str_repeat('x', 256)]], [['shield_parent' => 'invalid']],
+        ];
+    }
+
+    #[DataProvider('malformedScopeOpenings')]
+    public function test_malformed_scope_opening_is_rejected_before_history(array $overrides): void
+    {
+        $task = $this->claim();
+        $before = WorkflowHistoryEvent::query()->count();
+        $this->openScope($task, $overrides)->assertStatus(422);
+        $this->assertSame($before, WorkflowHistoryEvent::query()->count());
+    }
+
+    private function openScope(array $task, array $overrides = [], string $version = '1.20', string $namespace = 'default')
+    {
+        return $this->withHeaders(['X-Namespace' => $namespace, WorkerProtocol::HEADER => $version])
+            ->postJson("/api/worker/workflow-tasks/{$task['task_id']}/cancellation-scopes/open", array_replace([
+                'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'], 'sequence' => 1,
+            ], $overrides));
     }
 
     public static function operations(): array
