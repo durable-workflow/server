@@ -38,6 +38,8 @@ use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\ActivityCancellationAcknowledgement;
+use Workflow\V2\Support\ActivityCancellationCompletion;
+use Workflow\V2\Support\ActivityCancellationContext;
 use Workflow\V2\Support\ActivityRowLockOrder;
 use Workflow\V2\Support\CooperativeCancellationDelivery;
 use Workflow\V2\Support\WorkerProtocolVersion;
@@ -617,33 +619,60 @@ class ActivityTaskController
             return null;
         }
         $run = WorkflowRun::query()->where('namespace', $namespace)->find($execution->workflow_run_id);
-        if ($run === null || ! is_string($run->cancellation_request_command_id)) {
+        if ($run === null) {
             return null;
         }
-        $context = CooperativeCancellationDelivery::context($run);
-        if ($context === null || $context->requestId !== $run->cancellation_request_command_id) {
-            return null;
-        }
-        $events = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)
-            ->where('workflow_command_id', $context->requestId)
-            ->where('payload->activity_execution_id', $executionId)
-            ->whereIn('event_type', [HistoryEventType::ActivityCancelled->value, HistoryEventType::ActivityCancellationAcknowledged->value])
+        // Observe this execution's original fence, even when no whole-run
+        // request exists or a later request owns the run's cleanup. Keep this
+        // frequent worker observation bounded to the relevant cancellation facts.
+        $events = $run->historyEvents()->where(function ($query) use ($run, $executionId): void {
+            $query->where(function ($query) use ($executionId): void {
+                $query->where('payload->activity_execution_id', $executionId)
+                    ->whereIn('event_type', [HistoryEventType::ActivityCancelled->value, HistoryEventType::ActivityCancellationAcknowledged->value]);
+            })->orWhere(function ($query) use ($run): void {
+                $query->where('event_type', HistoryEventType::CooperativeCancellationRequested->value)
+                    ->where('workflow_command_id', $run->cancellation_request_command_id);
+            });
+        })
             ->get();
-        $cancelled = $events->first(fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ActivityCancelled
-            && ($event->payload['activity_attempt_id'] ?? null) === $attemptId);
+        $run->setRelation('historyEvents', $events);
+        $cancelled = $events->first(fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ActivityCancelled);
         $snapshot = $cancelled?->payload['activity_attempt'] ?? null;
-        if (! is_array($snapshot) || ($snapshot['id'] ?? null) !== $attemptId
+        if (! is_array($snapshot) || ($cancelled->payload['activity_attempt_id'] ?? null) !== $attemptId
+            || ($snapshot['id'] ?? null) !== $attemptId
             || ($snapshot['task_id'] ?? null) !== $taskId || ($snapshot['lease_owner'] ?? null) !== $leaseOwner
             || ($snapshot['activity_execution_id'] ?? null) !== $executionId || ($snapshot['status'] ?? null) !== 'cancelled') {
             return null;
         }
-        $ack = $events->first(fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ActivityCancellationAcknowledged
-            && ($event->payload['cancellation_history_event_id'] ?? null) === $cancelled->id
-            && ($event->payload['activity_attempt_id'] ?? null) === $attemptId);
+        $hasCanonicalContext = class_exists(ActivityCancellationContext::class)
+            && method_exists(ActivityCancellationContext::class, 'forEvent')
+            && method_exists(ActivityCancellationContext::class, 'rootRequestId');
+        $context = $hasCanonicalContext
+            ? ActivityCancellationContext::forEvent($run, $cancelled)
+            : (array_key_exists('cancellation_scope', $cancelled->payload) ? null : CooperativeCancellationDelivery::context($run));
+        if ($context === null || $cancelled->workflow_command_id !== $context->requestId) {
+            return null;
+        }
+        $rootRequestId = $hasCanonicalContext ? ActivityCancellationContext::rootRequestId($context) : $context->rootRequestId;
+        $ack = class_exists(ActivityCancellationCompletion::class) && method_exists(ActivityCancellationCompletion::class, 'stopReceipt')
+            ? ActivityCancellationCompletion::stopReceipt($run, $cancelled)
+            : $events->first(fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ActivityCancellationAcknowledged
+                && $event->sequence > $cancelled->sequence
+                && $event->workflow_command_id === $context->requestId
+                && ($event->payload['sequence'] ?? null) === ($cancelled->payload['sequence'] ?? null)
+                && ($event->payload['activity_execution_id'] ?? null) === $executionId
+                && ($event->payload['activity_attempt_id'] ?? null) === $attemptId
+                && ($event->payload['lease_owner'] ?? null) === $leaseOwner
+                && ($event->payload['cancellation_history_event_id'] ?? null) === $cancelled->id
+                && ($event->payload['request_id'] ?? null) === $context->requestId
+                && ($event->payload['root_request_id'] ?? null) === $rootRequestId
+                && ($event->payload['cleanup_deadline_at'] ?? null) === $context->deadline()->toISOString()
+                && ($event->payload['callback_state'] ?? null) === 'stopped'
+                && ($event->payload['evidence_source'] ?? null) === 'activity_worker');
 
         return [
             'request_id' => $context->requestId,
-            'root_request_id' => $context->rootRequestId,
+            'root_request_id' => $rootRequestId,
             'cleanup_deadline_at' => $context->deadline()->toISOString(),
             'cancellation_history_event_id' => $cancelled->id,
             'callback_state' => $ack === null ? 'unknown' : 'stopped',

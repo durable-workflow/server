@@ -331,6 +331,34 @@ class ActivityAttemptStatusTest extends TestCase
             ->assertJsonPath('recorded', false);
     }
 
+    public static function mismatchedStopReceipts(): array
+    {
+        return [
+            'wrong owner' => ['lease_owner', 'other-owner'],
+            'wrong root' => ['root_request_id', 'other-root'],
+            'changed original deadline' => ['cleanup_deadline_at', '2099-01-01T00:00:00.000000Z'],
+            'callback still running' => ['callback_state', 'running'],
+            'wrong evidence source' => ['evidence_source', 'workflow_worker'],
+        ];
+    }
+
+    #[DataProvider('mismatchedStopReceipts')]
+    public function test_mismatched_stop_receipt_cannot_report_whole_run_callback_as_stopped(string $field, mixed $value): void
+    {
+        $this->requireAcknowledgementBackend();
+        $task = $this->lease(capable: true);
+        $request = $this->cancelCooperatively($task);
+        $ack = $this->acknowledge($task, $request['request_id'])->assertOk()->json('history_event_id');
+        $event = WorkflowHistoryEvent::query()->findOrFail($ack);
+        $payload = $event->payload;
+        $payload[$field] = $value;
+        $event->forceFill(['payload' => $payload])->save();
+        $before = $this->snapshot($task);
+        $this->observe($task)->assertOk()->assertJsonPath('cancellation_acknowledgement.callback_state', 'unknown')
+            ->assertJsonPath('cancellation_acknowledgement.history_event_id', null);
+        $this->assertSame($before, $this->snapshot($task));
+    }
+
     public function test_late_stop_receipt_cannot_renew_original_deadline(): void
     {
         $this->requireAcknowledgementBackend();
