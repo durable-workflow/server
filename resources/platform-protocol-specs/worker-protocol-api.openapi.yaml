@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "41"
+  version: "42"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -1959,12 +1959,24 @@ components:
                   timer_id: { type: string, minLength: 1 }
                   fenced: { type: boolean }
                   history_event_id: { type: [string, "null"], minLength: 1 }
+            wait_cancellations:
+              type: array
+              description: Original prepared signal and condition wait decisions. A cancellation and associated timeout fence commit atomically. Earlier natural outcomes retain cancelled=false. Each receipt keeps its original history identity through retry or replacement.
+              items:
+                type: object
+                required: [kind, sequence, wait_id, cancelled, history_event_id]
+                properties:
+                  kind: { type: string, enum: [signal, condition] }
+                  sequence: { type: integer, minimum: 1 }
+                  wait_id: { type: string, minLength: 1 }
+                  cancelled: { type: boolean }
+                  history_event_id: { type: string, minLength: 1 }
           if:
             required: [prepared]
             properties:
               prepared: { const: true }
           then:
-            required: [workflow_run_id, preparation_history_event_id, scope_id, request_id, cancellation, sequence, call_kind, sequence_span, operation_sequence, operation_sequence_span, authority_deadline_at, activity_members, timer_members, lease_owner, workflow_task_attempt, history_refresh_page_token]
+            required: [workflow_run_id, preparation_history_event_id, scope_id, request_id, cancellation, sequence, call_kind, sequence_span, operation_sequence, operation_sequence_span, authority_deadline_at, activity_members, timer_members, wait_members, lease_owner, workflow_task_attempt, history_refresh_page_token]
             properties:
               workflow_run_id: { type: string, minLength: 1 }
               preparation_history_event_id: { type: string, minLength: 1 }
@@ -2021,6 +2033,18 @@ components:
               lease_owner: { type: string, minLength: 1 }
               workflow_task_attempt: { type: integer, minimum: 1 }
               history_refresh_page_token: { type: string, minLength: 1 }
+              wait_members:
+                type: array
+                description: Preparation v3 freezes original wait occurrences, including untimed waits, and their timeout association without application payload bytes.
+                items:
+                  type: object
+                  required: [kind, sequence, wait_id, timer_id, descriptor_hash]
+                  properties:
+                    kind: { type: string, enum: [signal, condition] }
+                    sequence: { type: integer, minimum: 1 }
+                    wait_id: { type: string, minLength: 1 }
+                    timer_id: { type: [string, "null"], minLength: 1 }
+                    descriptor_hash: { type: string, pattern: "^[a-f0-9]{64}$" }
     CancellationScopeOpeningRequest:
       type: object
       required: [lease_owner, workflow_task_attempt, sequence]

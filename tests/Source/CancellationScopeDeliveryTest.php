@@ -230,6 +230,55 @@ final class CancellationScopeDeliveryTest extends TestCase
         $this->assertSame(0, WorkflowHistoryEvent::query()->where('event_type', 'TimerFired')->count());
     }
 
+    #[DataProvider('waits')]
+    public function test_scoped_wait_delivery_retains_original_membership_and_claim(string $kind, ?int $timeout): void
+    {
+        [$task, $scope, $request] = $this->claim();
+        $run = WorkflowRun::query()->findOrFail($task['run_id']);
+        $command = array_filter(['type' => 'open_'.$kind.'_wait', 'cancellation_scope_id' => $scope,
+            'timeout_seconds' => $timeout, ...($kind === 'signal' ? ['signal_name' => 'ready'] : ['condition_key' => 'ready'])],
+            static fn (mixed $value): bool => $value !== null);
+        $this->withHeaders($this->headers())->postJson("/api/worker/workflow-tasks/{$task['task_id']}/complete", [
+            'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
+            'commands' => [$command],
+        ])->assertOk();
+        $this->assertSame(TaskStatus::Completed, WorkflowTask::query()->findOrFail($task['task_id'])->status);
+        $run->tasks()->create(['namespace' => $run->namespace, 'task_type' => TaskType::Workflow, 'status' => TaskStatus::Ready,
+            'available_at' => now(), 'connection' => $run->connection, 'queue' => $run->queue, 'compatibility' => $run->compatibility]);
+        $task = $this->withHeaders($this->headers())->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'delivery-owner', 'task_queue' => 'scoped-delivery',
+        ])->assertOk()->json('task');
+        $before = WorkflowTask::query()->findOrFail($task['task_id'])->getRawOriginal();
+        $prepared = $this->mutate('prepare', $task, $scope, $request, ['call_kind' => $kind])->assertOk()->json();
+        $this->assertContract($prepared);
+        $this->assertCount(1, $prepared['wait_members']);
+        $this->assertSame($kind, $prepared['wait_members'][0]['kind']);
+        $this->assertSame($timeout !== null, $prepared['wait_members'][0]['timer_id'] !== null);
+        $response = $this->mutate('deliver', $task, $scope, $request, ['call_kind' => $kind])->assertOk()
+            ->assertJsonPath('delivered', true)->assertJsonPath('wait_cancellations.0.cancelled', true)->json();
+        $this->assertContract($response);
+        $duplicate = $this->mutate('deliver', $task, $scope, $request, ['call_kind' => $kind])->assertOk()->json();
+        $this->assertSame($response['wait_cancellations'], $duplicate['wait_cancellations']);
+        $this->assertSame($response['history_event_id'], $duplicate['history_event_id']);
+        $this->assertSame($prepared['wait_members'], $duplicate['wait_members']);
+        $this->assertSame($prepared['authority_deadline_at'], $duplicate['authority_deadline_at']);
+        $this->assertSame($before, WorkflowTask::query()->findOrFail($task['task_id'])->getRawOriginal());
+        $marker = WorkflowHistoryEvent::query()->where('event_type', $kind === 'signal' ? 'SignalWaitCancelled' : 'ConditionWaitCancelled')->sole();
+        $this->assertSame($prepared['preparation_history_event_id'], $marker->payload['cancellation_scope']['preparation_history_event_id']);
+        if ($timeout !== null) {
+            $this->assertSame(TimerStatus::Cancelled, $run->timers()->sole()->status);
+            $this->assertSame(TaskStatus::Cancelled, $run->tasks()->where('task_type', TaskType::Timer)->sole()->status);
+        }
+    }
+
+    public static function waits(): iterable
+    {
+        foreach (['signal', 'condition'] as $kind) {
+            yield $kind.':untimed' => [$kind, null];
+            yield $kind.':timed' => [$kind, 5];
+        }
+    }
+
     private function claim(bool $timer = false): array
     {
         $this->withHeaders($this->headers('operator'))->postJson('/api/workflows', [
