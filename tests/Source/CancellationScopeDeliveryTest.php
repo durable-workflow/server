@@ -9,6 +9,7 @@ use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\PreparedLocalActivityPolicy;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -51,7 +52,7 @@ final class CancellationScopeDeliveryTest extends TestCase
         WorkflowNamespace::query()->create(['name' => 'default', 'retention_days' => 30, 'status' => 'active']);
     }
 
-    public function test_preparation_and_delivery_reuse_first_boundary_without_releasing_or_renewing_claim(): void
+    public function test_preparation_and_delivery_reuse_first_boundary_with_recoverable_original_claim(): void
     {
         [$task, $scope, $request] = $this->claim();
         $before = WorkflowTask::query()->findOrFail($task['task_id'])->getRawOriginal();
@@ -63,10 +64,11 @@ final class CancellationScopeDeliveryTest extends TestCase
             ->assertJsonPath('preparation_history_event_id', $prepared['preparation_history_event_id'])
             ->assertJsonPath('cancellation', $prepared['cancellation'])
             ->assertJsonPath('authority_deadline_at', $prepared['authority_deadline_at']);
+        $this->assertSame($before, WorkflowTask::query()->findOrFail($task['task_id'])->getRawOriginal());
         $delivery = $this->mutate('deliver', $task, $scope, $request)->assertOk()->assertJsonPath('delivered', true)->json();
         $this->assertContract($delivery);
         $this->mutate('deliver', $task, $scope, $request)->assertOk()->assertJsonPath('history_event_id', $delivery['history_event_id']);
-        $this->assertSame($before, WorkflowTask::query()->findOrFail($task['task_id'])->getRawOriginal());
+        $this->assertRecoverableHostingClaim($before, $task['task_id']);
         $this->assertSame(1, WorkflowHistoryEvent::query()->where('event_type', 'CancellationScopeDeliveryPrepared')->count());
         $this->assertSame(1, WorkflowHistoryEvent::query()->where('event_type', 'CancellationScopeDelivered')->count());
         $this->assertSame($prepared['preparation_history_event_id'], $delivery['preparation_history_event_id']);
@@ -219,7 +221,7 @@ final class CancellationScopeDeliveryTest extends TestCase
             ->assertJsonPath('preparation_history_event_id', $prepared['preparation_history_event_id'])->json();
         $this->assertContract($response);
         $this->assertContract($prepared);
-        $this->assertSame($before, WorkflowTask::query()->findOrFail($task['task_id'])->getRawOriginal());
+        $this->assertRecoverableHostingClaim($before, $task['task_id']);
         $duplicate = $this->mutate('deliver', $task, $scope, $request, ['call_kind' => 'timer'])->assertOk()->json();
         $this->assertSame($response['timer_cancellations'], $duplicate['timer_cancellations']);
         $this->assertSame($response['history_event_id'], $duplicate['history_event_id']);
@@ -270,7 +272,7 @@ final class CancellationScopeDeliveryTest extends TestCase
         $this->assertSame($response['history_event_id'], $duplicate['history_event_id']);
         $this->assertSame($prepared['wait_members'], $duplicate['wait_members']);
         $this->assertSame($prepared['authority_deadline_at'], $duplicate['authority_deadline_at']);
-        $this->assertSame($before, WorkflowTask::query()->findOrFail($task['task_id'])->getRawOriginal());
+        $this->assertRecoverableHostingClaim($before, $task['task_id']);
         $marker = WorkflowHistoryEvent::query()->where('event_type', $kind === 'signal' ? 'SignalWaitCancelled' : 'ConditionWaitCancelled')->sole();
         $this->assertSame($prepared['preparation_history_event_id'], $marker->payload['cancellation_scope']['preparation_history_event_id']);
         if ($timeout !== null) {
@@ -350,7 +352,7 @@ final class CancellationScopeDeliveryTest extends TestCase
             $this->assertTrue($receipt['ready']);
             $this->assertSame($delivery['history_event_id'], $duplicate['history_event_id']);
         }
-        $this->assertSame($before, WorkflowTask::query()->findOrFail($task['task_id'])->getRawOriginal());
+        $this->assertRecoverableHostingClaim($before, $task['task_id']);
         $this->assertSame(1, WorkflowHistoryEvent::query()->where('event_type', 'ChildCancellationRequested')->count());
         $this->assertSame(1, WorkflowHistoryEvent::query()->where('event_type', 'CancellationScopeDelivered')->count());
     }
@@ -599,6 +601,17 @@ final class CancellationScopeDeliveryTest extends TestCase
     {
         return ['Authorization' => 'Bearer fixture-'.$role, 'X-Namespace' => $namespace,
             'X-Durable-Workflow-Control-Plane-Version' => '2', WorkerProtocol::HEADER => $version];
+    }
+
+    private function assertRecoverableHostingClaim(array $before, string $taskId): void
+    {
+        $claim = WorkflowTask::query()->findOrFail($taskId);
+        $after = $claim->getRawOriginal();
+        $this->assertTrue($claim->lease_expires_at->gt(now()));
+        $this->assertTrue($claim->lease_expires_at->lte(now()->addSeconds(10)));
+        $this->assertTrue($claim->lease_expires_at->lt(Carbon::parse($before['lease_expires_at'], 'UTC')));
+        unset($before['lease_expires_at'], $before['updated_at'], $after['lease_expires_at'], $after['updated_at']);
+        $this->assertSame($before, $after);
     }
 
     private function assertContract(array $response): void
