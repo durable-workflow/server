@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "44"
+  version: "45"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -101,6 +101,18 @@ x-durable-workflow-prepared-local-activity-contract:
   renewal: atomic_workflow_and_local_attempt_leases_without_application_heartbeat
   application_heartbeat: canonical_progress_and_heartbeat_timeout_without_lease_renewal
   shielded_cleanup: canonical_request_and_delivery_identity_with_runtime_owned_original_deadline
+  scoped_cleanup:
+    status: unfrozen_candidate_prepared_local_only
+    proof: [scope_id, request_id, delivery_history_event_id]
+    authority: canonical_original_delivery_and_preparation_with_same_root_context
+    membership: original_scope_or_original_unshielded_descendant
+    snapshot: [scope_id, operation_scope_id, request_id, root_request_id, delivery_history_event_id, preparation_history_event_id, cleanup_deadline_at, authority_deadline_at]
+    admission: after_original_authored_delivery_range_and_before_payload_resolution_or_any_group_sibling
+    worker_deadline: forbidden
+    later_limits: may_shorten_current_authority_without_rewriting_snapshot
+    whole_run_cancellation: still_fences_scoped_cleanup
+    hosting_claim: renewable_interval_separate_from_subtree_deadline
+    scope_execution_capability: false
   cancellation: original_root_identity_and_deadline_without_releasing_cleanup_claim
   stop_acknowledgement: original_supervisor_reports_only_after_callback_is_stopped_and_joined
   expired_callback_stop: unknown_until_original_supervisor_reports_join
@@ -2149,13 +2161,7 @@ components:
         schedule_to_close_timeout: { type: [integer, "null"], minimum: 1 }
         heartbeat_timeout: { type: [integer, "null"], minimum: 1 }
         cancellation_cleanup:
-          type: object
-          additionalProperties: false
-          required: [request_id, delivery_history_event_id]
-          description: Explicit shielded cleanup after canonical delivery. The runtime supplies the original root identity and deadline.
-          properties:
-            request_id: { type: string, minLength: 1 }
-            delivery_history_event_id: { type: string, minLength: 1 }
+          $ref: "#/components/schemas/PreparedLocalCleanupProof"
         parallel_group_id: { type: string, minLength: 1 }
         parallel_group_kind: { type: string, enum: [activity, mixed] }
         parallel_group_mode: { type: string, const: all }
@@ -2235,15 +2241,46 @@ components:
                 total: { type: [number, string], description: Nonnegative finite number or numeric string. }
                 unit: { type: string, minLength: 1, maxLength: 64 }
                 details: { type: object, maxProperties: 20 }
+    PreparedLocalCleanupProof:
+      description: Explicit cleanup after canonical delivery. A scoped proof names the original cancelled address, while cancellation_scope_id names the new operation's original scope or unshielded descendant. The runtime supplies the root identity and immutable budget. No worker-supplied deadline or snapshot field is accepted.
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [request_id, delivery_history_event_id]
+          properties:
+            request_id: { type: string, minLength: 1 }
+            delivery_history_event_id: { type: string, minLength: 1 }
+        - type: object
+          additionalProperties: false
+          required: [scope_id, request_id, delivery_history_event_id]
+          properties:
+            scope_id: { type: string, minLength: 1, maxLength: 255 }
+            request_id: { type: string, minLength: 1 }
+            delivery_history_event_id: { type: string, minLength: 1 }
     PreparedLocalCleanupSnapshot:
-      type: [object, "null"]
-      additionalProperties: false
-      required: [request_id, root_request_id, delivery_history_event_id, cleanup_deadline_at]
-      properties:
-        request_id: { type: string, minLength: 1 }
-        root_request_id: { type: string, minLength: 1 }
-        delivery_history_event_id: { type: string, minLength: 1 }
-        cleanup_deadline_at: { type: string, format: date-time }
+      description: Original runtime authority. The four-field root snapshot remains unchanged. A scoped snapshot binds the original delivery and preparation, new operation membership and captured finite ceiling. Current ancestor or run limits may shorten authority without changing this snapshot. It grants no permission after expiry, terminal closure or whole-run cancellation.
+      oneOf:
+        - type: "null"
+        - type: object
+          additionalProperties: false
+          required: [request_id, root_request_id, delivery_history_event_id, cleanup_deadline_at]
+          properties:
+            request_id: { type: string, minLength: 1 }
+            root_request_id: { type: string, minLength: 1 }
+            delivery_history_event_id: { type: string, minLength: 1 }
+            cleanup_deadline_at: { type: string, format: date-time }
+        - type: object
+          additionalProperties: false
+          required: [scope_id, operation_scope_id, request_id, root_request_id, delivery_history_event_id, preparation_history_event_id, cleanup_deadline_at, authority_deadline_at]
+          properties:
+            scope_id: { type: string, minLength: 1 }
+            operation_scope_id: { type: string, minLength: 1 }
+            request_id: { type: string, minLength: 1 }
+            root_request_id: { type: string, minLength: 1 }
+            delivery_history_event_id: { type: string, minLength: 1 }
+            preparation_history_event_id: { type: string, minLength: 1 }
+            cleanup_deadline_at: { type: string, format: date-time }
+            authority_deadline_at: { type: string, format: date-time }
     PreparedLocalOutcomeRequest:
       allOf:
         - $ref: "#/components/schemas/PreparedLocalClaimRequest"

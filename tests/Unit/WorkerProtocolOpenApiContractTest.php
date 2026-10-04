@@ -3,9 +3,11 @@
 namespace Tests\Unit;
 
 use App\Support\WorkerProtocol;
+use PHPUnit\Framework\AssertionFailedError;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Yaml\Yaml;
+use Tests\Support\OpenApiSchema;
 
 class WorkerProtocolOpenApiContractTest extends TestCase
 {
@@ -39,6 +41,40 @@ class WorkerProtocolOpenApiContractTest extends TestCase
             WorkerProtocol::VERSION,
             $this->spec['components']['schemas']['AdvertisedWorkerProtocolVersion']['const'],
         );
+    }
+
+    public function test_prepared_cleanup_contract_preserves_root_shapes_and_requires_scoped_authority(): void
+    {
+        $schema = OpenApiSchema::fromFile(dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-api.openapi.yaml');
+        $rootProof = ['request_id' => 'request', 'delivery_history_event_id' => 'delivery'];
+        $rootSnapshot = [...$rootProof, 'root_request_id' => 'root-request', 'cleanup_deadline_at' => '2026-10-04T00:00:30.000000Z'];
+        $scopedSnapshot = [...$rootSnapshot, 'scope_id' => 'scope', 'operation_scope_id' => 'child-scope',
+            'preparation_history_event_id' => 'preparation', 'authority_deadline_at' => '2026-10-04T00:00:15.000000Z'];
+        $schema->assertReferenceMatches('#/components/schemas/PreparedLocalCleanupProof', (object) $rootProof);
+        $schema->assertReferenceMatches('#/components/schemas/PreparedLocalCleanupProof', (object) [...$rootProof, 'scope_id' => 'scope']);
+        $schema->assertReferenceMatches('#/components/schemas/PreparedLocalCleanupSnapshot', null);
+        $schema->assertReferenceMatches('#/components/schemas/PreparedLocalCleanupSnapshot', (object) $rootSnapshot);
+        $schema->assertReferenceMatches('#/components/schemas/PreparedLocalCleanupSnapshot', (object) $scopedSnapshot);
+    }
+
+    public static function invalidPreparedCleanupAuthority(): iterable
+    {
+        $proof = ['scope_id' => 'scope', 'request_id' => 'request', 'delivery_history_event_id' => 'delivery'];
+        $snapshot = [...$proof, 'root_request_id' => 'root-request', 'operation_scope_id' => 'child-scope',
+            'preparation_history_event_id' => 'preparation', 'cleanup_deadline_at' => '2026-10-04T00:00:30.000000Z',
+            'authority_deadline_at' => '2026-10-04T00:00:15.000000Z'];
+        yield 'invented proof deadline' => ['PreparedLocalCleanupProof', [...$proof, 'cleanup_deadline_at' => 'later']];
+        yield 'null scope' => ['PreparedLocalCleanupProof', [...$proof, 'scope_id' => null]];
+        yield 'missing preparation' => ['PreparedLocalCleanupSnapshot', array_diff_key($snapshot, ['preparation_history_event_id' => true])];
+        yield 'missing ceiling' => ['PreparedLocalCleanupSnapshot', array_diff_key($snapshot, ['authority_deadline_at' => true])];
+    }
+
+    #[DataProvider('invalidPreparedCleanupAuthority')]
+    public function test_prepared_cleanup_contract_refuses_incomplete_or_worker_invented_authority(string $name, array $value): void
+    {
+        $this->expectException(AssertionFailedError::class);
+        OpenApiSchema::fromFile(dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-api.openapi.yaml')
+            ->assertReferenceMatches('#/components/schemas/'.$name, (object) $value);
     }
 
     public function test_http_and_stream_specs_publish_the_runtime_negotiation_floor(): void

@@ -5,6 +5,8 @@ namespace Tests\Source;
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
 use App\Support\CooperativeCancellationPolicy;
+use App\Support\NamespaceExternalPayloadStorage;
+use App\Support\PreparedLocalActivityPolicy;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Support\Facades\DB;
@@ -21,12 +23,15 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Jobs\RunTimerTask;
+use Workflow\V2\Models\ActivityAttempt;
+use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\CancellationScopeRequests;
 use Workflow\V2\Support\CooperativeCancellationDelivery;
+use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\WorkflowStub;
 
 /** Source-only preparation commits outside the test's transaction. */
@@ -357,7 +362,191 @@ final class CancellationScopeDeliveryTest extends TestCase
         }
     }
 
-    private function claim(bool $timer = false, ?string $childPolicy = null): array
+    public function test_scoped_cleanup_prepares_and_reuses_original_runtime_snapshot(): void
+    {
+        [$task, $scope, $request, $proof] = $this->cleanupClaim();
+        $response = $this->cleanupLocal($task, 'prepare', $scope, $proof)->assertOk()
+            ->assertJsonPath('prepared', true)->assertJsonPath('duplicate', false);
+        $first = $response->json();
+        $snapshot = $first['cancellation_cleanup'];
+        $this->assertCleanupContract($snapshot);
+        $this->assertSame($scope, $snapshot['scope_id']);
+        $this->assertSame($scope, $snapshot['operation_scope_id']);
+        $this->assertSame($request, $snapshot['request_id']);
+        $this->assertSame($proof['delivery_history_event_id'], $snapshot['delivery_history_event_id']);
+        $this->assertSame($snapshot['authority_deadline_at'], $first['schedule_to_close_deadline_at']);
+        $before = WorkflowHistoryEvent::query()->count();
+        $duplicate = $this->cleanupLocal($task, 'prepare', $scope, $proof)->assertOk()->assertJsonPath('duplicate', true)
+            ->assertJsonPath('activity_attempt_id', $first['activity_attempt_id'])->json();
+        $duplicateSnapshot = $duplicate['cancellation_cleanup'];
+        ksort($snapshot);
+        ksort($duplicateSnapshot);
+        $this->assertSame($snapshot, $duplicateSnapshot);
+        $this->assertSame($before, WorkflowHistoryEvent::query()->count());
+        $this->assertNull(WorkflowRun::query()->findOrFail($task['run_id'])->cancellation_request_command_id);
+    }
+
+    public function test_scoped_cleanup_recovery_keeps_original_proof_and_refuses_stale_publication(): void
+    {
+        [$task, $scope, , $proof] = $this->cleanupClaim();
+        $first = $this->cleanupLocal($task, 'prepare', $scope, $proof)->assertOk()->json();
+        ActivityAttempt::query()->findOrFail($first['activity_attempt_id'])->forceFill(['lease_expires_at' => now()->subSecond()])->save();
+        WorkflowTask::query()->findOrFail($task['task_id'])->forceFill(['lease_expires_at' => now()->subSecond()])->save();
+        $replacement = $this->withHeaders($this->headers())->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'delivery-owner', 'task_queue' => 'scoped-delivery',
+        ])->assertOk()->json('task');
+        $this->assertSame($task['task_id'], $replacement['task_id']);
+        $this->assertSame($task['workflow_task_attempt'] + 1, $replacement['workflow_task_attempt']);
+        $recovery = $this->cleanupLocal($replacement, 'recover', $scope, $proof)->assertOk()
+            ->assertJsonPath('recovered', true)->assertJsonPath('claim_released', true)
+            ->assertJsonPath('callback_stop_state', 'unknown')->json();
+        $snapshot = ActivityExecution::query()->findOrFail($first['activity_execution_id'])->activity_options['cancellation_cleanup'];
+        $this->assertCleanupContract($snapshot);
+        $expected = $first['cancellation_cleanup'];
+        ksort($expected);
+        ksort($snapshot);
+        $this->assertSame($expected, $snapshot);
+        $before = WorkflowHistoryEvent::query()->count();
+        $this->cleanupLocal($replacement, 'recover', $scope, $proof)->assertOk()->assertJsonPath('duplicate', true)
+            ->assertJsonPath('event_id', $recovery['event_id']);
+        $this->withHeaders($this->headers())->postJson("/api/worker/workflow-tasks/{$task['task_id']}/local-activities/{$first['activity_attempt_id']}/outcome", [
+            'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
+            'report' => ['outcome' => 'completed', 'result' => Serializer::serializeWithCodec('avro', 'stale'), 'payload_codec' => 'avro'],
+        ])->assertConflict()->assertJsonPath('recorded', false);
+        $this->assertSame($before, WorkflowHistoryEvent::query()->count());
+        $this->assertSame(0, WorkflowHistoryEvent::query()->where('event_type', 'ActivityCompleted')->count());
+        $retryTask = $this->withHeaders($this->headers())->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'delivery-owner', 'task_queue' => 'scoped-delivery',
+        ])->assertOk()->json('task');
+        $this->assertSame($recovery['created_task_ids'][0], $retryTask['task_id']);
+        $retryResponse = $this->cleanupLocal($retryTask, 'prepare', $scope, $proof, workerAttempt: 'replacement-cleanup-attempt');
+        $this->assertSame(200, $retryResponse->status(), json_encode($retryResponse->json('reason'), JSON_THROW_ON_ERROR));
+        $retry = $retryResponse->assertJsonPath('prepared', true)->assertJsonPath('attempt_number', 2)->json();
+        $this->assertNotSame($first['activity_attempt_id'], $retry['activity_attempt_id']);
+        $retrySnapshot = $retry['cancellation_cleanup'];
+        ksort($retrySnapshot);
+        $this->assertSame($expected, $retrySnapshot);
+        $this->assertSame($first['schedule_to_close_deadline_at'], $retry['schedule_to_close_deadline_at']);
+        $body = [
+            'lease_owner' => $retryTask['lease_owner'], 'workflow_task_attempt' => $retryTask['workflow_task_attempt'],
+            'report' => ['outcome' => 'completed', 'result' => Serializer::serializeWithCodec('avro', 'resumed'), 'payload_codec' => 'avro'],
+        ];
+        OpenApiSchema::fromFile(resource_path('platform-protocol-specs/worker-protocol-api.openapi.yaml'))
+            ->assertReferenceMatches('#/components/schemas/PreparedLocalOutcomeRequest',
+                json_decode(json_encode($body, JSON_THROW_ON_ERROR), flags: JSON_THROW_ON_ERROR));
+        $outcome = $this->withHeaders($this->headers())->postJson("/api/worker/workflow-tasks/{$retryTask['task_id']}/local-activities/{$retry['activity_attempt_id']}/outcome", $body);
+        $this->assertSame(200, $outcome->status(), json_encode($outcome->json('reason'), JSON_THROW_ON_ERROR));
+        $outcome->assertJsonPath('recorded', true)->assertJsonPath('claim_released', false);
+        $this->assertSame(1, WorkflowHistoryEvent::query()->where('event_type', 'CancellationScopeDelivered')->count());
+        $this->assertSame(1, WorkflowHistoryEvent::query()->where('event_type', 'ActivityCompleted')->count());
+        $this->assertNull(WorkflowRun::query()->findOrFail($task['run_id'])->cancellation_request_command_id);
+    }
+
+    public static function forgedCleanupProofs(): iterable
+    {
+        foreach (['prepare', 'recover'] as $operation) {
+            foreach (['scope_id', 'request_id', 'delivery_history_event_id', 'cleanup_deadline_at'] as $field) {
+                yield $operation.':'.$field => [$operation, $field];
+            }
+        }
+    }
+
+    #[DataProvider('forgedCleanupProofs')]
+    public function test_scoped_cleanup_rejects_forged_authority_before_payload_resolution(string $operation, string $field): void
+    {
+        [$task, $scope, , $proof] = $this->cleanupClaim();
+        $proof[$field] = 'invented-authority';
+        $storage = \Mockery::mock(NamespaceExternalPayloadStorage::class);
+        $storage->shouldNotReceive('driverFor');
+        $this->app->instance(NamespaceExternalPayloadStorage::class, $storage);
+        $before = WorkflowHistoryEvent::query()->count();
+        $this->cleanupLocal($task, $operation, $scope, $proof, ['codec' => 'avro', 'invalid_reference' => true])
+            ->assertConflict()->assertJsonPath('recorded', false)->assertJsonPath('reason', 'operation_scope_cancellation_prepared');
+        $this->assertSame($before, WorkflowHistoryEvent::query()->count());
+        $this->assertSame(0, ActivityExecution::query()->count());
+        $this->assertSame(0, ActivityAttempt::query()->count());
+    }
+
+    public static function cleanupGroupValidity(): iterable
+    {
+        yield 'original proofs' => [false];
+        yield 'second proof invalid' => [true];
+    }
+
+    #[DataProvider('cleanupGroupValidity')]
+    public function test_scoped_cleanup_group_validates_all_proofs_before_any_sibling(bool $invalidSecond): void
+    {
+        [$task, $scope, , $proof] = $this->cleanupClaim();
+        $commands = [];
+        foreach ([0, 1] as $index) {
+            $commands[] = [...$this->cleanupDescriptor($scope, $proof), 'type' => 'prepare_local_activity',
+                ...ParallelChildGroup::itemMetadata(3, 2, $index, 'activity')];
+        }
+        if ($invalidSecond) {
+            $commands[1]['cancellation_cleanup']['request_id'] = 'invented-authority';
+            $commands[1]['arguments'] = ['codec' => 'avro', 'invalid_reference' => true];
+        }
+        $before = WorkflowHistoryEvent::query()->count();
+        $response = $this->withHeaders($this->headers())->postJson("/api/worker/workflow-tasks/{$task['task_id']}/local-activities/checkpoint-group", [
+            'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
+            'checkpoint_id' => 'scoped-cleanup-group', 'start_sequence' => 3, 'commands' => $commands,
+        ]);
+        if ($invalidSecond) {
+            $response->assertConflict()->assertJsonPath('recorded', false)->assertJsonPath('reason', 'operation_scope_cancellation_prepared');
+            $this->assertSame($before, WorkflowHistoryEvent::query()->count());
+            $this->assertSame(0, ActivityExecution::query()->count());
+            $this->assertSame(0, ActivityAttempt::query()->count());
+        } else {
+            $response->assertOk()->assertJsonPath('checkpointed', true);
+            $this->assertCount(2, $response->json('local_activities'));
+            $this->assertSame(2, ActivityExecution::query()->count());
+            foreach (ActivityExecution::query()->get() as $execution) {
+                $this->assertCleanupContract($execution->activity_options['cancellation_cleanup']);
+                $this->assertSame($proof['delivery_history_event_id'], $execution->activity_options['cancellation_cleanup']['delivery_history_event_id']);
+            }
+        }
+    }
+
+    private function cleanupClaim(): array
+    {
+        [$task, $scope, $request] = $this->claim(prepared: true);
+        $this->mutate('prepare', $task, $scope, $request, ['call_kind' => 'local_activity'])->assertOk();
+        $delivery = $this->mutate('deliver', $task, $scope, $request, ['call_kind' => 'local_activity'])->assertOk()->json();
+        $proof = ['scope_id' => $scope, 'request_id' => $request, 'delivery_history_event_id' => $delivery['history_event_id']];
+        OpenApiSchema::fromFile(resource_path('platform-protocol-specs/worker-protocol-api.openapi.yaml'))
+            ->assertReferenceMatches('#/components/schemas/PreparedLocalCleanupProof', (object) $proof);
+
+        return [$task, $scope, $request, $proof];
+    }
+
+    private function cleanupDescriptor(string $scope, array $proof, mixed $arguments = null): array
+    {
+        return ['type' => 'record_local_activity', 'activity_type' => 'opaque-local', 'payload_codec' => 'avro',
+            'arguments' => $arguments ?? Serializer::serializeWithCodec('avro', []),
+            'retry_policy' => ['max_attempts' => 2, 'backoff_seconds' => [0]],
+            'cancellation_scope_id' => $scope, 'cancellation_cleanup' => $proof];
+    }
+
+    private function cleanupLocal(array $task, string $operation, string $scope, array $proof, mixed $arguments = null,
+        string $workerAttempt = 'scoped-cleanup-attempt')
+    {
+        $body = [
+            'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
+            'worker_attempt_id' => $workerAttempt, 'sequence' => 3,
+            'descriptor' => $this->cleanupDescriptor($scope, $proof, $arguments),
+        ];
+
+        return $this->withHeaders($this->headers())->postJson("/api/worker/workflow-tasks/{$task['task_id']}/local-activities/{$operation}", $body);
+    }
+
+    private function assertCleanupContract(array $snapshot): void
+    {
+        OpenApiSchema::fromFile(resource_path('platform-protocol-specs/worker-protocol-api.openapi.yaml'))
+            ->assertReferenceMatches('#/components/schemas/PreparedLocalCleanupSnapshot',
+                json_decode(json_encode($snapshot, JSON_THROW_ON_ERROR), flags: JSON_THROW_ON_ERROR));
+    }
+
+    private function claim(bool $timer = false, ?string $childPolicy = null, bool $prepared = false): array
     {
         $this->withHeaders($this->headers('operator'))->postJson('/api/workflows', [
             'workflow_type' => 'tests.external-greeting-workflow', 'task_queue' => 'scoped-delivery', 'input' => ['Ada'],
@@ -365,7 +554,8 @@ final class CancellationScopeDeliveryTest extends TestCase
         $this->withHeaders($this->headers())->postJson('/api/worker/register', [
             'worker_id' => 'delivery-owner', 'task_queue' => 'scoped-delivery', 'runtime' => 'php',
             'supported_workflow_types' => ['tests.external-greeting-workflow'],
-            'capabilities' => [CooperativeCancellationPolicy::CAPABILITY],
+            'capabilities' => [CooperativeCancellationPolicy::CAPABILITY,
+                ...($prepared ? [PreparedLocalActivityPolicy::CAPABILITY, PreparedLocalActivityPolicy::GROUP_CAPABILITY] : [])],
             'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(), 'max_concurrent_workflow_tasks' => 1,
         ])->assertCreated();
         $task = $this->withHeaders($this->headers())->postJson('/api/worker/workflow-tasks/poll', [

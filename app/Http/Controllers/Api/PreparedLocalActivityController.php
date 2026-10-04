@@ -147,6 +147,8 @@ final class PreparedLocalActivityController
             // canonical membership under its attempt/execution/run/task locks.
             $reason = $bridge->validateCancellationScopeMembership($run, [[
                 'type' => 'prepare_local_activity', 'cancellation_scope_id' => $descriptor['cancellation_scope_id'],
+                ...(array_key_exists('cancellation_cleanup', $descriptor)
+                    ? ['cancellation_cleanup' => $descriptor['cancellation_cleanup']] : []),
             ]], $sequence);
         }
         if ($reason === null) {

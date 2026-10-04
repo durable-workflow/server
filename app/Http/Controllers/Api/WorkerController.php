@@ -1704,7 +1704,8 @@ class WorkerController
         $topLevelRules = [];
         if ($group) {
             $completionRules['commands'] = ['required', 'array', 'min:1', 'max:100'];
-            $completionRules['commands.*.cancellation_cleanup'] = ['nullable', 'array:request_id,delivery_history_event_id'];
+            $completionRules['commands.*.cancellation_cleanup'] = ['nullable', 'array:scope_id,request_id,delivery_history_event_id'];
+            $completionRules['commands.*.cancellation_cleanup.scope_id'] = ['sometimes', 'required', 'string', 'max:255'];
             $completionRules['commands.*.cancellation_cleanup.request_id'] = ['required_with:commands.*.cancellation_cleanup', 'string', 'max:255'];
             $completionRules['commands.*.cancellation_cleanup.delivery_history_event_id'] = ['required_with:commands.*.cancellation_cleanup', 'string', 'max:255'];
         }
