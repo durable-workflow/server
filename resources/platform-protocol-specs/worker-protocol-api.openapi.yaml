@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "43"
+  version: "44"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -1971,6 +1971,21 @@ components:
                   wait_id: { type: string, minLength: 1 }
                   cancelled: { type: boolean }
                   history_event_id: { type: string, minLength: 1 }
+            child_cancellations:
+              type: array
+              description: Durable decisions for original prepared direct children. A cooperative request and its parent receipt commit atomically. TryCancel is ready after acceptance, WAIT requires a separate canonical child terminal resolution, and Abandon leaves the child untouched. Partial receipts survive retries and replacement claims without changing the original identity or deadline. Readiness does not assert physical callback exit.
+              items:
+                type: object
+                additionalProperties: false
+                required: [child_call_id, child_workflow_run_id, history_event_id, resolution_history_event_id, request_id, policy, ready]
+                properties:
+                  child_call_id: { type: string, minLength: 1 }
+                  child_workflow_run_id: { type: string, minLength: 1 }
+                  history_event_id: { type: string, minLength: 1 }
+                  resolution_history_event_id: { type: [string, "null"], minLength: 1 }
+                  request_id: { type: [string, "null"], minLength: 1 }
+                  policy: { type: string, enum: [try_cancel, wait_cancellation_completed, abandon] }
+                  ready: { type: boolean }
           if:
             required: [prepared]
             properties:

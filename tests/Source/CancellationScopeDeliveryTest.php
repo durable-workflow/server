@@ -14,6 +14,7 @@ use Tests\Feature\Concerns\StoragePressureFixture;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\Support\OpenApiSchema;
 use Tests\TestCase;
+use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\PreparedCancellationScopeTaskBridge;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\TaskStatus;
@@ -25,6 +26,8 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\CancellationScopeRequests;
+use Workflow\V2\Support\CooperativeCancellationDelivery;
+use Workflow\V2\WorkflowStub;
 
 /** Source-only preparation commits outside the test's transaction. */
 final class CancellationScopeDeliveryTest extends TestCase
@@ -280,7 +283,7 @@ final class CancellationScopeDeliveryTest extends TestCase
     }
 
     #[DataProvider('childPolicies')]
-    public function test_child_preparation_freezes_original_targets_without_claiming_delivery(string $policy): void
+    public function test_child_delivery_reconciles_original_policy_receipts_without_releasing_the_host_claim(string $policy): void
     {
         [$task, $scope, $request] = $this->claim(childPolicy: $policy);
         $before = WorkflowTask::query()->findOrFail($task['task_id'])->getRawOriginal();
@@ -295,14 +298,56 @@ final class CancellationScopeDeliveryTest extends TestCase
         $this->assertSame($policy, $member['cancellation_policy']);
         $this->assertSame($prepared['child_members'], $this->mutate('prepare', $task, $scope, $request,
             ['call_kind' => 'child'])->assertOk()->json('child_members'));
-        $historyBefore = WorkflowHistoryEvent::query()->count();
-        $this->mutate('deliver', $task, $scope, $request, ['call_kind' => 'child'])->assertConflict()
-            ->assertJsonPath('reason', 'cancellation_scope_operation_delivery_unavailable')
-            ->assertJsonPath('unavailable', ['scoped_child_delivery']);
-        $this->assertSame($historyBefore, WorkflowHistoryEvent::query()->count());
-        $this->assertSame($before, WorkflowTask::query()->findOrFail($task['task_id'])->getRawOriginal());
         $this->assertNull(WorkflowRun::query()->findOrFail($member['child_workflow_run_id'])->cancellation_request_command_id);
         $this->assertSame(0, WorkflowHistoryEvent::query()->where('event_type', 'CancellationScopeDelivered')->count());
+        $response = $this->mutate('deliver', $task, $scope, $request, ['call_kind' => 'child']);
+        if ($policy === 'wait_cancellation_completed') {
+            $response->assertConflict()->assertJsonPath('delivered', false)
+                ->assertJsonPath('reason', 'cancellation_scope_child_completion_not_established');
+        } else {
+            $response->assertOk()->assertJsonPath('delivered', true);
+        }
+        $delivery = $response->json();
+        $this->assertContract($delivery);
+        $this->assertCount(1, $delivery['child_cancellations']);
+        $receipt = $delivery['child_cancellations'][0];
+        $this->assertSame($member['child_call_id'], $receipt['child_call_id']);
+        $this->assertSame($member['child_workflow_run_id'], $receipt['child_workflow_run_id']);
+        $this->assertSame($policy, $receipt['policy']);
+        $target = WorkflowStub::loadRun($member['child_workflow_run_id']);
+        $context = CooperativeCancellationDelivery::context($target->run()->fresh());
+        $this->assertSame($policy === 'abandon', $context === null);
+        $this->assertFalse($target->run()->fresh()->status->isTerminal());
+        if ($context !== null) {
+            $this->assertSame($prepared['cancellation'], $context->scopeOrigin->toArray());
+            $this->assertSame($prepared['authority_deadline_at'], $context->deadline()->toISOString());
+            $this->assertSame($context->requestId, $receipt['request_id']);
+        }
+        $historyBefore = WorkflowHistoryEvent::query()->count();
+        $duplicate = $this->mutate('deliver', $task, $scope, $request, ['call_kind' => 'child'])->json();
+        $this->assertContract($duplicate);
+        $this->assertSame($receipt, $duplicate['child_cancellations'][0]);
+        $this->assertSame($delivery['authority_deadline_at'], $duplicate['authority_deadline_at']);
+        $this->assertSame($historyBefore, WorkflowHistoryEvent::query()->count());
+        if ($policy === 'wait_cancellation_completed') {
+            $this->assertFalse($receipt['ready']);
+            $this->assertNull($receipt['resolution_history_event_id']);
+            $target->attemptCancel('canonical terminal fixture');
+            $resolved = $this->mutate('deliver', $task, $scope, $request, ['call_kind' => 'child'])
+                ->assertOk()->assertJsonPath('delivered', true)->json();
+            $this->assertContract($resolved);
+            $this->assertSame($receipt['history_event_id'], $resolved['child_cancellations'][0]['history_event_id']);
+            $this->assertSame($receipt['request_id'], $resolved['child_cancellations'][0]['request_id']);
+            $this->assertTrue($resolved['child_cancellations'][0]['ready']);
+            $this->assertNotNull($resolved['child_cancellations'][0]['resolution_history_event_id']);
+            $this->assertSame($prepared['authority_deadline_at'], $resolved['authority_deadline_at']);
+        } else {
+            $this->assertTrue($receipt['ready']);
+            $this->assertSame($delivery['history_event_id'], $duplicate['history_event_id']);
+        }
+        $this->assertSame($before, WorkflowTask::query()->findOrFail($task['task_id'])->getRawOriginal());
+        $this->assertSame(1, WorkflowHistoryEvent::query()->where('event_type', 'ChildCancellationRequested')->count());
+        $this->assertSame(1, WorkflowHistoryEvent::query()->where('event_type', 'CancellationScopeDelivered')->count());
     }
 
     public static function childPolicies(): iterable
@@ -341,7 +386,7 @@ final class CancellationScopeDeliveryTest extends TestCase
                 'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
                 'checkpoint_id' => 'child-prefix', 'start_sequence' => 2,
                 'commands' => [['type' => 'start_child_workflow', 'workflow_type' => 'tests.external-greeting-workflow',
-                    'arguments' => \Workflow\Serializers\Serializer::serializeWithCodec('avro', ['child']),
+                    'arguments' => Serializer::serializeWithCodec('avro', ['child']),
                     'payload_codec' => 'avro', 'cancellation_scope_id' => $scope, 'cancellation_policy' => $childPolicy]],
             ])->assertOk()->assertJsonPath('checkpointed', true);
         }
