@@ -32,6 +32,7 @@ use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\CancellationScopeRequests;
 use Workflow\V2\Support\CooperativeCancellationDelivery;
 use Workflow\V2\Support\ParallelChildGroup;
+use Workflow\V2\TaskWatchdog;
 use Workflow\V2\WorkflowStub;
 
 /** Source-only preparation commits outside the test's transaction. */
@@ -59,11 +60,12 @@ final class CancellationScopeDeliveryTest extends TestCase
             ->assertJsonPath('prepared', true)->assertJsonPath('delivered', false)
             ->assertJsonPath('claim_released', false)->assertJsonPath('activity_members', [])->json();
         $this->assertContract($prepared);
+        $this->assertRecoverableHostingClaim($before, $task['task_id'], shortened: true);
         $this->mutate('prepare', $task, $scope, $request)->assertOk()
             ->assertJsonPath('preparation_history_event_id', $prepared['preparation_history_event_id'])
             ->assertJsonPath('cancellation', $prepared['cancellation'])
             ->assertJsonPath('authority_deadline_at', $prepared['authority_deadline_at']);
-        $this->assertSame($before, WorkflowTask::query()->findOrFail($task['task_id'])->getRawOriginal());
+        $this->assertRecoverableHostingClaim($before, $task['task_id']);
         $delivery = $this->mutate('deliver', $task, $scope, $request)->assertOk()->assertJsonPath('delivered', true)->json();
         $this->assertContract($delivery);
         $this->mutate('deliver', $task, $scope, $request)->assertOk()->assertJsonPath('history_event_id', $delivery['history_event_id']);
@@ -191,18 +193,21 @@ final class CancellationScopeDeliveryTest extends TestCase
     {
         [$task, $scope, $request] = $this->claim();
         $prepared = $this->mutate('prepare', $task, $scope, $request)->assertOk()->json();
-        $this->travel(1)->seconds();
-        $claim = WorkflowTask::query()->findOrFail($task['task_id']);
-        $claim->forceFill(['attempt_count' => $task['workflow_task_attempt'] + 1])->save();
-        CooperativeCancellationPolicy::bindClaim($claim, CooperativeCancellationPolicy::workerSnapshot(
-            WorkerRegistration::query()->where('worker_id', 'delivery-owner')->sole(), '1.20'));
+        $this->travel(11)->seconds();
+        $repair = TaskWatchdog::runPass(respectThrottle: false, runIds: [$task['run_id']]);
+        $this->assertSame([], $repair['existing_task_failures']);
+        $this->assertSame(1, $repair['repaired_existing_tasks']);
+        $replacement = $this->withHeaders($this->headers())->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'delivery-owner', 'task_queue' => 'scoped-delivery',
+        ])->assertOk()->json('task');
+        $this->assertSame($task['task_id'], $replacement['task_id']);
+        $this->assertSame($task['workflow_task_attempt'] + 1, $replacement['workflow_task_attempt']);
         $this->mutate('prepare', $task, $scope, $request)->assertConflict()->assertJsonPath('reason', 'workflow_task_attempt_mismatch');
-        $task['workflow_task_attempt']++;
-        $this->mutate('prepare', $task, $scope, $request)->assertOk()
+        $this->mutate('prepare', $replacement, $scope, $request)->assertOk()
             ->assertJsonPath('preparation_history_event_id', $prepared['preparation_history_event_id'])
             ->assertJsonPath('cancellation', $prepared['cancellation'])
             ->assertJsonPath('authority_deadline_at', $prepared['authority_deadline_at']);
-        $this->mutate('deliver', $task, $scope, $request)->assertOk()->assertJsonPath('delivered', true);
+        $this->mutate('deliver', $replacement, $scope, $request)->assertOk()->assertJsonPath('delivered', true);
         $this->assertSame(1, WorkflowHistoryEvent::query()->where('event_type', 'CancellationScopeDeliveryPrepared')->count());
     }
 

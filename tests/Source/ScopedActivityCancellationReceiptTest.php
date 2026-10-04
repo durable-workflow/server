@@ -99,7 +99,13 @@ final class ScopedActivityCancellationReceiptTest extends TestCase
             ->assertJsonPath('delivered', false)->assertJsonPath('prepared', true)
             ->assertJsonPath('reason', 'cancellation_scope_activity_stop_not_acknowledged')
             ->assertJsonPath('claim_released', false)->json();
-        $this->assertSame($before, $this->snapshot($task, $target, $sibling));
+        $this->assertRecoverableHostingClaim($before[0], $task['task_id']);
+        $afterPending = $this->snapshot($task, $target, $sibling);
+        $beforePending = $before;
+        foreach (['lease_expires_at', 'updated_at'] as $field) {
+            unset($beforePending[0][$field], $afterPending[0][$field]);
+        }
+        $this->assertSame($beforePending, $afterPending);
         $ack = $this->acknowledge($target, $request->payload['request_id'])->assertOk()->json('history_event_id');
         $delivered = $this->withHeaders($this->headers())->postJson($path, $body)->assertOk()
             ->assertJsonPath('delivered', true)

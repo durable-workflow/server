@@ -72,13 +72,15 @@ abstract class TestCase extends BaseTestCase
         ]);
     }
 
-    protected function assertRecoverableHostingClaim(array $before, string $taskId): void
+    protected function assertRecoverableHostingClaim(array $before, string $taskId, bool $shortened = false): void
     {
         $claim = WorkflowTask::query()->findOrFail($taskId);
         $after = $claim->getRawOriginal();
         $this->assertTrue($claim->lease_expires_at->gt(now()));
         $this->assertTrue($claim->lease_expires_at->lte(now()->addSeconds(10)));
-        $this->assertTrue($claim->lease_expires_at->lt(Carbon::parse($before['lease_expires_at'], 'UTC')));
+        if ($shortened) {
+            $this->assertTrue($claim->lease_expires_at->lt(Carbon::parse($before['lease_expires_at'], 'UTC')));
+        }
         unset($before['lease_expires_at'], $before['updated_at'], $after['lease_expires_at'], $after['updated_at']);
         $this->assertSame($before, $after);
     }
