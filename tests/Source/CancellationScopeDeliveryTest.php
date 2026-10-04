@@ -60,7 +60,7 @@ final class CancellationScopeDeliveryTest extends TestCase
             ->assertJsonPath('prepared', true)->assertJsonPath('delivered', false)
             ->assertJsonPath('claim_released', false)->assertJsonPath('activity_members', [])->json();
         $this->assertContract($prepared);
-        $this->assertRecoverableHostingClaim($before, $task['task_id'], shortened: true);
+        $this->assertRecoverableHostingClaim($before, $task['task_id']);
         $this->mutate('prepare', $task, $scope, $request)->assertOk()
             ->assertJsonPath('preparation_history_event_id', $prepared['preparation_history_event_id'])
             ->assertJsonPath('cancellation', $prepared['cancellation'])
@@ -78,6 +78,47 @@ final class CancellationScopeDeliveryTest extends TestCase
     public static function phases(): array
     {
         return [['prepare'], ['deliver']];
+    }
+
+    public function test_accepted_unprepared_request_recovers_through_watchdog_and_http_poll(): void
+    {
+        [$task, $scope, $request] = $this->claim();
+        $accepted = WorkflowHistoryEvent::query()->where('event_type', 'CancellationScopeRequested')->sole();
+        $before = WorkflowTask::query()->findOrFail($task['task_id'])->getRawOriginal();
+        $historyBefore = WorkflowHistoryEvent::query()->count();
+        $this->assertSame(0, WorkflowHistoryEvent::query()->where('event_type', 'CancellationScopeDeliveryPrepared')->count());
+        $this->assertSame(0, WorkflowHistoryEvent::query()->where('event_type', 'CancellationScopeDelivered')->count());
+        $this->travel(11)->seconds();
+        $this->mutate('prepare', $task, $scope, $request)->assertConflict()
+            ->assertJsonPath('reason', 'cancellation_scope_workflow_claim_mismatch');
+        $this->assertSame($historyBefore, WorkflowHistoryEvent::query()->count());
+        $this->assertSame($before, WorkflowTask::query()->findOrFail($task['task_id'])->getRawOriginal());
+        $repair = TaskWatchdog::runPass(respectThrottle: false, runIds: [$task['run_id']]);
+        $this->assertSame([], $repair['existing_task_failures']);
+        $this->assertSame(1, $repair['repaired_existing_tasks']);
+        $replacement = $this->withHeaders($this->headers())->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'delivery-owner', 'task_queue' => 'scoped-delivery',
+        ])->assertOk()->json('task');
+        $this->assertSame($task['task_id'], $replacement['task_id']);
+        $this->assertSame($task['workflow_task_attempt'] + 1, $replacement['workflow_task_attempt']);
+        $run = WorkflowRun::query()->findOrFail($task['run_id']);
+        $replacementBefore = WorkflowTask::query()->findOrFail($task['task_id'])->getRawOriginal();
+        $duplicate = CancellationScopeRequests::request($run, $scope, '1.20', 300);
+        $this->assertSame($accepted->id, $duplicate->id);
+        $this->assertEquals($accepted->payload, $duplicate->payload);
+        $this->assertSame($replacementBefore, WorkflowTask::query()->findOrFail($task['task_id'])->getRawOriginal());
+        $this->mutate('prepare', $task, $scope, $request)->assertConflict()
+            ->assertJsonPath('reason', 'workflow_task_attempt_mismatch');
+        $prepared = $this->mutate('prepare', $replacement, $scope, $request)->assertOk()->json();
+        $this->assertContract($prepared);
+        $this->assertSame($request, $prepared['request_id']);
+        $this->assertSame($accepted->payload['cancellation']['root_context']['cleanup_deadline_at'], $prepared['authority_deadline_at']);
+        $this->assertNull($run->fresh()->cancellation_request_command_id);
+        $this->assertRecoverableHostingClaim($replacementBefore, $task['task_id']);
+        $this->mutate('deliver', $replacement, $scope, $request)->assertOk()
+            ->assertJsonPath('delivered', true)->assertJsonPath('preparation_history_event_id', $prepared['preparation_history_event_id']);
+        $this->assertSame(1, WorkflowHistoryEvent::query()->where('event_type', 'CancellationScopeRequested')->count());
+        $this->assertSame(1, WorkflowHistoryEvent::query()->where('event_type', 'CancellationScopeDeliveryPrepared')->count());
     }
 
     #[DataProvider('phases')]
@@ -586,7 +627,9 @@ final class CancellationScopeDeliveryTest extends TestCase
                     'payload_codec' => 'avro', 'cancellation_scope_id' => $scope, 'cancellation_policy' => $childPolicy]],
             ])->assertOk()->assertJsonPath('checkpointed', true);
         }
+        $beforeRequest = WorkflowTask::query()->findOrFail($task['task_id'])->getRawOriginal();
         $request = CancellationScopeRequests::request(WorkflowRun::query()->findOrFail($task['run_id']), $scope, '1.20', 30);
+        $this->assertRecoverableHostingClaim($beforeRequest, $task['task_id'], shortened: true);
 
         return [$task, $scope, $request->payload['request_id']];
     }
