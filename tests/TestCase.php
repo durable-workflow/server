@@ -4,6 +4,7 @@ namespace Tests;
 
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\TestCase as BaseTestCase;
+use Illuminate\Support\Carbon;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
@@ -69,6 +70,17 @@ abstract class TestCase extends BaseTestCase
             'minimum_protocol_version' => WorkerProtocol::PORTABLE_WORKER_AFFINITY_MINIMUM_PROTOCOL_VERSION,
             'reason' => 'not_implemented',
         ]);
+    }
+
+    protected function assertRecoverableHostingClaim(array $before, string $taskId): void
+    {
+        $claim = WorkflowTask::query()->findOrFail($taskId);
+        $after = $claim->getRawOriginal();
+        $this->assertTrue($claim->lease_expires_at->gt(now()));
+        $this->assertTrue($claim->lease_expires_at->lte(now()->addSeconds(10)));
+        $this->assertTrue($claim->lease_expires_at->lt(Carbon::parse($before['lease_expires_at'], 'UTC')));
+        unset($before['lease_expires_at'], $before['updated_at'], $after['lease_expires_at'], $after['updated_at']);
+        $this->assertSame($before, $after);
     }
 
     private function pollingCachePath(): string

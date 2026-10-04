@@ -107,7 +107,7 @@ final class ScopedActivityCancellationReceiptTest extends TestCase
             ->assertJsonPath('cancellation', $pending['cancellation'])
             ->assertJsonPath('authority_deadline_at', $pending['authority_deadline_at'])->json();
         $this->withHeaders($this->headers())->postJson($path, $body)->assertOk()->assertJsonPath('history_event_id', $delivered['history_event_id']);
-        $this->assertSame($before[0], WorkflowTask::query()->findOrFail($task['task_id'])->getRawOriginal());
+        $this->assertRecoverableHostingClaim($before[0], $task['task_id']);
         $this->assertSame($before[1][1], $this->snapshot($task, $target, $sibling)[1][1]);
         $this->assertLessThan(WorkflowHistoryEvent::query()->findOrFail($delivered['history_event_id'])->sequence,
             WorkflowHistoryEvent::query()->findOrFail($ack)->sequence);

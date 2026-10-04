@@ -9,7 +9,6 @@ use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\PreparedLocalActivityPolicy;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -601,17 +600,6 @@ final class CancellationScopeDeliveryTest extends TestCase
     {
         return ['Authorization' => 'Bearer fixture-'.$role, 'X-Namespace' => $namespace,
             'X-Durable-Workflow-Control-Plane-Version' => '2', WorkerProtocol::HEADER => $version];
-    }
-
-    private function assertRecoverableHostingClaim(array $before, string $taskId): void
-    {
-        $claim = WorkflowTask::query()->findOrFail($taskId);
-        $after = $claim->getRawOriginal();
-        $this->assertTrue($claim->lease_expires_at->gt(now()));
-        $this->assertTrue($claim->lease_expires_at->lte(now()->addSeconds(10)));
-        $this->assertTrue($claim->lease_expires_at->lt(Carbon::parse($before['lease_expires_at'], 'UTC')));
-        unset($before['lease_expires_at'], $before['updated_at'], $after['lease_expires_at'], $after['updated_at']);
-        $this->assertSame($before, $after);
     }
 
     private function assertContract(array $response): void
