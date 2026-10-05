@@ -461,8 +461,11 @@ final class CancellationScopeDeliveryTest extends TestCase
             [...$owner, 'renew_lease' => true, 'progress' => ['message' => 'must not record']]);
         $response->assertOk()->assertJsonPath('active', false)->assertJsonPath('renewed', false)
             ->assertJsonPath('heartbeat_recorded', false)->assertJsonPath('fenced', true)
-            ->assertJsonPath('reason', 'cancellation_scope_requested')
-            ->assertJsonPath('cancellation_scope.cancellation', $request->toArray());
+            ->assertJsonPath('reason', 'cancellation_scope_requested');
+        $this->assertSame(
+            $request->toArray(),
+            $request::fromArray($response->json('cancellation_scope.cancellation'))->toArray(),
+        );
         $this->assertIsString($response->json('history_refresh_page_token'));
         $this->assertSame($before, WorkflowTask::query()->findOrFail($task['task_id'])->getRawOriginal());
         $preparation = WorkflowHistoryEvent::query()->where('event_type', 'CancellationScopeDeliveryPrepared')->sole();
