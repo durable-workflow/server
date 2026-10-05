@@ -5,12 +5,17 @@ declare(strict_types=1);
 namespace Tests\Feature;
 
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Queue;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
+use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\MatchingRole;
 use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\TaskRepairPolicy;
 
 class TransportRepairTest extends TestCase
 {
@@ -346,6 +351,78 @@ class TransportRepairTest extends TestCase
             ->assertJsonPath('task.task_id', $taskId)
             ->assertJsonPath('task.lease_owner', 'repair-worker-2')
             ->assertJsonPath('task.workflow_task_attempt', 2);
+    }
+
+    #[DataProvider('namespaceRepairCases')]
+    public function test_repaired_workflow_is_visible_and_claimable_only_in_original_namespace(string $namespace, bool $existing): void
+    {
+        Queue::fake();
+        // The base fixture fills omitted task namespaces with "default".
+        // Production repair has no such listener. Exercise the real writer.
+        WorkflowTask::flushEventListeners();
+        config(['server.polling.timeout' => 0]);
+        $this->createNamespace($namespace);
+        $this->createNamespace('repair-other');
+        $this->configureWorkflowTypes(['tests.external-greeting-workflow' => ExternalGreetingWorkflow::class]);
+        foreach ([$namespace, 'repair-other'] as $workerNamespace) {
+            $this->registerWorker('repair-worker', 'namespace-repair', namespace: $workerNamespace);
+        }
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-namespace-repair',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'namespace-repair',
+            'input' => ['Ada'],
+        ], $this->apiHeaders($namespace))->assertCreated();
+        $runId = (string) $start->json('run_id');
+        $original = WorkflowTask::query()->where('workflow_run_id', $runId)->sole();
+        if ($existing) {
+            // Reproduce an already-created orphan from the preceding release.
+            $original->forceFill([
+                'namespace' => null,
+                'available_at' => now()->subSecond(),
+                'last_dispatch_attempt_at' => null,
+                'last_dispatched_at' => now()->subSeconds(TaskRepairPolicy::redispatchAfterSeconds() + 1),
+            ])->save();
+        } else {
+            $original->delete();
+        }
+        app(HistoryProjectionRole::class)->projectRun(WorkflowRun::query()->findOrFail($runId));
+        $this->getJson('/api/task-queues/namespace-repair', $this->apiHeaders($namespace))
+            ->assertOk()->assertJsonPath('stats.workflow_tasks.ready_count', 0);
+        $this->postJson('/api/system/repair/pass', ['run_ids' => [$runId]], $this->apiHeaders($namespace))
+            ->assertOk()
+            ->assertJsonPath('repaired_existing_tasks', $existing ? 1 : 0)
+            ->assertJsonPath('repaired_missing_tasks', $existing ? 0 : 1);
+        $repaired = WorkflowTask::query()->where('workflow_run_id', $runId)->sole();
+        $this->assertSame($namespace, $repaired->namespace);
+        $this->assertSame(TaskStatus::Ready, $repaired->status);
+        $this->assertSame($existing, $repaired->id === $original->id);
+        $this->getJson('/api/task-queues/namespace-repair', $this->apiHeaders($namespace))
+            ->assertOk()->assertJsonPath('stats.workflow_tasks.ready_count', 1);
+        $this->getJson('/api/task-queues/namespace-repair', $this->apiHeaders('repair-other'))
+            ->assertOk()->assertJsonPath('stats.workflow_tasks.ready_count', 0);
+        $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'repair-worker', 'task_queue' => 'namespace-repair', 'poll_request_id' => 'other-poll',
+        ], $this->workerHeaders('repair-other'))->assertOk()->assertJsonPath('task', null);
+        $claim = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'repair-worker', 'task_queue' => 'namespace-repair', 'poll_request_id' => 'original-poll',
+        ], $this->workerHeaders($namespace))->assertOk()
+            ->assertJsonPath('task.task_id', $repaired->id)
+            ->assertJsonPath('task.run_id', $runId)
+            ->assertJsonPath('task.lease_owner', 'repair-worker');
+        $this->postJson('/api/worker/workflow-tasks/'.$repaired->id.'/complete', [
+            'lease_owner' => 'repair-worker',
+            'workflow_task_attempt' => $claim->json('task.workflow_task_attempt'),
+            'commands' => [['type' => 'complete_workflow']],
+        ], $this->workerHeaders($namespace))->assertOk()->assertJsonPath('run_status', 'completed');
+    }
+
+    public static function namespaceRepairCases(): iterable
+    {
+        foreach (['default', 'repair-tenant'] as $namespace) {
+            yield $namespace.' / missing task' => [$namespace, false];
+            yield $namespace.' / existing orphan' => [$namespace, true];
+        }
     }
 
     public function test_system_repair_pass_requires_authentication(): void
