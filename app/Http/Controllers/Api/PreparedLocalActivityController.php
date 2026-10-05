@@ -22,11 +22,13 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use Workflow\V2\Contracts\CancellationScopeAdmission;
+use Workflow\V2\Contracts\PreparedCancellationScopeTaskBridge;
 use Workflow\V2\Contracts\PreparedLocalActivityTaskBridge;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Models\ActivityAttempt;
+use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
@@ -205,6 +207,26 @@ final class PreparedLocalActivityController
             return self::refused($validated['lease_owner'], ['original_prepared_local_claim']);
         }
         try {
+            $bridge = app(WorkflowTaskBridge::class);
+            if ($operation !== 'acknowledge' && $bridge instanceof PreparedCancellationScopeTaskBridge) {
+                $execution = ActivityExecution::query()->where('workflow_run_id', $task->workflow_run_id)
+                    ->find($attempt->activity_execution_id);
+                if ($execution instanceof ActivityExecution
+                    && ($execution->activity_options['cancellation_scope_id'] ?? 'root') !== 'root'
+                    && ! array_key_exists('cancellation_cleanup', $execution->activity_options)) {
+                    // Cancellation preparation commits before the fence actor.
+                    // This stop-only observation grants no renewal, heartbeat
+                    // or publication authority. Keep those mutations behind
+                    // the registration and quota locks below.
+                    $control = $this->mutations->run(fn (): array => $bridge->controlLocalActivity(
+                        $attemptId, $validated['lease_owner'], (int) $validated['workflow_task_attempt'],
+                        false, WorkerProtocol::requestVersion($request)
+                    ));
+                    if ($operation !== 'outcome' && isset($control['cancellation_scope'])) {
+                        return $this->reply($request, $control);
+                    }
+                }
+            }
             if ($operation === 'outcome' && ($validated['report']['outcome'] ?? null) === 'completed') {
                 $validated['report'] = $this->resolvePayload($validated['report'], 'result', 'report', $namespace);
             }
@@ -398,7 +420,9 @@ final class PreparedLocalActivityController
             return BackendLockPressure::workerOperationResponse($request, true);
         }
         $reason = $reply['reason'] ?? null;
-        $ok = $reason === null || isset($reply['cancellation_request']);
+        $ok = $reason === null || isset($reply['cancellation_request'])
+            || (($reply['fenced'] ?? false) === true && is_array($reply['cancellation_scope'] ?? null)
+                && in_array($reason, ['cancellation_scope_requested', 'cancellation_scope_deadline_expired'], true));
 
         return WorkerProtocol::json($reply, $ok ? 200 : (in_array($reason, ['task_not_found', 'activity_attempt_not_found'], true) ? 404 : 409));
     }

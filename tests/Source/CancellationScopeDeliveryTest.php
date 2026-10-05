@@ -433,6 +433,64 @@ final class CancellationScopeDeliveryTest extends TestCase
         $this->assertNull(WorkflowRun::query()->findOrFail($task['run_id'])->cancellation_request_command_id);
     }
 
+    #[DataProvider('localControlRequests')]
+    public function test_running_local_control_commits_original_scope_preparation_before_fencing(string $operation, bool $runRequest, bool $staleRegistration): void
+    {
+        [$task, $scope] = $this->claim(prepared: true, requestCancellation: false);
+        $path = "/api/worker/workflow-tasks/{$task['task_id']}/local-activities";
+        $owner = ['lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt']];
+        $local = $this->withHeaders($this->headers())->postJson($path.'/prepare', [
+            ...$owner, 'sequence' => 2, 'worker_attempt_id' => 'running-scoped-local',
+            'descriptor' => ['type' => 'record_local_activity', 'activity_type' => 'opaque-local',
+                'arguments' => Serializer::serializeWithCodec('avro', []), 'payload_codec' => 'avro',
+                'cancellation_scope_id' => $scope],
+        ])->assertOk()->json();
+        $run = WorkflowRun::query()->findOrFail($task['run_id']);
+        if ($runRequest) {
+            WorkflowStub::loadRun($run->id)->requestCancellation('finish the run', 30);
+        } else {
+            CancellationScopeRequests::request($run, $scope, '1.20', 30);
+        }
+        $request = CancellationScopeRequests::context($run->fresh(), $scope);
+        if ($staleRegistration) {
+            WorkerRegistration::query()->where('worker_id', 'delivery-owner')
+                ->update(['last_heartbeat_at' => now()->subHour()]);
+        }
+        $before = WorkflowTask::query()->findOrFail($task['task_id'])->getRawOriginal();
+        $response = $this->withHeaders($this->headers())->postJson($path.'/'.$local['activity_attempt_id'].'/'.$operation,
+            [...$owner, 'renew_lease' => true, 'progress' => ['message' => 'must not record']]);
+        $response->assertOk()->assertJsonPath('active', false)->assertJsonPath('renewed', false)
+            ->assertJsonPath('heartbeat_recorded', false)->assertJsonPath('fenced', true)
+            ->assertJsonPath('reason', 'cancellation_scope_requested')
+            ->assertJsonPath('cancellation_scope.cancellation', $request->toArray());
+        $this->assertIsString($response->json('history_refresh_page_token'));
+        $this->assertSame($before, WorkflowTask::query()->findOrFail($task['task_id'])->getRawOriginal());
+        $preparation = WorkflowHistoryEvent::query()->where('event_type', 'CancellationScopeDeliveryPrepared')->sole();
+        $fence = WorkflowHistoryEvent::query()->where('event_type', 'ActivityCancelled')->sole();
+        $this->assertLessThan($fence->sequence, $preparation->sequence);
+        $this->assertSame($request->requestId, $fence->workflow_command_id);
+        $this->assertSame(0, WorkflowHistoryEvent::query()->where('event_type', 'ActivityHeartbeatRecorded')->count());
+        $this->withHeaders($this->headers())->postJson($path.'/'.$local['activity_attempt_id'].'/acknowledge-cancellation',
+            [...$owner, 'request_id' => $request->requestId])->assertOk()->assertJsonPath('acknowledged', true);
+        $this->withHeaders($this->headers())->postJson($path.'/'.$local['activity_attempt_id'].'/outcome',
+            [...$owner, 'report' => ['outcome' => 'completed', 'result' => Serializer::serializeWithCodec('avro', 'stale'),
+                'payload_codec' => 'avro']])->assertConflict()->assertJsonPath('recorded', false);
+        $this->assertSame(0, WorkflowHistoryEvent::query()->where('event_type', 'ActivityCompleted')->count());
+        $this->assertSame(1, WorkflowHistoryEvent::query()->where('event_type', 'CancellationScopeDeliveryPrepared')->count());
+        $this->assertSame(1, WorkflowHistoryEvent::query()->where('event_type', 'ActivityCancelled')->count());
+    }
+
+    public static function localControlRequests(): iterable
+    {
+        foreach (['control', 'heartbeat'] as $operation) {
+            foreach ([false, true] as $runRequest) {
+                foreach ([false, true] as $staleRegistration) {
+                    yield $operation.':'.($runRequest ? 'run' : 'scope').':'.($staleRegistration ? 'stale' : 'fresh') => [$operation, $runRequest, $staleRegistration];
+                }
+            }
+        }
+    }
+
     public function test_scoped_cleanup_recovery_keeps_original_proof_and_refuses_stale_publication(): void
     {
         [$task, $scope, , $proof] = $this->cleanupClaim();
@@ -593,7 +651,7 @@ final class CancellationScopeDeliveryTest extends TestCase
                 json_decode(json_encode($snapshot, JSON_THROW_ON_ERROR), flags: JSON_THROW_ON_ERROR));
     }
 
-    private function claim(bool $timer = false, ?string $childPolicy = null, bool $prepared = false): array
+    private function claim(bool $timer = false, ?string $childPolicy = null, bool $prepared = false, bool $requestCancellation = true): array
     {
         $this->withHeaders($this->headers('operator'))->postJson('/api/workflows', [
             'workflow_type' => 'tests.external-greeting-workflow', 'task_queue' => 'scoped-delivery', 'input' => ['Ada'],
@@ -628,10 +686,15 @@ final class CancellationScopeDeliveryTest extends TestCase
             ])->assertOk()->assertJsonPath('checkpointed', true);
         }
         $beforeRequest = WorkflowTask::query()->findOrFail($task['task_id'])->getRawOriginal();
-        $request = CancellationScopeRequests::request(WorkflowRun::query()->findOrFail($task['run_id']), $scope, '1.20', 30);
-        $this->assertRecoverableHostingClaim($beforeRequest, $task['task_id'], shortened: true);
+        $request = $requestCancellation
+            ? CancellationScopeRequests::request(WorkflowRun::query()->findOrFail($task['run_id']), $scope, '1.20', 30) : null;
+        if ($requestCancellation) {
+            $this->assertRecoverableHostingClaim($beforeRequest, $task['task_id'], shortened: true);
+        } else {
+            $this->assertSame($beforeRequest, WorkflowTask::query()->findOrFail($task['task_id'])->getRawOriginal());
+        }
 
-        return [$task, $scope, $request->payload['request_id']];
+        return [$task, $scope, $request?->payload['request_id']];
     }
 
     private function mutate(string $phase, array $task, string $scope, string $request, array $overrides = [],
