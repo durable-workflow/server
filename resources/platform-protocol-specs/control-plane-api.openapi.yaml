@@ -399,6 +399,39 @@ paths:
         - $ref: "#/components/parameters/WorkflowIdPath"
       responses:
         "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+  /workflows/{workflowId}/observation:
+    get:
+      tags: [workflows]
+      operationId: observeWorkflow
+      description: >-
+        Bounded run metadata, projected current waits, the first 50 parent and
+        child links with independent outcomes, and the ten most recent failure
+        references. Does not load run histories, application values or the
+        cancellation tree. The stored current pointer is observed without repair
+        or canonical command validation. Missing evidence stays unknown. Use the
+        existing debug and history APIs for deeper inspection.
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/WorkflowIdPath"
+        - name: search_attribute_keys
+          in: query
+          schema: { type: array, maxItems: 20, items: { type: string, minLength: 1, maxLength: 255 } }
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+  /workflows/{workflowId}/runs/{runId}/observation:
+    get:
+      tags: [workflows]
+      operationId: observeWorkflowRun
+      description: The same bounded observation for one explicit retained run.
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/WorkflowIdPath"
+        - $ref: "#/components/parameters/RunIdPath"
+        - name: search_attribute_keys
+          in: query
+          schema: { type: array, maxItems: 20, items: { type: string, minLength: 1, maxLength: 255 } }
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
   /workflows/{workflowId}/debug:
     get:
       tags: [workflows]

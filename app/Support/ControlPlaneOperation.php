@@ -51,6 +51,14 @@ final class ControlPlaneOperation
             );
         }
 
+        if ($request->isMethod('GET') && preg_match('#^/api/workflows/([^/]+)/runs/([^/]+)/observation$#', $path, $matches) === 1) {
+            return new self('observe_workflow', null, rawurldecode($matches[1]), rawurldecode($matches[2]));
+        }
+
+        if ($request->isMethod('GET') && preg_match('#^/api/workflows/([^/]+)/observation$#', $path, $matches) === 1) {
+            return new self('observe_workflow', null, rawurldecode($matches[1]));
+        }
+
         if ($request->isMethod('GET') && preg_match('#^/api/workflows/([^/]+)/runs/([^/]+)/history$#', $path, $matches) === 1) {
             return new self(
                 'history',
