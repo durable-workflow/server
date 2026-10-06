@@ -1,6 +1,8 @@
 SELECT NOW(6) AS captured_at, @@innodb_print_all_deadlocks AS deadlock_logging,
        @@log_error_verbosity AS error_log_verbosity;
-SHOW GLOBAL STATUS LIKE 'Innodb_deadlocks';
+SELECT NAME AS metric_name, COUNT AS cumulative_count, STATUS AS metric_status
+FROM information_schema.INNODB_METRICS
+WHERE NAME IN ('lock_deadlocks', 'lock_timeouts');
 SHOW ENGINE INNODB STATUS;
 SELECT THREAD_ID, EVENT_ID, CURRENT_SCHEMA, SQL_TEXT, MYSQL_ERRNO,
        RETURNED_SQLSTATE, MESSAGE_TEXT, TIMER_WAIT, LOCK_TIME, ROWS_AFFECTED
