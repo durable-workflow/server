@@ -9,6 +9,7 @@ use App\Models\WorkerRegistration;
 use App\Support\AvroPayloadEnvelopeResolver;
 use App\Support\BackendLockPressure;
 use App\Support\CachedPollTaskKindConflict;
+use App\Support\CooperativeCancellationPolicy;
 use App\Support\ExternalPayloadStorageUnavailable;
 use App\Support\HistoryRetentionEnforcer;
 use App\Support\LongPollCapacityExhaustedException;
@@ -19,6 +20,8 @@ use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\PayloadCodecContract;
 use App\Support\PollRequestTaskKindsConflict;
+use App\Support\PreparedLocalActivityAdmissionRefused;
+use App\Support\PreparedLocalActivityPolicy;
 use App\Support\QueryTaskQueueUnavailableException;
 use App\Support\RouteAuthorizationResource;
 use App\Support\RuntimeExternalPayloadAudit;
@@ -36,6 +39,7 @@ use App\Support\WorkerPollFence;
 use App\Support\WorkerProtocol;
 use App\Support\WorkerProtocolMutationRetrier;
 use App\Support\WorkerTerminalEventAttribution;
+use App\Support\WorkflowHistoryPageToken;
 use App\Support\WorkflowMetadataCapabilityPolicy;
 use App\Support\WorkflowQueryTaskBroker;
 use App\Support\WorkflowStreamCommandProcessor;
@@ -50,7 +54,11 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use Workflow\V2\Contracts\CancellationScopeAdmission;
+use Workflow\V2\Contracts\CancellationScopeTaskBridge;
 use Workflow\V2\Contracts\HistoryProjectionRole;
+use Workflow\V2\Contracts\PreparedLocalActivityGroupTaskBridge;
+use Workflow\V2\Contracts\PreparedLocalActivityTaskBridge;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\HistoryEventType;
@@ -65,9 +73,11 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowServiceCall;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\PortableLocalActivityPreparation;
 use Workflow\V2\Support\StickyExecution;
 use Workflow\V2\Support\WorkerProtocolVersion;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
+use Workflow\V2\Support\WorkflowStepHistory;
 use Workflow\V2\Support\WorkflowTaskOwnership;
 
 class WorkerController
@@ -223,6 +233,47 @@ class WorkerController
         ]);
 
         $workerCapabilities = $this->nonEmptyStringArray($validated['capabilities'] ?? []);
+        if (in_array(PreparedLocalActivityPolicy::CANCELLATION_POLICIES_CAPABILITY, $workerCapabilities, true)
+            && ! PreparedLocalActivityPolicy::supportsCancellationPolicies($workerCapabilities, WorkerProtocol::requestVersion($request))) {
+            return WorkerProtocol::json([
+                'registered' => false,
+                'reason' => 'prepared_local_activity_cancellation_policy_capability_mismatch',
+                'required_capabilities' => [CooperativeCancellationPolicy::CAPABILITY, PreparedLocalActivityPolicy::CAPABILITY],
+                'minimum_protocol_version' => PreparedLocalActivityPolicy::MINIMUM_PROTOCOL_VERSION,
+                'requested_version' => WorkerProtocol::requestVersion($request),
+            ], 409);
+        }
+        if (in_array(PreparedLocalActivityPolicy::GROUP_CAPABILITY, $workerCapabilities, true)
+            && (! in_array(PreparedLocalActivityPolicy::CAPABILITY, $workerCapabilities, true)
+                || ! CooperativeCancellationPolicy::supports($workerCapabilities, WorkerProtocol::requestVersion($request)))) {
+            return WorkerProtocol::json([
+                'registered' => false,
+                'reason' => 'prepared_local_activity_group_capability_mismatch',
+                'required_capabilities' => [CooperativeCancellationPolicy::CAPABILITY, PreparedLocalActivityPolicy::CAPABILITY],
+                'minimum_protocol_version' => PreparedLocalActivityPolicy::MINIMUM_PROTOCOL_VERSION,
+                'requested_version' => WorkerProtocol::requestVersion($request),
+            ], 409);
+        }
+        if (in_array(PreparedLocalActivityPolicy::CAPABILITY, $workerCapabilities, true)
+            && ! CooperativeCancellationPolicy::supports($workerCapabilities, WorkerProtocol::requestVersion($request))) {
+            return WorkerProtocol::json([
+                'registered' => false,
+                'reason' => 'prepared_local_activity_capability_mismatch',
+                'required_capability' => CooperativeCancellationPolicy::CAPABILITY,
+                'minimum_protocol_version' => PreparedLocalActivityPolicy::MINIMUM_PROTOCOL_VERSION,
+                'requested_version' => WorkerProtocol::requestVersion($request),
+            ], 409);
+        }
+        if (in_array(CooperativeCancellationPolicy::CAPABILITY, $workerCapabilities, true)
+            && ! CooperativeCancellationPolicy::supports($workerCapabilities, WorkerProtocol::requestVersion($request))) {
+            return WorkerProtocol::json([
+                'registered' => false,
+                'reason' => 'cooperative_cancellation_protocol_mismatch',
+                'minimum_protocol_version' => CooperativeCancellationPolicy::MINIMUM_PROTOCOL_VERSION,
+                'requested_version' => WorkerProtocol::requestVersion($request),
+            ], 409);
+        }
+
         $capabilityManifest = $this->portableWorkerCapabilityManifest(
             is_array($validated['capability_manifest'] ?? null) ? $validated['capability_manifest'] : [],
         );
@@ -1435,11 +1486,76 @@ class WorkerController
      */
     public function completeWorkflowTask(Request $request, string $taskId): JsonResponse
     {
+        return $this->mutateWorkflowTaskCommands($request, $taskId);
+    }
+
+    public function checkpointLocalActivityPrefix(Request $request, string $taskId): JsonResponse
+    {
+        if ($response = PreparedLocalActivityController::unavailable($request)) {
+            return $response;
+        }
+        $task = NamespaceWorkflowScope::task((string) $request->attributes->get('namespace'), $taskId);
+        if ($task === null) {
+            return WorkerProtocol::json(['reason' => 'task_not_found'], 404);
+        }
+        if (PreparedLocalActivityPolicy::currentClaim($task) === null) {
+            return PreparedLocalActivityController::refused((string) $request->input('lease_owner', ''), ['worker_claim_capability']);
+        }
+
+        return $this->mutateWorkflowTaskCommands($request, $taskId, true);
+    }
+
+    public function checkpointLocalActivityGroup(Request $request, string $taskId): JsonResponse
+    {
+        if ($response = WorkerProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+        $reasons = PreparedLocalActivityPolicy::groupUnavailableReasons(WorkerProtocol::requestVersion($request));
+        if ($reasons !== []) {
+            return PreparedLocalActivityController::refused((string) $request->input('lease_owner', ''), $reasons, PreparedLocalActivityPolicy::GROUP_CAPABILITY);
+        }
+        $task = NamespaceWorkflowScope::task((string) $request->attributes->get('namespace'), $taskId);
+        if ($task === null) {
+            return WorkerProtocol::json(['reason' => 'task_not_found'], 404);
+        }
+        if (PreparedLocalActivityPolicy::currentGroupClaim($task) === null) {
+            return PreparedLocalActivityController::refused((string) $request->input('lease_owner', ''), ['worker_claim_capability'], PreparedLocalActivityPolicy::GROUP_CAPABILITY);
+        }
+
+        return $this->mutateWorkflowTaskCommands($request, $taskId, true, true);
+    }
+
+    public function checkpointCancellationScopePrefix(Request $request, string $taskId): JsonResponse
+    {
+        if ($response = WorkerProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+        if (! WorkerProtocol::versionMeetsMinimum(WorkerProtocol::requestVersion($request), CooperativeCancellationPolicy::MINIMUM_PROTOCOL_VERSION)) {
+            return WorkerProtocol::json(['checkpointed' => false, 'reason' => 'cancellation_scope_checkpoint_requires_protocol_1_20'], 409);
+        }
+        if (! app(WorkflowTaskBridge::class) instanceof CancellationScopeTaskBridge) {
+            return WorkerProtocol::json(['checkpointed' => false, 'reason' => 'cancellation_scope_checkpoint_unavailable',
+                'unavailable' => ['installed_runtime_scope_checkpoint']], 409);
+        }
+
+        return $this->mutateWorkflowTaskCommands($request, $taskId, true, scopePrefix: true);
+    }
+
+    private function mutateWorkflowTaskCommands(Request $request, string $taskId, bool $checkpoint = false, bool $group = false, bool $scopePrefix = false): JsonResponse
+    {
         if ($response = WorkerProtocol::rejectUnsupported($request)) {
             return $response;
         }
 
         $namespace = $request->attributes->get('namespace');
+
+        $checkpointInput = $checkpoint ? $request->validate([
+            'checkpoint_id' => ['required', 'string', 'max:255'],
+            'start_sequence' => ['required', 'integer', 'min:1'],
+            'message_stream_cursors' => ['prohibited'],
+            'message_stream_waits' => ['prohibited'],
+            'sticky_cache' => ['prohibited'],
+        ]) : [];
 
         $messageStreamCompletion = $request->validate([
             'message_stream_cursors' => ['nullable', 'array', 'max:100'],
@@ -1455,6 +1571,11 @@ class WorkerController
             'workflow_task_attempt' => ['required', 'integer', 'min:1'],
             'commands' => ['required', 'array', 'min:1'],
             'commands.*.type' => ['required', 'string'],
+            'commands.*.cancellation_scope_id' => ['sometimes', 'string', 'min:1', 'max:255'],
+            'commands.*.cancellation_cleanup' => ['sometimes', 'required', 'array:scope_id,request_id,delivery_history_event_id'],
+            'commands.*.cancellation_cleanup.scope_id' => ['sometimes', 'required', 'string', 'max:255'],
+            'commands.*.cancellation_cleanup.request_id' => ['required_with:commands.*.cancellation_cleanup', 'string', 'max:255'],
+            'commands.*.cancellation_cleanup.delivery_history_event_id' => ['required_with:commands.*.cancellation_cleanup', 'string', 'max:255'],
             'commands.*.result' => ['nullable'],
             'commands.*.activity_type' => ['nullable', 'string'],
             'commands.*.arguments' => ['nullable'],
@@ -1523,6 +1644,7 @@ class WorkerController
             'commands.*.entries' => ['nullable', 'array'],
             'commands.*.non_retryable' => ['nullable', 'boolean'],
             'commands.*.parent_close_policy' => ['nullable', 'string'],
+            'commands.*.cancellation_policy' => ['nullable', 'string', 'in:try_cancel,wait_cancellation_completed,abandon'],
             'commands.*.condition_key' => ['nullable', 'string'],
             'commands.*.condition_definition_fingerprint' => ['nullable', 'string'],
             'commands.*.condition_wait_occurrence_id' => ['nullable', 'string'],
@@ -1584,6 +1706,9 @@ class WorkerController
         ];
 
         $topLevelRules = [];
+        if ($group) {
+            $completionRules['commands'] = ['required', 'array', 'min:1', 'max:100'];
+        }
         $commandRules = ['commands' => ['required', 'array', 'min:1']];
         foreach ($completionRules as $field => $rules) {
             if (str_starts_with($field, 'commands.*.')) {
@@ -1611,7 +1736,11 @@ class WorkerController
                 }
 
                 foreach ($chunkValidator->validated()['commands'] as $index => $command) {
-                    $validatedCommands[$index] = $command;
+                    // Prepared descriptors have a closed Native grammar. Keep
+                    // original keys so transport validation cannot silently
+                    // discard routing, fabricated reports or unknown fields.
+                    $validatedCommands[$index] = $group && ($command['type'] ?? null) === 'prepare_local_activity'
+                        ? $chunk[$index] : $command;
                 }
             }
         }
@@ -1623,10 +1752,15 @@ class WorkerController
         $validated['commands'] = $validatedCommands;
 
         $commands = $this->normalizeWorkflowTaskCommandIntegerFields($validated['commands']);
-        $commands = WorkflowCommandNormalizer::preflightParallelMetadata($commands);
+        $commands = $group ? $this->preflightPreparedLocalGroupMetadata($commands)
+            : WorkflowCommandNormalizer::preflightParallelMetadata($commands);
         $commands = $this->applyWorkerSessionRoutingDefaults($commands);
 
         $this->validateWorkflowTaskCommandScopes($commands);
+
+        if ($response = $this->guardPreparedLocalCancellationPoliciesAvailable($request, (string) $namespace, $taskId, $commands)) {
+            return $response;
+        }
 
         if ($response = $this->guardWorkflowTaskOwnership(
             $request,
@@ -1640,6 +1774,31 @@ class WorkerController
 
         if ($response = $this->guardConditionWaitOccurrenceIdentityAvailable(
             $request,
+            $taskId,
+            (int) $validated['workflow_task_attempt'],
+            $commands,
+        )) {
+            return $response;
+        }
+
+        if ($response = $this->guardCancellationScopeAdmission($request, (string) $namespace, $taskId,
+            (int) $validated['workflow_task_attempt'], $commands)) {
+            return $response;
+        }
+
+        if ($response = $this->guardRemoteActivityCancellationPoliciesAvailable(
+            $request,
+            (string) $namespace,
+            $taskId,
+            (int) $validated['workflow_task_attempt'],
+            $commands,
+        )) {
+            return $response;
+        }
+
+        if ($response = $this->guardChildCancellationPoliciesAvailable(
+            $request,
+            (string) $namespace,
             $taskId,
             (int) $validated['workflow_task_attempt'],
             $commands,
@@ -1756,6 +1915,10 @@ class WorkerController
                     $validated,
                     $messageStreamCursors,
                     $messageStreamWaits,
+                    $checkpoint,
+                    $checkpointInput,
+                    $group,
+                    $scopePrefix,
                 ): array|JsonResponse {
                     return DB::transaction(function () use (
                         $bridge,
@@ -1766,6 +1929,10 @@ class WorkerController
                         $validated,
                         $messageStreamCursors,
                         $messageStreamWaits,
+                        $checkpoint,
+                        $checkpointInput,
+                        $group,
+                        $scopePrefix,
                     ): array|JsonResponse {
                         $quotaSnapshot = $this->durableStateQuota->snapshotForMutation(
                             (string) $namespace,
@@ -1780,10 +1947,10 @@ class WorkerController
                             ->where('worker_id', $validated['lease_owner'])
                             ->lockForUpdate()
                             ->first();
-                        NamespaceWorkflowScope::taskQuery((string) $namespace)
-                            ->whereKey($taskId)
-                            ->lockForUpdate()
-                            ->first();
+                        $claimedTask = NamespaceWorkflowScope::lockTaskForMutation((string) $namespace, $taskId);
+                        if (! $claimedTask instanceof WorkflowTask) {
+                            return $this->workflowTaskNotFound($taskId, (int) $validated['workflow_task_attempt']);
+                        }
 
                         if ($response = $this->guardWorkflowTaskOwnership(
                             $request,
@@ -1806,6 +1973,32 @@ class WorkerController
                             return $response;
                         }
 
+                        if ($response = $this->guardRemoteActivityCancellationPoliciesAvailable(
+                            $request,
+                            (string) $namespace,
+                            $taskId,
+                            (int) $validated['workflow_task_attempt'],
+                            $commands,
+                            $claimedTask,
+                        )) {
+                            return $response;
+                        }
+
+                        if ($response = $this->guardPreparedLocalCancellationPoliciesAvailable($request, (string) $namespace, $taskId, $commands, $claimedTask)) {
+                            return $response;
+                        }
+
+                        if ($response = $this->guardChildCancellationPoliciesAvailable(
+                            $request,
+                            (string) $namespace,
+                            $taskId,
+                            (int) $validated['workflow_task_attempt'],
+                            $commands,
+                            $claimedTask,
+                        )) {
+                            return $response;
+                        }
+
                         if ($response = $this->guardPortableWorkerAffinityCompletion(
                             $request,
                             (string) $namespace,
@@ -1820,16 +2013,51 @@ class WorkerController
                         }
 
                         $this->authorizeServiceOperationReplays($request, (string) $namespace, $taskId, $commands);
+                        if ($response = $this->guardCancellationScopeAdmission($request, (string) $namespace, $taskId,
+                            (int) $validated['workflow_task_attempt'], $commands, true)) {
+                            return $response;
+                        }
                         $commands = $this->canonicalizeWorkflowStreamPayloadCodecs($commands);
                         $streamCommands = $commands;
                         $commands = app(WorkflowStreamCommandProcessor::class)->withoutDirectives($commands);
-                        $commands = WorkflowCommandNormalizer::normalize(
-                            $commands,
-                            WorkerProtocol::requestVersion($request),
-                        );
-                        $outcome = $bridge->complete($taskId, $commands);
-                        if (($outcome['completed'] ?? false) === true) {
+                        $commands = $group ? $this->normalizePreparedLocalGroupCommands($commands, WorkerProtocol::requestVersion($request))
+                            : WorkflowCommandNormalizer::normalize($commands, WorkerProtocol::requestVersion($request));
+                        if ($checkpoint) {
+                            if ($scopePrefix) {
+                                if (! $bridge instanceof CancellationScopeTaskBridge
+                                    || ! $claimedTask instanceof WorkflowTask
+                                    || ! CooperativeCancellationPolicy::claimSupportsCancellation($claimedTask)) {
+                                    return WorkerProtocol::json(['checkpointed' => false, 'reason' => 'active_claim_cancellation_not_supported'], 409);
+                                }
+                            } elseif (PreparedLocalActivityPolicy::currentClaim($claimedTask) === null
+                                || ! $bridge instanceof PreparedLocalActivityTaskBridge
+                                || ($group && (PreparedLocalActivityPolicy::currentGroupClaim($claimedTask) === null
+                                    || ! $bridge instanceof PreparedLocalActivityGroupTaskBridge))) {
+                                throw new PreparedLocalActivityAdmissionRefused;
+                            }
+                            $method = $scopePrefix ? 'checkpointCancellationScopePrefix'
+                                : ($group ? 'checkpointLocalActivityGroup' : 'checkpointLocalActivityPrefix');
+                            $outcome = $bridge->$method(
+                                $taskId, $validated['lease_owner'], (int) $validated['workflow_task_attempt'],
+                                $checkpointInput['checkpoint_id'], (int) $checkpointInput['start_sequence'], $commands,
+                                WorkerProtocol::requestVersion($request),
+                            );
+                            // Shared post-processing must not release this claim
+                            // or attribute a terminal event to a prefix receipt.
+                            $outcome['completed'] = false;
+                        } else {
+                            $outcome = $bridge->complete($taskId, $commands);
+                        }
+                        if (($outcome[$checkpoint ? 'checkpointed' : 'completed'] ?? false) === true) {
                             app(WorkflowStreamCommandProcessor::class)->process($taskId, (string) $namespace, $streamCommands);
+                        }
+                        if (($outcome['completed'] ?? false) === true
+                            && $claimedTask instanceof WorkflowTask
+                            && CooperativeCancellationPolicy::claimSupportsCancellation($claimedTask)) {
+                            $successor = CooperativeCancellationPolicy::resumeUndeliveredRequest($claimedTask->refresh());
+                            if ($successor instanceof WorkflowTask) {
+                                $outcome['created_task_ids'][] = $successor->id;
+                            }
                         }
                         $this->applyStickyCacheClaim(
                             $taskId,
@@ -1875,6 +2103,9 @@ class WorkerController
                 'current_value' => $e->currentValue,
                 'configured_limit' => $e->configuredLimit,
             ], 422);
+        } catch (PreparedLocalActivityAdmissionRefused) {
+            return PreparedLocalActivityController::refused($validated['lease_owner'], ['worker_claim_capability'],
+                $group ? PreparedLocalActivityPolicy::GROUP_CAPABILITY : PreparedLocalActivityPolicy::CAPABILITY);
         } catch (ExternalPayloadStorageUnavailable $exception) {
             return $this->externalPayloadFailure($taskId, (int) $validated['workflow_task_attempt'], $exception, 503);
         } catch (StreamFullException $exception) {
@@ -1948,6 +2179,13 @@ class WorkerController
             return BackendLockPressure::workerOperationResponse($request, true);
         }
 
+        if ($checkpoint) {
+            unset($outcome['completed']);
+            $outcome['history_refresh_page_token'] = WorkflowHistoryPageToken::encode(0);
+
+            return WorkerProtocol::json($outcome, $this->workflowOutcomeStatus($outcome['reason']));
+        }
+
         return WorkerProtocol::json([
             'task_id' => $taskId,
             'workflow_task_attempt' => (int) $validated['workflow_task_attempt'],
@@ -1960,9 +2198,151 @@ class WorkerController
         ], $this->workflowOutcomeStatus($outcome['reason']));
     }
 
-    /**
-     * @param  list<array<string, mixed>>  $commands
-     */
+    /** @param array<int, array<string, mixed>> $commands */
+    private function preflightPreparedLocalGroupMetadata(array $commands): array
+    {
+        $locals = [];
+        foreach ($commands as $index => $command) {
+            if (($command['type'] ?? null) === 'prepare_local_activity') {
+                $locals[] = $index;
+                $commands[$index]['type'] = 'schedule_activity';
+            }
+        }
+        $commands = WorkflowCommandNormalizer::preflightParallelMetadata($commands);
+        foreach ($locals as $index) {
+            $commands[$index]['type'] = 'prepare_local_activity';
+        }
+
+        return $commands;
+    }
+
+    /** @param array<int, array<string, mixed>> $commands */
+    private function normalizePreparedLocalGroupCommands(array $commands, string $protocolVersion): array
+    {
+        $locals = [];
+        foreach ($commands as $index => $command) {
+            if (($command['type'] ?? null) !== 'prepare_local_activity') {
+                continue;
+            }
+            $descriptor = PortableLocalActivityPreparation::normalizeDescriptor([...$command, 'type' => 'record_local_activity']);
+            $locals[$index] = [...$descriptor, 'type' => 'prepare_local_activity'];
+            unset($descriptor['execution_mode'], $descriptor['cancellation_cleanup']);
+            $commands[$index] = [...$descriptor, 'type' => 'schedule_activity'];
+        }
+        $commands = WorkflowCommandNormalizer::normalize($commands, $protocolVersion);
+        foreach ($locals as $index => $descriptor) {
+            $commands[$index] = $descriptor;
+        }
+
+        return $commands;
+    }
+
+    /** @param array<int, array<string, mixed>> $commands */
+    private function guardPreparedLocalCancellationPoliciesAvailable(Request $request, string $namespace, string $taskId, array $commands, ?WorkflowTask $claimedTask = null): ?JsonResponse
+    {
+        foreach ($commands as $command) {
+            if (($command['type'] ?? null) !== 'prepare_local_activity' || ! array_key_exists('cancellation_policy', $command)) {
+                continue;
+            }
+            $task = $claimedTask ?? NamespaceWorkflowScope::task($namespace, $taskId);
+            if ($response = PreparedLocalActivityController::cancellationPolicyRefusal($request, $task, $command['cancellation_policy'])) {
+                return $response;
+            }
+        }
+
+        return null;
+    }
+
+    /** @param array<int, array<string, mixed>> $commands */
+    private function guardRemoteActivityCancellationPoliciesAvailable(
+        Request $request,
+        string $namespace,
+        string $taskId,
+        int $workflowTaskAttempt,
+        array $commands,
+        ?WorkflowTask $claimedTask = null,
+    ): ?JsonResponse {
+        $usesPolicy = false;
+        foreach ($commands as $command) {
+            if (($command['type'] ?? null) === 'schedule_activity'
+                && $this->hasCommandValue($command, 'cancellation_policy')) {
+                $usesPolicy = true;
+                break;
+            }
+        }
+        if (! $usesPolicy) {
+            return null;
+        }
+        $task = $claimedTask ?? NamespaceWorkflowScope::taskQuery($namespace)->whereKey($taskId)->first();
+        $unavailable = CooperativeCancellationPolicy::remoteActivityPolicyUnavailableReasons(
+            $task,
+            WorkerProtocol::requestVersion($request),
+        );
+        if ($unavailable === []) {
+            return null;
+        }
+
+        return WorkerProtocol::json([
+            'task_id' => $taskId,
+            'workflow_task_attempt' => $workflowTaskAttempt,
+            'worker_id' => $task?->lease_owner,
+            'outcome' => 'rejected',
+            'recorded' => false,
+            'reason' => 'activity_cancellation_policy_not_supported',
+            'required_capability' => CooperativeCancellationPolicy::CAPABILITY,
+            'minimum_protocol_version' => CooperativeCancellationPolicy::MINIMUM_PROTOCOL_VERSION,
+            'requested_version' => WorkerProtocol::requestVersion($request),
+            'unavailable' => $unavailable,
+            'remediation' => 'Use a runtime with remote activity cancellation policies and a cooperative worker claim on protocol 1.20 or newer.',
+        ], 409);
+    }
+
+    /** @param array<int, array<string, mixed>> $commands */
+    private function guardChildCancellationPoliciesAvailable(
+        Request $request,
+        string $namespace,
+        string $taskId,
+        int $workflowTaskAttempt,
+        array $commands,
+        ?WorkflowTask $claimedTask = null,
+    ): ?JsonResponse {
+        $usesPolicy = false;
+        foreach ($commands as $command) {
+            if (($command['type'] ?? null) === 'start_child_workflow'
+                && (($command['parent_close_policy'] ?? null) === 'request_cancellation'
+                    || in_array($command['cancellation_policy'] ?? null, ['try_cancel', 'wait_cancellation_completed'], true))) {
+                $usesPolicy = true;
+                break;
+            }
+        }
+        if (! $usesPolicy) {
+            return null;
+        }
+        $task = $claimedTask ?? NamespaceWorkflowScope::taskQuery($namespace)->whereKey($taskId)->first();
+        $unavailable = CooperativeCancellationPolicy::childPolicyUnavailableReasons(
+            $task,
+            WorkerProtocol::requestVersion($request),
+        );
+        if ($unavailable === []) {
+            return null;
+        }
+
+        return WorkerProtocol::json([
+            'task_id' => $taskId,
+            'workflow_task_attempt' => $workflowTaskAttempt,
+            'worker_id' => $task?->lease_owner,
+            'outcome' => 'rejected',
+            'recorded' => false,
+            'reason' => 'child_cancellation_policy_not_supported',
+            'required_capability' => CooperativeCancellationPolicy::CAPABILITY,
+            'minimum_protocol_version' => CooperativeCancellationPolicy::MINIMUM_PROTOCOL_VERSION,
+            'requested_version' => WorkerProtocol::requestVersion($request),
+            'unavailable' => $unavailable,
+            'remediation' => 'Use a runtime with child cancellation policies and a claim from a cooperative worker on protocol 1.20 or newer.',
+        ], 409);
+    }
+
+    /** @param list<array<string, mixed>> $commands */
     private function guardWorkerSessionCommandsAvailable(
         Request $request,
         string $taskId,
@@ -2396,7 +2776,7 @@ class WorkerController
         array $commands,
         array $outcome,
     ): void {
-        if (($outcome['completed'] ?? false) !== true) {
+        if (($outcome['completed'] ?? false) !== true && ($outcome['checkpointed'] ?? false) !== true) {
             return;
         }
 
@@ -2409,11 +2789,22 @@ class WorkerController
             return;
         }
 
-        $events = WorkflowHistoryEvent::query()
+        $eventQuery = WorkflowHistoryEvent::query()
             ->where('workflow_task_id', $taskId)
-            ->where('event_type', HistoryEventType::SearchAttributesUpserted->value)
-            ->orderBy('sequence')
-            ->get();
+            ->where('event_type', HistoryEventType::SearchAttributesUpserted->value);
+        if (($outcome['checkpointed'] ?? false) === true) {
+            $eventQuery->where('payload->sequence', '>=', $outcome['start_sequence'])
+                ->where('payload->sequence', '<', $outcome['next_sequence']);
+        } else {
+            $payload = WorkflowTask::query()->find($taskId)?->payload ?? [];
+            $prefixEnd = max($payload['portable_local_checkpoint']['next_sequence'] ?? 0,
+                $payload['portable_local_group_checkpoint']['next_sequence'] ?? 0,
+                $payload['portable_scope_checkpoint']['next_sequence'] ?? 0);
+            if (is_int($prefixEnd) && $prefixEnd > 0) {
+                $eventQuery->where('payload->sequence', '>=', $prefixEnd);
+            }
+        }
+        $events = $eventQuery->orderBy('sequence')->get();
 
         if ($events->count() !== count($upserts)) {
             throw new \RuntimeException('Typed search-attribute commands did not produce a one-to-one history event set.');
@@ -2534,6 +2925,54 @@ class WorkerController
         ], 409);
     }
 
+    /** @param  list<array<string, mixed>>  $commands */
+    private function guardCancellationScopeAdmission(
+        Request $request,
+        string $namespace,
+        string $taskId,
+        int $workflowTaskAttempt,
+        array $commands,
+        bool $lock = false,
+    ): ?JsonResponse {
+        if (! collect($commands)->contains(static fn (array $command): bool => array_key_exists('cancellation_scope_id', $command))) {
+            return null;
+        }
+        $reason = null;
+        $unavailable = [];
+        if (! WorkerProtocol::versionMeetsMinimum(WorkerProtocol::requestVersion($request), '1.20')) {
+            $reason = 'cancellation_scope_membership_unavailable';
+            $unavailable[] = 'request_protocol';
+        }
+        $bridge = app(WorkflowTaskBridge::class);
+        if (! $bridge instanceof CancellationScopeAdmission) {
+            $reason = 'cancellation_scope_membership_unavailable';
+            $unavailable[] = 'installed_runtime_scope_admission';
+        }
+        foreach ($commands as $command) {
+            if (array_key_exists('cancellation_scope_id', $command)
+                && ! in_array($command['type'], ['schedule_activity', 'start_timer', 'start_child_workflow', 'prepare_local_activity', 'open_signal_wait', 'open_condition_wait'], true)) {
+                $reason = 'invalid_cancellation_scope_command';
+            }
+        }
+        if ($reason === null) {
+            $task = WorkflowTask::query()->whereKey($taskId)->where('namespace', $namespace)->first();
+            $runQuery = WorkflowRun::query()->whereKey($task?->workflow_run_id)->where('namespace', $namespace);
+            $run = ($lock ? $runQuery->lockForUpdate() : $runQuery)->first();
+            if ($run instanceof WorkflowRun) {
+                $reason = $bridge->validateCancellationScopeMembership($run, $commands, WorkflowStepHistory::nextDurableCommandSequence($run));
+            }
+        }
+        if ($reason === null) {
+            return null;
+        }
+
+        return WorkerProtocol::json([
+            'task_id' => $taskId, 'workflow_task_attempt' => $workflowTaskAttempt, 'outcome' => 'rejected',
+            'recorded' => false, 'reason' => $reason, 'unavailable' => $unavailable,
+            'requested_version' => WorkerProtocol::requestVersion($request), 'minimum_protocol_version' => '1.20',
+        ], 409);
+    }
+
     /**
      * @param  list<array<string, mixed>>  $commands
      */
@@ -2638,7 +3077,7 @@ class WorkerController
             }
 
             if ($this->hasCommandValue($command, 'retry_policy')
-                && ! in_array($type, ['schedule_activity', 'record_local_activity', 'start_child_workflow'], true)
+                && ! in_array($type, ['schedule_activity', 'record_local_activity', 'prepare_local_activity', 'start_child_workflow'], true)
             ) {
                 $errors["commands.{$index}.retry_policy"][] =
                     'retry_policy is only supported for schedule_activity and start_child_workflow commands.';
@@ -2646,7 +3085,7 @@ class WorkerController
 
             foreach (['start_to_close_timeout', 'schedule_to_start_timeout', 'schedule_to_close_timeout', 'heartbeat_timeout'] as $field) {
                 if ($this->hasCommandValue($command, $field)
-                    && ! in_array($type, ['schedule_activity', 'record_local_activity'], true)
+                    && ! in_array($type, ['schedule_activity', 'record_local_activity', 'prepare_local_activity'], true)
                 ) {
                     $errors["commands.{$index}.{$field}"][] =
                         "{$field} is only supported for schedule_activity commands.";
@@ -2663,6 +3102,12 @@ class WorkerController
                     $errors["commands.{$index}.{$field}"][] =
                         "{$field} is only supported for start_child_workflow commands.";
                 }
+            }
+
+            if ($this->hasCommandValue($command, 'cancellation_policy')
+                && ! in_array($type, ['start_child_workflow', 'schedule_activity', 'prepare_local_activity'], true)) {
+                $errors["commands.{$index}.cancellation_policy"][] =
+                    'cancellation_policy is only supported for start_child_workflow, schedule_activity or prepared local Activity commands.';
             }
 
             if ($this->hasCommandValue($command, 'non_retryable')
@@ -2696,7 +3141,7 @@ class WorkerController
                 $this->validateActivityTimeoutEnvelope($command, $index, $errors);
             }
 
-            if ($type === 'record_local_activity') {
+            if (in_array($type, ['record_local_activity', 'prepare_local_activity'], true)) {
                 $this->validateActivityTimeoutEnvelope($command, $index, $errors);
             }
 
@@ -2978,7 +3423,8 @@ class WorkerController
                 }
             }
 
-            $payloadFields = WorkflowCommandNormalizer::payloadEnvelopeFields()[$commandType] ?? [];
+            $payloadFields = $commandType === 'prepare_local_activity' ? ['arguments']
+                : (WorkflowCommandNormalizer::payloadEnvelopeFields()[$commandType] ?? []);
             foreach ($payloadFields as $field) {
                 if (is_string($command[$field] ?? null)) {
                     AvroPayloadEnvelopeResolver::assertSerializedPayload($command[$field], "commands.{$index}.{$field}");
@@ -2995,6 +3441,13 @@ class WorkerController
                     $driver,
                     retainExternal: in_array($commandType, ['complete_workflow', 'schedule_activity'], true),
                 );
+
+                if ($commandType === 'prepare_local_activity') {
+                    $commands[$index][$field] = $resolved['payload'];
+                    $commands[$index]['payload_codec'] ??= $resolved['codec'];
+
+                    continue;
+                }
 
                 if ($resolved['codec'] === null) {
                     $commands[$index][$field] = $resolved['payload'];
@@ -3205,7 +3658,9 @@ class WorkerController
                 fn (): array|JsonResponse => DB::transaction(function () use ($request, $namespace, $taskId, $validated, $bridge): array|JsonResponse {
                     // Ownership must remain valid until renewal commits. A
                     // check before this lock can acknowledge a reclaimed lease.
-                    NamespaceWorkflowScope::taskQuery($namespace)->lockForUpdate()->find($taskId);
+                    if (! NamespaceWorkflowScope::lockTaskForMutation($namespace, $taskId) instanceof WorkflowTask) {
+                        return $this->workflowTaskNotFound($taskId, (int) $validated['workflow_task_attempt']);
+                    }
                     if ($response = $this->guardWorkflowTaskOwnership(
                         $request,
                         $namespace,
@@ -3216,7 +3671,16 @@ class WorkerController
                         return $response;
                     }
 
-                    return $bridge->heartbeat($taskId);
+                    $status = $bridge->heartbeat($taskId);
+                    if (($status['renewed'] ?? false) === true) {
+                        $task = NamespaceWorkflowScope::task($namespace, $taskId);
+                        if ($task?->run instanceof WorkflowRun
+                            && ($pending = CooperativeCancellationPolicy::pending($task->run)) !== null) {
+                            $status['cancellation_request'] = $pending;
+                        }
+                    }
+
+                    return $status;
                 }),
             );
         } catch (\Throwable $exception) {
@@ -3244,6 +3708,7 @@ class WorkerController
             'run_status' => $status['run_status'],
             'task_status' => $status['task_status'],
             'reason' => $status['reason'],
+            ...(isset($status['cancellation_request']) ? ['cancellation_request' => $status['cancellation_request']] : []),
         ], $this->workflowOutcomeStatus($status['reason']));
     }
 
@@ -3282,11 +3747,17 @@ class WorkerController
         if ($this->workflowTaskFailureWaitsForHistory($validated['failure'])) {
             try {
                 $outcome = $this->storageMutations->run(
-                    fn (): array => $this->acknowledgeWorkflowTaskWaitingForHistory(
-                        $namespace,
-                        $taskId,
-                        $validated['failure'],
-                    ),
+                    fn (): array|JsonResponse => DB::transaction(function () use ($request, $namespace, $taskId, $validated): array|JsonResponse {
+                        if (! NamespaceWorkflowScope::lockTaskForMutation($namespace, $taskId) instanceof WorkflowTask) {
+                            return $this->workflowTaskNotFound($taskId, (int) $validated['workflow_task_attempt']);
+                        }
+                        if ($response = $this->guardWorkflowTaskOwnership($request, $namespace, $taskId,
+                            (int) $validated['workflow_task_attempt'], $validated['lease_owner'])) {
+                            return $response;
+                        }
+
+                        return $this->acknowledgeWorkflowTaskWaitingForHistory($namespace, $taskId, $validated['failure']);
+                    }),
                 );
             } catch (\Throwable $exception) {
                 if (! BackendLockPressure::is($exception)) {
@@ -3294,6 +3765,10 @@ class WorkerController
                 }
 
                 return BackendLockPressure::workerOperationResponse($request, false);
+            }
+
+            if ($outcome instanceof JsonResponse) {
+                return $outcome;
             }
 
             return WorkerProtocol::json([
@@ -3311,16 +3786,26 @@ class WorkerController
         try {
             $outcome = $this->storageMutations->run(function () use (
                 $bridge,
+                $request,
                 $namespace,
                 $taskId,
                 $validated,
-            ): array {
+            ): array|JsonResponse {
                 return DB::transaction(function () use (
                     $bridge,
+                    $request,
                     $namespace,
                     $taskId,
                     $validated,
-                ): array {
+                ): array|JsonResponse {
+                    if (! NamespaceWorkflowScope::lockTaskForMutation($namespace, $taskId) instanceof WorkflowTask) {
+                        return $this->workflowTaskNotFound($taskId, (int) $validated['workflow_task_attempt']);
+                    }
+                    if ($response = $this->guardWorkflowTaskOwnership($request, $namespace, $taskId,
+                        (int) $validated['workflow_task_attempt'], $validated['lease_owner'])) {
+                        return $response;
+                    }
+
                     $outcome = $bridge->fail($taskId, $validated['failure']);
                     $nextTaskId = is_string($outcome['next_task_id'] ?? null)
                         ? $outcome['next_task_id']
@@ -3357,6 +3842,10 @@ class WorkerController
             }
 
             return BackendLockPressure::workerOperationResponse($request, false);
+        }
+
+        if ($outcome instanceof JsonResponse) {
+            return $outcome;
         }
 
         $nextTaskId = is_string($outcome['next_task_id'] ?? null)
@@ -3452,11 +3941,7 @@ class WorkerController
             &$createdTaskIds,
         ): array {
             /** @var WorkflowTask|null $task */
-            $task = WorkflowTask::query()
-                ->lockForUpdate()
-                ->whereKey($taskId)
-                ->where('namespace', $namespace)
-                ->first();
+            $task = NamespaceWorkflowScope::lockTaskForMutation($namespace, $taskId);
 
             if (! $task instanceof WorkflowTask) {
                 return ['recorded' => false, 'reason' => 'task_not_found', 'next_task_id' => null];
@@ -3576,11 +4061,7 @@ class WorkerController
     ): void {
         DB::transaction(function () use ($namespace, $taskId, $failure, $replayBlocked): void {
             /** @var WorkflowTask|null $task */
-            $task = WorkflowTask::query()
-                ->lockForUpdate()
-                ->whereKey($taskId)
-                ->where('namespace', $namespace)
-                ->first();
+            $task = NamespaceWorkflowScope::lockTaskForMutation($namespace, $taskId);
 
             if (! $task instanceof WorkflowTask
                 || $task->task_type !== TaskType::Workflow
@@ -3623,11 +4104,7 @@ class WorkerController
     {
         return DB::transaction(function () use ($namespace, $failedTaskId): ?string {
             /** @var WorkflowTask|null $failedTask */
-            $failedTask = WorkflowTask::query()
-                ->lockForUpdate()
-                ->whereKey($failedTaskId)
-                ->where('namespace', $namespace)
-                ->first();
+            $failedTask = NamespaceWorkflowScope::lockTaskForMutation($namespace, $failedTaskId);
 
             if (! $failedTask instanceof WorkflowTask
                 || $failedTask->task_type !== TaskType::Workflow
@@ -4114,22 +4591,22 @@ class WorkerController
 
     private static function encodeHistoryPageToken(int $sequence): string
     {
-        return base64_encode((string) $sequence);
+        return WorkflowHistoryPageToken::encode($sequence);
     }
 
     private static function decodeHistoryPageToken(?string $token): ?int
     {
-        if (! is_string($token) || trim($token) === '') {
-            return null;
-        }
+        return WorkflowHistoryPageToken::decode($token);
+    }
 
-        $decoded = base64_decode($token, true);
-
-        if (! is_string($decoded) || ! ctype_digit($decoded)) {
-            return null;
-        }
-
-        return (int) $decoded;
+    private function workflowTaskNotFound(string $taskId, int $workflowTaskAttempt): JsonResponse
+    {
+        return WorkerProtocol::json([
+            'task_id' => $taskId,
+            'workflow_task_attempt' => $workflowTaskAttempt,
+            'error' => 'Workflow task not found.',
+            'reason' => 'task_not_found',
+        ], 404);
     }
 
     /**
@@ -4192,12 +4669,7 @@ class WorkerController
 
         // Convert package-level outcomes to HTTP responses
         return match ($result['reason']) {
-            'task_not_found' => WorkerProtocol::json([
-                'task_id' => $taskId,
-                'workflow_task_attempt' => $workflowTaskAttempt,
-                'error' => 'Workflow task not found.',
-                'reason' => 'task_not_found',
-            ], 404),
+            'task_not_found' => $this->workflowTaskNotFound($taskId, $workflowTaskAttempt),
 
             'task_not_leased' => WorkerProtocol::json([
                 'task_id' => $taskId,

@@ -3,6 +3,8 @@
 use App\Http\Controllers\Api\ActivityController;
 use App\Http\Controllers\Api\ActivityTaskController;
 use App\Http\Controllers\Api\BridgeAdapterController;
+use App\Http\Controllers\Api\CancellationScopeController;
+use App\Http\Controllers\Api\CooperativeCancellationController;
 use App\Http\Controllers\Api\DeploymentController;
 use App\Http\Controllers\Api\EmbeddedV2ImportController;
 use App\Http\Controllers\Api\HealthController;
@@ -10,6 +12,7 @@ use App\Http\Controllers\Api\HistoryController;
 use App\Http\Controllers\Api\LegacyV1ProjectionController;
 use App\Http\Controllers\Api\MessageStreamController;
 use App\Http\Controllers\Api\NamespaceController;
+use App\Http\Controllers\Api\PreparedLocalActivityController;
 use App\Http\Controllers\Api\RuntimeCredentialController;
 use App\Http\Controllers\Api\RuntimeExternalPayloadController;
 use App\Http\Controllers\Api\ScheduleController;
@@ -140,6 +143,7 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
         Route::post('/{workflowId}/query/{queryName}', [WorkflowController::class, 'query']);
         Route::post('/{workflowId}/update/{updateName}', [WorkflowController::class, 'update']);
         Route::post('/{workflowId}/cancel', [WorkflowController::class, 'cancel']);
+        Route::post('/{workflowId}/request-cancellation', [CooperativeCancellationController::class, 'request']);
         Route::post('/{workflowId}/terminate', [WorkflowController::class, 'terminate']);
         Route::post('/{workflowId}/repair', [WorkflowController::class, 'repair']);
         Route::post('/{workflowId}/archive', [WorkflowController::class, 'archive']);
@@ -149,6 +153,7 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
         Route::post('/{workflowId}/runs/{runId}/query/{queryName}', [WorkflowController::class, 'queryRun']);
         Route::post('/{workflowId}/runs/{runId}/update/{updateName}', [WorkflowController::class, 'updateRun']);
         Route::post('/{workflowId}/runs/{runId}/cancel', [WorkflowController::class, 'cancelRun']);
+        Route::post('/{workflowId}/runs/{runId}/request-cancellation', [CooperativeCancellationController::class, 'request']);
         Route::post('/{workflowId}/runs/{runId}/terminate', [WorkflowController::class, 'terminateRun']);
         Route::post('/{workflowId}/runs/{runId}/repair', [WorkflowController::class, 'repairRun']);
         Route::post('/{workflowId}/runs/{runId}/redrive', [WorkflowController::class, 'redriveRun']);
@@ -230,6 +235,19 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
         Route::post('/workflow-tasks/poll', [WorkerController::class, 'pollWorkflowTasks']);
         Route::post('/workflow-tasks/{taskId}/history', [WorkerController::class, 'workflowTaskHistory']);
         Route::post('/workflow-tasks/{taskId}/heartbeat', [WorkerController::class, 'heartbeatWorkflowTask']);
+        Route::post('/workflow-tasks/{taskId}/deliver-cancellation', [CooperativeCancellationController::class, 'deliver']);
+        Route::post('/workflow-tasks/{taskId}/cancellation-scopes/open', [CancellationScopeController::class, 'open']);
+        Route::post('/workflow-tasks/{taskId}/cancellation-scopes/prepare', [CancellationScopeController::class, 'prepare']);
+        Route::post('/workflow-tasks/{taskId}/cancellation-scopes/deliver', [CancellationScopeController::class, 'deliver']);
+        Route::post('/workflow-tasks/{taskId}/cancellation-scopes/checkpoint', [WorkerController::class, 'checkpointCancellationScopePrefix']);
+        Route::post('/workflow-tasks/{taskId}/local-activities/prepare', [PreparedLocalActivityController::class, 'prepare']);
+        Route::post('/workflow-tasks/{taskId}/local-activities/checkpoint', [WorkerController::class, 'checkpointLocalActivityPrefix']);
+        Route::post('/workflow-tasks/{taskId}/local-activities/checkpoint-group', [WorkerController::class, 'checkpointLocalActivityGroup']);
+        Route::post('/workflow-tasks/{taskId}/local-activities/recover', [PreparedLocalActivityController::class, 'recover']);
+        Route::post('/workflow-tasks/{taskId}/local-activities/{attemptId}/control', [PreparedLocalActivityController::class, 'control']);
+        Route::post('/workflow-tasks/{taskId}/local-activities/{attemptId}/heartbeat', [PreparedLocalActivityController::class, 'heartbeat']);
+        Route::post('/workflow-tasks/{taskId}/local-activities/{attemptId}/outcome', [PreparedLocalActivityController::class, 'outcome']);
+        Route::post('/workflow-tasks/{taskId}/local-activities/{attemptId}/acknowledge-cancellation', [PreparedLocalActivityController::class, 'acknowledgeCancellation']);
         Route::post('/workflow-tasks/{taskId}/complete', [WorkerController::class, 'completeWorkflowTask']);
         Route::post('/workflow-tasks/{taskId}/fail', [WorkerController::class, 'failWorkflowTask']);
 
@@ -245,6 +263,8 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
 
         // Activity tasks (long-poll)
         Route::post('/activity-tasks/poll', [ActivityTaskController::class, 'poll']);
+        Route::post('/activity-tasks/{taskId}/status', [ActivityTaskController::class, 'status']);
+        Route::post('/activity-tasks/{taskId}/acknowledge-cancellation', [ActivityTaskController::class, 'acknowledgeCancellation']);
         Route::post('/activity-tasks/{taskId}/complete', [ActivityTaskController::class, 'complete']);
         Route::post('/activity-tasks/{taskId}/fail', [ActivityTaskController::class, 'fail']);
         Route::post('/activity-tasks/{taskId}/heartbeat', [ActivityTaskController::class, 'heartbeat']);

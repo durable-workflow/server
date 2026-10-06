@@ -86,4 +86,25 @@ class NamespaceWorkflowScope
             ->whereKey($taskId)
             ->first();
     }
+
+    /** Acquire these locks inside the caller's mutation transaction. */
+    public static function lockTaskForMutation(string $namespace, string $taskId): ?WorkflowTask
+    {
+        // Repair and cancellation admission lock the run before its tasks.
+        // An unlocked lookup discovers the immutable run ID without holding a
+        // task lock while waiting for that run. Revalidate it under the lock.
+        $runId = self::taskQuery($namespace)->whereKey($taskId)->value('workflow_run_id');
+        if (! is_string($runId)) {
+            return null;
+        }
+
+        $run = WorkflowRun::query()->where('namespace', $namespace)
+            ->whereKey($runId)->lockForUpdate()->first();
+        if (! $run instanceof WorkflowRun) {
+            return null;
+        }
+
+        return self::taskQuery($namespace)->whereKey($taskId)
+            ->where('workflow_run_id', $runId)->lockForUpdate()->first();
+    }
 }

@@ -33,6 +33,7 @@ POLL_TIMEOUT="${DW_PERF_POLL_TIMEOUT:-1}"
 POLL_INTERVAL_MS="${DW_PERF_POLL_INTERVAL_MS:-50}"
 POLL_SIGNAL_CHECK_INTERVAL_MS="${DW_PERF_POLL_SIGNAL_CHECK_INTERVAL_MS:-25}"
 READINESS_DIAGNOSTICS="${DW_PERF_READINESS_DIAGNOSTICS:-0}"
+MYSQL_LOCK_DIAGNOSTICS="${DW_PERF_MYSQL_LOCK_DIAGNOSTICS:-0}"
 PUBLISHED_SERVER_IMAGE="${DW_PERF_PUBLISHED_SERVER_IMAGE:-}"
 HTTP_VARIANT="${DW_PERF_HTTP_VARIANT:-apache}"
 PREBUILT_HTTP_IMAGE_ID="${DW_PERF_PREBUILT_HTTP_IMAGE_ID:-}"
@@ -70,6 +71,10 @@ if [[ -n "$PREBUILT_HTTP_IMAGE_ID" \
 fi
 if [[ "$READINESS_DIAGNOSTICS" != 0 && "$READINESS_DIAGNOSTICS" != 1 ]]; then
   echo "DW_PERF_READINESS_DIAGNOSTICS must be 0 or 1." >&2
+  exit 2
+fi
+if [[ "$MYSQL_LOCK_DIAGNOSTICS" != 0 && "$MYSQL_LOCK_DIAGNOSTICS" != 1 ]]; then
+  echo "DW_PERF_MYSQL_LOCK_DIAGNOSTICS must be 0 or 1." >&2
   exit 2
 fi
 if [[ -n "$PUBLISHED_SERVER_IMAGE" \
@@ -317,6 +322,12 @@ fi
 cleanup() {
   local status=$?
 
+  if [[ "$MYSQL_LOCK_DIAGNOSTICS" == 1 ]]; then
+    timeout 15s docker exec -i -e MYSQL_PWD=root "${PROJECT}-mysql-1" \
+      mysql --user=root --batch --raw \
+      < "$ROOT_DIR/scripts/perf/mysql-lock-diagnostics.sql" \
+      > "$ARTIFACT_DIR/mysql-lock-diagnostics.txt" 2>&1 || true
+  fi
   docker logs "${PROJECT}-server-1" > "$ARTIFACT_DIR/server.log" 2>&1 || true
   if [[ "$HTTP_VARIANT" == nginx-fpm || "$HTTP_VARIANT" == apache-event-fpm ]]; then
     docker logs "${PROJECT}-fpm-1" > "$ARTIFACT_DIR/fpm.log" 2>&1 || true
@@ -494,6 +505,12 @@ if [ "$setup_status" -ne 0 ]; then
   write_environment_setup_failure "$setup_status" "docker_compose_up" "docker compose failed before server_soak.py started"
   "${compose[@]}" ps >&2 || true
   exit "$setup_status"
+fi
+
+if [[ "$MYSQL_LOCK_DIAGNOSTICS" == 1 ]]; then
+  timeout 15s docker exec -e MYSQL_PWD=root "${PROJECT}-mysql-1" \
+    mysql --user=root --execute="SET GLOBAL log_error_verbosity=3; SET GLOBAL innodb_print_all_deadlocks=ON; UPDATE performance_schema.setup_consumers SET ENABLED='YES' WHERE NAME='events_statements_history_long';" \
+    > "$ARTIFACT_DIR/mysql-lock-diagnostics-setup.txt" 2>&1
 fi
 
 if [[ -n "$PUBLISHED_SERVER_IMAGE" ]]; then

@@ -448,6 +448,19 @@ esac
         for caller in ("helm-chart-validation.yml", "helm-chart-release.yml"):
             self.assertIn('- "uv.toml"', workflow_source(caller))
 
+    def test_chart_prerelease_order_preserves_stable_precedence(self) -> None:
+        versions = [
+            "0.1.136", "0.1.137-alpha.1", "0.1.137-alpha.2", "0.1.137-beta.1",
+            "0.1.137-rc.1", "0.1.137-rc.2", "0.1.137", "0.1.138-rc.1",
+        ]
+        for earlier, later in zip(versions, versions[1:]):
+            with self.subTest(earlier=earlier, later=later):
+                self.assertLess(RELEASE.semver_key(earlier), RELEASE.semver_key(later))
+        for invalid in ["latest", "0.1.137-rc.01", "0.1.137-preview.1"]:
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(RELEASE.ReleaseError):
+                    RELEASE.semver_key(invalid)
+
     def test_current_source_has_synchronized_public_identity(self) -> None:
         metadata = RELEASE.validate_source()
         source_release = RELEASE.source_release_metadata()

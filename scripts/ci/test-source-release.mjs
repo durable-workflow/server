@@ -99,7 +99,7 @@ test('a stable server source identity fans out through current release consumers
     const manifestPath = join(temporaryRoot, 'resources/release/source-release.json');
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
     manifest.server.version = '2.0.0';
-    manifest.helm_chart.version = nextPatch(manifest.helm_chart.version);
+    manifest.helm_chart.version = nextServerRelease(manifest.helm_chart.version);
     await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
     const write = runGenerator(temporaryRoot, ['--write']);
@@ -127,7 +127,7 @@ test('a simulated next release fans out without rewriting history or retaining s
     const previousServer = manifest.server.version;
     const previousChart = manifest.helm_chart.version;
     const nextServer = nextServerRelease(previousServer);
-    const nextChart = nextPatch(previousChart);
+    const nextChart = nextServerRelease(previousChart);
     manifest.server.version = nextServer;
     manifest.helm_chart.version = nextChart;
     await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);

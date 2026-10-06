@@ -11,6 +11,10 @@ on:
         description: Full Git commit SHA to classify regression-corpus changes against
         required: true
         type: string
+      prepared_local_workflow_commit:
+        description: Optional full Native commit for candidate prepared-local source qualification. Does not replace locked-package CI.
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -183,7 +187,7 @@ jobs:
             --health-cmd='mysqladmin --silent --host=127.0.0.1 ping' \
             --health-interval=1s --health-start-period=20s --health-retries=30 \
             mysql@sha256:679e7e924f38a3cbb62a3d7df32924b83f7321a602d3f9f967c01b3df18495d6 \
-            --disable-log-bin --performance-schema=OFF \
+            --disable-log-bin --performance-schema=ON \
             --innodb-buffer-pool-size=64M --innodb-redo-log-capacity=64M \
             --innodb-log-buffer-size=8M --table-open-cache=256 --max-connections=40
           docker run --detach \
@@ -253,3 +257,103 @@ jobs:
           test "$PREFLIGHT_RESULT" = success
           test "$FEATURE_RESULT" = success
           echo "Server repository contracts and feature tests succeeded."
+
+  prepared-local-source:
+    name: Candidate cancellation and prepared-local source qualification
+    needs: [action-policy, preflight]
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.prepared_local_workflow_commit != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      mysql:
+        image: mysql@sha256:679e7e924f38a3cbb62a3d7df32924b83f7321a602d3f9f967c01b3df18495d6
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+          MYSQL_DATABASE: prepared_local_test
+          MYSQL_ROOT_HOST: "%"
+        ports: ["3317:3306"]
+        options: >-
+          --health-cmd="mysqladmin --silent --host=127.0.0.1 ping"
+          --health-interval=2s --health-timeout=5s --health-retries=30
+      postgres:
+        image: postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: prepared_local_test
+        ports: ["5439:5432"]
+        options: >-
+          --health-cmd="pg_isready --host=127.0.0.1 --username=postgres"
+          --health-interval=2s --health-timeout=5s --health-retries=30
+    env:
+      DW_PREPARED_WORKFLOW_COMMIT: ${{ inputs.prepared_local_workflow_commit }}
+    steps:
+      - name: Require immutable candidate source
+        run: |
+          set -euo pipefail
+          [[ "$DW_PREPARED_WORKFLOW_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ ! "$DW_PREPARED_WORKFLOW_COMMIT" =~ ^0+$ ]]
+      - name: Check out Server candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Check out exact Native candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: durable-workflow/workflow
+          ref: ${{ inputs.prepared_local_workflow_commit }}
+          path: prepared-workflow-source
+          persist-credentials: false
+      - name: Record source binding and qualify all supported databases
+        run: |
+          set -euo pipefail
+          test "$(git -C prepared-workflow-source rev-parse HEAD)" = "$DW_PREPARED_WORKFLOW_COMMIT"
+          mkdir -p prepared-local-evidence
+          chmod 0777 prepared-local-evidence
+          {
+            echo "Candidate source qualification only. No image, release or SDK conformance claim."
+            echo "Server commit: $(git rev-parse HEAD)"
+            echo "Native source overlay: $DW_PREPARED_WORKFLOW_COMMIT"
+            echo "Locked package baseline retained by ordinary feature CI."
+          } > prepared-local-evidence/provenance.txt
+          docker build --target base -t dw-server-prepared-local-base .
+          tar --exclude=vendor --exclude='*/vendor' --exclude=build --exclude='*/build' \
+            --exclude=prepared-local-evidence -cf ../prepared-local-source.tar .
+          qualification_status=0
+          for database in sqlite mysql pgsql; do
+            database_name=prepared_local_test
+            database_user=root
+            database_port=3317
+            if [ "$database" = sqlite ]; then database_name=:memory:; fi
+            if [ "$database" = pgsql ]; then database_user=postgres; database_port=5439; fi
+            if ! docker run --rm --init --network host \
+              --user 1000:1000 \
+              --tmpfs /app:rw,uid=1000,gid=1000,mode=0755 \
+              --volume "$PWD/../prepared-local-source.tar:/source.tar:ro" \
+              --volume "$PWD/prepared-local-evidence:/evidence" \
+              --env COMPOSER_HOME=/tmp/dw-prepared-composer \
+              --env DB_CONNECTION="$database" --env DB_DATABASE="$database_name" \
+              --env DB_HOST=127.0.0.1 --env DB_PORT="$database_port" \
+              --env DB_USERNAME="$database_user" --env DB_PASSWORD= \
+              --env DW_PREPARED_DATABASE="$database" \
+              --workdir /app --entrypoint sh dw-server-prepared-local-base -ec '
+                tar --no-same-owner -xf /source.tar -C /app
+                composer install --no-interaction --no-progress --prefer-dist
+                mv vendor/durable-workflow/workflow /tmp/locked-workflow-package
+                cp -a prepared-workflow-source vendor/durable-workflow/workflow
+                php vendor/bin/phpunit tests/Feature/PreparedLocalActivityProtocolTest.php tests/Feature/ActivityAttemptStatusTest.php tests/Feature/HistoryRetentionTest.php tests/Unit/WorkerPollFenceTest.php tests/Source/CancellationCascadeDiagnosticsTest.php tests/Source/PreparedLocalCancellationPolicyTest.php tests/Source/CancellationScopeAdmissionTest.php tests/Source/ScopedActivityCancellationReceiptTest.php tests/Source/CancellationScopeDeliveryTest.php tests/Feature/WorkflowStreamsTest.php tests/Feature/WorkflowDebugTest.php --fail-on-skipped --log-junit "/evidence/$DW_PREPARED_DATABASE.xml" --colors=never
+                if [ "$DW_PREPARED_DATABASE" = sqlite ]; then
+                  php vendor/bin/phpunit tests/Feature/CooperativeCancellationProtocolTest.php tests/Feature/WorkflowWorkerProtocolTest.php tests/Feature/ActivityWorkerProtocolTest.php tests/Feature/SearchAttributeValueValidationTest.php tests/Feature/NamespaceDurableStateQuotaTest.php tests/Feature/RuntimeExternalPayloadTransportTest.php tests/Feature/RuntimePayloadCompletionUploadsTest.php tests/Unit/RuntimePayloadCompletionContextTest.php tests/Unit/WorkerProtocolOpenApiContractTest.php --log-junit /evidence/affected-regression.xml --colors=never
+                fi
+              ' > "prepared-local-evidence/$database.log" 2>&1; then
+              qualification_status=1
+            fi
+          done
+          test "$qualification_status" = 0
+      - name: Retain exact source qualification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: candidate-prepared-local-source
+          path: prepared-local-evidence
+          if-no-files-found: error
+          retention-days: 90

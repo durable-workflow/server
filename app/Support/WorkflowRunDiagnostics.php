@@ -16,6 +16,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\CancellationCascadeView;
 use Workflow\V2\Support\StandaloneWorkerVisibility;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskRepairPolicy;
@@ -72,6 +73,10 @@ class WorkflowRunDiagnostics
             'recent_failures' => $recentFailures,
             'latest_workflow_task_failure' => $latestWorkflowTaskFailure,
             'compatibility' => $this->compatibility($namespace, $run, $summary, $taskQueue),
+            'cancellation_cascade_supported' => class_exists(CancellationCascadeView::class),
+            'cancellation_cascade' => class_exists(CancellationCascadeView::class) && $run->namespace === $namespace
+                ? CancellationCascadeView::forRun($run)
+                : null,
         ];
 
         $payload['findings'] = $this->findings($payload);
@@ -884,10 +889,13 @@ class WorkflowRunDiagnostics
         }
 
         if ((bool) data_get($payload, 'execution.task_problem', false)) {
+            $historical = data_get($payload, 'execution.task_problem_badge.code') === 'history';
             $findings[] = [
-                'severity' => 'warning',
-                'code' => 'task_problem',
-                'message' => 'The run summary has a task problem flag.',
+                'severity' => $historical ? 'info' : 'warning',
+                'code' => $historical ? 'task_recovery_history' : 'task_problem',
+                'message' => $historical
+                    ? 'The run previously needed workflow-task repair or replay recovery.'
+                    : 'The run summary has a task problem flag.',
             ];
         }
 

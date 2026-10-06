@@ -187,11 +187,18 @@ def validate_source(chart_path: Path = DEFAULT_CHART_PATH) -> dict[str, Any]:
     return metadata
 
 
-def semver_key(version: str) -> tuple[int, int, int]:
+def semver_key(version: str) -> tuple[int, int, int, int, int]:
     match = SEMVER_PATTERN.fullmatch(version)
-    if match is None or match.group(4):
-        raise ReleaseError(f"chart version must be a stable numeric SemVer: {version}")
-    return tuple(int(match.group(index)) for index in range(1, 4))
+    if match is None:
+        raise ReleaseError(f"chart version must be an exact SemVer: {version}")
+    stage_order, number = 3, 0
+    if match.group(4):
+        prerelease = re.fullmatch(r"(alpha|beta|rc)\.(0|[1-9][0-9]*)", match.group(4))
+        if prerelease is None:
+            raise ReleaseError(f"unsupported chart prerelease: {version}")
+        stage_order = {"alpha": 0, "beta": 1, "rc": 2}[prerelease.group(1)]
+        number = int(prerelease.group(2))
+    return (int(match.group(1)), int(match.group(2)), int(match.group(3)), stage_order, number)
 
 
 def git_output(arguments: list[str]) -> str:

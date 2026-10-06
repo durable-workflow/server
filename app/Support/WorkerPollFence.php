@@ -92,6 +92,11 @@ final class WorkerPollFence
             : [];
 
         if ($processIdentity !== [] || $currentProcessIdentity !== []) {
+            // MySQL may reorder keys when a claim is persisted as JSON.
+            // Preserve strict field/value checks without depending on order.
+            ksort($processIdentity);
+            ksort($currentProcessIdentity);
+
             return $processIdentity === $currentProcessIdentity;
         }
 

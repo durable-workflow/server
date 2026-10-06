@@ -19,7 +19,7 @@ class WorkerProtocol
      * here. WorkflowPackageApiFloor asserts the installed package still
      * provides the companion protocol helpers for this version.
      */
-    public const VERSION = '1.19';
+    public const VERSION = '1.20';
 
     public const PORTABLE_WORKER_AFFINITY_MINIMUM_PROTOCOL_VERSION = '1.18';
 
@@ -413,6 +413,8 @@ class WorkerProtocol
      *     query_task_timeouts: array{control_plane_timeout_seconds: int, lease_timeout_seconds: int, lease_grace_seconds: int},
      *     activity_retry_policy: bool,
      *     activity_timeouts: bool,
+     *     cooperative_cancellation: bool,
+     *     activity_cancellation_acknowledgement: bool,
      *     local_activities: array<string, mixed>,
      *     worker_session_verbs: list<string>,
      *     worker_sessions: array<string, mixed>,
@@ -544,6 +546,12 @@ class WorkerProtocol
             ],
             'activity_retry_policy' => true,
             'activity_timeouts' => true,
+            'cooperative_cancellation' => CooperativeCancellationPolicy::serverSupported(),
+            'prepared_local_activities' => PreparedLocalActivityPolicy::serverSupported(),
+            'prepared_local_activity_groups' => PreparedLocalActivityPolicy::groupsSupported(),
+            'prepared_local_activity_cancellation_policies' => PreparedLocalActivityPolicy::cancellationPolicies(),
+            'activity_cancellation_acknowledgement' => CooperativeCancellationPolicy::serverSupported()
+                && CooperativeCancellationPolicy::activityAcknowledgementBackendSupported(),
             'local_activities' => [
                 ...WorkerProtocolVersion::localActivitySemantics(),
                 'supported' => $portableWorkerAffinitySupported,

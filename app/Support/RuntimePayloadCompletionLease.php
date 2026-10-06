@@ -5,7 +5,12 @@ namespace App\Support;
 use App\Models\WorkerRegistration;
 use Carbon\CarbonImmutable;
 use Workflow\V2\Contracts\ActivityTaskBridge;
+use Workflow\V2\Contracts\CancellationScopeTaskBridge;
+use Workflow\V2\Contracts\PreparedLocalActivityTaskBridge;
+use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\ActivityAttempt;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\WorkflowTaskOwnership;
 
 final class RuntimePayloadCompletionLease
@@ -100,6 +105,81 @@ final class RuntimePayloadCompletionLease
         if (! $guard['valid'] || $guard['task']?->task_type !== TaskType::Workflow || in_array($guard['status']['run_status'] ?? null,
             ['completed', 'failed', 'cancelled', 'terminated'], true)) {
             throw self::rejected();
+        }
+
+        if ($context->schema === RuntimePayloadCompletionContext::PREPARED_SCHEMA) {
+            $task = $guard['task'];
+            if ($context->operation === 'cancellation_scope_checkpoint') {
+                if (! CooperativeCancellationPolicy::serverSupported()
+                    || ! app(WorkflowTaskBridge::class) instanceof CancellationScopeTaskBridge
+                    || ! CooperativeCancellationPolicy::claimSupportsCancellation($task)) {
+                    throw self::rejected();
+                }
+                $claim = null;
+            } else {
+                $claim = PreparedLocalActivityPolicy::currentClaim($task);
+                if (! PreparedLocalActivityPolicy::serverSupported() || $claim === null || ! WorkerPollFence::isCurrent($claim)) {
+                    throw self::rejected();
+                }
+            }
+            if ($context->operation === 'local_activity_group_checkpoint'
+                && (! PreparedLocalActivityPolicy::groupsSupported() || PreparedLocalActivityPolicy::currentGroupClaim($task) === null)) {
+                throw self::rejected();
+            }
+            $expires = [$guard['status']['lease_expires_at'] ?? null];
+            $run = WorkflowRun::query()->find($task->workflow_run_id);
+            if (! $run instanceof WorkflowRun) {
+                throw self::rejected();
+            }
+            if ($run->cancellation_request_command_id !== null) {
+                if ($run->cancellation_deadline_at === null) {
+                    throw self::rejected();
+                }
+                $expires[] = $run->cancellation_deadline_at->toISOString();
+            }
+            if ($context->operation === 'local_activity_outcome') {
+                $attempt = ActivityAttempt::query()->where('workflow_task_id', $task->id)->find($context->activityAttemptId);
+                if (! $attempt instanceof ActivityAttempt
+                    || PreparedLocalActivityPolicy::originalClaim($task, $attempt, $context->leaseOwner, $context->attempt) !== $claim) {
+                    throw self::rejected();
+                }
+                /** @var PreparedLocalActivityTaskBridge $bridge */
+                $bridge = app(WorkflowTaskBridge::class);
+                $control = $bridge->controlLocalActivity($attempt->id, $context->leaseOwner, $context->attempt, false,
+                    PreparedLocalActivityPolicy::MINIMUM_PROTOCOL_VERSION);
+                if (($control['active'] ?? null) !== true
+                    || ($control['activity_attempt_id'] ?? null) !== $attempt->id
+                    || ($control['workflow_task_id'] ?? null) !== $task->id
+                    || ($control['workflow_task_attempt'] ?? null) !== $context->attempt
+                    || ($control['lease_owner'] ?? null) !== $context->leaseOwner
+                    || ($control['renewed'] ?? null) !== false) {
+                    throw self::rejected();
+                }
+                foreach (['lease_expires_at', 'workflow_lease_expires_at', 'start_to_close_deadline_at',
+                    'schedule_to_close_deadline_at', 'heartbeat_deadline_at'] as $field) {
+                    if (! array_key_exists($field, $control)
+                        || (str_contains($field, 'lease_expires_at') && (! is_string($control[$field]) || $control[$field] === ''))) {
+                        throw self::rejected();
+                    }
+                    if (($control[$field] ?? null) !== null) {
+                        $expires[] = $control[$field];
+                    }
+                }
+            }
+            $earliest = null;
+            foreach ($expires as $expiry) {
+                if (! is_string($expiry) || $expiry === '') {
+                    throw self::rejected();
+                }
+                try {
+                    $deadline = CarbonImmutable::parse($expiry);
+                } catch (\Exception) {
+                    throw self::rejected();
+                }
+                $earliest = $earliest === null || $deadline->lt($earliest) ? $deadline : $earliest;
+            }
+
+            return $earliest?->toISOString();
         }
 
         return $guard['status']['lease_expires_at'] ?? null;

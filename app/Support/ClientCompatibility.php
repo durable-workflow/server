@@ -13,7 +13,7 @@ final class ClientCompatibility
     private const SUPPORTED_SDK_VERSIONS = [
         'php' => self::STABLE_2_X,
         'python' => self::STABLE_2_X,
-        'rust' => self::STABLE_2_X,
+        'rust' => '>=2.0.0,<4.0.0',
         'cli' => self::STABLE_2_X,
     ];
 
