@@ -477,11 +477,11 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
             $this->assertSame('pass', $installScenario['status']);
             $this->assertSame([], $installScenario['linked_findings']);
             $this->assertTrue($installScenario['observed_outputs']['published_install_tuple_proven']);
-            $this->assertTrue($installScenario['observed_outputs']['supplied_install_evidence']);
+            $this->assertTrue($installScenario['observed_outputs']['artifact_install_evidence']['supplied_install_evidence']);
             $this->assertFalse($installScenario['observed_outputs']['local_product_source_checkouts_used']);
             $this->assertSame(
                 ['pass', 'pass', 'pass', 'pass', 'pass'],
-                array_column($installScenario['observed_outputs']['artifacts'], 'status'),
+                array_column($installScenario['observed_outputs']['artifact_install_evidence']['artifacts'], 'status'),
             );
             $this->assertSame('docker://durableworkflow/server:0.2.244', $result['artifact_sources']['server']);
             $this->assertSame(
@@ -489,7 +489,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                 $record['artifactSources']['sdk-php'],
             );
             $this->assertSame(
-                $installScenario['observed_outputs'],
+                $installScenario['observed_outputs']['artifact_install_evidence'],
                 $result['artifact_install_evidence'],
             );
         } finally {
