@@ -569,6 +569,7 @@ workflow-task command payload.
 - `GET /api/system/metrics` — Server metrics including bounded stuck workflow-task diagnostics
 - `GET /api/system/operator-metrics` — Full operator metrics snapshot (runs, tasks, backlog, repair, workers/fleet, backend, structural limits) for namespace-scoped rollout-safety coordination health
 - `GET /api/system/operator-dashboard/bounded` returns dashboard aggregates without decoding fleet-wide histories. History-audit counts are `null` and `operator_metrics.history_audit_evaluation` is `not_requested`. Use `/api/system/operator-dashboard` or `/api/system/operator-metrics` when a full history audit is needed. Both dashboard routes require operator authentication, the control-plane version header and a namespace.
+- `GET /api/system/operator-dashboard/bounded/workflow-types?workflow_types=<JSON array>` restricts workflow counts, trends, failures, waits and workflow alerts to the specified exact workflow types in the authenticated namespace. URL-encode the JSON array. An empty array selects no workflow types. Worker, queue and storage metrics retain their namespace scope. The response identifies both scopes and the aggregation windows in `workflow_scope`, `operator_metrics_scope` and `time_windows`.
 - `GET /api/system/repair` — Task repair diagnostics
 - `POST /api/system/repair/pass` — Run task repair sweep
 - `GET /api/system/activity-timeouts` — Expired activity execution diagnostics
@@ -638,6 +639,14 @@ last history event includes only sequence, type, timestamp, and bounded payload
 metadata by default; add `include_last_event_payload=true` to include at most a
 4 KiB JSON preview. Use the history endpoints when a full replay/debug archive
 is needed.
+
+Each recent failure includes a `supporting_event` reference. A retained reference
+contains the failure event's sequence, type, timestamp and an opaque
+`next_page_token`. Pass that token unchanged to the selected run's history
+endpoint to load a page starting at the event. A missing reference reports
+`pruned` when run details were reclaimed, or `unavailable` otherwise.
+`recent_failures_truncated` indicates that more than ten failure records exist.
+These references load event metadata without decoding the complete run history.
 
 The candidate cooperative-cancellation runtime adds `cancellation_cascade_supported`
 and `cancellation_cascade` to both debug responses. A supported runtime returns

@@ -13,6 +13,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
 use Workflow\V2\Models\WorkflowRun;
@@ -453,7 +454,7 @@ class SystemOperatorMetricsTest extends TestCase
             ->assertJsonPath('dashboard.flows', 3);
     }
 
-    #[\PHPUnit\Framework\Attributes\DataProvider('invalidDashboardTypeSelections')]
+    #[DataProvider('invalidDashboardTypeSelections')]
     public function test_workflow_type_dashboard_rejects_malformed_scope_before_reading(string $encoded): void
     {
         $this->getJson('/api/system/operator-dashboard/bounded/workflow-types?'.http_build_query([

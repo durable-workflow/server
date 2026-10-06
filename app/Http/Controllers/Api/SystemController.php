@@ -197,13 +197,13 @@ class SystemController
         ]);
         $encoded = $validated['workflow_types'];
         $types = json_decode($encoded, flags: JSON_THROW_ON_ERROR);
-        if (strlen(rawurlencode($encoded)) > 4096 || !is_array($types) || !array_is_list($types)) {
+        if (strlen(rawurlencode($encoded)) > 4096 || ! is_array($types) || ! array_is_list($types)) {
             throw ValidationException::withMessages([
                 'workflow_types' => 'Provide a JSON list of workflow types with at most 4096 encoded bytes.',
             ]);
         }
         foreach ($types as $type) {
-            if (!is_string($type) || $type === '' || mb_strlen($type) > 255) {
+            if (! is_string($type) || $type === '' || mb_strlen($type) > 255) {
                 throw ValidationException::withMessages([
                     'workflow_types' => 'Workflow types must be nonempty strings of at most 255 characters.',
                 ]);
@@ -225,7 +225,7 @@ class SystemController
             $dashboard = OperatorDashboardSummary::snapshot(null, $namespace, $includeHistoryAudits);
         } else {
             $observer = app(OperatorObservabilityRepository::class);
-            if (!method_exists($observer, 'workflowTypeDashboardSummary')) {
+            if (! method_exists($observer, 'workflowTypeDashboardSummary')) {
                 return ControlPlaneProtocol::json([
                     'message' => 'The installed workflow observer cannot filter dashboard totals by workflow type.',
                     'reason' => 'backend_capability_unavailable',
