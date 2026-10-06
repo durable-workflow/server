@@ -16,6 +16,7 @@ use Illuminate\Support\Str;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 class SystemOperatorMetricsTest extends TestCase
@@ -401,6 +402,87 @@ class SystemOperatorMetricsTest extends TestCase
             ->assertOk()
             ->assertJsonMissingPath('dashboard.operator_metrics.history_audit_evaluation')
             ->assertJsonPath('dashboard.operator_metrics.projections.run_waits.needs_rebuild', 0);
+    }
+
+    public function test_workflow_type_dashboard_filters_volume_within_the_authenticated_namespace(): void
+    {
+        foreach ([
+            ['maintenance', 'maintenance.scan', 'default', 'completed'],
+            ['order-ok', 'orders.import', 'default', 'completed'],
+            ['order-fail', 'orders.import', 'default', 'failed'],
+            ['outside-order', 'orders.import', 'other', 'failed'],
+        ] as [$id, $type, $namespace, $status]) {
+            $identity = [
+                'id' => $id, 'workflow_instance_id' => $id, 'run_number' => 1,
+                'workflow_type' => $type, 'namespace' => $namespace, 'status' => $status,
+                'closed_at' => now()->subMinute(), 'created_at' => now()->subMinutes(2),
+            ];
+            WorkflowRun::query()->create([...$identity, 'workflow_class' => 'Tests\\Fixtures\\ScopeWorkflow']);
+            WorkflowRunSummary::query()->create([
+                ...$identity, 'class' => 'Tests\\Fixtures\\ScopeWorkflow',
+                'status_bucket' => $status, 'duration_ms' => 100,
+            ]);
+        }
+        $path = '/api/system/operator-dashboard/bounded/workflow-types?'.http_build_query([
+            'workflow_types' => '["orders.import"]',
+        ], encoding_type: PHP_QUERY_RFC3986);
+
+        $this->getJson($path, $this->controlPlaneHeadersWithWorkerProtocol())
+            ->assertOk()
+            ->assertJsonPath('namespace', 'default')
+            ->assertJsonPath('dashboard.flows', 2)
+            ->assertJsonPath('dashboard.workflow_scope.namespace', 'default')
+            ->assertJsonPath('dashboard.workflow_scope.workflow_types', ['orders.import'])
+            ->assertJsonPath('dashboard.operator_metrics_scope.workflow_types', null)
+            ->assertJsonPath('dashboard.operator_metrics.runs.total', 3)
+            ->assertJsonPath('dashboard.operator_metrics.history_audit_evaluation', 'not_requested')
+            ->assertJsonPath('dashboard.fleet_overview.trends.hour.completed', 1)
+            ->assertJsonPath('dashboard.fleet_overview.trends.hour.failed', 1);
+
+        $this->getJson($path, $this->controlPlaneHeadersWithWorkerProtocol('other'))
+            ->assertOk()
+            ->assertJsonPath('dashboard.flows', 1)
+            ->assertJsonPath('dashboard.workflow_scope.namespace', 'other');
+        $this->getJson('/api/system/operator-dashboard/bounded/workflow-types?workflow_types=%5B%5D', $this->controlPlaneHeadersWithWorkerProtocol())
+            ->assertOk()
+            ->assertJsonPath('dashboard.flows', 0)
+            ->assertJsonPath('dashboard.workflow_scope.workflow_types', [])
+            ->assertJsonPath('dashboard.operator_metrics.runs.total', 3);
+        $this->getJson('/api/system/operator-dashboard/bounded', $this->controlPlaneHeadersWithWorkerProtocol())
+            ->assertOk()
+            ->assertJsonPath('dashboard.flows', 3);
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('invalidDashboardTypeSelections')]
+    public function test_workflow_type_dashboard_rejects_malformed_scope_before_reading(string $encoded): void
+    {
+        $this->getJson('/api/system/operator-dashboard/bounded/workflow-types?'.http_build_query([
+            'workflow_types' => $encoded,
+        ], encoding_type: PHP_QUERY_RFC3986), $this->controlPlaneHeadersWithWorkerProtocol())
+            ->assertUnprocessable()
+            ->assertJsonPath('reason', 'validation_failed')
+            ->assertJsonValidationErrors('workflow_types');
+    }
+
+    public static function invalidDashboardTypeSelections(): array
+    {
+        return [
+            'malformed json' => ['['],
+            'object' => ['{}'],
+            'scalar' => ['"orders.import"'],
+            'null' => ['null'],
+            'empty type' => ['[""]'],
+            'non-string type' => ['[1]'],
+            'oversized type' => [json_encode([str_repeat('x', 256)], JSON_THROW_ON_ERROR)],
+            'oversized encoded query' => [json_encode([str_repeat('/', 1500)], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES)],
+        ];
+    }
+
+    public function test_workflow_type_dashboard_requires_control_plane_version_before_scope_validation(): void
+    {
+        $this->getJson('/api/system/operator-dashboard/bounded/workflow-types', ['X-Namespace' => 'default'])
+            ->assertStatus(400)
+            ->assertJsonPath('reason', 'missing_control_plane_version');
     }
 
     public function test_bounded_dashboard_requires_control_plane_version_header(): void
