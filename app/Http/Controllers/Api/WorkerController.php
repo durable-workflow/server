@@ -1947,10 +1947,7 @@ class WorkerController
                             ->where('worker_id', $validated['lease_owner'])
                             ->lockForUpdate()
                             ->first();
-                        $claimedTask = NamespaceWorkflowScope::taskQuery((string) $namespace)
-                            ->whereKey($taskId)
-                            ->lockForUpdate()
-                            ->first();
+                        $claimedTask = NamespaceWorkflowScope::lockTaskForMutation((string) $namespace, $taskId);
 
                         if ($response = $this->guardWorkflowTaskOwnership(
                             $request,
@@ -3658,7 +3655,7 @@ class WorkerController
                 fn (): array|JsonResponse => DB::transaction(function () use ($request, $namespace, $taskId, $validated, $bridge): array|JsonResponse {
                     // Ownership must remain valid until renewal commits. A
                     // check before this lock can acknowledge a reclaimed lease.
-                    NamespaceWorkflowScope::taskQuery($namespace)->lockForUpdate()->find($taskId);
+                    NamespaceWorkflowScope::lockTaskForMutation($namespace, $taskId);
                     if ($response = $this->guardWorkflowTaskOwnership(
                         $request,
                         $namespace,
@@ -3745,11 +3742,15 @@ class WorkerController
         if ($this->workflowTaskFailureWaitsForHistory($validated['failure'])) {
             try {
                 $outcome = $this->storageMutations->run(
-                    fn (): array => $this->acknowledgeWorkflowTaskWaitingForHistory(
-                        $namespace,
-                        $taskId,
-                        $validated['failure'],
-                    ),
+                    fn (): array|JsonResponse => DB::transaction(function () use ($request, $namespace, $taskId, $validated): array|JsonResponse {
+                        NamespaceWorkflowScope::lockTaskForMutation($namespace, $taskId);
+                        if ($response = $this->guardWorkflowTaskOwnership($request, $namespace, $taskId,
+                            (int) $validated['workflow_task_attempt'], $validated['lease_owner'])) {
+                            return $response;
+                        }
+
+                        return $this->acknowledgeWorkflowTaskWaitingForHistory($namespace, $taskId, $validated['failure']);
+                    }),
                 );
             } catch (\Throwable $exception) {
                 if (! BackendLockPressure::is($exception)) {
@@ -3757,6 +3758,10 @@ class WorkerController
                 }
 
                 return BackendLockPressure::workerOperationResponse($request, false);
+            }
+
+            if ($outcome instanceof JsonResponse) {
+                return $outcome;
             }
 
             return WorkerProtocol::json([
@@ -3774,16 +3779,24 @@ class WorkerController
         try {
             $outcome = $this->storageMutations->run(function () use (
                 $bridge,
+                $request,
                 $namespace,
                 $taskId,
                 $validated,
-            ): array {
+            ): array|JsonResponse {
                 return DB::transaction(function () use (
                     $bridge,
+                    $request,
                     $namespace,
                     $taskId,
                     $validated,
-                ): array {
+                ): array|JsonResponse {
+                    NamespaceWorkflowScope::lockTaskForMutation($namespace, $taskId);
+                    if ($response = $this->guardWorkflowTaskOwnership($request, $namespace, $taskId,
+                        (int) $validated['workflow_task_attempt'], $validated['lease_owner'])) {
+                        return $response;
+                    }
+
                     $outcome = $bridge->fail($taskId, $validated['failure']);
                     $nextTaskId = is_string($outcome['next_task_id'] ?? null)
                         ? $outcome['next_task_id']
@@ -3820,6 +3833,10 @@ class WorkerController
             }
 
             return BackendLockPressure::workerOperationResponse($request, false);
+        }
+
+        if ($outcome instanceof JsonResponse) {
+            return $outcome;
         }
 
         $nextTaskId = is_string($outcome['next_task_id'] ?? null)
@@ -3915,11 +3932,7 @@ class WorkerController
             &$createdTaskIds,
         ): array {
             /** @var WorkflowTask|null $task */
-            $task = WorkflowTask::query()
-                ->lockForUpdate()
-                ->whereKey($taskId)
-                ->where('namespace', $namespace)
-                ->first();
+            $task = NamespaceWorkflowScope::lockTaskForMutation($namespace, $taskId);
 
             if (! $task instanceof WorkflowTask) {
                 return ['recorded' => false, 'reason' => 'task_not_found', 'next_task_id' => null];
@@ -4039,11 +4052,7 @@ class WorkerController
     ): void {
         DB::transaction(function () use ($namespace, $taskId, $failure, $replayBlocked): void {
             /** @var WorkflowTask|null $task */
-            $task = WorkflowTask::query()
-                ->lockForUpdate()
-                ->whereKey($taskId)
-                ->where('namespace', $namespace)
-                ->first();
+            $task = NamespaceWorkflowScope::lockTaskForMutation($namespace, $taskId);
 
             if (! $task instanceof WorkflowTask
                 || $task->task_type !== TaskType::Workflow
@@ -4086,11 +4095,7 @@ class WorkerController
     {
         return DB::transaction(function () use ($namespace, $failedTaskId): ?string {
             /** @var WorkflowTask|null $failedTask */
-            $failedTask = WorkflowTask::query()
-                ->lockForUpdate()
-                ->whereKey($failedTaskId)
-                ->where('namespace', $namespace)
-                ->first();
+            $failedTask = NamespaceWorkflowScope::lockTaskForMutation($namespace, $failedTaskId);
 
             if (! $failedTask instanceof WorkflowTask
                 || $failedTask->task_type !== TaskType::Workflow

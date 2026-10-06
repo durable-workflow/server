@@ -183,7 +183,7 @@ final class CooperativeCancellationController
         ): array {
             // Keep the ownership check and engine delivery under the same
             // task lock. A reclaim cannot replace the checked attempt.
-            $task = NamespaceWorkflowScope::taskQuery($namespace)->lockForUpdate()->find($taskId);
+            $task = NamespaceWorkflowScope::lockTaskForMutation($namespace, $taskId);
             if (! $task instanceof WorkflowTask) {
                 return ['delivered' => false, 'reason' => 'task_not_found'];
             }

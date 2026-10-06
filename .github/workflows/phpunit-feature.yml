@@ -187,7 +187,7 @@ jobs:
             --health-cmd='mysqladmin --silent --host=127.0.0.1 ping' \
             --health-interval=1s --health-start-period=20s --health-retries=30 \
             mysql@sha256:679e7e924f38a3cbb62a3d7df32924b83f7321a602d3f9f967c01b3df18495d6 \
-            --disable-log-bin --performance-schema=OFF \
+            --disable-log-bin --performance-schema=ON \
             --innodb-buffer-pool-size=64M --innodb-redo-log-capacity=64M \
             --innodb-log-buffer-size=8M --table-open-cache=256 --max-connections=40
           docker run --detach \
