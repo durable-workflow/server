@@ -2,7 +2,7 @@ asyncapi: 2.6.0
 id: durable-workflow.v2.worker-protocol-stream
 info:
   title: Durable Workflow worker-protocol long-poll stream semantics
-  version: "14"
+  version: "15"
   description: >
     Normative AsyncAPI description of the public worker-protocol stream
     semantics. Durable uses HTTP long-poll request/response rather than a
@@ -226,7 +226,7 @@ components:
       properties:
         protocol_version:
           type: string
-          const: "1.19"
+          const: "1.20"
         server_capabilities:
           type: object
           additionalProperties: true

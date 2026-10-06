@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "47"
+  version: "48"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -56,7 +56,7 @@ x-durable-workflow-cancellation-scope-opening:
       allowance: shares_existing_workflow_claim_budget
   replay: identical_parent_and_shield_reuses_canonical_history_identity
 x-durable-workflow-cooperative-cancellation-contract:
-  status: release_candidate
+  status: stable
   minimum_protocol_version: "1.20"
   worker_capability: cooperative_cancellation
   request_operation: POST /workflows/{workflowId}/request-cancellation
@@ -91,7 +91,7 @@ x-durable-workflow-cooperative-cancellation-contract:
   cleanup_completion: cancelled_with_original_request_id
   terminal_cancel_and_terminate: unchanged
 x-durable-workflow-prepared-local-activity-contract:
-  status: release_candidate
+  status: stable
   minimum_protocol_version: "1.20"
   worker_capabilities: [cooperative_cancellation, prepared_local_activities]
   backend_role: Workflow\V2\Contracts\PreparedLocalActivityTaskBridge
