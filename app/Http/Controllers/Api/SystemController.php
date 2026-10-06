@@ -193,6 +193,9 @@ class SystemController
 
         $namespace = (string) $request->attributes->get('namespace');
         $dashboard = OperatorDashboardSummary::snapshot(null, $namespace, $includeHistoryAudits);
+        if (! $includeHistoryAudits) {
+            $dashboard['operator_metrics']['capacity_evidence'] = $this->capacityEvidence->snapshot($namespace);
+        }
         $dashboard['operator_metrics']['worker_sessions'] = $this->workerSessions->metrics($namespace);
         $dashboard['operator_metrics']['runtime_external_payload_cleanup'] = RuntimeExternalPayloadCleanupMetrics::snapshot($namespace);
 

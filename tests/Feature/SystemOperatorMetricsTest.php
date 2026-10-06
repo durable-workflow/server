@@ -389,6 +389,8 @@ class SystemOperatorMetricsTest extends TestCase
             ->assertJsonPath('namespace', 'default')
             ->assertJsonPath('dashboard.flows', 0)
             ->assertJsonPath('dashboard.operator_metrics.history_audit_evaluation', 'not_requested')
+            ->assertJsonPath('dashboard.operator_metrics.capacity_evidence.namespace', 'default')
+            ->assertJsonPath('dashboard.operator_metrics.capacity_evidence.cardinality.bounded', true)
             ->assertJsonPath('dashboard.operator_metrics.command_contracts.backfill_needed_runs', null)
             ->assertJsonPath('dashboard.operator_metrics.projections.run_waits.needs_rebuild', null)
             ->assertJsonPath('dashboard.operator_metrics.projections.run_timeline_entries.needs_rebuild', null)
