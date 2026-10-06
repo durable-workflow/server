@@ -1948,6 +1948,9 @@ class WorkerController
                             ->lockForUpdate()
                             ->first();
                         $claimedTask = NamespaceWorkflowScope::lockTaskForMutation((string) $namespace, $taskId);
+                        if (! $claimedTask instanceof WorkflowTask) {
+                            return WorkerProtocol::json(['reason' => 'task_not_found'], 404);
+                        }
 
                         if ($response = $this->guardWorkflowTaskOwnership(
                             $request,
@@ -3655,7 +3658,9 @@ class WorkerController
                 fn (): array|JsonResponse => DB::transaction(function () use ($request, $namespace, $taskId, $validated, $bridge): array|JsonResponse {
                     // Ownership must remain valid until renewal commits. A
                     // check before this lock can acknowledge a reclaimed lease.
-                    NamespaceWorkflowScope::lockTaskForMutation($namespace, $taskId);
+                    if (! NamespaceWorkflowScope::lockTaskForMutation($namespace, $taskId) instanceof WorkflowTask) {
+                        return WorkerProtocol::json(['reason' => 'task_not_found'], 404);
+                    }
                     if ($response = $this->guardWorkflowTaskOwnership(
                         $request,
                         $namespace,
@@ -3743,7 +3748,9 @@ class WorkerController
             try {
                 $outcome = $this->storageMutations->run(
                     fn (): array|JsonResponse => DB::transaction(function () use ($request, $namespace, $taskId, $validated): array|JsonResponse {
-                        NamespaceWorkflowScope::lockTaskForMutation($namespace, $taskId);
+                        if (! NamespaceWorkflowScope::lockTaskForMutation($namespace, $taskId) instanceof WorkflowTask) {
+                            return WorkerProtocol::json(['reason' => 'task_not_found'], 404);
+                        }
                         if ($response = $this->guardWorkflowTaskOwnership($request, $namespace, $taskId,
                             (int) $validated['workflow_task_attempt'], $validated['lease_owner'])) {
                             return $response;
@@ -3791,7 +3798,9 @@ class WorkerController
                     $taskId,
                     $validated,
                 ): array|JsonResponse {
-                    NamespaceWorkflowScope::lockTaskForMutation($namespace, $taskId);
+                    if (! NamespaceWorkflowScope::lockTaskForMutation($namespace, $taskId) instanceof WorkflowTask) {
+                        return WorkerProtocol::json(['reason' => 'task_not_found'], 404);
+                    }
                     if ($response = $this->guardWorkflowTaskOwnership($request, $namespace, $taskId,
                         (int) $validated['workflow_task_attempt'], $validated['lease_owner'])) {
                         return $response;

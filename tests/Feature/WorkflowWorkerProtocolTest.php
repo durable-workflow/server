@@ -53,6 +53,39 @@ class WorkflowWorkerProtocolTest extends TestCase
         ]);
     }
 
+    public function test_worker_mutations_refuse_a_task_whose_run_is_outside_its_namespace(): void
+    {
+        Queue::fake();
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default');
+        $this->createNamespace('other', 'Other');
+        $runId = $this->postJson('/api/workflows', [
+            'workflow_type' => 'tests.external-greeting-workflow', 'task_queue' => 'namespace-lock', 'input' => ['Ada'],
+        ], $this->apiHeaders())->assertCreated()->json('run_id');
+        $this->registerWorker('namespace-lock-worker', 'namespace-lock');
+        $claim = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'namespace-lock-worker', 'task_queue' => 'namespace-lock',
+        ], $this->workerHeaders())->assertOk()->json('task');
+        $this->assertIsArray($claim);
+        WorkflowRun::query()->whereKey($runId)->update(['namespace' => 'other']);
+        $taskBefore = WorkflowTask::query()->findOrFail($claim['task_id'])->getRawOriginal();
+        $historyBefore = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->count();
+
+        foreach (['heartbeat', 'complete', 'fail'] as $operation) {
+            $body = ['lease_owner' => $claim['lease_owner'], 'workflow_task_attempt' => $claim['workflow_task_attempt']];
+            if ($operation === 'complete') {
+                $body['commands'] = [['type' => 'complete_workflow', 'result' => Serializer::serializeWithCodec('avro', 'refuse')]];
+            } elseif ($operation === 'fail') {
+                $body['failure'] = ['message' => 'Refuse cross-namespace mutation'];
+            }
+            $this->postJson('/api/worker/workflow-tasks/'.$claim['task_id'].'/'.$operation, $body, $this->workerHeaders())
+                ->assertNotFound()->assertJsonPath('reason', 'task_not_found');
+        }
+        $this->assertSame($taskBefore, WorkflowTask::query()->findOrFail($claim['task_id'])->getRawOriginal());
+        $this->assertSame($historyBefore, WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->count());
+        $this->assertSame('pending', WorkflowRun::query()->findOrFail($runId)->status->value);
+    }
+
     public function test_it_starts_workflows_and_completes_workflow_tasks_through_the_external_worker_protocol(): void
     {
         Queue::fake();
