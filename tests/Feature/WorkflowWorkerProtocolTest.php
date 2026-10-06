@@ -79,7 +79,10 @@ class WorkflowWorkerProtocolTest extends TestCase
                 $body['failure'] = ['message' => 'Refuse cross-namespace mutation'];
             }
             $this->postJson('/api/worker/workflow-tasks/'.$claim['task_id'].'/'.$operation, $body, $this->workerHeaders())
-                ->assertNotFound()->assertJsonPath('reason', 'task_not_found');
+                ->assertNotFound()->assertJsonPath('reason', 'task_not_found')
+                ->assertJsonPath('error', 'Workflow task not found.')
+                ->assertJsonPath('task_id', $claim['task_id'])
+                ->assertJsonPath('workflow_task_attempt', $claim['workflow_task_attempt']);
         }
         $this->assertSame($taskBefore, WorkflowTask::query()->findOrFail($claim['task_id'])->getRawOriginal());
         $this->assertSame($historyBefore, WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->count());

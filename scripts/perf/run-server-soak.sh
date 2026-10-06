@@ -324,7 +324,7 @@ cleanup() {
 
   if [[ "$MYSQL_LOCK_DIAGNOSTICS" == 1 ]]; then
     timeout 15s docker exec -i -e MYSQL_PWD=root "${PROJECT}-mysql-1" \
-      mysql --user=root --batch \
+      mysql --user=root --batch --raw \
       < "$ROOT_DIR/scripts/perf/mysql-lock-diagnostics.sql" \
       > "$ARTIFACT_DIR/mysql-lock-diagnostics.txt" 2>&1 || true
   fi
@@ -509,7 +509,7 @@ fi
 
 if [[ "$MYSQL_LOCK_DIAGNOSTICS" == 1 ]]; then
   timeout 15s docker exec -e MYSQL_PWD=root "${PROJECT}-mysql-1" \
-    mysql --user=root --execute="SET GLOBAL innodb_print_all_deadlocks=ON; UPDATE performance_schema.setup_consumers SET ENABLED='YES' WHERE NAME='events_statements_history_long';" \
+    mysql --user=root --execute="SET GLOBAL log_error_verbosity=3; SET GLOBAL innodb_print_all_deadlocks=ON; UPDATE performance_schema.setup_consumers SET ENABLED='YES' WHERE NAME='events_statements_history_long';" \
     > "$ARTIFACT_DIR/mysql-lock-diagnostics-setup.txt" 2>&1
 fi
 
