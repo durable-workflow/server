@@ -10,7 +10,7 @@ const defaultRepositoryRoot = resolve(fileURLToPath(new URL('../..', import.meta
 const schema = 'durable-workflow.server.source-release/v1';
 const prerelease = String.raw`(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)-(?:alpha|beta|rc)\.(?:0|[1-9]\d*)`;
 const stableVersion = String.raw`(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)`;
-const serverVersion = String.raw`(?:${stableVersion}|${prerelease})`;
+const serverVersion = String.raw`(?:${prerelease}|${stableVersion})`;
 const remediation = 'node scripts/ci/sync-source-release.mjs --write';
 
 function fail(message) {
@@ -52,7 +52,7 @@ export async function sourceRelease(repositoryRoot = defaultRepositoryRoot) {
     ),
     chartVersion: exact(
       object(record.helm_chart, 'source release helm_chart').version,
-      stableVersion,
+      serverVersion,
       'source release helm_chart.version',
     ),
   };
@@ -265,7 +265,7 @@ const consumers = [
     render(source, release) {
       let rendered = replaceExactly(
         source,
-        new RegExp(`^(version:\\s*)${stableVersion}\\s*$`, 'm'),
+        new RegExp(`^(version:\\s*)${serverVersion}\\s*$`, 'm'),
         (_match, prefix) => `${prefix}${release.chartVersion}`,
         1,
         this.path,

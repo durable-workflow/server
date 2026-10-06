@@ -285,7 +285,7 @@ class CooperativeCancellationProtocolTest extends TestCase
             ->assertJsonPath('reason', 'cooperative_cancellation_not_supported');
     }
 
-    public function test_discovery_matches_request_support_and_preserves_the_default_protocol(): void
+    public function test_discovery_matches_request_support_and_defaults_to_the_cooperative_protocol(): void
     {
         foreach (['1.19' => false, '1.20' => true, '2.0' => false, 'malformed' => false] as $version => $supported) {
             config(['server.worker_protocol.version' => $version]);
@@ -296,7 +296,7 @@ class CooperativeCancellationProtocolTest extends TestCase
             $this->assertSame($supported, CooperativeCancellationPolicy::serverSupported());
         }
 
-        $this->assertSame('1.19', WorkerProtocol::VERSION);
+        $this->assertSame('1.20', WorkerProtocol::VERSION);
     }
 
     public function test_waiting_timer_is_interrupted_only_when_delivery_is_committed(): void

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "46"
+  version: "47"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -14,9 +14,9 @@ info:
     from the same major whose minor is less than or equal to N.
 x-durable-workflow-worker-protocol-negotiation:
   advertised_version_path: worker_protocol.version
-  default_advertised_version: "1.19"
+  default_advertised_version: "1.20"
   request_header_rule: same_major_and_minor_less_than_or_equal_to_advertised
-  accepted_request_versions_by_default: ["1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "1.10", "1.11", "1.12", "1.13", "1.14", "1.15", "1.16", "1.17", "1.18", "1.19"]
+  accepted_request_versions_by_default: ["1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "1.10", "1.11", "1.12", "1.13", "1.14", "1.15", "1.16", "1.17", "1.18", "1.19", "1.20"]
   response_version: advertised_version
   fail_closed_on: [missing_header, malformed_version, different_major, minor_greater_than_advertised]
 x-durable-workflow-catalog-entry: worker_protocol_api
@@ -56,6 +56,7 @@ x-durable-workflow-cancellation-scope-opening:
       allowance: shares_existing_workflow_claim_budget
   replay: identical_parent_and_shield_reuses_canonical_history_identity
 x-durable-workflow-cooperative-cancellation-contract:
+  status: release_candidate
   minimum_protocol_version: "1.20"
   worker_capability: cooperative_cancellation
   request_operation: POST /workflows/{workflowId}/request-cancellation
@@ -90,7 +91,7 @@ x-durable-workflow-cooperative-cancellation-contract:
   cleanup_completion: cancelled_with_original_request_id
   terminal_cancel_and_terminate: unchanged
 x-durable-workflow-prepared-local-activity-contract:
-  status: candidate
+  status: release_candidate
   minimum_protocol_version: "1.20"
   worker_capabilities: [cooperative_cancellation, prepared_local_activities]
   backend_role: Workflow\V2\Contracts\PreparedLocalActivityTaskBridge
@@ -495,6 +496,7 @@ paths:
   /worker/workflow-tasks/{taskId}/cancellation-scopes/open:
     post:
       operationId: openWorkflowCancellationScope
+      x-durable-workflow-experimental: true
       tags: [workflow-tasks]
       x-durable-workflow-minimum-protocol-version: "1.20"
       x-durable-workflow-worker-capability: cooperative_cancellation
@@ -522,6 +524,7 @@ paths:
   /worker/workflow-tasks/{taskId}/cancellation-scopes/prepare:
     post:
       operationId: prepareWorkflowCancellationScopeDelivery
+      x-durable-workflow-experimental: true
       tags: [workflow-tasks]
       x-durable-workflow-minimum-protocol-version: "1.20"
       x-durable-workflow-worker-capability: cooperative_cancellation
@@ -551,6 +554,7 @@ paths:
   /worker/workflow-tasks/{taskId}/cancellation-scopes/deliver:
     post:
       operationId: deliverWorkflowCancellationScope
+      x-durable-workflow-experimental: true
       tags: [workflow-tasks]
       x-durable-workflow-minimum-protocol-version: "1.20"
       x-durable-workflow-worker-capability: cooperative_cancellation
@@ -584,6 +588,7 @@ paths:
   /worker/workflow-tasks/{taskId}/cancellation-scopes/checkpoint:
     post:
       operationId: checkpointCancellationScopePrefix
+      x-durable-workflow-experimental: true
       tags: [workflow-tasks]
       x-durable-workflow-minimum-protocol-version: "1.20"
       x-durable-workflow-worker-capability: cooperative_cancellation
@@ -1538,21 +1543,21 @@ components:
       properties:
         cooperative_cancellation:
           type: boolean
-          description: Explicit support for claim-bound cooperative request delivery, requiring worker protocol 1.20 or newer in the same major version. False at the default protocol 1.19.
+          description: Explicit support for claim-bound cooperative request delivery, requiring worker protocol 1.20 or newer in the same major version. Workers must opt in on an immutable claim.
         activity_cancellation_acknowledgement:
           type: boolean
-          description: Original remote callback-stop receipts require an installed runtime primitive and worker protocol 1.20. False for the default protocol and for runtimes without that primitive.
+          description: Original remote callback-stop receipts require an installed runtime primitive and worker protocol 1.20. False for earlier protocols and runtimes without that primitive.
         prepared_local_activities:
           type: boolean
-          description: Candidate preparation, prefix checkpoint, supervisor control, application heartbeat, outcome, recovery and joined-stop receipts. Requires protocol 1.20 and the actual bound PreparedLocalActivityTaskBridge role including heartbeat support. False at the default protocol 1.19.
+          description: Preparation, prefix checkpoint, supervisor control, application heartbeat, outcome, recovery and joined-stop receipts. Requires protocol 1.20 and the actual bound PreparedLocalActivityTaskBridge role including heartbeat support. False for earlier protocols or an absent backend role.
         prepared_local_activity_groups:
           type: boolean
-          description: Candidate atomic complete-all-group admission. Requires prepared local activities, protocol 1.20 and the actual bound PreparedLocalActivityGroupTaskBridge. Existing custom prepared bridges do not acquire this role.
+          description: Atomic complete-all-group admission. Requires prepared local activities, protocol 1.20 and the actual bound PreparedLocalActivityGroupTaskBridge. Existing custom prepared bridges do not acquire this role.
         prepared_local_activity_cancellation_policies:
           type: array
           uniqueItems: true
           items: { type: string, enum: [try_cancel, wait_cancellation_completed] }
-          description: Explicit policies supported by the actual installed prepared-local bridge's optional supportedLocalActivityCancellationPolicies method. Empty at default protocol 1.19 or for older optional-role bridges. Workers need a new immutable claim with the separately named worker capability before admission or replay.
+          description: Explicit policies supported by the actual installed prepared-local bridge's optional supportedLocalActivityCancellationPolicies method. Empty for earlier protocols or older optional-role bridges. Workers need a new immutable claim with the separately named worker capability before admission or replay.
         supported_workflow_task_commands:
           type: array
           uniqueItems: true

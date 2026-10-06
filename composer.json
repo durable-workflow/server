@@ -6,7 +6,7 @@
     "require": {
         "php": "^8.2",
         "apache/avro": "^1.12",
-        "durable-workflow/workflow": "2.3.4",
+        "durable-workflow/workflow": "2.4.0-rc.1",
         "laravel/framework": "^13.30",
         "laravel/tinker": "^3.0",
         "league/flysystem-aws-s3-v3": "^3.35.3"
@@ -48,7 +48,7 @@
     },
     "extra": {
         "durable-workflow": {
-            "product-train": "2.4.40"
+            "product-train": "2.5.0-rc.1"
         },
         "laravel": {
             "dont-discover": []

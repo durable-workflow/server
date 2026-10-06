@@ -57,7 +57,7 @@ class ClusterInfoCompatibilityTest extends TestCase
             ->assertJsonPath('client_compatibility.authority', 'protocol_manifests')
             ->assertJsonPath('capabilities.workflow_tasks', true)
             ->assertJsonPath('platform_protocol_specs.schema', PlatformProtocolSpecs::SCHEMA)
-            ->assertJsonPath('surface_stability_contract.version', 4)
+            ->assertJsonPath('surface_stability_contract.version', 5)
             ->assertJsonPath('activity_runtime_contract.version', 1)
             ->assertJsonPath('topology.schema', ServerTopology::SCHEMA)
             ->assertJsonMissingPath('worker_fleet')
@@ -707,7 +707,7 @@ class ClusterInfoCompatibilityTest extends TestCase
         $response = $this->getJson('/api/cluster/info')->assertOk();
 
         $response
-            ->assertJsonPath('surface_stability_contract.version', 4)
+            ->assertJsonPath('surface_stability_contract.version', 5)
             ->assertJsonPath(
                 'surface_stability_contract.surface_families.official_sdks.package_compatibility.rust_sdk.package',
                 'durable-workflow',
@@ -1038,7 +1038,7 @@ class ClusterInfoCompatibilityTest extends TestCase
             ->assertJsonPath('client_compatibility.clients.cli.supported_versions', '>=2.0.0,<3.0.0')
             ->assertJsonPath('client_compatibility.clients.sdk-php.supported_versions', '>=2.0.0,<3.0.0')
             ->assertJsonPath('client_compatibility.clients.sdk-python.supported_versions', '>=2.0.0,<3.0.0')
-            ->assertJsonPath('client_compatibility.clients.sdk-rust.supported_versions', '>=2.0.0,<3.0.0');
+            ->assertJsonPath('client_compatibility.clients.sdk-rust.supported_versions', '>=2.0.0,<4.0.0');
 
         foreach ($response->json('supported_sdk_versions') as $supportedVersions) {
             $this->assertStringNotContainsString(
