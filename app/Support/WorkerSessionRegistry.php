@@ -441,7 +441,7 @@ final class WorkerSessionRegistry
             return $limit;
         }
 
-        $session = $this->renewHeldSession($session, $options, $worker->worker_id, true);
+        $session = $this->renewHeldSession($session, $options, $worker->worker_id);
 
         return $this->success($session, 'reacquired', $activityTaskId);
     }
@@ -453,7 +453,6 @@ final class WorkerSessionRegistry
         WorkerSessionLease $session,
         array $options,
         string $workerId,
-        bool $resetTtl = false,
     ): WorkerSessionLease {
         $now = now();
 
@@ -464,7 +463,6 @@ final class WorkerSessionRegistry
             'status' => WorkerSessionLease::STATUS_ACTIVE,
             'lease_owner' => $workerId,
             'lease_expires_at' => $now->copy()->addSeconds($options['lease_seconds']),
-            'ttl_expires_at' => $resetTtl ? $now->copy()->addSeconds($options['ttl_seconds']) : null,
             'closed_at' => null,
             'failure_reason' => null,
             'lease_seconds' => $options['lease_seconds'],
@@ -480,7 +478,7 @@ final class WorkerSessionRegistry
 
     private function refreshStatusLocked(WorkerSessionLease $session): WorkerSessionLease
     {
-        if ($session->status !== WorkerSessionLease::STATUS_ACTIVE) {
+        if ($session->status === WorkerSessionLease::STATUS_CLOSED || $session->failure_reason === 'ttl_expired') {
             return $session;
         }
 
@@ -492,6 +490,10 @@ final class WorkerSessionRegistry
                 'failure_reason' => 'ttl_expired',
             ])->save();
 
+            return $session;
+        }
+
+        if ($session->status !== WorkerSessionLease::STATUS_ACTIVE) {
             return $session;
         }
 
@@ -518,7 +520,16 @@ final class WorkerSessionRegistry
     {
         WorkerSessionLease::query()
             ->where('namespace', $namespace)
-            ->where('status', WorkerSessionLease::STATUS_ACTIVE)
+            ->where(function ($query): void {
+                $query->where('status', WorkerSessionLease::STATUS_ACTIVE)
+                    ->orWhere(function ($expired): void {
+                        $expired->where('status', '!=', WorkerSessionLease::STATUS_CLOSED)
+                            ->where('ttl_expires_at', '<=', now())
+                            ->where(function ($reason): void {
+                                $reason->whereNull('failure_reason')->orWhere('failure_reason', '!=', 'ttl_expired');
+                            });
+                    });
+            })
             ->orderBy('id')
             ->get()
             ->each(function (WorkerSessionLease $session): void {
