@@ -405,6 +405,7 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
         Route::get('/health', [SystemController::class, 'health']);
         Route::match(['get', 'post'], '/metrics', [SystemController::class, 'metrics']);
         Route::get('/operator-dashboard', [SystemController::class, 'operatorDashboard']);
+        Route::get('/operator-dashboard/bounded', [SystemController::class, 'boundedOperatorDashboard']);
         Route::get('/operator-metrics', [SystemController::class, 'operatorMetrics']);
         Route::get('/prometheus-metrics', [SystemController::class, 'prometheusMetrics']);
         Route::get('/repair', [SystemController::class, 'repairStatus']);

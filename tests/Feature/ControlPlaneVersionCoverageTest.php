@@ -150,6 +150,7 @@ class ControlPlaneVersionCoverageTest extends TestCase
             'system.metrics' => ['method' => 'get', 'path' => '/api/system/metrics'],
             'system.metrics_post' => ['method' => 'post', 'path' => '/api/system/metrics'],
             'system.operator_dashboard' => ['method' => 'get', 'path' => '/api/system/operator-dashboard'],
+            'system.bounded_operator_dashboard' => ['method' => 'get', 'path' => '/api/system/operator-dashboard/bounded'],
             'system.operator_metrics' => ['method' => 'get', 'path' => '/api/system/operator-metrics'],
             'system.repair_status' => ['method' => 'get', 'path' => '/api/system/repair'],
             'system.repair_pass' => ['method' => 'post', 'path' => '/api/system/repair/pass'],

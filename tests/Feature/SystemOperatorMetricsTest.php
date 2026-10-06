@@ -381,6 +381,37 @@ class SystemOperatorMetricsTest extends TestCase
             ->assertJsonPath('reason', 'missing_control_plane_version');
     }
 
+    public function test_bounded_dashboard_defers_history_audits_without_claiming_zero_drift(): void
+    {
+        $this->getJson('/api/system/operator-dashboard/bounded', $this->controlPlaneHeadersWithWorkerProtocol())
+            ->assertOk()
+            ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+            ->assertJsonPath('namespace', 'default')
+            ->assertJsonPath('dashboard.flows', 0)
+            ->assertJsonPath('dashboard.operator_metrics.history_audit_evaluation', 'not_requested')
+            ->assertJsonPath('dashboard.operator_metrics.capacity_evidence.namespace', 'default')
+            ->assertJsonPath('dashboard.operator_metrics.capacity_evidence.cardinality.bounded', true)
+            ->assertJsonPath('dashboard.operator_metrics.command_contracts.backfill_needed_runs', null)
+            ->assertJsonPath('dashboard.operator_metrics.projections.run_waits.needs_rebuild', null)
+            ->assertJsonPath('dashboard.operator_metrics.projections.run_timeline_entries.needs_rebuild', null)
+            ->assertJsonPath('dashboard.operator_metrics.projections.run_timer_entries.needs_rebuild', null)
+            ->assertJsonPath('dashboard.operator_metrics.projections.run_lineage_entries.needs_rebuild', null);
+
+        $this->getJson('/api/system/operator-dashboard', $this->controlPlaneHeadersWithWorkerProtocol())
+            ->assertOk()
+            ->assertJsonMissingPath('dashboard.operator_metrics.history_audit_evaluation')
+            ->assertJsonPath('dashboard.operator_metrics.projections.run_waits.needs_rebuild', 0);
+    }
+
+    public function test_bounded_dashboard_requires_control_plane_version_header(): void
+    {
+        $this->getJson('/api/system/operator-dashboard/bounded', [
+            'X-Namespace' => 'default',
+        ])
+            ->assertStatus(400)
+            ->assertJsonPath('reason', 'missing_control_plane_version');
+    }
+
     public function test_operator_dashboard_requires_control_plane_version_header(): void
     {
         $this->getJson('/api/system/operator-dashboard', [
