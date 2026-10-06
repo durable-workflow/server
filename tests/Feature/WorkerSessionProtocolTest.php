@@ -962,6 +962,59 @@ class WorkerSessionProtocolTest extends TestCase
             ->assertJsonPath('session.lease_owner', 'gpu-worker-reacquire');
     }
 
+    public function test_reacquiring_an_expired_lease_preserves_the_absolute_session_ttl(): void
+    {
+        $this->registerWorkerThroughProtocol(workerId: 'holder-first', taskQueue: 'session-ttl');
+        $this->registerWorkerThroughProtocol(workerId: 'holder-next', taskQueue: 'session-ttl');
+        $options = [
+            'session_id' => 'absolute-ttl',
+            'queue' => 'session-ttl',
+            'lease_seconds' => 5,
+            'ttl_seconds' => 30,
+        ];
+        $created = $this->postJson('/api/worker/sessions', [
+            ...$options,
+            'worker_id' => 'holder-first',
+        ], $this->workerHeaders())->assertCreated();
+        $deadline = $created->json('session.ttl_expires_at');
+
+        $this->travel(6)->seconds();
+        $this->postJson('/api/worker/sessions', [
+            ...$options,
+            'worker_id' => 'holder-next',
+        ], $this->workerHeaders())->assertOk()
+            ->assertJsonPath('outcome', 'reacquired')
+            ->assertJsonPath('session.ttl_expires_at', $deadline);
+        $this->travel(25)->seconds();
+        $this->postJson('/api/worker/sessions', [
+            ...$options,
+            'worker_id' => 'holder-next',
+        ], $this->workerHeaders())->assertConflict()
+            ->assertJsonPath('reason', 'session_reacquire_disallowed')
+            ->assertJsonPath('session.failure_reason', 'ttl_expired');
+    }
+
+    public function test_absolute_ttl_remains_terminal_after_a_lease_was_already_marked_expired(): void
+    {
+        $this->registerWorkerThroughProtocol(workerId: 'holder-expired', taskQueue: 'session-ttl');
+        $options = [
+            'session_id' => 'already-expired-lease',
+            'queue' => 'session-ttl',
+            'worker_id' => 'holder-expired',
+            'lease_seconds' => 5,
+            'ttl_seconds' => 30,
+        ];
+        $this->postJson('/api/worker/sessions', $options, $this->workerHeaders())->assertCreated();
+        $this->travel(6)->seconds();
+        $this->getJson('/api/worker-sessions/already-expired-lease', $this->apiHeaders())->assertOk()
+            ->assertJsonPath('session.failure_reason', 'lease_expired');
+        $this->travel(25)->seconds();
+        $this->getJson('/api/worker-sessions/already-expired-lease', $this->apiHeaders())->assertOk()
+            ->assertJsonPath('session.failure_reason', 'ttl_expired');
+        $this->postJson('/api/worker/sessions', $options, $this->workerHeaders())->assertConflict()
+            ->assertJsonPath('reason', 'session_reacquire_disallowed');
+    }
+
     /**
      * @param  list<string>  $supportedWorkflowTypes
      * @param  list<string>  $supportedActivityTypes
