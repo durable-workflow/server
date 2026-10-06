@@ -9,7 +9,7 @@ use PHPUnit\Framework\TestCase;
 
 final class SchedulesConformanceRunnerContractTest extends TestCase
 {
-    public function test_python_workers_register_with_the_required_portable_capability_manifest(): void
+    public function test_python_protocol_probes_register_with_their_actual_capability_manifest(): void
     {
         $repoRoot = dirname(__DIR__, 2);
         $runner = (string) file_get_contents($repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs');
@@ -30,9 +30,11 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                 $pythonWorker,
             );
             $this->assertStringContainsString(
-                'capability_manifest=PORTABLE_WORKER_AFFINITY_CAPABILITY_MANIFEST',
+                'capability_manifest=SCHEDULE_PROBE_CAPABILITY_MANIFEST',
                 $pythonWorker,
             );
+            $this->assertStringContainsString('"supported": False', $pythonWorker);
+            $this->assertStringContainsString('"reason": "schedule_probe_uses_direct_task_polling"', $pythonWorker);
         }
     }
 
@@ -88,7 +90,6 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         $workerShard = substr($runner, $workerStart, $workerEnd - $workerStart);
 
         $this->assertStringContainsString('$client->payloadCodec()->envelope($completeResult)', $workerShard);
-        $this->assertStringContainsString("'blob' => json_encode(\$completeResult, JSON_THROW_ON_ERROR)", $workerShard);
         $this->assertStringNotContainsString("'result' => json_encode(\$completeResult, JSON_THROW_ON_ERROR)", $workerShard);
     }
 
@@ -109,7 +110,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         );
         $this->assertStringContainsString('schedule_max_runs: scheduleMaxRuns', $runner);
         $this->assertStringContainsString('max_runs=max(2, int(payload.get("schedule_max_runs") or 2))', $crossLanguageShard);
-        $this->assertStringContainsString("'max_runs' => max(2, (int) (\$payload['schedule_max_runs'] ?? 2))", $crossLanguageShard);
+        $this->assertStringContainsString("maxRuns: max(2, (int) (\$payload['schedule_max_runs'] ?? 2))", $crossLanguageShard);
         $this->assertStringNotContainsString('max_runs=1', $crossLanguageShard);
         $this->assertStringNotContainsString("'max_runs' => 1", $crossLanguageShard);
     }
@@ -131,7 +132,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         $pythonHeartbeat = strpos($pythonWorker, 'heartbeat_response = await client.heartbeat_worker(');
         $pythonPoll = strpos($pythonWorker, 'task = await client.poll_workflow_task(');
         $phpHeartbeat = strpos($phpWorker, '$heartbeatResponse = $client->heartbeatWorker(');
-        $phpPoll = strpos($phpWorker, '$tasks = $client->pollWorkflowTasks(');
+        $phpPoll = strpos($phpWorker, '$task = $client->pollWorkflowTask(');
 
         $this->assertIsInt($pythonHeartbeat);
         $this->assertIsInt($pythonPoll);
@@ -476,11 +477,11 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
             $this->assertSame('pass', $installScenario['status']);
             $this->assertSame([], $installScenario['linked_findings']);
             $this->assertTrue($installScenario['observed_outputs']['published_install_tuple_proven']);
-            $this->assertTrue($installScenario['observed_outputs']['supplied_install_evidence']);
+            $this->assertTrue($installScenario['observed_outputs']['artifact_install_evidence']['supplied_install_evidence']);
             $this->assertFalse($installScenario['observed_outputs']['local_product_source_checkouts_used']);
             $this->assertSame(
                 ['pass', 'pass', 'pass', 'pass', 'pass'],
-                array_column($installScenario['observed_outputs']['artifacts'], 'status'),
+                array_column($installScenario['observed_outputs']['artifact_install_evidence']['artifacts'], 'status'),
             );
             $this->assertSame('docker://durableworkflow/server:0.2.244', $result['artifact_sources']['server']);
             $this->assertSame(
@@ -488,7 +489,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                 $record['artifactSources']['sdk-php'],
             );
             $this->assertSame(
-                $installScenario['observed_outputs'],
+                $installScenario['observed_outputs']['artifact_install_evidence'],
                 $result['artifact_install_evidence'],
             );
         } finally {

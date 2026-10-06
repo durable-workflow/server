@@ -845,6 +845,12 @@ class SchedulesRuntimeContractTest extends TestCase
                 'create_or_observe' => true,
                 'list_observed' => true,
                 'control_observed' => true,
+                'manual_trigger_observed' => true,
+                'triggered_workflow_completion_observed' => true,
+                'operations' => array_fill_keys([
+                    'create', 'list', 'describe', 'pause', 'resume',
+                    'manual_trigger', 'delete', 'triggered_workflow_completion',
+                ], true),
             ],
             'sdk-php' => [
                 'create_or_observe' => true,
@@ -868,6 +874,13 @@ class SchedulesRuntimeContractTest extends TestCase
             'refused' => true,
             'typed_error' => true,
             'persisted' => false,
+            'persistence_evidence' => [
+                'public_list_checked' => true,
+                'list_contains_invalid_schedule' => false,
+                'public_describe_checked' => true,
+                'describe_found' => false,
+                'describe_status' => 404,
+            ],
         ];
         $nonexistentWorkflow = [
             'behavior' => 'fails_at_fire_time',
@@ -928,6 +941,9 @@ class SchedulesRuntimeContractTest extends TestCase
                 'waterline' => '2.0.0-alpha.57',
             ],
             'artifact_sources' => $artifactSources,
+            'artifact_version_resolution' => [
+                'sdk-php' => ['version' => '0.1.1', 'source' => $artifactSources['sdk-php']],
+            ],
             'local_product_source_checkouts_used' => false,
             'artifact_install_evidence' => $scenarioResults['published_artifact_install_only']['observed_outputs']['artifact_install_evidence'],
             'topology' => [
