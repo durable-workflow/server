@@ -79,6 +79,104 @@ class WorkflowDebugTest extends TestCase
         return ['completed' => ['completed'], 'cancelled' => ['cancelled']];
     }
 
+    public function test_recent_failures_link_to_their_retained_history_without_loading_the_history(): void
+    {
+        [$runId] = $this->diagnosticTask('debug-failure-reference');
+        $failures = [];
+
+        for ($index = 0; $index < 12; $index++) {
+            $failure = WorkflowFailure::query()->create([
+                'workflow_run_id' => $runId,
+                'source_kind' => 'activity',
+                'source_id' => 'activity-'.$index,
+                'propagation_kind' => 'workflow',
+                'failure_category' => FailureCategory::TaskFailure->value,
+                'non_retryable' => false,
+                'handled' => true,
+                'exception_class' => 'RuntimeException',
+                'message' => 'Activity failed.',
+                'file' => __FILE__,
+                'line' => __LINE__,
+                'created_at' => now()->addSeconds($index),
+            ]);
+            $failures[] = $failure;
+            WorkflowHistoryEvent::query()->create([
+                'workflow_run_id' => $runId,
+                'sequence' => 1000 + $index,
+                'event_type' => HistoryEventType::ActivityFailed,
+                'payload' => ['failure_id' => $failure->id, 'private_detail' => 'do not include in diagnostics'],
+                'recorded_at' => now(),
+            ]);
+            WorkflowHistoryEvent::query()->create([
+                'workflow_run_id' => $runId,
+                'sequence' => 2000 + $index,
+                'event_type' => HistoryEventType::FailureHandled,
+                'payload' => ['failure_id' => $failure->id],
+                'recorded_at' => now(),
+            ]);
+        }
+
+        for ($index = 0; $index < 500; $index++) {
+            WorkflowHistoryEvent::query()->create([
+                'workflow_run_id' => $runId,
+                'sequence' => 3000 + $index,
+                'event_type' => HistoryEventType::SignalReceived,
+                'payload' => [],
+                'recorded_at' => now(),
+            ]);
+        }
+
+        $hydratedEvents = 0;
+        WorkflowHistoryEvent::retrieved(static function () use (&$hydratedEvents): void {
+            $hydratedEvents++;
+        });
+        $response = $this->getJson('/api/workflows/debug-failure-reference/debug', $this->controlPlaneHeadersWithWorkerProtocol())
+            ->assertOk()
+            ->assertJsonCount(10, 'recent_failures')
+            ->assertJsonPath('recent_failures_truncated', true)
+            ->assertJsonPath('recent_failures.0.failure_id', $failures[11]->id)
+            ->assertJsonPath('recent_failures.0.supporting_event.state', 'retained')
+            ->assertJsonPath('recent_failures.0.supporting_event.sequence', 1011)
+            ->assertJsonPath('recent_failures.0.supporting_event.event_type', 'ActivityFailed')
+            ->assertJsonMissing(['private_detail' => 'do not include in diagnostics']);
+        $this->assertLessThanOrEqual(12, $hydratedEvents);
+
+        $token = rawurlencode($response->json('recent_failures.0.supporting_event.next_page_token'));
+        $this->getJson("/api/workflows/debug-failure-reference/runs/{$runId}/history?page_size=1&next_page_token={$token}", $this->controlPlaneHeadersWithWorkerProtocol())
+            ->assertOk()
+            ->assertJsonPath('events.0.sequence', 1011)
+            ->assertJsonPath('events.0.event_type', 'ActivityFailed')
+            ->assertJsonPath('events.0.payload.failure_id', $failures[11]->id);
+    }
+
+    public function test_missing_failure_history_is_explicitly_unavailable_or_pruned(): void
+    {
+        [$runId] = $this->diagnosticTask('debug-missing-failure-reference');
+        WorkflowFailure::query()->create([
+            'workflow_run_id' => $runId,
+            'source_kind' => 'activity',
+            'source_id' => 'activity-missing',
+            'propagation_kind' => 'workflow',
+            'failure_category' => FailureCategory::TaskFailure->value,
+            'non_retryable' => false,
+            'handled' => false,
+            'exception_class' => 'RuntimeException',
+            'message' => 'No supporting event retained.',
+            'file' => __FILE__,
+            'line' => __LINE__,
+        ]);
+
+        $this->getJson('/api/workflows/debug-missing-failure-reference/debug', $this->controlPlaneHeadersWithWorkerProtocol())
+            ->assertOk()
+            ->assertJsonPath('recent_failures_truncated', false)
+            ->assertJsonPath('recent_failures.0.supporting_event', ['state' => 'unavailable']);
+
+        WorkflowRun::query()->findOrFail($runId)->forceFill(['details_pruned_at' => now()])->save();
+        $this->getJson('/api/workflows/debug-missing-failure-reference/debug', $this->controlPlaneHeadersWithWorkerProtocol())
+            ->assertOk()
+            ->assertJsonPath('recent_failures.0.supporting_event', ['state' => 'pruned']);
+    }
+
     public function test_active_replay_failure_keeps_its_warning_and_error(): void
     {
         $workflowId = 'debug-active-replay';

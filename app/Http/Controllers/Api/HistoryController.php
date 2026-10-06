@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Support\ControlPlaneProtocol;
 use App\Support\ExternalPayloadEnvelopeService;
+use App\Support\HistoryPageToken;
 use App\Support\LegacyV1Projection;
 use App\Support\LongPoller;
 use App\Support\LongPollSignalStore;
@@ -50,7 +51,7 @@ class HistoryController
         }
 
         $pageSize = $validated['page_size'] ?? 100;
-        $afterSequence = $this->decodePageToken($validated['next_page_token'] ?? null);
+        $afterSequence = HistoryPageToken::decode($validated['next_page_token'] ?? null);
         $waitNewEvent = (bool) ($validated['wait_new_event'] ?? false);
 
         $events = $waitNewEvent
@@ -81,7 +82,7 @@ class HistoryController
                 'payload' => $this->eventPayload($namespace, $run, $event),
             ])->all(),
             'next_page_token' => $hasMore && $lastSequence !== null
-                ? self::encodePageToken((int) $lastSequence)
+                ? HistoryPageToken::encode((int) $lastSequence)
                 : null,
         ];
 
@@ -227,26 +228,6 @@ class HistoryController
             $run->compatibility,
             $suffix,
         );
-    }
-
-    private function decodePageToken(?string $token): ?int
-    {
-        if (! is_string($token) || trim($token) === '') {
-            return null;
-        }
-
-        $decoded = base64_decode($token, true);
-
-        if (! is_string($decoded) || ! ctype_digit($decoded)) {
-            return null;
-        }
-
-        return (int) $decoded;
-    }
-
-    private static function encodePageToken(int $sequence): string
-    {
-        return base64_encode((string) $sequence);
     }
 
     /**

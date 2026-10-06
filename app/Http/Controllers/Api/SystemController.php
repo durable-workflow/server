@@ -19,7 +19,9 @@ use App\Support\WorkerSessionRegistry;
 use App\Support\WorkflowTaskFailureMetrics;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\ValidationException;
 use Workflow\V2\Contracts\MatchingRole;
+use Workflow\V2\Contracts\OperatorObservabilityRepository;
 use Workflow\V2\Support\HealthCheck;
 use Workflow\V2\Support\OperatorDashboardSummary;
 use Workflow\V2\Support\OperatorMetrics;
@@ -185,14 +187,53 @@ class SystemController
         return $this->dashboardResponse($request, includeHistoryAudits: false);
     }
 
-    private function dashboardResponse(Request $request, bool $includeHistoryAudits): JsonResponse
+    public function workflowTypeOperatorDashboard(Request $request): JsonResponse
+    {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+        $validated = $request->validate([
+            'workflow_types' => ['required', 'string', 'json', 'max:4096'],
+        ]);
+        $encoded = $validated['workflow_types'];
+        $types = json_decode($encoded, flags: JSON_THROW_ON_ERROR);
+        if (strlen(rawurlencode($encoded)) > 4096 || ! is_array($types) || ! array_is_list($types)) {
+            throw ValidationException::withMessages([
+                'workflow_types' => 'Provide a JSON list of workflow types with at most 4096 encoded bytes.',
+            ]);
+        }
+        foreach ($types as $type) {
+            if (! is_string($type) || $type === '' || mb_strlen($type) > 255) {
+                throw ValidationException::withMessages([
+                    'workflow_types' => 'Workflow types must be nonempty strings of at most 255 characters.',
+                ]);
+            }
+        }
+
+        return $this->dashboardResponse($request, includeHistoryAudits: false, workflowTypes: $types);
+    }
+
+    /** @param list<string>|null $workflowTypes */
+    private function dashboardResponse(Request $request, bool $includeHistoryAudits, ?array $workflowTypes = null): JsonResponse
     {
         if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
             return $response;
         }
 
         $namespace = (string) $request->attributes->get('namespace');
-        $dashboard = OperatorDashboardSummary::snapshot(null, $namespace, $includeHistoryAudits);
+        if ($workflowTypes === null) {
+            $dashboard = OperatorDashboardSummary::snapshot(null, $namespace, $includeHistoryAudits);
+        } else {
+            $observer = app(OperatorObservabilityRepository::class);
+            if (! method_exists($observer, 'workflowTypeDashboardSummary')) {
+                return ControlPlaneProtocol::json([
+                    'message' => 'The installed workflow observer cannot filter dashboard totals by workflow type.',
+                    'reason' => 'backend_capability_unavailable',
+                    'capability' => 'workflow_type_dashboard',
+                ], 501);
+            }
+            $dashboard = $observer->workflowTypeDashboardSummary($workflowTypes, namespace: $namespace);
+        }
         if (! $includeHistoryAudits) {
             $dashboard['operator_metrics']['capacity_evidence'] = $this->capacityEvidence->snapshot($namespace);
         }

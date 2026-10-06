@@ -5,8 +5,10 @@ namespace App\Support;
 use App\Models\WorkerRegistration;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Collection;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\ActivityAttempt;
@@ -56,7 +58,13 @@ class WorkflowRunDiagnostics
         $activityTaskQueues = $this->activityTaskQueues($namespace, $pendingActivities);
         $lastEvent = $this->lastEvent($run, $includeLastEventPayload);
         $nextScheduledEvent = $this->nextScheduledEvent($summary, $taskRows->all());
-        $recentFailures = $this->recentFailures($run);
+        $failureRows = WorkflowFailure::query()
+            ->where('workflow_run_id', $run->id)
+            ->latest('created_at')
+            ->orderByDesc('id')
+            ->limit(self::FAILURE_LIMIT + 1)
+            ->get();
+        $recentFailures = $this->recentFailures($run, $failureRows->take(self::FAILURE_LIMIT));
         $latestWorkflowTaskFailure = $this->latestWorkflowTaskFailure($run);
 
         $payload = [
@@ -71,6 +79,7 @@ class WorkflowRunDiagnostics
             'task_queue' => $taskQueue,
             'activity_task_queues' => $activityTaskQueues,
             'recent_failures' => $recentFailures,
+            'recent_failures_truncated' => $failureRows->count() > self::FAILURE_LIMIT,
             'latest_workflow_task_failure' => $latestWorkflowTaskFailure,
             'compatibility' => $this->compatibility($namespace, $run, $summary, $taskQueue),
             'cancellation_cascade_supported' => class_exists(CancellationCascadeView::class),
@@ -663,28 +672,81 @@ class WorkflowRunDiagnostics
     }
 
     /**
+     * @param  Collection<int, WorkflowFailure>  $failures
      * @return list<array<string, mixed>>
      */
-    private function recentFailures(WorkflowRun $run): array
+    private function recentFailures(WorkflowRun $run, Collection $failures): array
     {
-        return WorkflowFailure::query()
-            ->where('workflow_run_id', $run->id)
-            ->latest('created_at')
-            ->limit(self::FAILURE_LIMIT)
-            ->get()
-            ->map(fn (WorkflowFailure $failure): array => $this->compact([
-                'failure_id' => $failure->id,
-                'source_kind' => $failure->source_kind,
-                'source_id' => $failure->source_id,
-                'propagation_kind' => $failure->propagation_kind,
-                'failure_category' => $this->enumValue($failure->failure_category),
-                'exception_class' => $failure->exception_class,
-                'message' => $failure->message,
-                'non_retryable' => (bool) $failure->non_retryable,
-                'handled' => (bool) $failure->handled,
-                'created_at' => $this->timestamp($failure->created_at),
-            ]))
+        $events = $this->failureEvents($run, $failures->pluck('id')->all());
+
+        return $failures
+            ->map(function (WorkflowFailure $failure) use ($run, $events): array {
+                $event = $events->get($failure->id);
+
+                return $this->compact([
+                    'failure_id' => $failure->id,
+                    'source_kind' => $failure->source_kind,
+                    'source_id' => $failure->source_id,
+                    'propagation_kind' => $failure->propagation_kind,
+                    'failure_category' => $this->enumValue($failure->failure_category),
+                    'exception_class' => $failure->exception_class,
+                    'message' => $failure->message,
+                    'non_retryable' => (bool) $failure->non_retryable,
+                    'handled' => (bool) $failure->handled,
+                    'created_at' => $this->timestamp($failure->created_at),
+                    'supporting_event' => $event instanceof WorkflowHistoryEvent ? [
+                        'state' => 'retained',
+                        'sequence' => (int) $event->sequence,
+                        'event_type' => $this->enumValue($event->event_type),
+                        'recorded_at' => $this->timestamp($event->recorded_at),
+                        'next_page_token' => HistoryPageToken::encode(max(0, (int) $event->sequence - 1)),
+                    ] : [
+                        'state' => $run->details_pruned_at === null ? 'unavailable' : 'pruned',
+                    ],
+                ]);
+            })
             ->all();
+    }
+
+    /**
+     * @param  list<string>  $failureIds
+     * @return Collection<string, WorkflowHistoryEvent>
+     */
+    private function failureEvents(WorkflowRun $run, array $failureIds): Collection
+    {
+        if ($failureIds === []) {
+            return collect();
+        }
+
+        // Aggregate only the requested failure identities. The result contains
+        // at most ten scalar rows, even when the retained history is large.
+        $references = WorkflowHistoryEvent::query()->toBase()
+            ->where('workflow_run_id', $run->id)
+            ->whereIn('payload->failure_id', $failureIds)
+            ->whereIn('event_type', [
+                HistoryEventType::ActivityFailed->value,
+                HistoryEventType::ActivityTimedOut->value,
+                HistoryEventType::ChildRunFailed->value,
+                HistoryEventType::ChildRunCancelled->value,
+                HistoryEventType::ChildRunTerminated->value,
+                HistoryEventType::WorkflowFailed->value,
+                HistoryEventType::WorkflowTimedOut->value,
+                HistoryEventType::WorkflowCancelled->value,
+                HistoryEventType::WorkflowTerminated->value,
+                HistoryEventType::UpdateCompleted->value,
+            ])
+            ->select('payload->failure_id as failure_id')
+            ->selectRaw('MAX(sequence) as sequence')
+            ->groupBy('payload->failure_id')
+            ->get();
+        $failureBySequence = $references->pluck('failure_id', 'sequence');
+
+        return WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->whereIn('sequence', $failureBySequence->keys()->all())
+            ->select(['id', 'workflow_run_id', 'sequence', 'event_type', 'recorded_at'])
+            ->get()
+            ->keyBy(fn (WorkflowHistoryEvent $event): string => (string) $failureBySequence->get($event->sequence));
     }
 
     /**
