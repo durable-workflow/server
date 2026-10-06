@@ -1572,6 +1572,10 @@ class WorkerController
             'commands' => ['required', 'array', 'min:1'],
             'commands.*.type' => ['required', 'string'],
             'commands.*.cancellation_scope_id' => ['sometimes', 'string', 'min:1', 'max:255'],
+            'commands.*.cancellation_cleanup' => ['sometimes', 'required', 'array:scope_id,request_id,delivery_history_event_id'],
+            'commands.*.cancellation_cleanup.scope_id' => ['sometimes', 'required', 'string', 'max:255'],
+            'commands.*.cancellation_cleanup.request_id' => ['required_with:commands.*.cancellation_cleanup', 'string', 'max:255'],
+            'commands.*.cancellation_cleanup.delivery_history_event_id' => ['required_with:commands.*.cancellation_cleanup', 'string', 'max:255'],
             'commands.*.result' => ['nullable'],
             'commands.*.activity_type' => ['nullable', 'string'],
             'commands.*.arguments' => ['nullable'],
@@ -1704,10 +1708,6 @@ class WorkerController
         $topLevelRules = [];
         if ($group) {
             $completionRules['commands'] = ['required', 'array', 'min:1', 'max:100'];
-            $completionRules['commands.*.cancellation_cleanup'] = ['nullable', 'array:scope_id,request_id,delivery_history_event_id'];
-            $completionRules['commands.*.cancellation_cleanup.scope_id'] = ['sometimes', 'required', 'string', 'max:255'];
-            $completionRules['commands.*.cancellation_cleanup.request_id'] = ['required_with:commands.*.cancellation_cleanup', 'string', 'max:255'];
-            $completionRules['commands.*.cancellation_cleanup.delivery_history_event_id'] = ['required_with:commands.*.cancellation_cleanup', 'string', 'max:255'];
         }
         $commandRules = ['commands' => ['required', 'array', 'min:1']];
         foreach ($completionRules as $field => $rules) {

@@ -615,6 +615,69 @@ final class CancellationScopeDeliveryTest extends TestCase
         }
     }
 
+    public function test_completion_preserves_original_scoped_timer_cleanup_proof_after_metadata_prefix(): void
+    {
+        [$task, $scope, , $proof] = $this->cleanupClaim();
+        $this->withHeaders($this->headers())->postJson("/api/worker/workflow-tasks/{$task['task_id']}/complete", [
+            'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
+            'commands' => [
+                ['type' => 'record_side_effect', 'result' => Serializer::serializeWithCodec('avro', 'cleanup entry')],
+                ['type' => 'start_timer', 'delay_seconds' => 1, 'cancellation_scope_id' => $scope,
+                    'cancellation_cleanup' => $proof],
+            ],
+        ])->assertOk();
+        $timer = WorkflowHistoryEvent::query()->where('event_type', 'TimerScheduled')->sole();
+        $this->assertSame(4, $timer->payload['sequence']);
+        $this->assertSame($scope, $timer->payload['cancellation_scope_id']);
+        $snapshot = $timer->payload['cancellation_cleanup'];
+        $this->assertSame($proof['request_id'], $snapshot['request_id']);
+        $this->assertSame($proof['delivery_history_event_id'], $snapshot['delivery_history_event_id']);
+        $delivery = WorkflowHistoryEvent::query()->findOrFail($proof['delivery_history_event_id']);
+        $this->assertSame($delivery->payload['authority_deadline_at'], $snapshot['authority_deadline_at']);
+        $this->assertSame($delivery->payload['cancellation']['root_context']['cleanup_deadline_at'], $snapshot['cleanup_deadline_at']);
+        $this->assertSame(1, WorkflowHistoryEvent::query()->where('event_type', 'SideEffectRecorded')->count());
+        $this->assertSame(TimerStatus::Pending, WorkflowTimer::query()->sole()->status);
+    }
+
+    public static function invalidTimerCleanupProofs(): iterable
+    {
+        foreach (['null', 'empty', 'missing-scope', 'new-deadline', 'different-request', 'too-long'] as $mutation) {
+            yield $mutation => [$mutation];
+        }
+    }
+
+    #[DataProvider('invalidTimerCleanupProofs')]
+    public function test_completion_refuses_invalid_timer_cleanup_before_any_prefix_commit(string $mutation): void
+    {
+        [$task, $scope, , $proof] = $this->cleanupClaim();
+        $command = ['type' => 'start_timer', 'delay_seconds' => 1, 'cancellation_scope_id' => $scope,
+            'cancellation_cleanup' => $proof];
+        if ($mutation === 'null') { $command['cancellation_cleanup'] = null; }
+        elseif ($mutation === 'empty') { $command['cancellation_cleanup'] = []; }
+        elseif ($mutation === 'missing-scope') { unset($command['cancellation_cleanup']['scope_id']); }
+        elseif ($mutation === 'new-deadline') { $command['cancellation_cleanup']['cleanup_deadline_at'] = now()->addHour()->toIso8601String(); }
+        elseif ($mutation === 'different-request') { $command['cancellation_cleanup']['request_id'] = 'invented-request'; }
+        else { $command['delay_seconds'] = 31; }
+        $before = WorkflowHistoryEvent::query()->count();
+        $response = $this->withHeaders($this->headers())->postJson("/api/worker/workflow-tasks/{$task['task_id']}/complete", [
+            'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
+            'commands' => [
+                ['type' => 'record_side_effect', 'result' => Serializer::serializeWithCodec('avro', 'must not commit')],
+                $command,
+            ],
+        ]);
+        if (in_array($mutation, ['missing-scope', 'different-request', 'too-long'], true)) {
+            $response->assertConflict()->assertJsonPath('recorded', false)->assertJsonPath('reason',
+                $mutation === 'too-long' ? 'cancellation_scope_cleanup_timer_exceeds_deadline'
+                    : 'cancellation_scope_cleanup_authority_mismatch');
+        } else {
+            $response->assertUnprocessable();
+        }
+        $this->assertSame($before, WorkflowHistoryEvent::query()->count());
+        $this->assertSame(0, WorkflowTimer::query()->count());
+        $this->assertSame(TaskStatus::Leased, WorkflowTask::query()->findOrFail($task['task_id'])->status);
+    }
+
     private function cleanupClaim(): array
     {
         [$task, $scope, $request] = $this->claim(prepared: true);
