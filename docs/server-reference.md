@@ -568,6 +568,7 @@ workflow-task command payload.
 - `GET /api/system/health` — Full rollout-safety health snapshot for the requested namespace, including check status, categories, routing-drain state, operator metrics, and structural limits
 - `GET /api/system/metrics` — Server metrics including bounded stuck workflow-task diagnostics
 - `GET /api/system/operator-metrics` — Full operator metrics snapshot (runs, tasks, backlog, repair, workers/fleet, backend, structural limits) for namespace-scoped rollout-safety coordination health
+- `GET /api/system/operator-dashboard/bounded` returns dashboard aggregates without decoding fleet-wide histories. History-audit counts are `null` and `operator_metrics.history_audit_evaluation` is `not_requested`. Use `/api/system/operator-dashboard` or `/api/system/operator-metrics` when a full history audit is needed. Both dashboard routes require operator authentication, the control-plane version header and a namespace.
 - `GET /api/system/repair` — Task repair diagnostics
 - `POST /api/system/repair/pass` — Run task repair sweep
 - `GET /api/system/activity-timeouts` — Expired activity execution diagnostics

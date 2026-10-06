@@ -177,12 +177,22 @@ class SystemController
 
     public function operatorDashboard(Request $request): JsonResponse
     {
+        return $this->dashboardResponse($request, includeHistoryAudits: true);
+    }
+
+    public function boundedOperatorDashboard(Request $request): JsonResponse
+    {
+        return $this->dashboardResponse($request, includeHistoryAudits: false);
+    }
+
+    private function dashboardResponse(Request $request, bool $includeHistoryAudits): JsonResponse
+    {
         if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
             return $response;
         }
 
         $namespace = (string) $request->attributes->get('namespace');
-        $dashboard = OperatorDashboardSummary::snapshot(null, $namespace);
+        $dashboard = OperatorDashboardSummary::snapshot(null, $namespace, $includeHistoryAudits);
         $dashboard['operator_metrics']['worker_sessions'] = $this->workerSessions->metrics($namespace);
         $dashboard['operator_metrics']['runtime_external_payload_cleanup'] = RuntimeExternalPayloadCleanupMetrics::snapshot($namespace);
 
