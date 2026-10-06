@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Support\ControlPlaneProtocol;
+use App\Support\RunObservationHistoryToken;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Workflow\V2\Contracts\OperatorObservabilityRepository;
@@ -22,6 +23,8 @@ class WorkflowObservationController
         $validated = $request->validate([
             'search_attribute_keys' => ['nullable', 'array', 'max:20'],
             'search_attribute_keys.*' => ['required', 'string', 'min:1', 'max:255', 'distinct'],
+            'history_page_size' => ['nullable', 'integer', 'min:1', 'max:1000'],
+            'history_page_token' => ['nullable', 'string', 'max:4096'],
         ]);
         $namespace = (string) $request->attributes->get('namespace');
         $instanceModel = ConfiguredV2Models::resolve('instance_model', WorkflowInstance::class);
@@ -47,7 +50,7 @@ class WorkflowObservationController
         }
 
         $observer = app(OperatorObservabilityRepository::class);
-        if (! method_exists($observer, 'runObservation')) {
+        if (! method_exists($observer, 'runObservation') || ! method_exists($observer, 'runHistoryPage')) {
             return ControlPlaneProtocol::jsonForRequest($request, [
                 'workflow_id' => $workflowId, 'run_id' => $run->id,
                 'message' => 'The configured observer does not support bounded run observations.',
@@ -55,11 +58,27 @@ class WorkflowObservationController
             ], 501);
         }
 
+        $cursor = RunObservationHistoryToken::decode($validated['history_page_token'] ?? null, $run->id);
         $observation = $observer->runObservation($run);
         $observation['workflow_id'] = $workflowId;
         $observation['task_queue'] = $observation['queue'];
         $observation['read_mode'] = 'bounded';
         $observation['search_attributes'] = $this->searchAttributes($run, $validated['search_attribute_keys'] ?? []);
+        $history = $observer->runHistoryPage($run, (int) ($validated['history_page_size'] ?? 200),
+            $cursor['after'] ?? 0, $cursor['through'] ?? null);
+        $history['next_page_token'] = $history['has_more'] ? RunObservationHistoryToken::encode(
+            $run->id, $history['next_sequence'], $history['through_sequence'],
+        ) : null;
+        $observation['history'] = $history;
+        foreach ($observation['recent_failures']['failures'] as &$failure) {
+            if ($failure['supporting_event']['state'] === 'retained') {
+                $reference = $failure['supporting_event'];
+                $failure['supporting_event']['next_page_token'] = RunObservationHistoryToken::encode(
+                    $run->id, $reference['after_sequence'], $reference['sequence'],
+                );
+            }
+        }
+        unset($failure);
 
         return ControlPlaneProtocol::jsonForRequest($request, $observation);
     }

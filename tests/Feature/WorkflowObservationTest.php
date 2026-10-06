@@ -73,11 +73,18 @@ class WorkflowObservationTest extends TestCase
             ->assertJsonPath('children.returned_count', 50)->assertJsonPath('children.has_more', true)
             ->assertJsonPath('children.relationships.0.status', 'failed')
             ->assertJsonPath('children.relationships.1.status', 'running')
-            ->assertJsonPath('recent_failures.failures.0.supporting_event.sequence', 1002);
-        $this->assertSame(['runs' => 52, 'history' => 2], $retrieved);
+            ->assertJsonPath('recent_failures.failures.0.supporting_event.sequence', 1002)
+            ->assertJsonPath('history.returned_count', 200)->assertJsonPath('history.has_more', true)
+            ->assertJsonPath('history.through_sequence', 1002);
+        $this->assertSame(['runs' => 52, 'history' => 203], $retrieved);
         $this->assertArrayNotHasKey('arguments', $response->json());
         $this->assertArrayNotHasKey('output', $response->json());
         $this->assertArrayNotHasKey('cancellation_cascade', $response->json());
+        $token = $response->json('recent_failures.failures.0.supporting_event.next_page_token');
+        $this->withHeaders($this->apiHeaders())->getJson('/api/workflows/coordinator/runs/coordinator/observation?'.http_build_query([
+            'history_page_token' => $token,
+        ]))->assertOk()->assertJsonPath('history.returned_count', 1)
+            ->assertJsonPath('history.events.0.event_type', 'ActivityFailed');
     }
 
     public function test_current_selection_is_scoped_and_never_repairs_a_wrong_pointer(): void
@@ -132,6 +139,38 @@ class WorkflowObservationTest extends TestCase
         $this->app->instance(OperatorObservabilityRepository::class, $this->createMock(OperatorObservabilityRepository::class));
         $this->withHeaders($this->apiHeaders())->getJson('/api/workflows/unsupported/observation')
             ->assertStatus(501)->assertJsonPath('reason', 'bounded_run_observation_unsupported');
+    }
+
+    public function test_history_cursor_keeps_its_original_run_and_ceiling_and_pruning_stays_explicit(): void
+    {
+        $this->createNamespace('default');
+        $run = $this->makeRun('growing');
+        $this->makeRun('other');
+        for ($sequence = 1; $sequence <= 3; $sequence++) {
+            WorkflowHistoryEvent::query()->create([
+                'workflow_run_id' => $run->id, 'sequence' => $sequence,
+                'event_type' => 'SignalReceived', 'payload' => ['arguments' => ['external_payload' => 'opaque']],
+                'recorded_at' => now(),
+            ]);
+        }
+        $path = '/api/workflows/growing/runs/growing/observation';
+        $first = $this->withHeaders($this->apiHeaders())->getJson($path.'?history_page_size=2')
+            ->assertOk()->assertJsonPath('history.events.0.payload.arguments.external_payload', 'opaque');
+        $token = $first->json('history.next_page_token');
+        WorkflowHistoryEvent::query()->create([
+            'workflow_run_id' => $run->id, 'sequence' => 4, 'event_type' => 'SignalReceived',
+            'payload' => [], 'recorded_at' => now(),
+        ]);
+        $query = '?'.http_build_query(['history_page_token' => $token]);
+        $this->withHeaders($this->apiHeaders())->getJson($path.$query)->assertOk()
+            ->assertJsonPath('history.through_sequence', 3)->assertJsonCount(1, 'history.events')
+            ->assertJsonPath('history.events.0.sequence', 3)->assertJsonPath('history.next_page_token', null);
+        $this->withHeaders($this->apiHeaders())->getJson('/api/workflows/other/runs/other/observation'.$query)->assertStatus(422);
+        $this->withHeaders($this->apiHeaders())->getJson($path.'?history_page_token=invalid')->assertStatus(422);
+        $run->update(['details_pruned_at' => now()]);
+        WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->delete();
+        $this->withHeaders($this->apiHeaders())->getJson($path)->assertOk()
+            ->assertJsonPath('history.details_state', 'pruned')->assertJsonPath('history.returned_count', 0);
     }
 
     private function makeRun(string $id, string $status = 'running', string $namespace = 'default'): WorkflowRun
