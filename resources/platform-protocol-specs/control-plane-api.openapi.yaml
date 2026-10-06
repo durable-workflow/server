@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.control-plane-api
-  version: "11"
+  version: "12"
   summary: Durable Workflow control-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the standalone Durable Workflow
@@ -397,6 +397,53 @@ paths:
       parameters:
         - $ref: "#/components/parameters/ControlPlaneVersionHeader"
         - $ref: "#/components/parameters/WorkflowIdPath"
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+  /workflows/{workflowId}/observation:
+    get:
+      tags: [workflows]
+      operationId: observeWorkflow
+      description: >-
+        Bounded run metadata, projected current waits, the first 50 parent and
+        child links with independent outcomes, and the ten most recent failure
+        references and a history page of 200 events by default. Does not load child
+        histories, decode application values or load the cancellation tree.
+        External payload references remain opaque. The stored current pointer is observed without repair
+        or canonical command validation. Missing evidence stays unknown. Use the
+        existing debug API for full inspection. History cursors authenticate the
+        selected run and preserve the original sequence ceiling.
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/WorkflowIdPath"
+        - name: search_attribute_keys
+          in: query
+          schema: { type: array, maxItems: 20, items: { type: string, minLength: 1, maxLength: 255 } }
+        - name: history_page_size
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 200 }
+        - name: history_page_token
+          in: query
+          schema: { type: string, maxLength: 4096 }
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+  /workflows/{workflowId}/runs/{runId}/observation:
+    get:
+      tags: [workflows]
+      operationId: observeWorkflowRun
+      description: The same bounded observation for one explicit retained run.
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/WorkflowIdPath"
+        - $ref: "#/components/parameters/RunIdPath"
+        - name: search_attribute_keys
+          in: query
+          schema: { type: array, maxItems: 20, items: { type: string, minLength: 1, maxLength: 255 } }
+        - name: history_page_size
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 200 }
+        - name: history_page_token
+          in: query
+          schema: { type: string, maxLength: 4096 }
       responses:
         "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
   /workflows/{workflowId}/debug:

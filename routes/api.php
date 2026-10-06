@@ -26,6 +26,7 @@ use App\Http\Controllers\Api\WorkerDeregistrationController;
 use App\Http\Controllers\Api\WorkerManagementController;
 use App\Http\Controllers\Api\WorkerSessionController;
 use App\Http\Controllers\Api\WorkflowController;
+use App\Http\Controllers\Api\WorkflowObservationController;
 use App\Http\Controllers\Api\WorkflowStreamController;
 use App\Http\Middleware\Authenticate;
 use App\Http\Middleware\ControlPlaneVersionResolver;
@@ -169,9 +170,11 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
 
     Route::prefix('workflows')->middleware([$operator, $cpv, $httpControl, $ns, $namespaceAdmission])->group(function () {
         Route::get('/{workflowId}/debug', [WorkflowController::class, 'debug']);
+        Route::get('/{workflowId}/observation', [WorkflowObservationController::class, 'show']);
         Route::get('/{workflowId}/runs', [WorkflowController::class, 'runs']);
         Route::get('/{workflowId}/runs/{runId}', [WorkflowController::class, 'showRun']);
         Route::get('/{workflowId}/runs/{runId}/debug', [WorkflowController::class, 'debugRun']);
+        Route::get('/{workflowId}/runs/{runId}/observation', [WorkflowObservationController::class, 'show']);
         Route::get('/{workflowId}/message-streams', [MessageStreamController::class, 'index']);
         Route::get('/{workflowId}/message-streams/{streamName}', [MessageStreamController::class, 'show']);
 

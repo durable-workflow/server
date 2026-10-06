@@ -93,6 +93,11 @@ final class ControlPlaneResponseContract
             'required_fields' => ['workflow_id'],
             'success_fields' => ['run_id', 'diagnostic_status'],
         ],
+        'observe_workflow' => [
+            'operation_name_field' => null,
+            'required_fields' => ['workflow_id'],
+            'success_fields' => ['run_id', 'read_mode', 'observed_at', 'current_waits', 'parents', 'children', 'recent_failures', 'history'],
+        ],
         'history' => [
             'operation_name_field' => null,
             'required_fields' => ['workflow_id', 'run_id'],
