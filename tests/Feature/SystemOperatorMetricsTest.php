@@ -383,6 +383,56 @@ class SystemOperatorMetricsTest extends TestCase
             ->assertJsonPath('reason', 'missing_control_plane_version');
     }
 
+    public function test_dashboard_counts_utc_projections_in_a_local_application(): void
+    {
+        $originalTimezone = date_default_timezone_get();
+        config(['app.timezone' => 'Europe/Kyiv']);
+        date_default_timezone_set('Europe/Kyiv');
+        $now = Carbon::parse('2026-10-07T07:42:00Z')->setTimezone('Europe/Kyiv');
+        Carbon::setTestNow($now);
+
+        try {
+            foreach ([-1, 0, 1] as $seconds) {
+                $started = $now->copy()->utc()->subHour()->addSeconds($seconds);
+                WorkflowRunSummary::query()->create([
+                    'id' => 'timezone-'.$seconds, 'workflow_instance_id' => 'timezone-'.$seconds,
+                    'namespace' => 'default', 'workflow_type' => 'dashboard.test',
+                    'class' => 'Dashboard', 'run_number' => 1, 'status' => 'completed', 'status_bucket' => 'completed',
+                    'sort_timestamp' => $started, 'closed_at' => $started->copy()->setTimezone('Europe/Kyiv'),
+                ]);
+            }
+            $this->getJson('/api/system/operator-dashboard/bounded', $this->controlPlaneHeadersWithWorkerProtocol())
+                ->assertOk()->assertJsonPath('dashboard.flows_past_hour', 2);
+        } finally {
+            date_default_timezone_set($originalTimezone);
+        }
+    }
+
+    public function test_dashboard_does_not_delete_expired_worker_heartbeats(): void
+    {
+        foreach (['expired' => -60, 'active' => 60] as $worker => $offset) {
+            DB::table('workflow_worker_compatibility_heartbeats')->insert([
+                'worker_id' => $worker, 'scope_key' => $worker, 'namespace' => 'default',
+                'supported' => '["build"]', 'recorded_at' => now(), 'expires_at' => now()->addSeconds($offset),
+                'created_at' => now(), 'updated_at' => now(),
+            ]);
+        }
+        DB::statement('PRAGMA query_only = ON');
+        DB::enableQueryLog();
+        DB::flushQueryLog();
+
+        try {
+            $this->getJson('/api/system/operator-dashboard/bounded', $this->controlPlaneHeadersWithWorkerProtocol())
+                ->assertOk()->assertJsonPath('dashboard.operator_metrics.workers.active_workers', 1);
+            $this->assertSame(2, DB::table('workflow_worker_compatibility_heartbeats')->count());
+            $writes = array_filter(DB::getQueryLog(), static fn (array $query): bool => preg_match('/^\s*(insert|update|delete|replace)\b/i', $query['query']) === 1);
+            $this->assertSame([], $writes);
+        } finally {
+            DB::statement('PRAGMA query_only = OFF');
+            DB::disableQueryLog();
+        }
+    }
+
     public function test_bounded_dashboard_defers_history_audits_without_claiming_zero_drift(): void
     {
         $this->getJson('/api/system/operator-dashboard/bounded', $this->controlPlaneHeadersWithWorkerProtocol())
