@@ -425,8 +425,7 @@ class SystemOperatorMetricsTest extends TestCase
             $this->getJson('/api/system/operator-dashboard/bounded', $this->controlPlaneHeadersWithWorkerProtocol())
                 ->assertOk()->assertJsonPath('dashboard.operator_metrics.workers.active_workers', 1);
             $this->assertSame(2, DB::table('workflow_worker_compatibility_heartbeats')->count());
-            $writes = array_filter(DB::getQueryLog(), static fn (array $query): bool =>
-                preg_match('/^\s*(insert|update|delete|replace)\b/i', $query['query']) === 1);
+            $writes = array_filter(DB::getQueryLog(), static fn (array $query): bool => preg_match('/^\s*(insert|update|delete|replace)\b/i', $query['query']) === 1);
             $this->assertSame([], $writes);
         } finally {
             DB::statement('PRAGMA query_only = OFF');
