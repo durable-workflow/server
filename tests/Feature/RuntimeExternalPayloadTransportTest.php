@@ -294,6 +294,7 @@ class RuntimeExternalPayloadTransportTest extends TestCase
 
     public function test_namespace_byte_quota_contains_uploads_without_affecting_another_namespace(): void
     {
+        $this->freezeTime();
         config(['server.external_payload_transport.max_bytes_per_namespace' => 10]);
 
         $first = $this->upload('123456');
