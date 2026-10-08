@@ -35,6 +35,7 @@ export function rustVersioningPasses(report, version) {
   const signalCount = (snapshot, type) => snapshot?.events?.filter((event) => event.event_type === type).length;
   if (!drainRun?.workflow_id || !drainRun.run_id || !drain.v1_build || !drain.v2_build
       || drain.v1_build === drain.v2_build || !deliveredAt(drain.first, drainRun, 'ready')
+      || drain.promotion?.build_id !== drain.v2_build || drain.promotion.new_start_selected !== true
       || drain.first.side_effect_calls !== 1 || !Number.isInteger(drain.initial?.pid)
       || drain.initial.pid <= 0 || drain.first.pid !== drain.initial.pid
       || !(drainEntry(drain.before)?.pending_workflow_tasks?.ready_count > 0)
@@ -180,7 +181,7 @@ async function main() {
   const report = JSON.parse(fs.readFileSync(resultPath, 'utf8'));
   report.registry_package = { version, source:sdk[0].source, checksum,
     url:`https://crates.io/api/v1/crates/durable-workflow/${version}/download` };
-  if (!rustVersioningPasses(report, version)) throw new Error('Rust observations do not prove the selected five cells');
+  if (!rustVersioningPasses(report, version)) throw new Error('Rust observations do not prove the selected six cells');
   fs.copyFileSync(path.join(root, 'Cargo.lock'), path.join(resultDir, 'worker-versioning-rust-Cargo.lock'));
   report.runner_commit = process.env.GITHUB_SHA ?? process.env.DW_WV_RUNNER_COMMIT ?? null;
   report.fixture_sha256 = createHash('sha256').update(fs.readFileSync(path.join(root, 'src/main.rs'))).digest('hex');

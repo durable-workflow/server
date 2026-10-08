@@ -27,6 +27,7 @@ function observations() {
       drain_resume:{ original:drained, v1_build:'drain-v1', v2_build:'drain-v2',
         v1_worker_id:'drain-w1', v2_worker_id:'drain-w2', workers, restored_workers:workers,
         initial:{ pid:201 }, first:firstDrainPoll, before:rollout('active', 1, 0),
+        promotion:{ build_id:'drain-v2', new_start_selected:true },
         drain:{ build_id:'drain-v1', drain_intent:'draining', drained_at:'2026-10-08T12:00:00Z' },
         duplicate_drain:{ drained_at:'2026-10-08T12:00:00Z' }, blocked_rollout:rollout('draining', 0, 1),
         blocked_show:{ ...drained, compatibility:'drain-v1', status:'waiting' },
@@ -65,6 +66,7 @@ test('complete managed-worker observations pass', () => {
 });
 
 const invalid = {
+  'wrong promoted peer during drain':(r) => { r.cells.drain_resume.promotion.build_id = 'drain-v1'; },
   'empty queue during drain':(r) => { r.cells.drain_resume.before.build_ids[0].pending_workflow_tasks.ready_count = 0; },
   'drained task claimed':(r) => { r.cells.drain_resume.drained_polls[0].processed = 1; },
   'callback advanced while drained':(r) => { r.cells.drain_resume.drained_polls[0].callbacks = []; },

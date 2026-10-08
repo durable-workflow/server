@@ -36,13 +36,19 @@ node scripts/conformance/worker-versioning-rust-published-workers.mjs
 
 The token must allow namespace creation through the control-plane API. This is
 an application fixture compiled against crates.io, with no SDK checkout or patch.
-It creates three short workflows and registers two build cohorts. Worker calls
+It creates four short workflows across two isolated queues and registers build cohorts. Worker calls
 use the SDK's `Worker` and authored workflow callbacks. API requests promote the
 build and inspect worker identities, run pins, diagnostics and durable history.
 
 ## Required outcomes
 
 - Worker registrations expose the actual Rust SDK and each build identity.
+- With an original v1 signal queued and v2 promoted, draining v1 blocks both
+  compatible and incompatible delivery. API state shows the drain, absent active
+  workers and retained ready backlog. Repeating drain preserves its timestamp.
+  The SDK's normal managed loop exits from the drain response without a kill.
+  Resume restores the build, and a fresh v1 worker cold-replays the original
+  queued signal and recorded result without repeating the producer.
 - An existing v1 run refuses v2 delivery. After promotion, new starts use v2
   while the existing run retains v1.
 - Capacity-one cache eviction forces replay without repeating a side effect.
@@ -53,7 +59,7 @@ build and inspect worker identities, run pins, diagnostics and durable history.
   The original run and recorded result survive, with one side-effect record and
   one terminal completion. Terminal history is removed from the worker cache.
 
-The five observations are checked before a passing result is written. Missing
+The six observations are checked before a passing result is written. Missing
 observations and command failures return a nonzero exit status. Worker processes
 are reaped on fixture exit. Remove the disposable stack and scratch directory
 after retaining the small result files. Do not point this experiment at a
@@ -77,9 +83,15 @@ run/build identity, repeated producers and duplicate completions.
 
 These cases test build routing between separately registered definitions. They do
 not claim that different language implementations can share a build identity or
-that their histories can be replayed interchangeably. Drain/resume controls,
-divergent-code registration and upgrading the Rust crate within a running cohort
+that their histories can be replayed interchangeably. Divergent-code registration
+and upgrading the Rust crate within a running cohort
 remain separate gaps in the organization conformance audit.
+
+Draining is a routing control, not cancellation of an existing workflow. A drained
+SDK loop exits normally. Resuming its build allows compatible workers to claim
+again, but does not restart an exited process. The drain case checks this absence
+explicitly before starting a fresh worker, then verifies original run/build
+identity, queued signal delivery, the recorded result and one terminal completion.
 
 The aggregate command also requires a passing mixed result when
 `DW_WV_MIXED_COHORTS=1` is selected. Supply the result from the focused host command
