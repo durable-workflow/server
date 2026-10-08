@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# != 2 || "$1" != --result-dir ]]; then
-  printf '%s\n' 'Usage: worker-versioning-rust-host-published-artifacts.sh --result-dir DIR' >&2
+if [[ $# != 2 || ( "$1" != --result-dir && "$1" != --cleanup ) ]]; then
+  printf '%s\n' 'Usage: worker-versioning-rust-host-published-artifacts.sh {--result-dir|--cleanup} DIR' >&2
   exit 2
 fi
 for variable in DW_SERVER_VERSION DW_RUST_SDK_VERSION; do
   [[ "${!variable:-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
 done
+if [[ "${DW_WV_MIXED_COHORTS:-0}" == 1 ]]; then
+  for variable in DW_PHP_SDK_VERSION DW_PYTHON_SDK_VERSION; do
+    [[ "${!variable:-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+  done
+fi
 [[ "${DW_SERVER_IMAGE:-}" =~ ^(docker.io/)?durableworkflow/server@sha256:[0-9a-f]{64}$ ]]
 mkdir -p "$2"
 result_dir="$(cd "$2" && pwd)"
+mode="$1"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 run_id="${DW_JOB_RESOURCE_PREFIX:-${GITHUB_RUN_ID:-$(date -u +%s)}-${GITHUB_RUN_ATTEMPT:-$$}-${GITHUB_JOB:-rust-versioning}}"
 resource="dw-wv-rust-${run_id}"
@@ -18,13 +24,17 @@ rust_image="${DW_WV_RUST_IMAGE:-rust@sha256:300ec56abce8cc9448ddea2172747d048ed9
 
 cleanup() {
   local status=$?
-  for role in server mysql redis; do
-    docker logs "$resource-$role" > "$result_dir/$role.log" 2>&1 || true
-  done
-  docker rm -f -v "$resource-runner" "$resource-server" "$resource-mysql" "$resource-redis" "$resource-node" >/dev/null 2>&1 || true
+  if [[ "$mode" != --cleanup ]]; then
+    for role in server mysql redis; do
+      docker logs "$resource-$role" > "$result_dir/$role.log" 2>&1 || true
+    done
+  fi
+  docker rm -f -v "$resource-mixed" "$resource-runner" "$resource-server" "$resource-mysql" "$resource-redis" "$resource-node" >/dev/null 2>&1 || true
+  docker image rm "$resource-mixed:qualification" >/dev/null 2>&1 || true
   docker network rm "$resource" >/dev/null 2>&1 || true
   exit "$status"
 }
+if [[ "$mode" == --cleanup ]]; then cleanup; fi
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -66,3 +76,26 @@ docker run --rm --init --user "$(id -u):$(id -g)" \
   -e DW_WV_SERVER_URL="http://$resource-server:8080" \
   -e DW_WV_RESULT_DIR=/result -e DW_WV_RUN_ROOT=/result/run \
   "$rust_image" /result/node /repo/scripts/conformance/worker-versioning-rust-published-workers.mjs
+
+if [[ "${DW_WV_MIXED_COHORTS:-0}" == 1 ]]; then
+  context="$result_dir/mixed-build"
+  mkdir -p "$context"
+  cp "$result_dir/target/debug/worker-versioning-rust-probe" "$context/"
+  cp "$result_dir/run/published-rust-worker-shard/Cargo.toml" "$result_dir/worker-versioning-rust-Cargo.toml"
+  rm -r "$result_dir/target" "$result_dir/cargo" "$result_dir/run"
+  cp "$repo_root"/scripts/conformance/worker-versioning-mixed-* "$context/"
+  cp "$repo_root/scripts/conformance/worker-versioning-mixed.Dockerfile" "$context/Dockerfile"
+  docker build --tag "$resource-mixed:qualification" \
+    --build-arg PHP_SDK_VERSION="$DW_PHP_SDK_VERSION" \
+    --build-arg PYTHON_SDK_VERSION="$DW_PYTHON_SDK_VERSION" "$context" \
+    > "$result_dir/mixed-image-build.log" 2>&1
+  docker inspect "$resource-mixed:qualification" > "$result_dir/mixed-consumer-image.json"
+  docker run --rm --init --user "$(id -u):$(id -g)" \
+    --name "$resource-mixed" --network "$resource" --cpus=2 --memory=2g \
+    --volume "$result_dir:/result" \
+    -e DW_SERVER_VERSION -e DW_SERVER_IMAGE -e DW_RUST_SDK_VERSION \
+    -e DW_PHP_SDK_VERSION -e DW_PYTHON_SDK_VERSION -e DW_WV_RUNNER_COMMIT \
+    -e DW_WV_NAMESPACE="${DW_WV_NAMESPACE:-rust-worker-versioning}" \
+    -e DW_WV_SERVER_URL="http://$resource-server:8080" -e DW_WV_RESULT_DIR=/result \
+    "$resource-mixed:qualification" > "$result_dir/mixed-execution.log" 2>&1
+fi

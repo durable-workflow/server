@@ -29,6 +29,9 @@ Environment overrides:
                              build pinning, promotion, no-compatible-worker and
                              fresh-process replay qualification. Requires cargo
                              and Rust 1.86+. Its result must pass when selected.
+  DW_WV_MIXED_COHORTS=1     Require the four mixed Rust/PHP and Rust/Python build
+                             directions. Supply worker-versioning-mixed-result.json
+                             from the focused host command in this result directory.
   DW_WORKFLOW_PHP_VERSION    Published durable-workflow/workflow version under test.
   DW_WATERLINE_VERSION       Published Waterline version under test.
   DW_WV_SERVER_PORT          Host port for the published server. Defaults to a free port.
