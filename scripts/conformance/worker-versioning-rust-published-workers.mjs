@@ -6,7 +6,70 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 
 const requiredCells = ['registration_build_ids', 'pinned_delivery_and_promotion',
-  'cache_eviction_replay', 'no_compatible_worker', 'sigkill_cold_replay', 'drain_resume'];
+  'cache_eviction_replay', 'no_compatible_worker', 'sigkill_cold_replay', 'drain_resume',
+  'divergent_definition_registration'];
+
+function definitionRegistrationPasses(cell, version) {
+  if (!cell?.original?.workflow_id || !cell.original.run_id || !cell.new?.workflow_id || !cell.new.run_id
+      || cell.original.run_id === cell.new.run_id || !cell.build_id || !cell.changed_build
+      || cell.build_id === cell.changed_build || !cell.worker_id || !cell.peer_id
+      || cell.worker_id === cell.peer_id || !/^sha256:[a-f0-9]{64}$/.test(cell.fingerprint ?? '')
+      || !/^sha256:[a-f0-9]{64}$/.test(cell.divergent_fingerprint ?? '')
+      || cell.fingerprint === cell.divergent_fingerprint) return false;
+  const type = 'conformance.rust-build-cohort';
+  const workerMatches = (snapshot, id, fingerprint) => snapshot?.workers?.some((row) =>
+    row.worker_id === id && row.build_id === cell.build_id && row.task_queue === cell.task_queue
+    && row.runtime === 'rust' && row.sdk_version === `durable-workflow-rust/${version}`
+    && row.workflow_definition_fingerprints?.[type] === fingerprint);
+  const rejected = (response, reason) => response?.registered === false && response.http_status === 409
+    && response.response?.reason === reason && response.response.workflow_type === type
+    && response.side_effect_calls === 0 && Array.isArray(response.callbacks) && response.callbacks.length === 0;
+  const cohort = (snapshot) => snapshot?.build_ids?.find((row) => row.build_id === cell.build_id);
+  const delivered = (poll, identity, boundary, effects) => poll?.processed > 0
+    && poll.callbacks?.at(-1)?.workflow_id === identity.workflow_id
+    && poll.callbacks.at(-1).run_id === identity.run_id && poll.callbacks.at(-1).boundary === boundary
+    && poll.side_effect_calls === effects;
+  const count = (history, event) => history?.events?.filter((row) => row.event_type === event).length;
+  const started = cell.history_before?.events?.find((row) => row.event_type === 'WorkflowStarted');
+  return workerMatches(cell.before, cell.worker_id, cell.fingerprint)
+    && workerMatches(cell.preserved, cell.worker_id, cell.fingerprint)
+    && workerMatches(cell.peers, cell.worker_id, cell.fingerprint)
+    && workerMatches(cell.peers, cell.peer_id, cell.divergent_fingerprint)
+    && rejected(cell.changed_registration, 'workflow_definition_changed')
+    && rejected(cell.missing_registration, 'workflow_definition_fingerprint_missing')
+    && started?.payload?.workflow_definition_fingerprint === cell.fingerprint
+    && started.payload.workflow_definition_fingerprint_source === 'worker'
+    && delivered(cell.first, cell.original, 'ready', 1)
+    && cohort(cell.conflicts)?.workflow_definition_fingerprint_conflicts?.some((row) =>
+      row.workflow_type === type && row.fingerprint_count === 2)
+    && Array.isArray(cell.incompatible_polls) && cell.incompatible_polls.length >= 2
+    && cell.incompatible_polls.every((poll) => poll.processed === 0 && poll.side_effect_calls === 0
+      && Array.isArray(poll.callbacks) && poll.callbacks.length === 0)
+    && cohort(cell.blocked_rollout)?.pending_workflow_tasks?.ready_count > 0
+    && cohort(cell.blocked_rollout)?.pending_workflow_tasks?.leased_count === 0
+    && Array.isArray(cell.history_before?.events)
+    && JSON.stringify(cell.history_before.events) === JSON.stringify(cell.blocked_history?.events)
+    && cell.killed?.signal === 9 && cell.killed.pid === cell.initial?.pid
+    && Number.isInteger(cell.killed.pid) && cell.killed.pid > 0
+    && Number.isInteger(cell.replacement?.pid) && cell.replacement.pid > 0
+    && cell.replacement.pid !== cell.killed.pid && cell.replacement.registered === true
+    && cell.replacement.metrics?.entries === 0 && cell.replacement.metrics?.hit === 0
+    && delivered(cell.resumed, cell.original, 'finish', 0)
+    && delivered(cell.completed, cell.original, 'completed', 0)
+    && cell.result?.producer === 'original-definition' && cell.show?.status === 'completed'
+    && cell.show.run_id === cell.original.run_id && cell.show.workflow_id === cell.original.workflow_id
+    && cell.show.compatibility === cell.build_id
+    && count(cell.history, 'SideEffectRecorded') === 1 && count(cell.history, 'WorkflowCompleted') === 1
+    && Array.isArray(cohort(cell.recovered)?.workflow_definition_fingerprint_conflicts)
+    && cohort(cell.recovered).workflow_definition_fingerprint_conflicts.length === 0
+    && delivered(cell.changed_first, cell.new, 'ready', 1)
+    && delivered(cell.changed_resumed, cell.new, 'finish', 1)
+    && delivered(cell.changed_completed, cell.new, 'completed', 1)
+    && cell.changed_result?.producer === 'divergent-definition' && cell.changed_show?.status === 'completed'
+    && cell.changed_show.run_id === cell.new.run_id && cell.changed_show.workflow_id === cell.new.workflow_id
+    && cell.changed_show.compatibility === cell.changed_build
+    && count(cell.changed_history, 'SideEffectRecorded') === 1 && count(cell.changed_history, 'WorkflowCompleted') === 1;
+}
 
 // Check the observations, not just a caller-supplied pass label.
 export function rustVersioningPasses(report, version) {
@@ -19,6 +82,7 @@ export function rustVersioningPasses(report, version) {
       || !/^[a-f0-9]{64}$/.test(report.registry_package.checksum ?? '')
       || !requiredCells.every((cell) => report.cells?.[cell])) return false;
   const cells = report.cells;
+  if (!definitionRegistrationPasses(cells.divergent_definition_registration, version)) return false;
   const pin = cells.pinned_delivery_and_promotion;
   const cold = cells.sigkill_cold_replay;
   const drain = cells.drain_resume;
@@ -166,7 +230,11 @@ async function main() {
     throw new Error('Published image release metadata does not match DW_SERVER_VERSION');
   }
   fs.writeFileSync(path.join(root, 'Cargo.toml'), `[package]\nname = "worker-versioning-rust-probe"\nversion = "0.0.0"\nedition = "2021"\nrust-version = "1.86"\n[dependencies]\ndurable-workflow = "=${version}"\nserde_json = "1"\nreqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }\ntokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }\n`);
-  fs.copyFileSync(new URL('./worker-versioning-rust-probe.rs', import.meta.url), path.join(root, 'src/main.rs'));
+  const fixtureFiles = ['worker-versioning-rust-probe.rs', 'worker-versioning-rust-definition-v1.rs', 'worker-versioning-rust-definition-v2.rs'];
+  for (const filename of fixtureFiles) {
+    fs.copyFileSync(new URL(`./${filename}`, import.meta.url), path.join(root, 'src', filename));
+  }
+  fs.copyFileSync(path.join(root, 'src/worker-versioning-rust-probe.rs'), path.join(root, 'src/main.rs'));
   fs.appendFileSync(path.join(root, 'Cargo.toml'), '\n[profile.dev]\ndebug = 0\nincremental = false\n');
   const manifest = path.join(root, 'Cargo.toml');
   const metadata = JSON.parse(run('cargo', ['metadata', '--format-version', '1', '--manifest-path', manifest], path.join(resultDir, 'worker-versioning-rust-metadata.log')));
@@ -199,10 +267,12 @@ async function main() {
   report.registry_package = { version, source:sdk[0].source, checksum,
     url:`https://crates.io/api/v1/crates/durable-workflow/${version}/download` };
   report.artifact_versions = { server:process.env.DW_SERVER_VERSION ?? null, 'sdk-rust':version };
-  if (!rustVersioningPasses(report, version)) throw new Error('Rust observations do not prove the selected six cells');
+  if (!rustVersioningPasses(report, version)) throw new Error('Rust observations do not prove the selected seven cells');
   fs.copyFileSync(path.join(root, 'Cargo.lock'), path.join(resultDir, 'worker-versioning-rust-Cargo.lock'));
   report.runner_commit = process.env.GITHUB_SHA ?? process.env.DW_WV_RUNNER_COMMIT ?? null;
-  report.fixture_sha256 = createHash('sha256').update(fs.readFileSync(path.join(root, 'src/main.rs'))).digest('hex');
+  report.fixture_sha256 = createHash('sha256').update(fs.readFileSync(path.join(root, 'src/worker-versioning-rust-probe.rs'))).digest('hex');
+  report.fixture_sources_sha256 = Object.fromEntries(fixtureFiles.map((filename) => [filename,
+    createHash('sha256').update(fs.readFileSync(path.join(root, 'src', filename))).digest('hex')]));
   report.started_at = startedAt;
   report.finished_at = new Date().toISOString();
   report.artifact_sources = { server:process.env.DW_SERVER_IMAGE ?? process.env.DW_WV_SERVER_URL,
