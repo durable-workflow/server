@@ -1069,6 +1069,10 @@ NODE
 }
 
 run_published_worker_shard() {
+  if [[ -n "${DW_RUST_SDK_VERSION:-}" ]]; then
+    node "$script_dir/worker-versioning-rust-published-workers.mjs" >"$result_dir/published-rust-worker-shard.log" 2>&1 || true
+  fi
+
   if [[ -z "${DW_WV_PUBLISHED_WORKER_EVIDENCE:-}" ]]; then
     export DW_WV_PUBLISHED_WORKER_EVIDENCE="$result_dir/published-worker-execution-evidence.json"
   fi
