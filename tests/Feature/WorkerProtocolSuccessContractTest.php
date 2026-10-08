@@ -1234,6 +1234,121 @@ class WorkerProtocolSuccessContractTest extends TestCase
         $this->assertSame($resultBlob, $closedUpdate->result);
     }
 
+    public static function waitingReplayMessages(): array
+    {
+        return [
+            'update' => [['update']],
+            'signal' => [['signal']],
+            'signal then update' => [['signal', 'update']],
+        ];
+    }
+
+    #[DataProvider('waitingReplayMessages')]
+    public function test_waiting_timer_replay_delivers_messages_accepted_during_its_lease(array $messages): void
+    {
+        Queue::fake();
+        $workflowType = 'tests.waiting-replay-update';
+        $workflowId = 'wf-waiting-replay-update';
+        $taskQueue = 'waiting-replay-update';
+        $workerId = 'worker-waiting-replay-update';
+
+        $this->postJson('/api/worker/register', [
+            'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
+            'worker_id' => $workerId,
+            'task_queue' => $taskQueue,
+            'runtime' => 'php',
+            'supported_workflow_types' => [$workflowType],
+            'capabilities' => ['workflow_tasks'],
+            'workflow_command_contracts' => [$workflowType => [
+                'queries' => [], 'query_contracts' => [],
+                'signals' => ['finish'], 'signal_contracts' => [[
+                    'name' => 'finish',
+                    'parameters' => [[
+                        'name' => 'value', 'position' => 0, 'required' => true,
+                        'variadic' => false, 'default_available' => false,
+                        'type' => 'int', 'allows_null' => false,
+                    ]],
+                ]],
+                'updates' => ['set'], 'update_validators' => [],
+                'update_contracts' => [[
+                    'name' => 'set',
+                    'parameters' => [[
+                        'name' => 'value', 'position' => 0, 'required' => true,
+                        'variadic' => false, 'default_available' => false,
+                        'type' => 'int', 'allows_null' => false,
+                    ]],
+                ]],
+            ]],
+        ], $this->workerProtocolHeaders())->assertCreated();
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => $workflowId,
+            'workflow_type' => $workflowType,
+            'task_queue' => $taskQueue,
+        ], $this->apiHeaders())->assertCreated();
+        $runId = (string) $start->json('run_id');
+        $pollBody = ['worker_id' => $workerId, 'task_queue' => $taskQueue];
+        $startTask = $this->postJson('/api/worker/workflow-tasks/poll', $pollBody,
+            $this->workerProtocolHeaders())->assertOk()->json('task');
+        $startComplete = $this->postJson('/api/worker/workflow-tasks/'.$startTask['task_id'].'/complete', [
+            'lease_owner' => $workerId,
+            'workflow_task_attempt' => $startTask['workflow_task_attempt'],
+            'commands' => [
+                ['type' => 'start_timer', 'delay_seconds' => 0],
+                ['type' => 'start_timer', 'delay_seconds' => 300],
+            ],
+        ], $this->workerProtocolHeaders())->assertOk()->assertJsonPath('run_status', 'waiting');
+
+        $this->app->call([new RunTimerTask((string) $startComplete->json('created_task_ids.0')), 'handle']);
+        $replay = $this->postJson('/api/worker/workflow-tasks/poll', $pollBody,
+            $this->workerProtocolHeaders())->assertOk()->json('task');
+        $this->assertSame($runId, $replay['run_id']);
+        $this->assertNotSame('workflow_signal', $replay['resume_source_kind']);
+
+        // The first timer has fired. This leased replay still waits for the
+        // second timer when new durable messages are accepted.
+        $messageIds = [];
+        foreach ($messages as $message) {
+            $path = $message === 'signal' ? '/signal/finish' : '/update/set';
+            $accepted = $this->postJson('/api/workflows/'.$workflowId.$path, [
+                'input' => [13], 'request_id' => 'waiting-replay-'.$message, 'wait_for' => 'accepted',
+            ], $this->apiHeaders())->assertAccepted();
+            $messageIds[$message] = $message === 'signal'
+                ? (string) WorkflowSignal::query()->where('workflow_run_id', $runId)->sole()->id
+                : (string) $accepted->json('update_id');
+        }
+        $acknowledgment = $this->postJson('/api/worker/workflow-tasks/'.$replay['task_id'].'/fail', [
+            'lease_owner' => $workerId,
+            'workflow_task_attempt' => $replay['workflow_task_attempt'],
+            'failure' => ['type' => 'WorkflowTaskWaitingForHistory', 'message' => 'Waiting for the second timer.'],
+        ], $this->workerProtocolHeaders())->assertOk()->assertJsonPath('outcome', 'waiting_for_history');
+
+        foreach ($messages as $message) {
+            $this->assertIsString($acknowledgment->json('next_task_id'));
+            $delivery = $this->postJson('/api/worker/workflow-tasks/poll', $pollBody,
+                $this->workerProtocolHeaders())->assertOk()->json('task');
+            $this->assertSame($acknowledgment->json('next_task_id'), $delivery['task_id']);
+            $this->assertSame($runId, $delivery['run_id']);
+            $this->assertSame($messageIds[$message], $delivery['workflow_'.$message.'_id']);
+            $claim = ['lease_owner' => $workerId, 'workflow_task_attempt' => $delivery['workflow_task_attempt']];
+            if ($message === 'signal') {
+                $acknowledgment = $this->postJson('/api/worker/workflow-tasks/'.$delivery['task_id'].'/fail', [
+                    ...$claim,
+                    'failure' => ['type' => 'WorkflowTaskWaitingForHistory', 'message' => 'Still waiting for the timer.'],
+                ], $this->workerProtocolHeaders())->assertOk()->assertJsonPath('outcome', 'waiting_for_history');
+                $this->assertSame('applied', WorkflowSignal::query()->findOrFail($messageIds[$message])->status->value);
+            } else {
+                $this->postJson('/api/worker/workflow-tasks/'.$delivery['task_id'].'/complete', [
+                    ...$claim,
+                    'commands' => [['type' => 'complete_update', 'update_id' => $messageIds[$message],
+                        'result' => ['codec' => 'avro', 'blob' => Serializer::serializeWithCodec('avro', 13)]]],
+                ], $this->workerProtocolHeaders())->assertOk()->assertJsonPath('run_status', 'waiting');
+                $this->assertSame('completed', WorkflowUpdate::query()->findOrFail($messageIds[$message])->status->value);
+            }
+        }
+        $this->assertSame(1, WorkflowTimer::query()->where('workflow_run_id', $runId)->where('status', 'pending')->count());
+    }
+
     public function test_signal_backed_workflow_task_poll_exposes_resume_context(): void
     {
         Queue::fake();

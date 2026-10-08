@@ -73,6 +73,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowServiceCall;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\PendingMessageTask;
 use Workflow\V2\Support\PortableLocalActivityPreparation;
 use Workflow\V2\Support\StickyExecution;
 use Workflow\V2\Support\WorkerProtocolVersion;
@@ -4032,6 +4033,19 @@ class WorkerController
                     'status' => RunStatus::Waiting,
                     'last_progress_at' => now(),
                 ])->save();
+
+                // Admission defers messages while a replay owns the run.
+                // Release that ownership and schedule the next eligible
+                // message together so its delivery does not depend on a
+                // later timer, signal or repair pass.
+                $nextMessageTask = PendingMessageTask::createForRun(
+                    $run,
+                    includeReceivedProjectedSignalWait: false,
+                );
+
+                if ($nextMessageTask instanceof WorkflowTask) {
+                    $createdTaskIds[] = $nextMessageTask->id;
+                }
             }
 
             $this->projectWorkflowRun($run->id);
@@ -4043,7 +4057,7 @@ class WorkerController
             ];
         });
 
-        if ($bridgeCompleted) {
+        if ($bridgeCompleted || $createdTaskIds !== []) {
             app(ServiceModeTimerDispatcher::class)->dispatchCreatedTaskIds($createdTaskIds);
             $this->wakeQueryTaskPollersForWorkflowTaskQueue($namespace, $workflowTaskQueue);
         }
