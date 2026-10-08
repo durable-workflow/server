@@ -100,6 +100,7 @@ async function main() {
   }
   fs.writeFileSync(path.join(root, 'Cargo.toml'), `[package]\nname = "worker-versioning-rust-probe"\nversion = "0.0.0"\nedition = "2021"\nrust-version = "1.86"\n[dependencies]\ndurable-workflow = "=${version}"\nserde_json = "1"\nreqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }\ntokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }\n`);
   fs.copyFileSync(new URL('./worker-versioning-rust-probe.rs', import.meta.url), path.join(root, 'src/main.rs'));
+  fs.appendFileSync(path.join(root, 'Cargo.toml'), '\n[profile.dev]\ndebug = 0\nincremental = false\n');
   const manifest = path.join(root, 'Cargo.toml');
   const metadata = JSON.parse(run('cargo', ['metadata', '--format-version', '1', '--manifest-path', manifest], path.join(resultDir, 'worker-versioning-rust-metadata.log')));
   const sdk = metadata.packages.filter((pkg) => pkg.name === 'durable-workflow');

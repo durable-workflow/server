@@ -13,6 +13,7 @@ import {
 } from './current-worker-protocol.mjs';
 import { isExactPythonRelease, isExactSemverRelease } from './version-identities.mjs';
 import { rustVersioningPasses } from './worker-versioning-rust-published-workers.mjs';
+import { mixedVersioningPasses } from './worker-versioning-mixed-published-workers.mjs';
 
 const RESULT_SCHEMA = 'durable-workflow.v2.worker-versioning-runtime.result';
 const RECORD_SCHEMA = 'durable-workflow.v2.worker-versioning-runtime.record';
@@ -1364,6 +1365,19 @@ async function main() {
         owning_surface: 'conformance_harness',
         observed_behavior: rustEvidence?.error ?? 'Selected Rust worker observations are missing or incomplete.',
         expected_behavior: 'Published Rust workers preserve build pinning and recorded values through promotion, cache eviction, missing compatible workers and SIGKILL replacement.',
+      });
+    }
+  }
+
+  if (process.env.DW_WV_MIXED_COHORTS === '1') {
+    const evidence = readJsonIfExists(path.join(resultDir, 'worker-versioning-mixed-result.json'));
+    if (mixedVersioningPasses(evidence, artifactVersions)) {
+      addPass('mixed_rust_build_cohort_execution', evidence);
+    } else {
+      addFail('mixed_rust_build_cohort_execution', evidence ?? {}, {
+        scenario_id:'mixed_rust_build_cohort_execution', owning_surface:'conformance_harness',
+        observed_behavior:evidence?.error ?? 'Selected mixed worker observations are missing or incomplete.',
+        expected_behavior:'Published Rust/PHP and Rust/Python workers preserve run/build identity and results in all four promotion directions, with no incompatible delivery or repeated producer/completion.',
       });
     }
   }

@@ -5,8 +5,10 @@ on:
     paths:
       - .github/workflows/published-rust-worker-versioning.yml
       - scripts/conformance/worker-versioning-rust-*
+      - scripts/conformance/worker-versioning-mixed*
       - scripts/conformance/worker-versioning-published-artifacts.*
       - tests/Unit/WorkerVersioningPublishedRustWorkerTest.mjs
+      - tests/Unit/WorkerVersioningPublishedMixedWorkerTest.mjs
   workflow_dispatch:
     inputs:
       server_version:
@@ -21,6 +23,14 @@ on:
         description: Exact published Rust SDK version
         required: true
         type: string
+      php_sdk_version:
+        description: Exact published PHP SDK version
+        default: '2.2.4'
+        type: string
+      python_sdk_version:
+        description: Exact published Python SDK version
+        default: '2.5.0'
+        type: string
 
 permissions:
   contents: read
@@ -34,6 +44,9 @@ jobs:
       DW_SERVER_VERSION: ${{ inputs.server_version || '2.5.10' }}
       DW_SERVER_IMAGE: ${{ inputs.server_image || 'durableworkflow/server@sha256:2043e097d6eb411632386b001385cb5d8145dac1e3b5b14df901ac333d81c5ec' }}
       DW_RUST_SDK_VERSION: ${{ inputs.rust_sdk_version || '3.4.0' }}
+      DW_PHP_SDK_VERSION: ${{ inputs.php_sdk_version || '2.2.4' }}
+      DW_PYTHON_SDK_VERSION: ${{ inputs.python_sdk_version || '2.5.0' }}
+      DW_WV_MIXED_COHORTS: '1'
       DW_WV_RUNNER_COMMIT: ${{ github.sha }}
       DW_JOB_RESOURCE_PREFIX: ${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
     steps:
@@ -46,9 +59,10 @@ jobs:
         run: |
           docker run --rm --init --user "$(id -u):$(id -g)" \
             --volume "$PWD:/repo:ro" --workdir /repo node:22-slim \
-            node --test tests/Unit/WorkerVersioningPublishedRustWorkerTest.mjs
+            node --test tests/Unit/WorkerVersioningPublishedRustWorkerTest.mjs \
+              tests/Unit/WorkerVersioningPublishedMixedWorkerTest.mjs
 
-      - name: Execute published Rust build cohorts
+      - name: Execute published Rust and mixed build cohorts
         if: ${{ always() && steps.validate.outcome == 'success' }}
         run: |
           bash scripts/conformance/worker-versioning-rust-host-published-artifacts.sh \
@@ -58,11 +72,14 @@ jobs:
         if: always()
         run: |
           docker rm -f -v "dw-wv-rust-${DW_JOB_RESOURCE_PREFIX}-runner" \
+            "dw-wv-rust-${DW_JOB_RESOURCE_PREFIX}-mixed" \
             "dw-wv-rust-${DW_JOB_RESOURCE_PREFIX}-server" \
             "dw-wv-rust-${DW_JOB_RESOURCE_PREFIX}-mysql" \
             "dw-wv-rust-${DW_JOB_RESOURCE_PREFIX}-redis" \
             "dw-wv-rust-${DW_JOB_RESOURCE_PREFIX}-node" >/dev/null 2>&1 || true
           docker network rm "dw-wv-rust-${DW_JOB_RESOURCE_PREFIX}" >/dev/null 2>&1 || true
+          bash scripts/conformance/worker-versioning-rust-host-published-artifacts.sh \
+            --cleanup "$RUNNER_TEMP/worker-versioning"
 
       - name: Retain observations
         if: always()
@@ -71,7 +88,9 @@ jobs:
           name: rust-worker-versioning-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/worker-versioning/*.json
+            ${{ runner.temp }}/worker-versioning/*.jsonl
             ${{ runner.temp }}/worker-versioning/*.log
             ${{ runner.temp }}/worker-versioning/*.lock
+            ${{ runner.temp }}/worker-versioning/*.toml
           if-no-files-found: error
           retention-days: 30

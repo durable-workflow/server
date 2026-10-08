@@ -7,14 +7,18 @@ Set `DW_RUST_SDK_VERSION` to add the managed Rust worker cases. Cargo and Rust
 must pass for the aggregate result to pass.
 
 For a focused Rust check, use the **Published Rust worker versioning** Action.
-Select an exact Server version, its immutable image digest and an exact Rust SDK
-version. It starts an isolated MySQL/Redis/Server stack, verifies the image's
-release metadata, runs the command below and removes the stack even on failure.
-Results, service logs and the consumer's Cargo lockfile are retained for 30 days.
+Select an exact Server version, its immutable image digest and exact Rust, PHP
+and Python SDK versions. It starts an isolated MySQL/Redis/Server stack, verifies
+the image's release metadata and runs both the Rust cases and four mixed build
+cohorts. It removes the stack and consumer image even on failure. Results,
+service logs, worker observations and package provenance are retained for 30 days.
 
 The same disposable topology can run on a Docker host with
 `bash scripts/conformance/worker-versioning-rust-host-published-artifacts.sh --result-dir DIR`.
 Set `DW_SERVER_VERSION`, `DW_SERVER_IMAGE` and `DW_RUST_SDK_VERSION` first.
+Add `DW_WV_MIXED_COHORTS=1`, `DW_PHP_SDK_VERSION` and `DW_PYTHON_SDK_VERSION`
+to run the mixed cases as well. The host command builds an application image
+using Composer and pip registry packages, plus the compiled Rust registry consumer.
 
 To run against your own disposable published Server stack:
 
@@ -55,6 +59,29 @@ are reaped on fixture exit. Remove the disposable stack and scratch directory
 after retaining the small result files. Do not point this experiment at a
 customer namespace or a shared production database.
 
-This Rust shard does not cover mixed PHP/Rust or Python/Rust build cohorts,
-drain/resume controls or divergent-code registration. Those remain separate
-coverage gaps in the organization conformance audit.
+## Mixed build cohorts
+
+The four cases are Rust v1/PHP v2, PHP v1/Rust v2, Rust v1/Python v2 and
+Python v1/Rust v2. Each uses two actual SDK workers with distinct build IDs.
+SDK clients start a v1 workflow, promote v2 and start a new workflow. The original
+run keeps its v1 build, while the new run uses v2. Both return their recorded
+producer label, with one side-effect record and one completion each.
+
+Before compatible delivery, the fixture holds that worker at its next SDK poll
+and lets the incompatible worker poll twice. No task may be delivered or executed.
+PHP/Python use their normal managed loops with a test transport gate and returned
+task observations. Rust uses the SDK's managed `run_once` and authored callback
+observations. Registry metadata must identify every actual worker and package.
+The result validator rejects incomplete directions, foreign delivery, changed
+run/build identity, repeated producers and duplicate completions.
+
+These cases test build routing between separately registered definitions. They do
+not claim that different language implementations can share a build identity or
+that their histories can be replayed interchangeably. Drain/resume controls,
+divergent-code registration and upgrading the Rust crate within a running cohort
+remain separate gaps in the organization conformance audit.
+
+The aggregate command also requires a passing mixed result when
+`DW_WV_MIXED_COHORTS=1` is selected. Supply the result from the focused host command
+in the aggregate result directory. Missing or invalid selected observations fail
+the aggregate check.
