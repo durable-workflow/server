@@ -88,8 +88,16 @@ async fn worker_process(args: &[String]) -> Result<()> {
     std::io::stdout().flush()?;
     for line in std::io::stdin().lock().lines() {
         let command: Value = serde_json::from_str(&line?)?;
-        let stop = command["action"] == "stop";
-        let processed = if stop {
+        let drained = command["action"] == "drained";
+        let stop = command["action"] == "stop" || drained;
+        let processed = if drained {
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                worker.run_until(std::future::pending()),
+            )
+            .await??;
+            0
+        } else if stop {
             worker.run_until(async {}).await?;
             0
         } else {
@@ -181,6 +189,19 @@ impl Process {
         )?;
         Ok(json!({"pid":pid,"signal":status.signal()}))
     }
+
+    fn drain(&mut self) -> Result<Value> {
+        use std::os::unix::process::ExitStatusExt;
+        let response = self.request("drained")?;
+        let status = self.child.wait()?;
+        require(
+            status.success() && status.signal().is_none(),
+            "drained managed worker did not exit normally",
+        )?;
+        Ok(
+            json!({"pid":self.child.id(),"exit_code":status.code(),"signal":status.signal(),"response":response}),
+        )
+    }
 }
 
 impl Drop for Process {
@@ -238,9 +259,12 @@ impl Api {
         self.request(reqwest::Method::GET, path, None).await
     }
     async fn promote(&self, queue: &str, build: &str) -> Result<Value> {
+        self.control(queue, build, "promote").await
+    }
+    async fn control(&self, queue: &str, build: &str, action: &str) -> Result<Value> {
         self.request(
             reqwest::Method::POST,
-            &format!("/api/task-queues/{queue}/build-ids/promote"),
+            &format!("/api/task-queues/{queue}/build-ids/{action}"),
             Some(json!({"build_id":build})),
         )
         .await
@@ -324,9 +348,181 @@ fn no_compatible(value: &Value) -> bool {
     value["compatibility_status"] == "no_compatible_worker"
 }
 
+fn cohort<'a>(rollout: &'a Value, build: &str) -> Result<&'a Value> {
+    rollout["build_ids"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["build_id"] == build))
+        .ok_or_else(|| "build cohort is absent from rollout visibility".into())
+}
+
+async fn qualify_drain_resume(client: &Client, api: &Api) -> Result<Value> {
+    let suffix = durable_workflow::Uuid::new_v4().simple().to_string();
+    let queue = format!("rust-drain-{suffix}");
+    let v1_build = format!("drain-v1-{suffix}");
+    let v2_build = format!("drain-v2-{suffix}");
+    let v1_id = format!("drain-worker-v1-{suffix}");
+    let v2_id = format!("drain-worker-v2-{suffix}");
+    let mut v1 = Process::start(&queue, &v1_id, &v1_build, "original-drain-v1")?;
+    let mut v2 = Process::start(&queue, &v2_id, &v2_build, "incompatible-v2")?;
+    let initial = v1.initial.clone();
+    let workers = api.get(&format!("/api/workers?task_queue={queue}")).await?;
+    api.promote(&queue, &v1_build).await?;
+    let old = client
+        .start_workflow(TYPE, &queue, &format!("rust-drained-{suffix}"), json!([]))
+        .await?;
+    let first = drive(api, &mut v1, &old, "waiting", "ready").await?;
+    require(
+        first["side_effect_calls"] == 1,
+        "drain run never executed its side-effect producer",
+    )?;
+    let promotion = api.promote(&queue, &v2_build).await?;
+    old.signal("ready", json!([])).await?;
+    let before = api
+        .get(&format!("/api/task-queues/{queue}/build-ids"))
+        .await?;
+    require(
+        cohort(&before, &v1_build)?["pending_workflow_tasks"]["ready_count"]
+            .as_u64()
+            .unwrap_or(0)
+            > 0,
+        "drain exercise has no queued runnable task",
+    )?;
+    let drain = api.control(&queue, &v1_build, "drain").await?;
+    let repeat_started = Instant::now();
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let duplicate_drain = api.control(&queue, &v1_build, "drain").await?;
+    let repeated_after_ms = repeat_started.elapsed().as_millis();
+    require(
+        drain["drain_intent"] == "draining"
+            && !drain["drained_at"].is_null()
+            && duplicate_drain["drained_at"] == drain["drained_at"],
+        "drain lost its original identity/timestamp",
+    )?;
+    let mut drained_polls = Vec::new();
+    let mut incompatible_polls = Vec::new();
+    for _ in 0..2 {
+        let poll = v1.request("poll")?;
+        require(
+            poll["processed"] == 0
+                && poll["callbacks"] == first["callbacks"]
+                && poll["side_effect_calls"] == 1,
+            "drained worker executed queued work",
+        )?;
+        drained_polls.push(poll);
+        let wrong = v2.request("poll")?;
+        require(
+            wrong["processed"] == 0,
+            "promoted incompatible worker stole drained work",
+        )?;
+        incompatible_polls.push(wrong);
+    }
+    let blocked_rollout = api
+        .get(&format!("/api/task-queues/{queue}/build-ids"))
+        .await?;
+    let blocked_entry = cohort(&blocked_rollout, &v1_build)?;
+    require(
+        blocked_entry["drain_intent"] == "draining"
+            && blocked_entry["active_worker_count"] == 0
+            && blocked_entry["draining_worker_count"] == 1
+            && blocked_entry["pending_workflow_tasks"]["ready_count"]
+                .as_u64()
+                .unwrap_or(0)
+                > 0
+            && blocked_entry["pending_workflow_tasks"]["leased_count"] == 0,
+        "drained cohort/backlog is not visible or a worker leased its task",
+    )?;
+    let blocked_show = api.show(&old).await?;
+    let blocked_history = api.history(&old).await?;
+    require(
+        blocked_show["compatibility"] == v1_build
+            && blocked_show["status"] == "waiting"
+            && event_count(&blocked_history, "SignalReceived")? == 1
+            && event_count(&blocked_history, "SignalApplied")? == 0
+            && event_count(&blocked_history, "SideEffectRecorded")? == 1
+            && event_count(&blocked_history, "WorkflowCompleted")? == 0,
+        "drain changed the run or consumed/duplicated its recorded work",
+    )?;
+    let shutdown = v1.drain()?;
+    require(
+        shutdown["response"]["side_effect_calls"] == 1
+            && shutdown["response"]["callbacks"] == first["callbacks"],
+        "managed shutdown executed the queued task",
+    )?;
+    let absent_rollout = api
+        .get(&format!("/api/task-queues/{queue}/build-ids"))
+        .await?;
+    require(
+        cohort(&absent_rollout, &v1_build)?["active_worker_count"] == 0,
+        "drained worker remained active after its normal exit",
+    )?;
+    let resume = api.control(&queue, &v1_build, "resume").await?;
+    let duplicate_resume = api.control(&queue, &v1_build, "resume").await?;
+    require(
+        resume["drain_intent"] == "active"
+            && duplicate_resume["drain_intent"] == "active"
+            && resume["drained_at"].is_null(),
+        "resume did not restore the cohort",
+    )?;
+    let resumed_rollout = api
+        .get(&format!("/api/task-queues/{queue}/build-ids"))
+        .await?;
+    require(
+        cohort(&resumed_rollout, &v1_build)?["drain_intent"] == "active"
+            && cohort(&resumed_rollout, &v1_build)?["active_worker_count"] == 0,
+        "resume hid worker absence or left the build drained",
+    )?;
+    let wrong = v2.request("poll")?;
+    require(
+        wrong["processed"] == 0,
+        "resume routed the original run to promoted v2",
+    )?;
+    incompatible_polls.push(wrong);
+    let mut replacement =
+        Process::start(&queue, &v1_id, &v1_build, "resumed-producer-must-not-run")?;
+    let replacement_initial = replacement.initial.clone();
+    require(
+        replacement_initial["pid"] != shutdown["pid"],
+        "resume did not start a new worker process",
+    )?;
+    let restored_workers = api.get(&format!("/api/workers?task_queue={queue}")).await?;
+    let resumed = drive(api, &mut replacement, &old, "waiting", "finish").await?;
+    require(
+        resumed["side_effect_calls"] == 0,
+        "resumed worker repeated the recorded producer",
+    )?;
+    for signal in ["finish", "settle"] {
+        old.signal(signal, json!([])).await?;
+    }
+    let completed = drive(api, &mut replacement, &old, "completed", "completed").await?;
+    let result = old.result(WorkflowResultOptions::default()).await?;
+    let history = api.history(&old).await?;
+    let final_show = api.show(&old).await?;
+    require(
+        result == json!({"producer":"original-drain-v1"})
+            && completed["side_effect_calls"] == 0
+            && final_show["compatibility"] == v1_build
+            && event_count(&history, "SideEffectRecorded")? == 1
+            && event_count(&history, "WorkflowCompleted")? == 1,
+        "resumed result/build or completion history changed",
+    )?;
+    replacement.stop()?;
+    v2.stop()?;
+    Ok(
+        json!({"original":identity(&old),"v1_build":v1_build,"v2_build":v2_build,
+        "v1_worker_id":v1_id,"v2_worker_id":v2_id,"workers":workers,"initial":initial,"first":first,
+        "promotion":promotion,"before":before,"drain":drain,"duplicate_drain":duplicate_drain,"repeated_after_ms":repeated_after_ms,
+        "drained_polls":drained_polls,"incompatible_polls":incompatible_polls,
+        "blocked_rollout":blocked_rollout,"blocked_show":blocked_show,"blocked_history":blocked_history,
+        "shutdown":shutdown,"absent_rollout":absent_rollout,"resume":resume,"duplicate_resume":duplicate_resume,
+        "resumed_rollout":resumed_rollout,"replacement":replacement_initial,"restored_workers":restored_workers,
+        "resumed":resumed,"completed":completed,"result":result,"history":history,"show":final_show}),
+    )
+}
+
 async fn qualify() -> Result<Value> {
     let client = client()?;
     let api = Api::new()?;
+    let drain_resume = qualify_drain_resume(&client, &api).await?;
     let suffix = durable_workflow::Uuid::new_v4().simple().to_string();
     let queue = format!("rust-build-{suffix}");
     let v1_build = format!("rust-v1-{suffix}");
@@ -504,6 +700,7 @@ async fn qualify() -> Result<Value> {
         "sdk_version":env::var("DW_RUST_SDK_VERSION")?,"worker_execution":"managed_rust_sdk_workers",
         "local_product_source_checkouts_used":false,"namespace":api.namespace,"task_queue":queue,
         "cells":{
+            "drain_resume":drain_resume,
             "registration_build_ids":{"workers":workers,"v1_build":v1_build,"v2_build":v2_build,"v1_worker_id":v1_id,"v2_worker_id":v2_id},
             "pinned_delivery_and_promotion":{"old":identity(&old),"new":identity(&new),"v1_build":v1_build,"v2_build":v2_build,"wrong_old_poll":wrong_old,"wrong_new_poll":wrong_new,"first_v1_poll":first,"new_completed":new_completed,"promotion":promotion},
             "cache_eviction_replay":{"original":identity(&old),"evictor":identity(&evictor),"eviction":eviction,"cold_replay":replay},
@@ -519,7 +716,9 @@ async fn main() -> Result<()> {
     if args.get(1).map(String::as_str) == Some("--start") {
         let queue = args.get(2).ok_or("task queue is required")?;
         let workflow_id = args.get(3).ok_or("workflow ID is required")?;
-        let handle = client()?.start_workflow(TYPE, queue, workflow_id, json!([workflow_id])).await?;
+        let handle = client()?
+            .start_workflow(TYPE, queue, workflow_id, json!([workflow_id]))
+            .await?;
         println!("{}", identity(&handle));
         return Ok(());
     }
