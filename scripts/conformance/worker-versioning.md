@@ -36,13 +36,21 @@ node scripts/conformance/worker-versioning-rust-published-workers.mjs
 
 The token must allow namespace creation through the control-plane API. This is
 an application fixture compiled against crates.io, with no SDK checkout or patch.
-It creates four short workflows across two isolated queues and registers build cohorts. Worker calls
+It creates six short workflows across three isolated queues and registers build cohorts. Worker calls
 use the SDK's `Worker` and authored workflow callbacks. API requests promote the
 build and inspect worker identities, run pins, diagnostics and durable history.
 
 ## Required outcomes
 
 - Worker registrations expose the actual Rust SDK and each build identity.
+- Two authored definitions embed their actual source through the SDK. Changed
+  or missing source identity under the same active worker ID receives the precise
+  HTTP409 refusal without overwriting its registration. A new worker ID with
+  changed code under the same build exposes a cohort definition conflict and
+  cannot consume the original run's queued task. SIGKILL and cold replacement
+  with the original definition preserve its result and complete it once. The
+  changed handler executes different waits and a different result under its own
+  build as a positive control.
 - With an original v1 signal queued and v2 promoted, draining v1 blocks both
   compatible and incompatible delivery. API state shows the drain, absent active
   workers and retained ready backlog. Repeating drain preserves its timestamp.
@@ -59,7 +67,7 @@ build and inspect worker identities, run pins, diagnostics and durable history.
   The original run and recorded result survive, with one side-effect record and
   one terminal completion. Terminal history is removed from the worker cache.
 
-The six observations are checked before a passing result is written. Missing
+The seven observations are checked before a passing result is written. Missing
 observations and command failures return a nonzero exit status. Worker processes
 are reaped on fixture exit. Remove the disposable stack and scratch directory
 after retaining the small result files. Do not point this experiment at a
@@ -83,9 +91,10 @@ run/build identity, repeated producers and duplicate completions.
 
 These cases test build routing between separately registered definitions. They do
 not claim that different language implementations can share a build identity or
-that their histories can be replayed interchangeably. Divergent-code registration
-and upgrading the Rust crate within a running cohort
-remain separate gaps in the organization conformance audit.
+that their histories can be replayed interchangeably. The Rust definition case
+tests same-language source identity and divergent-code registration separately.
+Upgrading the Rust crate within a running cohort remains an open item in the
+organization conformance audit.
 
 Draining is a routing control, not cancellation of an existing workflow. A drained
 SDK loop exits normally. Resuming its build allows compatible workers to claim

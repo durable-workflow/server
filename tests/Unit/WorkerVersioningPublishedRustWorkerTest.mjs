@@ -18,6 +18,18 @@ function observations() {
   }] });
   const workers = { workers:['v1', 'v2'].map((build, index) => ({ worker_id:`drain-w${index + 1}`,
     build_id:`drain-${build}`, runtime:'rust', sdk_version:'durable-workflow-rust/3.4.0' })) };
+  const definitionOld = { workflow_id:'definition-old', run_id:'definition-old-run' };
+  const definitionNew = { workflow_id:'definition-new', run_id:'definition-new-run' };
+  const fingerprint = `sha256:${'a'.repeat(64)}`;
+  const divergentFingerprint = `sha256:${'b'.repeat(64)}`;
+  const definitionWorker = (id, source) => ({ worker_id:id, task_queue:'definition-queue', build_id:'definition-build',
+    runtime:'rust', sdk_version:'durable-workflow-rust/3.4.0',
+    workflow_definition_fingerprints:{ 'conformance.rust-build-cohort':source } });
+  const definitionHistory = { events:[{ event_type:'WorkflowStarted', payload:{
+    workflow_definition_fingerprint:fingerprint, workflow_definition_fingerprint_source:'worker',
+  } }, { event_type:'SideEffectRecorded' }, { event_type:'SignalReceived' }] };
+  const refusal = (reason) => ({ registered:false, http_status:409,
+    response:{ reason, workflow_type:'conformance.rust-build-cohort' }, side_effect_calls:0, callbacks:[] });
   return {
     schema:'durable-workflow.conformance.rust-worker-versioning', version:1,
     outcome:'pass', sdk_version:'3.4.0', worker_execution:'managed_rust_sdk_workers',
@@ -25,6 +37,28 @@ function observations() {
     artifact_versions:{ server:'2.5.11' },
     registry_package:{ version:'3.4.0', source:'registry+https://github.com/rust-lang/crates.io-index', checksum:'a'.repeat(64) },
     cells:{
+      divergent_definition_registration:{ original:definitionOld, new:definitionNew,
+        task_queue:'definition-queue', build_id:'definition-build', changed_build:'changed-build',
+        worker_id:'definition-worker', peer_id:'changed-worker', fingerprint, divergent_fingerprint:divergentFingerprint,
+        initial:{ pid:301 }, before:{ workers:[definitionWorker('definition-worker', fingerprint)] },
+        preserved:{ workers:[definitionWorker('definition-worker', fingerprint)] },
+        peers:{ workers:[definitionWorker('definition-worker', fingerprint), definitionWorker('changed-worker', divergentFingerprint)] },
+        changed_registration:refusal('workflow_definition_changed'), missing_registration:refusal('workflow_definition_fingerprint_missing'),
+        history_before:definitionHistory, blocked_history:structuredClone(definitionHistory),
+        first:poll(definitionOld, 'ready', 1),
+        conflicts:{ build_ids:[{ build_id:'definition-build', workflow_definition_fingerprint_conflicts:[{
+          workflow_type:'conformance.rust-build-cohort', fingerprint_count:2,
+        }] }] }, incompatible_polls:[{ processed:0, side_effect_calls:0, callbacks:[] }, { processed:0, side_effect_calls:0, callbacks:[] }],
+        blocked_rollout:{ build_ids:[{ build_id:'definition-build', pending_workflow_tasks:{ ready_count:1, leased_count:0 } }] },
+        killed:{ pid:301, signal:9 }, replacement:{ pid:302, registered:true, metrics:{ entries:0, hit:0 } },
+        resumed:poll(definitionOld, 'finish', 0), completed:poll(definitionOld, 'completed', 0),
+        result:{ producer:'original-definition' }, show:{ ...definitionOld, compatibility:'definition-build', status:'completed' },
+        history:{ events:[{ event_type:'SideEffectRecorded' }, { event_type:'WorkflowCompleted' }] },
+        recovered:{ build_ids:[{ build_id:'definition-build', workflow_definition_fingerprint_conflicts:[] }] },
+        changed_first:poll(definitionNew, 'ready', 1), changed_resumed:poll(definitionNew, 'finish', 1),
+        changed_completed:poll(definitionNew, 'completed', 1), changed_result:{ producer:'divergent-definition' },
+        changed_show:{ ...definitionNew, compatibility:'changed-build', status:'completed' },
+        changed_history:{ events:[{ event_type:'SideEffectRecorded' }, { event_type:'WorkflowCompleted' }] } },
       drain_resume:{ original:drained, v1_build:'drain-v1', v2_build:'drain-v2',
         blocked_debug:{ ...drained, findings:[{ code:'workflow_build_draining', routing_status:'draining',
           required_build_id:'drain-v1', task_queue:'drain-queue', next_event:'Resume and run a worker.', expected_resolution:'Resume and start a compatible worker.' }] },
@@ -72,6 +106,24 @@ test('complete managed-worker observations pass', () => {
 });
 
 const invalid = {
+  'divergent source accepted':(r) => { r.cells.divergent_definition_registration.changed_registration.registered = true; },
+  'wrong divergent refusal reason':(r) => { r.cells.divergent_definition_registration.changed_registration.response.reason = 'other'; },
+  'omitted source accepted':(r) => { r.cells.divergent_definition_registration.missing_registration.http_status = 201; },
+  'changed registration overwrote original source':(r) => { r.cells.divergent_definition_registration.preserved.workers[0].workflow_definition_fingerprints = {}; },
+  'unbound original definition':(r) => { r.cells.divergent_definition_registration.history_before.events[0].payload.workflow_definition_fingerprint_source = 'caller'; },
+  'divergent code reused fingerprint':(r) => { r.cells.divergent_definition_registration.divergent_fingerprint = r.cells.divergent_definition_registration.fingerprint; },
+  'silent cohort definition conflict':(r) => { r.cells.divergent_definition_registration.conflicts.build_ids[0].workflow_definition_fingerprint_conflicts = []; },
+  'divergent same-build delivery':(r) => { r.cells.divergent_definition_registration.incompatible_polls[0].processed = 1; },
+  'divergent task lease':(r) => { r.cells.divergent_definition_registration.blocked_rollout.build_ids[0].pending_workflow_tasks.leased_count = 1; },
+  'original definition history mutated':(r) => { r.cells.divergent_definition_registration.blocked_history.events.push({ event_type:'WorkflowFailed' }); },
+  'definition recovery repeated producer':(r) => { r.cells.divergent_definition_registration.resumed.side_effect_calls = 1; },
+  'definition recovery reused killed process':(r) => { r.cells.divergent_definition_registration.replacement.pid = 301; },
+  'definition recovery changed run pin':(r) => { r.cells.divergent_definition_registration.show.compatibility = 'changed-build'; },
+  'definition recovery changed result':(r) => { r.cells.divergent_definition_registration.result.producer = 'divergent-definition'; },
+  'definition completion duplicated':(r) => { r.cells.divergent_definition_registration.history.events.push({ event_type:'WorkflowCompleted' }); },
+  'retired definition still conflicts':(r) => { r.cells.divergent_definition_registration.recovered.build_ids[0].workflow_definition_fingerprint_conflicts = [{}]; },
+  'changed positive control never ran':(r) => { r.cells.divergent_definition_registration.changed_completed.processed = 0; },
+  'changed positive control has original behavior':(r) => { r.cells.divergent_definition_registration.changed_result.producer = 'original-definition'; },
   'missing drain routing explanation':(r) => { r.cells.drain_resume.blocked_debug.findings = []; },
   'missing resume recovery guidance':(r) => { r.cells.drain_resume.resumed_debug.findings[0].expected_resolution = ''; },
   'routing explanation for another build':(r) => { r.cells.drain_resume.blocked_debug.findings[0].required_build_id = 'v2'; },
