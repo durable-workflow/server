@@ -2061,6 +2061,9 @@ final class WorkflowTaskPoller
                 )
                 : null,
             'run_status' => $history['run_status'] ?? null,
+            'sticky_worker_id' => $history['sticky_worker_id'] ?? $claim['sticky_worker_id'] ?? null,
+            'sticky_until' => $history['sticky_until'] ?? $claim['sticky_until'] ?? null,
+            'sticky_replay_mode' => $history['sticky_replay_mode'] ?? $claim['sticky_replay_mode'] ?? null,
             'last_history_sequence' => $history['last_history_sequence'],
             'total_history_events' => $history['total_history_events'],
             'history_size_bytes' => $history['history_size_bytes'],
