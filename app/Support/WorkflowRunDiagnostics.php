@@ -2,10 +2,12 @@
 
 namespace App\Support;
 
+use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Schema;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
@@ -88,7 +90,10 @@ class WorkflowRunDiagnostics
                 : null,
         ];
 
-        $payload['findings'] = $this->findings($payload);
+        $payload['findings'] = [
+            ...$this->findings($payload),
+            ...$this->pendingWorkflowRoutingFindings($namespace, $run, $taskRows->all(), $taskQueue),
+        ];
 
         return $payload;
     }
@@ -100,6 +105,108 @@ class WorkflowRunDiagnostics
         }
 
         return WorkflowRunSummary::query()->find($run->id);
+    }
+
+    /**
+     * Protocol compatibility describes advertised code support. Routing also
+     * requires a resumed build and an active worker that can execute this type.
+     * Inspect only runnable work from this run, never the entire queue backlog.
+     *
+     * @param  list<array<string, mixed>>  $tasks
+     * @param  array<string, mixed>|null  $taskQueue
+     * @return list<array<string, mixed>>
+     */
+    private function pendingWorkflowRoutingFindings(
+        string $namespace,
+        WorkflowRun $run,
+        array $tasks,
+        ?array $taskQueue,
+    ): array {
+        if ($run->status?->isTerminal() === true || $run->namespace !== $namespace) {
+            return [];
+        }
+
+        $findings = [];
+        $checked = [];
+        $queues = is_array($taskQueue) ? [(string) $run->queue => $taskQueue] : [];
+        $hasRollouts = Schema::hasTable((new WorkerBuildIdRollout)->getTable());
+
+        foreach ($tasks as $task) {
+            $availableAt = $task['available_at'] ?? null;
+            if (($task['status'] ?? null) !== TaskStatus::Ready->value
+                || ($task['task_missing'] ?? false) === true
+                || ($availableAt instanceof CarbonInterface && $availableAt->gt(now()))) {
+                continue;
+            }
+
+            $queue = $this->stringValue($task['queue'] ?? null) ?? $this->stringValue($run->queue);
+            $connection = $this->stringValue($task['connection'] ?? null) ?? $this->stringValue($run->connection);
+            $build = $this->stringValue($task['compatibility'] ?? null);
+            $scope = json_encode([$connection, $queue, $build], JSON_THROW_ON_ERROR);
+            if ($queue === null || isset($checked[$scope])) {
+                continue;
+            }
+            $checked[$scope] = true;
+
+            $rollout = $hasRollouts ? WorkerBuildIdRollout::query()
+                ->where('namespace', $namespace)
+                ->where('task_queue', $queue)
+                ->where('build_id', WorkerBuildIdRollout::buildIdKey($build))
+                ->first() : null;
+            $label = $build === null ? 'the unversioned build' : sprintf('build [%s]', $build);
+            $context = [
+                'severity' => 'warning',
+                'task_id' => $this->stringValue($task['id'] ?? null),
+                'task_queue' => $queue,
+                'connection' => $connection,
+                'required_build_id' => $build,
+            ];
+
+            if ($rollout?->isDraining() === true) {
+                $findings[] = [
+                    ...$context,
+                    'code' => 'workflow_build_draining',
+                    'routing_status' => 'draining',
+                    'message' => sprintf('A ready workflow task is blocked because %s on task queue [%s] is drained.', $label, $queue),
+                    'next_event' => 'Delivery can resume after the build is resumed and a compatible workflow worker is running.',
+                    'expected_resolution' => sprintf('Resume %s on task queue [%s] and start or restart a compatible workflow worker. Resume does not restart an exited process. The existing run keeps its build and history.', $label, $queue),
+                ];
+
+                continue;
+            }
+
+            // Unversioned workers retain the existing no-active-pollers finding.
+            if ($build === null) {
+                continue;
+            }
+
+            $compatibleIds = [];
+            foreach (WorkerCompatibilityFleet::detailsForNamespace($namespace, $build, $connection, $queue) as $worker) {
+                if (($worker['supports_required'] ?? false) === true) {
+                    $compatibleIds[(string) $worker['worker_id']] = true;
+                }
+            }
+            $queues[$queue] ??= $this->taskQueue($namespace, $queue);
+            $eligible = array_filter(
+                $this->activePollers($queues[$queue] ?? []),
+                fn (array $worker): bool => $this->stringValue($worker['build_id'] ?? null) === $build
+                    && isset($compatibleIds[(string) ($worker['worker_id'] ?? '')])
+                    && $this->pollerSupportsWorkflow($worker, (string) $run->workflow_type),
+            );
+
+            if ($eligible === []) {
+                $findings[] = [
+                    ...$context,
+                    'code' => 'no_eligible_workflow_worker',
+                    'routing_status' => 'no_eligible_worker',
+                    'message' => sprintf('A ready workflow task requires %s on task queue [%s], but no active compatible workflow worker can receive it.', $label, $queue),
+                    'next_event' => 'The task stays ready until a compatible workflow worker registers and polls.',
+                    'expected_resolution' => sprintf('Start or restart a workflow worker for %s, task queue [%s] and workflow type [%s]. Resuming a build does not start a worker process. Keep the existing run and its recorded history.', $label, $queue, $run->workflow_type),
+                ];
+            }
+        }
+
+        return $findings;
     }
 
     /**
