@@ -388,7 +388,10 @@ async fn qualify_drain_resume(client: &Client, api: &Api) -> Result<Value> {
         "drain exercise has no queued runnable task",
     )?;
     let drain = api.control(&queue, &v1_build, "drain").await?;
+    let repeat_started = Instant::now();
+    tokio::time::sleep(Duration::from_millis(1100)).await;
     let duplicate_drain = api.control(&queue, &v1_build, "drain").await?;
+    let repeated_after_ms = repeat_started.elapsed().as_millis();
     require(
         drain["drain_intent"] == "draining"
             && !drain["drained_at"].is_null()
@@ -507,7 +510,7 @@ async fn qualify_drain_resume(client: &Client, api: &Api) -> Result<Value> {
     Ok(
         json!({"original":identity(&old),"v1_build":v1_build,"v2_build":v2_build,
         "v1_worker_id":v1_id,"v2_worker_id":v2_id,"workers":workers,"initial":initial,"first":first,
-        "promotion":promotion,"before":before,"drain":drain,"duplicate_drain":duplicate_drain,
+        "promotion":promotion,"before":before,"drain":drain,"duplicate_drain":duplicate_drain,"repeated_after_ms":repeated_after_ms,
         "drained_polls":drained_polls,"incompatible_polls":incompatible_polls,
         "blocked_rollout":blocked_rollout,"blocked_show":blocked_show,"blocked_history":blocked_history,
         "shutdown":shutdown,"absent_rollout":absent_rollout,"resume":resume,"duplicate_resume":duplicate_resume,

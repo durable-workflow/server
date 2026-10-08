@@ -41,6 +41,7 @@ export function rustVersioningPasses(report, version) {
       || !(drainEntry(drain.before)?.pending_workflow_tasks?.ready_count > 0)
       || drain.drain?.build_id !== drain.v1_build || drain.drain.drain_intent !== 'draining'
       || !drain.drain.drained_at || drain.duplicate_drain?.drained_at !== drain.drain.drained_at
+      || !(drain.repeated_after_ms >= 1000)
       || drainEntry(drain.blocked_rollout)?.drain_intent !== 'draining'
       || drainEntry(drain.blocked_rollout)?.active_worker_count !== 0
       || drainEntry(drain.blocked_rollout)?.draining_worker_count !== 1
