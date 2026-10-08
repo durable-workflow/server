@@ -516,6 +516,13 @@ async fn qualify() -> Result<Value> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--start") {
+        let queue = args.get(2).ok_or("task queue is required")?;
+        let workflow_id = args.get(3).ok_or("workflow ID is required")?;
+        let handle = client()?.start_workflow(TYPE, queue, workflow_id, json!([workflow_id])).await?;
+        println!("{}", identity(&handle));
+        return Ok(());
+    }
     if args.get(1).map(String::as_str) == Some("--worker") {
         return worker_process(&args).await;
     }

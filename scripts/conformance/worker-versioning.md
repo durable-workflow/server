@@ -58,3 +58,6 @@ customer namespace or a shared production database.
 This Rust shard does not cover mixed PHP/Rust or Python/Rust build cohorts,
 drain/resume controls or divergent-code registration. Those remain separate
 coverage gaps in the organization conformance audit.
+
+The next increment adds the four mixed Rust/PHP and Rust/Python build-cohort
+directions with actual managed workers, SDK client starts and durable results.
