@@ -146,6 +146,15 @@ class WorkerProtocolOpenApiContractTest extends TestCase
 
     public function test_portable_worker_affinity_is_machine_described_at_protocol_1_18(): void
     {
+        $task = $this->spec['components']['schemas']['WorkflowTask'];
+        foreach (['sticky_worker_id', 'sticky_until', 'sticky_replay_mode'] as $field) {
+            $this->assertSame(['string', 'null'], $task['properties'][$field]['type']);
+            $this->assertSame('1.18', $task['properties'][$field]['x-durable-workflow-minimum-protocol-version']);
+        }
+        $this->assertSame(
+            ['cold_replay', 'sticky_hit_expected', 'forced_cold_replay', null],
+            $task['properties']['sticky_replay_mode']['enum'],
+        );
         $contract = $this->spec['x-durable-workflow-portable-worker-affinity-contract'];
         $this->assertSame('1.18', $contract['minimum_protocol_version']);
         $this->assertSame(

@@ -1374,6 +1374,19 @@ class WorkerController
 
         $task = $this->formatTaskHistoryPagination($poll['task'] ?? null);
 
+        // PHP SDKs before 2.2.0 reject the valid StartAccepted prefix when
+        // a sticky hint triggers their authoritative-history fallback.
+        // They still receive the complete, paginated history and retain the
+        // previous full-replay behavior. Routing and lease identity are intact.
+        if ($task !== null
+            && $worker->runtime === 'php'
+            && is_string($worker->sdk_version)
+            && preg_match('/^durable-workflow-php\/v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/', $worker->sdk_version, $sdkVersion) === 1
+            && version_compare($sdkVersion[1], '2.2.0', '<')
+        ) {
+            $task['sticky_replay_mode'] = null;
+        }
+
         return WorkerProtocol::json([
             'task' => $task,
             'poll_status' => is_string($poll['poll_status'] ?? null)
