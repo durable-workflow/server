@@ -25,6 +25,10 @@ Environment overrides:
   DW_CLI_VERSION             Published CLI version under test.
   DW_PYTHON_SDK_VERSION      Published PyPI durable-workflow version under test.
   DW_PHP_SDK_VERSION         Exact published durable-workflow/sdk version under test.
+  DW_RUST_SDK_VERSION        Optional exact crates.io version for managed Rust
+                             build pinning, promotion, no-compatible-worker and
+                             fresh-process replay qualification. Requires cargo
+                             and Rust 1.86+. Its result must pass when selected.
   DW_WORKFLOW_PHP_VERSION    Published durable-workflow/workflow version under test.
   DW_WATERLINE_VERSION       Published Waterline version under test.
   DW_WV_SERVER_PORT          Host port for the published server. Defaults to a free port.
@@ -1065,6 +1069,10 @@ NODE
 }
 
 run_published_worker_shard() {
+  if [[ -n "${DW_RUST_SDK_VERSION:-}" ]]; then
+    node "$script_dir/worker-versioning-rust-published-workers.mjs" >"$result_dir/published-rust-worker-shard.log" 2>&1 || true
+  fi
+
   if [[ -z "${DW_WV_PUBLISHED_WORKER_EVIDENCE:-}" ]]; then
     export DW_WV_PUBLISHED_WORKER_EVIDENCE="$result_dir/published-worker-execution-evidence.json"
   fi

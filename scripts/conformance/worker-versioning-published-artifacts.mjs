@@ -12,6 +12,7 @@ import {
   workflowTaskFailurePayload,
 } from './current-worker-protocol.mjs';
 import { isExactPythonRelease, isExactSemverRelease } from './version-identities.mjs';
+import { rustVersioningPasses } from './worker-versioning-rust-published-workers.mjs';
 
 const RESULT_SCHEMA = 'durable-workflow.v2.worker-versioning-runtime.result';
 const RECORD_SCHEMA = 'durable-workflow.v2.worker-versioning-runtime.record';
@@ -1349,6 +1350,24 @@ async function main() {
     compatibility_value: stringValue(v1RunShow.compatibility),
   });
 
+  const rustVersion = trim(process.env.DW_RUST_SDK_VERSION);
+  const rustEvidence = rustVersion
+    ? readJsonIfExists(path.join(resultDir, 'worker-versioning-rust-result.json'))
+    : null;
+  if (rustVersion) {
+    if (rustVersioningPasses(rustEvidence, rustVersion)) {
+      addPass('rust_build_cohort_execution', rustEvidence);
+      runtimeMatrix.runtimes.push('sdk-rust');
+    } else {
+      addFail('rust_build_cohort_execution', rustEvidence ?? {}, {
+        scenario_id: 'rust_build_cohort_execution',
+        owning_surface: 'conformance_harness',
+        observed_behavior: rustEvidence?.error ?? 'Selected Rust worker observations are missing or incomplete.',
+        expected_behavior: 'Published Rust workers preserve build pinning and recorded values through promotion, cache eviction, missing compatible workers and SIGKILL replacement.',
+      });
+    }
+  }
+
   const result = {
     schema: RESULT_SCHEMA,
     version: 1,
@@ -1362,6 +1381,7 @@ async function main() {
     artifact_versions: artifactVersions,
     artifact_sources: artifactSources,
     published_worker_execution_evidence: publishedWorkerEvidence,
+    ...(rustVersion ? { rust_worker_execution_evidence: rustEvidence } : {}),
     scenario_results: scenarioResults,
     findings,
     finding_links: findingLinks,
@@ -2994,6 +3014,7 @@ export function artifactVersionsFromEnv() {
     'sdk-python': trim(process.env.DW_PYTHON_SDK_VERSION),
     workflow,
     'sdk-php': sdkPhp,
+    ...(trim(process.env.DW_RUST_SDK_VERSION) ? { 'sdk-rust': trim(process.env.DW_RUST_SDK_VERSION) } : {}),
     waterline: trim(process.env.DW_WATERLINE_VERSION),
   };
 }
@@ -3006,6 +3027,7 @@ export function artifactSourcesFromEnv() {
     workflow: trim(process.env.DW_WORKFLOW_PHP_ARTIFACT_SOURCE) || 'not_exercised',
     'sdk-php': trim(process.env.DW_PHP_SDK_ARTIFACT_SOURCE) || 'not_exercised',
     waterline: trim(process.env.DW_WATERLINE_ARTIFACT_SOURCE) || 'not_exercised',
+    ...(trim(process.env.DW_RUST_SDK_VERSION) ? { 'sdk-rust': 'crates.io' } : {}),
   };
 }
 

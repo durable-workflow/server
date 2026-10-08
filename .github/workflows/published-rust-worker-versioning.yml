@@ -1,0 +1,77 @@
+name: Published Rust worker versioning
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/published-rust-worker-versioning.yml
+      - scripts/conformance/worker-versioning-rust-*
+      - scripts/conformance/worker-versioning-published-artifacts.*
+      - tests/Unit/WorkerVersioningPublishedRustWorkerTest.mjs
+  workflow_dispatch:
+    inputs:
+      server_version:
+        description: Exact published Server version
+        required: true
+        type: string
+      server_image:
+        description: Exact published Server image digest
+        required: true
+        type: string
+      rust_sdk_version:
+        description: Exact published Rust SDK version
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  published-rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      # One default artifact tuple for pull-request checks. Dispatch selects its own.
+      DW_SERVER_VERSION: ${{ inputs.server_version || '2.5.10' }}
+      DW_SERVER_IMAGE: ${{ inputs.server_image || 'durableworkflow/server@sha256:2043e097d6eb411632386b001385cb5d8145dac1e3b5b14df901ac333d81c5ec' }}
+      DW_RUST_SDK_VERSION: ${{ inputs.rust_sdk_version || '3.4.0' }}
+      DW_WV_RUNNER_COMMIT: ${{ github.sha }}
+      DW_JOB_RESOURCE_PREFIX: ${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Check result validation
+        id: validate
+        run: |
+          docker run --rm --init --user "$(id -u):$(id -g)" \
+            --volume "$PWD:/repo:ro" --workdir /repo node:22-slim \
+            node --test tests/Unit/WorkerVersioningPublishedRustWorkerTest.mjs
+
+      - name: Execute published Rust build cohorts
+        if: ${{ always() && steps.validate.outcome == 'success' }}
+        run: |
+          bash scripts/conformance/worker-versioning-rust-host-published-artifacts.sh \
+            --result-dir "$RUNNER_TEMP/worker-versioning"
+
+      - name: Remove job resources
+        if: always()
+        run: |
+          docker rm -f -v "dw-wv-rust-${DW_JOB_RESOURCE_PREFIX}-runner" \
+            "dw-wv-rust-${DW_JOB_RESOURCE_PREFIX}-server" \
+            "dw-wv-rust-${DW_JOB_RESOURCE_PREFIX}-mysql" \
+            "dw-wv-rust-${DW_JOB_RESOURCE_PREFIX}-redis" \
+            "dw-wv-rust-${DW_JOB_RESOURCE_PREFIX}-node" >/dev/null 2>&1 || true
+          docker network rm "dw-wv-rust-${DW_JOB_RESOURCE_PREFIX}" >/dev/null 2>&1 || true
+
+      - name: Retain observations
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: rust-worker-versioning-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/worker-versioning/*.json
+            ${{ runner.temp }}/worker-versioning/*.log
+            ${{ runner.temp }}/worker-versioning/*.lock
+          if-no-files-found: error
+          retention-days: 30
