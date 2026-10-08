@@ -24,7 +24,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: scheduler
-              image: durableworkflow/server:2.5.11
+              image: durableworkflow/server:2.5.12
               command: ["server-entrypoint"]
               args:
                 - sh

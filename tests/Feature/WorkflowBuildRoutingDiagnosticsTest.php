@@ -25,6 +25,8 @@ class WorkflowBuildRoutingDiagnosticsTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // RefreshDatabase resets rows while fleet throttles survive in this process.
+        WorkerCompatibilityFleet::clear();
         Queue::fake();
         $this->createNamespace('default');
         $this->configureWorkflowTypes([self::TYPE => AwaitApprovalWorkflow::class]);
