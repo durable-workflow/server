@@ -58,7 +58,10 @@ async fn worker_process(args: &[String]) -> Result<()> {
     let callback_effects = effects.clone();
     let callback_seen = seen.clone();
     if let Some(definition) = args.get(6) {
-        require(["original", "changed", "without-source"].contains(&definition.as_str()), "unknown workflow definition")?;
+        require(
+            ["original", "changed", "without-source"].contains(&definition.as_str()),
+            "unknown workflow definition",
+        )?;
         let changed = definition == "changed";
         worker.register_workflow(TYPE, move |ctx, _| {
             let effects = callback_effects.clone();
@@ -78,10 +81,13 @@ async fn worker_process(args: &[String]) -> Result<()> {
             } else {
                 include_str!("worker-versioning-rust-definition-v1.rs")
             };
-            worker.set_workflow_definition_sources(TYPE, &[source, include_str!("worker-versioning-rust-probe.rs")])?;
+            worker.set_workflow_definition_sources(
+                TYPE,
+                &[source, include_str!("worker-versioning-rust-probe.rs")],
+            )?;
         }
     } else {
-    worker.register_workflow(TYPE, move |ctx, _| {
+        worker.register_workflow(TYPE, move |ctx, _| {
         let effects = callback_effects.clone();
         let seen = callback_seen.clone();
         let producer = producer.clone();
@@ -109,9 +115,12 @@ async fn worker_process(args: &[String]) -> Result<()> {
     let registration = match worker.register().await {
         Ok(registration) => registration,
         Err(durable_workflow::Error::Http { status, body }) if args.get(6).is_some() => {
-            println!("{}", json!({"registered":false,"pid":std::process::id(),"http_status":status.as_u16(),
+            println!(
+                "{}",
+                json!({"registered":false,"pid":std::process::id(),"http_status":status.as_u16(),
                 "response":serde_json::from_str::<Value>(&body)?,"side_effect_calls":effects.load(Ordering::SeqCst),
-                "callbacks":*seen.lock().unwrap()}));
+                "callbacks":*seen.lock().unwrap()})
+            );
             return Ok(());
         }
         Err(error) => return Err(error.into()),
@@ -410,18 +419,33 @@ fn cohort<'a>(rollout: &'a Value, build: &str) -> Result<&'a Value> {
         .ok_or_else(|| "build cohort is absent from rollout visibility".into())
 }
 
-fn registration_rejection(queue: &str, worker: &str, build: &str, definition: &str) -> Result<Value> {
+fn registration_rejection(
+    queue: &str,
+    worker: &str,
+    build: &str,
+    definition: &str,
+) -> Result<Value> {
     let output = Command::new(env::current_exe()?)
         .args(["--worker", queue, worker, build, "unused", definition])
-        .stdin(Stdio::null()).stderr(Stdio::inherit()).output()?;
-    require(output.status.success(), "registration attempt failed without an HTTP observation")?;
+        .stdin(Stdio::null())
+        .stderr(Stdio::inherit())
+        .output()?;
+    require(
+        output.status.success(),
+        "registration attempt failed without an HTTP observation",
+    )?;
     let observation: Value = serde_json::from_slice(&output.stdout)?;
-    require(observation["registered"] == false, "unsafe definition registration was accepted")?;
+    require(
+        observation["registered"] == false,
+        "unsafe definition registration was accepted",
+    )?;
     Ok(observation)
 }
 
 fn worker_row<'a>(snapshot: &'a Value, id: &str) -> Result<&'a Value> {
-    snapshot["workers"].as_array().and_then(|rows| rows.iter().find(|row| row["worker_id"] == id))
+    snapshot["workers"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["worker_id"] == id))
         .ok_or_else(|| "worker registration missing from public snapshot".into())
 }
 
@@ -434,46 +458,92 @@ async fn qualify_definition_registration(client: &Client, api: &Api) -> Result<V
     let mut original = Process::definition(&queue, &worker_id, &build, "original")?;
     let initial = original.initial.clone();
     let before = api.get(&format!("/api/workers?task_queue={queue}")).await?;
-    let fingerprint = worker_row(&before, &worker_id)?["workflow_definition_fingerprints"][TYPE].clone();
-    require(fingerprint.as_str().is_some_and(|value| value.starts_with("sha256:")), "SDK did not advertise embedded source identity")?;
+    let fingerprint =
+        worker_row(&before, &worker_id)?["workflow_definition_fingerprints"][TYPE].clone();
+    require(
+        fingerprint
+            .as_str()
+            .is_some_and(|value| value.starts_with("sha256:")),
+        "SDK did not advertise embedded source identity",
+    )?;
     api.promote(&queue, &build).await?;
-    let old = client.start_workflow(TYPE, &queue, &format!("rust-definition-old-{suffix}"), json!([])).await?;
+    let old = client
+        .start_workflow(
+            TYPE,
+            &queue,
+            &format!("rust-definition-old-{suffix}"),
+            json!([]),
+        )
+        .await?;
     let first = drive(api, &mut original, &old, "waiting", "ready").await?;
     old.signal("ready", json!([])).await?;
     let history_before = api.history(&old).await?;
     let changed = registration_rejection(&queue, &worker_id, &build, "changed")?;
     let missing = registration_rejection(&queue, &worker_id, &build, "without-source")?;
-    for (response, reason) in [(&changed, "workflow_definition_changed"), (&missing, "workflow_definition_fingerprint_missing")] {
-        require(response["http_status"] == 409 && response["response"]["reason"] == reason
-            && response["response"]["workflow_type"] == TYPE && response["side_effect_calls"] == 0
-            && response["callbacks"] == json!([]), "registration refusal lacked the precise SDK-visible reason or executed code")?;
+    for (response, reason) in [
+        (&changed, "workflow_definition_changed"),
+        (&missing, "workflow_definition_fingerprint_missing"),
+    ] {
+        require(
+            response["http_status"] == 409
+                && response["response"]["reason"] == reason
+                && response["response"]["workflow_type"] == TYPE
+                && response["side_effect_calls"] == 0
+                && response["callbacks"] == json!([]),
+            "registration refusal lacked the precise SDK-visible reason or executed code",
+        )?;
     }
     let preserved = api.get(&format!("/api/workers?task_queue={queue}")).await?;
-    require(worker_row(&preserved, &worker_id)?["workflow_definition_fingerprints"][TYPE] == fingerprint,
-        "rejected registration overwrote the original fingerprint")?;
+    require(
+        worker_row(&preserved, &worker_id)?["workflow_definition_fingerprints"][TYPE]
+            == fingerprint,
+        "rejected registration overwrote the original fingerprint",
+    )?;
 
     // A new process identity can register different code. The cohort conflict
     // must be inspectable and the old run must still refuse its task delivery.
     let mut divergent = Process::definition(&queue, &peer_id, &build, "changed")?;
     let peers = api.get(&format!("/api/workers?task_queue={queue}")).await?;
-    let divergent_fingerprint = worker_row(&peers, &peer_id)?["workflow_definition_fingerprints"][TYPE].clone();
-    require(divergent_fingerprint != fingerprint && !divergent_fingerprint.is_null(), "divergent source reused the original fingerprint")?;
-    let conflicts = api.get(&format!("/api/task-queues/{queue}/build-ids")).await?;
-    require(cohort(&conflicts, &build)?["workflow_definition_fingerprint_conflicts"].as_array()
-        .is_some_and(|rows| rows.iter().any(|row| row["workflow_type"] == TYPE && row["fingerprint_count"] == 2)),
-        "same-build divergent definitions had no public conflict diagnostic")?;
+    let divergent_fingerprint =
+        worker_row(&peers, &peer_id)?["workflow_definition_fingerprints"][TYPE].clone();
+    require(
+        divergent_fingerprint != fingerprint && !divergent_fingerprint.is_null(),
+        "divergent source reused the original fingerprint",
+    )?;
+    let conflicts = api
+        .get(&format!("/api/task-queues/{queue}/build-ids"))
+        .await?;
+    require(
+        cohort(&conflicts, &build)?["workflow_definition_fingerprint_conflicts"]
+            .as_array()
+            .is_some_and(|rows| {
+                rows.iter()
+                    .any(|row| row["workflow_type"] == TYPE && row["fingerprint_count"] == 2)
+            }),
+        "same-build divergent definitions had no public conflict diagnostic",
+    )?;
     let mut incompatible_polls = Vec::new();
     for _ in 0..2 {
         let poll = divergent.request("poll")?;
-        require(poll["processed"] == 0 && poll["side_effect_calls"] == 0 && poll["callbacks"] == json!([]),
-            "divergent same-build worker acquired the original task")?;
+        require(
+            poll["processed"] == 0
+                && poll["side_effect_calls"] == 0
+                && poll["callbacks"] == json!([]),
+            "divergent same-build worker acquired the original task",
+        )?;
         incompatible_polls.push(poll);
     }
-    let blocked_rollout = api.get(&format!("/api/task-queues/{queue}/build-ids")).await?;
+    let blocked_rollout = api
+        .get(&format!("/api/task-queues/{queue}/build-ids"))
+        .await?;
     let blocked_history = api.history(&old).await?;
     let pending = &cohort(&blocked_rollout, &build)?["pending_workflow_tasks"];
-    require(pending["ready_count"].as_u64().unwrap_or(0) > 0 && pending["leased_count"] == 0
-        && blocked_history == history_before, "divergent polls changed the original history or consumed its ready task")?;
+    require(
+        pending["ready_count"].as_u64().unwrap_or(0) > 0
+            && pending["leased_count"] == 0
+            && blocked_history == history_before,
+        "divergent polls changed the original history or consumed its ready task",
+    )?;
     divergent.stop()?;
     let killed = original.kill()?;
     let mut replacement = Process::definition(&queue, &worker_id, &build, "original")?;
@@ -484,20 +554,36 @@ async fn qualify_definition_registration(client: &Client, api: &Api) -> Result<V
     let result = old.result(WorkflowResultOptions::default()).await?;
     let history = api.history(&old).await?;
     let show = api.show(&old).await?;
-    let recovered = api.get(&format!("/api/task-queues/{queue}/build-ids")).await?;
-    require(result == json!({"producer":"original-definition"}) && resumed["side_effect_calls"] == 0
-        && completed["side_effect_calls"] == 0 && show["compatibility"] == build
-        && event_count(&history, "SideEffectRecorded")? == 1 && event_count(&history, "WorkflowCompleted")? == 1,
-        "safe cold recovery changed the original result/pin or repeated durable work")?;
-    require(cohort(&recovered, &build)?["workflow_definition_fingerprint_conflicts"] == json!([]),
-        "retired divergent worker still contributed a conflict")?;
+    let recovered = api
+        .get(&format!("/api/task-queues/{queue}/build-ids"))
+        .await?;
+    require(
+        result == json!({"producer":"original-definition"})
+            && resumed["side_effect_calls"] == 0
+            && completed["side_effect_calls"] == 0
+            && show["compatibility"] == build
+            && event_count(&history, "SideEffectRecorded")? == 1
+            && event_count(&history, "WorkflowCompleted")? == 1,
+        "safe cold recovery changed the original result/pin or repeated durable work",
+    )?;
+    require(
+        cohort(&recovered, &build)?["workflow_definition_fingerprint_conflicts"] == json!([]),
+        "retired divergent worker still contributed a conflict",
+    )?;
     replacement.stop()?;
 
     // Positive control executes the changed handler under its own build.
     let changed_build = format!("changed-build-{suffix}");
     let mut changed_worker = Process::definition(&queue, &peer_id, &changed_build, "changed")?;
     api.promote(&queue, &changed_build).await?;
-    let new = client.start_workflow(TYPE, &queue, &format!("rust-definition-new-{suffix}"), json!([])).await?;
+    let new = client
+        .start_workflow(
+            TYPE,
+            &queue,
+            &format!("rust-definition-new-{suffix}"),
+            json!([]),
+        )
+        .await?;
     let changed_first = drive(api, &mut changed_worker, &new, "waiting", "ready").await?;
     new.signal("settle", json!([])).await?;
     let changed_resumed = drive(api, &mut changed_worker, &new, "waiting", "finish").await?;
@@ -506,11 +592,16 @@ async fn qualify_definition_registration(client: &Client, api: &Api) -> Result<V
     let changed_result = new.result(WorkflowResultOptions::default()).await?;
     let changed_history = api.history(&new).await?;
     let changed_show = api.show(&new).await?;
-    require(changed_result == json!({"producer":"divergent-definition"}) && changed_show["compatibility"] == changed_build
-        && event_count(&changed_history, "SideEffectRecorded")? == 1 && event_count(&changed_history, "WorkflowCompleted")? == 1,
-        "positive control never executed distinct workflow semantics")?;
+    require(
+        changed_result == json!({"producer":"divergent-definition"})
+            && changed_show["compatibility"] == changed_build
+            && event_count(&changed_history, "SideEffectRecorded")? == 1
+            && event_count(&changed_history, "WorkflowCompleted")? == 1,
+        "positive control never executed distinct workflow semantics",
+    )?;
     changed_worker.stop()?;
-    Ok(json!({"original":identity(&old),"new":identity(&new),"task_queue":queue,"build_id":build,
+    Ok(
+        json!({"original":identity(&old),"new":identity(&new),"task_queue":queue,"build_id":build,
         "worker_id":worker_id,"peer_id":peer_id,"changed_build":changed_build,
         "fingerprint":fingerprint,"divergent_fingerprint":divergent_fingerprint,"initial":initial,
         "before":before,"first":first,"history_before":history_before,"changed_registration":changed,
@@ -519,7 +610,8 @@ async fn qualify_definition_registration(client: &Client, api: &Api) -> Result<V
         "killed":killed,"replacement":replacement_initial,"resumed":resumed,"completed":completed,
         "result":result,"history":history,"show":show,"recovered":recovered,"changed_first":changed_first,
         "changed_resumed":changed_resumed,"changed_completed":changed_completed,"changed_result":changed_result,
-        "changed_history":changed_history,"changed_show":changed_show}))
+        "changed_history":changed_history,"changed_show":changed_show}),
+    )
 }
 
 async fn qualify_drain_resume(client: &Client, api: &Api) -> Result<Value> {

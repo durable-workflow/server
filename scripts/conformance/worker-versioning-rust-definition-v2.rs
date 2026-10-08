@@ -1,7 +1,14 @@
 use durable_workflow::{json, Value, WorkflowContext};
-use std::sync::{atomic::{AtomicUsize, Ordering}, Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc, Mutex,
+};
 
-pub async fn execute(ctx: WorkflowContext, effects: Arc<AtomicUsize>, seen: Arc<Mutex<Vec<Value>>>) -> durable_workflow::Result<Value> {
+pub async fn execute(
+    ctx: WorkflowContext,
+    effects: Arc<AtomicUsize>,
+    seen: Arc<Mutex<Vec<Value>>>,
+) -> durable_workflow::Result<Value> {
     let identity = ctx.workflow_identity()?;
     let recorded = ctx.side_effect(|| {
         effects.fetch_add(1, Ordering::SeqCst);
