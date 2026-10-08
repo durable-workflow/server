@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "48"
+  version: "49"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -1866,6 +1866,20 @@ components:
         workflow_task_attempt: { type: integer, minimum: 1 }
         lease_owner: { type: string, minLength: 1 }
         lease_expires_at: { type: string, format: date-time }
+        sticky_worker_id:
+          type: [string, "null"]
+          description: Process identity holding this run's optional sticky affinity.
+          x-durable-workflow-minimum-protocol-version: "1.18"
+        sticky_until:
+          type: [string, "null"]
+          format: date-time
+          description: Affinity expiry. Cache loss before expiry still requires cold replay.
+          x-durable-workflow-minimum-protocol-version: "1.18"
+        sticky_replay_mode:
+          type: [string, "null"]
+          enum: [cold_replay, sticky_hit_expected, forced_cold_replay, null]
+          description: Authoritative mode for the current lease. A warm hint requires a valid local prefix.
+          x-durable-workflow-minimum-protocol-version: "1.18"
         history_events: { type: array, items: { $ref: "#/components/schemas/WorkerHistoryEvent" } }
         cancellation_request:
           $ref: "#/components/schemas/CooperativeCancellationRequest"

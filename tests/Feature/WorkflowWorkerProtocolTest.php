@@ -25,6 +25,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
+use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowChildCall;
@@ -1024,7 +1025,11 @@ class WorkflowWorkerProtocolTest extends TestCase
             'worker_id' => 'php-sticky-worker',
             'task_queue' => 'portable-affinity',
             'build_id' => 'build-a',
-        ])->assertOk();
+            'history_page_size' => 1,
+        ])->assertOk()
+            ->assertJsonPath('task.sticky_worker_id', null)
+            ->assertJsonPath('task.sticky_until', null)
+            ->assertJsonPath('task.sticky_replay_mode', StickyExecution::MODE_COLD_REPLAY);
         $taskId = (string) $poll->json('task.task_id');
 
         $this->withHeaders($this->workerHeaders())
@@ -1053,6 +1058,42 @@ class WorkflowWorkerProtocolTest extends TestCase
                 ->firstOrFail()
                 ->process_metrics['sticky_cache'],
         );
+
+        $timer = WorkflowTask::query()->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Timer)->firstOrFail();
+        $this->travel(6)->seconds();
+        $this->app->call([new RunTimerTask($timer->id), 'handle']);
+        $body = [
+            'worker_id' => 'php-sticky-worker',
+            'task_queue' => 'portable-affinity',
+            'build_id' => 'build-a',
+            'history_page_size' => 1,
+            'poll_request_id' => 'sticky-warm-poll',
+        ];
+        $warm = $this->withHeaders($this->workerHeaders())->postJson('/api/worker/workflow-tasks/poll', $body)
+            ->assertOk()
+            ->assertJsonPath('task.sticky_worker_id', 'php-sticky-worker')
+            ->assertJsonPath('task.sticky_replay_mode', StickyExecution::MODE_STICKY_HIT_EXPECTED);
+        $this->assertNotNull($warm->json('task.sticky_until'));
+        $this->assertNotNull($warm->json('task.next_history_page_token'));
+        $this->withHeaders($this->workerHeaders())->postJson('/api/worker/workflow-tasks/poll', $body)
+            ->assertOk()
+            ->assertJsonPath('task.task_id', $warm->json('task.task_id'))
+            ->assertJsonPath('task.workflow_task_attempt', $warm->json('task.workflow_task_attempt'))
+            ->assertJsonPath('task.sticky_worker_id', 'php-sticky-worker')
+            ->assertJsonPath('task.sticky_until', $warm->json('task.sticky_until'))
+            ->assertJsonPath('task.sticky_replay_mode', StickyExecution::MODE_STICKY_HIT_EXPECTED);
+
+        // Losing the holder lease and affinity TTL keeps the original durable run.
+        WorkflowTask::query()->whereKey($warm->json('task.task_id'))->update([
+            'status' => TaskStatus::Ready, 'lease_owner' => null, 'lease_expires_at' => null,
+            'sticky_until' => now()->subSecond(),
+        ]);
+        $body['poll_request_id'] = 'sticky-expired-poll';
+        $this->withHeaders($this->workerHeaders())->postJson('/api/worker/workflow-tasks/poll', $body)
+            ->assertOk()
+            ->assertJsonPath('task.run_id', $runId)
+            ->assertJsonPath('task.sticky_replay_mode', StickyExecution::MODE_FORCED_COLD_REPLAY);
     }
 
     public function test_worker_heartbeat_is_scoped_to_the_resolved_namespace(): void
