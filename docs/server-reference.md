@@ -648,6 +648,19 @@ endpoint to load a page starting at the event. A missing reference reports
 `recent_failures_truncated` indicates that more than ten failure records exist.
 These references load event metadata without decoding the complete run history.
 
+For a ready workflow task, debug findings also explain delivery eligibility.
+`workflow_build_draining` identifies the required drained build and queue.
+Resume that build and start or restart a compatible workflow worker. Resume
+permits delivery but does not restart an exited process.
+`no_eligible_workflow_worker` means the task is ready but no active worker with
+a live matching compatibility heartbeat advertises its build and workflow type
+on that queue. Start a matching worker and let it register and poll. Keep the
+existing run, build pin and recorded history. Each finding includes
+`routing_status`, `required_build_id`, `task_queue`, `next_event` and
+`expected_resolution`. Protocol compatibility fields continue to describe code
+support. Work not yet due, an ordinary wait without a ready task and terminal
+runs do not produce these routing findings.
+
 The candidate cooperative-cancellation runtime adds `cancellation_cascade_supported`
 and `cancellation_cascade` to both debug responses. A supported runtime returns
 `null` when the selected run has no cooperative request. An older installed

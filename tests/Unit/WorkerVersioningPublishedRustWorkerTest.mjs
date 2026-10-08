@@ -12,7 +12,7 @@ function observations() {
   });
   const firstDrainPoll = { ...poll(drained, 'ready', 1), pid:201 };
   const held = { ...firstDrainPoll, processed:0 };
-  const rollout = (intent, active, draining) => ({ build_ids:[{
+  const rollout = (intent, active, draining) => ({ task_queue:'drain-queue', build_ids:[{
     build_id:'drain-v1', drain_intent:intent, active_worker_count:active, draining_worker_count:draining,
     pending_workflow_tasks:{ ready_count:1, leased_count:0 },
   }] });
@@ -22,9 +22,15 @@ function observations() {
     schema:'durable-workflow.conformance.rust-worker-versioning', version:1,
     outcome:'pass', sdk_version:'3.4.0', worker_execution:'managed_rust_sdk_workers',
     local_product_source_checkouts_used:false,
+    artifact_versions:{ server:'2.5.11' },
     registry_package:{ version:'3.4.0', source:'registry+https://github.com/rust-lang/crates.io-index', checksum:'a'.repeat(64) },
     cells:{
       drain_resume:{ original:drained, v1_build:'drain-v1', v2_build:'drain-v2',
+        blocked_debug:{ ...drained, findings:[{ code:'workflow_build_draining', routing_status:'draining',
+          required_build_id:'drain-v1', task_queue:'drain-queue', next_event:'Resume and run a worker.', expected_resolution:'Resume and start a compatible worker.' }] },
+        resumed_debug:{ ...drained, findings:[{ code:'no_eligible_workflow_worker', routing_status:'no_eligible_worker',
+          required_build_id:'drain-v1', task_queue:'drain-queue', next_event:'Worker registers and polls.', expected_resolution:'Start a compatible worker.' }] },
+        recovered_debug:{ ...drained, findings:[] }, completed_debug:{ ...drained, findings:[] },
         v1_worker_id:'drain-w1', v2_worker_id:'drain-w2', workers, restored_workers:workers,
         initial:{ pid:201 }, first:firstDrainPoll, before:rollout('active', 1, 0),
         promotion:{ build_id:'drain-v2', new_start_selected:true },
@@ -66,6 +72,12 @@ test('complete managed-worker observations pass', () => {
 });
 
 const invalid = {
+  'missing drain routing explanation':(r) => { r.cells.drain_resume.blocked_debug.findings = []; },
+  'missing resume recovery guidance':(r) => { r.cells.drain_resume.resumed_debug.findings[0].expected_resolution = ''; },
+  'routing explanation for another build':(r) => { r.cells.drain_resume.blocked_debug.findings[0].required_build_id = 'v2'; },
+  'routing explanation for another run':(r) => { r.cells.drain_resume.resumed_debug.run_id = 'other-run'; },
+  'recovery still reported routing blocked':(r) => { r.cells.drain_resume.recovered_debug.findings = r.cells.drain_resume.resumed_debug.findings; },
+  'terminal run still reported drained':(r) => { r.cells.drain_resume.completed_debug.findings = r.cells.drain_resume.blocked_debug.findings; },
   'wrong promoted peer during drain':(r) => { r.cells.drain_resume.promotion.build_id = 'drain-v1'; },
   'empty queue during drain':(r) => { r.cells.drain_resume.before.build_ids[0].pending_workflow_tasks.ready_count = 0; },
   'drained task claimed':(r) => { r.cells.drain_resume.drained_polls[0].processed = 1; },
