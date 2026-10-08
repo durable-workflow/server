@@ -57,7 +57,7 @@ jobs:
       - name: Remove job resources
         if: always()
         run: |
-          docker rm -f "dw-wv-rust-${DW_JOB_RESOURCE_PREFIX}-runner" \
+          docker rm -f -v "dw-wv-rust-${DW_JOB_RESOURCE_PREFIX}-runner" \
             "dw-wv-rust-${DW_JOB_RESOURCE_PREFIX}-server" \
             "dw-wv-rust-${DW_JOB_RESOURCE_PREFIX}-mysql" \
             "dw-wv-rust-${DW_JOB_RESOURCE_PREFIX}-redis" \

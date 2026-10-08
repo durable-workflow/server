@@ -21,7 +21,7 @@ cleanup() {
   for role in server mysql redis; do
     docker logs "$resource-$role" > "$result_dir/$role.log" 2>&1 || true
   done
-  docker rm -f "$resource-runner" "$resource-server" "$resource-mysql" "$resource-redis" "$resource-node" >/dev/null 2>&1 || true
+  docker rm -f -v "$resource-runner" "$resource-server" "$resource-mysql" "$resource-redis" "$resource-node" >/dev/null 2>&1 || true
   docker network rm "$resource" >/dev/null 2>&1 || true
   exit "$status"
 }
