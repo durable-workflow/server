@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 
 const requiredCells = ['registration_build_ids', 'pinned_delivery_and_promotion',
-  'cache_eviction_replay', 'no_compatible_worker', 'sigkill_cold_replay'];
+  'cache_eviction_replay', 'no_compatible_worker', 'sigkill_cold_replay', 'drain_resume'];
 
 // Check the observations, not just a caller-supplied pass label.
 export function rustVersioningPasses(report, version) {
@@ -21,6 +21,7 @@ export function rustVersioningPasses(report, version) {
   const cells = report.cells;
   const pin = cells.pinned_delivery_and_promotion;
   const cold = cells.sigkill_cold_replay;
+  const drain = cells.drain_resume;
   const original = pin.old;
   const sameRun = (value) => value?.workflow_id === original?.workflow_id
     && value?.run_id === original?.run_id;
@@ -29,6 +30,54 @@ export function rustVersioningPasses(report, version) {
     && poll.callbacks.at(-1).run_id === identity?.run_id
     && poll.callbacks.at(-1).boundary === boundary;
   const registration = cells.registration_build_ids;
+  const drainRun = drain.original;
+  const drainEntry = (snapshot) => snapshot?.build_ids?.find((row) => row.build_id === drain.v1_build);
+  const signalCount = (snapshot, type) => snapshot?.events?.filter((event) => event.event_type === type).length;
+  if (!drainRun?.workflow_id || !drainRun.run_id || !drain.v1_build || !drain.v2_build
+      || drain.v1_build === drain.v2_build || !deliveredAt(drain.first, drainRun, 'ready')
+      || drain.first.side_effect_calls !== 1 || !Number.isInteger(drain.initial?.pid)
+      || drain.initial.pid <= 0 || drain.first.pid !== drain.initial.pid
+      || !(drainEntry(drain.before)?.pending_workflow_tasks?.ready_count > 0)
+      || drain.drain?.build_id !== drain.v1_build || drain.drain.drain_intent !== 'draining'
+      || !drain.drain.drained_at || drain.duplicate_drain?.drained_at !== drain.drain.drained_at
+      || drainEntry(drain.blocked_rollout)?.drain_intent !== 'draining'
+      || drainEntry(drain.blocked_rollout)?.active_worker_count !== 0
+      || drainEntry(drain.blocked_rollout)?.draining_worker_count !== 1
+      || !(drainEntry(drain.blocked_rollout)?.pending_workflow_tasks?.ready_count > 0)
+      || drainEntry(drain.blocked_rollout)?.pending_workflow_tasks?.leased_count !== 0
+      || drain.blocked_show?.run_id !== drainRun.run_id || drain.blocked_show?.compatibility !== drain.v1_build
+      || drain.blocked_show?.status !== 'waiting' || signalCount(drain.blocked_history, 'SignalReceived') !== 1
+      || signalCount(drain.blocked_history, 'SignalApplied') !== 0
+      || signalCount(drain.blocked_history, 'SideEffectRecorded') !== 1
+      || signalCount(drain.blocked_history, 'WorkflowCompleted') !== 0
+      || !Array.isArray(drain.drained_polls) || drain.drained_polls.length < 2
+      || !drain.drained_polls.every((poll) => poll.processed === 0 && poll.pid === drain.initial.pid
+        && poll.side_effect_calls === 1 && JSON.stringify(poll.callbacks) === JSON.stringify(drain.first.callbacks))
+      || !Array.isArray(drain.incompatible_polls) || drain.incompatible_polls.length < 3
+      || !drain.incompatible_polls.every((poll) => poll.processed === 0)
+      || drain.shutdown?.pid !== drain.initial.pid || drain.shutdown.exit_code !== 0 || drain.shutdown.signal !== null
+      || drain.shutdown.response?.processed !== 0 || drain.shutdown.response?.side_effect_calls !== 1
+      || JSON.stringify(drain.shutdown.response.callbacks) !== JSON.stringify(drain.first.callbacks)
+      || drainEntry(drain.absent_rollout)?.active_worker_count !== 0
+      || drain.resume?.build_id !== drain.v1_build || drain.resume.drain_intent !== 'active'
+      || drain.resume.drained_at !== null || drain.duplicate_resume?.drain_intent !== 'active'
+      || drainEntry(drain.resumed_rollout)?.drain_intent !== 'active'
+      || drainEntry(drain.resumed_rollout)?.active_worker_count !== 0
+      || !Number.isInteger(drain.replacement?.pid) || drain.replacement.pid <= 0
+      || drain.replacement.pid === drain.shutdown.pid || drain.replacement.metrics?.entries !== 0
+      || drain.replacement.metrics?.hit !== 0 || drain.resumed?.pid !== drain.replacement.pid
+      || !deliveredAt(drain.resumed, drainRun, 'finish') || drain.resumed.side_effect_calls !== 0
+      || !deliveredAt(drain.completed, drainRun, 'completed') || drain.completed.side_effect_calls !== 0
+      || drain.show?.run_id !== drainRun.run_id || drain.show?.compatibility !== drain.v1_build
+      || drain.show?.status !== 'completed' || drain.result?.producer !== 'original-drain-v1'
+      || signalCount(drain.history, 'SideEffectRecorded') !== 1
+      || signalCount(drain.history, 'WorkflowCompleted') !== 1) return false;
+  if (!['v1', 'v2'].every((cohort) => drain.workers?.workers?.some((worker) =>
+    worker.worker_id === drain[`${cohort}_worker_id`] && worker.build_id === drain[`${cohort}_build`]
+    && worker.runtime === 'rust' && worker.sdk_version === `durable-workflow-rust/${version}`))
+    || !drain.restored_workers?.workers?.some((worker) => worker.worker_id === drain.v1_worker_id
+      && worker.build_id === drain.v1_build && worker.runtime === 'rust'
+      && worker.sdk_version === `durable-workflow-rust/${version}`)) return false;
   if (registration.v1_build !== pin.v1_build || registration.v2_build !== pin.v2_build
       || !Array.isArray(registration.workers?.workers)
       || !['v1', 'v2'].every((cohort) => registration.workers.workers.some((worker) =>
