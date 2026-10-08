@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends php-cli php-cur
 COPY --from=composer /usr/bin/composer /usr/bin/composer
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 RUN mkdir -p /opt/php /opt/python && cd /opt/php \
-    && composer require --no-dev --no-scripts --no-plugins --no-interaction --no-progress "durable-workflow/sdk:${PHP_SDK_VERSION}" \
+    && composer require --update-no-dev --no-scripts --no-plugins --no-interaction --no-progress "durable-workflow/sdk:${PHP_SDK_VERSION}" \
     && pip install --no-cache-dir --report /opt/python/install-report.json "durable-workflow==${PYTHON_SDK_VERSION}"
 COPY worker-versioning-rust-probe /fixtures/worker-versioning-rust-probe
 COPY worker-versioning-mixed-* /fixtures/
