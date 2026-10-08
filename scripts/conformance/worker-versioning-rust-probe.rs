@@ -291,6 +291,14 @@ impl Api {
         ))
         .await
     }
+    async fn debug(&self, handle: &WorkflowHandle) -> Result<Value> {
+        self.get(&format!(
+            "/api/workflows/{}/runs/{}/debug",
+            handle.workflow_id,
+            handle.run_id.as_deref().ok_or("missing SDK run ID")?
+        ))
+        .await
+    }
 }
 
 async fn drive(
@@ -432,6 +440,7 @@ async fn qualify_drain_resume(client: &Client, api: &Api) -> Result<Value> {
         "drained cohort/backlog is not visible or a worker leased its task",
     )?;
     let blocked_show = api.show(&old).await?;
+    let blocked_debug = api.debug(&old).await?;
     let blocked_history = api.history(&old).await?;
     require(
         blocked_show["compatibility"] == v1_build
@@ -466,6 +475,7 @@ async fn qualify_drain_resume(client: &Client, api: &Api) -> Result<Value> {
     let resumed_rollout = api
         .get(&format!("/api/task-queues/{queue}/build-ids"))
         .await?;
+    let resumed_debug = api.debug(&old).await?;
     require(
         cohort(&resumed_rollout, &v1_build)?["drain_intent"] == "active"
             && cohort(&resumed_rollout, &v1_build)?["active_worker_count"] == 0,
@@ -486,6 +496,7 @@ async fn qualify_drain_resume(client: &Client, api: &Api) -> Result<Value> {
     )?;
     let restored_workers = api.get(&format!("/api/workers?task_queue={queue}")).await?;
     let resumed = drive(api, &mut replacement, &old, "waiting", "finish").await?;
+    let recovered_debug = api.debug(&old).await?;
     require(
         resumed["side_effect_calls"] == 0,
         "resumed worker repeated the recorded producer",
@@ -497,6 +508,7 @@ async fn qualify_drain_resume(client: &Client, api: &Api) -> Result<Value> {
     let result = old.result(WorkflowResultOptions::default()).await?;
     let history = api.history(&old).await?;
     let final_show = api.show(&old).await?;
+    let completed_debug = api.debug(&old).await?;
     require(
         result == json!({"producer":"original-drain-v1"})
             && completed["side_effect_calls"] == 0
@@ -512,9 +524,10 @@ async fn qualify_drain_resume(client: &Client, api: &Api) -> Result<Value> {
         "v1_worker_id":v1_id,"v2_worker_id":v2_id,"workers":workers,"initial":initial,"first":first,
         "promotion":promotion,"before":before,"drain":drain,"duplicate_drain":duplicate_drain,"repeated_after_ms":repeated_after_ms,
         "drained_polls":drained_polls,"incompatible_polls":incompatible_polls,
-        "blocked_rollout":blocked_rollout,"blocked_show":blocked_show,"blocked_history":blocked_history,
+        "blocked_rollout":blocked_rollout,"blocked_show":blocked_show,"blocked_history":blocked_history,"blocked_debug":blocked_debug,
         "shutdown":shutdown,"absent_rollout":absent_rollout,"resume":resume,"duplicate_resume":duplicate_resume,
-        "resumed_rollout":resumed_rollout,"replacement":replacement_initial,"restored_workers":restored_workers,
+        "resumed_rollout":resumed_rollout,"resumed_debug":resumed_debug,"recovered_debug":recovered_debug,"completed_debug":completed_debug,
+        "replacement":replacement_initial,"restored_workers":restored_workers,
         "resumed":resumed,"completed":completed,"result":result,"history":history,"show":final_show}),
     )
 }

@@ -31,6 +31,22 @@ export function rustVersioningPasses(report, version) {
     && poll.callbacks.at(-1).boundary === boundary;
   const registration = cells.registration_build_ids;
   const drainRun = drain.original;
+  const serverParts = report.artifact_versions?.server?.match(/^(\d+)\.(\d+)\.(\d+)$/)?.slice(1).map(Number);
+  const needsRoutingDiagnostics = serverParts && (serverParts[0] > 2
+    || (serverParts[0] === 2 && (serverParts[1] > 5 || (serverParts[1] === 5 && serverParts[2] >= 11))));
+  if (needsRoutingDiagnostics) {
+    const sameDrainRun = (debug) => debug?.workflow_id === drainRun?.workflow_id && debug?.run_id === drainRun?.run_id;
+    const diagnostic = (debug, code, status) => sameDrainRun(debug)
+      && debug?.findings?.some((finding) => finding.code === code && finding.routing_status === status
+        && finding.required_build_id === drain.v1_build && finding.task_queue === drain.before?.task_queue
+        && typeof finding.next_event === 'string' && finding.next_event.length > 0
+        && typeof finding.expected_resolution === 'string' && finding.expected_resolution.length > 0);
+    const recovered = (debug) => sameDrainRun(debug) && Array.isArray(debug?.findings)
+      && !debug.findings.some((finding) => ['workflow_build_draining', 'no_eligible_workflow_worker'].includes(finding.code));
+    if (!diagnostic(drain.blocked_debug, 'workflow_build_draining', 'draining')
+      || !diagnostic(drain.resumed_debug, 'no_eligible_workflow_worker', 'no_eligible_worker')
+      || !recovered(drain.recovered_debug) || !recovered(drain.completed_debug)) return false;
+  }
   const drainEntry = (snapshot) => snapshot?.build_ids?.find((row) => row.build_id === drain.v1_build);
   const signalCount = (snapshot, type) => snapshot?.events?.filter((event) => event.event_type === type).length;
   if (!drainRun?.workflow_id || !drainRun.run_id || !drain.v1_build || !drain.v2_build
@@ -182,13 +198,13 @@ async function main() {
   const report = JSON.parse(fs.readFileSync(resultPath, 'utf8'));
   report.registry_package = { version, source:sdk[0].source, checksum,
     url:`https://crates.io/api/v1/crates/durable-workflow/${version}/download` };
+  report.artifact_versions = { server:process.env.DW_SERVER_VERSION ?? null, 'sdk-rust':version };
   if (!rustVersioningPasses(report, version)) throw new Error('Rust observations do not prove the selected six cells');
   fs.copyFileSync(path.join(root, 'Cargo.lock'), path.join(resultDir, 'worker-versioning-rust-Cargo.lock'));
   report.runner_commit = process.env.GITHUB_SHA ?? process.env.DW_WV_RUNNER_COMMIT ?? null;
   report.fixture_sha256 = createHash('sha256').update(fs.readFileSync(path.join(root, 'src/main.rs'))).digest('hex');
   report.started_at = startedAt;
   report.finished_at = new Date().toISOString();
-  report.artifact_versions = { server:process.env.DW_SERVER_VERSION ?? null, 'sdk-rust':version };
   report.artifact_sources = { server:process.env.DW_SERVER_IMAGE ?? process.env.DW_WV_SERVER_URL,
     'sdk-rust':report.registry_package.url };
   fs.writeFileSync(resultPath, `${JSON.stringify(report, null, 2)}\n`);

@@ -167,7 +167,7 @@ class WorkflowRunDiagnostics
                     ...$context,
                     'code' => 'workflow_build_draining',
                     'routing_status' => 'draining',
-                    'message' => sprintf('A ready workflow task is blocked because %s on task queue [%s] is drained.', $label, $queue),
+                    'message' => sprintf('A ready workflow task is blocked because %s on task queue [%s] is drained. Resume the build and start a compatible workflow worker. Resume does not restart an exited process.', $label, $queue),
                     'next_event' => 'Delivery can resume after the build is resumed and a compatible workflow worker is running.',
                     'expected_resolution' => sprintf('Resume %s on task queue [%s] and start or restart a compatible workflow worker. Resume does not restart an exited process. The existing run keeps its build and history.', $label, $queue),
                 ];
@@ -199,7 +199,7 @@ class WorkflowRunDiagnostics
                     ...$context,
                     'code' => 'no_eligible_workflow_worker',
                     'routing_status' => 'no_eligible_worker',
-                    'message' => sprintf('A ready workflow task requires %s on task queue [%s], but no active compatible workflow worker can receive it.', $label, $queue),
+                    'message' => sprintf('A ready workflow task requires %s on task queue [%s], but no active compatible workflow worker can receive it. Start or restart a worker for this build and workflow type.', $label, $queue),
                     'next_event' => 'The task stays ready until a compatible workflow worker registers and polls.',
                     'expected_resolution' => sprintf('Start or restart a workflow worker for %s, task queue [%s] and workflow type [%s]. Resuming a build does not start a worker process. Keep the existing run and its recorded history.', $label, $queue, $run->workflow_type),
                 ];

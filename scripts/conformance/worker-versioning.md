@@ -92,6 +92,11 @@ SDK loop exits normally. Resuming its build allows compatible workers to claim
 again, but does not restart an exited process. The drain case checks this absence
 explicitly before starting a fresh worker, then verifies original run/build
 identity, queued signal delivery, the recorded result and one terminal completion.
+For published Server 2.5.11 and later, the same case also requires run debug
+findings for the drained build and the absent eligible worker after resume,
+including safe recovery guidance. Those findings must disappear after compatible
+recovery and completion. Earlier Server tuples retain the routing and recovery
+checks without claiming these newer diagnostic fields.
 
 The aggregate command also requires a passing mixed result when
 `DW_WV_MIXED_COHORTS=1` is selected. Supply the result from the focused host command

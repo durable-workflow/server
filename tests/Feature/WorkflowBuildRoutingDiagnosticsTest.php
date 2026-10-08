@@ -90,7 +90,11 @@ class WorkflowBuildRoutingDiagnosticsTest extends TestCase
         $this->registerWorker('candidate', $queue, $namespace, supportedWorkflowTypes: $types);
         WorkerRegistration::query()->where('worker_id', 'candidate')->update([
             'build_id' => $build,
-            'status' => $case === 'draining status' ? 'draining' : 'active',
+            'status' => match ($case) {
+                'draining status' => 'draining',
+                'superseded status' => WorkerRegistration::STATUS_SUPERSEDED,
+                default => 'active',
+            },
             'last_heartbeat_at' => $case === 'stale registration' ? now()->subSeconds(121) : now(),
         ]);
         config(['server.workers.stale_after_seconds' => 120, 'workflows.v2.compatibility.heartbeat_ttl_seconds' => 30]);
@@ -111,7 +115,7 @@ class WorkflowBuildRoutingDiagnosticsTest extends TestCase
     public static function ineligibleWorkers(): array
     {
         return array_map(static fn (string $case): array => [$case], [
-            'draining status', 'stale registration', 'other namespace', 'other queue',
+            'draining status', 'superseded status', 'stale registration', 'other namespace', 'other queue',
             'other build', 'unsupported workflow type', 'other connection', 'expired compatibility heartbeat',
         ]);
     }
@@ -135,6 +139,27 @@ class WorkflowBuildRoutingDiagnosticsTest extends TestCase
         $this->postJson('/api/task-queues/diagnostic-queue/build-ids/drain', ['build_id' => 'v1'], $this->apiHeaders('other'))->assertOk();
         $this->postJson('/api/task-queues/other-queue/build-ids/drain', ['build_id' => 'v1'], $this->apiHeaders())->assertOk();
         $this->assertNoRoutingFinding();
+    }
+
+    public function test_terminal_runs_do_not_report_remaining_ready_tasks_as_routing_blocked(): void
+    {
+        [$run] = $this->startPinnedRun();
+        $this->postJson('/api/task-queues/diagnostic-queue/build-ids/drain', ['build_id' => 'v1'], $this->apiHeaders())->assertOk();
+        $run->forceFill(['status' => RunStatus::Completed, 'closed_at' => now()])->save();
+        $this->assertNoRoutingFinding();
+    }
+
+    public function test_an_unversioned_build_drain_has_an_explicit_recovery_finding(): void
+    {
+        $this->registerWorker('unversioned', 'diagnostic-queue', supportedWorkflowTypes: [self::TYPE]);
+        $this->postJson('/api/workflows', [
+            'workflow_id' => 'routing-diagnostic', 'workflow_type' => self::TYPE,
+            'task_queue' => 'diagnostic-queue',
+        ], $this->apiHeaders())->assertCreated();
+        $this->postJson('/api/task-queues/diagnostic-queue/build-ids/drain', ['build_id' => null], $this->apiHeaders())->assertOk();
+        $finding = $this->routingFinding('workflow_build_draining');
+        self::assertNull($finding['required_build_id']);
+        self::assertStringContainsString('the unversioned build', $finding['message']);
     }
 
     private function startPinnedRun(): array
