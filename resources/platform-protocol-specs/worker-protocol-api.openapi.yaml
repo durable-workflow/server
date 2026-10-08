@@ -1878,7 +1878,11 @@ components:
         sticky_replay_mode:
           type: [string, "null"]
           enum: [cold_replay, sticky_hit_expected, forced_cold_replay, null]
-          description: Authoritative mode for the current lease. A warm hint requires a valid local prefix.
+          description: >-
+            Authoritative mode for the current lease. A warm hint requires a valid
+            local prefix. PHP SDKs before 2.2.0 receive null to preserve full replay
+            because their sticky fallback rejects a valid StartAccepted prefix.
+            History, pagination, affinity routing and lease identity are unchanged.
           x-durable-workflow-minimum-protocol-version: "1.18"
         history_events: { type: array, items: { $ref: "#/components/schemas/WorkerHistoryEvent" } }
         cancellation_request:
