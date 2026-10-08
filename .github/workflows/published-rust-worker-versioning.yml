@@ -41,8 +41,8 @@ jobs:
     timeout-minutes: 25
     env:
       # One default artifact tuple for pull-request checks. Dispatch selects its own.
-      DW_SERVER_VERSION: ${{ inputs.server_version || '2.5.10' }}
-      DW_SERVER_IMAGE: ${{ inputs.server_image || 'durableworkflow/server@sha256:2043e097d6eb411632386b001385cb5d8145dac1e3b5b14df901ac333d81c5ec' }}
+      DW_SERVER_VERSION: ${{ inputs.server_version || '2.5.11' }}
+      DW_SERVER_IMAGE: ${{ inputs.server_image || 'durableworkflow/server@sha256:ef1ec35808419da8929d3a334ccb44e7a9fbecf26e6768b5826e1b689768c4d5' }}
       DW_RUST_SDK_VERSION: ${{ inputs.rust_sdk_version || '3.4.0' }}
       DW_PHP_SDK_VERSION: ${{ inputs.php_sdk_version || '2.2.4' }}
       DW_PYTHON_SDK_VERSION: ${{ inputs.python_sdk_version || '2.5.0' }}
