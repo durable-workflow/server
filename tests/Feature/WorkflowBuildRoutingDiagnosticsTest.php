@@ -46,7 +46,7 @@ class WorkflowBuildRoutingDiagnosticsTest extends TestCase
         self::assertStringContainsString('Resume does not restart an exited process', $finding['expected_resolution']);
         $this->postJson('/api/worker/workflow-tasks/poll', [
             'worker_id' => 'diagnostic-v1', 'task_queue' => 'diagnostic-queue', 'build_id' => 'v1',
-        ], $this->workerHeaders())->assertOk()->assertJsonPath('poll_status', 'draining');
+        ], $this->workerHeaders())->assertStatus(409)->assertJsonPath('poll_status', 'draining');
 
         $this->deleteJson('/api/workers/diagnostic-v1', [], $this->apiHeaders())->assertOk();
         $this->routingFinding('workflow_build_draining');
