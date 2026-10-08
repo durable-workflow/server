@@ -12,7 +12,7 @@ pub async fn execute(
     let identity = ctx.workflow_identity()?;
     let recorded = ctx.side_effect(|| {
         effects.fetch_add(1, Ordering::SeqCst);
-        "original-definition"
+        "original-definition".to_owned()
     })?;
     let observe = |boundary| {
         seen.lock().unwrap().push(json!({"workflow_id":identity.workflow_id,"run_id":identity.run_id,"recorded":recorded,"boundary":boundary}));
