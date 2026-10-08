@@ -71,8 +71,69 @@ function definitionRegistrationPasses(cell, version) {
     && count(cell.changed_history, 'SideEffectRecorded') === 1 && count(cell.changed_history, 'WorkflowCompleted') === 1;
 }
 
+function sdkUpgradePasses(report, version, previousVersion) {
+  const cell = report.cells?.sdk_crate_upgrade;
+  const artifacts = report.upgrade_artifacts;
+  const source = 'registry+https://github.com/rust-lang/crates.io-index';
+  const sha = (value) => /^[a-f0-9]{64}$/.test(value ?? '');
+  if (!cell?.original?.workflow_id || !cell.original.run_id || !cell.worker_id || !cell.task_queue
+      || report.previous_sdk_version !== previousVersion || previousVersion === version
+      || artifacts?.previous?.registry_package?.version !== previousVersion
+      || artifacts?.current?.registry_package?.version !== version
+      || ![artifacts.previous, artifacts.current].every((artifact) =>
+        artifact.registry_package.source === source && sha(artifact.registry_package.checksum)
+        && sha(artifact.binary_sha256) && ['worker-versioning-rust-upgrade-worker.rs',
+          'worker-versioning-rust-definition-v1.rs'].every((file) => sha(artifact.source_sha256?.[file])))
+      || artifacts.current.registry_package.checksum !== report.registry_package.checksum
+      || artifacts.current.binary_sha256 === artifacts.previous.binary_sha256
+      || JSON.stringify(artifacts.current.source_sha256) !== JSON.stringify(artifacts.previous.source_sha256)
+      || !/^sha256:[a-f0-9]{64}$/.test(cell.fingerprint ?? '')) return false;
+  const sdk = (selected) => `durable-workflow-rust/${selected}`;
+  const worker = (snapshot, selected) => snapshot?.workers?.some((row) => row.worker_id === cell.worker_id
+    && row.task_queue === cell.task_queue && row.build_id === null && row.runtime === 'rust'
+    && row.sdk_version === sdk(selected)
+    && row.workflow_definition_fingerprints?.['conformance.rust-sdk-upgrade'] === cell.fingerprint);
+  const initial = (receipt, selected) => receipt?.registered === true && receipt.sdk_version === sdk(selected)
+    && Number.isInteger(receipt.pid) && receipt.pid > 0 && receipt.side_effect_calls === 0
+    && Array.isArray(receipt.callbacks) && receipt.callbacks.length === 0;
+  const delivered = (poll, receipt, boundary, effects) => poll?.processed > 0 && poll.pid === receipt.pid
+    && poll.sdk_version === receipt.sdk_version && poll.side_effect_calls === effects
+    && poll.callbacks?.at(-1)?.workflow_id === cell.original.workflow_id
+    && poll.callbacks.at(-1).run_id === cell.original.run_id && poll.callbacks.at(-1).boundary === boundary;
+  const count = (history, event) => history?.events?.filter((row) => row.event_type === event).length;
+  const prefix = (before, after) => Array.isArray(before?.events) && Array.isArray(after?.events)
+    && before.events.length <= after.events.length
+    && JSON.stringify(before.events) === JSON.stringify(after.events.slice(0, before.events.length));
+  const started = cell.history_before?.events?.find((row) => row.event_type === 'WorkflowStarted');
+  const pending = cell.pending?.build_ids?.find((row) => row.build_id === null)?.pending_workflow_tasks;
+  return cell.original.client === true && cell.original.sdk_version === sdk(previousVersion)
+    && worker(cell.before, previousVersion) && worker(cell.after, version) && worker(cell.final_workers, version)
+    && initial(cell.initial, previousVersion) && delivered(cell.first, cell.initial, 'ready', 1)
+    && started?.payload?.workflow_definition_fingerprint === cell.fingerprint
+    && started.payload.workflow_definition_fingerprint_source === 'worker'
+    && count(cell.history_before, 'SideEffectRecorded') === 1 && count(cell.history_before, 'WorkflowCompleted') === 0
+    && cell.killed?.pid === cell.initial.pid && cell.killed.signal === 9
+    && pending?.ready_count > 0 && pending.leased_count === 0
+    && prefix(cell.history_before, cell.pending_history)
+    && count(cell.pending_history, 'SignalReceived') === 1 && count(cell.pending_history, 'SignalApplied') === 0
+    && initial(cell.successor, version) && cell.successor.pid !== cell.initial.pid
+    && delivered(cell.resumed, cell.successor, 'finish', 0)
+    && prefix(cell.pending_history, cell.upgraded_history)
+    && count(cell.upgraded_history, 'SignalApplied') === 1 && count(cell.upgraded_history, 'WorkflowCompleted') === 0
+    && cell.successor_killed?.pid === cell.successor.pid && cell.successor_killed.signal === 9
+    && initial(cell.replacement, version) && cell.replacement.pid !== cell.successor.pid
+    && cell.replacement.pid !== cell.initial.pid && delivered(cell.completed, cell.replacement, 'completed', 0)
+    && cell.result?.workflow_id === cell.original.workflow_id && cell.result.run_id === cell.original.run_id
+    && cell.result.sdk_version === sdk(previousVersion) && cell.result.result?.producer === 'original-definition'
+    && cell.show?.workflow_id === cell.original.workflow_id && cell.show.run_id === cell.original.run_id
+    && cell.show.status === 'completed' && cell.show.compatibility === null
+    && prefix(cell.upgraded_history, cell.history) && count(cell.history, 'WorkflowStarted') === 1
+    && count(cell.history, 'SideEffectRecorded') === 1 && count(cell.history, 'WorkflowCompleted') === 1
+    && count(cell.history, 'SignalReceived') === 2 && count(cell.history, 'SignalApplied') === 2;
+}
+
 // Check the observations, not just a caller-supplied pass label.
-export function rustVersioningPasses(report, version) {
+export function rustVersioningPasses(report, version, previousVersion = null) {
   if (report?.schema !== 'durable-workflow.conformance.rust-worker-versioning'
       || report.version !== 1 || report.outcome !== 'pass' || report.sdk_version !== version
       || report.worker_execution !== 'managed_rust_sdk_workers'
@@ -82,6 +143,9 @@ export function rustVersioningPasses(report, version) {
       || !/^[a-f0-9]{64}$/.test(report.registry_package.checksum ?? '')
       || !requiredCells.every((cell) => report.cells?.[cell])) return false;
   const cells = report.cells;
+  if (previousVersion || report.previous_sdk_version) {
+    if (!sdkUpgradePasses(report, version, previousVersion ?? report.previous_sdk_version)) return false;
+  }
   if (!definitionRegistrationPasses(cells.divergent_definition_registration, version)) return false;
   const pin = cells.pinned_delivery_and_promotion;
   const cold = cells.sigkill_cold_replay;
@@ -213,6 +277,41 @@ function run(command, args, log, options = {}) {
   return result.stdout;
 }
 
+function compileUpgradeWorker(version, root, resultDir, label) {
+  fs.mkdirSync(path.join(root, 'src'), { recursive:true });
+  const sources = ['worker-versioning-rust-upgrade-worker.rs', 'worker-versioning-rust-definition-v1.rs'];
+  for (const filename of sources) fs.copyFileSync(new URL(`./${filename}`, import.meta.url), path.join(root, 'src', filename));
+  fs.writeFileSync(path.join(root, 'src/main.rs'), fs.readFileSync(path.join(root, 'src/worker-versioning-rust-upgrade-worker.rs')));
+  const manifest = path.join(root, 'Cargo.toml');
+  fs.writeFileSync(manifest, `[package]\nname = "worker-versioning-rust-upgrade-worker"\nversion = "0.0.0"\nedition = "2021"\nrust-version = "1.86"\n[dependencies]\ndurable-workflow = "=${version}"\nserde_json = "1"\ntokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }\n[profile.dev]\ndebug = 0\nincremental = false\n`);
+  const prefix = `worker-versioning-rust-upgrade-${label}`;
+  const metadata = JSON.parse(run('cargo', ['metadata', '--format-version', '1', '--manifest-path', manifest], path.join(resultDir, `${prefix}-metadata.log`)));
+  const packages = metadata.packages.filter((pkg) => pkg.name === 'durable-workflow');
+  if (packages.length !== 1 || packages[0].version !== version || packages[0].source !== 'registry+https://github.com/rust-lang/crates.io-index') {
+    throw new Error(`${label} SDK must resolve from its exact registry package`);
+  }
+  run('cargo', ['build', '--locked', '--manifest-path', manifest, '--message-format=json'], path.join(resultDir, `${prefix}-build.log`));
+  const messages = fs.readFileSync(path.join(resultDir, `${prefix}-build.log`), 'utf8').split('\n').flatMap((line) => {
+    try { return [JSON.parse(line)]; } catch { return []; }
+  });
+  const executable = messages.find((message) => message.reason === 'compiler-artifact'
+    && message.target?.name === 'worker-versioning-rust-upgrade-worker' && message.executable)?.executable;
+  if (!executable) throw new Error(`${label} upgrade worker executable is missing`);
+  const binary = path.join(root, 'compiled-worker');
+  fs.copyFileSync(executable, binary);
+  fs.chmodSync(binary, 0o755);
+  const lock = fs.readFileSync(path.join(root, 'Cargo.lock'), 'utf8');
+  const sdkLock = lock.split('[[package]]').find((block) => /^name = "durable-workflow"$/m.test(block));
+  const checksum = sdkLock?.match(/^checksum = "([a-f0-9]{64})"$/m)?.[1];
+  if (!checksum || !sdkLock.includes(`version = "${version}"`)) throw new Error(`${label} registry checksum missing`);
+  fs.copyFileSync(path.join(root, 'Cargo.lock'), path.join(resultDir, `${prefix}-Cargo.lock`));
+  fs.copyFileSync(manifest, path.join(resultDir, `${prefix}-Cargo.toml`));
+  return { binary, evidence:{ registry_package:{ version, source:packages[0].source, checksum },
+    source_sha256:Object.fromEntries(sources.map((filename) => [filename,
+      createHash('sha256').update(fs.readFileSync(path.join(root, 'src', filename))).digest('hex')])),
+    binary_sha256:createHash('sha256').update(fs.readFileSync(binary)).digest('hex') } };
+}
+
 async function main() {
   const startedAt = new Date().toISOString();
   const version = process.env.DW_RUST_SDK_VERSION ?? '';
@@ -253,6 +352,18 @@ async function main() {
   const sdkLock = lock.split('[[package]]').find((block) => /^name = "durable-workflow"$/m.test(block));
   const checksum = sdkLock?.match(/^checksum = "([a-f0-9]{64})"$/m)?.[1];
   if (!checksum || !sdkLock.includes(`version = "${version}"`)) throw new Error('Registry crate checksum is missing');
+  const previousVersion = process.env.DW_RUST_SDK_PREVIOUS_VERSION ?? '';
+  let upgradeArtifacts;
+  if (previousVersion) {
+    if (!/^\d+\.\d+\.\d+$/.test(previousVersion) || previousVersion === version) {
+      throw new Error('Previous Rust SDK must be a distinct exact stable registry version');
+    }
+    const current = compileUpgradeWorker(version, path.join(root, 'upgrade-current'), resultDir, 'current');
+    const previous = compileUpgradeWorker(previousVersion, path.join(root, 'upgrade-previous'), resultDir, 'previous');
+    process.env.DW_WV_RUST_CURRENT_WORKER = current.binary;
+    process.env.DW_WV_RUST_PREVIOUS_WORKER = previous.binary;
+    upgradeArtifacts = { current:current.evidence, previous:previous.evidence };
+  }
   const namespace = await fetch(`${process.env.DW_WV_SERVER_URL.replace(/\/+$/, '')}/api/namespaces`, {
     method:'POST', signal:AbortSignal.timeout(10000),
     headers:{ 'Content-Type':'application/json', Accept:'application/json',
@@ -267,7 +378,11 @@ async function main() {
   report.registry_package = { version, source:sdk[0].source, checksum,
     url:`https://crates.io/api/v1/crates/durable-workflow/${version}/download` };
   report.artifact_versions = { server:process.env.DW_SERVER_VERSION ?? null, 'sdk-rust':version };
-  if (!rustVersioningPasses(report, version)) throw new Error('Rust observations do not prove the selected seven cells');
+  if (previousVersion) {
+    report.previous_sdk_version = previousVersion;
+    report.upgrade_artifacts = upgradeArtifacts;
+  }
+  if (!rustVersioningPasses(report, version, previousVersion || null)) throw new Error('Rust observations do not prove the selected routing, recovery and upgrade cells');
   fs.copyFileSync(path.join(root, 'Cargo.lock'), path.join(resultDir, 'worker-versioning-rust-Cargo.lock'));
   report.runner_commit = process.env.GITHUB_SHA ?? process.env.DW_WV_RUNNER_COMMIT ?? null;
   report.fixture_sha256 = createHash('sha256').update(fs.readFileSync(path.join(root, 'src/worker-versioning-rust-probe.rs'))).digest('hex');

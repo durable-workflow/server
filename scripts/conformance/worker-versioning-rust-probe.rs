@@ -183,8 +183,23 @@ impl Process {
     }
 
     fn start_args(args: &[&str]) -> Result<Self> {
-        let mut child = Command::new(env::current_exe()?)
-            .args(args)
+        let mut command = Command::new(env::current_exe()?);
+        command.args(args);
+        let process = Self::spawn(command)?;
+        require(process.initial["registered"] == true
+            && process.initial["metrics"]["entries"] == 0 && process.initial["metrics"]["hit"] == 0,
+            "replacement cache must start empty")?;
+        Ok(process)
+    }
+
+    fn upgrade(binary: &str, mode: &str, queue: &str, id: &str) -> Result<Self> {
+        let mut command = Command::new(binary);
+        command.args([mode, queue, id]);
+        Self::spawn(command)
+    }
+
+    fn spawn(mut command: Command) -> Result<Self> {
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -199,13 +214,9 @@ impl Process {
         };
         process.initial = process.read()?;
         require(
-            process.initial["registered"] == true
+            (process.initial["registered"] == true || process.initial["client"] == true)
                 && process.initial["pid"].as_u64() == Some(process.child.id() as u64),
-            "worker did not register in its actual process",
-        )?;
-        require(
-            process.initial["metrics"]["entries"] == 0 && process.initial["metrics"]["hit"] == 0,
-            "replacement cache must start empty",
+            "SDK process did not acknowledge its actual identity",
         )?;
         Ok(process)
     }
@@ -447,6 +458,73 @@ fn worker_row<'a>(snapshot: &'a Value, id: &str) -> Result<&'a Value> {
         .as_array()
         .and_then(|rows| rows.iter().find(|row| row["worker_id"] == id))
         .ok_or_else(|| "worker registration missing from public snapshot".into())
+}
+
+async fn drive_upgrade(api: &Api, process: &mut Process, original: &Value, status: &str, boundary: &str) -> Result<Value> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let observation = process.request("poll")?;
+        let show = api.get(&format!("/api/workflows/{}/runs/{}",
+            original["workflow_id"].as_str().ok_or("original workflow ID missing")?,
+            original["run_id"].as_str().ok_or("original run ID missing")?)).await?;
+        let delivered = observation["processed"].as_u64().unwrap_or(0) > 0
+            && observation["callbacks"].as_array().and_then(|rows| rows.last()).is_some_and(|row|
+                row["workflow_id"] == original["workflow_id"] && row["run_id"] == original["run_id"]
+                && row["boundary"] == boundary);
+        if delivered && show["status"] == status { return Ok(observation); }
+        require(Instant::now() < deadline, &format!("upgrade did not reach {boundary}: {show}"))?;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+async fn qualify_sdk_upgrade(client: &Client, api: &Api) -> Result<Option<Value>> {
+    let Ok(previous_binary) = env::var("DW_WV_RUST_PREVIOUS_WORKER") else { return Ok(None); };
+    let current_binary = env::var("DW_WV_RUST_CURRENT_WORKER")?;
+    let suffix = durable_workflow::Uuid::new_v4().simple().to_string();
+    let queue = format!("rust-sdk-upgrade-{suffix}");
+    let worker_id = format!("upgrade-worker-{suffix}");
+    let workflow_id = format!("rust-upgrade-{suffix}");
+    let mut previous = Process::upgrade(&previous_binary, "--worker", &queue, &worker_id)?;
+    let initial = previous.initial.clone();
+    let before = api.get(&format!("/api/workers?task_queue={queue}")).await?;
+    let fingerprint = worker_row(&before, &worker_id)?["workflow_definition_fingerprints"]["conformance.rust-sdk-upgrade"].clone();
+    let mut old_client = Process::upgrade(&previous_binary, "--client", &queue, &workflow_id)?;
+    let original = old_client.initial.clone();
+    let run_id = original["run_id"].as_str().ok_or("older SDK did not return a run ID")?;
+    let run_path = format!("/api/workflows/{workflow_id}/runs/{run_id}");
+    let first = drive_upgrade(api, &mut previous, &original, "waiting", "ready").await?;
+    let history_before = api.get(&format!("{run_path}/history")).await?;
+    let killed = previous.kill()?;
+    client.signal_workflow_run(&workflow_id, run_id, "ready", json!([])).await?;
+    let pending = api.get(&format!("/api/task-queues/{queue}/build-ids")).await?;
+    let pending_history = api.get(&format!("{run_path}/history")).await?;
+    let mut successor = Process::upgrade(&current_binary, "--worker", &queue, &worker_id)?;
+    let successor_initial = successor.initial.clone();
+    let after = api.get(&format!("/api/workers?task_queue={queue}")).await?;
+    let resumed = drive_upgrade(api, &mut successor, &original, "waiting", "finish").await?;
+    let upgraded_history = api.get(&format!("{run_path}/history")).await?;
+    let successor_killed = successor.kill()?;
+    client.signal_workflow_run(&workflow_id, run_id, "finish", json!([])).await?;
+    let mut replacement = Process::upgrade(&current_binary, "--worker", &queue, &worker_id)?;
+    let replacement_initial = replacement.initial.clone();
+    let completed = drive_upgrade(api, &mut replacement, &original, "completed", "completed").await?;
+    let result = old_client.request("result")?;
+    let history = api.get(&format!("{run_path}/history")).await?;
+    let show = api.get(&run_path).await?;
+    let final_workers = api.get(&format!("/api/workers?task_queue={queue}")).await?;
+    require(result["result"] == json!({"producer":"original-definition"})
+        && resumed["side_effect_calls"] == 0 && completed["side_effect_calls"] == 0
+        && show["run_id"] == run_id && show["compatibility"].is_null()
+        && event_count(&history, "SideEffectRecorded")? == 1 && event_count(&history, "WorkflowCompleted")? == 1,
+        "SDK upgrade changed the original result/pin or repeated durable work")?;
+    replacement.stop()?;
+    old_client.stop()?;
+    Ok(Some(json!({"original":original,"task_queue":queue,"worker_id":worker_id,"fingerprint":fingerprint,
+        "initial":initial,"before":before,"first":first,"history_before":history_before,"killed":killed,
+        "pending":pending,"pending_history":pending_history,"successor":successor_initial,"after":after,
+        "resumed":resumed,"upgraded_history":upgraded_history,"successor_killed":successor_killed,
+        "replacement":replacement_initial,"completed":completed,"result":result,"history":history,
+        "show":show,"final_workers":final_workers})))
 }
 
 async fn qualify_definition_registration(client: &Client, api: &Api) -> Result<Value> {
@@ -786,6 +864,7 @@ async fn qualify_drain_resume(client: &Client, api: &Api) -> Result<Value> {
 async fn qualify() -> Result<Value> {
     let client = client()?;
     let api = Api::new()?;
+    let sdk_upgrade = qualify_sdk_upgrade(&client, &api).await?;
     let definition_registration = qualify_definition_registration(&client, &api).await?;
     let drain_resume = qualify_drain_resume(&client, &api).await?;
     let suffix = durable_workflow::Uuid::new_v4().simple().to_string();
@@ -965,6 +1044,7 @@ async fn qualify() -> Result<Value> {
         "sdk_version":env::var("DW_RUST_SDK_VERSION")?,"worker_execution":"managed_rust_sdk_workers",
         "local_product_source_checkouts_used":false,"namespace":api.namespace,"task_queue":queue,
         "cells":{
+            "sdk_crate_upgrade":sdk_upgrade,
             "divergent_definition_registration":definition_registration,
             "drain_resume":drain_resume,
             "registration_build_ids":{"workers":workers,"v1_build":v1_build,"v2_build":v2_build,"v1_worker_id":v1_id,"v2_worker_id":v2_id},

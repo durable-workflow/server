@@ -8,6 +8,10 @@ fi
 for variable in DW_SERVER_VERSION DW_RUST_SDK_VERSION; do
   [[ "${!variable:-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
 done
+if [[ -n "${DW_RUST_SDK_PREVIOUS_VERSION:-}" ]]; then
+  [[ "$DW_RUST_SDK_PREVIOUS_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+  [[ "$DW_RUST_SDK_PREVIOUS_VERSION" != "$DW_RUST_SDK_VERSION" ]]
+fi
 if [[ "${DW_WV_MIXED_COHORTS:-0}" == 1 ]]; then
   for variable in DW_PHP_SDK_VERSION DW_PYTHON_SDK_VERSION; do
     [[ "${!variable:-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
@@ -71,7 +75,7 @@ docker run --rm --init --user "$(id -u):$(id -g)" \
   --name "$resource-runner" --network "$resource" --cpus=2 --memory=2g \
   --volume "$repo_root:/repo:ro" --volume "$result_dir:/result" \
   -e CARGO_HOME=/result/cargo -e CARGO_TARGET_DIR=/result/target -e CARGO_BUILD_JOBS=2 \
-  -e DW_SERVER_VERSION -e DW_SERVER_IMAGE -e DW_RUST_SDK_VERSION -e DW_WV_RUNNER_COMMIT \
+  -e DW_SERVER_VERSION -e DW_SERVER_IMAGE -e DW_RUST_SDK_VERSION -e DW_RUST_SDK_PREVIOUS_VERSION -e DW_WV_RUNNER_COMMIT \
   -e DW_WV_NAMESPACE="${DW_WV_NAMESPACE:-rust-worker-versioning}" \
   -e DW_WV_SERVER_URL="http://$resource-server:8080" \
   -e DW_WV_RESULT_DIR=/result -e DW_WV_RUN_ROOT=/result/run \
