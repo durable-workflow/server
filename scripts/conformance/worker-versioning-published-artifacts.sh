@@ -29,6 +29,9 @@ Environment overrides:
                              build pinning, promotion, no-compatible-worker and
                              fresh-process replay qualification. Requires cargo
                              and Rust 1.86+. Its result must pass when selected.
+  DW_RUST_SDK_PREVIOUS_VERSION  Optional distinct exact crates.io version for
+                             identical-source SDK upgrade and post-upgrade
+                             cold recovery. Its result must pass when selected.
   DW_WV_MIXED_COHORTS=1     Require the four mixed Rust/PHP and Rust/Python build
                              directions. Supply worker-versioning-mixed-result.json
                              from the focused host command in this result directory.
