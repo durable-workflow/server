@@ -12,6 +12,7 @@ and Python SDK versions. It starts an isolated MySQL/Redis/Server stack, verifie
 the image's release metadata and runs both the Rust cases and four mixed build
 cohorts. It removes the stack and consumer image even on failure. Results,
 service logs, worker observations and package provenance are retained for 30 days.
+The Action also selects an exact previous Rust SDK for the crate-upgrade case.
 
 The same disposable topology can run on a Docker host with
 `bash scripts/conformance/worker-versioning-rust-host-published-artifacts.sh --result-dir DIR`.
@@ -19,11 +20,17 @@ Set `DW_SERVER_VERSION`, `DW_SERVER_IMAGE` and `DW_RUST_SDK_VERSION` first.
 Add `DW_WV_MIXED_COHORTS=1`, `DW_PHP_SDK_VERSION` and `DW_PYTHON_SDK_VERSION`
 to run the mixed cases as well. The host command builds an application image
 using Composer and pip registry packages, plus the compiled Rust registry consumer.
+Set `DW_RUST_SDK_PREVIOUS_VERSION` to a distinct exact registry version to include
+the SDK upgrade. Both crates must support source-bound signal workflows. The
+same application sources are compiled against each, with separate package locks,
+checksums and executable hashes. Omitting this option selects the seven routing
+and recovery cases without claiming a crate upgrade.
 
 To run against your own disposable published Server stack:
 
 ```bash
 export DW_RUST_SDK_VERSION=<exact-crate-version>
+export DW_RUST_SDK_PREVIOUS_VERSION=<exact-previous-crate-version>
 export DW_SERVER_VERSION=<exact-server-version>
 export DW_SERVER_IMAGE=durableworkflow/server@sha256:<image-digest>
 export DW_WV_SERVER_URL=http://<isolated-server>:8080
@@ -43,6 +50,13 @@ build and inspect worker identities, run pins, diagnostics and durable history.
 ## Required outcomes
 
 - Worker registrations expose the actual Rust SDK and each build identity.
+- When an SDK upgrade is selected, the older SDK client and worker start an
+  unversioned run. A signal is queued after worker SIGKILL. A fresh newer-SDK
+  worker with the original worker ID and source identity delivers that signal
+  and reaches the next durable wait without repeating the recorded producer.
+  Another SIGKILL and newer-SDK replacement completes the same run. The older
+  SDK client reads the original result from its selected-run handle. History
+  prefixes, both applied signals, one side effect and one completion are checked.
 - Two authored definitions embed their actual source through the SDK. Changed
   or missing source identity under the same active worker ID receives the precise
   HTTP409 refusal without overwriting its registration. A new worker ID with
@@ -67,7 +81,8 @@ build and inspect worker identities, run pins, diagnostics and durable history.
   The original run and recorded result survive, with one side-effect record and
   one terminal completion. Terminal history is removed from the worker cache.
 
-The seven observations are checked before a passing result is written. Missing
+The seven routing observations and the selected eighth SDK-upgrade observation
+are checked before a passing result is written. Missing
 observations and command failures return a nonzero exit status. Worker processes
 are reaped on fixture exit. Remove the disposable stack and scratch directory
 after retaining the small result files. Do not point this experiment at a
@@ -93,8 +108,11 @@ These cases test build routing between separately registered definitions. They d
 not claim that different language implementations can share a build identity or
 that their histories can be replayed interchangeably. The Rust definition case
 tests same-language source identity and divergent-code registration separately.
-Upgrading the Rust crate within a running cohort remains an open item in the
-organization conformance audit.
+The crate-upgrade case preserves an unversioned original run. It does not assign
+a new build to that history. Upgrade qualification applies to the selected pair
+of published SDKs and the exercised signal/side-effect history. Application code
+changes, adding build IDs to an existing run and other durable operations need
+their own upgrade cases.
 
 Draining is a routing control, not cancellation of an existing workflow. A drained
 SDK loop exits normally. Resuming its build allows compatible workers to claim

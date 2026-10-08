@@ -1356,7 +1356,7 @@ async function main() {
     ? readJsonIfExists(path.join(resultDir, 'worker-versioning-rust-result.json'))
     : null;
   if (rustVersion) {
-    if (rustVersioningPasses(rustEvidence, rustVersion)) {
+    if (rustVersioningPasses(rustEvidence, rustVersion, trim(process.env.DW_RUST_SDK_PREVIOUS_VERSION) || null)) {
       addPass('rust_build_cohort_execution', rustEvidence);
       runtimeMatrix.runtimes.push('sdk-rust');
     } else {

@@ -105,6 +105,76 @@ test('complete managed-worker observations pass', () => {
   assert.equal(rustVersioningPasses(observations(), '3.4.0'), true);
 });
 
+function upgradeObservations() {
+  const report = observations();
+  const original = { workflow_id:'sdk-upgrade', run_id:'sdk-original-run', client:true, sdk_version:'durable-workflow-rust/3.3.3' };
+  const fingerprint = `sha256:${'c'.repeat(64)}`;
+  const historyBefore = { events:[{ event_type:'WorkflowStarted', payload:{
+    workflow_definition_fingerprint:fingerprint, workflow_definition_fingerprint_source:'worker',
+  } }, { event_type:'SideEffectRecorded' }] };
+  const pendingHistory = { events:[...historyBefore.events, { event_type:'SignalReceived' }] };
+  const upgradedHistory = { events:[...pendingHistory.events, { event_type:'SignalApplied' }] };
+  const history = { events:[...upgradedHistory.events, { event_type:'SignalReceived' },
+    { event_type:'SignalApplied' }, { event_type:'WorkflowCompleted' }] };
+  const registry = (version, checksum) => ({ version, source:'registry+https://github.com/rust-lang/crates.io-index', checksum });
+  const sources = { 'worker-versioning-rust-upgrade-worker.rs':'d'.repeat(64),
+    'worker-versioning-rust-definition-v1.rs':'e'.repeat(64) };
+  report.previous_sdk_version = '3.3.3';
+  report.upgrade_artifacts = {
+    current:{ registry_package:registry('3.4.0', 'a'.repeat(64)), binary_sha256:'b'.repeat(64), source_sha256:sources },
+    previous:{ registry_package:registry('3.3.3', 'c'.repeat(64)), binary_sha256:'f'.repeat(64), source_sha256:structuredClone(sources) },
+  };
+  const worker = (version) => ({ workers:[{ worker_id:'upgrade-worker', task_queue:'upgrade-queue', build_id:null,
+    runtime:'rust', sdk_version:`durable-workflow-rust/${version}`,
+    workflow_definition_fingerprints:{ 'conformance.rust-sdk-upgrade':fingerprint } }] });
+  const initial = (pid, version) => ({ pid, registered:true, sdk_version:`durable-workflow-rust/${version}`, side_effect_calls:0, callbacks:[] });
+  const poll = (pid, version, boundary, effects) => ({ pid, sdk_version:`durable-workflow-rust/${version}`,
+    processed:1, side_effect_calls:effects, callbacks:[{ workflow_id:original.workflow_id, run_id:original.run_id, boundary }] });
+  report.cells.sdk_crate_upgrade = { original, task_queue:'upgrade-queue', worker_id:'upgrade-worker', fingerprint,
+    initial:initial(401, '3.3.3'), first:poll(401, '3.3.3', 'ready', 1), before:worker('3.3.3'), history_before:historyBefore,
+    killed:{ pid:401, signal:9 }, pending:{ build_ids:[{ build_id:null, pending_workflow_tasks:{ ready_count:1, leased_count:0 } }] },
+    pending_history:pendingHistory, successor:initial(402, '3.4.0'), after:worker('3.4.0'),
+    resumed:poll(402, '3.4.0', 'finish', 0), upgraded_history:upgradedHistory, successor_killed:{ pid:402, signal:9 },
+    replacement:initial(403, '3.4.0'), completed:poll(403, '3.4.0', 'completed', 0),
+    result:{ workflow_id:original.workflow_id, run_id:original.run_id, sdk_version:original.sdk_version, result:{ producer:'original-definition' } },
+    history, show:{ workflow_id:original.workflow_id, run_id:original.run_id, status:'completed', compatibility:null }, final_workers:worker('3.4.0'),
+  };
+  return report;
+}
+
+test('published SDK upgrade observations pass when explicitly selected', () => {
+  assert.equal(rustVersioningPasses(upgradeObservations(), '3.4.0', '3.3.3'), true);
+  assert.equal(rustVersioningPasses(observations(), '3.4.0', '3.3.3'), false);
+});
+
+const invalidUpgrade = {
+  'same crate twice':(r) => { r.previous_sdk_version = '3.4.0'; },
+  'previous crate from checkout':(r) => { r.upgrade_artifacts.previous.registry_package.source = null; },
+  'missing previous crate checksum':(r) => { delete r.upgrade_artifacts.previous.registry_package.checksum; },
+  'changed application sources':(r) => { r.upgrade_artifacts.previous.source_sha256['worker-versioning-rust-upgrade-worker.rs'] = '0'.repeat(64); },
+  'same executable twice':(r) => { r.upgrade_artifacts.previous.binary_sha256 = r.upgrade_artifacts.current.binary_sha256; },
+  'previous SDK never registered':(r) => { r.cells.sdk_crate_upgrade.before.workers[0].sdk_version = 'durable-workflow-rust/3.4.0'; },
+  'upgrade changed source identity':(r) => { r.cells.sdk_crate_upgrade.after.workers[0].workflow_definition_fingerprints = {}; },
+  'upgrade changed original build':(r) => { r.cells.sdk_crate_upgrade.show.compatibility = 'new-build'; },
+  'missing pending signal':(r) => { r.cells.sdk_crate_upgrade.pending_history.events.pop(); },
+  'pending upgrade task acquired':(r) => { r.cells.sdk_crate_upgrade.pending.build_ids[0].pending_workflow_tasks.leased_count = 1; },
+  'upgrade reused previous process':(r) => { r.cells.sdk_crate_upgrade.successor.pid = 401; },
+  'upgrade repeated producer':(r) => { r.cells.sdk_crate_upgrade.resumed.side_effect_calls = 1; },
+  'post-upgrade worker not killed':(r) => { r.cells.sdk_crate_upgrade.successor_killed.signal = 15; },
+  'replacement did not deliver completion':(r) => { r.cells.sdk_crate_upgrade.completed.processed = 0; },
+  'older caller got a different run':(r) => { r.cells.sdk_crate_upgrade.result.run_id = 'other-run'; },
+  'older caller lost recorded result':(r) => { r.cells.sdk_crate_upgrade.result.result.producer = 'other'; },
+  'upgraded history overwrote old history':(r) => { r.cells.sdk_crate_upgrade.history.events[0] = { event_type:'Replaced' }; },
+  'upgrade duplicated completion':(r) => { r.cells.sdk_crate_upgrade.history.events.push({ event_type:'WorkflowCompleted' }); },
+};
+for (const [name, mutate] of Object.entries(invalidUpgrade)) {
+  test(`reject SDK upgrade: ${name}`, () => {
+    const report = upgradeObservations();
+    mutate(report);
+    assert.equal(rustVersioningPasses(report, '3.4.0', '3.3.3'), false);
+  });
+}
+
 const invalid = {
   'divergent source accepted':(r) => { r.cells.divergent_definition_registration.changed_registration.registered = true; },
   'wrong divergent refusal reason':(r) => { r.cells.divergent_definition_registration.changed_registration.response.reason = 'other'; },
