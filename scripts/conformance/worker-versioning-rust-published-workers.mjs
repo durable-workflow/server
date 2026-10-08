@@ -93,6 +93,11 @@ async function main() {
   const resultPath = path.join(resultDir, 'worker-versioning-rust-result.json');
   fs.mkdirSync(path.join(root, 'src'), { recursive:true });
   fs.mkdirSync(resultDir, { recursive:true });
+  const serverRelease = path.join(resultDir, 'server-source-release.json');
+  if (fs.existsSync(serverRelease)
+      && JSON.parse(fs.readFileSync(serverRelease, 'utf8')).server?.version !== process.env.DW_SERVER_VERSION) {
+    throw new Error('Published image release metadata does not match DW_SERVER_VERSION');
+  }
   fs.writeFileSync(path.join(root, 'Cargo.toml'), `[package]\nname = "worker-versioning-rust-probe"\nversion = "0.0.0"\nedition = "2021"\nrust-version = "1.86"\n[dependencies]\ndurable-workflow = "=${version}"\nserde_json = "1"\nreqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }\ntokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }\n`);
   fs.copyFileSync(new URL('./worker-versioning-rust-probe.rs', import.meta.url), path.join(root, 'src/main.rs'));
   const manifest = path.join(root, 'Cargo.toml');

@@ -12,6 +12,10 @@ version. It starts an isolated MySQL/Redis/Server stack, verifies the image's
 release metadata, runs the command below and removes the stack even on failure.
 Results, service logs and the consumer's Cargo lockfile are retained for 30 days.
 
+The same disposable topology can run on a Docker host with
+`bash scripts/conformance/worker-versioning-rust-host-published-artifacts.sh --result-dir DIR`.
+Set `DW_SERVER_VERSION`, `DW_SERVER_IMAGE` and `DW_RUST_SDK_VERSION` first.
+
 To run against your own disposable published Server stack:
 
 ```bash
