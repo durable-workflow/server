@@ -2002,69 +2002,207 @@ async fn reported_activity_failure_commits_one_persistent_retry_and_fences_old_o
     let workflow = poll(&app_a, "worker", "workflow").await;
     let arguments = envelope(Payload::Array(vec![Payload::Long(9007199254740993)]));
     let policy = json!({"max_attempts":2,"backoff_seconds":[1],"non_retryable_error_types":[]});
+    for invalid in [
+        json!({"max_attempts":0}),
+        json!({"max_attempts":"2"}),
+        json!({"max_attempts":1.5}),
+        json!({"max_attempts":2,"backoff_seconds":[-1]}),
+        json!({"max_attempts":2,"backoff_seconds":[i64::MAX]}),
+        json!({"max_attempts":2,"non_retryable_error_types":["RuntimeException"]}),
+        json!({"max_attempts":2,"unsupported":true}),
+    ] {
+        let refused = finish_task(&app_a,&workflow,json!([{"type":"schedule_activity","activity_type":"retry-activity","arguments":arguments,"retry_policy":invalid}])).await;
+        assert_eq!(refused.0, StatusCode::UNPROCESSABLE_ENTITY, "{}", refused.1);
+        assert!(poll(&app_b, "worker", "activity").await.is_null());
+        assert_eq!(
+            run_history(&app_b, &started["workflow_id"], &started["run_id"])
+                .await
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
     let scheduled = finish_task(&app_a, &workflow, json!([{"type":"schedule_activity","activity_type":"retry-activity","arguments":arguments,"retry_policy":policy}])).await;
     assert_eq!(scheduled.0, StatusCode::OK, "{}", scheduled.1);
     let first = poll(&app_a, "worker", "activity").await;
     assert_eq!(first["attempt_number"], 1);
-    let fail_path = format!("/api/worker/activity-tasks/{}/fail", first["task_id"].as_str().unwrap());
+    let fail_path = format!(
+        "/api/worker/activity-tasks/{}/fail",
+        first["task_id"].as_str().unwrap()
+    );
     let fail = json!({"lease_owner":"worker","activity_attempt_id":first["activity_attempt_id"],"failure":{"type":"RuntimeException","message":"retry λ","non_retryable":false}});
     let wrong_owner = json!({"lease_owner":"wrong","activity_attempt_id":first["activity_attempt_id"],"failure":fail["failure"]});
-    assert_eq!(request(&app_b,"POST",&fail_path,wrong_owner).await.0,StatusCode::CONFLICT);
-    let (one, two) = tokio::join!(request(&app_a,"POST",&fail_path,fail.clone()), request(&app_b,"POST",&fail_path,fail.clone()));
-    assert_eq!(one.0,StatusCode::OK,"{}",one.1);
-    assert_eq!(two.0,StatusCode::OK,"{}",two.1);
-    assert_ne!(one.1["recorded"],two.1["recorded"]);
-    let receipt = if one.1["recorded"]==true { one.1 } else { two.1 };
-    let original = run_history(&app_b,&started["workflow_id"],&started["run_id"]).await;
-    assert_eq!(original.as_array().unwrap().len(),5);
+    assert_eq!(
+        request(&app_b, "POST", &fail_path, wrong_owner).await.0,
+        StatusCode::CONFLICT
+    );
+    let mut non_retryable = fail.clone();
+    non_retryable["failure"]["non_retryable"] = json!(true);
+    assert_eq!(
+        request(&app_b, "POST", &fail_path, non_retryable).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        run_history(&app_b, &started["workflow_id"], &started["run_id"])
+            .await
+            .as_array()
+            .unwrap()
+            .len(),
+        4
+    );
+    let (one, two) = tokio::join!(
+        request(&app_a, "POST", &fail_path, fail.clone()),
+        request(&app_b, "POST", &fail_path, fail.clone())
+    );
+    assert_eq!(one.0, StatusCode::OK, "{}", one.1);
+    assert_eq!(two.0, StatusCode::OK, "{}", two.1);
+    assert_ne!(one.1["recorded"], two.1["recorded"]);
+    let receipt = if one.1["recorded"] == true {
+        one.1
+    } else {
+        two.1
+    };
+    let original = run_history(&app_b, &started["workflow_id"], &started["run_id"]).await;
+    assert_eq!(original.as_array().unwrap().len(), 5);
     let retry = &original[4]["payload"];
-    assert_eq!(retry["retry_task_id"],receipt["next_task_id"]);
-    assert_eq!(retry["retry_of_task_id"],first["task_id"]);
-    assert_eq!(retry["retry_after_attempt_id"],first["activity_attempt_id"]);
-    assert_eq!(retry["activity_attempt"]["status"],"failed");
-    assert!(poll(&app_b,"worker","workflow").await.is_null());
-    assert!(poll(&app_b,"worker","activity").await.is_null(),"retry waits the actual one-second backoff");
+    assert_eq!(retry["retry_task_id"], receipt["next_task_id"]);
+    assert_eq!(retry["retry_of_task_id"], first["task_id"]);
+    assert_eq!(
+        retry["retry_after_attempt_id"],
+        first["activity_attempt_id"]
+    );
+    assert_eq!(retry["activity_attempt"]["status"], "failed");
+    assert!(poll(&app_b, "worker", "workflow").await.is_null());
+    assert!(
+        poll(&app_b, "worker", "activity").await.is_null(),
+        "retry waits the actual one-second backoff"
+    );
     let mut conflicting = fail.clone();
     conflicting["failure"]["message"] = json!("different");
-    assert_eq!(request(&app_b,"POST",&fail_path,conflicting).await.0,StatusCode::CONFLICT);
-    let old_complete_path = format!("/api/worker/activity-tasks/{}/complete",first["task_id"].as_str().unwrap());
+    assert_eq!(
+        request(&app_b, "POST", &fail_path, conflicting).await.0,
+        StatusCode::CONFLICT
+    );
+    let old_complete_path = format!(
+        "/api/worker/activity-tasks/{}/complete",
+        first["task_id"].as_str().unwrap()
+    );
     let old_complete = json!({"lease_owner":"worker","activity_attempt_id":first["activity_attempt_id"],"result":envelope(Payload::Long(-1))});
-    assert_eq!(request(&app_b,"POST",&old_complete_path,old_complete.clone()).await.0,StatusCode::CONFLICT);
+    assert_eq!(
+        request(&app_b, "POST", &old_complete_path, old_complete.clone())
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
     node_a.close().await;
     let recovered = database.open().await.unwrap();
     let app_c = router(recovered.clone());
-    let available = chrono::DateTime::parse_from_rfc3339(retry["retry_available_at"].as_str().unwrap()).unwrap();
-    let wait = (available.with_timezone(&chrono::Utc)-chrono::Utc::now()).to_std().unwrap_or_default();
-    tokio::time::sleep(wait+std::time::Duration::from_millis(10)).await;
-    let (left,right) = tokio::join!(poll(&app_b,"worker","activity"),poll(&app_c,"worker","activity"));
-    assert_ne!(left.is_null(),right.is_null(),"one retry claim across independent nodes");
+    let available =
+        chrono::DateTime::parse_from_rfc3339(retry["retry_available_at"].as_str().unwrap())
+            .unwrap();
+    let wait = (available.with_timezone(&chrono::Utc) - chrono::Utc::now())
+        .to_std()
+        .unwrap_or_default();
+    tokio::time::sleep(wait + std::time::Duration::from_millis(10)).await;
+    let (left, right) = tokio::join!(
+        poll(&app_b, "worker", "activity"),
+        poll(&app_c, "worker", "activity")
+    );
+    assert_ne!(
+        left.is_null(),
+        right.is_null(),
+        "one retry claim across independent nodes"
+    );
     let second = if left.is_null() { right } else { left };
-    assert_eq!(second["task_id"],retry["retry_task_id"]);
-    assert_eq!(second["activity_execution_id"],first["activity_execution_id"]);
-    assert_eq!(second["idempotency_key"],first["idempotency_key"]);
-    assert_eq!(second["run_id"],started["run_id"]);
-    assert_eq!(second["arguments"],arguments);
-    assert_eq!(second["attempt_number"],2);
-    assert_ne!(second["activity_attempt_id"],first["activity_attempt_id"]);
-    assert_eq!(request(&app_b,"POST",&old_complete_path,old_complete).await.0,StatusCode::CONFLICT);
-    assert_eq!(request(&app_c,"POST",&fail_path,fail.clone()).await.1["recorded"],false);
-    assert!(poll(&app_b,"worker","workflow").await.is_null());
-    let complete_path = format!("/api/worker/activity-tasks/{}/complete",second["task_id"].as_str().unwrap());
+    assert_eq!(second["task_id"], retry["retry_task_id"]);
+    assert_eq!(
+        second["activity_execution_id"],
+        first["activity_execution_id"]
+    );
+    assert_eq!(second["idempotency_key"], first["idempotency_key"]);
+    assert_eq!(second["run_id"], started["run_id"]);
+    assert_eq!(second["arguments"], arguments);
+    assert_eq!(second["attempt_number"], 2);
+    assert_ne!(second["activity_attempt_id"], first["activity_attempt_id"]);
+    assert_eq!(
+        request(&app_b, "POST", &old_complete_path, old_complete)
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        request(&app_c, "POST", &fail_path, fail.clone()).await.1["recorded"],
+        false
+    );
+    assert!(poll(&app_b, "worker", "workflow").await.is_null());
+    let complete_path = format!(
+        "/api/worker/activity-tasks/{}/complete",
+        second["task_id"].as_str().unwrap()
+    );
+    let second_fail_path = format!(
+        "/api/worker/activity-tasks/{}/fail",
+        second["task_id"].as_str().unwrap()
+    );
+    let exhausted = json!({"lease_owner":"worker","activity_attempt_id":second["activity_attempt_id"],"failure":fail["failure"]});
+    assert_eq!(
+        request(&app_c, "POST", &second_fail_path, exhausted)
+            .await
+            .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        run_history(&app_b, &started["workflow_id"], &started["run_id"])
+            .await
+            .as_array()
+            .unwrap()
+            .len(),
+        6
+    );
     let result = envelope(Payload::Long(9007199254740993));
     let complete = json!({"lease_owner":"worker","activity_attempt_id":second["activity_attempt_id"],"result":result});
-    assert_eq!(request(&app_c,"POST",&complete_path,complete.clone()).await.0,StatusCode::OK);
-    assert_eq!(request(&app_b,"POST",&complete_path,complete).await.1["recorded"],false);
-    let (left,right) = tokio::join!(poll(&app_b,"worker","workflow"),poll(&app_c,"worker","workflow"));
-    assert_ne!(left.is_null(),right.is_null(),"one parent resumption after the successful retry");
-    let resumed = if left.is_null() {right} else {left};
-    assert_eq!(resumed["history_events"].as_array().unwrap().len(),7);
-    let completed = finish_task(&app_c,&resumed,json!([{"type":"complete_workflow","result":result}])).await;
-    assert_eq!(completed.0,StatusCode::OK,"{}",completed.1);
-    let history = run_history(&app_b,&started["workflow_id"],&started["run_id"]).await;
-    assert_eq!(history.as_array().unwrap().len(),8);
-    assert_eq!(history[4],original[4],"retry receipt/history remains immutable after recovery");
-    assert_eq!(request(&app_b,"POST",&fail_path,fail).await.1["recorded"],false);
-    assert_eq!(run_history(&app_b,&started["workflow_id"],&started["run_id"]).await,history);
+    assert_eq!(
+        request(&app_c, "POST", &complete_path, complete.clone())
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(&app_b, "POST", &complete_path, complete).await.1["recorded"],
+        false
+    );
+    let (left, right) = tokio::join!(
+        poll(&app_b, "worker", "workflow"),
+        poll(&app_c, "worker", "workflow")
+    );
+    assert_ne!(
+        left.is_null(),
+        right.is_null(),
+        "one parent resumption after the successful retry"
+    );
+    let resumed = if left.is_null() { right } else { left };
+    assert_eq!(resumed["history_events"].as_array().unwrap().len(), 7);
+    let completed = finish_task(
+        &app_c,
+        &resumed,
+        json!([{"type":"complete_workflow","result":result}]),
+    )
+    .await;
+    assert_eq!(completed.0, StatusCode::OK, "{}", completed.1);
+    let history = run_history(&app_b, &started["workflow_id"], &started["run_id"]).await;
+    assert_eq!(history.as_array().unwrap().len(), 8);
+    assert_eq!(
+        history[4], original[4],
+        "retry receipt/history remains immutable after recovery"
+    );
+    assert_eq!(
+        request(&app_b, "POST", &fail_path, fail).await.1["recorded"],
+        false
+    );
+    assert_eq!(
+        run_history(&app_b, &started["workflow_id"], &started["run_id"]).await,
+        history
+    );
     node_b.close().await;
     recovered.close().await;
     database.remove().await;

@@ -80,8 +80,18 @@ frames, actual SDK claims/completions and no intermediate workflow resumption.
 HTTP duplicates must leave history unchanged; embedded redelivery uses the real
 queue jobs for both closed tasks. Embedded Throwable class and external worker
 failure type are explicit representations of the same original failure.
-Reference probes complete both published PHP and embedded executions; complete
-reference/comparator and native qualification remain in progress. Terminal and
+All eleven cases pass and compare against the published PHP and embedded
+references at `8d0da93aa3db059b6bcf2230898ceb2231a1dae6`; 128 comparator tests pass.
+The tests-first native regression fails with `422 unsupported_request_field`
+before retry support in [run 37995605455](https://github.com/durable-workflow/server/actions/runs/37995605455).
+The native transition is implemented in [#344](https://github.com/durable-workflow/server/pull/344):
+failure encoding uses the official codec on a bounded blocking worker, then one
+transaction closes the original attempt/task, preserves its failure and creates
+one ready retry at the original exact deadline. Polling keeps the original
+activity/idempotency identity and increments the new task's attempt counter.
+No parent task is created until a successful result commits. The current PHP
+tables and native schema version remain unchanged. Exact-head native/database
+and source qualification remain in progress. Terminal and
 non-retryable failures, timeout/lease retries and broader retry policies remain
 separate gates. Retry work is followed by cancellation, schedules, visibility, authorization/namespaces,
 streams and existing consumers. Each slice must run on the required database

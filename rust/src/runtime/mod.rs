@@ -2,6 +2,7 @@
 //! arguments use the official codec on a bounded blocking worker.
 //! Typed database adapters share transitions; existing PHP data requires qualification.
 
+mod activity_failures;
 mod backend;
 mod children;
 mod execution;

@@ -72,7 +72,7 @@ where
             "SELECT id,status,arguments,output,last_history_sequence,last_command_sequence,run_deadline_at FROM workflow_runs LIMIT 0",
             "SELECT id,sequence,payload,recorded_at FROM workflow_history_events LIMIT 0",
             "SELECT id,status,payload,lease_owner,lease_expires_at,attempt_count FROM workflow_tasks LIMIT 0",
-            "SELECT id,sequence,activity_type,status,arguments,result FROM activity_executions LIMIT 0",
+            "SELECT id,sequence,activity_type,status,arguments,result,retry_policy,exception,attempt_count,current_attempt_id FROM activity_executions LIMIT 0",
             "SELECT id,workflow_task_id,attempt_number,status FROM activity_attempts LIMIT 0",
             "SELECT id,workflow_run_id,sequence,status,delay_seconds,fire_at,fired_at FROM workflow_run_timers LIMIT 0",
             "SELECT id,workflow_command_id,workflow_run_id,signal_name,signal_wait_id,status,arguments FROM workflow_signal_records LIMIT 0",
@@ -716,8 +716,9 @@ where
             let task_id = DB::string(&task, "id")?;
             let attempt = DB::number(&task, "attempt_count")? + 1;
             let expires = after(LEASE_SECONDS);
-            Self::query("UPDATE workflow_tasks SET status='leased',lease_owner=$1,lease_expires_at=$2,attempt_count=$3 WHERE id=$4")
-                .bind(worker_id).bind(DB::bind_time(expires)).bind(attempt).bind(&task_id).execute(&mut *tx).await?;
+            let leased_at = now();
+            Self::query("UPDATE workflow_tasks SET status='leased',lease_owner=$1,lease_expires_at=$2,attempt_count=$3,leased_at=$4 WHERE id=$5")
+                .bind(worker_id).bind(DB::bind_time(expires)).bind(attempt).bind(DB::bind_time(leased_at)).bind(&task_id).execute(&mut *tx).await?;
             let run = Self::query("SELECT * FROM workflow_runs WHERE id=$1")
                 .bind(&run_id)
                 .fetch_one(&mut *tx)
@@ -735,13 +736,20 @@ where
                 Self::query("INSERT INTO activity_attempts(id,activity_execution_id,workflow_run_id,workflow_task_id,attempt_number,status,lease_owner,lease_expires_at,started_at) VALUES ($1,$2,$3,$4,$5,'running',$6,$7,$8)")
                     .bind(&attempt_id).bind(&activity_id).bind(&run_id).bind(&task_id).bind(attempt)
                     .bind(worker_id).bind(DB::bind_time(expires)).bind(DB::bind_time(started_at)).execute(&mut *tx).await?;
-                Self::query("UPDATE activity_executions SET status='running' WHERE id=$1")
-                    .bind(&activity_id)
+                Self::query("UPDATE activity_executions SET status='running',attempt_count=$1,current_attempt_id=$2,started_at=$3,last_heartbeat_at=NULL WHERE id=$4")
+                    .bind(attempt).bind(&attempt_id).bind(DB::bind_time(started_at)).bind(&activity_id)
                     .execute(&mut *tx)
+                    .await?;
+                let activity = Self::query("SELECT * FROM activity_executions WHERE id=$1")
+                    .bind(&activity_id)
+                    .fetch_one(&mut *tx)
                     .await?;
                 let mut payload = Self::activity_payload(&activity)?;
                 payload["activity_attempt_id"] = json!(attempt_id);
                 payload["attempt_number"] = json!(attempt);
+                payload["task"] = json!({"id":task_id,"type":"activity","status":"leased",
+                    "available_at":DB::optional_instant(&task,"available_at")?,"leased_at":leased_at,
+                    "lease_owner":worker_id,"lease_expires_at":expires,"attempt_count":attempt,"queue":queue});
                 Self::append(
                     &mut tx,
                     &run_id,
@@ -757,6 +765,8 @@ where
                 claim["activity_type"] = json!(type_name);
                 claim["idempotency_key"] = json!(activity_id);
                 claim["arguments"] = wire(&DB::string(&activity, "arguments")?);
+                claim["retry_policy"] =
+                    DB::optional_document_row(&activity, "retry_policy")?.unwrap_or(Value::Null);
             } else {
                 claim["workflow_task_attempt"] = json!(attempt);
                 claim["arguments"] = wire(&DB::string(&run, "arguments")?);
@@ -851,9 +861,19 @@ where
                     envelope(command, "result")?;
                 }
                 "schedule_activity" => {
-                    reject_fields(command, &["type", "activity_type", "arguments", "queue"])?;
+                    reject_fields(
+                        command,
+                        &[
+                            "type",
+                            "activity_type",
+                            "arguments",
+                            "queue",
+                            "retry_policy",
+                        ],
+                    )?;
                     text(command, "activity_type")?;
                     envelope(command, "arguments")?;
+                    super::activity_failures::retry_policy(command)?;
                 }
                 "start_child_workflow" if commands.len() == 1 => {
                     super::children::validate_child(command)?;
@@ -939,9 +959,10 @@ where
                     })?;
                 let activity_type = text(command, "activity_type")?;
                 let arguments = envelope(command, "arguments")?;
-                Self::query("INSERT INTO activity_executions(id,workflow_run_id,sequence,activity_type,activity_class,status,payload_codec,arguments,queue) VALUES ($1,$2,$3,$4,$5,'scheduled','avro',$6,$7)")
+                let policy = super::activity_failures::retry_policy(command)?;
+                Self::query("INSERT INTO activity_executions(id,workflow_run_id,sequence,activity_type,activity_class,status,payload_codec,arguments,queue,retry_policy) VALUES ($1,$2,$3,$4,$5,'pending','avro',$6,$7,$8)")
                     .bind(&activity_id).bind(&run_id).bind(sequence).bind(activity_type).bind(activity_type)
-                    .bind(&arguments).bind(&queue).execute(&mut *tx).await?;
+                    .bind(&arguments).bind(&queue).bind(policy.as_ref().map(DB::document)).execute(&mut *tx).await?;
                 let activity = Self::query("SELECT * FROM activity_executions WHERE id=$1")
                     .bind(&activity_id)
                     .fetch_one(&mut *tx)
@@ -1108,6 +1129,20 @@ where
         let run_id = DB::string(&task, "workflow_run_id")?;
         let run = Self::active_run(&mut tx, &run_id).await?;
         let activity_id = DB::string(&attempt, "activity_execution_id")?;
+        let activity =
+            Self::query("SELECT * FROM activity_executions WHERE id=$1 AND workflow_run_id=$2")
+                .bind(&activity_id)
+                .bind(&run_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        if DB::optional_string(&activity, "current_attempt_id")?.as_deref() != Some(attempt_id)
+            || DB::number(&activity, "attempt_count")? != DB::number(&attempt, "attempt_number")?
+            || DB::string(&activity, "status")? != "running"
+        {
+            return Err(refuse(StatusCode::CONFLICT, "stale_attempt"));
+        }
+        Self::query("UPDATE activity_executions SET status='completed',result=$1,exception=NULL,closed_at=$2 WHERE id=$3")
+            .bind(&result).bind(DB::bind_time(now())).bind(&activity_id).execute(&mut *tx).await?;
         let activity = Self::query("SELECT * FROM activity_executions WHERE id=$1")
             .bind(&activity_id)
             .fetch_one(&mut *tx)
@@ -1116,6 +1151,9 @@ where
         payload["activity_attempt_id"] = json!(attempt_id);
         payload["attempt_number"] = json!(DB::number(&attempt, "attempt_number")?);
         payload["result"] = wire(&result);
+        payload["task"] = json!({"id":task_id,"type":"activity","status":"leased",
+            "available_at":DB::optional_instant(&task,"available_at")?,"leased_at":DB::optional_instant(&task,"leased_at")?,
+            "lease_owner":DB::optional_string(&task,"lease_owner")?,"attempt_count":DB::number(&task,"attempt_count")?});
         Self::append(
             &mut tx,
             &run_id,
@@ -1125,11 +1163,6 @@ where
             None,
         )
         .await?;
-        Self::query("UPDATE activity_executions SET status='completed',result=$1 WHERE id=$2")
-            .bind(result)
-            .bind(&activity_id)
-            .execute(&mut *tx)
-            .await?;
         Self::query("UPDATE activity_attempts SET status='completed',closed_at=$1 WHERE id=$2")
             .bind(DB::bind_time(now()))
             .bind(attempt_id)
@@ -1219,7 +1252,7 @@ where
         self.wake.notify_waiters();
         Ok(())
     }
-    async fn task_row(tx: &mut Transaction<'_, DB>, task_id: &str) -> Result<DB::Row> {
+    pub(super) async fn task_row(tx: &mut Transaction<'_, DB>, task_id: &str) -> Result<DB::Row> {
         Self::query("SELECT t.*,c.receipt FROM workflow_tasks t LEFT JOIN dw_task_completions c ON c.task_id=t.id WHERE t.id=$1 AND t.namespace='default'")
         .bind(task_id)
         .fetch_optional(&mut **tx)
@@ -1227,7 +1260,7 @@ where
         .ok_or_else(|| refuse(StatusCode::NOT_FOUND, "task_not_found"))
     }
 
-    async fn record_completion(
+    pub(super) async fn record_completion(
         tx: &mut Transaction<'_, DB>,
         task_id: &str,
         body: &Value,
@@ -1240,7 +1273,7 @@ where
         Ok(())
     }
 
-    fn duplicate_receipt(task: &DB::Row, body: &Value) -> Result<bool> {
+    pub(super) fn duplicate_receipt(task: &DB::Row, body: &Value) -> Result<bool> {
         if DB::string(task, "status")? != "completed" {
             return Ok(false);
         }
@@ -1251,7 +1284,7 @@ where
         Err(refuse(StatusCode::CONFLICT, "conflicting_completion"))
     }
 
-    fn fence(task: &DB::Row, body: &Value) -> Result<()> {
+    pub(super) fn fence(task: &DB::Row, body: &Value) -> Result<()> {
         if DB::string(task, "status")? != "leased" {
             return Err(refuse(StatusCode::CONFLICT, "task_not_leased"));
         }
@@ -1331,11 +1364,16 @@ where
         Ok(())
     }
 
-    fn activity_payload(activity: &DB::Row) -> Result<Value> {
+    pub(super) fn activity_payload(activity: &DB::Row) -> Result<Value> {
         Ok(
             json!({"activity_execution_id": DB::string(activity,"id")?, "activity_type": DB::string(activity,"activity_type")?,
         "activity_class": DB::string(activity,"activity_class")?, "sequence": DB::number(activity,"sequence")?,
-        "activity": {"activity_type": DB::string(activity,"activity_type")?, "arguments": wire(&DB::string(activity,"arguments")?),
+        "activity": {"id":DB::string(activity,"id")?,"idempotency_key":DB::string(activity,"id")?,
+            "activity_type": DB::string(activity,"activity_type")?, "arguments": wire(&DB::string(activity,"arguments")?),
+            "retry_policy":DB::optional_document_row(activity,"retry_policy")?,
+            "status":DB::string(activity,"status")?,"attempt_count":DB::number(activity,"attempt_count")?,
+            "attempt_id":DB::optional_string(activity,"current_attempt_id")?,
+            "exception":DB::optional_string(activity,"exception")?.map(|value|wire(&value)),
             "payload_codec": "avro", "queue": DB::string(activity,"queue")?}}),
         )
     }

@@ -5,7 +5,8 @@ This is the first, deliberately bounded slice of
 It executes Avro echo (including an exact large int64), a one-activity workflow,
 one/repeated durable sleeps, one/repeated signal deliveries, state queries and
 state updates with immutable duplicate receipts and two sequential child
-workflows with real nested activities against any
+workflows with real nested activities and a reported activity failure with a
+durable retry against any
 isolated Server URL using the **published** PHP SDK. The embedded adapter runs
 the same logical cases through a Laravel application, real database queue jobs,
 and the installed Workflow package. Rust will use the HTTP adapter unchanged.
@@ -100,12 +101,26 @@ unchanged Avro frames. No SDK response, request or authentication header is edit
 headers are excluded from observations. Failure/retry/cancellation, parent-close
 effects and cross-language child directions remain separate qualification gates.
 
+The activity-retry fixture reports a retryable application failure on attempt
+one, then succeeds on attempt two after the original one-second deadline.
+It checks original execution/run/idempotency identities, distinct tasks and
+attempts, exact argument/result types and unchanged Avro frames, policy snapshots,
+closed first-attempt failure and exact retry task/deadline relationships. SDK
+polls and outcome reports must match the actual history; a retry cannot resume
+the workflow before the successful result. HTTP mode repeats the original
+failure and completion through the published SDK and checks unchanged history.
+Embedded mode redelivers the two original closed tasks through real queue jobs.
+An embedded Throwable retains its class; an external failure retains the
+reported type. Those explicit representations are checked before projecting
+the same original failure. Terminal/non-retryable failures, timeout retries,
+other retry families and complete error-envelope parity remain separate gates.
+
 The current type recorder covers null, boolean, int64, double, string, list and
 map values. Other decoded PHP objects fail explicitly; binary/logical-type and
 empty-map distinctions still need their own fixtures and adapters.
 
 This projection **does not yet compare** actor/authentication metadata, PHP
-class names and source fingerprints, task snapshot transport metadata, retries,
+class names and source fingerprints, other task snapshot transport metadata, broader retries,
 lease fencing, cancellation, timer cancellation/parallel groups, or any other listed port gate. Those fields
 remain in raw observations. They need their own reviewed fixtures; omitting them
 here cannot establish full parity. See `docs/rust-server-port.md` for the complete

@@ -65,6 +65,10 @@ pub fn router(runtime: Runtime) -> Router {
         )
         .route("/api/worker/activity-tasks/poll", post(poll_activity))
         .route(
+            "/api/worker/activity-tasks/{task_id}/fail",
+            post(fail_activity),
+        )
+        .route(
             "/api/worker/workflow-tasks/{task_id}/history",
             post(task_history),
         )
@@ -336,6 +340,13 @@ async fn complete_activity(
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
     runtime.complete_activity(&task_id, body).await.map(Json)
+}
+async fn fail_activity(
+    State(runtime): State<Runtime>,
+    Path(task_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>> {
+    runtime.fail_activity(&task_id, body).await.map(Json)
 }
 async fn query_current(
     State(runtime): State<Runtime>,
