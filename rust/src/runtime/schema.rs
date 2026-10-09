@@ -211,23 +211,27 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_fresh_nodes_share_one_complete_migration() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("runtime.sqlite");
-        let path = path.to_str().unwrap();
-        let (a, b, c) = tokio::join!(
-            super::super::Runtime::open(path, "test-token".into()),
-            super::super::Runtime::open(path, "test-token".into()),
-            super::super::Runtime::open(path, "test-token".into()),
-        );
-        for result in [a, b, c] {
-            let runtime = result.unwrap();
-            assert!(runtime.schema_ready().await);
-            let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
-                .fetch_one(runtime.sqlite_pool())
-                .await
-                .unwrap();
-            assert_eq!(rows, 1);
-            runtime.close().await;
+        // Exercise fresh-file journal setup repeatedly; a single successful
+        // group does not expose the observed startup BUSY race reliably.
+        for _ in 0..16 {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("runtime.sqlite");
+            let path = path.to_str().unwrap();
+            let (a, b, c) = tokio::join!(
+                super::super::Runtime::open(path, "test-token".into()),
+                super::super::Runtime::open(path, "test-token".into()),
+                super::super::Runtime::open(path, "test-token".into()),
+            );
+            for result in [a, b, c] {
+                let runtime = result.unwrap();
+                assert!(runtime.schema_ready().await);
+                let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
+                    .fetch_one(runtime.sqlite_pool())
+                    .await
+                    .unwrap();
+                assert_eq!(rows, 1);
+                runtime.close().await;
+            }
         }
     }
 

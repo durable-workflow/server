@@ -383,3 +383,12 @@ Next: qualify backup-first sequential takeover with
 stored-value and migration-interruption fixtures. The capability, consumer,
 performance and operational inventory remains open under #325.
 No separate defect issues have been filed yet.
+
+Final checks of the pending-task correction caught `SQLITE_BUSY` during
+three-node fresh SQLite startup, before its HTTP case ran. The candidate startup
+fix retries only that transient database error, with at most three attempts;
+each repeats read-only ownership preflight and retains the existing lock limits.
+An unsuccessful bootstrap closes its pool and finishes rollback before retry.
+Other errors and ownership refusals return immediately. The existing real-node
+fixture now exercises sixteen independent fresh databases. Qualification is
+pending; this is no change to ordinary command retry semantics or PHP takeover.
