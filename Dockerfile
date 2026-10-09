@@ -1,7 +1,4 @@
-ARG COMPOSER_IMAGE=composer:2
-ARG PHP_BASE_IMAGE=php:8.3-apache
-
-FROM ${COMPOSER_IMAGE} AS phpredis-source
+FROM composer:2 AS phpredis-source
 
 ARG PHPREDIS_VERSION=6.3.0
 ARG PHPREDIS_COMMIT=df4fab2de7fc327c54c94a13af2b9542e4fbd720
@@ -14,7 +11,7 @@ RUN git clone --depth 1 --branch "${PHPREDIS_VERSION}" https://github.com/phpred
          exit 1; \
        fi
 
-FROM ${PHP_BASE_IMAGE} AS base
+FROM php:8.3-apache AS base
 
 COPY --from=phpredis-source /phpredis /usr/src/php/ext/redis
 
@@ -33,7 +30,7 @@ RUN apt-get update && apt-get install -y \
     && usermod --uid 1000 --gid 1000 www-data \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=phpredis-source /usr/bin/composer /usr/bin/composer
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
 # Source qualification exercises the actual startup path from this base too.
 COPY --chmod=0755 docker/ensure-sqlite-database.sh /usr/local/bin/server-ensure-sqlite

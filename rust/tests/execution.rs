@@ -771,49 +771,52 @@ async fn child_lease_expiry_and_fresh_pool_recovery_preserve_original_parent_res
 
 #[tokio::test]
 async fn mismatched_child_call_rolls_back_child_terminal_history_and_parent_resume() {
-    let database = TestDatabase::new().await;
-    let runtime = database.open().await.unwrap();
-    let app = router(runtime.clone());
-    register(&app, "worker", json!(["echo", "child"]), json!([])).await;
-    let parent = start(&app, "child-mismatch").await;
-    let parent_task = poll(&app, "worker", "workflow").await;
-    assert_eq!(
-        finish_task(&app, &parent_task, json!([child_command(7)]))
-            .await
-            .0,
-        StatusCode::OK
-    );
-    let child = poll(&app, "worker", "workflow").await;
-    database
-        .execute("UPDATE workflow_child_calls SET resolved_child_run_id='stale-child-run'")
+    for corruption in [
+        "UPDATE workflow_child_calls SET resolved_child_run_id='stale-child-run'",
+        "DELETE FROM workflow_links",
+    ] {
+        let database = TestDatabase::new().await;
+        let runtime = database.open().await.unwrap();
+        let app = router(runtime.clone());
+        register(&app, "worker", json!(["echo", "child"]), json!([])).await;
+        let parent = start(&app, "child-mismatch").await;
+        let parent_task = poll(&app, "worker", "workflow").await;
+        assert_eq!(
+            finish_task(&app, &parent_task, json!([child_command(7)]))
+                .await
+                .0,
+            StatusCode::OK
+        );
+        let child = poll(&app, "worker", "workflow").await;
+        database.execute(corruption).await;
+        let result = finish_task(
+            &app,
+            &child,
+            json!([{"type":"complete_workflow","result":envelope(Payload::Long(7))}]),
+        )
         .await;
-    let result = finish_task(
-        &app,
-        &child,
-        json!([{"type":"complete_workflow","result":envelope(Payload::Long(7))}]),
-    )
-    .await;
-    assert_eq!(result.0, StatusCode::CONFLICT);
-    assert_eq!(result.1["reason"], "child_call_mismatch");
-    assert_eq!(
-        run_history(&app, &child["workflow_id"], &child["run_id"])
-            .await
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
-    assert_eq!(
-        run_history(&app, &parent["workflow_id"], &parent["run_id"])
-            .await
-            .as_array()
-            .unwrap()
-            .len(),
-        4
-    );
-    assert!(poll(&app, "worker", "workflow").await.is_null());
-    runtime.close().await;
-    database.remove().await;
+        assert_eq!(result.0, StatusCode::CONFLICT);
+        assert_eq!(result.1["reason"], "child_call_mismatch");
+        assert_eq!(
+            run_history(&app, &child["workflow_id"], &child["run_id"])
+                .await
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            run_history(&app, &parent["workflow_id"], &parent["run_id"])
+                .await
+                .as_array()
+                .unwrap()
+                .len(),
+            4
+        );
+        assert!(poll(&app, "worker", "workflow").await.is_null());
+        runtime.close().await;
+        database.remove().await;
+    }
 }
 
 async fn update_worker(app: &Router, worker: &str) {

@@ -9,6 +9,7 @@ use super::{
     text, wire,
 };
 use axum::http::StatusCode;
+use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Transaction, Type};
 
@@ -182,11 +183,18 @@ where
         tx: &mut Transaction<'_, DB>,
         child: &DB::Row,
         output: &str,
+        closed_at: DateTime<Utc>,
     ) -> Result<()> {
         let child_run = DB::string(child, "id")?;
+        let started = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowStarted' ORDER BY sequence LIMIT 1")
+            .bind(&child_run).fetch_one(&mut **tx).await?;
+        let original = DB::document_row(&started, "payload")?;
         let links = Self::query("SELECT * FROM workflow_links WHERE child_workflow_run_id=$1 AND link_type='child_workflow' LIMIT 2").bind(&child_run).fetch_all(&mut **tx).await?;
-        if links.is_empty() {
+        if links.is_empty() && original.get("parent_workflow_run_id").is_none() {
             return Ok(());
+        }
+        if links.is_empty() {
+            return Err(refuse(StatusCode::CONFLICT, "child_call_mismatch"));
         }
         if links.len() != 1 {
             return Err(refuse(
@@ -198,6 +206,17 @@ where
         let parent_run = DB::string(link, "parent_workflow_run_id")?;
         let sequence = DB::number(link, "sequence")?;
         let call_id = DB::string(link, "id")?;
+        if original["parent_workflow_run_id"] != parent_run
+            || original["parent_workflow_instance_id"]
+                != DB::string(link, "parent_workflow_instance_id")?
+            || original["parent_sequence"] != sequence
+            || original["workflow_link_id"] != call_id
+            || original["child_call_id"] != call_id
+            || original["workflow_instance_id"] != DB::string(child, "workflow_instance_id")?
+            || original["workflow_run_id"] != child_run
+        {
+            return Err(refuse(StatusCode::CONFLICT, "child_call_mismatch"));
+        }
         let calls = Self::query("SELECT * FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND sequence=$2 LIMIT 2").bind(&parent_run).bind(sequence).fetch_all(&mut **tx).await?;
         let call = calls
             .first()
@@ -216,10 +235,14 @@ where
         {
             return Err(refuse(StatusCode::CONFLICT, "child_call_mismatch"));
         }
-        let closed_at = now();
         Self::query("UPDATE workflow_child_calls SET status='completed',closed_reason='completed',closed_at=$1,updated_at=$2 WHERE id=$3")
             .bind(DB::bind_time(closed_at)).bind(DB::bind_time(closed_at)).bind(DB::number(call, "id")?).execute(&mut **tx).await?;
         let parent = Self::query("SELECT r.*,i.current_run_id FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE r.id=$1").bind(&parent_run).fetch_one(&mut **tx).await?;
+        if DB::string(&parent, "workflow_instance_id")?
+            != DB::string(link, "parent_workflow_instance_id")?
+        {
+            return Err(refuse(StatusCode::CONFLICT, "child_call_mismatch"));
+        }
         if !matches!(
             DB::string(&parent, "status")?.as_str(),
             "running" | "waiting"

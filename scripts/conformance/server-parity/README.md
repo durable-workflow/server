@@ -120,16 +120,22 @@ PHP/embedded use the exact frozen PHP image, pulled from its existing public GHC
 mirror with the unchanged manifest digest. Pinned official Rust/database images
 use the public Google registry mirror. Registry transport does not change the
 frozen artifact tuple; no registry credentials are required for pull-request CI.
-PHP source CI can select mirrored Composer/PHP build images through explicit
-build arguments while ordinary Dockerfile defaults remain unchanged.
+PHP source CI caches public mirrored Composer/PHP build inputs under their
+canonical image names on its isolated hosted runner. It retains the ordinary
+product Dockerfile without overrides.
 Rust uses the PR's exact source. It compares all three and runs the separate
 `restart.php prepare|finish URL RECEIPT` probe around an actual Rust process kill.
-That probe preserves a leased activity, a pending durable timer and an acknowledged
-pending signal, waits for the actual activity lease expiry, refuses the old claim
-and completes all three original runs through a fresh published SDK worker.
+That probe preserves a leased activity, a pending durable timer, an acknowledged
+pending signal and an acknowledged child creation with its child task leased.
+It waits for the actual activity/child lease expiry, refuses both old claims and
+completes the original runs through fresh published SDK workers.
 The timer must keep its pre-kill identity/deadline and commit exactly one firing.
 The signal must retain its accepted command, typed arguments and original condition
 wait/fingerprint, then advance its cursor and commit application exactly once.
+The child task keeps its original run, history/input and task identity as attempt
+two. Its nested activity executes once, and its original parent receives one
+terminal result. Retrying the acknowledged child creation retains its immutable
+receipt and leaves the completed parent history unchanged.
 PostgreSQL and MySQL/MariaDB jobs also use two native nodes with a killed node,
 survivor and replacement sharing only their own database. Separate storage
 checks exercise actual initialization kills, corrupt catalog/history refusal,

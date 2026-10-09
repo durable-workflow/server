@@ -120,6 +120,13 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Cache public mirrored build inputs under their canonical image names
+        run: |
+          docker pull mirror.gcr.io/library/composer:2
+          docker tag mirror.gcr.io/library/composer:2 composer:2
+          docker pull mirror.gcr.io/library/php:8.3-apache
+          docker tag mirror.gcr.io/library/php:8.3-apache php:8.3-apache
+
       - name: Resolve locked workflow package authority
         id: workflow
         run: php scripts/ci/resolve-workflow-package-authority.php
@@ -162,9 +169,7 @@ jobs:
             echo "Invalid regression corpus base revision: $CORPUS_BASE_REF" >&2
             exit 1
           fi
-          docker build --target base --build-arg COMPOSER_IMAGE=mirror.gcr.io/library/composer:2 \
-            --build-arg PHP_BASE_IMAGE=mirror.gcr.io/library/php:8.3-apache \
-            -t durable-workflow-server-phpunit-base .
+          docker build --target base -t durable-workflow-server-phpunit-base .
           docker run --rm --entrypoint sh durable-workflow-server-phpunit-base \
             -c 'node --version >/dev/null && python3 -m venv /tmp/dw-conformance-venv && test -x /tmp/dw-conformance-venv/bin/python3'
           docker build -t durable-workflow-server-corpus-validator - <<'DOCKERFILE'
@@ -188,7 +193,7 @@ jobs:
             --env MYSQL_ALLOW_EMPTY_PASSWORD=yes --env MYSQL_ROOT_HOST=% \
             --health-cmd='mysqladmin --silent --host=127.0.0.1 ping' \
             --health-interval=1s --health-start-period=20s --health-retries=30 \
-            mysql@sha256:679e7e924f38a3cbb62a3d7df32924b83f7321a602d3f9f967c01b3df18495d6 \
+            mirror.gcr.io/library/mysql@sha256:679e7e924f38a3cbb62a3d7df32924b83f7321a602d3f9f967c01b3df18495d6 \
             --disable-log-bin --performance-schema=ON \
             --innodb-buffer-pool-size=64M --innodb-redo-log-capacity=64M \
             --innodb-log-buffer-size=8M --table-open-cache=256 --max-connections=40
@@ -199,7 +204,7 @@ jobs:
             --env POSTGRES_HOST_AUTH_METHOD=trust \
             --health-cmd='pg_isready --host=127.0.0.1 --username=postgres' \
             --health-interval=1s --health-start-period=5s --health-retries=30 \
-            postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
+            mirror.gcr.io/library/postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
           for database in mysql pgsql; do
             for attempt in $(seq 1 60); do
               health="$(docker inspect --format '{{.State.Health.Status}}' "dw-server-backup-${database}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}")"
@@ -317,9 +322,7 @@ jobs:
             echo "Native source overlay: $DW_PREPARED_WORKFLOW_COMMIT"
             echo "Locked package baseline retained by ordinary feature CI."
           } > prepared-local-evidence/provenance.txt
-          docker build --target base --build-arg COMPOSER_IMAGE=mirror.gcr.io/library/composer:2 \
-            --build-arg PHP_BASE_IMAGE=mirror.gcr.io/library/php:8.3-apache \
-            -t dw-server-prepared-local-base .
+          docker build --target base -t dw-server-prepared-local-base .
           tar --exclude=vendor --exclude='*/vendor' --exclude=build --exclude='*/build' \
             --exclude=prepared-local-evidence -cf ../prepared-local-source.tar .
           qualification_status=0

@@ -332,6 +332,7 @@ export function checkObservation(fixture, observation, workflowId) {
       equal(childStarted.payload.child_run_number, 1, 'original child run number');
       equal(resolved.payload.child_run_number, 1, 'resolution of original child run number');
       equal(resolved.payload.child_status, 'completed', 'actual child terminal resolution');
+      equal(instantNanoseconds(resolved.payload.closed_at), instantNanoseconds(child.execution.closed_at), 'parent retains original child close timestamp');
       equal(resolved.decoded.result, output, 'parent receives committed child result');
       equal(resolved.typed_decoded.result, typedOutput, 'parent receives exact child result types');
       equal(resolved.decoded.output, output, 'parent resolution retains committed child output');

@@ -82,6 +82,7 @@ function childObservation(mode = 'http') {
     child.typed_output = childFixture.typed_output.value.child_results.value[index];
     child.execution.input_envelope = {codec: 'avro', blob: `child-arguments-frame-${index}`};
     child.execution.output_envelope = {codec: 'avro', blob: `child-result-frame-${index}`};
+    child.execution.closed_at = '2026-01-01T00:00:01.123456Z';
     for (const event of child.events.slice(0, 2)) {
       Object.assign(event.payload, {workflow_instance_id: child.workflow_id, workflow_run_id: child.run_id, workflow_type: child.workflow_type});
     }
@@ -104,7 +105,7 @@ function childObservation(mode = 'http') {
     raw.events.push(
       {event_type: 'ChildWorkflowScheduled', payload: {...link}, decoded: {}, typed_decoded: {}},
       {event_type: 'ChildRunStarted', payload: {...link, child_run_number: 1}, decoded: {}, typed_decoded: {}},
-      {event_type: 'ChildRunCompleted', payload: {...link, child_run_number: 1, child_status: 'completed'},
+      {event_type: 'ChildRunCompleted', payload: {...link, child_run_number: 1, child_status: 'completed', closed_at: child.execution.closed_at},
         decoded: {output: child.output, result: child.output}, typed_decoded: {output: child.typed_output, result: child.typed_output}},
     );
     return child;
@@ -157,6 +158,7 @@ for (const [name, corrupt] of [
   ['changed original child argument type', raw => {raw.children[0].typed_input.value[0].value.number = {type: 'double', value: 42};}],
   ['stale previous child result', raw => {raw.events[7].decoded.result = raw.children[0].output;}],
   ['changed original child policy', raw => {raw.events[2].payload.parent_close_policy = 'terminate';}],
+  ['child closure timestamp differs from committed run', raw => {raw.events[4].payload.closed_at = '2026-01-01T00:00:03Z';}],
   ['duplicate child terminal effect', raw => {raw.children[0].events.push(structuredClone(raw.children[0].events.at(-1)));}],
   ['missing nested activity completion', raw => {raw.children[0].events.splice(3, 1);}],
   ['nested activity stale attempt', raw => {raw.children[0].events[3].payload.activity_attempt_id = 'stale-attempt';}],

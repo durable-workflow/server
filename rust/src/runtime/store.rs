@@ -1051,6 +1051,7 @@ where
                     return Err(refuse(StatusCode::CONFLICT, "pending_durable_operations"));
                 }
                 let output = envelope(command, "result")?;
+                let closed_at = now();
                 Self::append(
                     &mut tx,
                     &run_id,
@@ -1061,8 +1062,8 @@ where
                 )
                 .await?;
                 Self::query("UPDATE workflow_runs SET status='completed',closed_reason='completed',output=$1,closed_at=$2 WHERE id=$3")
-                    .bind(&output).bind(DB::bind_time(now())).bind(&run_id).execute(&mut *tx).await?;
-                Self::complete_child(&mut tx, &run, &output).await?;
+                    .bind(&output).bind(DB::bind_time(closed_at)).bind(&run_id).execute(&mut *tx).await?;
+                Self::complete_child(&mut tx, &run, &output, closed_at).await?;
             }
         }
         Self::query("UPDATE workflow_tasks SET status='completed' WHERE id=$1")
