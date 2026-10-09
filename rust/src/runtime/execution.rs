@@ -1,13 +1,14 @@
 //! Runtime database selection without duplicating durable transitions.
-use super::{Result, postgres::PostgresStorage, refuse, sqlite, store::Store};
+use super::{Result, mysql::MySqlStorage, postgres::PostgresStorage, refuse, sqlite, store::Store};
 use axum::http::StatusCode;
 use serde_json::Value;
-use sqlx::{Postgres, Sqlite, postgres::PgConnectOptions};
+use sqlx::{MySql, Postgres, Sqlite, mysql::MySqlConnectOptions, postgres::PgConnectOptions};
 use std::sync::Arc;
 
 enum Storage {
     Sqlite(Store<Sqlite>),
     Postgres(Store<Postgres>),
+    MySql(Store<MySql>),
 }
 
 #[derive(Clone)]
@@ -22,6 +23,7 @@ macro_rules! delegate {
             match &*self.storage {
                 Storage::Sqlite(store) => store.$name($($arg),*).await,
                 Storage::Postgres(store) => store.$name($($arg),*).await,
+                Storage::MySql(store) => store.$name($($arg),*).await,
             }
         }
     };
@@ -60,6 +62,17 @@ impl Runtime {
         Ok(runtime)
     }
 
+    pub async fn open_mysql(options: MySqlConnectOptions, token: String) -> Result<Self> {
+        Self::validate_token(&token)?;
+        let store = Store::new(MySqlStorage::open(options).await?.into_pool());
+        let runtime = Self {
+            storage: Arc::new(Storage::MySql(store)),
+            token: token.into(),
+        };
+        runtime.verify_ready().await?;
+        Ok(runtime)
+    }
+
     async fn verify_ready(&self) -> Result<()> {
         if !self.schema_ready().await {
             self.close().await;
@@ -75,6 +88,7 @@ impl Runtime {
         match &*self.storage {
             Storage::Sqlite(store) => store.close().await,
             Storage::Postgres(store) => store.close().await,
+            Storage::MySql(store) => store.close().await,
         }
     }
 
@@ -82,7 +96,7 @@ impl Runtime {
     pub(crate) fn sqlite_pool(&self) -> &sqlx::SqlitePool {
         match &*self.storage {
             Storage::Sqlite(store) => &store.pool,
-            Storage::Postgres(_) => panic!("SQLite-only schema test"),
+            Storage::Postgres(_) | Storage::MySql(_) => panic!("SQLite-only schema test"),
         }
     }
 

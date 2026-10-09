@@ -357,8 +357,19 @@ record 83.054 seconds for clean default tests/binary, 787.0 MiB of targets plus
 incremental outputs total 825.5 MiB. These bounded development samples do not
 qualify the complete server or establish a causal speedup.
 
-Next: implement MariaDB/MySQL with the same execution fixtures and real
-interruption checks, then qualify backup-first sequential takeover with
+The [MariaDB/MySQL execution slice in #335](https://github.com/durable-workflow/server/pull/335)
+adds the third typed adapter to the same state machine. Separate physical
+catalogs retain the frozen PHP MySQL and MariaDB schemas. A bounded session
+lock and checksummed initialization marker account for implicitly committed
+DDL; only unchanged, empty native partial initialization can resume. Existing
+PHP databases, changed catalogs and unknown migration history are refused.
+The Action adds MySQL 8.0, the existing PHP MySQL image and MariaDB 10.11,
+with the same three-runtime fixtures, native activity restart and real schema
+interruption boundaries. Implementation and local checks are in progress;
+these new hosted jobs have not yet established a successful qualification.
+
+Next: finish MariaDB/MySQL execution and interruption qualification, then
+qualify backup-first sequential takeover with
 stored-value and migration-interruption fixtures. The capability, consumer,
 performance and operational inventory remains open under #325.
 No separate defect issues have been filed yet.

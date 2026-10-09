@@ -24,6 +24,308 @@ permissions:
   contents: read
 
 jobs:
+  mysql-execution:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: mysql-8.0
+            image: mysql@sha256:62fb722c78b24245ddff1796a0fcee4a49cc5b87e0aaaf20c92d1da9e0a2497b
+            client: mysql
+            memory: 768m
+          - label: existing-php-mysql-matrix
+            image: mysql@sha256:679e7e924f38a3cbb62a3d7df32924b83f7321a602d3f9f967c01b3df18495d6
+            client: mysql
+            memory: 768m
+          - label: mariadb-10.11
+            image: mariadb@sha256:7db29378d4fdab73f8123bbc2b48905c90d1a4b00cf848b028f1e81e623257f2
+            client: mariadb
+            memory: 512m
+    env:
+      RESOURCE_SCOPE: dw-mysql-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.label }}
+      MYSQL_IMAGE: ${{ matrix.image }}
+      DB_CLIENT: ${{ matrix.client }}
+      DB_MEMORY: ${{ matrix.memory }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Bootstrap independent published PHP and native MySQL databases
+        run: |
+          set -euo pipefail
+          mkdir -p cargo-home rust-target parity-evidence mysql-state
+          chmod 0777 parity-evidence
+          docker network create "$RESOURCE_SCOPE"
+          docker run -d --name "$RESOURCE_SCOPE-db" --network "$RESOURCE_SCOPE" --network-alias=parity-mysql \
+            --user="$(id -u):$(id -g)" --cpus=1 --memory="$DB_MEMORY" --memory-swap="$DB_MEMORY" \
+            -e MYSQL_ROOT_PASSWORD=parity-disposable-password -e MYSQL_ROOT_HOST=% -e MYSQL_DATABASE=php_ref \
+            -v "$PWD/mysql-state:/var/lib/mysql" "$MYSQL_IMAGE" \
+            --skip-log-bin --innodb-buffer-pool-size=128M --performance-schema=OFF
+          ready=0
+          for attempt in $(seq 1 60); do
+            if docker exec "$RESOURCE_SCOPE-db" "$DB_CLIENT" -uroot -pparity-disposable-password -e 'SELECT 1'; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
+          docker exec "$RESOURCE_SCOPE-db" "$DB_CLIENT" -uroot -pparity-disposable-password -N -e 'SELECT VERSION()' > parity-evidence/database-version.txt
+          docker exec "$RESOURCE_SCOPE-db" "$DB_CLIENT" -uroot -pparity-disposable-password \
+            -e 'CREATE DATABASE native_ref CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci'
+          image=$(jq -r '.server.images["linux/amd64"]' tests/Fixtures/ServerParity/php-baseline.json)
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
+            -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=php_ref \
+            -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
+            -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
+            "$image" artisan server:bootstrap --force > parity-evidence/published-bootstrap.txt
+          docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" --cpus=2 --memory=2g --memory-swap=2g \
+            -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 \
+            -e DW_TEST_MYSQL_URL=mysql://root:parity-disposable-password@parity-mysql:3306/php_ref \
+            -e DW_EXECUTION_MYSQL_URL=mysql://root:parity-disposable-password@parity-mysql:3306/php_ref \
+            -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" \
+            -v "$PWD/parity-evidence:/evidence" -w /source/rust --entrypoint bash \
+            rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 -c \
+            'cargo test --locked --lib runtime::mysql::tests::qualification_ -- --ignored --nocapture --test-threads=2 > /evidence/mysql-tests.txt && cargo test --locked --test execution -- --nocapture --test-threads=2 > /evidence/mysql-execution-tests.txt && cargo build --locked'
+          docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
+            -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=native_ref \
+            -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
+            -v "$PWD/rust-target:/target:ro" --entrypoint /target/debug/durable-workflow-server \
+            rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            schema-bootstrap > parity-evidence/native-bootstrap.json
+          docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
+            -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=native_ref \
+            -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
+            -v "$PWD/rust-target:/target:ro" --entrypoint /target/debug/durable-workflow-server \
+            rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            schema-check > parity-evidence/native-check.json
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
+            -e DB_HOST=parity-mysql -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
+            -v "$PWD:/source:ro" -w /source "$image" \
+            scripts/conformance/server-parity/mysql-schema.php compare php_ref native_ref > parity-evidence/catalog-comparison.json
+      - name: Compare three runtimes, recover killed native nodes and refuse published PHP takeover
+        run: |
+          set -euo pipefail
+          image=$(jq -r '.server.images["linux/amd64"]' tests/Fixtures/ServerParity/php-baseline.json)
+          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
+            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+            install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
+          docker run -d --name "$RESOURCE_SCOPE-php" --network "$RESOURCE_SCOPE" --network-alias=parity-php \
+            --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
+            -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=php_ref \
+            -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
+            -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token "$image"
+          ready=0
+          for attempt in $(seq 1 30); do
+            if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
+              -fsS http://parity-php:8080/api/ready > parity-evidence/php-readiness.json; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
+          docker exec "$RESOURCE_SCOPE-db" "$DB_CLIENT" -uroot -pparity-disposable-password \
+            -e 'CREATE DATABASE embedded_ref CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci'
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
+            -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=embedded_ref \
+            -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
+            -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
+            "$image" artisan server:bootstrap --force > parity-evidence/embedded-bootstrap.txt
+          docker run -d --name "$RESOURCE_SCOPE-native-a" --network "$RESOURCE_SCOPE" --network-alias=parity-native-a \
+            --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
+            -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token -e DW_BIND_ADDRESS=0.0.0.0:8080 \
+            -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=native_ref \
+            -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
+            -v "$PWD/rust-target:/target:ro" --entrypoint /target/debug/durable-workflow-server \
+            rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
+          docker run -d --name "$RESOURCE_SCOPE-native-b" --network "$RESOURCE_SCOPE" --network-alias=parity-native-b \
+            --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
+            -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token -e DW_BIND_ADDRESS=0.0.0.0:8080 \
+            -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=native_ref \
+            -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
+            -v "$PWD/rust-target:/target:ro" --entrypoint /target/debug/durable-workflow-server \
+            rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
+          ready=0
+          for attempt in $(seq 1 30); do
+            if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
+              -fsS http://parity-native-a:8080/api/ready > parity-evidence/native-a-readiness.json; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
+            -fsS http://parity-native-b:8080/api/ready > parity-evidence/native-b-readiness.json
+          export DW_PARITY_RUNNER_REVISION=$(git rev-parse HEAD)
+          docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
+            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
+            --mode http --url http://parity-php:8080 --target php --output /evidence/php.json
+          docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
+            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
+            --mode http --url http://parity-native-a:8080 --target rust --output /evidence/rust.json
+          docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
+            -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=embedded_ref \
+            -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password -e DW_MODE=embedded \
+            -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
+            --mode embedded --application-root /app --target embedded --output /evidence/embedded.json
+          docker run --rm --user=1000:1000 --entrypoint node --network=none \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
+            scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json > parity-evidence/comparison.json
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
+            -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/restart.php \
+            prepare http://parity-native-a:8080 /evidence/native-restart-receipt.json > parity-evidence/native-restart-prepare.json
+          docker kill --signal=KILL "$RESOURCE_SCOPE-native-a"
+          test "$(docker inspect --format='{{.State.ExitCode}}' "$RESOURCE_SCOPE-native-a")" = 137
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
+            -fsS http://parity-native-b:8080/api/ready > parity-evidence/native-survivor-readiness.json
+          docker run -d --name "$RESOURCE_SCOPE-recovered" --network "$RESOURCE_SCOPE" --network-alias=parity-recovered \
+            --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
+            -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token -e DW_BIND_ADDRESS=0.0.0.0:8080 \
+            -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=native_ref \
+            -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
+            -v "$PWD/rust-target:/target:ro" --entrypoint /target/debug/durable-workflow-server \
+            rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
+          ready=0
+          for attempt in $(seq 1 30); do
+            if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
+              -fsS http://parity-recovered:8080/api/ready > parity-evidence/native-restart-readiness.json; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
+            -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/restart.php \
+            finish http://parity-recovered:8080 /evidence/native-restart-receipt.json > parity-evidence/native-restart-finish.json
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
+            -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/restart.php \
+            prepare http://parity-php:8080 /evidence/php-pending-receipt.json > parity-evidence/php-pending.json
+          docker stop "$RESOURCE_SCOPE-php"
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
+            -e DB_HOST=parity-mysql -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
+            -v "$PWD:/source:ro" -w /source "$image" scripts/conformance/server-parity/mysql-schema.php \
+            snapshot php_ref > parity-evidence/php-before.json
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
+            -e DB_HOST=parity-mysql -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
+            -v "$PWD:/source:ro" -w /source "$image" scripts/conformance/server-parity/mysql-schema.php \
+            catalog php_ref > parity-evidence/catalog-before.json
+          if docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
+            -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=php_ref \
+            -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
+            -v "$PWD/rust-target:/target:ro" --entrypoint /target/debug/durable-workflow-server \
+            rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            schema-bootstrap > parity-evidence/php-native-refusal.txt 2>&1; then
+            exit 1
+          fi
+          rg -Fq existing_database_requires_qualified_takeover parity-evidence/php-native-refusal.txt
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
+            -e DB_HOST=parity-mysql -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
+            -v "$PWD:/source:ro" -w /source "$image" scripts/conformance/server-parity/mysql-schema.php \
+            snapshot php_ref > parity-evidence/php-after.json
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
+            -e DB_HOST=parity-mysql -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
+            -v "$PWD:/source:ro" -w /source "$image" scripts/conformance/server-parity/mysql-schema.php \
+            catalog php_ref > parity-evidence/catalog-after.json
+          cmp parity-evidence/php-before.json parity-evidence/php-after.json
+          cmp parity-evidence/catalog-before.json parity-evidence/catalog-after.json
+      - name: Verify TLS certificate trust and hostname checks
+        run: |
+          set -euo pipefail
+          image=$(jq -r '.server.images["linux/amd64"]' tests/Fixtures/ServerParity/php-baseline.json)
+          mkdir -p mysql-tls
+          docker run --rm --user="$(id -u):$(id -g)" --network=none \
+            -v "$PWD/mysql-tls:/tls" --entrypoint openssl "$image" req -x509 -newkey rsa:2048 \
+            -nodes -sha256 -days 1 -keyout /tls/ca.key -out /tls/ca.crt -subj /CN=development-ca \
+            -addext basicConstraints=critical,CA:TRUE > parity-evidence/tls-certificate-generation.txt 2>&1
+          docker run --rm --user="$(id -u):$(id -g)" --network=none \
+            -v "$PWD/mysql-tls:/tls" --entrypoint openssl "$image" req -newkey rsa:2048 \
+            -nodes -sha256 -keyout /tls/server.key -out /tls/server.csr -subj /CN=parity-mysql \
+            -addext subjectAltName=DNS:parity-mysql -addext basicConstraints=critical,CA:FALSE \
+            -addext extendedKeyUsage=serverAuth >> parity-evidence/tls-certificate-generation.txt 2>&1
+          docker run --rm --user="$(id -u):$(id -g)" --network=none \
+            -v "$PWD/mysql-tls:/tls" --entrypoint openssl "$image" x509 -req \
+            -in /tls/server.csr -CA /tls/ca.crt -CAkey /tls/ca.key -CAcreateserial -days 1 \
+            -copy_extensions copy -out /tls/server.crt >> parity-evidence/tls-certificate-generation.txt 2>&1
+          chmod 0600 mysql-tls/server.key
+          docker run --rm --user="$(id -u):$(id -g)" --network=none \
+            -v "$PWD/mysql-tls:/tls" --entrypoint openssl "$image" req -x509 -newkey rsa:2048 \
+            -nodes -sha256 -days 1 -keyout /tls/untrusted.key -out /tls/untrusted.crt -subj /CN=untrusted-development-ca \
+            >> parity-evidence/tls-certificate-generation.txt 2>&1
+          docker stop "$RESOURCE_SCOPE-db"
+          docker logs "$RESOURCE_SCOPE-db" > parity-evidence/database-before-tls.log 2>&1
+          docker rm "$RESOURCE_SCOPE-db"
+          docker run -d --name "$RESOURCE_SCOPE-db" --network "$RESOURCE_SCOPE" --network-alias=parity-mysql \
+            --user="$(id -u):$(id -g)" --cpus=1 --memory="$DB_MEMORY" --memory-swap="$DB_MEMORY" \
+            -v "$PWD/mysql-state:/var/lib/mysql" -v "$PWD/mysql-tls:/tls:ro" "$MYSQL_IMAGE" \
+            --skip-log-bin --innodb-buffer-pool-size=128M --performance-schema=OFF \
+            --ssl-ca=/tls/ca.crt --ssl-cert=/tls/server.crt --ssl-key=/tls/server.key
+          ready=0
+          for attempt in $(seq 1 60); do
+            if docker exec "$RESOURCE_SCOPE-db" "$DB_CLIENT" -uroot -pparity-disposable-password -e 'SELECT 1'; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
+          docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
+            -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=native_ref \
+            -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
+            -e DB_SSLMODE=verify_identity -e DB_SSLROOTCERT=/tls/ca.crt \
+            -v "$PWD/mysql-tls/ca.crt:/tls/ca.crt:ro" -v "$PWD/rust-target:/target:ro" \
+            --entrypoint /target/debug/durable-workflow-server \
+            rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            schema-check > parity-evidence/tls-trusted.json
+          if docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
+            -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=native_ref \
+            -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
+            -e DB_SSLMODE=verify_identity -e DB_SSLROOTCERT=/tls/untrusted.crt \
+            -v "$PWD/mysql-tls/untrusted.crt:/tls/untrusted.crt:ro" -v "$PWD/rust-target:/target:ro" \
+            --entrypoint /target/debug/durable-workflow-server \
+            rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            schema-check > parity-evidence/tls-untrusted.txt 2>&1; then
+            exit 1
+          fi
+          if docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
+            -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=mysql -e DB_HOST="$RESOURCE_SCOPE-db" -e DB_DATABASE=native_ref \
+            -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
+            -e DB_SSLMODE=verify_identity -e DB_SSLROOTCERT=/tls/ca.crt \
+            -v "$PWD/mysql-tls/ca.crt:/tls/ca.crt:ro" -v "$PWD/rust-target:/target:ro" \
+            --entrypoint /target/debug/durable-workflow-server \
+            rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            schema-check > parity-evidence/tls-wrong-hostname.txt 2>&1; then
+            exit 1
+          fi
+          rg -Fq storage_unavailable parity-evidence/tls-untrusted.txt
+          rg -Fq storage_unavailable parity-evidence/tls-wrong-hostname.txt
+      - name: Collect logs and clean owned resources
+        if: always()
+        run: |
+          mkdir -p parity-evidence
+          docker logs "$RESOURCE_SCOPE-php" > parity-evidence/php.log 2>&1 || true
+          docker logs "$RESOURCE_SCOPE-native-a" > parity-evidence/native-a.log 2>&1 || true
+          docker logs "$RESOURCE_SCOPE-native-b" > parity-evidence/native-b.log 2>&1 || true
+          docker logs "$RESOURCE_SCOPE-recovered" > parity-evidence/native-recovered.log 2>&1 || true
+          docker logs "$RESOURCE_SCOPE-db" > parity-evidence/database.log 2>&1 || true
+          docker rm -f "$RESOURCE_SCOPE-php" "$RESOURCE_SCOPE-native-a" "$RESOURCE_SCOPE-native-b" "$RESOURCE_SCOPE-recovered" "$RESOURCE_SCOPE-db" || true
+          docker network rm "$RESOURCE_SCOPE" || true
+      - name: Retain MySQL execution evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: mysql-execution-${{ matrix.label }}
+          path: parity-evidence
+          retention-days: 90
+
   postgres-storage:
     runs-on: ubuntu-latest
     timeout-minutes: 10

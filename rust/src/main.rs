@@ -1,6 +1,9 @@
 use std::{env, error::Error, net::SocketAddr, str::FromStr};
 
-use durable_workflow_server::runtime::{Runtime, RuntimeError, postgres::PostgresStorage, router};
+use durable_workflow_server::runtime::{
+    Runtime, RuntimeError, mysql::MySqlStorage, postgres::PostgresStorage, router,
+};
+use sqlx::mysql::{MySqlConnectOptions, MySqlSslMode};
 use sqlx::postgres::{PgConnectOptions, PgSslMode};
 
 fn postgres_options() -> Result<PgConnectOptions, Box<dyn Error>> {
@@ -28,6 +31,31 @@ fn postgres_options() -> Result<PgConnectOptions, Box<dyn Error>> {
     })
 }
 
+fn mysql_options() -> Result<MySqlConnectOptions, Box<dyn Error>> {
+    if let Ok(url) = env::var("DB_URL") {
+        return MySqlConnectOptions::from_str(&url).map_err(|_| "invalid DB_URL".into());
+    }
+    let database = env::var("DB_DATABASE").map_err(|_| "DB_DATABASE is required")?;
+    let username = env::var("DB_USERNAME").map_err(|_| "DB_USERNAME is required")?;
+    let port = env::var("DB_PORT")
+        .unwrap_or_else(|_| "3306".into())
+        .parse::<u16>()?;
+    let ssl =
+        MySqlSslMode::from_str(&env::var("DB_SSLMODE").unwrap_or_else(|_| "preferred".into()))
+            .map_err(|_| "invalid DB_SSLMODE")?;
+    let options = MySqlConnectOptions::new()
+        .host(&env::var("DB_HOST").unwrap_or_else(|_| "127.0.0.1".into()))
+        .port(port)
+        .database(&database)
+        .username(&username)
+        .password(&env::var("DB_PASSWORD").unwrap_or_default())
+        .ssl_mode(ssl);
+    Ok(match env::var("DB_SSLROOTCERT") {
+        Ok(path) => options.ssl_ca(path),
+        Err(_) => options,
+    })
+}
+
 #[tokio::main(worker_threads = 2)]
 async fn main() -> Result<(), Box<dyn Error>> {
     if env::var("DW_RUST_EXPERIMENTAL").as_deref() != Ok("1") {
@@ -39,20 +67,40 @@ async fn main() -> Result<(), Box<dyn Error>> {
         {
             return Err("unknown development command".into());
         }
-        if env::var("DB_CONNECTION").as_deref() != Ok("pgsql") {
-            return Err("these development schema commands require DB_CONNECTION=pgsql".into());
-        }
-        let options = postgres_options()?;
-        let result = if command == "schema-check" {
-            PostgresStorage::check(options).await
-        } else {
-            match PostgresStorage::open(options).await {
-                Ok(storage) => {
-                    storage.close().await;
-                    Ok(())
+        let backend = env::var("DB_CONNECTION").unwrap_or_default();
+        let result = match backend.as_str() {
+            "pgsql" => {
+                let options = postgres_options()?;
+                if command == "schema-check" {
+                    PostgresStorage::check(options).await
+                } else {
+                    match PostgresStorage::open(options).await {
+                        Ok(storage) => {
+                            storage.close().await;
+                            Ok(())
+                        }
+                        Err(error) => Err(error),
+                    }
                 }
-                Err(error) => Err(error),
             }
+            "mysql" | "mariadb" => {
+                let options = mysql_options()?;
+                if command == "schema-check" {
+                    MySqlStorage::check(options).await
+                } else {
+                    match MySqlStorage::open(options).await {
+                        Ok(storage) => {
+                            storage.close().await;
+                            Ok(())
+                        }
+                        Err(error) => Err(error),
+                    }
+                }
+            }
+            _ => return Err(
+                "these development schema commands require DB_CONNECTION=pgsql, mysql or mariadb"
+                    .into(),
+            ),
         };
         if let Err(error) = result {
             let reason = match error {
@@ -60,9 +108,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 _ => "storage_unavailable",
             };
             eprintln!("{reason}");
-            return Err("PostgreSQL development schema command refused".into());
+            return Err("development schema command refused".into());
         }
-        println!("{{\"backend\":\"pgsql\",\"schema_version\":2,\"status\":\"ready\"}}");
+        println!("{{\"backend\":\"{backend}\",\"schema_version\":2,\"status\":\"ready\"}}");
         return Ok(());
     }
     let token = env::var("DW_AUTH_TOKEN").map_err(|_| "DW_AUTH_TOKEN is required")?;
@@ -81,10 +129,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             Runtime::open(&database, token).await?
         }
         "pgsql" => Runtime::open_postgres(postgres_options()?, token).await?,
+        "mysql" | "mariadb" => Runtime::open_mysql(mysql_options()?, token).await?,
         _ => {
-            return Err(
-                "unsupported development database; MySQL remains a required port gate".into(),
-            );
+            return Err("unsupported development database".into());
         }
     };
     let listener = tokio::net::TcpListener::bind(address).await?;
