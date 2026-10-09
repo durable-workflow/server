@@ -79,7 +79,7 @@ final class PhpDatabaseOwnershipProcessTest extends TestCase
         $this->initialize('sqlite');
         $this->database->exec('PRAGMA journal_mode=WAL');
         $this->database->exec('PRAGMA wal_autocheckpoint=0');
-        $schema = dirname(__DIR__, 2).'/rust/migrations/sqlite/0002_full_schema.sql';
+        $schema = dirname(__DIR__, 2).'/rust/migrations/sqlite/0003_full_schema.sql';
         self::assertFileExists($schema);
         $this->database->exec(file_get_contents($schema));
         $path = $this->environment['DB_DATABASE'];
