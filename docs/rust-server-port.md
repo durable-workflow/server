@@ -84,7 +84,16 @@ fixture Action additionally checks the large int64 and explicit decoded type tre
 This is bounded correctness evidence, not performance qualification
 or a three-database/three-runtime pass.
 
-Next: measure the PHP capacity and idle mixed long-poll baseline before adding
-Rust, and expand fixtures using the existing conformance inventory. The rest
+The fixture foundation is merged in #326. All three cases and 25 comparator
+checks passed at its exact head, together with the full PHP feature suite.
+
+The [development reference profile](../benchmarks/server-port/v1/README.md)
+pins the current PHP/SDK tuple and uses existing standard-workflow and mixed
+idle-poll commands. Measurement is pending. The development host's kernel,
+runtime and SATA storage differ from the standard capacity topology, so that
+profile preserves the full capacity gate and makes no maximum-capacity claim.
+
+Next: measure the PHP throughput, memory and idle mixed long-poll reference
+before adding Rust, and expand fixtures using the existing conformance inventory. The rest
 of the inventory remains open under #325. No separate defect issues have been
 filed yet.
