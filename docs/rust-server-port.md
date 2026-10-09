@@ -385,8 +385,10 @@ performance and operational inventory remains open under #325.
 No separate defect issues have been filed yet.
 
 Pending-task review found a prerequisite compatibility case: PHP treats a null
-`workflow_tasks.available_at` as immediately available, while the current native
-query excludes it. A focused HTTP regression will cover both workflow and
-activity tasks, preserve original identities and a single durable outcome,
-and keep future-dated work waiting. This correction precedes read-only upgrade
+`workflow_tasks.available_at` as immediately available, while the native query
+excluded it. The focused regression reproduces the native stall; the common
+polling predicate now admits null availability while future-dated work waits.
+PHP and native HTTP cases cover workflow/activity tasks, original run identities,
+duplicate activity completion and the final durable workflow outcome. Final
+database-matrix results are pending. This correction precedes read-only upgrade
 preflight; it does not enable database takeover.

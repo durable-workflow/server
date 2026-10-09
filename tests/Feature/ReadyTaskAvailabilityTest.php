@@ -84,5 +84,7 @@ class ReadyTaskAvailabilityTest extends TestCase
         ], $headers)->assertOk()->assertJsonPath('recorded', true);
         $this->getJson('/api/workflows/null-availability/runs/'.$runId, $headers)
             ->assertOk()->assertJsonPath('status', 'completed')->assertJsonPath('output', 'Hello, Ada!');
+        $this->getJson('/api/workflows/null-availability/runs/'.$runId.'/history', $headers)
+            ->assertOk()->assertJsonCount(6, 'events')->assertJsonPath('events.5.event_type', 'WorkflowCompleted');
     }
 }

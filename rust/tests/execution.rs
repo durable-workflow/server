@@ -169,6 +169,52 @@ impl TestDatabase {
         }
     }
 
+    async fn set_availability(&self, kind: &str, value: Option<chrono::DateTime<chrono::Utc>>) {
+        match self {
+            Self::Sqlite(dir) => {
+                let pool = sqlx::SqlitePool::connect(&format!(
+                    "sqlite://{}",
+                    dir.path().join("runtime.sqlite").display()
+                ))
+                .await
+                .unwrap();
+                sqlx::query("UPDATE workflow_tasks SET available_at=$1 WHERE task_type=$2")
+                    .bind(value.map(|instant| instant.to_rfc3339()))
+                    .bind(kind)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+            }
+            Self::Postgres { options, .. } => {
+                let pool = sqlx::postgres::PgPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
+                sqlx::query("UPDATE workflow_tasks SET available_at=$1 WHERE task_type=$2")
+                    .bind(value.map(|instant| instant.naive_utc()))
+                    .bind(kind)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+            }
+            Self::MySql { options, .. } => {
+                let pool = sqlx::mysql::MySqlPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
+                sqlx::query("UPDATE workflow_tasks SET available_at=? WHERE task_type=?")
+                    .bind(value)
+                    .bind(kind)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+            }
+        }
+    }
+
     async fn set_time(&self, started_at: bool, value: &str) {
         let statement = if started_at {
             "UPDATE workflow_runs SET started_at=$1"
@@ -420,34 +466,101 @@ async fn null_task_availability_is_ready_but_future_work_remains_waiting() {
     let started = start(&app, "null-availability").await;
     register(&app, "worker", json!(["echo"]), json!(["activity-echo"])).await;
 
-    database.execute("UPDATE workflow_tasks SET available_at='2100-01-01 00:00:00' WHERE task_type='workflow'").await;
+    let tomorrow = chrono::Utc::now() + chrono::Duration::days(1);
+    database.set_availability("workflow", Some(tomorrow)).await;
     assert!(poll(&app, "worker", "workflow").await.is_null());
-    database.execute("UPDATE workflow_tasks SET available_at=NULL WHERE task_type='workflow'").await;
+    database.set_availability("workflow", None).await;
     let task = poll(&app, "worker", "workflow").await;
     assert_eq!(task["run_id"], started["run_id"]);
     assert_eq!(task["workflow_task_attempt"], 1);
     assert!(poll(&app, "worker", "workflow").await.is_null());
-    let path = format!("/api/worker/workflow-tasks/{}/complete", task["task_id"].as_str().unwrap());
+    let path = format!(
+        "/api/worker/workflow-tasks/{}/complete",
+        task["task_id"].as_str().unwrap()
+    );
     let schedule = json!({"type":"schedule_activity","activity_type":"activity-echo","arguments":envelope(Payload::Array(vec![]))});
-    assert_eq!(request(&app, "POST", &path, completion(&task, json!([schedule]))).await.0, StatusCode::OK);
+    assert_eq!(
+        request(&app, "POST", &path, completion(&task, json!([schedule])))
+            .await
+            .0,
+        StatusCode::OK
+    );
 
-    database.execute("UPDATE workflow_tasks SET available_at='2100-01-01 00:00:00' WHERE task_type='activity'").await;
+    database.set_availability("activity", Some(tomorrow)).await;
     assert!(poll(&app, "worker", "activity").await.is_null());
-    database.execute("UPDATE workflow_tasks SET available_at=NULL WHERE task_type='activity'").await;
+    database.set_availability("activity", None).await;
     let activity = poll(&app, "worker", "activity").await;
     assert_eq!(activity["run_id"], started["run_id"]);
     assert_eq!(activity["attempt_number"], 1);
     assert!(poll(&app, "worker", "activity").await.is_null());
-    let path = format!("/api/worker/activity-tasks/{}/complete", activity["task_id"].as_str().unwrap());
+    let path = format!(
+        "/api/worker/activity-tasks/{}/complete",
+        activity["task_id"].as_str().unwrap()
+    );
     let result = envelope(Payload::Long(7));
     let body = json!({"lease_owner":"worker","activity_attempt_id":activity["activity_attempt_id"],"result":result});
-    assert_eq!(request(&app, "POST", &path, body.clone()).await.1["recorded"], true);
-    assert_eq!(request(&app, "POST", &path, body).await.1["recorded"], false);
+    assert_eq!(
+        request(&app, "POST", &path, body.clone()).await.1["recorded"],
+        true
+    );
+    assert_eq!(
+        request(&app, "POST", &path, body).await.1["recorded"],
+        false
+    );
     let resumed = poll(&app, "worker", "workflow").await;
-    let path = format!("/api/worker/workflow-tasks/{}/complete", resumed["task_id"].as_str().unwrap());
-    assert_eq!(request(&app, "POST", &path, completion(&resumed, json!([{"type":"complete_workflow","result":result}]))).await.0, StatusCode::OK);
-    let types: Vec<_> = resumed["history_events"].as_array().unwrap().iter().map(|e| e["event_type"].as_str().unwrap()).collect();
-    assert_eq!(types, ["StartAccepted", "WorkflowStarted", "ActivityScheduled", "ActivityStarted", "ActivityCompleted"]);
+    let path = format!(
+        "/api/worker/workflow-tasks/{}/complete",
+        resumed["task_id"].as_str().unwrap()
+    );
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            &path,
+            completion(
+                &resumed,
+                json!([{"type":"complete_workflow","result":result}])
+            )
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let types: Vec<_> = resumed["history_events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["event_type"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        types,
+        [
+            "StartAccepted",
+            "WorkflowStarted",
+            "ActivityScheduled",
+            "ActivityStarted",
+            "ActivityCompleted"
+        ]
+    );
+    let (status, described) =
+        request(&app, "GET", "/api/workflows/null-availability", json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(described["status"], "completed");
+    assert_eq!(described["run_id"], started["run_id"]);
+    assert_eq!(described["output_envelope"], result);
+    let (status, history) = request(
+        &app,
+        "GET",
+        &format!(
+            "/api/workflows/null-availability/runs/{}/history",
+            started["run_id"].as_str().unwrap()
+        ),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(history["events"].as_array().unwrap().len(), 6);
+    assert_eq!(history["events"][5]["event_type"], "WorkflowCompleted");
     runtime.close().await;
     database.remove().await;
 }
