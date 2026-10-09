@@ -18,6 +18,29 @@ function assertRestart(bool $condition, string $message): void
     }
 }
 
+function sameRestartValue(mixed $expected, mixed $actual): bool
+{
+    if (is_array($expected)) {
+        if (! is_array($actual) || array_is_list($expected) !== array_is_list($actual)
+            || count($expected) !== count($actual)) {
+            return false;
+        }
+        // Avro map order is not semantic. List positions, keys, scalar types
+        // and exact large integers must still match without PHP coercion.
+        foreach ($expected as $key => $value) {
+            if (! array_key_exists($key, $actual) || ! sameRestartValue($value, $actual[$key])) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    return is_float($expected)
+        ? is_float($actual) && pack('d', $expected) === pack('d', $actual)
+        : $expected === $actual;
+}
+
 function restartSignalWorkflow(WorkflowContext $context, array $input): array
 {
     $context->waitCondition(fn (): bool => count($context->signals('payload')) > 0, 'restart.payload');
@@ -147,7 +170,7 @@ foreach ([2, 3] as $index) {
 assertRestart(new DateTimeImmutable($timerHistory[3]['payload']['fired_at']) >= new DateTimeImmutable($timer['scheduled']['fire_at']), 'Recovered timer fired early.');
 $signal = $receipt['signal'];
 $signalExecution = $client->describeWorkflow($signal['workflow_id'], $signal['run_id']);
-assertRestart($signalExecution->status === 'completed' && $signalExecution->output === $value, 'Pending signal did not recover its original typed outcome.');
+assertRestart($signalExecution->status === 'completed' && sameRestartValue($value, $signalExecution->output), 'Pending signal did not recover its original typed outcome.');
 $signalHistory = $client->workflowHistory($signal['workflow_id'], $signal['run_id'])['events'];
 assertRestart(array_column($signalHistory, 'event_type') === ['StartAccepted', 'WorkflowStarted', 'ConditionWaitOpened', 'SignalReceived', 'MessageCursorAdvanced', 'SignalApplied', 'ConditionWaitSatisfied', 'WorkflowCompleted'], 'Recovered signal history differs.');
 assertRestart(array_column($signalHistory, 'sequence') === range(1, 8), 'Recovered signal history is not contiguous.');
@@ -163,8 +186,8 @@ foreach (['condition_wait_id', 'condition_key', 'condition_definition_fingerprin
 }
 assertRestart($signalHistory[4]['payload']['previous_position'] === 0 && $signalHistory[4]['payload']['new_position'] === 1, 'Recovered signal cursor did not advance exactly once.');
 assertRestart($signalHistory[6]['payload']['workflow_signal_id'] === $signal['received']['signal_id'], 'Recovered condition references a different signal.');
-assertRestart($client->payloadCodec()->decodeEnvelope($signalHistory[3]['payload']['arguments']) === [$value]
-    && $client->payloadCodec()->decodeEnvelope($signalHistory[5]['payload']['value']) === $value, 'Accepted/applied signal payload changed across process loss.');
+assertRestart(sameRestartValue([$value], $client->payloadCodec()->decodeEnvelope($signalHistory[3]['payload']['arguments']))
+    && sameRestartValue($value, $client->payloadCodec()->decodeEnvelope($signalHistory[5]['payload']['value'])), 'Accepted/applied signal payload changed across process loss.');
 $client->deregisterWorkerRegistration('restart-old');
 echo json_encode(['phase' => $phase, 'outcome' => 'pass', 'run_id' => $execution->runId,
     'stale_claim_refused' => true, 'history' => $history, 'timer_recovered' => true, 'timer_history' => $timerHistory,
