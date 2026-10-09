@@ -1,4 +1,4 @@
--- Native development schema version 2. The PHP relations/indexes below are
+-- Native development schema version 3. The PHP relations/indexes below are
 -- captured from the image pinned in tests/Fixtures/ServerParity/php-baseline.json.
 -- This creates a fresh database; it never converts or adopts a PHP database.
 CREATE TABLE "activity_attempts" ("id" varchar not null, "workflow_run_id" varchar not null, "activity_execution_id" varchar not null, "workflow_task_id" varchar, "attempt_number" integer not null, "status" varchar not null, "lease_owner" varchar, "started_at" datetime not null, "last_heartbeat_at" datetime, "lease_expires_at" datetime, "closed_at" datetime, "created_at" datetime, "updated_at" datetime, "worker_attempt_id" varchar, primary key ("id"));
@@ -386,7 +386,7 @@ CREATE INDEX "workflow_worker_sessions_namespace_status_index" on "workflow_work
 
 -- Native bookkeeping uses separate relations; PHP-owned columns stay intact.
 CREATE TABLE dw_server_schema (engine TEXT NOT NULL, version INTEGER NOT NULL);
-INSERT INTO dw_server_schema VALUES ('rust-development', 2);
+INSERT INTO dw_server_schema VALUES ('rust-development', 3);
 CREATE TABLE dw_task_completions (
     task_id TEXT PRIMARY KEY REFERENCES workflow_tasks(id) ON DELETE CASCADE,
     receipt TEXT NOT NULL
@@ -398,3 +398,4 @@ CREATE TABLE dw_poll_receipts (
     PRIMARY KEY(namespace,worker_id,kind,request_id)
 );
 CREATE INDEX dw_workflow_tasks_poll ON workflow_tasks(namespace, queue, task_type, status, available_at);
+CREATE TABLE dw_query_cache ("key" TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL, expiration INTEGER NOT NULL);

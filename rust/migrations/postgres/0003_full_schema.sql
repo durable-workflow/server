@@ -1599,7 +1599,7 @@ ALTER TABLE ONLY public.workflow_search_attributes
 
 -- Native bookkeeping is separate from the existing PHP-owned columns.
 CREATE TABLE public.dw_server_schema (engine text NOT NULL, version bigint NOT NULL);
-INSERT INTO public.dw_server_schema VALUES ('rust-development', 2);
+INSERT INTO public.dw_server_schema VALUES ('rust-development', 3);
 CREATE TABLE public.dw_task_completions (
     task_id character varying(26) PRIMARY KEY REFERENCES public.workflow_tasks(id) ON DELETE CASCADE,
     receipt jsonb NOT NULL
@@ -1613,6 +1613,7 @@ CREATE TABLE public.dw_poll_receipts (
     PRIMARY KEY(namespace,worker_id,kind,request_id)
 );
 CREATE INDEX dw_workflow_tasks_poll ON public.workflow_tasks(namespace,queue,task_type,status,available_at);
+CREATE TABLE public.dw_query_cache ("key" text PRIMARY KEY, value text NOT NULL, expiration bigint NOT NULL);
 -- Generated from the frozen published PHP baseline on PostgreSQL 17.11.
 -- pg_dump --schema-only --no-owner --no-privileges; dump session/psql
 -- directives and comments are omitted. No table data is included.

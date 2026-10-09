@@ -1388,4 +1388,9 @@ CREATE TABLE IF NOT EXISTS dw_poll_receipts (
     PRIMARY KEY(namespace,worker_id,kind,request_id),
     CONSTRAINT dw_poll_receipts_task FOREIGN KEY(task_id) REFERENCES workflow_tasks(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_nopad_bin;
+CREATE TABLE IF NOT EXISTS dw_query_cache (
+    `key` VARCHAR(64) PRIMARY KEY,
+    value LONGTEXT NOT NULL,
+    expiration BIGINT NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 SET FOREIGN_KEY_CHECKS=1;

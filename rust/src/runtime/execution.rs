@@ -221,6 +221,59 @@ impl Runtime {
         }
     }
     delegate!(describe(workflow_id: &str, run_id: Option<&str>) -> Result<Value>);
+    pub(crate) async fn query_workflow(
+        &self,
+        workflow_id: &str,
+        run_id: Option<&str>,
+        name: &str,
+        body: Value,
+    ) -> Result<(StatusCode, Value)> {
+        if body.as_object().is_none_or(|m| m.len() != 1) {
+            return Err(refuse(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "unsupported_request_field",
+            ));
+        }
+        let arguments = super::envelope(&body, "input")?;
+        if arguments.len() > super::queries::ARGUMENT_BYTES {
+            return Err(refuse(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "query_arguments_exceed_budget",
+            ));
+        }
+        let values =
+            super::queries::decode(self.signal_codec.clone(), arguments.clone(), true).await?;
+        match &*self.storage {
+            Storage::Sqlite(store) => {
+                store
+                    .query_workflow(workflow_id, run_id, name, arguments, values)
+                    .await
+            }
+            Storage::Postgres(store) => {
+                store
+                    .query_workflow(workflow_id, run_id, name, arguments, values)
+                    .await
+            }
+            Storage::MySql(store) => {
+                store
+                    .query_workflow(workflow_id, run_id, name, arguments, values)
+                    .await
+            }
+        }
+    }
+    delegate!(poll_query(body: Value) -> Result<Value>);
+    pub(crate) async fn complete_query(&self, task_id: &str, body: Value) -> Result<Value> {
+        let result = super::envelope(&body, "result_envelope")?;
+        if result.len() > super::queries::RESULT_BYTES {
+            return Err(refuse(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "query_result_exceeds_budget",
+            ));
+        }
+        super::queries::decode(self.signal_codec.clone(), result, false).await?;
+        self.finish_query(task_id, body, false).await
+    }
+    delegate!(finish_query(task_id: &str, body: Value, failed: bool) -> Result<Value>);
     delegate!(
         history(
             workflow_id: &str,

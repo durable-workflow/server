@@ -12,6 +12,10 @@
         "CREATE TABLE `dw_poll_receipts` (\n  `namespace` varchar(255) NOT NULL,\n  `worker_id` varchar(255) NOT NULL,\n  `kind` varchar(8) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,\n  `request_id` varchar(255) NOT NULL,\n  `task_id` varchar(26) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,\n  `attempt` bigint(20) NOT NULL,\n  `response` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL CHECK (json_valid(`response`)),\n  `expires_at` timestamp(6) NOT NULL,\n  PRIMARY KEY (`namespace`,`worker_id`,`kind`,`request_id`),\n  KEY `dw_poll_receipts_task` (`task_id`),\n  CONSTRAINT `dw_poll_receipts_task` FOREIGN KEY (`task_id`) REFERENCES `workflow_tasks` (`id`) ON DELETE CASCADE\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_nopad_bin"
     ],
     [
+        "dw_query_cache",
+        "CREATE TABLE `dw_query_cache` (\n  `key` varchar(64) NOT NULL,\n  `value` longtext NOT NULL,\n  `expiration` bigint(20) NOT NULL,\n  PRIMARY KEY (`key`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin"
+    ],
+    [
         "dw_server_schema",
         "CREATE TABLE `dw_server_schema` (\n  `engine` varchar(64) NOT NULL,\n  `version` bigint(20) NOT NULL,\n  `bootstrap_checksum` varbinary(48) NOT NULL,\n  PRIMARY KEY (`engine`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin"
     ],

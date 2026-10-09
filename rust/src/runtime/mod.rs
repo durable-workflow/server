@@ -1,5 +1,5 @@
-//! First execution slice, deliberately unpublished and opt-in. Avro envelopes
-//! remain opaque: the runtime does not use the unfinished ingress decoder.
+//! First execution slice, deliberately unpublished and opt-in. Signal/query
+//! arguments use the official codec on a bounded blocking worker.
 //! Typed database adapters share transitions; existing PHP data requires qualification.
 
 mod backend;
@@ -7,6 +7,7 @@ mod execution;
 mod http;
 pub mod mysql;
 pub mod postgres;
+mod queries;
 mod schema;
 mod sqlite;
 mod store;

@@ -14,6 +14,14 @@ pub(super) trait Backend: Database {
     const TASK_CANDIDATES_SQL: &'static str = super::store::TASK_CANDIDATES_SQL;
     const POLL_RECEIPT_CLEANUP_SQL: &'static str = super::store::POLL_RECEIPT_CLEANUP_SQL;
     const TIMER_TASK_SQL: &'static str;
+    const QUERY_CACHE_SCAN: &'static str = "SELECT \"key\",value,expiration FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' ORDER BY \"key\" LIMIT 65";
+    const QUERY_CACHE_GET: &'static str =
+        "SELECT value,expiration FROM dw_query_cache WHERE \"key\"=$1";
+    const QUERY_CACHE_INSERT: &'static str =
+        "INSERT INTO dw_query_cache(\"key\",value,expiration) VALUES ($1,$2,$3)";
+    const QUERY_CACHE_UPDATE: &'static str =
+        "UPDATE dw_query_cache SET value=$1,expiration=$2 WHERE \"key\"=$3";
+    const QUERY_CACHE_DELETE: &'static str = "DELETE FROM dw_query_cache WHERE \"key\"=$1";
     fn statement(sql: &'static str) -> Cow<'static, str> {
         Cow::Borrowed(sql)
     }
@@ -206,6 +214,14 @@ impl Backend for Postgres {
 impl Backend for MySql {
     type EncodedTime = DateTime<Utc>;
     type EncodedDocument = Json<Value>;
+    const QUERY_CACHE_SCAN: &'static str = "SELECT `key`,value,expiration FROM dw_query_cache WHERE `key` LIKE 'dw-native-query:%' ORDER BY `key` LIMIT 65";
+    const QUERY_CACHE_GET: &'static str =
+        "SELECT value,expiration FROM dw_query_cache WHERE `key`=$1";
+    const QUERY_CACHE_INSERT: &'static str =
+        "INSERT INTO dw_query_cache(`key`,value,expiration) VALUES ($1,$2,$3)";
+    const QUERY_CACHE_UPDATE: &'static str =
+        "UPDATE dw_query_cache SET value=$1,expiration=$2 WHERE `key`=$3";
+    const QUERY_CACHE_DELETE: &'static str = "DELETE FROM dw_query_cache WHERE `key`=$1";
     const TIMER_TASK_SQL: &'static str = "SELECT id FROM workflow_tasks WHERE workflow_run_id=? AND namespace='default' AND task_type='timer' AND status='ready' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.timer_id'))=?";
     // First use the preserved run/sequence index to materialize only IDs and
     // byte counts for this bounded page. Sorting JSON payloads in the window
@@ -274,7 +290,8 @@ impl Backend for MySql {
         let mut tx = pool.begin().await?;
         // InnoDB row locking releases on commit/rollback/process loss. This
         // first slice serializes transitions on its single ownership row.
-        sqlx::query("SELECT engine FROM dw_server_schema WHERE engine='rust-development' AND version=2 FOR UPDATE").fetch_one(&mut *tx).await?;
+        sqlx::query("SELECT engine FROM dw_server_schema WHERE engine='rust-development' AND version=? FOR UPDATE")
+            .bind(mysql::VERSION).fetch_one(&mut *tx).await?;
         Ok(tx)
     }
     async fn history_ready(pool: &Pool<Self>) -> bool {

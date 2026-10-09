@@ -9,7 +9,7 @@ use sqlx::{
 };
 use std::{collections::BTreeMap, sync::OnceLock, time::Duration};
 
-pub const VERSION: i64 = 2;
+pub const VERSION: i64 = 3;
 type Catalog = Vec<(String, String)>;
 
 pub const MARKER_SQL: &str = "CREATE TABLE dw_server_schema (engine VARCHAR(64) NOT NULL PRIMARY KEY,version BIGINT NOT NULL,bootstrap_checksum VARBINARY(48) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin";
@@ -37,11 +37,11 @@ impl Flavor {
         let (slot, sql) = match self {
             Self::MySql => (
                 &MYSQL,
-                include_str!("../../migrations/mysql/0002_full_schema.sql"),
+                include_str!("../../migrations/mysql/0003_full_schema.sql"),
             ),
             Self::MariaDb => (
                 &MARIA,
-                include_str!("../../migrations/mariadb/0002_full_schema.sql"),
+                include_str!("../../migrations/mariadb/0003_full_schema.sql"),
             ),
         };
         slot.get_or_init(|| {
@@ -538,10 +538,18 @@ mod tests {
     async fn qualification_corrupt_catalog_and_history_refusal() {
         for (mutation, reason) in [
             (
-                "UPDATE dw_server_schema SET version=3",
+                "UPDATE dw_server_schema SET version=99",
+                "unsupported_rust_schema",
+            ),
+            (
+                "UPDATE dw_server_schema SET version=2",
                 "unsupported_rust_schema",
             ),
             ("DELETE FROM dw_server_schema", "unsupported_rust_schema"),
+            (
+                "ALTER TABLE dw_query_cache DROP COLUMN expiration",
+                "native_schema_catalog_mismatch",
+            ),
             (
                 "UPDATE dw_server_schema SET bootstrap_checksum=X'00'",
                 "unsupported_rust_schema",

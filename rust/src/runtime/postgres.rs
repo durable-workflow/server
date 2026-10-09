@@ -13,7 +13,7 @@ use sqlx::{
 
 use super::{Result, refuse};
 
-pub const VERSION: i64 = 2;
+pub const VERSION: i64 = 3;
 pub const CATALOG_QUERY: &str = include_str!("postgres-catalog.sql");
 type Catalog = Vec<(String, String, Json<Value>)>;
 
@@ -24,7 +24,7 @@ fn migrator() -> &'static Migrator {
             VERSION,
             "full frozen PHP PostgreSQL schema and native receipts".into(),
             MigrationType::Simple,
-            include_str!("../../migrations/postgres/0002_full_schema.sql").into_sql_str(),
+            include_str!("../../migrations/postgres/0003_full_schema.sql").into_sql_str(),
             false,
         )]);
         // The caller's transaction-scoped PostgreSQL advisory lock covers
@@ -446,10 +446,18 @@ mod tests {
     async fn qualification_corrupt_history_and_catalog_are_refused_without_writes() {
         for (mutation, reason) in [
             (
-                "UPDATE dw_server_schema SET version=3",
+                "UPDATE dw_server_schema SET version=99",
+                "unsupported_rust_schema",
+            ),
+            (
+                "UPDATE dw_server_schema SET version=2",
                 "unsupported_rust_schema",
             ),
             ("DELETE FROM dw_server_schema", "unsupported_rust_schema"),
+            (
+                "ALTER TABLE dw_query_cache DROP COLUMN expiration",
+                "native_schema_catalog_mismatch",
+            ),
             (
                 "INSERT INTO dw_server_schema VALUES ('rust-development',2)",
                 "unsupported_rust_schema",

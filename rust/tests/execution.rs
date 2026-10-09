@@ -461,6 +461,296 @@ fn completion(task: &Value, commands: Value) -> Value {
     json!({"lease_owner":task["lease_owner"],"workflow_task_attempt":task["workflow_task_attempt"],"commands":commands})
 }
 
+async fn query_worker(app: &Router, worker: &str) {
+    let (status, body) = request(app,"POST","/api/worker/register",json!({
+        "worker_id":worker,"task_queue":"test","runtime":"php","supported_workflow_types":["echo"],
+        "supported_activity_types":[],"capabilities":["query_tasks"],"workflow_command_contracts":{"echo":{
+        "queries":["state"],"query_contracts":[{"name":"state","parameters":[{"name":"request","position":0,
+        "type":"int","required":true,"variadic":false,"default_available":false,"allows_null":false}]}]}}})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
+async fn await_query(app: &Router, worker: &str) -> Value {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let task = poll(app, worker, "query").await;
+            if !task.is_null() {
+                break task;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("query must be admitted without holding the database pool")
+}
+
+#[tokio::test]
+async fn queries_fence_recovered_leases_across_pools_without_mutating_the_run() {
+    let database = TestDatabase::new().await;
+    let first = database.open().await.unwrap();
+    let second = database.open().await.unwrap();
+    let a = router(first.clone());
+    let b = router(second.clone());
+    query_worker(&a, "query-a").await;
+    query_worker(&b, "query-b").await;
+    let started = start(&a, "read-only-query").await;
+    let query_path = format!(
+        "/api/workflows/read-only-query/runs/{}/query/state",
+        started["run_id"].as_str().unwrap()
+    );
+    let input = json!({"input":envelope(Payload::Array(vec![Payload::Long(9007199254740993)]))});
+    assert_eq!(
+        request(&a, "POST", &query_path, input.clone()).await.1["reason"],
+        "query_snapshot_busy"
+    );
+    let workflow_task = poll(&a, "query-a", "workflow").await;
+    assert_eq!(
+        request(&a, "POST", &query_path, input.clone()).await.1["reason"],
+        "query_snapshot_busy"
+    );
+    let complete_path = format!(
+        "/api/worker/workflow-tasks/{}/complete",
+        workflow_task["task_id"].as_str().unwrap()
+    );
+    assert_eq!(
+        request(
+            &a,
+            "POST",
+            &complete_path,
+            completion(
+                &workflow_task,
+                json!([{
+        "type":"complete_workflow","result":envelope(Payload::Long(9007199254740993))}])
+            )
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let history_path = format!(
+        "/api/workflows/read-only-query/runs/{}/history",
+        started["run_id"].as_str().unwrap()
+    );
+    let before = request(&a, "GET", &history_path, Value::Null).await.1;
+    let run_before = request(&a, "GET", "/api/workflows/read-only-query", Value::Null)
+        .await
+        .1;
+    for (path, input, expected) in [
+        (
+            query_path.replace("/query/state", "/query/unknown"),
+            input.clone(),
+            "rejected_unknown_query",
+        ),
+        (
+            query_path.clone(),
+            json!({"input":envelope(Payload::Array(vec![Payload::String("wrong".into())]))}),
+            "invalid_query_arguments",
+        ),
+        (
+            query_path.clone(),
+            json!({"input":{"codec":"avro","blob":"bad-avro"}}),
+            "invalid_query_arguments",
+        ),
+    ] {
+        assert_eq!(
+            request(&a, "POST", &path, input).await.1["reason"],
+            expected
+        );
+    }
+    let waiting = {
+        let app = a.clone();
+        let path = query_path.clone();
+        let input = input.clone();
+        tokio::spawn(async move { request(&app, "POST", &path, input).await })
+    };
+    let claim = await_query(&b, "query-a").await;
+    assert_eq!(claim["run_status"], "completed");
+    // Worker snapshots retain durable row IDs/links; the control-plane
+    // history endpoint exposes its documented timestamp projection.
+    let projected = Value::Array(
+        claim["history_events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| {
+                json!({"sequence":event["sequence"],"event_type":event["event_type"],
+            "payload":event["payload"],"timestamp":event["recorded_at"]})
+            })
+            .collect(),
+    );
+    assert_eq!(projected, before["events"]);
+    assert_eq!(claim["query_arguments"], input["input"]);
+    assert_eq!(poll(&a, "query-a", "query").await, claim);
+    assert!(poll(&b, "query-b", "query").await.is_null());
+    let finish_path = format!(
+        "/api/worker/query-tasks/{}/complete",
+        claim["query_task_id"].as_str().unwrap()
+    );
+    let result = envelope(Payload::Long(9007199254740993));
+    let completion = json!({"lease_owner":"query-a","query_task_attempt":claim["query_task_attempt"],"result_envelope":result});
+    let mut wrong = completion.clone();
+    wrong["lease_owner"] = json!("query-b");
+    assert_eq!(
+        request(&b, "POST", &finish_path, wrong).await.1["reason"],
+        "query_task_lease_owner_mismatch"
+    );
+    let mut invalid = completion.clone();
+    invalid["result_envelope"]["blob"] = json!("not-avro");
+    assert_eq!(
+        request(&b, "POST", &finish_path, invalid).await.1["reason"],
+        "invalid_query_result"
+    );
+    match &database {
+        TestDatabase::Sqlite(_) => database.execute("UPDATE dw_query_cache SET value=json_set(value,'$.lease_until',0) WHERE value LIKE '%\"status\":\"leased\"%'").await,
+        TestDatabase::Postgres{..} => database.execute("UPDATE dw_query_cache SET value=jsonb_set(value::jsonb,'{lease_until}','0')::text WHERE value LIKE '%\"status\":\"leased\"%'").await,
+        TestDatabase::MySql{..} => database.execute("UPDATE dw_query_cache SET value=JSON_SET(value,'$.lease_until',0) WHERE value LIKE '%\"status\":\"leased\"%'").await,
+    }
+    assert_eq!(
+        request(&a, "POST", &finish_path, completion.clone())
+            .await
+            .1["reason"],
+        "query_task_lease_expired"
+    );
+    let recovered = await_query(&a, "query-b").await;
+    assert_eq!(recovered["query_task_id"], claim["query_task_id"]);
+    assert_eq!(recovered["query_task_attempt"], 2);
+    assert_eq!(recovered["history_events"], claim["history_events"]);
+    assert_eq!(
+        request(&a, "POST", &finish_path, completion.clone())
+            .await
+            .1["reason"],
+        "query_task_lease_owner_mismatch"
+    );
+    let mut current = completion.clone();
+    current["lease_owner"] = json!("query-b");
+    assert_eq!(
+        request(&b, "POST", &finish_path, current.clone()).await.1["reason"],
+        "query_task_attempt_mismatch"
+    );
+    current["query_task_attempt"] = json!(2);
+    assert_eq!(
+        request(&b, "POST", &finish_path, current.clone()).await.0,
+        StatusCode::OK
+    );
+    let outcome = waiting.await.unwrap();
+    assert_eq!(outcome.0, StatusCode::OK, "{}", outcome.1);
+    assert_eq!(outcome.1["result_envelope"], result);
+    assert_eq!(
+        request(&b, "POST", &finish_path, current).await.1["reason"],
+        "query_task_not_leased"
+    );
+    assert_eq!(
+        request(&a, "GET", &history_path, Value::Null).await.1,
+        before
+    );
+    assert_eq!(
+        request(&b, "GET", "/api/workflows/read-only-query", Value::Null)
+            .await
+            .1,
+        run_before
+    );
+    first.close().await;
+    second.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn queries_bound_abandoned_requests_reclaim_expired_entries_and_deliver_worker_failure() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    query_worker(&app, "query-worker").await;
+    start(&app, "bounded-queries").await;
+    let task = poll(&app, "query-worker", "workflow").await;
+    let path = format!(
+        "/api/worker/workflow-tasks/{}/complete",
+        task["task_id"].as_str().unwrap()
+    );
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            &path,
+            completion(
+                &task,
+                json!([{"type":"complete_workflow",
+        "result":envelope(Payload::Long(1))}])
+            )
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let input = json!({"input":envelope(Payload::Array(vec![Payload::Long(1)]))});
+    let mut requests = tokio::task::JoinSet::new();
+    for _ in 0..17 {
+        let app = app.clone();
+        let input = input.clone();
+        requests.spawn(async move {
+            request(
+                &app,
+                "POST",
+                "/api/workflows/bounded-queries/query/state",
+                input,
+            )
+            .await
+        });
+    }
+    let rejected = tokio::time::timeout(std::time::Duration::from_secs(5), requests.join_next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        rejected.0,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "{}",
+        rejected.1
+    );
+    assert_eq!(rejected.1["reason"], "query_task_queue_full");
+    requests.abort_all();
+    while requests.join_next().await.is_some() {}
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            "/api/workflows/bounded-queries/query/state",
+            input.clone()
+        )
+        .await
+        .1["reason"],
+        "query_task_queue_full"
+    );
+    database
+        .execute("UPDATE dw_query_cache SET expiration=0")
+        .await;
+    let waiting = {
+        let app = app.clone();
+        tokio::spawn(async move {
+            request(
+                &app,
+                "POST",
+                "/api/workflows/bounded-queries/query/state",
+                input,
+            )
+            .await
+        })
+    };
+    let claim = await_query(&app, "query-worker").await;
+    let path = format!(
+        "/api/worker/query-tasks/{}/fail",
+        claim["query_task_id"].as_str().unwrap()
+    );
+    assert_eq!(request(&app,"POST",&path,json!({"lease_owner":"query-worker","query_task_attempt":1,
+        "failure":{"reason":"query_rejected","message":"handler refused the request","type":"TestFailure"}})).await.0,StatusCode::OK);
+    let result = waiting.await.unwrap();
+    assert_eq!(result.0, StatusCode::CONFLICT);
+    assert_eq!(result.1["reason"], "query_rejected");
+    assert_eq!(result.1["message"], "handler refused the request");
+    runtime.close().await;
+    database.remove().await;
+}
+
 #[tokio::test]
 async fn buffered_signals_survive_restart_and_each_wait_commits_once() {
     let database = TestDatabase::new().await;

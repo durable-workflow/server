@@ -6,6 +6,24 @@ The unpublished Rust crate has an Avro foundation and an opt-in SQLite/PostgreSQ
 execution slice. Full runtime parity, migration, performance improvement and
 cutover remain unqualified.
 
+Query slice #341 adds a shared state query before signals, after one delivery,
+and after completion. The [hosted matrix](https://github.com/durable-workflow/server/actions/runs/37981215484)
+on [06499eb7](https://github.com/durable-workflow/server/commit/06499eb7)
+passes all eight PHP/Rust/embedded fixtures on SQLite, PostgreSQL 16/17,
+MySQL 8.0/8.4 and MariaDB 10.11. It also passes native query lease/limit tests,
+complete schema qualification and actual process-kill recovery of pending
+timers/signals and leased activities. This qualifies these representative cases;
+full query semantics, #325, takeover and performance remain open.
+Native admission uses immutable quiescent snapshots,
+original query contracts and leased transient tasks in a separate native
+`dw_query_cache` table. The frozen PHP schema has no Laravel cache table;
+development schema version 3 adds only native bookkeeping and refuses older
+native development databases. PHP-owned relations remain unchanged.
+Arguments/results use the official codec outside Tokio executor threads.
+Bounded pending/result inventory, expiry, independent-pool completion and stale
+fences have dedicated tests. Busy workflow/query routing and query poll-request
+receipts remain unqualified; the latter capability is advertised as false.
+
 ## Work order and current status
 
 The next slices widen reviewed PHP/Rust/embedded fixtures and native behavior:
