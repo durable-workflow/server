@@ -120,8 +120,7 @@ jobs:
           docker kill --signal=KILL "$RESOURCE_SCOPE-rust"
           test "$(docker inspect --format='{{.State.ExitCode}}' "$RESOURCE_SCOPE-rust")" = 137
           docker logs "$RESOURCE_SCOPE-rust" > parity-evidence/rust-killed.log 2>&1
-          docker rm "$RESOURCE_SCOPE-rust"
-          docker run -d --name "$RESOURCE_SCOPE-rust" --network "$RESOURCE_SCOPE" --network-alias=parity-rust \
+          docker run -d --name "$RESOURCE_SCOPE-recovered" --network "$RESOURCE_SCOPE" --network-alias=parity-recovered \
             --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
             -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token \
             -e DB_DATABASE=/state/rust.sqlite -e DW_BIND_ADDRESS=0.0.0.0:8080 \
@@ -131,7 +130,7 @@ jobs:
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --entrypoint curl --network "$RESOURCE_SCOPE" "$image" \
-              -fsS http://parity-rust:8080/api/ready > parity-evidence/restart-readiness.json; then
+              -fsS http://parity-recovered:8080/api/ready > parity-evidence/restart-readiness.json; then
               ready=1
               break
             fi
@@ -141,7 +140,7 @@ jobs:
           docker run --rm --user=1000:1000 --entrypoint php --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/restart.php \
-            finish http://parity-rust:8080 /evidence/restart-receipt.json > parity-evidence/restart-finish.json
+            finish http://parity-recovered:8080 /evidence/restart-receipt.json > parity-evidence/restart-finish.json
       - name: Collect Server logs and clean resources
         if: always()
         env:
@@ -149,8 +148,10 @@ jobs:
         run: |
           docker logs "$RESOURCE_SCOPE-server" > parity-evidence/server.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-rust" > parity-evidence/rust.log 2>&1 || true
+          docker logs "$RESOURCE_SCOPE-recovered" > parity-evidence/rust-recovered.log 2>&1 || true
           docker rm -f "$RESOURCE_SCOPE-server" || true
           docker rm -f "$RESOURCE_SCOPE-rust" || true
+          docker rm -f "$RESOURCE_SCOPE-recovered" || true
           docker network rm "$RESOURCE_SCOPE" || true
       - name: Retain fixture evidence
         if: always()
