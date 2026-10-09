@@ -565,7 +565,20 @@ async fn queries_fence_recovered_leases_across_pools_without_mutating_the_run() 
     };
     let claim = await_query(&b, "query-a").await;
     assert_eq!(claim["run_status"], "completed");
-    assert_eq!(claim["history_events"], before["events"]);
+    // Worker snapshots retain durable row IDs/links; the control-plane
+    // history endpoint exposes its documented timestamp projection.
+    let projected = Value::Array(
+        claim["history_events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| {
+                json!({"sequence":event["sequence"],"event_type":event["event_type"],
+            "payload":event["payload"],"timestamp":event["recorded_at"]})
+            })
+            .collect(),
+    );
+    assert_eq!(projected, before["events"]);
     assert_eq!(claim["query_arguments"], input["input"]);
     assert_eq!(poll(&a, "query-a", "query").await, claim);
     assert!(poll(&b, "query-b", "query").await.is_null());
