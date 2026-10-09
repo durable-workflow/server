@@ -384,11 +384,12 @@ stored-value and migration-interruption fixtures. The capability, consumer,
 performance and operational inventory remains open under #325.
 No separate defect issues have been filed yet.
 
-Pending-task review found a prerequisite compatibility case: PHP treats a null
+The [pending-task correction in #336](https://github.com/durable-workflow/server/pull/336)
+addresses a prerequisite compatibility case: PHP treats a null
 `workflow_tasks.available_at` as immediately available, while the native query
 excluded it. The focused regression reproduces the native stall; the common
 polling predicate now admits null availability while future-dated work waits.
 PHP and native HTTP cases cover workflow/activity tasks, original run identities,
-duplicate activity completion and the final durable workflow outcome. Final
-database-matrix results are pending. This correction precedes read-only upgrade
+duplicate activity completion and the final durable workflow outcome. Exact-head
+hosted qualification is recorded in the PR. This correction precedes read-only upgrade
 preflight; it does not enable database takeover.

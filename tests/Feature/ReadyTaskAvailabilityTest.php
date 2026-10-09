@@ -34,6 +34,7 @@ class ReadyTaskAvailabilityTest extends TestCase
         foreach (['future', 'ready'] as $worker) {
             $this->postJson('/api/worker/register', [
                 'worker_id' => $worker, 'task_queue' => 'availability', 'runtime' => 'php',
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
                 'supported_workflow_types' => ['tests.external-greeting-workflow'],
                 'supported_activity_types' => ['tests.external-greeting-activity'],
             ], $headers)->assertCreated();
