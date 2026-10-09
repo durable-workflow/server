@@ -446,10 +446,18 @@ mod tests {
     async fn qualification_corrupt_history_and_catalog_are_refused_without_writes() {
         for (mutation, reason) in [
             (
-                "UPDATE dw_server_schema SET version=3",
+                "UPDATE dw_server_schema SET version=99",
+                "unsupported_rust_schema",
+            ),
+            (
+                "UPDATE dw_server_schema SET version=2",
                 "unsupported_rust_schema",
             ),
             ("DELETE FROM dw_server_schema", "unsupported_rust_schema"),
+            (
+                "ALTER TABLE dw_query_cache DROP COLUMN expiration",
+                "native_schema_catalog_mismatch",
+            ),
             (
                 "INSERT INTO dw_server_schema VALUES ('rust-development',2)",
                 "unsupported_rust_schema",

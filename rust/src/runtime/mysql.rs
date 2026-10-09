@@ -538,10 +538,18 @@ mod tests {
     async fn qualification_corrupt_catalog_and_history_refusal() {
         for (mutation, reason) in [
             (
-                "UPDATE dw_server_schema SET version=3",
+                "UPDATE dw_server_schema SET version=99",
+                "unsupported_rust_schema",
+            ),
+            (
+                "UPDATE dw_server_schema SET version=2",
                 "unsupported_rust_schema",
             ),
             ("DELETE FROM dw_server_schema", "unsupported_rust_schema"),
+            (
+                "ALTER TABLE dw_query_cache DROP COLUMN expiration",
+                "native_schema_catalog_mismatch",
+            ),
             (
                 "UPDATE dw_server_schema SET bootstrap_checksum=X'00'",
                 "unsupported_rust_schema",
