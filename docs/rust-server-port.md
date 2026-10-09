@@ -448,7 +448,7 @@ external payload preservation remain required follow-up under #325.
 [The timer slice in #339](https://github.com/durable-workflow/server/pull/339)
 adds reviewed one-timer and repeated zero/delayed-sleep fixtures. Their contract
 requires original timer IDs/deadlines, deterministic command sequences,
-non-early firing and one completed typed outcome. Eleven new comparator cases
+non-early firing and one completed typed outcome. Twelve new comparator cases
 include corrupted timer identity, delay, sequence, deadline and duplicate/early
 firing counterexamples. The tests-first native regression refuses `start_timer`
 with 422 on the previous execution slice; matrix receipts are in the PR.
@@ -462,6 +462,9 @@ The comparator retains sub-millisecond precision rather than rounding early
 firing into equality. MySQL's driver-owned JSON-path query must bypass the
 generic PostgreSQL placeholder conversion, which otherwise mistakes a literal
 `$.timer_id` for a binding and panics. The same recovery case requalifies it.
+Comparisons also bind saved expectations directly to the current reviewed source
+fixtures; matching edited recordings cannot invent replacement expectations
+while retaining copied fixture hashes and pass labels.
 
 Native scheduling is implemented with persisted PHP-layout timers and timer
 tasks. A bounded background batch rechecks pending work under the existing

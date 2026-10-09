@@ -125,7 +125,7 @@ export function checkObservation(fixture, observation, workflowId) {
   };
 }
 
-export function compareRecords(records, expectedFixtureHashes) {
+export function compareRecords(records, expectedFixtureHashes, expectedFixtures) {
   assert.ok(records.length >= 2, 'at least two recordings are required');
   const reference = records[0];
   for (const record of records) {
@@ -144,6 +144,7 @@ export function compareRecords(records, expectedFixtureHashes) {
     for (const [index, item] of record.cases.entries()) {
       const baseline = reference.cases[index];
       assert.equal(item.fixture_id, item.fixture.id, 'case identity matches fixture');
+      assert.deepStrictEqual(item.fixture, expectedFixtures[`${item.fixture_id}.json`], 'case expectations match the current reviewed source fixture');
       assert.equal(item.observation.sdk_php, record.artifacts.sdk_php, 'installed published SDK matches tuple');
       if (record.mode === 'embedded') assert.equal(item.observation.workflow_package, record.artifacts.workflow, 'installed Workflow matches tuple');
       assert.deepStrictEqual(item.fixture, baseline.fixture, 'same fixture expectations');

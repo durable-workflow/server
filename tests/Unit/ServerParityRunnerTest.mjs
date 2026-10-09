@@ -4,7 +4,8 @@ import {readFileSync} from 'node:fs';
 import {checkObservation, compareRecords as compareCorpusRecords} from '../../scripts/conformance/server-parity/contract.mjs';
 
 const fixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/one-activity.json', import.meta.url)));
-const compareRecords = records => compareCorpusRecords(records, {'one-activity.json': 'fixture-sha'});
+const reviewed = {'one-activity.json': fixture};
+const compareRecords = records => compareCorpusRecords(records, {'one-activity.json': 'fixture-sha'}, reviewed);
 function observation(suffix = '') {
   const run = `run${suffix}`;
   const command = `command${suffix}`;
@@ -101,7 +102,7 @@ test('two empty recordings cannot establish parity', () => {
 });
 
 test('two matching subsets cannot omit a required current fixture', () => {
-  assert.throws(() => compareCorpusRecords([record(), record('-other')], {'one-activity.json': 'fixture-sha', 'echo.json': 'required-fixture-sha'}));
+  assert.throws(() => compareCorpusRecords([record(), record('-other')], {'one-activity.json': 'fixture-sha', 'echo.json': 'required-fixture-sha'}, reviewed));
 });
 
 test('matching recordings cannot omit hashed fixtures or repeat one case', () => {
@@ -113,6 +114,17 @@ test('matching recordings cannot omit hashed fixtures or repeat one case', () =>
     corrupt(changed);
     assert.throws(() => compareRecords([changed, structuredClone(changed)]));
   }
+});
+
+test('matching forged expectations and pass labels cannot replace reviewed source fixtures', () => {
+  const records = [structuredClone(record()), structuredClone(record('-other'))];
+  for (const value of records) {
+    const item = value.cases[0];
+    item.fixture.expected_events[2] = 'UnreviewedReplacement';
+    item.observation.events[2].event_type = 'UnreviewedReplacement';
+    item.projection = checkObservation(item.fixture, item.observation, 'test-one-activity');
+  }
+  assert.throws(() => compareRecords(records), /current reviewed source fixture/);
 });
 
 const timerFixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/two-timers.json', import.meta.url)));
