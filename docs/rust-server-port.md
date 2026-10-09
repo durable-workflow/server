@@ -219,9 +219,12 @@ Apache's runtime UID have separate private copies. The
 [operator guide](php-database-ownership.md) records temporary disk requirements,
 cleanup and the explicit reserved-name grant needed by table-only MySQL/MariaDB
 roles. This does not claim migration or production takeover qualification.
+Cache-only restart and scheduler-cache maintenance remain usable during a
+database outage; early command preflight targets write-capable roles rather than
+every command sharing their prefix.
 
-Next: qualify and merge the exact #331 head, then implement the versioned
-full-schema takeover foundation, expanding real execution and differential
+Next: implement the versioned full-schema takeover foundation after #331's
+exact-head qualification and merge, expanding real execution and differential
 fixtures across the required databases. The rest of the inventory remains open
 under #325.
 No separate defect issues have been filed yet.

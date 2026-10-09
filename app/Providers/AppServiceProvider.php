@@ -76,8 +76,13 @@ class AppServiceProvider extends ServiceProvider
         // Workers can catch ordinary backend exceptions and keep looping.
         // Refuse ownership before entering those loops or destructive commands.
         $this->app->make('events')->listen(CommandStarting::class, static function (CommandStarting $event): void {
-            if (in_array($event->command, ['server:bootstrap', 'db:seed', 'db:wipe'], true)
-                || preg_match('/^(migrate(?::|$)|queue:|schedule:|workflow:)/', $event->command) === 1) {
+            if (in_array($event->command, [
+                'server:bootstrap', 'db:seed', 'db:wipe',
+                'queue:work', 'queue:listen',
+                'schedule:run', 'schedule:work', 'schedule:evaluate',
+                'workflow:v2:backfill-command-contracts', 'workflow:v2:schedule-tick',
+                'workflow:v2:rebuild-projections', 'workflow:v2:history-import', 'workflow:v2:repair-pass',
+            ], true) || preg_match('/^migrate(?::|$)/', $event->command) === 1) {
                 $target = $event->input->getParameterOption('--database', null, true);
                 $connection = DB::connection(is_string($target) && $target !== '' ? $target : null);
                 $connection->getPdo();

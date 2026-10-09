@@ -113,6 +113,18 @@ final class PhpDatabaseOwnershipProcessTest extends TestCase
         self::assertFileDoesNotExist($readonly);
     }
 
+    public function test_cache_only_recovery_commands_work_while_database_is_unavailable(): void
+    {
+        $this->initialize('sqlite');
+        $this->database = null;
+        $path = $this->environment['DB_DATABASE'];
+        unlink($path);
+        foreach ([['queue:restart'], ['schedule:clear-cache'], ['schedule:list']] as $command) {
+            $this->artisan($command)->mustRun();
+            self::assertFileDoesNotExist($path);
+        }
+    }
+
     public function test_sqlite_direct_nested_wipe_and_standard_entrypoint_refuse_marked_database(): void
     {
         $this->initialize('sqlite');
