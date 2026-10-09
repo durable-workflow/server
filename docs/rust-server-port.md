@@ -37,10 +37,10 @@ does not prove the remaining acceptance criteria.
 | Timers, schedules, signals, queries, updates, search attributes, memo, sagas | Corresponding runners in `scripts/conformance/`, manifests in `static/platform-conformance/`; Sample App polyglot experiments | Pending |
 | Local activities, cancellation scopes, worker sessions, streams, service catalog/Nexus, bridge adapters, standalone activities, debugging and repair | `routes/api.php`, `docs/contracts/`, worker/control-plane specifications, corresponding Feature tests and Nexus runner | Pending; not omitted from parity |
 | Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | PHP echo/activity only |
-| SQL schema and stored representations | `database/migrations/`, Workflow package `src/migrations/`, model casts, `Workflow\\Serializers\\Serializer`, queue job payloads, exported history and credential digests | Full representation audit pending |
+| SQL schema and stored representations | `database/migrations/`, Workflow package `src/migrations/`, model casts, `Workflow\\Serializers\\Serializer`, queue job payloads, exported history and credential digests | [Representation checkpoints](rust-server-storage-audit.md) recorded; complete mapping and executable migration tests pending |
 | Images, architecture, bootstrap, configuration, readiness, metrics and graceful shutdown | `Dockerfile`, `docker/`, `config/`, `docker-compose*.yml`, `k8s/helm/`, `docs/server-reference.md`, small-cluster/multi-region validation docs | Pending |
 | Backup and in-place upgrade | `docs/self-hosted-backup-and-restore.md`, external payload backup holds; last PHP image writes, all PHP roles stop, Rust takes over same DB sequentially | Pending on SQLite, MariaDB/MySQL, PostgreSQL |
-| Throughput, memory, CPU, latency, backlog/drain, idle mixed long polls | `benchmarks/capacity/v1/` and `scripts/benchmark/`; repeated runs and drift checks using frozen artifacts | Baseline not measured |
+| Throughput, memory, CPU, latency, backlog/drain, idle mixed long polls | `benchmarks/capacity/v1/` and `scripts/benchmark/`; repeated runs and drift checks using frozen artifacts | Development measurements in progress; full performance qualification pending |
 
 Ordinary PHP, Rust and embedded runs use independent databases. Never connect
 different engines to one database concurrently. SQLite multi-node qualification
@@ -87,12 +87,12 @@ result. Do not compare performance across concurrent unrelated host workloads.
 
 The first HTTP and embedded recordings passed on the frozen amd64 image and
 Workflow package, with an independent SQLite database for each. Hosted
-[fixture execution](https://github.com/durable-workflow/server/actions/runs/37889245892)
+[fixture execution](https://github.com/durable-workflow/server/actions/runs/37889894631)
 retains both raw records and the comparison for 90 days. It executes both
 workflows to completion, including the activity, with the published PHP SDK.
 [PR #326](https://github.com/durable-workflow/server/pull/326) owns source checks
-and review. The linked initial run covers the two original cases; the PR's current
-fixture Action additionally checks the large int64 and explicit decoded type trees.
+and review. The linked final run covers all three cases, including the large
+int64 and explicit decoded type trees.
 This is bounded correctness evidence, not performance qualification
 or a three-database/three-runtime pass.
 
@@ -101,9 +101,23 @@ checks passed at its exact head, together with the full PHP feature suite.
 
 The [development reference profile](../benchmarks/server-port/v1/README.md)
 pins the current PHP/SDK tuple and uses existing standard-workflow and mixed
-idle-poll commands. Measurement is pending. The development host's kernel,
+idle-poll commands. Its preparation is merged in [#327](https://github.com/durable-workflow/server/pull/327).
+Measurement is in progress. The development host's kernel,
 runtime and SATA storage differ from the standard capacity topology, so that
 profile preserves the full capacity gate and makes no maximum-capacity claim.
+
+Mixed idle observations completed three repetitions each at 6, 12 and 24 polls.
+Six polls returned six empty outcomes; twelve returned eight empty outcomes and
+four explicit capacity rejections; twenty-four returned eight empty outcomes and
+sixteen rejections. All registrations were removed, with no claimed tasks,
+runtime restart or OOM. Query waits were clamped to about five seconds, while
+workflow/activity waits lasted about ten seconds. Health/readiness probes passed
+throughout the six- and twelve-poll runs. All three twenty-four-poll registration
+bursts caused at least one two-second API probe timeout, with an Apache
+`MaxRequestWorkers` warning observed. These failures remain part of the reference
+evidence; API headroom at that burst size is not qualified. Shared-host background
+work changed between measurements, so a PHP/Rust performance gain still requires
+matched conditions and drift controls.
 
 Next: measure the PHP throughput, memory and idle mixed long-poll reference
 before adding Rust, and expand fixtures using the existing conformance inventory. The rest
