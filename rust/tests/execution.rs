@@ -127,11 +127,7 @@ impl TestDatabase {
                     .connect_with(options.as_ref().clone())
                     .await
                     .unwrap();
-                let query = query
-                    .replace("$1", "?")
-                    .replace("$2", "?")
-                    .replace("$3", "?");
-                let count = sqlx::query_scalar(&query)
+                let count = sqlx::query_scalar("SELECT COUNT(*) FROM workflow_failures WHERE source_id=? AND id=? AND non_retryable=? AND source_kind='activity_execution' AND propagation_kind='activity' AND failure_category='activity' AND handled=false")
                     .bind(activity_id)
                     .bind(failure_id)
                     .bind(non_retryable)
