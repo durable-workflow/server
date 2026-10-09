@@ -20,6 +20,14 @@ pub fn router(runtime: Runtime) -> Router {
         .route("/api/workflows", post(start))
         .route("/api/workflows/{workflow_id}", get(describe_current))
         .route(
+            "/api/workflows/{workflow_id}/query/{query_name}",
+            post(query_current),
+        )
+        .route(
+            "/api/workflows/{workflow_id}/runs/{run_id}/query/{query_name}",
+            post(query_run),
+        )
+        .route(
             "/api/workflows/{workflow_id}/signal/{signal_name}",
             post(signal_current),
         )
@@ -56,7 +64,12 @@ pub fn router(runtime: Runtime) -> Router {
             "/api/worker/activity-tasks/{task_id}/complete",
             post(complete_activity),
         )
-        .route("/api/worker/query-tasks/poll", post(query_unavailable))
+        .route("/api/worker/query-tasks/poll", post(poll_query))
+        .route(
+            "/api/worker/query-tasks/{task_id}/complete",
+            post(complete_query),
+        )
+        .route("/api/worker/query-tasks/{task_id}/fail", post(fail_query))
         .fallback(unavailable)
         .layer(DefaultBodyLimit::max(3 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(runtime.clone(), guard))
@@ -294,10 +307,45 @@ async fn complete_activity(
 ) -> Result<Json<Value>> {
     runtime.complete_activity(&task_id, body).await.map(Json)
 }
-async fn query_unavailable() -> Json<Value> {
-    Json(
-        json!({"task": null, "poll_status": "no_query_capability", "server_capabilities": capabilities()}),
-    )
+async fn query_current(
+    State(runtime): State<Runtime>,
+    Path((workflow_id, name)): Path<(String, String)>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    runtime
+        .query_workflow(&workflow_id, None, &name, body)
+        .await
+        .map(|(status, body)| (status, Json(body)))
+}
+async fn query_run(
+    State(runtime): State<Runtime>,
+    Path((workflow_id, run_id, name)): Path<(String, String, String)>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    runtime
+        .query_workflow(&workflow_id, Some(&run_id), &name, body)
+        .await
+        .map(|(status, body)| (status, Json(body)))
+}
+async fn poll_query(
+    State(runtime): State<Runtime>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>> {
+    runtime.poll_query(body).await.map(Json)
+}
+async fn complete_query(
+    State(runtime): State<Runtime>,
+    Path(task_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>> {
+    runtime.complete_query(&task_id, body).await.map(Json)
+}
+async fn fail_query(
+    State(runtime): State<Runtime>,
+    Path(task_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>> {
+    runtime.finish_query(&task_id, body, true).await.map(Json)
 }
 async fn unavailable() -> Response {
     refuse(

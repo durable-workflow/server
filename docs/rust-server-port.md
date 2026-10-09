@@ -6,6 +6,15 @@ The unpublished Rust crate has an Avro foundation and an opt-in SQLite/PostgreSQ
 execution slice. Full runtime parity, migration, performance improvement and
 cutover remain unqualified.
 
+Query slice #341 adds a shared state query before signals, after one delivery,
+and after completion. PHP and embedded reference recordings pass; native
+qualification is pending. Native admission uses immutable quiescent snapshots,
+original query contracts and leased transient tasks in the existing cache
+table. Arguments/results use the official codec outside Tokio executor threads.
+Bounded pending/result inventory, expiry, independent-pool completion and stale
+fences have dedicated tests. Busy workflow/query routing and query poll-request
+receipts remain unqualified; the latter capability is advertised as false.
+
 ## Work order and current status
 
 The next slices widen reviewed PHP/Rust/embedded fixtures and native behavior:

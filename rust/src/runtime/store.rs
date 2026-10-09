@@ -20,7 +20,7 @@ pub(super) const POLL_RECEIPT_CLEANUP_SQL: &str = "DELETE FROM dw_poll_receipts 
 pub(super) const WORKER_REGISTRATION_SQL: &str = "INSERT INTO workflow_worker_registrations(namespace,worker_id,task_queue,runtime,sdk_version,build_id,supported_workflow_types,supported_activity_types,capabilities,capability_manifest,last_heartbeat_at,created_at,updated_at) VALUES ('default',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT(worker_id,namespace) DO UPDATE SET task_queue=excluded.task_queue,runtime=excluded.runtime,sdk_version=excluded.sdk_version,build_id=excluded.build_id,supported_workflow_types=excluded.supported_workflow_types,supported_activity_types=excluded.supported_activity_types,capabilities=excluded.capabilities,capability_manifest=excluded.capability_manifest,last_heartbeat_at=excluded.last_heartbeat_at,updated_at=excluded.updated_at";
 pub(super) struct Store<DB: Backend> {
     pub(super) pool: Pool<DB>,
-    wake: Arc<Notify>,
+    pub(super) wake: Arc<Notify>,
 }
 fn id() -> String {
     Ulid::new().to_string()
@@ -44,12 +44,14 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
-    fn query(sql: &'static str) -> sqlx::query::Query<'static, DB, DB::Arguments> {
+    pub(super) fn query(sql: &'static str) -> sqlx::query::Query<'static, DB, DB::Arguments> {
         // Dialect conversion starts from a compiled static template. Runtime
         // values are always encoded by bind(), never interpolated into SQL.
         sqlx::query(sqlx::AssertSqlSafe(DB::statement(sql)))
     }
-    fn scalar(sql: &'static str) -> sqlx::query::QueryScalar<'static, DB, i64, DB::Arguments> {
+    pub(super) fn scalar(
+        sql: &'static str,
+    ) -> sqlx::query::QueryScalar<'static, DB, i64, DB::Arguments> {
         sqlx::query_scalar(sqlx::AssertSqlSafe(DB::statement(sql)))
     }
     pub(super) fn new(pool: Pool<DB>) -> Self {
@@ -89,7 +91,7 @@ where
     pub(super) async fn close(&self) {
         self.pool.close().await;
     }
-    async fn begin(&self) -> Result<Transaction<'static, DB>> {
+    pub(super) async fn begin(&self) -> Result<Transaction<'static, DB>> {
         DB::begin(&self.pool).await
     }
     pub(crate) async fn start(&self, body: Value) -> Result<Value> {
@@ -184,6 +186,8 @@ where
                     for (source, target) in [
                         ("signals", "declared_signals"),
                         ("signal_contracts", "declared_signal_contracts"),
+                        ("queries", "declared_queries"),
+                        ("query_contracts", "declared_query_contracts"),
                     ] {
                         started[target] = contract[source].clone();
                     }
@@ -1303,7 +1307,7 @@ where
         .await
     }
 
-    async fn history_page_connection(
+    pub(super) async fn history_page_connection(
         connection: &mut DB::Connection,
         run_id: &str,
         after_sequence: i64,
@@ -1408,28 +1412,35 @@ fn validate_signal_arguments(
     name: &str,
     values: &[crate::codec::Value],
 ) -> Result<()> {
-    let parameters = contract["declared_signal_contracts"]
+    validate_arguments(
+        contract,
+        "declared_signal_contracts",
+        name,
+        values,
+        "unsupported_signal_contract",
+        "invalid_signal_arguments",
+    )
+}
+
+pub(super) fn validate_arguments(
+    contract: &Value,
+    field: &str,
+    name: &str,
+    values: &[crate::codec::Value],
+    unsupported: &'static str,
+    invalid: &'static str,
+) -> Result<()> {
+    let parameters = contract[field]
         .as_array()
         .and_then(|contracts| contracts.iter().find(|contract| contract["name"] == name))
         .and_then(|contract| contract["parameters"].as_array())
-        .ok_or_else(|| {
-            refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "unsupported_signal_contract",
-            )
-        })?;
+        .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, unsupported))?;
     if parameters.len() != values.len() {
-        return Err(refuse(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "invalid_signal_arguments",
-        ));
+        return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, invalid));
     }
     for (parameter, value) in parameters.iter().zip(values) {
         if parameter["variadic"] == true || parameter["default_available"] == true {
-            return Err(refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "unsupported_signal_contract",
-            ));
+            return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, unsupported));
         }
         if matches!(value, crate::codec::Value::Null) && parameter["allows_null"] == true {
             continue;
@@ -1443,17 +1454,11 @@ fn validate_signal_arguments(
             Some("bool") => matches!(value, Payload::Boolean(_)),
             Some("string") => matches!(value, Payload::String(_)),
             _ => {
-                return Err(refuse(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "unsupported_signal_contract",
-                ));
+                return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, unsupported));
             }
         };
         if !valid {
-            return Err(refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "invalid_signal_arguments",
-            ));
+            return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, invalid));
         }
     }
     Ok(())
@@ -1485,5 +1490,5 @@ pub(crate) fn capabilities() -> Value {
     json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "open_condition_wait", "open_signal_wait", "complete_workflow"],
         "workflow_memo_updates": false, "cooperative_cancellation": false, "prepared_local_activities": false,
         "worker_sessions": false, "sticky_execution": false, "local_activities": false, "message_streams": false,
-        "workflow_updates": false, "query_tasks": false})
+        "workflow_updates": false, "query_tasks": true, "query_task_poll_request_idempotency": false})
 }

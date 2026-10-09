@@ -210,12 +210,31 @@ workers replay the persisted activity result and complete the workflow normally.
 Discovery marks the runtime as development, advertises the admitted commands
 and sets the major unimplemented worker capabilities to false. Accepted protocol
 headers identify transport shapes, not a full protocol conformance claim.
-Query polling explicitly reports no query capability. Other missing paths return
+Queries admit a quiescent committed snapshot, including completed runs, through
+the published worker query protocol. An active/ready workflow task returns
+`query_snapshot_busy`; concurrent workflow/query routing remains unqualified.
+Original query declarations and positional primitive argument contracts are
+recorded at start. Default/variadic/class parameters remain unsupported.
+Query arguments and results use the official codec on the same bounded blocking
+worker as signals. Other missing paths return
 `rust_capability_not_implemented`; no missing operation is presented as success.
 
 Starts, ordered history, task claims and outcomes are transactional. Expired or
 revoked owner/attempt fences cannot commit. Identical completion retries return
 the existing receipt without another outcome; conflicting retries are refused.
+Query completion follows the PHP broker's terminal lease refusal on repetition.
+Query poll-request receipt idempotency is explicitly advertised as false;
+repeat polling by the active owner retains its existing attempt and snapshot.
+Transient query entries use a native prefix in the preserved cache table, with
+16 pending requests and 64 pending/results combined per default-namespace
+development database. Arguments are capped at 64 KiB, each complete task and
+snapshot at one MiB, result blobs at 256 KiB, and completion bodies at 512 KiB.
+The query deadline is 30 seconds, leases last at most ten seconds, and recent
+results expire after 60 seconds. Admission/polling reclaim expired entries;
+abandoned requests occupy a bounded slot until their deadline plus 60 seconds.
+Results discard replay snapshots. These are development bounds, not qualified
+customer limits. Full query failures, worker compatibility, busy routing and
+request-id receipts still need reviewed fixtures.
 Poll IDs retain the original task/snapshot across process boundaries, with
 expired receipts reclaimed. Worker/control-plane history is paginated, capped
 at 1000 records and eight MiB of encoded payloads per page. Requests are capped
@@ -254,7 +273,7 @@ WAL visibility or manually delete a nonempty journal.
 connection-pool claims, stale fences, duplicate outcomes/polls, worker history
 pagination, atomic unsupported-command refusal and read-only PHP refusal.
 The shared Action builds once, cross-decodes the 15 codec cases, executes all
-seven reviewed fixtures against separate PHP/Rust/embedded databases, then
+eight reviewed fixtures against separate PHP/Rust/embedded databases, then
 kills the Rust process with a leased activity, a pending timer and an acknowledged
 pending signal. The restart probe lets the actual lease expire, rejects the old
 claim and completes through a new published PHP SDK worker. It checks original
