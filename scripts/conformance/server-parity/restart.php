@@ -41,6 +41,17 @@ function sameRestartValue(mixed $expected, mixed $actual): bool
         : $expected === $actual;
 }
 
+/** Compare the control API's declared fields without losing raw worker events. */
+function restartControlHistory(array $events): array
+{
+    $ids = array_column($events, 'id');
+    assertRestart(count($ids) === count($events) && count(array_unique($ids)) === count($events)
+        && ! in_array('', $ids, true), 'Recovered worker history lost original event identities.');
+
+    return array_map(static fn (array $event): array => ['sequence' => $event['sequence'],
+        'event_type' => $event['event_type'], 'timestamp' => $event['recorded_at'], 'payload' => $event['payload']], $events);
+}
+
 function restartSignalWorkflow(WorkflowContext $context, array $input): array
 {
     $context->waitCondition(fn (): bool => count($context->signals('payload')) > 0, 'restart.payload');
@@ -236,7 +247,9 @@ $refuseOldTerminalResult();
 $client->registerWorker('restart-terminal-new', 'restart-terminal-v1', ['restart.terminal'], []);
 $terminalClaim = $client->pollWorkflowTask('restart-terminal-new', 'restart-terminal-v1', 0);
 assertRestart(is_array($terminalClaim) && $terminalClaim['task_id'] === $terminal['failure_receipt']['next_task_id']
-    && $terminalClaim['run_id'] === $terminal['run_id'] && sameRestartValue($terminalClaim['history_events'], $terminal['history']), 'Recovered terminal resumption lost original task/run/history.');
+    && $terminalClaim['run_id'] === $terminal['run_id']
+    && sameRestartValue(restartControlHistory($terminalClaim['history_events']), $terminal['history'])
+    && $terminalClaim['history_events'][4]['workflow_task_id'] === $terminalActivity['task_id'], 'Recovered terminal resumption lost original task/run/history.');
 $terminalReplay = (new Replayer($client->payloadCodec()))->replay(restartTerminalWorkflow(...),
     $terminalClaim['history_events'], $client->payloadCodec()->decodeEnvelope($terminalClaim['arguments']), 'restart-terminal-v1', $terminalClaim);
 $terminalResult = ['echo' => $value, 'caught' => ['type' => 'RuntimeException', 'message' => 'restart terminal λ', 'non_retryable' => true]];

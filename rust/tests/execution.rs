@@ -2412,7 +2412,28 @@ async fn terminal_activity_failures_resume_once_and_preserve_original_failure() 
         let resumed = if left.is_null() { right } else { left };
         assert_eq!(resumed["task_id"], receipt["next_task_id"]);
         assert_eq!(resumed["run_id"], started["run_id"]);
-        assert_eq!(resumed["history_events"], original);
+        let worker_events = resumed["history_events"].as_array().unwrap();
+        assert_eq!(
+            worker_events.last().unwrap()["workflow_task_id"],
+            last["task_id"]
+        );
+        let event_ids: std::collections::HashSet<_> = worker_events
+            .iter()
+            .map(|event| event["id"].as_str().filter(|id| !id.is_empty()).unwrap())
+            .collect();
+        assert_eq!(event_ids.len(), worker_events.len());
+        // Worker history retains event IDs/attribution and recorded_at;
+        // the control API explicitly returns these four common fields.
+        let control_events: Vec<_> = worker_events
+            .iter()
+            .map(|event| {
+                json!({
+                    "sequence":event["sequence"],"event_type":event["event_type"],
+                    "timestamp":event["recorded_at"],"payload":event["payload"]
+                })
+            })
+            .collect();
+        assert_eq!(json!(control_events), original);
         let result = envelope(Payload::Long(9007199254740993));
         assert_eq!(
             finish_task(
