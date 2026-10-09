@@ -27,7 +27,7 @@ receipts remain unqualified; the latter capability is advertised as false.
 ## Work order and current status
 
 The next slices widen reviewed PHP/Rust/embedded fixtures and native behavior:
-Timer, signal and quiescent query slices are qualified. State-update slice
+Timer, signal, quiescent query and state-update slices are qualified. State-update slice
 [#342](https://github.com/durable-workflow/server/pull/342) applies two distinct
 values while a workflow waits for a finishing
 signal, repeats each request ID with different arguments, and checks original
@@ -35,8 +35,10 @@ identities/results, state replay and the shared message cursor. All nine cases
 pass and compare on the frozen published PHP and embedded references at
 `ab105eba4aebc5295d1fe08c3bf70a87e1f7e639`; 83 comparator checks pass.
 Native admission, original request receipts, routed update tasks and completion
-fences are implemented. Exact source identities and all six database/PHP check
-outcomes are recorded in #342; qualification of the final head gates its merge.
+fences are qualified on all six targets in the
+[final shared matrix](https://github.com/durable-workflow/server/actions/runs/37987814790)
+at `a6f96db537acdbdfb505373e46e2eed8fbe2d3d2`; #342 records exact source identities
+and passing PHP/source outcomes. All nine shared fixtures pass per runtime.
 The native HTTP cases exercise independent pools, expired-lease recovery,
 registration fences, completion waits and the 64-update inventory boundary.
 MariaDB qualification exposed decimal promotion of a nullable integer through
@@ -46,8 +48,14 @@ to 64 updates, with 64 KiB argument blobs, 256 KiB results and at most 30 second
 per completion wait. Waiting releases the transaction and database connection.
 Queued/busy control routing, validators, failure tasks and full update semantics
 remain open.
-Updates are followed by child
-workflows, retries/cancellation, schedules, visibility, authorization/namespaces,
+The next child-workflow fixture calls two children in sequence, each executing
+an activity with a distinct typed payload, then returns their committed results
+in order. Preserve parent/call/child-run and activity-attempt relationships,
+registered type keys, original arguments, exact int64 and complete histories.
+HTTP-created children omit `StartAccepted`; embedded children record it. Both
+inventories must be explicit and checked before projecting their common behavior.
+The fixture and native child execution are being prepared and remain unqualified.
+Child workflows are followed by retries/cancellation, schedules, visibility, authorization/namespaces,
 streams and existing consumers. Each slice must run on the required database
 matrix. Read-only upgrade inspection and backup-first takeover remain required,
 but follow wider capability coverage. PHP and unknown databases stay refused.
