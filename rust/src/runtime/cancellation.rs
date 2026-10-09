@@ -94,7 +94,11 @@ where
             .ok_or_else(|| refuse(StatusCode::NOT_FOUND, "instance_not_found"))?;
         let run_id = DB::string(&run, "id")?;
         if selected_run.is_some_and(|id| id != run_id) {
-            return Err(refuse(StatusCode::CONFLICT, "selected_run_not_current"));
+            return Err(RuntimeError::Protocol {
+                status: StatusCode::CONFLICT,
+                response: json!({"workflow_id":workflow_id,"run_id":selected_run,
+                    "reason":"historical_run_command_rejected","target_scope":"run"}),
+            });
         }
         let closed = !matches!(DB::string(&run, "status")?.as_str(), "running" | "waiting");
         if !closed {

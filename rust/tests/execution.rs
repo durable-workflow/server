@@ -2007,6 +2007,19 @@ async fn immediate_cancellation_closes_original_work_once_and_survives_fresh_poo
             }
         }
         let prefix = run_history(&app_b, &workflow, &run).await;
+        let wrong_run = request(
+            &app_b,
+            "POST",
+            &format!("/api/workflows/{phase}/runs/another-run/cancel"),
+            json!({"reason":"replacement"}),
+        )
+        .await;
+        assert_eq!(wrong_run.0, StatusCode::CONFLICT);
+        assert_eq!(wrong_run.1["reason"], "historical_run_command_rejected");
+        let invalid_reason =
+            request(&app_b, "POST", &path, json!({"reason":"λ".repeat(1001)})).await;
+        assert_eq!(invalid_reason.0, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(run_history(&app_b, &workflow, &run).await, prefix);
         let body = json!({"reason":"parity cancellation λ"});
         let (left, right) = tokio::join!(
             request(&app_a, "POST", &path, body.clone()),

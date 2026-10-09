@@ -131,13 +131,31 @@ the same original failure. Separate terminal fixtures cover exhausted budget
 and matching/nonmatching error filters. Timeout retries, other retry families
 and complete error-envelope parity remain separate gates.
 
+Three immediate cancellation fixtures stop a run before workflow claim, with a
+pending timer, or with a leased activity. The unchanged SDK worker submits its
+actual result after cancellation and discards the original HTTP 409
+`run_cancelled`/`ignored` refusal. The probe repeats cancellation with another
+reason and repeats the old activity result; neither may replace the original
+command, failure, input or history. A fresh client reloads the original terminal
+run and verifies that no workflow/activity work remains. Embedded mode uses its
+public cancelled outcome and physical failure/attempt/task rows, then redelivers
+the original cancelled activity task through the real queue.
+The frozen HTTP selected-run route guards the current run but records an
+instance-scoped command, while embedded `loadRun` records a run-scoped command.
+Fixtures declare both receipt forms. Cancelled attempt history omits expiry;
+physical rows and actual outcome refusals prove closure separately.
+Cooperative cleanup, cancellation scopes and child/update propagation remain
+unqualified. The experimental native runtime explicitly refuses cancellation
+requiring pending child/update/query handling and bounds cancellation to 1,000
+open activities and 1,000 pending timers. These bounds do not establish full parity.
+
 The current type recorder covers null, boolean, int64, double, string, list and
 map values. Other decoded PHP objects fail explicitly; binary/logical-type and
 empty-map distinctions still need their own fixtures and adapters.
 
 This projection **does not yet compare** actor/authentication metadata, PHP
 class names and source fingerprints, other task snapshot transport metadata, broader retries,
-lease fencing, cancellation, timer cancellation/parallel groups, or any other listed port gate. Those fields
+broader lease fencing, cooperative cancellation, timer parallel groups, or any other listed port gate. Those fields
 remain in raw observations. They need their own reviewed fixtures; omitting them
 here cannot establish full parity. See `docs/rust-server-port.md` for the complete
 inventory and next action. Add expectations from a contract decision before
@@ -167,6 +185,12 @@ failure and commit one typed workflow result. Duplicate failure/completion repor
 leave the original history unchanged, and late activity success is refused. This
 checkpoint uses explicit client claims/replay; the shared terminal fixtures use
 the normal SDK worker loop.
+Two additional checkpoints immediately cancel an original leased activity and
+a pending timer before the real process kill. After replacement, the published
+client reloads the same cancelled histories and typed cancellation outcomes,
+refuses repeated cancellation and late success/failure from the old attempt,
+and polls no revived work. The cancelled timer's original deadline has passed;
+its original cancelled history must still contain no firing.
 It waits for the actual activity/child lease expiry, refuses both old claims and
 completes the original runs through fresh published SDK workers.
 The timer must keep its pre-kill identity/deadline and commit exactly one firing.
