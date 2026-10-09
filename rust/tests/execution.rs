@@ -233,7 +233,10 @@ impl TestDatabase {
                 .await
                 .unwrap();
                 sqlx::query(statement)
-                    .bind(value.and_utc().to_rfc3339())
+                    // The frozen PHP Workflow models store microsecond SQL
+                    // timestamps. Ordinary PHP/native databases stay separate;
+                    // this reproduces only that representation in native data.
+                    .bind(value.format("%Y-%m-%d %H:%M:%S%.6f").to_string())
                     .execute(&pool)
                     .await
                     .unwrap();

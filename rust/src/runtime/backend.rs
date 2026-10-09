@@ -11,6 +11,8 @@ pub(super) trait Backend: Database {
     type EncodedDocument: for<'q> Encode<'q, Self> + Type<Self> + Send + Sync + 'static;
     const HISTORY_PAGE: &'static str;
     const WORKER_REGISTRATION_SQL: &'static str = super::store::WORKER_REGISTRATION_SQL;
+    const TASK_CANDIDATES_SQL: &'static str = super::store::TASK_CANDIDATES_SQL;
+    const POLL_RECEIPT_CLEANUP_SQL: &'static str = super::store::POLL_RECEIPT_CLEANUP_SQL;
     fn statement(sql: &'static str) -> Cow<'static, str> {
         Cow::Borrowed(sql)
     }
@@ -228,5 +230,69 @@ impl Backend for MySql {
             return false;
         };
         mysql::verify_history(&mut connection).await.is_ok()
+    }
+}
+
+#[cfg(test)]
+mod timestamp_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn sqlite_php_and_native_deadlines_keep_microsecond_claim_and_receipt_fences() {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = super::super::Runtime::open(
+            directory.path().join("time.sqlite").to_str().unwrap(),
+            "test-token".into(),
+        ).await.unwrap();
+        runtime.start(json!({"workflow_id":"timestamp-fences", "workflow_type":"echo", "task_queue":"test", "input":{"codec":"avro","blob":"wwHioz3/VYAiNwA="}})).await.unwrap();
+        let pool = runtime.sqlite_pool();
+        let clock = DateTime::parse_from_rfc3339("2026-01-02T03:04:05.123456Z").unwrap().with_timezone(&Utc);
+        // Values and decisions come from UTC deadline ordering. Execute the
+        // actual compiled claim/cleanup queries with a fixed bound clock; no
+        // float-based SQLite date conversion may round a microsecond fence.
+        for (value, ready) in [
+            ("2026-01-02 03:04:05.123455", true),
+            ("2026-01-02 03:04:05.123456", true),
+            ("2026-01-02 03:04:05.123457", false),
+            ("2026-01-02T03:04:05.123455Z", true),
+            ("2026-01-02T03:04:05.123456Z", true),
+            ("2026-01-02T03:04:05.123457Z", false),
+            ("2026-01-02T03:04:05.123456+00:00", true),
+            ("2026-01-02T03:04:05.123457+00:00", false),
+            ("2026-01-02T03:04:05.123Z", true),
+            ("2026-01-02T03:04:05.124Z", false),
+            ("2026-01-02 03:04:05", true),
+            ("2026-01-02T03:04:06Z", false),
+        ] {
+            sqlx::query("UPDATE workflow_tasks SET status='ready',available_at=$1,lease_expires_at=NULL").bind(value).execute(pool).await.unwrap();
+            let available = sqlx::query(Sqlite::TASK_CANDIDATES_SQL).bind("test").bind("workflow").bind(Sqlite::bind_time(clock)).bind(Sqlite::bind_time(clock)).fetch_all(pool).await.unwrap();
+            assert_eq!(available.len(), usize::from(ready), "availability {value}");
+            sqlx::query("UPDATE workflow_tasks SET status='leased',available_at=NULL,lease_expires_at=$1").bind(value).execute(pool).await.unwrap();
+            let expired = sqlx::query(Sqlite::TASK_CANDIDATES_SQL).bind("test").bind("workflow").bind(Sqlite::bind_time(clock)).bind(Sqlite::bind_time(clock)).fetch_all(pool).await.unwrap();
+            assert_eq!(expired.len(), usize::from(ready), "lease {value}");
+            sqlx::query("INSERT INTO dw_poll_receipts(namespace,worker_id,kind,request_id,task_id,attempt,response,expires_at) SELECT 'default','worker','workflow','receipt',id,1,'{}',$1 FROM workflow_tasks")
+                .bind(value).execute(pool).await.unwrap();
+            sqlx::query(Sqlite::POLL_RECEIPT_CLEANUP_SQL).bind(Sqlite::bind_time(clock)).bind(Sqlite::bind_time(clock)).execute(pool).await.unwrap();
+            let retained: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM dw_poll_receipts").fetch_one(pool).await.unwrap();
+            assert_eq!(retained, i64::from(!ready), "receipt {value}");
+            sqlx::query("DELETE FROM dw_poll_receipts").execute(pool).await.unwrap();
+        }
+        runtime.close().await;
+    }
+
+    #[test]
+    fn sqlite_timestamp_reads_preserve_php_microseconds_and_native_utc_instants() {
+        for value in [
+            "2026-01-02 03:04:05.123456",
+            "2026-01-02T03:04:05.123456Z",
+            "2026-01-02T03:04:05.123456+00:00",
+        ] {
+            let instant = sqlite_instant(value.into()).unwrap();
+            assert_eq!(instant.to_rfc3339_opts(SecondsFormat::Micros, true), "2026-01-02T03:04:05.123456Z");
+        }
+        for value in ["not-a-date", "2026-02-30 03:04:05.123456", "2026-01-02 03:04:05.123456 trailing"] {
+            assert!(sqlite_instant(value.into()).is_err(), "invalid {value}");
+        }
     }
 }
