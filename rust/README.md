@@ -108,6 +108,13 @@ open. Timers, failure/retry policy, cancellation and the rest of the API also
 remain open under #325. Existing databases and published PHP artifacts are
 unchanged by this opt-in crate.
 
+Read-only inspection of an existing WAL database can create temporary `-shm`
+metadata and a zero-byte `-wal`, as described by [SQLite](https://sqlite.org/wal.html#read_only_databases).
+The probe never enables WAL on a PHP/unknown database or writes its data;
+existing database and nonempty journal bytes must remain unchanged. Probe
+connections close explicitly even on refusal. Never use `immutable=1` to bypass
+WAL visibility or manually delete a nonempty journal.
+
 `cargo test --locked --all-targets` exercises file persistence, independent
 connection-pool claims, stale fences, duplicate outcomes/polls, worker history
 pagination, atomic unsupported-command refusal and read-only PHP refusal.

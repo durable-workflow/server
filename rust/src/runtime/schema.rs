@@ -261,6 +261,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn php_wal_refusal_preserves_database_and_committed_frames() {
+        for keep_writer in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("php.sqlite");
+            let mut connection = SqliteConnection::connect_with(
+                &SqliteConnectOptions::new()
+                    .filename(&path)
+                    .create_if_missing(true)
+                    .journal_mode(SqliteJournalMode::Wal),
+            )
+            .await
+            .unwrap();
+            sqlx::raw_sql("CREATE TABLE acknowledged(id TEXT PRIMARY KEY,status TEXT); INSERT INTO acknowledged VALUES ('original-id','pending');")
+                .execute(&mut connection).await.unwrap();
+            let mut writer = Some(connection);
+            if !keep_writer {
+                writer.take().unwrap().close().await.unwrap();
+            }
+            let database_before = std::fs::read(&path).unwrap();
+            let wal_path = path.with_extension("sqlite-wal");
+            let wal_before = std::fs::read(&wal_path).unwrap_or_default();
+            assert_eq!(!wal_before.is_empty(), keep_writer);
+            let refused =
+                super::super::Runtime::open(path.to_str().unwrap(), "test-token".into()).await;
+            assert!(matches!(
+                refused,
+                Err(super::super::RuntimeError::Refused {
+                    reason: "existing_database_requires_qualified_takeover",
+                    ..
+                })
+            ));
+            assert_eq!(std::fs::read(&path).unwrap(), database_before);
+            assert_eq!(
+                std::fs::read(&wal_path).unwrap_or_default(),
+                wal_before,
+                "only an absent/zero-byte temporary WAL is equivalent"
+            );
+            if let Some(writer) = writer {
+                writer.close().await.unwrap();
+            }
+            let mut ordinary =
+                SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path))
+                    .await
+                    .unwrap();
+            let row: (String, String) = sqlx::query_as("SELECT id,status FROM acknowledged")
+                .fetch_one(&mut ordinary)
+                .await
+                .unwrap();
+            assert_eq!(row, ("original-id".to_owned(), "pending".to_owned()));
+            ordinary.close().await.unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn altered_catalog_or_migration_history_cannot_enable_writes() {
         for mutation in [
             "UPDATE _sqlx_migrations SET checksum=X'00'",

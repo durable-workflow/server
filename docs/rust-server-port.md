@@ -238,7 +238,7 @@ added. Qualification must compare the actual published PHP catalog with an
 independent native database, preserve the existing execution/restart fixtures,
 and test interrupted/concurrent bootstrap and migration-history mismatches.
 The local implementation passes the existing seven execution tests, four codec
-tests and four new schema cases. The latter check three concurrent fresh nodes,
+tests and five new schema cases. The latter check three concurrent fresh nodes,
 real SIGKILLs after migration-ledger creation and before the outer commit,
 read-only refusal of old development data and nine catalog/history corruptions.
 Restart after either acknowledged interruption creates one complete migration
@@ -253,6 +253,15 @@ without an immutable snapshot that could conceal WAL state.
 The final fixture additionally prepares pending work in the published PHP
 database and requires native refusal with unchanged database/journal hashes.
 Its final-head evidence belongs to [#332](https://github.com/durable-workflow/server/pull/332).
+SQLite's [read-only WAL contract](https://sqlite.org/wal.html#read_only_databases)
+permits creating shared-memory metadata and an empty WAL when those files are
+absent. The refusal fixture exposed this behavior on the real published PHP
+database. Native startup now awaits probe closure on success and refusal. The
+receipt treats an absent and exactly zero-byte WAL as equivalent; any nonempty
+WAL, rollback journal and database must retain its exact hash. Unit cases cover
+both a closed WAL database and committed work still present in a nonempty WAL.
+The final local suite passes 16 cases plus the two invoked fault subprocesses;
+formatting, warning-free Clippy and the 72 Docker-isolation policy cases pass.
 The [build observations](../rust/schema-build-observations-2026-10-09.md)
 record 64.445 seconds for a clean tests/binary build, 541.9 MiB of targets plus
 177.6 MiB of downloads, and 0.137/0.823-second no-op/comment builds. These are

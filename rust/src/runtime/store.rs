@@ -67,21 +67,28 @@ impl Runtime {
                 .foreign_keys(false),
         )
         .await?;
-        let tables: Vec<String> = sqlx::query_scalar(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
-        )
-        .fetch_all(&mut preflight)
-        .await?;
-        let initialized = tables.iter().any(|name| name == "dw_server_schema");
-        if initialized {
-            schema::verify(&mut preflight).await?;
-        } else if !tables.is_empty() {
-            return Err(refuse(
-                StatusCode::CONFLICT,
-                "existing_database_requires_qualified_takeover",
-            ));
+        let preflight_result = async {
+            let tables: Vec<String> = sqlx::query_scalar(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+            )
+            .fetch_all(&mut preflight)
+            .await?;
+            let initialized = tables.iter().any(|name| name == "dw_server_schema");
+            if initialized {
+                schema::verify(&mut preflight).await?;
+            } else if !tables.is_empty() {
+                return Err(refuse(
+                    StatusCode::CONFLICT,
+                    "existing_database_requires_qualified_takeover",
+                ));
+            }
+            Ok::<_, super::RuntimeError>(initialized)
         }
+        .await;
+        // Await SQLite worker shutdown on refusal as well as success. An
+        // error return must not abandon the preflight connection until exit.
         preflight.close().await?;
+        let initialized = preflight_result?;
         let pool = SqlitePoolOptions::new()
             .max_connections(4)
             .acquire_timeout(Duration::from_secs(5))
