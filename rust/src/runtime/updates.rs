@@ -13,7 +13,7 @@ use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Transaction, Ty
 use std::time::Duration;
 
 const MAX_UPDATES_PER_RUN: i64 = 64;
-const UPDATE_ROW: &str = "SELECT u.*,c.workflow_type,c.message_sequence,COALESCE(u.workflow_sequence,0) AS callback_sequence FROM workflow_updates u JOIN workflow_commands c ON c.id=u.workflow_command_id WHERE u.id=$1";
+const UPDATE_ROW: &str = "SELECT u.*,c.workflow_type,c.message_sequence FROM workflow_updates u JOIN workflow_commands c ON c.id=u.workflow_command_id WHERE u.id=$1";
 
 impl<DB: Backend> Store<DB>
 where
@@ -236,14 +236,16 @@ where
         if status == "completed" && result.is_none() {
             return Err(refuse(StatusCode::CONFLICT, "invalid_stored_update_result"));
         }
-        let sequence = DB::number(update, "callback_sequence")?;
+        // MariaDB promotes COALESCE(unsigned BIGINT,0) to DECIMAL. Preserve
+        // the physical nullable integer and its exact logical value instead.
+        let sequence = DB::optional_number(update, "workflow_sequence")?;
         Ok(json!({
             "accepted":true,"workflow_id":DB::string(update,"workflow_instance_id")?,"run_id":DB::string(update,"workflow_run_id")?,
             "resolved_run_id":DB::string(update,"resolved_workflow_run_id")?,"requested_run_id":null,"target_scope":"instance",
             "workflow_type":DB::string(update,"workflow_type")?,"command_id":DB::string(update,"workflow_command_id")?,
             "command_sequence":DB::number(update,"command_sequence")?,"command_status":"accepted","command_source":"control_plane",
             "update_id":DB::string(update,"id")?,"update_name":DB::string(update,"update_name")?,"update_status":status,
-            "workflow_sequence":if sequence == 0 { None } else { Some(sequence) },
+            "workflow_sequence":sequence,
             "outcome":DB::optional_string(update,"outcome")?,"result":null,"result_envelope":result.as_deref().map(wire),
             "accepted_at":DB::instant(update,"accepted_at")?,"applied_at":DB::optional_instant(update,"applied_at")?,
             "closed_at":DB::optional_instant(update,"closed_at")?,"reason":null,"rejection_reason":null,"validation_errors":[],
