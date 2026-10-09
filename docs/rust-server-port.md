@@ -8,6 +8,12 @@ cutover remain unqualified.
 
 ## Work order and current status
 
+The next storage foundation targets PostgreSQL's real timestamp/JSON columns,
+transactional migrations and ownership checks against an independently
+bootstrapped published PHP database. Fresh native bootstrap must keep the full
+existing physical schema; it does not authorize adoption of PHP data. Actual
+PostgreSQL execution and MariaDB/MySQL support remain required next steps.
+
 1. Inventory the current contract, schema and operational surfaces. Establish
    shared reviewed fixtures and a recorder usable against any isolated Server
    URL and a real embedded Laravel engine. Freeze published PHP/consumer artifacts
