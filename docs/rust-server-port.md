@@ -391,9 +391,12 @@ fix retries only that transient database error, with at most three attempts;
 each repeats read-only ownership preflight and retains the existing lock limits.
 An unsuccessful bootstrap closes its pool and finishes rollback before retry.
 Other errors and ownership refusals return immediately. Ownership inspection
-checks all user objects, including view-only databases, and repeats the same
+checks all user objects, including view-only databases and names such as
+`sqlitex_customer_data`, and repeats the same
 empty/native ownership check under the initialization write lock before DDL.
 The concurrent-runtime fixture exercises sixteen independent fresh databases;
-a view-only refusal case requires unchanged file bytes and no WAL/SHM creation.
+three unknown-object refusal cases require unchanged file bytes and no WAL/SHM
+creation. Catalog inspection uses SQLite's literal internal-name prefix, so a
+SQL wildcard cannot hide user objects.
 Exact-head qualification is recorded in #337. Ordinary command execution and
 PHP takeover remain outside this startup correction.

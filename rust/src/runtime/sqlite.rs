@@ -95,7 +95,7 @@ async fn open_once(database: &str) -> Result<SqlitePool> {
 
 async fn inspect(connection: &mut SqliteConnection) -> Result<bool> {
     let objects: Vec<(String, String)> =
-        sqlx::query_as("SELECT type,name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
+        sqlx::query_as("SELECT type,name FROM sqlite_master WHERE name NOT GLOB 'sqlite_*'")
             .fetch_all(&mut *connection)
             .await?;
     let initialized = objects

@@ -30,7 +30,7 @@ type Catalog = Vec<(String, String, String, String)>;
 static EXPECTED: OnceCell<Catalog> = OnceCell::const_new();
 
 async fn catalog(connection: &mut SqliteConnection) -> Result<Catalog> {
-    Ok(sqlx::query_as("SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY type,name")
+    Ok(sqlx::query_as("SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE sql IS NOT NULL AND name NOT GLOB 'sqlite_*' ORDER BY type,name")
         .fetch_all(connection).await?)
 }
 
@@ -248,22 +248,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn view_only_database_is_refused_before_journal_or_schema_mutation() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("runtime.sqlite");
-        let mut connection = SqliteConnection::connect_with(
-            &SqliteConnectOptions::new()
-                .filename(&path)
-                .create_if_missing(true),
-        )
-        .await
-        .unwrap();
-        sqlx::query("CREATE VIEW acknowledged_view AS SELECT 'preserve-this' AS value")
-            .execute(&mut connection)
+    async fn user_objects_are_refused_before_journal_or_schema_mutation() {
+        // LIKE's underscore wildcard must not hide names such as sqlitex_*.
+        for statement in [
+            "CREATE VIEW acknowledged_view AS SELECT 'preserve-this' AS value",
+            "CREATE VIEW sqlitex_customer_view AS SELECT 'preserve-this' AS value",
+            "CREATE TABLE sqlitex_customer_data(id TEXT); INSERT INTO sqlitex_customer_data VALUES ('preserve-this')",
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("runtime.sqlite");
+            let mut connection = SqliteConnection::connect_with(
+                &SqliteConnectOptions::new()
+                    .filename(&path)
+                    .create_if_missing(true),
+            )
             .await
             .unwrap();
-        connection.close().await.unwrap();
-        assert_read_only_refusal(&path).await;
+            sqlx::raw_sql(statement)
+                .execute(&mut connection)
+                .await
+                .unwrap();
+            connection.close().await.unwrap();
+            assert_read_only_refusal(&path).await;
+        }
     }
 
     #[tokio::test]
