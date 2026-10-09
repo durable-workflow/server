@@ -223,8 +223,23 @@ Cache-only restart and scheduler-cache maintenance remain usable during a
 database outage; early command preflight targets write-capable roles rather than
 every command sharing their prefix.
 
-Next: implement the versioned full-schema takeover foundation after #331's
-exact-head qualification and merge, expanding real execution and differential
-fixtures across the required databases. The rest of the inventory remains open
-under #325.
+The next foundation aligns fresh native SQLite databases with the complete
+schema created by the frozen published PHP image: 49 tables and 333 explicit
+indexes, including credentials, payload holds, timers, cancellation and legacy
+infrastructure. SQLx records and validates native migration checksums. Worker
+registration uses the existing `workflow_worker_registrations` relation;
+execution timeout stays on the workflow instance. Native completion/poll receipts
+use separate relations rather than replacing PHP-owned columns.
+
+This is a fresh-database development bootstrap, not permission to adopt PHP
+data. PHP databases and the earlier abbreviated native development schema remain
+refused before writable connection setup. No observable protocol capability is
+added. Qualification must compare the actual published PHP catalog with an
+independent native database, preserve the existing execution/restart fixtures,
+and test interrupted/concurrent bootstrap and migration-history mismatches.
+Implementation and final-head results will be recorded here before merge.
+
+Next: qualify and merge this SQLite schema foundation, then implement the other
+database backends and backup-first sequential takeover with stored-value and
+interruption fixtures. The rest of the inventory remains open under #325.
 No separate defect issues have been filed yet.

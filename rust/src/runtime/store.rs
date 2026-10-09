@@ -12,7 +12,7 @@ use sqlx::{
 use tokio::sync::Notify;
 use ulid::Ulid;
 
-use super::{Result, envelope, refuse, text, wire};
+use super::{Result, envelope, refuse, schema, text, wire};
 
 const LEASE_SECONDS: i64 = 30;
 
@@ -71,13 +71,7 @@ impl Runtime {
         .await?;
         let initialized = tables.iter().any(|name| name == "dw_server_schema");
         if initialized {
-            let markers: Vec<(String, i64)> =
-                sqlx::query_as("SELECT engine, version FROM dw_server_schema")
-                    .fetch_all(&mut preflight)
-                    .await?;
-            if markers != [("rust-development".to_owned(), 1)] {
-                return Err(refuse(StatusCode::CONFLICT, "unsupported_rust_schema"));
-            }
+            schema::verify(&mut preflight).await?;
         } else if !tables.is_empty() {
             return Err(refuse(
                 StatusCode::CONFLICT,
@@ -108,9 +102,7 @@ impl Runtime {
             .fetch_one(&mut *tx)
             .await?;
             if exists == 0 {
-                sqlx::raw_sql(include_str!("../../migrations/sqlite/0001_development.sql"))
-                    .execute(&mut *tx)
-                    .await?;
+                schema::bootstrap(&mut tx).await?;
             }
             tx.commit().await?;
         }
@@ -133,17 +125,18 @@ impl Runtime {
             sqlx::query_as("SELECT engine,version FROM dw_server_schema")
                 .fetch_all(&self.pool)
                 .await;
-        if !marker.is_ok_and(|rows| rows == [("rust-development".into(), 1)]) {
+        if !marker.is_ok_and(|rows| rows == [("rust-development".into(), schema::VERSION)]) {
             return false;
         }
         for query in [
             "SELECT id,namespace,current_run_id FROM workflow_instances LIMIT 0",
             "SELECT id,status,arguments,output,last_history_sequence,last_command_sequence,run_deadline_at FROM workflow_runs LIMIT 0",
             "SELECT id,sequence,payload,recorded_at FROM workflow_history_events LIMIT 0",
-            "SELECT id,status,payload,lease_owner,lease_expires_at,attempt_count,receipt FROM workflow_tasks LIMIT 0",
+            "SELECT id,status,payload,lease_owner,lease_expires_at,attempt_count FROM workflow_tasks LIMIT 0",
             "SELECT id,sequence,activity_type,status,arguments,result FROM activity_executions LIMIT 0",
             "SELECT id,workflow_task_id,attempt_number,status FROM activity_attempts LIMIT 0",
-            "SELECT namespace,worker_id,definition FROM worker_registrations LIMIT 0",
+            "SELECT namespace,worker_id,supported_workflow_types,supported_activity_types FROM workflow_worker_registrations LIMIT 0",
+            "SELECT task_id,receipt FROM dw_task_completions LIMIT 0",
             "SELECT request_id,task_id,attempt,response,expires_at FROM dw_poll_receipts LIMIT 0",
         ] {
             if sqlx::query(query).execute(&self.pool).await.is_err() {
@@ -214,12 +207,13 @@ impl Runtime {
         let started_at = now();
         let execution_deadline = after(execution_timeout);
         let run_deadline = after(run_timeout.min(execution_timeout));
-        sqlx::query("INSERT INTO workflow_instances(id,namespace,workflow_type,current_run_id,created_at) VALUES (?,'default',?,?,?)")
-            .bind(workflow_id).bind(workflow_type).bind(&run_id).bind(&started_at).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO workflow_runs(id,workflow_instance_id,namespace,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,execution_timeout_seconds,run_timeout_seconds,execution_deadline_at,run_deadline_at,started_at) VALUES (?,?,'default',?,?,1,'running','avro',?,?,?,?,?,?,?)")
+        sqlx::query("INSERT INTO workflow_instances(id,namespace,workflow_type,workflow_class,current_run_id,run_count,execution_timeout_seconds,created_at,updated_at,started_at) VALUES (?,'default',?,?,?,1,?,?,?,?)")
+            .bind(workflow_id).bind(workflow_type).bind(workflow_type).bind(&run_id).bind(execution_timeout)
+            .bind(&started_at).bind(&started_at).bind(&started_at).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO workflow_runs(id,workflow_instance_id,namespace,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,run_timeout_seconds,execution_deadline_at,run_deadline_at,started_at,created_at,updated_at) VALUES (?,?,'default',?,?,1,'running','avro',?,?,?,?,?,?,?,?)")
             .bind(&run_id).bind(workflow_id).bind(workflow_type).bind(workflow_type).bind(arguments)
-            .bind(queue).bind(execution_timeout).bind(run_timeout).bind(&execution_deadline).bind(&run_deadline)
-            .bind(&started_at).execute(&mut *tx).await?;
+            .bind(queue).bind(run_timeout).bind(&execution_deadline).bind(&run_deadline)
+            .bind(&started_at).bind(&started_at).bind(&started_at).execute(&mut *tx).await?;
         let identity = json!({"workflow_instance_id": workflow_id, "workflow_run_id": run_id,
             "workflow_type": workflow_type, "workflow_class": workflow_type, "workflow_command_id": command_id});
         let mut accepted = identity.clone();
@@ -258,7 +252,7 @@ impl Runtime {
     }
 
     pub(crate) async fn describe(&self, workflow_id: &str, run_id: Option<&str>) -> Result<Value> {
-        let row = sqlx::query("SELECT r.* FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE i.id=? AND r.id=COALESCE(?,i.current_run_id) AND r.namespace='default'")
+        let row = sqlx::query("SELECT r.*,i.execution_timeout_seconds FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE i.id=? AND r.id=COALESCE(?,i.current_run_id) AND r.namespace='default'")
             .bind(workflow_id).bind(run_id).fetch_optional(&self.pool).await?
             .ok_or_else(|| refuse(StatusCode::NOT_FOUND, "instance_not_found"))?;
         let output: Option<String> = row.get("output");
@@ -314,8 +308,12 @@ impl Runtime {
                 ));
             }
         }
-        sqlx::query("INSERT INTO worker_registrations(namespace,worker_id,task_queue,definition,last_heartbeat_at) VALUES ('default',?,?,?,?) ON CONFLICT(namespace,worker_id) DO UPDATE SET task_queue=excluded.task_queue,definition=excluded.definition,last_heartbeat_at=excluded.last_heartbeat_at")
-            .bind(worker_id).bind(queue).bind(body.to_string()).bind(now()).execute(&self.pool).await?;
+        let runtime = text(&body, "runtime")?;
+        sqlx::query("INSERT INTO workflow_worker_registrations(namespace,worker_id,task_queue,runtime,sdk_version,build_id,supported_workflow_types,supported_activity_types,capabilities,capability_manifest,last_heartbeat_at,created_at,updated_at) VALUES ('default',?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(worker_id,namespace) DO UPDATE SET task_queue=excluded.task_queue,runtime=excluded.runtime,sdk_version=excluded.sdk_version,build_id=excluded.build_id,supported_workflow_types=excluded.supported_workflow_types,supported_activity_types=excluded.supported_activity_types,capabilities=excluded.capabilities,capability_manifest=excluded.capability_manifest,last_heartbeat_at=excluded.last_heartbeat_at,updated_at=excluded.updated_at")
+            .bind(worker_id).bind(queue).bind(runtime).bind(body["sdk_version"].as_str()).bind(body["build_id"].as_str())
+            .bind(body["supported_workflow_types"].to_string()).bind(body["supported_activity_types"].to_string())
+            .bind(json_column(&body["capabilities"])).bind(json_column(&body["capability_manifest"]))
+            .bind(now()).bind(now()).bind(now()).execute(&self.pool).await?;
         Ok(
             json!({"worker_id": worker_id, "registered": true, "namespace": "default", "task_queue": queue,
             "runtime": body["runtime"], "build_id": body["build_id"], "heartbeat_interval_seconds": 10,
@@ -325,7 +323,7 @@ impl Runtime {
 
     pub(crate) async fn worker_heartbeat(&self, body: Value) -> Result<Value> {
         let worker_id = text(&body, "worker_id")?;
-        let result = sqlx::query("UPDATE worker_registrations SET last_heartbeat_at=? WHERE namespace='default' AND worker_id=?")
+        let result = sqlx::query("UPDATE workflow_worker_registrations SET last_heartbeat_at=? WHERE namespace='default' AND worker_id=?")
             .bind(now()).bind(worker_id).execute(&self.pool).await?;
         if result.rows_affected() != 1 {
             return Err(refuse(StatusCode::NOT_FOUND, "worker_not_registered"));
@@ -337,7 +335,7 @@ impl Runtime {
 
     pub(crate) async fn deregister(&self, worker_id: &str) -> Result<Value> {
         let mut tx = self.begin().await?;
-        sqlx::query("DELETE FROM worker_registrations WHERE namespace='default' AND worker_id=?")
+        sqlx::query("DELETE FROM workflow_worker_registrations WHERE namespace='default' AND worker_id=?")
             .bind(worker_id)
             .execute(&mut *tx)
             .await?;
@@ -392,13 +390,12 @@ impl Runtime {
         let worker_id = text(body, "worker_id")?;
         let queue = text(body, "task_queue")?;
         let mut tx = self.begin().await?;
-        let worker = sqlx::query("SELECT definition,task_queue FROM worker_registrations WHERE namespace='default' AND worker_id=?")
+        let worker = sqlx::query("SELECT supported_workflow_types,supported_activity_types,task_queue FROM workflow_worker_registrations WHERE namespace='default' AND worker_id=?")
             .bind(worker_id).fetch_optional(&mut *tx).await?
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "worker_not_registered"))?;
         if string(&worker, "task_queue") != queue {
             return Err(refuse(StatusCode::CONFLICT, "task_queue_mismatch"));
         }
-        let definition: Value = serde_json::from_str(&string(&worker, "definition"))?;
         sqlx::query("DELETE FROM dw_poll_receipts WHERE expires_at<=? AND task_id IN (SELECT id FROM workflow_tasks WHERE status!='leased' OR lease_expires_at<=?)")
             .bind(now()).bind(now()).execute(&mut *tx).await?;
         let request_id = body
@@ -415,11 +412,11 @@ impl Runtime {
                 }
                 return Err(refuse(StatusCode::CONFLICT,"poll_cached_task_expired"));
         }
-        let types = &definition[if kind == "workflow" {
+        let types: Value = serde_json::from_str(&string(&worker, if kind == "workflow" {
             "supported_workflow_types"
         } else {
             "supported_activity_types"
-        }];
+        }))?;
         let candidates = sqlx::query("SELECT t.*,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.namespace='default' AND t.queue=? AND t.task_type=? AND r.status IN ('running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.lease_expires_at<=?)) AND t.available_at<=? ORDER BY t.available_at,t.id LIMIT 100")
             .bind(queue).bind(kind).bind(now()).bind(now()).fetch_all(&mut *tx).await?;
         for task in candidates {
@@ -649,11 +646,11 @@ impl Runtime {
                     .bind(output).bind(now()).bind(&run_id).execute(&mut *tx).await?;
             }
         }
-        sqlx::query("UPDATE workflow_tasks SET status='completed',receipt=? WHERE id=?")
-            .bind(body.to_string())
+        sqlx::query("UPDATE workflow_tasks SET status='completed' WHERE id=?")
             .bind(task_id)
             .execute(&mut *tx)
             .await?;
+        record_completion(&mut tx, task_id, &body).await?;
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok(
@@ -717,11 +714,11 @@ impl Runtime {
             .bind(attempt_id)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("UPDATE workflow_tasks SET status='completed',receipt=? WHERE id=?")
-            .bind(body.to_string())
+        sqlx::query("UPDATE workflow_tasks SET status='completed' WHERE id=?")
             .bind(task_id)
             .execute(&mut *tx)
             .await?;
+        record_completion(&mut tx, task_id, &body).await?;
         let next_task_id = create_task(
             &mut tx,
             &run_id,
@@ -766,11 +763,21 @@ pub(crate) fn capabilities() -> Value {
 }
 
 async fn task_row(tx: &mut Transaction<'_, Sqlite>, task_id: &str) -> Result<SqliteRow> {
-    sqlx::query("SELECT * FROM workflow_tasks WHERE id=? AND namespace='default'")
+    sqlx::query("SELECT t.*,c.receipt FROM workflow_tasks t LEFT JOIN dw_task_completions c ON c.task_id=t.id WHERE t.id=? AND t.namespace='default'")
         .bind(task_id)
         .fetch_optional(&mut **tx)
         .await?
         .ok_or_else(|| refuse(StatusCode::NOT_FOUND, "task_not_found"))
+}
+
+fn json_column(value: &Value) -> Option<String> {
+    (!value.is_null()).then(|| value.to_string())
+}
+
+async fn record_completion(tx: &mut Transaction<'_, Sqlite>, task_id: &str, body: &Value) -> Result<()> {
+    sqlx::query("INSERT INTO dw_task_completions(task_id,receipt) VALUES (?,?)")
+        .bind(task_id).bind(body.to_string()).execute(&mut **tx).await?;
+    Ok(())
 }
 
 fn duplicate_receipt(task: &SqliteRow, body: &Value) -> Result<bool> {

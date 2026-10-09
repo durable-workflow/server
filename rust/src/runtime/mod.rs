@@ -3,6 +3,7 @@
 //! SQLite is the first backend; existing PHP databases cannot be bootstrapped.
 
 mod http;
+mod schema;
 mod store;
 
 pub use http::router;
@@ -23,6 +24,8 @@ pub enum RuntimeError {
     Io(#[from] std::io::Error),
     #[error("{0}")]
     Json(#[from] serde_json::Error),
+    #[error("native schema migration failed")]
+    Migration(#[from] sqlx::migrate::MigrateError),
     #[error("{reason}")]
     Refused {
         status: StatusCode,
