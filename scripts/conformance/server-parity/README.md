@@ -4,7 +4,8 @@ This is the first, deliberately bounded slice of
 [Server #325](https://github.com/durable-workflow/server/issues/325).
 It executes Avro echo (including an exact large int64), a one-activity workflow,
 one/repeated durable sleeps, one/repeated signal deliveries, state queries and
-state updates with immutable duplicate receipts against any
+state updates with immutable duplicate receipts and two sequential child
+workflows with real nested activities against any
 isolated Server URL using the **published** PHP SDK. The embedded adapter runs
 the same logical cases through a Laravel application, real database queue jobs,
 and the installed Workflow package. Rust will use the HTTP adapter unchanged.
@@ -85,6 +86,19 @@ client process sends each blocking HTTP query while the real worker keeps pollin
 Embedded mode calls its normal replayed query method. Both check exact arguments
 and result types, original run/status and unchanged durable history before/after
 each query. HTTP observations retain actual query task, lease and worker snapshot.
+
+The child fixture calls two children sequentially with distinct typed payloads.
+Each child executes an activity and returns an echo with a child-workflow marker;
+the parent returns the two committed results in declaration order. Record the
+original parent/call/link/child-run and activity-attempt relationships, full
+histories and exact argument/result types. HTTP-created child histories omit
+`StartAccepted`, while embedded children retain their original start command.
+Both explicit inventories are checked before comparing common durable behavior.
+HTTP mode observes actual polls/completions through the published PSR-18 transport,
+including leases, attempts, original history prefixes, parent resume bindings and
+unchanged Avro frames. No SDK response, request or authentication header is edited;
+headers are excluded from observations. Failure/retry/cancellation, parent-close
+effects and cross-language child directions remain separate qualification gates.
 
 The current type recorder covers null, boolean, int64, double, string, list and
 map values. Other decoded PHP objects fail explicitly; binary/logical-type and

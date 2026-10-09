@@ -63,6 +63,7 @@ export function checkObservation(fixture, observation, workflowId) {
   const projectedEvents = events.map(({sequence, event_type}) => ({sequence, event_type}));
   const projectedQueries = [];
   const projectedUpdates = [];
+  const projectedChildren = [];
   if (fixture.update_values) {
     equal(observation.updates.length, fixture.update_values.length, 'complete update observation inventory');
     equal(started.declared_updates, [fixture.update_name], 'original durable update declaration');
@@ -300,6 +301,181 @@ export function checkObservation(fixture, observation, workflowId) {
       }
     }
   }
+  if (fixture.child_count) {
+    equal(observation.children.length, fixture.child_count, 'complete original child inventory');
+    for (const [index, child] of observation.children.entries()) {
+      const offset = 2 + index * 3;
+      const [scheduled, childStarted, resolved] = events.slice(offset, offset + 3);
+      const input = fixture.input.payloads[index];
+      const typedInput = {type: 'list', value: [fixture.typed_value.value.payloads.value[index]]};
+      const output = fixture.output.child_results[index];
+      const typedOutput = fixture.typed_output.value.child_results.value[index];
+      const callId = scheduled.payload.child_call_id;
+      for (const key of ['child_call_id', 'workflow_link_id', 'child_workflow_instance_id', 'child_workflow_run_id']) {
+        nonempty(scheduled.payload[key], `original child ${key}`);
+        equal(childStarted.payload[key], scheduled.payload[key], `child start preserves ${key}`);
+        equal(resolved.payload[key], scheduled.payload[key], `child resolution preserves ${key}`);
+      }
+      equal(scheduled.payload.workflow_link_id, callId, 'child call is its original link');
+      equal(child.workflow_id, scheduled.payload.child_workflow_instance_id, 'observed original child instance');
+      equal(child.run_id, scheduled.payload.child_workflow_run_id, 'observed original child run');
+      identities.push(callId, child.workflow_id, child.run_id);
+      equal(new Set(identities).size, identities.length, 'distinct child/call/run and parent identities');
+      for (const event of [scheduled, childStarted, resolved]) {
+        equal(event.payload.sequence, index + 1, 'authored child call sequence');
+        equal(event.payload.child_workflow_type, fixture.child_workflow_type, 'original registered child type');
+      }
+      for (const event of [scheduled, childStarted]) {
+        equal(event.payload.parent_close_policy, 'abandon', 'original default parent-close policy');
+        equal(event.payload.cancellation_policy, 'abandon', 'original default child cancellation policy');
+      }
+      equal(childStarted.payload.child_run_number, 1, 'original child run number');
+      equal(resolved.payload.child_run_number, 1, 'resolution of original child run number');
+      equal(resolved.payload.child_status, 'completed', 'actual child terminal resolution');
+      equal(resolved.decoded.result, output, 'parent receives committed child result');
+      equal(resolved.typed_decoded.result, typedOutput, 'parent receives exact child result types');
+      equal(resolved.decoded.output, output, 'parent resolution retains committed child output');
+      equal(resolved.typed_decoded.output, typedOutput, 'parent resolution exact output types');
+      equal(child.workflow_type, fixture.child_workflow_type, 'observed registered child type');
+      equal(child.namespace, observation.namespace, 'child inherits parent namespace');
+      equal(child.task_queue, observation.task_queue, 'child uses original requested queue');
+      equal(child.status, 'completed', 'real child completion');
+      equal(child.payload_codec, 'avro', 'child Avro codec');
+      equal(child.input, [input], 'original child arguments');
+      equal(child.typed_input, typedInput, 'exact original child argument types');
+      equal(child.output, output, 'actual child output');
+      equal(child.typed_output, typedOutput, 'exact child output types');
+      const childEvents = child.events;
+      const inventory = observation.mode === 'embedded' ? fixture.embedded_child_expected_events : fixture.child_expected_events;
+      equal(childEvents.map(event => event.event_type), inventory, 'complete original child event inventory');
+      equal(childEvents.map(event => event.sequence), childEvents.map((_, position) => position + 1), 'original child history sequence');
+      let previous = -Infinity;
+      for (const event of childEvents) {
+        const time = Date.parse(event.timestamp);
+        assert.ok(Number.isFinite(time) && time >= previous, 'ordered original child timestamps');
+        previous = time;
+      }
+      const childStart = childEvents.find(event => event.event_type === 'WorkflowStarted');
+      for (const [key, value] of Object.entries({workflow_instance_id: child.workflow_id, workflow_run_id: child.run_id,
+        workflow_type: fixture.child_workflow_type, parent_workflow_instance_id: workflowId,
+        parent_workflow_run_id: observation.run_id, parent_sequence: index + 1,
+        workflow_link_id: callId, child_call_id: callId})) {
+        equal(childStart.payload[key], value, `child history original ${key}`);
+      }
+      if (observation.mode === 'embedded') {
+        const accepted = childEvents[0].payload;
+        nonempty(accepted.workflow_command_id, 'embedded child durable start command');
+        identities.push(accepted.workflow_command_id);
+        equal(new Set(identities).size, identities.length, 'distinct embedded child start command');
+        equal(childStart.payload.workflow_command_id, accepted.workflow_command_id, 'embedded child original accepted command');
+        equal(accepted.workflow_instance_id, child.workflow_id, 'embedded child accepted instance');
+        equal(accepted.workflow_run_id, child.run_id, 'embedded child accepted run');
+      }
+      const activityEvents = childEvents.slice(observation.mode === 'embedded' ? 2 : 1, observation.mode === 'embedded' ? 5 : 4);
+      const activityId = activityEvents[0].payload.activity_execution_id;
+      const attemptId = activityEvents[1].payload.activity_attempt_id;
+      nonempty(activityId, 'child activity identity');
+      nonempty(attemptId, 'child activity attempt identity');
+      identities.push(activityId, attemptId);
+      equal(new Set(identities).size, identities.length, 'distinct nested activity and attempt identities');
+      for (const event of activityEvents) {
+        equal(event.payload.activity_execution_id, activityId, 'child activity original execution');
+        equal(event.payload.activity_type, 'parity.v1.echo_activity', 'child registered activity type');
+        equal(event.payload.sequence, 1, 'child activity authored sequence');
+      }
+      for (const event of activityEvents.slice(0, 2)) {
+        equal(event.decoded.activity_arguments, [input], 'child activity original arguments');
+        equal(event.typed_decoded.activity_arguments, typedInput, 'child activity exact argument types');
+      }
+      for (const event of activityEvents.slice(1)) {
+        equal(event.payload.activity_attempt_id, attemptId, 'child activity original committed attempt');
+        equal(event.payload.attempt_number, 1, 'one nested activity attempt');
+      }
+      equal(activityEvents[2].decoded.result, input, 'nested activity committed result');
+      equal(activityEvents[2].typed_decoded.result, typedInput.value[0], 'nested activity exact committed result types');
+      equal(childEvents.at(-1).decoded.output, output, 'committed original child output');
+      equal(childEvents.at(-1).typed_decoded.output, typedOutput, 'committed exact child output types');
+      for (const event of [scheduled, childStarted, resolved]) {
+        Object.assign(projectedEvents[event.sequence - 1], {call_id: `@child-call:${index + 1}`,
+          child_workflow_id: `@child:${index + 1}`, child_run_id: `@child-run:${index + 1}`, command_sequence: index + 1});
+      }
+      projectedChildren.push({workflow_type: child.workflow_type, namespace: child.namespace, task_queue: child.task_queue,
+        status: child.status, input: typedInput, output: typedOutput, parent_sequence: index + 1,
+        parent_close_policy: 'abandon', cancellation_policy: 'abandon', activity_type: 'parity.v1.echo_activity', attempt_number: 1});
+    }
+    if (observation.mode === 'http') {
+      equal(observation.workflow_polls.length, 7, 'actual parent/child workflow turns');
+      equal(observation.workflow_completions.length, 7, 'actual committed parent/child workflow turns');
+      for (const task of observation.workflow_polls) {
+        nonempty(task.task_id, 'actual child-family task identity');
+        nonempty(task.lease_owner, 'actual child-family lease owner');
+        identities.push(task.task_id);
+        equal(new Set(identities).size, identities.length, 'distinct child-family task identities');
+        equal(task.workflow_task_attempt, 1, 'child-family initial task attempt');
+        const childIndex = observation.children.findIndex(child => child.workflow_id === task.workflow_id);
+        const owner = childIndex === -1 ? observation : observation.children[childIndex];
+        equal(task.workflow_id, owner.workflow_id, 'actual task original workflow');
+        equal(task.run_id, owner.run_id, 'actual task original run');
+        equal(task.workflow_type, owner.workflow_type, 'actual task original type');
+        const completion = observation.workflow_completions.find(item => item.response.task_id === task.task_id);
+        assert.ok(completion, 'original leased task completes through published SDK');
+        equal(completion.path, `/api/worker/workflow-tasks/${task.task_id}/complete`, 'completion original task path');
+        equal(completion.request.lease_owner, task.lease_owner, 'completion original lease owner');
+        equal(completion.request.workflow_task_attempt, task.workflow_task_attempt, 'completion original attempt');
+        equal(completion.response.run_id, task.run_id, 'completion original run');
+        equal(completion.response.recorded, true, 'workflow turn commits once');
+        equal(completion.request.commands.length, 1, 'one child-family command per committed turn');
+      }
+      const parentTasks = observation.workflow_polls.filter(task => task.workflow_id === workflowId);
+      equal(parentTasks.length, 3, 'parent initial turn and two real resumptions');
+      for (const [index, task] of parentTasks.slice(1).entries()) {
+        const child = observation.children[index];
+        const callId = events[2 + index * 3].payload.child_call_id;
+        equal(task.child_call_id, callId, 'parent resumes original child call');
+        equal(task.child_workflow_run_id, child.run_id, 'parent resumes original child run');
+        equal(task.resume_source_kind, 'child_workflow_run', 'child terminal resume source');
+        equal(task.resume_source_id, child.run_id, 'child terminal resume identity');
+        equal(task.workflow_event_type, 'ChildRunCompleted', 'child terminal resume event');
+        equal(task.workflow_sequence, index + 1, 'parent resumes original authored position');
+        equal(task.open_wait_id, `child:${callId}`, 'parent original child wait identity');
+      }
+      for (const owner of [observation, ...observation.children]) {
+        const parent = owner.workflow_id === workflowId;
+        const childIndex = observation.children.indexOf(owner);
+        const tasks = observation.workflow_polls.filter(task => task.workflow_id === owner.workflow_id);
+        const frame = value => {
+          if (typeof value === 'string') return value;
+          equal(value?.codec, 'avro', 'original SDK Avro frame codec');
+          nonempty(value?.blob, 'original SDK Avro frame bytes');
+          return value.blob;
+        };
+        equal(tasks.length, parent ? 3 : 2, 'complete original workflow turn inventory');
+        for (const [turn, task] of tasks.entries()) {
+          const prefix = parent ? 2 + turn * 3 : 1 + turn * 3;
+          const history = events => events.map(({sequence, event_type, payload}) => ({sequence, event_type, payload}));
+          equal(history(task.history_events), history(owner.events.slice(0, prefix)), 'actual worker original committed history prefix');
+          const completion = observation.workflow_completions.find(item => item.response.task_id === task.task_id);
+          const command = completion.request.commands[0];
+          const decoded = completion.decoded_commands[0];
+          const complete = turn === tasks.length - 1;
+          equal(command.type, complete ? 'complete_workflow' : parent ? 'start_child_workflow' : 'schedule_activity', 'actual SDK command for original workflow turn');
+          if (complete) {
+            equal(frame(command.result), frame(owner.execution.output_envelope), 'SDK result frame is durably preserved');
+            equal(decoded.decoded.result, owner.output, 'SDK commits original workflow result');
+            equal(decoded.typed_decoded.result, owner.typed_output, 'SDK commits exact original workflow result types');
+          } else {
+            const index = parent ? turn : childIndex;
+            const stored = parent ? observation.children[index].execution.input_envelope
+              : owner.events[1].payload.activity.arguments;
+            equal(frame(command.arguments), frame(stored), 'SDK child/activity argument frame is durably preserved');
+            equal(decoded.decoded.arguments, [fixture.input.payloads[index]], 'SDK schedules original child/activity arguments');
+            equal(decoded.typed_decoded.arguments, {type: 'list', value: [fixture.typed_value.value.payloads.value[index]]}, 'SDK schedules exact child/activity argument types');
+            equal(parent ? command.workflow_type : command.activity_type, parent ? fixture.child_workflow_type : 'parity.v1.echo_activity', 'SDK schedules original registered child/activity type');
+          }
+        }
+      }
+    }
+  }
   if (fixture.activity) {
     const [scheduled, running, completed] = events.slice(2, 5);
     const id = scheduled.payload.activity_execution_id;
@@ -334,6 +510,7 @@ export function checkObservation(fixture, observation, workflowId) {
     input: observation.typed_input, output: observation.typed_output, execution_timeout_seconds: 3600,
     run_timeout_seconds: 600, events: projectedEvents, ...(fixture.queries ? {queries: projectedQueries} : {}),
     ...(fixture.update_values ? {updates: projectedUpdates} : {}),
+    ...(fixture.child_count ? {children: projectedChildren} : {}),
   };
 }
 

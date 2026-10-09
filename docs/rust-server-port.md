@@ -54,7 +54,10 @@ in order. Preserve parent/call/child-run and activity-attempt relationships,
 registered type keys, original arguments, exact int64 and complete histories.
 HTTP-created children omit `StartAccepted`; embedded children record it. Both
 inventories must be explicit and checked before projecting their common behavior.
-The fixture and native child execution are being prepared and remain unqualified.
+The shared fixture/adapters/comparator are implemented in
+[#343](https://github.com/durable-workflow/server/pull/343). Its reference and
+exact-head qualification outcomes are recorded there. Native child execution
+remains to implement; all six database/PHP checks gate the final merge.
 Child workflows are followed by retries/cancellation, schedules, visibility, authorization/namespaces,
 streams and existing consumers. Each slice must run on the required database
 matrix. Read-only upgrade inspection and backup-first takeover remain required,

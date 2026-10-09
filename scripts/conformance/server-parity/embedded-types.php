@@ -10,10 +10,35 @@ use Workflow\V2\Attributes\Signal;
 use Workflow\QueryMethod;
 use Workflow\UpdateMethod;
 use Workflow\V2\Workflow;
+use Workflow\WorkflowOptions;
 
 use function Workflow\V2\activity;
 use function Workflow\V2\timer;
 use function Workflow\V2\signal;
+use function Workflow\V2\child;
+
+#[Type('parity.v1.two_children')]
+final class TwoChildrenWorkflow extends Workflow
+{
+    public function handle(array $value): array
+    {
+        $results = [];
+        foreach ($value['payloads'] as $payload) {
+            $results[] = child(ChildActivityWorkflow::class, $payload, new WorkflowOptions(connection: 'database', queue: 'server-parity-v1'));
+        }
+
+        return ['child_results' => $results];
+    }
+}
+
+#[Type('parity.v1.child_activity')]
+final class ChildActivityWorkflow extends Workflow
+{
+    public function handle(array $value): array
+    {
+        return ['echo' => activity(EchoActivity::class, $value), 'source' => 'child-workflow'];
+    }
+}
 
 #[Type('parity.v1.echo')]
 final class EchoWorkflow extends Workflow

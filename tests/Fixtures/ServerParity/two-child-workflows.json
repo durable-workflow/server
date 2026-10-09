@@ -1,0 +1,25 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "two-child-workflows",
+  "workflow_type": "parity.v1.two_children",
+  "child_workflow_type": "parity.v1.child_activity",
+  "child_count": 2,
+  "input": {"payloads": [{"message": "first child λ", "number": 9007199254740993, "optional": null}, {"message": "second child λ", "number": 42, "ready": true}]},
+  "typed_value": {"type": "map", "value": {"payloads": {"type": "list", "value": [
+    {"type": "map", "value": {"message": {"type": "string", "value": "first child λ"}, "number": {"type": "int64", "value": "9007199254740993"}, "optional": {"type": "null", "value": null}}},
+    {"type": "map", "value": {"message": {"type": "string", "value": "second child λ"}, "number": {"type": "int64", "value": "42"}, "ready": {"type": "boolean", "value": true}}}
+  ]}}},
+  "output": {"child_results": [
+    {"echo": {"message": "first child λ", "number": 9007199254740993, "optional": null}, "source": "child-workflow"},
+    {"echo": {"message": "second child λ", "number": 42, "ready": true}, "source": "child-workflow"}
+  ]},
+  "typed_output": {"type": "map", "value": {"child_results": {"type": "list", "value": [
+    {"type": "map", "value": {"echo": {"type": "map", "value": {"message": {"type": "string", "value": "first child λ"}, "number": {"type": "int64", "value": "9007199254740993"}, "optional": {"type": "null", "value": null}}}, "source": {"type": "string", "value": "child-workflow"}}},
+    {"type": "map", "value": {"echo": {"type": "map", "value": {"message": {"type": "string", "value": "second child λ"}, "number": {"type": "int64", "value": "42"}, "ready": {"type": "boolean", "value": true}}}, "source": {"type": "string", "value": "child-workflow"}}}
+  ]}}},
+  "activity": false,
+  "expected_events": ["StartAccepted", "WorkflowStarted", "ChildWorkflowScheduled", "ChildRunStarted", "ChildRunCompleted", "ChildWorkflowScheduled", "ChildRunStarted", "ChildRunCompleted", "WorkflowCompleted"],
+  "child_expected_events": ["WorkflowStarted", "ActivityScheduled", "ActivityStarted", "ActivityCompleted", "WorkflowCompleted"],
+  "embedded_child_expected_events": ["StartAccepted", "WorkflowStarted", "ActivityScheduled", "ActivityStarted", "ActivityCompleted", "WorkflowCompleted"],
+  "contract": "A parent calls two child workflows sequentially with distinct typed arguments. Each child executes a real activity and returns its committed echo with a child-workflow marker; the parent returns both committed results once and in declaration order. Preserve distinct call/link/child-instance/child-run and activity-attempt identities, original parent relationships, namespace/queue/type keys, authored sequences, original arguments and exact int64 results. Parent histories bind scheduling, start and terminal resolution to the original child run, and a second call begins only after the first resolves. HTTP child histories omit StartAccepted while embedded child histories record their start command; retain and check these explicit inventories before comparing common durable behavior. Default parent-close and cancellation policies are abandon; this fixture does not qualify child failure, retry, cancellation, parent-close effects or cross-language directions."
+}
