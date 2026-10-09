@@ -24,7 +24,7 @@ permissions:
   contents: read
 
 jobs:
-  rust-codec:
+  execution-and-codec:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -38,7 +38,7 @@ jobs:
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" \
             -v "$PWD/parity-evidence:/evidence" -w /source/rust --entrypoint bash \
             rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 -c \
-            'cargo test --locked --all-targets > /evidence/rust-tests.txt && cargo run --locked --example codec-fixtures -- ../tests/Fixtures/ServerParity/Codec/v1.json > /evidence/rust-codec.json'
+            'cargo test --locked --all-targets > /evidence/rust-tests.txt && cargo build --locked && cargo run --locked --example codec-fixtures -- ../tests/Fixtures/ServerParity/Codec/v1.json > /evidence/rust-codec.json'
           image=$(jq -r '.server.images["linux/amd64"]' tests/Fixtures/ServerParity/php-baseline.json)
           docker run --rm --user="$(id -u):$(id -g)" --network=none --entrypoint php \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
@@ -51,21 +51,7 @@ jobs:
             rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
             cargo run --locked --offline --example codec-fixtures -- \
             ../tests/Fixtures/ServerParity/Codec/v1.json /evidence/php-codec.json > parity-evidence/cross-decode.json
-      - name: Retain codec evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: rust-server-codec
-          path: parity-evidence
-          retention-days: 90
-          if-no-files-found: error
-
-  php-embedded:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - name: Execute and compare published PHP and embedded fixtures
+      - name: Execute and compare Rust, published PHP and embedded fixtures
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: |
@@ -81,6 +67,13 @@ jobs:
           docker run --rm --user=1000:1000 --entrypoint node -v "$PWD:/source:ro" -w /source \
             "$image" --test tests/Unit/ServerParityRunnerTest.mjs > parity-evidence/comparator-tests.txt
           docker network create "$RESOURCE_SCOPE"
+          docker run -d --name "$RESOURCE_SCOPE-rust" --network "$RESOURCE_SCOPE" --network-alias=parity-rust \
+            --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
+            -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token \
+            -e DB_DATABASE=/state/rust.sqlite -e DW_BIND_ADDRESS=0.0.0.0:8080 \
+            -v "$PWD/rust-target:/target:ro" -v "$PWD/parity-state:/state" \
+            --entrypoint /target/debug/durable-workflow-server \
+            rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
           for target in php embedded; do
             docker run --rm --user=1000:1000 --entrypoint php \
               -v "$PWD/parity-state:/state" -e DB_CONNECTION=sqlite -e DB_DATABASE="/state/$target.sqlite" \
@@ -91,21 +84,27 @@ jobs:
             --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
             -v "$PWD/parity-state:/state" -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/php.sqlite \
             -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token "$image"
-          ready=0
-          for attempt in $(seq 1 30); do
-            if docker run --rm --user=1000:1000 --entrypoint curl --network "$RESOURCE_SCOPE" "$image" \
-              -fsS http://parity-server:8080/api/ready > parity-evidence/readiness.json; then
-              ready=1
-              break
-            fi
-            sleep 1
+          for target in server rust; do
+            ready=0
+            for attempt in $(seq 1 30); do
+              if docker run --rm --user=1000:1000 --entrypoint curl --network "$RESOURCE_SCOPE" "$image" \
+                -fsS "http://parity-$target:8080/api/ready" > "parity-evidence/$target-readiness.json"; then
+                ready=1
+                break
+              fi
+              sleep 1
+            done
+            test "$ready" = 1
           done
-          test "$ready" = 1
           export DW_PARITY_RUNNER_REVISION=$(git rev-parse HEAD)
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
             --mode http --url http://parity-server:8080 --target php --output /evidence/php.json
+          docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
+            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
+            --mode http --url http://parity-rust:8080 --target rust --output /evidence/rust.json
           docker run --rm --user=1000:1000 --entrypoint node \
             -v "$PWD:/source:ro" -v "$PWD/parity-state:/state" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/embedded.sqlite -e DW_MODE=embedded \
@@ -113,14 +112,46 @@ jobs:
             --mode embedded --application-root /app --target embedded --output /evidence/embedded.json
           docker run --rm --user=1000:1000 --entrypoint node \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
-            scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/embedded.json > parity-evidence/comparison.json
+            scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json > parity-evidence/comparison.json
+          docker run --rm --user=1000:1000 --entrypoint php --network "$RESOURCE_SCOPE" \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
+            -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/restart.php \
+            prepare http://parity-rust:8080 /evidence/restart-receipt.json > parity-evidence/restart-prepare.json
+          docker kill --signal=KILL "$RESOURCE_SCOPE-rust"
+          test "$(docker inspect --format='{{.State.ExitCode}}' "$RESOURCE_SCOPE-rust")" = 137
+          docker logs "$RESOURCE_SCOPE-rust" > parity-evidence/rust-killed.log 2>&1
+          docker run -d --name "$RESOURCE_SCOPE-recovered" --network "$RESOURCE_SCOPE" --network-alias=parity-recovered \
+            --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
+            -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token \
+            -e DB_DATABASE=/state/rust.sqlite -e DW_BIND_ADDRESS=0.0.0.0:8080 \
+            -v "$PWD/rust-target:/target:ro" -v "$PWD/parity-state:/state" \
+            --entrypoint /target/debug/durable-workflow-server \
+            rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
+          ready=0
+          for attempt in $(seq 1 30); do
+            if docker run --rm --user=1000:1000 --entrypoint curl --network "$RESOURCE_SCOPE" "$image" \
+              -fsS http://parity-recovered:8080/api/ready > parity-evidence/restart-readiness.json; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
+          docker run --rm --user=1000:1000 --entrypoint php --network "$RESOURCE_SCOPE" \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
+            -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/restart.php \
+            finish http://parity-recovered:8080 /evidence/restart-receipt.json > parity-evidence/restart-finish.json
       - name: Collect Server logs and clean resources
         if: always()
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: |
           docker logs "$RESOURCE_SCOPE-server" > parity-evidence/server.log 2>&1 || true
+          docker logs "$RESOURCE_SCOPE-rust" > parity-evidence/rust.log 2>&1 || true
+          docker logs "$RESOURCE_SCOPE-recovered" > parity-evidence/rust-recovered.log 2>&1 || true
           docker rm -f "$RESOURCE_SCOPE-server" || true
+          docker rm -f "$RESOURCE_SCOPE-rust" || true
+          docker rm -f "$RESOURCE_SCOPE-recovered" || true
           docker network rm "$RESOURCE_SCOPE" || true
       - name: Retain fixture evidence
         if: always()

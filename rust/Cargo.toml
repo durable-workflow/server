@@ -11,9 +11,17 @@ description = "Development of the compatible Rust Durable Workflow Server"
 apache-avro = { version = "=0.22.0", default-features = false }
 base64 = "0.22"
 thiserror = "2"
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "json", "query", "tokio"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "=0.9.0", default-features = false, features = ["runtime-tokio", "sqlite-bundled"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+ulid = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [dev-dependencies]
-serde_json = "1"
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
 
 [profile.dev]
 debug = 0
