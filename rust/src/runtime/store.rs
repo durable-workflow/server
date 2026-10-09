@@ -66,6 +66,7 @@ where
             "SELECT id,status,payload,lease_owner,lease_expires_at,attempt_count FROM workflow_tasks LIMIT 0",
             "SELECT id,sequence,activity_type,status,arguments,result FROM activity_executions LIMIT 0",
             "SELECT id,workflow_task_id,attempt_number,status FROM activity_attempts LIMIT 0",
+            "SELECT id,workflow_run_id,sequence,status,delay_seconds,fire_at,fired_at FROM workflow_run_timers LIMIT 0",
             "SELECT namespace,worker_id,supported_workflow_types,supported_activity_types FROM workflow_worker_registrations LIMIT 0",
             "SELECT task_id,receipt FROM dw_task_completions LIMIT 0",
             "SELECT request_id,task_id,attempt,response,expires_at FROM dw_poll_receipts LIMIT 0",
@@ -519,6 +520,10 @@ where
                     text(command, "activity_type")?;
                     envelope(command, "arguments")?;
                 }
+                "start_timer" => {
+                    reject_fields(command, &["type", "delay_seconds"])?;
+                    timer_deadline(command)?;
+                }
                 _ => {
                     return Err(refuse(
                         StatusCode::UNPROCESSABLE_ENTITY,
@@ -584,10 +589,35 @@ where
                 .bind(&run_id)
                 .execute(&mut *tx)
                 .await?;
+            } else if command["type"] == "start_timer" {
+                sequence += 1;
+                let timer_id = id();
+                let delay = command["delay_seconds"].as_i64().unwrap();
+                let fire_at = timer_deadline(command)?;
+                Self::query("INSERT INTO workflow_run_timers(id,workflow_run_id,sequence,status,delay_seconds,fire_at) VALUES ($1,$2,$3,'pending',$4,$5)")
+                    .bind(&timer_id).bind(&run_id).bind(sequence).bind(delay).bind(DB::bind_time(fire_at)).execute(&mut *tx).await?;
+                Self::append(&mut tx, &run_id, "TimerScheduled", json!({"timer_id":timer_id,"sequence":sequence,"delay_seconds":delay,"fire_at":fire_at}), Some(task_id), None).await?;
+                let timer_task = Self::create_task(
+                    &mut tx,
+                    &run_id,
+                    &DB::string(&run, "queue")?,
+                    "timer",
+                    json!({"timer_id":timer_id}),
+                )
+                .await?;
+                Self::query("UPDATE workflow_tasks SET available_at=$1 WHERE id=$2")
+                    .bind(DB::bind_time(fire_at))
+                    .bind(timer_task)
+                    .execute(&mut *tx)
+                    .await?;
+                Self::query("UPDATE workflow_runs SET status='waiting',last_command_sequence=$1 WHERE id=$2")
+                    .bind(sequence).bind(&run_id).execute(&mut *tx).await?;
             } else {
                 let outstanding: i64 = Self::scalar("SELECT COUNT(*) FROM activity_executions WHERE workflow_run_id=$1 AND status!='completed'")
                     .bind(&run_id).fetch_one(&mut *tx).await?;
-                if outstanding != 0 {
+                let timers: i64 = Self::scalar("SELECT COUNT(*) FROM workflow_run_timers WHERE workflow_run_id=$1 AND status='pending'")
+                    .bind(&run_id).fetch_one(&mut *tx).await?;
+                if outstanding != 0 || timers != 0 {
                     return Err(refuse(StatusCode::CONFLICT, "pending_durable_operations"));
                 }
                 let output = envelope(command, "result")?;
@@ -690,6 +720,71 @@ where
         Ok(
             json!({"task_id": task_id, "activity_attempt_id": attempt_id, "outcome": "completed", "recorded": true, "reason": null, "next_task_id": next_task_id}),
         )
+    }
+    pub(crate) async fn fire_due_timers(&self) -> Result<()> {
+        // New timers use the canonical PHP timestamp shape on SQLite and typed
+        // UTC values elsewhere. Existing PHP data still cannot be adopted.
+        // The read probe avoids acquiring the transition lock when idle.
+        const DUE: &str = "SELECT t.*,r.queue FROM workflow_run_timers t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE r.namespace='default' AND r.status IN ('running','waiting') AND t.status='pending' AND t.fire_at<=$1 ORDER BY t.fire_at,t.id LIMIT 50";
+        if Self::query(DUE)
+            .bind(DB::bind_time(now()))
+            .fetch_optional(&self.pool)
+            .await?
+            .is_none()
+        {
+            return Ok(());
+        }
+        let mut tx = self.begin().await?;
+        // Re-read under the same durable transition lock as worker completion.
+        // Another node may already have fired any candidate from the probe.
+        let due = Self::query(DUE)
+            .bind(DB::bind_time(now()))
+            .fetch_all(&mut *tx)
+            .await?;
+        for timer in due {
+            let fire_at = DB::instant(&timer, "fire_at")?;
+            let fired_at = now();
+            if fire_at > fired_at {
+                continue;
+            }
+            let run_id = DB::string(&timer, "workflow_run_id")?;
+            match Self::active_run(&mut tx, &run_id).await {
+                Ok(_) => {}
+                Err(super::RuntimeError::Refused {
+                    reason: "run_timed_out",
+                    ..
+                }) => continue,
+                Err(error) => return Err(error),
+            }
+            let timer_id = DB::string(&timer, "id")?;
+            let task = Self::query(DB::TIMER_TASK_SQL)
+                .bind(&run_id)
+                .bind(&timer_id)
+                .fetch_one(&mut *tx)
+                .await?;
+            let task_id = DB::string(&task, "id")?;
+            Self::append(&mut tx, &run_id, "TimerFired", json!({"timer_id":timer_id,"sequence":DB::number(&timer,"sequence")?,"delay_seconds":DB::number(&timer,"delay_seconds")?,"fire_at":fire_at,"fired_at":fired_at}),Some(&task_id),None).await?;
+            Self::query("UPDATE workflow_run_timers SET status='fired',fired_at=$1 WHERE id=$2")
+                .bind(DB::bind_time(fired_at))
+                .bind(&timer_id)
+                .execute(&mut *tx)
+                .await?;
+            Self::query("UPDATE workflow_tasks SET status='completed' WHERE id=$1")
+                .bind(&task_id)
+                .execute(&mut *tx)
+                .await?;
+            Self::create_task(
+                &mut tx,
+                &run_id,
+                &DB::string(&timer, "queue")?,
+                "workflow",
+                json!({"timer_id":timer_id}),
+            )
+            .await?;
+        }
+        tx.commit().await?;
+        self.wake.notify_waiters();
+        Ok(())
     }
     async fn task_row(tx: &mut Transaction<'_, DB>, task_id: &str) -> Result<DB::Row> {
         Self::query("SELECT t.*,c.receipt FROM workflow_tasks t LEFT JOIN dw_task_completions c ON c.task_id=t.id WHERE t.id=$1 AND t.namespace='default'")
@@ -878,6 +973,15 @@ fn positive_seconds(body: &Value, field: &str, default: i64) -> Result<i64> {
         .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_timeout"))
 }
 
+fn timer_deadline(command: &Value) -> Result<DateTime<Utc>> {
+    command["delay_seconds"]
+        .as_i64()
+        .filter(|delay| *delay >= 0)
+        .and_then(chrono::Duration::try_seconds)
+        .and_then(|delay| now().checked_add_signed(delay))
+        .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_timer_delay"))
+}
+
 fn reject_fields(body: &Value, allowed: &[&str]) -> Result<()> {
     if body
         .as_object()
@@ -892,7 +996,7 @@ fn reject_fields(body: &Value, allowed: &[&str]) -> Result<()> {
 }
 
 pub(crate) fn capabilities() -> Value {
-    json!({"supported_workflow_task_commands": ["schedule_activity", "complete_workflow"],
+    json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "complete_workflow"],
         "workflow_memo_updates": false, "cooperative_cancellation": false, "prepared_local_activities": false,
         "worker_sessions": false, "sticky_execution": false, "local_activities": false, "message_streams": false,
         "workflow_updates": false, "query_tasks": false})

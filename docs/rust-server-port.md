@@ -444,3 +444,22 @@ PHP/source qualification is recorded in #338. These are representation tests
 against separate native data, not a sequential takeover or timezone qualification.
 Read-only upgrade preflight, pending poll bindings, timer jobs, credential and
 external payload preservation remain required next work under #325.
+
+[The timer slice in #339](https://github.com/durable-workflow/server/pull/339)
+adds reviewed one-timer and repeated zero/delayed-sleep fixtures. Their contract
+requires original timer IDs/deadlines, deterministic command sequences,
+non-early firing and one completed typed outcome. Eight new comparator cases
+include corrupted timer identity, delay, sequence, deadline and duplicate/early
+firing counterexamples. The tests-first native regression refuses `start_timer`
+with 422 on the previous execution slice; matrix receipts are in the PR.
+
+Native scheduling is implemented with persisted PHP-layout timers and timer
+tasks. A bounded background batch rechecks pending work under the existing
+cross-node transition lock, atomically commits firing and the next workflow
+task, and wakes polls after commit. Idle ticks use a read probe; they do not take
+the transition lock. Shutdown joins the scheduler before closing storage;
+database turn failures suppress readiness and emit a bounded diagnostic until
+the next successful turn. There are no new dependencies or schema changes.
+Qualification is pending. Cancellation/parallel timer groups, expiry recovery,
+missing timer reconstruction, CPU-heavy deadline health, throughput and complete
+operational parity remain open. This slice does not qualify database takeover.

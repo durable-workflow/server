@@ -469,13 +469,22 @@ async fn durable_timer_survives_restart_and_two_nodes_fire_once_without_polling(
     let started = start(&app, "durable-timer").await;
     register(&app, "worker", json!(["echo"]), json!([])).await;
     let task = poll(&app, "worker", "workflow").await;
-    let path = format!("/api/worker/workflow-tasks/{}/complete", task["task_id"].as_str().unwrap());
+    let path = format!(
+        "/api/worker/workflow-tasks/{}/complete",
+        task["task_id"].as_str().unwrap()
+    );
     let body = completion(&task, json!([{"type":"start_timer","delay_seconds":2}]));
     let scheduled = request(&app, "POST", &path, body.clone()).await;
     assert_eq!(scheduled.0, StatusCode::OK, "{}", scheduled.1);
-    assert_eq!(request(&app, "POST", &path, body).await.1["recorded"], false);
+    assert_eq!(
+        request(&app, "POST", &path, body).await.1["recorded"],
+        false
+    );
     assert!(poll(&app, "worker", "workflow").await.is_null());
-    let history_path = format!("/api/workflows/durable-timer/runs/{}/history", started["run_id"].as_str().unwrap());
+    let history_path = format!(
+        "/api/workflows/durable-timer/runs/{}/history",
+        started["run_id"].as_str().unwrap()
+    );
     let before = request(&app, "GET", &history_path, Value::Null).await.1;
     assert_eq!(before["events"].as_array().unwrap().len(), 3);
     let timer = before["events"][2]["payload"].clone();
@@ -490,8 +499,13 @@ async fn durable_timer_survives_restart_and_two_nodes_fire_once_without_polling(
     let budget = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
     let fired = loop {
         let history = request(&app_a, "GET", &history_path, Value::Null).await.1;
-        if history["events"].as_array().unwrap().len() == 4 { break history; }
-        assert!(tokio::time::Instant::now() < budget, "timer did not recover: {history}");
+        if history["events"].as_array().unwrap().len() == 4 {
+            break history;
+        }
+        assert!(
+            tokio::time::Instant::now() < budget,
+            "timer did not recover: {history}"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     };
     let fired_payload = &fired["events"][3]["payload"];
@@ -499,14 +513,30 @@ async fn durable_timer_survives_restart_and_two_nodes_fire_once_without_polling(
     assert_eq!(fired_payload["timer_id"], timer["timer_id"]);
     assert_eq!(fired_payload["sequence"], 1);
     assert_eq!(fired_payload["fire_at"], timer["fire_at"]);
-    assert!(chrono::DateTime::parse_from_rfc3339(fired_payload["fired_at"].as_str().unwrap()).unwrap()
-        >= chrono::DateTime::parse_from_rfc3339(timer["fire_at"].as_str().unwrap()).unwrap());
-    let (claim_a, claim_b) = tokio::join!(poll(&app_a, "worker", "workflow"), poll(&app_b, "worker", "workflow"));
+    assert!(
+        chrono::DateTime::parse_from_rfc3339(fired_payload["fired_at"].as_str().unwrap()).unwrap()
+            >= chrono::DateTime::parse_from_rfc3339(timer["fire_at"].as_str().unwrap()).unwrap()
+    );
+    let (claim_a, claim_b) = tokio::join!(
+        poll(&app_a, "worker", "workflow"),
+        poll(&app_b, "worker", "workflow")
+    );
     assert_ne!(claim_a.is_null(), claim_b.is_null());
     let resumed = if claim_a.is_null() { claim_b } else { claim_a };
     assert_eq!(resumed["run_id"], started["run_id"]);
-    let completed = request(&app_a, "POST", &format!("/api/worker/workflow-tasks/{}/complete", resumed["task_id"].as_str().unwrap()),
-        completion(&resumed, json!([{"type":"complete_workflow","result":envelope(Payload::Long(7))}]))).await;
+    let completed = request(
+        &app_a,
+        "POST",
+        &format!(
+            "/api/worker/workflow-tasks/{}/complete",
+            resumed["task_id"].as_str().unwrap()
+        ),
+        completion(
+            &resumed,
+            json!([{"type":"complete_workflow","result":envelope(Payload::Long(7))}]),
+        ),
+    )
+    .await;
     assert_eq!(completed.0, StatusCode::OK, "{}", completed.1);
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     let history = request(&app_b, "GET", &history_path, Value::Null).await.1;
@@ -774,7 +804,7 @@ async fn activity_commit_wakes_replay_and_stale_activity_attempt_is_refused() {
             &path,
             completion(
                 &task,
-                json!([schedule.clone(),{"type":"start_timer","delay_seconds":1}])
+                json!([schedule.clone(),{"type":"unimplemented_effect"}])
             )
         )
         .await
@@ -782,6 +812,27 @@ async fn activity_commit_wakes_replay_and_stale_activity_attempt_is_refused() {
         StatusCode::UNPROCESSABLE_ENTITY
     );
     assert!(poll(&app, "worker", "activity").await.is_null());
+    for delay in [
+        json!(-1),
+        json!(1.5),
+        json!("1"),
+        Value::Null,
+        json!(i64::MAX),
+    ] {
+        let outcome = request(
+            &app,
+            "POST",
+            &path,
+            completion(
+                &task,
+                json!([schedule.clone(),{"type":"start_timer","delay_seconds":delay}]),
+            ),
+        )
+        .await;
+        assert_eq!(outcome.0, StatusCode::UNPROCESSABLE_ENTITY, "{}", outcome.1);
+        assert_eq!(outcome.1["reason"], "invalid_timer_delay");
+        assert!(poll(&app, "worker", "activity").await.is_null());
+    }
     assert_eq!(
         request(&app, "POST", &path, completion(&task, json!([schedule])))
             .await
