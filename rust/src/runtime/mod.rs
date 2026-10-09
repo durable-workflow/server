@@ -3,6 +3,7 @@
 //! Typed database adapters share transitions; existing PHP data requires qualification.
 
 mod backend;
+mod children;
 mod execution;
 mod http;
 pub mod mysql;

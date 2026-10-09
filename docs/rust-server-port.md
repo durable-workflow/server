@@ -56,8 +56,16 @@ HTTP-created children omit `StartAccepted`; embedded children record it. Both
 inventories must be explicit and checked before projecting their common behavior.
 The shared fixture/adapters/comparator are implemented in
 [#343](https://github.com/durable-workflow/server/pull/343). Its reference and
-exact-head qualification outcomes are recorded there. Native child execution
-remains to implement; all six database/PHP checks gate the final merge.
+exact-head qualification outcomes are recorded there. Native successful,
+sequential child creation/completion/resumption is implemented but remains
+unqualified until the exact head passes all six database and PHP checks.
+Child runs retain PHP's nullable default timeout budgets, original parent
+call/link IDs and immutable terminal results. Creation and parent resumption
+commit atomically with the leased workflow task; duplicate completions retain
+their original receipts. Native tests exercise independent pools, real child
+lease expiry, fresh-pool recovery and rollback on inconsistent linkage.
+Retry/cancellation policies, explicit timeouts, parallel groups and parent-close
+actions remain refused or unqualified beyond this success slice.
 Child workflows are followed by retries/cancellation, schedules, visibility, authorization/namespaces,
 streams and existing consumers. Each slice must run on the required database
 matrix. Read-only upgrade inspection and backup-first takeover remain required,

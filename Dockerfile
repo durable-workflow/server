@@ -33,7 +33,7 @@ RUN apt-get update && apt-get install -y \
     && usermod --uid 1000 --gid 1000 www-data \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+COPY --from=phpredis-source /usr/bin/composer /usr/bin/composer
 
 # Source qualification exercises the actual startup path from this base too.
 COPY --chmod=0755 docker/ensure-sqlite-database.sh /usr/local/bin/server-ensure-sqlite
