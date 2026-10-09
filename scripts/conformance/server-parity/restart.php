@@ -58,6 +58,11 @@ function restartChildWorkflow(WorkflowContext $context, array $input): mixed
     return $context->activity('restart.child.activity', [$input]);
 }
 
+function restartRetryWorkflow(WorkflowContext $context, array $input): mixed
+{
+    return $context->activity('restart.retry.activity', [$input], ['retry_policy' => ['max_attempts' => 2, 'backoff_seconds' => [10]]]);
+}
+
 assertRestart($argc === 4, 'Usage: restart.php prepare|finish URL RECEIPT');
 [$script, $phase, $url, $receiptPath] = $argv;
 $client = new Client($url, namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null);
@@ -114,7 +119,28 @@ if ($phase === 'prepare') {
     assertRestart(array_column($parentHistory, 'event_type') === ['StartAccepted', 'WorkflowStarted', 'ChildWorkflowScheduled', 'ChildRunStarted'], 'Parent was not waiting on its original child at the kill checkpoint.');
     assertRestart($parentHistory[2]['payload']['child_workflow_run_id'] === $childTask['run_id']
         && count($childTask['history_events']) === 1 && $childTask['history_events'][0]['event_type'] === 'WorkflowStarted', 'Child lease is not bound to the acknowledged original parent call.');
+    // A separate routed queue keeps this failure checkpoint independent of the
+    // already pending signal/child work. The real SDK authors the retry policy.
+    $client->registerWorker('restart-retry-old', 'restart-retry-v1', ['restart.retry'], ['restart.retry.activity']);
+    $retryHandle = $client->startWorkflow('restart.retry', 'rust-restart-retry', 'restart-retry-v1', [$value]);
+    $retryTask = $client->pollWorkflowTask('restart-retry-old', 'restart-retry-v1', 0);
+    assertRestart(is_array($retryTask) && $retryTask['run_id'] === $retryHandle->selectedRunId, 'Prepare did not lease the original retry workflow.');
+    $retryReplay = (new Replayer($client->payloadCodec()))->replay(restartRetryWorkflow(...),
+        $retryTask['history_events'], $client->payloadCodec()->decodeEnvelope($retryTask['arguments']), 'restart-retry-v1', $retryTask);
+    $client->completeWorkflowTask($retryTask['task_id'], $retryTask['lease_owner'], $retryTask['workflow_task_attempt'], $retryReplay->commands);
+    $failedActivity = $client->pollActivityTask('restart-retry-old', 'restart-retry-v1', 0);
+    assertRestart(is_array($failedActivity) && $failedActivity['attempt_number'] === 1, 'Prepare did not lease the first retry activity attempt.');
+    $failureReceipt = $client->failActivityTask($failedActivity['task_id'], $failedActivity['activity_attempt_id'],
+        $failedActivity['lease_owner'], 'restart retry λ', 'RuntimeException');
+    assertRestart($failureReceipt['recorded'] === true, 'Application failure/retry was not acknowledged durably.');
+    $retryHistory = $client->workflowHistory($retryHandle->workflowId, $retryHandle->selectedRunId)['events'];
+    assertRestart(array_column($retryHistory, 'event_type') === ['StartAccepted', 'WorkflowStarted', 'ActivityScheduled', 'ActivityStarted', 'ActivityRetryScheduled'], 'Reported retry was not pending at the kill checkpoint.');
+    assertRestart($failureReceipt['next_task_id'] === $retryHistory[4]['payload']['retry_task_id']
+        && new DateTimeImmutable($retryHistory[4]['payload']['retry_available_at']) > new DateTimeImmutable(), 'Retry identity/deadline was not retained before the kill.');
+    assertRestart($client->pollActivityTask('restart-retry-old', 'restart-retry-v1', 0) === null, 'Retry was claimable before its recorded backoff.');
     $receipt = ['workflow_id' => $handle->workflowId, 'run_id' => $handle->selectedRunId, 'activity' => $activity,
+        'retry' => ['workflow_id' => $retryHandle->workflowId, 'run_id' => $retryHandle->selectedRunId,
+            'first_claim' => $failedActivity, 'failure_receipt' => $failureReceipt, 'history' => $retryHistory],
         'timer' => ['workflow_id' => $timerHandle->workflowId, 'run_id' => $timerHandle->selectedRunId, 'scheduled' => $timerHistory[2]['payload']],
         'signal' => ['workflow_id' => $signalHandle->workflowId, 'run_id' => $signalHandle->selectedRunId,
             'opened' => $signalHistory[2]['payload'], 'received' => $signalHistory[3]['payload'], 'response' => $signalCommand],
@@ -124,6 +150,8 @@ if ($phase === 'prepare') {
     file_put_contents($receiptPath, json_encode($receipt, JSON_THROW_ON_ERROR).PHP_EOL);
     echo json_encode(['phase' => $phase, 'outcome' => 'prepared', 'run_id' => $handle->selectedRunId,
         'lease_expires_at' => $activity['lease_expires_at'], 'pending_timer' => $receipt['timer'],
+        'pending_retry' => ['run_id' => $retryHandle->selectedRunId, 'task_id' => $failureReceipt['next_task_id'],
+            'available_at' => $retryHistory[4]['payload']['retry_available_at']],
         'pending_child' => ['parent_run_id' => $parentHandle->selectedRunId, 'child_run_id' => $childTask['run_id'],
             'task_id' => $childTask['task_id'], 'lease_expires_at' => $childTask['lease_expires_at']]], JSON_THROW_ON_ERROR).PHP_EOL;
     exit(0);
@@ -139,6 +167,64 @@ assertRestart($waitUntil - time() < 40, 'Unexpected unbounded lease wait.');
 while (time() < $waitUntil) {
     usleep(100_000);
 }
+$retry = $receipt['retry'];
+$firstRetryClaim = $retry['first_claim'];
+assertRestart(sameRestartValue($retry['history'], $client->workflowHistory($retry['workflow_id'], $retry['run_id'])['events']), 'Acknowledged retry history changed across process loss.');
+$failureDuplicate = $client->failActivityTask($firstRetryClaim['task_id'], $firstRetryClaim['activity_attempt_id'],
+    $firstRetryClaim['lease_owner'], 'restart retry λ', 'RuntimeException');
+assertRestart($failureDuplicate['recorded'] === false, 'Acknowledged pre-kill failure created another retry.');
+$refuseOldRetryResult = function () use ($client, $firstRetryClaim, $value): void {
+    $refused = false;
+    try {
+        $client->completeActivityTask($firstRetryClaim['task_id'], $firstRetryClaim['activity_attempt_id'], $firstRetryClaim['lease_owner'], $value);
+    } catch (ServerException $exception) {
+        $refused = $exception->status === 409;
+    }
+    assertRestart($refused, 'The failed pre-kill activity attempt committed a late result.');
+};
+$refuseOldRetryResult();
+$retryWorker = null;
+$retryClaim = null;
+$retryDeadline = microtime(true) + 15;
+$retryWorker = (new Worker($client, 'restart-retry-v1', workerId: 'restart-retry-new', clock: function () use ($client, $retry, $retryDeadline, &$retryWorker): float {
+    assertRestart(microtime(true) < $retryDeadline, 'Recovered retry exceeded its completion budget.');
+    if ($client->describeWorkflow($retry['workflow_id'], $retry['run_id'])->status === 'completed') {
+        $retryWorker?->requestShutdown();
+    }
+
+    return microtime(true);
+}))->registerWorkflow('restart.retry', restartRetryWorkflow(...))
+    ->registerActivity('restart.retry.activity', function (ActivityContext $context, array $input) use (&$retryClaim, $value): array {
+        assertRestart($context->attemptNumber === 2 && sameRestartValue($input, $value), 'Recovered retry lost its original typed input or attempt count.');
+        $retryClaim = ['task_id' => $context->taskId, 'activity_attempt_id' => $context->activityAttemptId,
+            'lease_owner' => $context->leaseOwner, 'attempt_number' => $context->attemptNumber];
+
+        return ['echo' => $input, 'attempt' => $context->attemptNumber];
+    });
+$retryWorker->run(0);
+$retryExecution = $client->describeWorkflow($retry['workflow_id'], $retry['run_id']);
+$retryResult = ['echo' => $value, 'attempt' => 2];
+assertRestart($retryExecution->status === 'completed' && sameRestartValue($retryExecution->output, $retryResult), 'Recovered retry result differs.');
+$retryHistory = $client->workflowHistory($retry['workflow_id'], $retry['run_id'])['events'];
+assertRestart(array_column($retryHistory, 'event_type') === ['StartAccepted', 'WorkflowStarted', 'ActivityScheduled', 'ActivityStarted', 'ActivityRetryScheduled', 'ActivityStarted', 'ActivityCompleted', 'WorkflowCompleted'], 'Recovered retry history differs or resolved twice.');
+assertRestart(array_column($retryHistory, 'sequence') === range(1, 8)
+    && sameRestartValue(array_slice($retryHistory, 0, 5), $retry['history']), 'Original acknowledged failure/retry receipt changed after recovery.');
+assertRestart(is_array($retryClaim) && $retryClaim['task_id'] === $retry['history'][4]['payload']['retry_task_id']
+    && $retryClaim['activity_attempt_id'] !== $firstRetryClaim['activity_attempt_id']
+    && $retryClaim['lease_owner'] !== $firstRetryClaim['lease_owner'], 'Recovered worker did not execute the original retry task with a new attempt/owner.');
+foreach ([5, 6] as $index) {
+    assertRestart($retryHistory[$index]['payload']['activity_execution_id'] === $firstRetryClaim['activity_execution_id']
+        && $retryHistory[$index]['payload']['activity_attempt_id'] === $retryClaim['activity_attempt_id']
+        && $retryHistory[$index]['payload']['attempt_number'] === 2, 'Recovered retry result has a different activity/attempt relationship.');
+}
+assertRestart((new DateTimeImmutable($retryHistory[5]['payload']['task']['available_at']))->format('U.u')
+    === (new DateTimeImmutable($retry['history'][4]['payload']['retry_available_at']))->format('U.u'), 'Recovered retry recomputed its original backoff deadline.');
+assertRestart(new DateTimeImmutable($retryHistory[5]['payload']['task']['leased_at']) >= new DateTimeImmutable($retry['history'][4]['payload']['retry_available_at']), 'Recovered retry claimed before its original deadline.');
+assertRestart($retryHistory[5]['payload']['activity']['arguments'] === $retry['history'][2]['payload']['activity']['arguments'], 'Recovered retry changed original argument bytes.');
+$retryDuplicate = $client->completeActivityTask($retryClaim['task_id'], $retryClaim['activity_attempt_id'], $retryClaim['lease_owner'], $retryResult);
+assertRestart($retryDuplicate['recorded'] === false
+    && sameRestartValue($retryHistory, $client->workflowHistory($retry['workflow_id'], $retry['run_id'])['events']), 'Recovered retry completion created another outcome.');
+$refuseOldRetryResult();
 $refused = false;
 try {
     $client->completeActivityTask($old['task_id'], $old['activity_attempt_id'], $old['lease_owner'], $value);
@@ -283,7 +369,10 @@ assertRestart($parentDuplicate['recorded'] === false
 $client->deregisterWorkerRegistration('restart-old');
 $client->deregisterWorkerRegistration('restart-child-old');
 $client->deregisterWorkerRegistration('restart-child-new');
+$client->deregisterWorkerRegistration('restart-retry-old');
 echo json_encode(['phase' => $phase, 'outcome' => 'pass', 'run_id' => $execution->runId,
+    'retry_recovered' => true, 'retry_history' => $retryHistory, 'retry_claim' => $retryClaim,
+    'retry_failure_duplicate' => $failureDuplicate, 'retry_completion_duplicate' => $retryDuplicate,
     'stale_claim_refused' => true, 'history' => $history, 'timer_recovered' => true, 'timer_history' => $timerHistory,
     'signal_recovered' => true, 'signal_history' => $signalHistory, 'child_recovered' => true,
     'stale_child_claim_refused' => true, 'child_claim' => $recoveredChild, 'child_completion' => $childCompletion,

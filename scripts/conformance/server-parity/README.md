@@ -142,6 +142,8 @@ Rust uses the PR's exact source. It compares all three and runs the separate
 `restart.php prepare|finish URL RECEIPT` probe around an actual Rust process kill.
 That probe preserves a leased activity, a pending durable timer, an acknowledged
 pending signal and an acknowledged child creation with its child task leased.
+It also preserves an acknowledged activity failure and pending retry, including
+the original closed attempt, ready retry task, arguments and backoff deadline.
 It waits for the actual activity/child lease expiry, refuses both old claims and
 completes the original runs through fresh published SDK workers.
 The timer must keep its pre-kill identity/deadline and commit exactly one firing.
@@ -151,6 +153,10 @@ The child task keeps its original run, history/input and task identity as attemp
 two. Its nested activity executes once, and its original parent receives one
 terminal result. Retrying the acknowledged child creation retains its immutable
 receipt and leaves the completed parent history unchanged.
+The reported retry executes its original task as attempt two, returns one typed
+result and retains the complete pre-kill failure/history prefix. It cannot
+recompute the deadline or accept the failed attempt's late completion; repeating
+the original failure or successful completion has no new durable effect.
 PostgreSQL and MySQL/MariaDB jobs also use two native nodes with a killed node,
 survivor and replacement sharing only their own database. Separate storage
 checks exercise actual initialization kills, corrupt catalog/history refusal,

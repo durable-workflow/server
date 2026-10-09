@@ -91,7 +91,12 @@ one ready retry at the original exact deadline. Polling keeps the original
 activity/idempotency identity and increments the new task's attempt counter.
 No parent task is created until a successful result commits. The current PHP
 tables and native schema version remain unchanged. Exact-head native/database
-and source qualification remain in progress. Terminal and
+and source qualification remain in progress. The process-kill probe now also
+prepares an acknowledged failed attempt and pending ten-second retry. Recovery
+must retain the original failure prefix, retry task/arguments/deadline, execute
+attempt two through the published SDK, commit one result and refuse the old
+failed attempt's late completion. Its actual kill qualification is pending.
+Terminal and
 non-retryable failures, timeout/lease retries and broader retry policies remain
 separate gates. Retry work is followed by cancellation, schedules, visibility, authorization/namespaces,
 streams and existing consumers. Each slice must run on the required database
