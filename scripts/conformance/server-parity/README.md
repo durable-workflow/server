@@ -123,8 +123,9 @@ failure and completion through the published SDK and checks unchanged history.
 Embedded mode redelivers the two original closed tasks through real queue jobs.
 An embedded Throwable retains its class; an external failure retains the
 reported type. Those explicit representations are checked before projecting
-the same original failure. Terminal/non-retryable failures, timeout retries,
-other retry families and complete error-envelope parity remain separate gates.
+the same original failure. Separate terminal fixtures cover exhausted budget
+and matching/nonmatching error filters. Timeout retries, other retry families
+and complete error-envelope parity remain separate gates.
 
 The current type recorder covers null, boolean, int64, double, string, list and
 map values. Other decoded PHP objects fail explicitly; binary/logical-type and
@@ -155,6 +156,13 @@ That probe preserves a leased activity, a pending durable timer, an acknowledged
 pending signal and an acknowledged child creation with its child task leased.
 It also preserves an acknowledged activity failure and pending retry, including
 the original closed attempt, ready retry task, arguments and backoff deadline.
+Another checkpoint reports a terminal non-retryable failure with unused retry
+budget and preserves its original pending workflow-resume task. After replacement,
+the unchanged published SDK client and replayer claim that task, catch the original
+failure and commit one typed workflow result. Duplicate failure/completion reports
+leave the original history unchanged, and late activity success is refused. This
+checkpoint uses explicit client claims/replay; the shared terminal fixtures use
+the normal SDK worker loop.
 It waits for the actual activity/child lease expiry, refuses both old claims and
 completes the original runs through fresh published SDK workers.
 The timer must keep its pre-kill identity/deadline and commit exactly one firing.

@@ -1,5 +1,5 @@
-//! Reported application failure followed by a durable activity retry.
-//! Terminal/non-retryable failure and timeout policies remain explicit gates.
+//! Reported application failure, durable retries and catchable terminal failure.
+//! Timeout policies and broader workflow/child failure remain explicit gates.
 use super::{
     Result,
     backend::Backend,
@@ -63,19 +63,40 @@ pub(super) fn retry_policy(command: &Value) -> Result<Option<Value>> {
                 )
             })?;
     }
-    // Error filters require the terminal failure transition, not just retries.
-    let filters = policy
+    let mut filters = Vec::new();
+    if let Some(value) = policy
         .get("non_retryable_error_types")
-        .filter(|v| !v.is_null());
-    if filters.is_some_and(|value| value.as_array().is_none_or(|list| !list.is_empty())) {
-        return Err(refuse(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "terminal_activity_failure_not_available",
-        ));
+        .filter(|v| !v.is_null())
+    {
+        let list = value
+            .as_array()
+            .filter(|list| list.len() <= 1000)
+            .ok_or_else(|| {
+                refuse(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "invalid_activity_retry_policy",
+                )
+            })?;
+        for value in list {
+            let kind = value
+                .as_str()
+                .map(str::trim)
+                .filter(|kind| !kind.is_empty() && kind.len() <= 255)
+                .ok_or_else(|| {
+                    refuse(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "invalid_activity_retry_policy",
+                    )
+                })?;
+            let kind = json!(kind);
+            if !filters.contains(&kind) {
+                filters.push(kind);
+            }
+        }
     }
     Ok(Some(
         json!({"snapshot_version":1,"max_attempts":max,"backoff_seconds":backoff,
-        "non_retryable_error_types":[],"start_to_close_timeout":null,"schedule_to_start_timeout":null,
+        "non_retryable_error_types":filters,"start_to_close_timeout":null,"schedule_to_start_timeout":null,
         "schedule_to_close_timeout":null,"heartbeat_timeout":null}),
     ))
 }
@@ -202,12 +223,14 @@ where
             }
         }
         let max = policy["max_attempts"].as_i64().unwrap_or(1);
-        if failure["non_retryable"] == true || count >= max {
-            return Err(refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "terminal_activity_failure_not_available",
-            ));
-        }
+        // Class/type filters use exact PHP matching. Preserve the original
+        // report's flag in its payload; the derived terminal classification
+        // also accounts for the immutable execution policy.
+        let non_retryable = failure["non_retryable"] == true
+            || policy["non_retryable_error_types"]
+                .as_array()
+                .is_some_and(|types| types.contains(&failure["type"]));
+        let terminal = non_retryable || count >= max;
         let backoff = policy["backoff_seconds"]
             .as_array()
             .and_then(|values| values.get((count - 1) as usize).or_else(|| values.last()))
@@ -227,8 +250,6 @@ where
             .bind(attempt_id)
             .execute(&mut *tx)
             .await?;
-        Self::query("UPDATE activity_executions SET status='pending',exception=$1,last_heartbeat_at=NULL WHERE id=$2")
-            .bind(blob).bind(&activity_id).execute(&mut *tx).await?;
         Self::query(
             "UPDATE workflow_tasks SET status='completed',lease_expires_at=NULL WHERE id=$1",
         )
@@ -236,6 +257,59 @@ where
         .execute(&mut *tx)
         .await?;
         Self::record_completion(&mut tx, task_id, &body).await?;
+        if terminal {
+            Self::query("UPDATE activity_executions SET status='failed',exception=$1,last_heartbeat_at=NULL,closed_at=$2 WHERE id=$3")
+                .bind(blob).bind(DB::bind_time(closed_at)).bind(&activity_id).execute(&mut *tx).await?;
+            let failure_id = super::store::id();
+            Self::query("INSERT INTO workflow_failures(id,workflow_run_id,source_kind,source_id,propagation_kind,failure_category,exception_class,message,non_retryable,handled,file,line,created_at,updated_at) VALUES ($1,$2,'activity_execution',$3,'activity','activity',$4,$5,CASE WHEN $6='true' THEN TRUE ELSE FALSE END,FALSE,'external-worker',0,$7,$8)")
+                .bind(&failure_id).bind(&run_id).bind(&activity_id).bind(text(&failure,"type")?)
+                .bind(failure["message"].as_str().unwrap()).bind(if non_retryable {"true"} else {"false"})
+                .bind(DB::bind_time(closed_at)).bind(DB::bind_time(closed_at)).execute(&mut *tx).await?;
+            let updated = Self::query("SELECT * FROM activity_executions WHERE id=$1")
+                .bind(&activity_id)
+                .fetch_one(&mut *tx)
+                .await?;
+            let mut payload = Self::activity_payload(&updated)?;
+            payload["activity_attempt_id"] = json!(attempt_id);
+            payload["attempt_number"] = json!(count);
+            payload["failure_id"] = json!(failure_id);
+            payload["failure_category"] = json!("activity");
+            payload["non_retryable"] = json!(non_retryable);
+            payload["exception_type"] = failure["type"].clone();
+            payload["exception_class"] = failure["type"].clone();
+            payload["message"] = failure["message"].clone();
+            payload["code"] = failure["code"].clone();
+            payload["exception"] = failure.clone();
+            payload["activity"]["exception"] = failure;
+            payload["task"] = json!({"id":task_id,"type":"activity","status":"leased",
+                "available_at":DB::optional_instant(&task,"available_at")?,"leased_at":DB::optional_instant(&task,"leased_at")?,
+                "lease_owner":DB::optional_string(&task,"lease_owner")?,"attempt_count":count});
+            Self::append(
+                &mut tx,
+                &run_id,
+                "ActivityFailed",
+                payload,
+                Some(task_id),
+                None,
+            )
+            .await?;
+            let run = Self::active_run(&mut tx, &run_id).await?;
+            let next = Self::create_task(
+                &mut tx,
+                &run_id,
+                &DB::string(&run, "queue")?,
+                "workflow",
+                json!({"activity_execution_id":activity_id}),
+            )
+            .await?;
+            tx.commit().await?;
+            self.wake.notify_waiters();
+            return Ok(
+                json!({"task_id":task_id,"activity_attempt_id":attempt_id,"outcome":"failed","recorded":true,"reason":null,"next_task_id":next}),
+            );
+        }
+        Self::query("UPDATE activity_executions SET status='pending',exception=$1,last_heartbeat_at=NULL WHERE id=$2")
+            .bind(blob).bind(&activity_id).execute(&mut *tx).await?;
         let retry_task = Self::create_task(&mut tx,&run_id,&DB::string(&activity,"queue")?,"activity",
             json!({"activity_execution_id":activity_id,"retry_of_task_id":task_id,"retry_after_attempt_id":attempt_id,
                 "retry_after_attempt":count,"retry_backoff_seconds":backoff,"max_attempts":max,"retry_policy":policy})).await?;

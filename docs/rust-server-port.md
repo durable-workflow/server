@@ -109,13 +109,21 @@ HTTP protocol has no catch acknowledgement command and omits that event. Both
 complete inventories and the original embedded failure/handling relationship
 are checked explicitly before comparing the declared common catch behavior;
 this does not qualify full failure diagnostics or visibility.
-Fixtures/adapters/comparator and a native regression are implemented before
-native terminal failure support. A local filtered-failure diagnostic completes
-against frozen PHP/embedded artifacts, and 151 comparator tests pass; committed
-full reference and native/database/source qualification remain pending.
+All fourteen reviewed fixtures pass against the frozen PHP/embedded artifacts
+at `d116947a70d30cdae66f9c8bd7e5ea6d18126d6a`, and 154 comparator tests pass.
+The tests-first native regression at `5e819617e38e0a528700663905c737a2c615f09f`
+compiles and fails on the missing terminal transition; its other 21 HTTP tests
+pass. Native terminal failure and exact error-type filters are now implemented;
+final shared database and source qualification remain pending.
 The native regression also covers explicit non-retryable reports and default
 no-retry behavior, independent pools, original failure rows, concurrent duplicate
 reports/resumption, fresh-pool recovery and stale/conflicting outcomes.
+The actual process-kill probe also preserves an acknowledged terminal failure
+with retry budget remaining and its original pending workflow-resume task.
+After replacement, the published SDK client and replayer catch the original
+failure, complete once and reject late success from the closed activity.
+This checkpoint uses explicit client claims/replay; the shared terminal fixtures
+exercise the normal SDK worker loop.
 Timeout/lease retries, uncaught failures and broader retry policies remain
 separate gates. This work is followed by cancellation, schedules, visibility, authorization/namespaces,
 streams and existing consumers. Each slice must run on the required database
