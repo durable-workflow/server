@@ -162,7 +162,9 @@ jobs:
             echo "Invalid regression corpus base revision: $CORPUS_BASE_REF" >&2
             exit 1
           fi
-          docker build --target base -t durable-workflow-server-phpunit-base .
+          docker build --target base --build-arg COMPOSER_IMAGE=mirror.gcr.io/library/composer:2 \
+            --build-arg PHP_BASE_IMAGE=mirror.gcr.io/library/php:8.3-apache \
+            -t durable-workflow-server-phpunit-base .
           docker run --rm --entrypoint sh durable-workflow-server-phpunit-base \
             -c 'node --version >/dev/null && python3 -m venv /tmp/dw-conformance-venv && test -x /tmp/dw-conformance-venv/bin/python3'
           docker build -t durable-workflow-server-corpus-validator - <<'DOCKERFILE'
@@ -315,7 +317,9 @@ jobs:
             echo "Native source overlay: $DW_PREPARED_WORKFLOW_COMMIT"
             echo "Locked package baseline retained by ordinary feature CI."
           } > prepared-local-evidence/provenance.txt
-          docker build --target base -t dw-server-prepared-local-base .
+          docker build --target base --build-arg COMPOSER_IMAGE=mirror.gcr.io/library/composer:2 \
+            --build-arg PHP_BASE_IMAGE=mirror.gcr.io/library/php:8.3-apache \
+            -t dw-server-prepared-local-base .
           tar --exclude=vendor --exclude='*/vendor' --exclude=build --exclude='*/build' \
             --exclude=prepared-local-evidence -cf ../prepared-local-source.tar .
           qualification_status=0

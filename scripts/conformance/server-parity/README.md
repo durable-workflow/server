@@ -116,7 +116,12 @@ The `Shared Server fixtures` Action builds the unpublished Rust development
 runtime in each job, installs the locked SDK and runs PHP, Rust and embedded targets
 against independent databases. The matrix includes SQLite, PostgreSQL 16/17,
 MySQL 8.0/the existing PHP matrix image and MariaDB 10.11.
-PHP/embedded use the exact frozen PHP image;
+PHP/embedded use the exact frozen PHP image, pulled from its existing public GHCR
+mirror with the unchanged manifest digest. Pinned official Rust/database images
+use the public Google registry mirror. Registry transport does not change the
+frozen artifact tuple; no registry credentials are required for pull-request CI.
+PHP source CI can select mirrored Composer/PHP build images through explicit
+build arguments while ordinary Dockerfile defaults remain unchanged.
 Rust uses the PR's exact source. It compares all three and runs the separate
 `restart.php prepare|finish URL RECEIPT` probe around an actual Rust process kill.
 That probe preserves a leased activity, a pending durable timer and an acknowledged

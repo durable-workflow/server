@@ -1,4 +1,7 @@
-FROM composer:2 AS phpredis-source
+ARG COMPOSER_IMAGE=composer:2
+ARG PHP_BASE_IMAGE=php:8.3-apache
+
+FROM ${COMPOSER_IMAGE} AS phpredis-source
 
 ARG PHPREDIS_VERSION=6.3.0
 ARG PHPREDIS_COMMIT=df4fab2de7fc327c54c94a13af2b9542e4fbd720
@@ -11,7 +14,7 @@ RUN git clone --depth 1 --branch "${PHPREDIS_VERSION}" https://github.com/phpred
          exit 1; \
        fi
 
-FROM php:8.3-apache AS base
+FROM ${PHP_BASE_IMAGE} AS base
 
 COPY --from=phpredis-source /phpredis /usr/src/php/ext/redis
 
