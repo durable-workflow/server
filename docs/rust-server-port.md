@@ -8,10 +8,12 @@ cutover remain unqualified.
 
 ## Work order and current status
 
-The next slice qualifies backup-first sequential database takeover, starting
-with stored-representation compatibility and explicit migration boundaries.
-PHP and unknown databases remain refused before mutation until that path is
-implemented and qualified on every required database family.
+The next slices widen reviewed PHP/Rust/embedded fixtures and native behavior:
+durable timers first, then signals and queries/updates, followed by child
+workflows, retries/cancellation, schedules, visibility, authorization/namespaces,
+streams and existing consumers. Each slice must run on the required database
+matrix. Read-only upgrade inspection and backup-first takeover remain required,
+but follow wider capability coverage. PHP and unknown databases stay refused.
 
 The current execution slice shares the native workflow/activity state machine
 between SQLite, PostgreSQL and MariaDB/MySQL, with typed database adapters and explicit
@@ -24,7 +26,13 @@ The PostgreSQL storage foundation prepares the real timestamp/JSON schema,
 transactional migrations and ownership checks against an independently
 bootstrapped published PHP database. Fresh native bootstrap keeps the full
 existing physical schema; it does not authorize adoption of PHP data. Actual
-Backup-first database takeover remains a required next step.
+Backup-first database takeover remains unimplemented.
+
+The three current shared fixtures cover echo, an exact int64 and one activity.
+Database bootstrap and storage safety evidence do not increase that semantic
+coverage. Native transitions remain serialized. The diagnostic PHP observations
+are not a matched PHP/Rust performance comparison; that comparison waits for a
+broader execution surface and must measure transaction serialization cost.
 
 1. Inventory the current contract, schema and operational surfaces. Establish
    shared reviewed fixtures and a recorder usable against any isolated Server

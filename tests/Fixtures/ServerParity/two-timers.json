@@ -1,0 +1,14 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "two-timers",
+  "workflow_type": "parity.v1.one_timer",
+  "input": {"message": "zero then delayed", "delays": [0, 1]},
+  "typed_value": {"type": "map", "value": {
+    "message": {"type": "string", "value": "zero then delayed"},
+    "delays": {"type": "list", "value": [{"type": "int64", "value": "0"}, {"type": "int64", "value": "1"}]}
+  }},
+  "activity": false,
+  "timer_delays": [0, 1],
+  "expected_events": ["StartAccepted", "WorkflowStarted", "TimerScheduled", "TimerFired", "TimerScheduled", "TimerFired", "WorkflowCompleted"],
+  "contract": "Repeated durable sleep, including zero delay, consumes distinct deterministic command sequences and distinct timer IDs. Replaying the first fired timer must not schedule it again or change either original deadline."
+}

@@ -114,3 +114,44 @@ test('matching recordings cannot omit hashed fixtures or repeat one case', () =>
     assert.throws(() => compareRecords([changed, structuredClone(changed)]));
   }
 });
+
+const timerFixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/two-timers.json', import.meta.url)));
+function timerObservation() {
+  const raw = observation();
+  raw.workflow_type = timerFixture.workflow_type;
+  raw.input = [timerFixture.input];
+  raw.output = timerFixture.input;
+  raw.typed_input = {type: 'list', value: [timerFixture.typed_value]};
+  raw.typed_output = timerFixture.typed_value;
+  raw.events = [raw.events[0], raw.events[1], ...timerFixture.timer_delays.flatMap((delay, index) => {
+    const scheduled = {timer_id: `timer-${index}`, sequence: index + 1, delay_seconds: delay, fire_at: `2026-01-01T00:00:0${index + delay + 2}Z`};
+    return [
+      {payload: scheduled, timestamp: `2026-01-01T00:00:0${index + 2}Z`},
+      {payload: {...scheduled, fired_at: scheduled.fire_at}, timestamp: scheduled.fire_at},
+    ].map(event => ({...event, decoded: {}, typed_decoded: {}}));
+  }), {payload: {}, decoded: {output: timerFixture.input}, typed_decoded: {output: timerFixture.typed_value}, timestamp: '2026-01-01T00:00:05Z'}]
+    .map((event, index) => ({...event, event_type: timerFixture.expected_events[index], sequence: index + 1}));
+  for (const event of raw.events.slice(0, 2)) event.payload.workflow_type = timerFixture.workflow_type;
+  return raw;
+}
+
+test('zero and delayed timers retain distinct identities and command sequences', () => {
+  const checked = checkObservation(timerFixture, timerObservation(), 'test-one-activity');
+  assert.equal(checked.events[2].timer_id, '@timer:1');
+  assert.equal(checked.events[4].timer_id, '@timer:2');
+});
+for (const [name, corrupt] of [
+  ['early timer firing', raw => {raw.events[5].payload.fired_at = '2026-01-01T00:00:03.999Z';}],
+  ['changed timer identity', raw => {raw.events[3].payload.timer_id = 'other';}],
+  ['reused timer identity', raw => {raw.events[4].payload.timer_id = raw.events[2].payload.timer_id;}],
+  ['extended timer deadline', raw => {raw.events[5].payload.fire_at = '2026-01-01T00:00:06Z';}],
+  ['changed timer command sequence', raw => {raw.events[4].payload.sequence = 1;}],
+  ['changed timer delay', raw => {raw.events[5].payload.delay_seconds = 2;}],
+  ['duplicate timer firing', raw => {raw.events.splice(4, 0, structuredClone(raw.events[3]));}],
+]) {
+  test(`refuses ${name}`, () => {
+    const raw = timerObservation();
+    corrupt(raw);
+    assert.throws(() => checkObservation(timerFixture, raw, 'test-one-activity'));
+  });
+}

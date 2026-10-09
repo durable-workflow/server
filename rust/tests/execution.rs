@@ -462,6 +462,62 @@ fn completion(task: &Value, commands: Value) -> Value {
 }
 
 #[tokio::test]
+async fn durable_timer_survives_restart_and_two_nodes_fire_once_without_polling() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let started = start(&app, "durable-timer").await;
+    register(&app, "worker", json!(["echo"]), json!([])).await;
+    let task = poll(&app, "worker", "workflow").await;
+    let path = format!("/api/worker/workflow-tasks/{}/complete", task["task_id"].as_str().unwrap());
+    let body = completion(&task, json!([{"type":"start_timer","delay_seconds":2}]));
+    let scheduled = request(&app, "POST", &path, body.clone()).await;
+    assert_eq!(scheduled.0, StatusCode::OK, "{}", scheduled.1);
+    assert_eq!(request(&app, "POST", &path, body).await.1["recorded"], false);
+    assert!(poll(&app, "worker", "workflow").await.is_null());
+    let history_path = format!("/api/workflows/durable-timer/runs/{}/history", started["run_id"].as_str().unwrap());
+    let before = request(&app, "GET", &history_path, Value::Null).await.1;
+    assert_eq!(before["events"].as_array().unwrap().len(), 3);
+    let timer = before["events"][2]["payload"].clone();
+    runtime.close().await;
+
+    let (a, b) = tokio::join!(database.open(), database.open());
+    let (a, b) = (a.unwrap(), b.unwrap());
+    let app_a = router(a.clone());
+    let app_b = router(b.clone());
+    // Timers must fire independently of a worker poll. Reopened nodes recover
+    // only committed database state; no process-local timer survives close.
+    let budget = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let fired = loop {
+        let history = request(&app_a, "GET", &history_path, Value::Null).await.1;
+        if history["events"].as_array().unwrap().len() == 4 { break history; }
+        assert!(tokio::time::Instant::now() < budget, "timer did not recover: {history}");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    let fired_payload = &fired["events"][3]["payload"];
+    assert_eq!(fired["events"][3]["event_type"], "TimerFired");
+    assert_eq!(fired_payload["timer_id"], timer["timer_id"]);
+    assert_eq!(fired_payload["sequence"], 1);
+    assert_eq!(fired_payload["fire_at"], timer["fire_at"]);
+    assert!(chrono::DateTime::parse_from_rfc3339(fired_payload["fired_at"].as_str().unwrap()).unwrap()
+        >= chrono::DateTime::parse_from_rfc3339(timer["fire_at"].as_str().unwrap()).unwrap());
+    let (claim_a, claim_b) = tokio::join!(poll(&app_a, "worker", "workflow"), poll(&app_b, "worker", "workflow"));
+    assert_ne!(claim_a.is_null(), claim_b.is_null());
+    let resumed = if claim_a.is_null() { claim_b } else { claim_a };
+    assert_eq!(resumed["run_id"], started["run_id"]);
+    let completed = request(&app_a, "POST", &format!("/api/worker/workflow-tasks/{}/complete", resumed["task_id"].as_str().unwrap()),
+        completion(&resumed, json!([{"type":"complete_workflow","result":envelope(Payload::Long(7))}]))).await;
+    assert_eq!(completed.0, StatusCode::OK, "{}", completed.1);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let history = request(&app_b, "GET", &history_path, Value::Null).await.1;
+    assert_eq!(history["events"].as_array().unwrap().len(), 5);
+    assert_eq!(history["events"][4]["event_type"], "WorkflowCompleted");
+    a.close().await;
+    b.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
 async fn null_task_availability_is_ready_but_future_work_remains_waiting() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();

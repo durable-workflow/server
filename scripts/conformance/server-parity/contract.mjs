@@ -49,6 +49,31 @@ export function checkObservation(fixture, observation, workflowId) {
   equal(events.at(-1).decoded.output, fixture.input, 'committed workflow result');
   equal(events.at(-1).typed_decoded.output, fixture.typed_value, 'committed workflow result types');
   const projectedEvents = events.map(({sequence, event_type}) => ({sequence, event_type}));
+  if (fixture.timer_delays) {
+    for (const [index, delay] of fixture.timer_delays.entries()) {
+      const offset = 2 + index * 2;
+      const [scheduled, fired] = events.slice(offset, offset + 2);
+      const timerId = scheduled.payload.timer_id;
+      nonempty(timerId, 'durable timer identity');
+      identities.push(timerId);
+      equal(new Set(identities).size, identities.length, 'distinct timer and run/command identities');
+      const fireAt = Date.parse(scheduled.payload.fire_at);
+      assert.ok(Number.isFinite(fireAt), 'original persisted timer deadline');
+      const scheduledAt = Date.parse(scheduled.timestamp);
+      // Published history timestamps can lose fractional seconds. Preserve the
+      // exact payload deadline and allow only that known recorder precision.
+      assert.ok(Math.abs(fireAt - scheduledAt - delay * 1000) < 1000, 'timer retains requested delay');
+      equal(fired.payload.fire_at, scheduled.payload.fire_at, 'firing retains original deadline');
+      const firedAt = Date.parse(fired.payload.fired_at);
+      assert.ok(Number.isFinite(firedAt) && firedAt >= fireAt, 'timer must not fire early');
+      for (const [relative, event] of [scheduled, fired].entries()) {
+        equal(event.payload.timer_id, timerId, 'same timer throughout history');
+        equal(event.payload.sequence, index + 1, 'deterministic timer command sequence');
+        equal(event.payload.delay_seconds, delay, 'persisted timer delay');
+        Object.assign(projectedEvents[offset + relative], {timer_id: `@timer:${index + 1}`, command_sequence: index + 1, delay_seconds: delay});
+      }
+    }
+  }
   if (fixture.activity) {
     const [scheduled, running, completed] = events.slice(2, 5);
     const id = scheduled.payload.activity_execution_id;

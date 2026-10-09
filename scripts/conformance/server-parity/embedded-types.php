@@ -9,6 +9,7 @@ use Workflow\V2\Attributes\Type;
 use Workflow\V2\Workflow;
 
 use function Workflow\V2\activity;
+use function Workflow\V2\timer;
 
 #[Type('parity.v1.echo')]
 final class EchoWorkflow extends Workflow
@@ -33,6 +34,19 @@ final class EchoActivity extends Activity
 {
     public function handle(array $value): array
     {
+        return $value;
+    }
+}
+
+#[Type('parity.v1.one_timer')]
+final class TimerWorkflow extends Workflow
+{
+    public function handle(array $value): array
+    {
+        foreach ($value['delays'] as $delay) {
+            timer($delay);
+        }
+
         return $value;
     }
 }

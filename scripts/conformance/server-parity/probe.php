@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Artisan;
 use ServerParity\EchoActivity;
 use ServerParity\EchoWorkflow;
 use ServerParity\OneActivityWorkflow;
+use ServerParity\TimerWorkflow;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
@@ -90,6 +91,13 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     }))
         ->registerWorkflow('parity.v1.echo', static fn (WorkflowContext $context, array $value): array => $value)
         ->registerWorkflow('parity.v1.one_activity', static fn (WorkflowContext $context, array $value): array => $context->activity('parity.v1.echo_activity', [$value]))
+        ->registerWorkflow('parity.v1.one_timer', static function (WorkflowContext $context, array $value): array {
+            foreach ($value['delays'] as $delay) {
+                $context->sleep($delay);
+            }
+
+            return $value;
+        })
         ->registerActivity('parity.v1.echo_activity', static fn (ActivityContext $context, array $value): array => $value);
 
     // run() performs real registration and task execution. The clock observes
@@ -139,6 +147,7 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
         'workflows.v2.types.workflows' => [
             'parity.v1.echo' => EchoWorkflow::class,
             'parity.v1.one_activity' => OneActivityWorkflow::class,
+            'parity.v1.one_timer' => TimerWorkflow::class,
         ],
         'workflows.v2.types.activities' => ['parity.v1.echo_activity' => EchoActivity::class],
     ]);
@@ -148,17 +157,29 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
             $row->namespace = $namespace;
         });
     }
-    $class = $fixture['activity'] ? OneActivityWorkflow::class : EchoWorkflow::class;
+    $class = isset($fixture['timer_delays']) ? TimerWorkflow::class
+        : ($fixture['activity'] ? OneActivityWorkflow::class : EchoWorkflow::class);
     $stub = WorkflowStub::make($class, $workflowId);
     $stub->start(
         $fixture['input'],
         new WorkflowOptions(connection: 'database', queue: $queue),
         new StartOptions(executionTimeoutSeconds: 3600, runTimeoutSeconds: 600),
     );
-    Artisan::call('queue:work', [
-        'connection' => 'database', '--queue' => $queue, '--stop-when-empty' => true,
-        '--max-time' => 30, '--sleep' => 0, '--tries' => 1,
-    ]);
+    $deadline = microtime(true) + 30;
+    do {
+        Artisan::call('queue:work', [
+            'connection' => 'database', '--queue' => $queue, '--stop-when-empty' => true,
+            '--max-time' => 30, '--sleep' => 0, '--tries' => 1,
+        ]);
+        $run = WorkflowRun::query()->findOrFail($stub->runId());
+        if ($run->status->value === 'completed') {
+            break;
+        }
+        if (microtime(true) >= $deadline) {
+            throw new RuntimeException('Embedded parity workflow exceeded its completion budget.');
+        }
+        usleep(50000);
+    } while (true);
     $run = WorkflowRun::query()->findOrFail($stub->runId());
     $events = $run->historyEvents()->orderBy('sequence')->get()->map(static fn ($event): array => [
         'sequence' => $event->sequence,
