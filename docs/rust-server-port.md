@@ -8,6 +8,13 @@ cutover remain unqualified.
 
 ## Work order and current status
 
+The next execution slice shares the native workflow/activity state machine
+between SQLite and PostgreSQL, with typed database adapters and explicit
+transaction locking. Qualification must run the unchanged execution fixtures
+and real lease interruption on PostgreSQL, with PHP and embedded targets in
+independent databases. Existing PHP data remains refused until backup-first
+takeover is implemented and qualified.
+
 The PostgreSQL storage foundation prepares the real timestamp/JSON schema,
 transactional migrations and ownership checks against an independently
 bootstrapped published PHP database. Fresh native bootstrap keeps the full
