@@ -1,0 +1,26 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "state-updates",
+  "workflow_type": "parity.v1.updates",
+  "input": {"message": "original workflow λ"},
+  "typed_value": {"type": "map", "value": {"message": {"type": "string", "value": "original workflow λ"}}},
+  "activity": false,
+  "signal_count": 1,
+  "signal_value": {"finish": true},
+  "typed_signal_value": {"type": "map", "value": {"finish": {"type": "boolean", "value": true}}},
+  "update_name": "set_payload",
+  "update_values": [{"message": "first update λ", "number": 9007199254740993, "optional": null}, {"message": "second update λ", "number": 42, "ready": true}],
+  "typed_update_values": [
+    {"type": "map", "value": {"message": {"type": "string", "value": "first update λ"}, "number": {"type": "int64", "value": "9007199254740993"}, "optional": {"type": "null", "value": null}}},
+    {"type": "map", "value": {"message": {"type": "string", "value": "second update λ"}, "number": {"type": "int64", "value": "42"}, "ready": {"type": "boolean", "value": true}}}
+  ],
+  "duplicate_update_value": {"message": "duplicate must not apply"},
+  "output": {"values": [{"message": "first update λ", "number": 9007199254740993, "optional": null}, {"message": "second update λ", "number": 42, "ready": true}]},
+  "typed_output": {"type": "map", "value": {"values": {"type": "list", "value": [
+    {"type": "map", "value": {"message": {"type": "string", "value": "first update λ"}, "number": {"type": "int64", "value": "9007199254740993"}, "optional": {"type": "null", "value": null}}},
+    {"type": "map", "value": {"message": {"type": "string", "value": "second update λ"}, "number": {"type": "int64", "value": "42"}, "ready": {"type": "boolean", "value": true}}}
+  ]}}},
+  "expected_events": ["StartAccepted", "WorkflowStarted", "ConditionWaitOpened", "UpdateAccepted", "UpdateApplied", "UpdateCompleted", "MessageCursorAdvanced", "UpdateAccepted", "UpdateApplied", "UpdateCompleted", "MessageCursorAdvanced", "SignalReceived", "MessageCursorAdvanced", "SignalApplied", "ConditionWaitSatisfied", "WorkflowCompleted"],
+  "embedded_expected_events": ["StartAccepted", "WorkflowStarted", "SignalWaitOpened", "UpdateAccepted", "UpdateApplied", "UpdateCompleted", "MessageCursorAdvanced", "UpdateAccepted", "UpdateApplied", "UpdateCompleted", "MessageCursorAdvanced", "SignalReceived", "MessageCursorAdvanced", "SignalApplied", "WorkflowCompleted"],
+  "contract": "Apply two distinct typed updates to a workflow blocked on a finishing signal. Repeat each request ID with different arguments before execution and after completion: retain the original command/update identities, arguments and result, with no extra history, callback or cursor advance. Accepted/applied/completed history and returned results bind to the original run and declaration. Results include the exact value and applied count; final workflow output includes both values exactly once in order. Updates share the ordered instance message cursor with the finishing signal. Embedded callbacks mutate real replayed workflow state; published HTTP SDK workers consume the same accepted updates. Callback workflow-sequence positions may differ between an embedded callback at a suspended wait and external update tasks; retain and validate their within-target event/result links without comparing those authoring positions."
+}

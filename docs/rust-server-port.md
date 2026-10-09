@@ -27,7 +27,12 @@ receipts remain unqualified; the latter capability is advertised as false.
 ## Work order and current status
 
 The next slices widen reviewed PHP/Rust/embedded fixtures and native behavior:
-durable timer and signal slices lead into queries/updates, followed by child
+Timer, signal and quiescent query slices are qualified. The next state-update
+fixture applies two distinct values while a workflow waits for a finishing
+signal, repeats each request ID with different arguments, and checks original
+identities/results, state replay and the shared message cursor. Published PHP
+and embedded reference qualification and native implementation remain pending.
+Updates are followed by child
 workflows, retries/cancellation, schedules, visibility, authorization/namespaces,
 streams and existing consumers. Each slice must run on the required database
 matrix. Read-only upgrade inspection and backup-first takeover remain required,

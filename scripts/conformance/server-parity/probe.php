@@ -15,6 +15,8 @@ use ServerParity\OneActivityWorkflow;
 use ServerParity\TimerWorkflow;
 use ServerParity\SignalsWorkflow;
 use ServerParity\QueriesWorkflow;
+use ServerParity\UpdatesWorkflow;
+use Workflow\V2\CommandContext;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
@@ -97,12 +99,52 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $deliveries = [];
     $queries = [];
     $queryTasks = [];
+    $updates = [];
+    $updateTasks = [];
+    $pendingUpdate = null;
     $pendingQuery = null;
     $deadline = microtime(true) + 30;
     $worker = null;
-    $worker = (new Worker($client, $queue, clock: static function () use (&$worker, &$handle, &$deliveries, &$queries, &$queryTasks, &$pendingQuery, $client, $fixture, $fixturePath, $workflowId, $url, $deadline): float {
+    $worker = (new Worker($client, $queue, clock: static function () use (&$worker, &$handle, &$deliveries, &$queries, &$queryTasks, &$pendingQuery, &$updates, &$updateTasks, &$pendingUpdate, $client, $fixture, $fixturePath, $workflowId, $url, $deadline): float {
         if (microtime(true) > $deadline) {
             throw new RuntimeException('Parity worker exceeded its 30-second completion budget.');
+        }
+        if ($handle !== null && isset($fixture['update_values'])) {
+            $history = $client->workflowHistory($workflowId, $handle->selectedRunId, 100)['events'];
+            if ($pendingUpdate !== null) {
+                $completed = array_filter($history, static fn (array $event): bool => $event['event_type'] === 'UpdateCompleted'
+                    && $event['payload']['update_id'] === $pendingUpdate['accepted']['update_id']);
+                if ($completed === []) {
+                    return microtime(true);
+                }
+                // This completed retry is still the published SDK call. It must
+                // return the original result despite the different arguments.
+                $result = $client->updateWorkflow($workflowId, $fixture['update_name'], [$fixture['duplicate_update_value']],
+                    requestId: $pendingUpdate['request_id'], runId: $handle->selectedRunId);
+                $updates[] = [...$pendingUpdate, 'result' => $result, 'typed_result' => typedValue($result),
+                    'history_before_result' => $history,
+                    'history_after_result' => $client->workflowHistory($workflowId, $handle->selectedRunId, 100)['events'],
+                    'worker' => $updateTasks[count($updates)] ?? null];
+                $pendingUpdate = null;
+            }
+            $index = count($updates);
+            if ($index < count($fixture['update_values']) && $handle->describeSelectedRun()->status === 'waiting') {
+                $value = $fixture['update_values'][$index];
+                $requestId = $workflowId.':update:'.$index;
+                $before = $handle->describeSelectedRun()->raw;
+                $accepted = $client->updateWorkflow($workflowId, $fixture['update_name'], [$value],
+                    waitFor: 'accepted', requestId: $requestId, runId: $handle->selectedRunId);
+                $historyAccepted = $client->workflowHistory($workflowId, $handle->selectedRunId, 100)['events'];
+                $duplicate = $client->updateWorkflow($workflowId, $fixture['update_name'], [$fixture['duplicate_update_value']],
+                    waitFor: 'accepted', requestId: $requestId, runId: $handle->selectedRunId);
+                $pendingUpdate = ['name' => $fixture['update_name'], 'request_id' => $requestId,
+                    'arguments' => [$value], 'typed_arguments' => typedValue([$value]), 'before' => $before,
+                    'accepted' => $accepted, 'duplicate_accepted' => $duplicate,
+                    'history_after_acceptance' => $historyAccepted,
+                    'history_after_duplicate' => $client->workflowHistory($workflowId, $handle->selectedRunId, 100)['events']];
+
+                return microtime(true);
+            }
         }
         if ($handle !== null && isset($fixture['queries'])) {
             if ($pendingQuery !== null) {
@@ -150,7 +192,8 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
                 }
             }
         }
-        if ($handle !== null && isset($fixture['signal_count']) && count($deliveries) < $fixture['signal_count']) {
+        if ($handle !== null && isset($fixture['signal_count']) && count($deliveries) < $fixture['signal_count']
+            && count($updates) === count($fixture['update_values'] ?? [])) {
             $page = $client->workflowHistory($workflowId, $handle->selectedRunId, 100);
             $opened = array_filter($page['events'], static fn (array $event): bool => $event['event_type'] === 'ConditionWaitOpened');
             if (count($opened) > count($deliveries)) {
@@ -206,6 +249,17 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
             return ['request' => $request, 'delivered' => count($applied),
                 'last' => $applied === [] ? null : $client->payloadCodec()->decodeEnvelope($applied[array_key_last($applied)]['payload']['value'])];
         })
+        ->registerWorkflow('parity.v1.updates', static function (WorkflowContext $context, array $value, int $target): array {
+            $context->waitCondition(fn (): bool => count($context->signals('payload')) === $target, 'payload:0');
+
+            return ['values' => array_map(static fn (array $arguments): array => $arguments[0], $context->updates('set_payload'))];
+        })
+        ->declareSignal('parity.v1.updates', 'payload', static fn (array $value) => null)
+        ->registerUpdate('parity.v1.updates', 'set_payload', static function (QueryContext $context, array $value) use (&$updateTasks): array {
+            $updateTasks[] = ['task' => $context->task, 'arguments' => [$value], 'typed_arguments' => typedValue([$value])];
+
+            return ['value' => $value, 'applied' => count($context->events('UpdateApplied')) + 1];
+        })
         ->registerActivity('parity.v1.echo_activity', static fn (ActivityContext $context, array $value): array => $value);
 
     // run() performs real registration and task execution. The clock observes
@@ -251,6 +305,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'events' => decodeHistory($events, $client->payloadCodec()->decodeEnvelope(...)),
         'signal_deliveries' => $deliveries,
         'queries' => $queries,
+        'updates' => $updates,
     ];
 }
 
@@ -269,6 +324,7 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
             'parity.v1.one_timer' => TimerWorkflow::class,
             'parity.v1.signals' => SignalsWorkflow::class,
             'parity.v1.queries' => QueriesWorkflow::class,
+            'parity.v1.updates' => UpdatesWorkflow::class,
         ],
         'workflows.v2.types.activities' => ['parity.v1.echo_activity' => EchoActivity::class],
     ]);
@@ -278,8 +334,8 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
             $row->namespace = $namespace;
         });
     }
-    $class = isset($fixture['queries']) ? QueriesWorkflow::class : (isset($fixture['signal_count']) ? SignalsWorkflow::class : (isset($fixture['timer_delays']) ? TimerWorkflow::class
-        : ($fixture['activity'] ? OneActivityWorkflow::class : EchoWorkflow::class)));
+    $class = isset($fixture['update_values']) ? UpdatesWorkflow::class : (isset($fixture['queries']) ? QueriesWorkflow::class : (isset($fixture['signal_count']) ? SignalsWorkflow::class : (isset($fixture['timer_delays']) ? TimerWorkflow::class
+        : ($fixture['activity'] ? OneActivityWorkflow::class : EchoWorkflow::class))));
     $stub = WorkflowStub::make($class, $workflowId);
     $arguments = [$fixture['input']];
     if (isset($fixture['signal_count'])) {
@@ -292,6 +348,8 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
     );
     $deliveries = [];
     $queries = [];
+    $updates = [];
+    $pendingUpdate = null;
     $deadline = microtime(true) + 30;
     do {
         Artisan::call('queue:work', [
@@ -299,6 +357,41 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
             '--max-time' => 30, '--sleep' => 0, '--tries' => 1,
         ]);
         $run = WorkflowRun::query()->findOrFail($stub->runId());
+        $history = static fn (): array => $run->historyEvents()->orderBy('sequence')->get()->map(static fn ($event): array => [
+            'sequence' => $event->sequence, 'event_type' => $event->event_type->value, 'payload' => $event->payload,
+        ])->all();
+        if (isset($fixture['update_values'])) {
+            if ($pendingUpdate !== null) {
+                $completed = $stub->inspectUpdate($pendingUpdate['accepted']['update_id']);
+                if (! $completed->completed()) {
+                    throw new RuntimeException('Embedded update did not complete through its real queue job.');
+                }
+                $historyBefore = $history();
+                $duplicate = $stub->withCommandContext(CommandContext::phpApi()->with(['request' => ['request_id' => $pendingUpdate['request_id']]]))
+                    ->submitUpdateWithArguments($fixture['update_name'], [$fixture['duplicate_update_value']]);
+                $result = $stub->inspectUpdate($duplicate->updateId())->result();
+                $updates[] = [...$pendingUpdate, 'result' => $result, 'typed_result' => typedValue($result),
+                    'history_before_result' => $historyBefore, 'history_after_result' => $history()];
+                $pendingUpdate = null;
+            }
+            $index = count($updates);
+            if ($index < count($fixture['update_values']) && $run->status->value === 'waiting') {
+                $value = $fixture['update_values'][$index];
+                $requestId = $workflowId.':update:'.$index;
+                $target = $stub->withCommandContext(CommandContext::phpApi()->with(['request' => ['request_id' => $requestId]]));
+                $before = $run->toArray();
+                $receipt = static fn ($update): array => ['accepted' => $update->accepted(), 'command_id' => $update->commandId(),
+                    'workflow_id' => $update->workflowId(), 'run_id' => $update->runId(), 'update_id' => $update->updateId(),
+                    'update_name' => $update->updateName(), 'update_status' => $update->updateStatus(), 'outcome' => $update->outcome()];
+                $accepted = $receipt($target->submitUpdateWithArguments($fixture['update_name'], [$value]));
+                $historyAccepted = $history();
+                $duplicate = $receipt($target->submitUpdateWithArguments($fixture['update_name'], [$fixture['duplicate_update_value']]));
+                $pendingUpdate = ['name' => $fixture['update_name'], 'request_id' => $requestId,
+                    'arguments' => [$value], 'typed_arguments' => typedValue([$value]), 'before' => $before,
+                    'accepted' => $accepted, 'duplicate_accepted' => $duplicate,
+                    'history_after_acceptance' => $historyAccepted, 'history_after_duplicate' => $history()];
+            }
+        }
         $expected = $fixture['queries'][count($queries)] ?? null;
         if ($expected !== null && $run->status->value === $expected['status']
             && $run->historyEvents()->where('event_type', 'SignalApplied')->count() === $expected['after_signal_count']) {
@@ -313,7 +406,8 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
                 'after' => $run->fresh()->toArray(), 'history_before' => $historyBefore, 'history_after' => $history(),
                 'result' => $result, 'typed_result' => typedValue($result)];
         }
-        if (isset($fixture['signal_count']) && count($deliveries) < $fixture['signal_count']) {
+        if (isset($fixture['signal_count']) && count($deliveries) < $fixture['signal_count']
+            && count($updates) === count($fixture['update_values'] ?? [])) {
             $opened = $run->historyEvents()->where('event_type', 'SignalWaitOpened')->count();
             if ($opened > count($deliveries)) {
                 $before = $run->toArray();
@@ -354,6 +448,7 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
         'events' => decodeHistory($events, static fn ($value) => Serializer::unserializeWithCodec('avro', is_array($value) ? $value['blob'] : $value)),
         'signal_deliveries' => $deliveries,
         'queries' => $queries,
+        'updates' => $updates,
     ];
 }
 
