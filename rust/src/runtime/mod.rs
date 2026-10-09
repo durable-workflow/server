@@ -1,14 +1,17 @@
 //! First execution slice, deliberately unpublished and opt-in. Avro envelopes
 //! remain opaque: the runtime does not use the unfinished ingress decoder.
-//! SQLite is the first backend; existing PHP databases cannot be bootstrapped.
+//! SQLite/PostgreSQL share transitions; existing PHP data requires qualification.
 
+mod backend;
+mod execution;
 mod http;
 pub mod postgres;
 mod schema;
+mod sqlite;
 mod store;
 
+pub use execution::Runtime;
 pub use http::router;
-pub use store::Runtime;
 
 use axum::{
     Json,

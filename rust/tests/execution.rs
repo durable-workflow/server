@@ -10,6 +10,229 @@ use durable_workflow_server::{
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
+use sqlx::{ConnectOptions, Postgres, migrate::MigrateDatabase, postgres::PgConnectOptions};
+use std::str::FromStr;
+
+enum TestDatabase {
+    Sqlite(tempfile::TempDir),
+    Postgres {
+        options: Box<PgConnectOptions>,
+        url: String,
+    },
+}
+
+impl TestDatabase {
+    async fn new() -> Self {
+        match std::env::var("DW_EXECUTION_POSTGRES_URL") {
+            Ok(url) => {
+                let name = format!(
+                    "dw_execution_{}",
+                    ulid::Ulid::new().to_string().to_lowercase()
+                );
+                let options = PgConnectOptions::from_str(&url).unwrap().database(&name);
+                let url = options.to_url_lossy().to_string();
+                Postgres::create_database(&url).await.unwrap();
+                Self::Postgres {
+                    options: Box::new(options),
+                    url,
+                }
+            }
+            Err(_) => Self::Sqlite(tempfile::tempdir().unwrap()),
+        }
+    }
+
+    async fn open(&self) -> Result<Runtime, durable_workflow_server::runtime::RuntimeError> {
+        match self {
+            Self::Sqlite(dir) => {
+                Runtime::open(
+                    dir.path().join("runtime.sqlite").to_str().unwrap(),
+                    "test-token".into(),
+                )
+                .await
+            }
+            Self::Postgres { options, .. } => {
+                Runtime::open_postgres(options.as_ref().clone(), "test-token".into()).await
+            }
+        }
+    }
+
+    async fn execute(&self, statement: &'static str) {
+        match self {
+            Self::Sqlite(dir) => {
+                let pool = sqlx::SqlitePool::connect(&format!(
+                    "sqlite://{}",
+                    dir.path().join("runtime.sqlite").display()
+                ))
+                .await
+                .unwrap();
+                sqlx::query(statement).execute(&pool).await.unwrap();
+                pool.close().await;
+            }
+            Self::Postgres { options, .. } => {
+                let pool = sqlx::postgres::PgPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
+                sqlx::query(statement).execute(&pool).await.unwrap();
+                pool.close().await;
+            }
+        }
+    }
+
+    async fn remove(self) {
+        if let Self::Postgres { url, .. } = self {
+            Postgres::drop_database(&url).await.unwrap();
+        }
+    }
+
+    async fn replace_history_payload(&self, payload: Value) {
+        match self {
+            Self::Sqlite(dir) => {
+                let pool = sqlx::SqlitePool::connect(&format!(
+                    "sqlite://{}",
+                    dir.path().join("runtime.sqlite").display()
+                ))
+                .await
+                .unwrap();
+                sqlx::query("UPDATE workflow_history_events SET payload=$1 WHERE sequence=1")
+                    .bind(payload.to_string())
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+            }
+            Self::Postgres { options, .. } => {
+                let pool = sqlx::postgres::PgPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
+                sqlx::query("UPDATE workflow_history_events SET payload=$1 WHERE sequence=1")
+                    .bind(sqlx::types::Json(payload))
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn simultaneous_starts_and_completions_commit_one_durable_outcome() {
+    let database = TestDatabase::new().await;
+    let node_a = database.open().await.unwrap();
+    let node_b = database.open().await.unwrap();
+    let app_a = router(node_a.clone());
+    let app_b = router(node_b.clone());
+    let body = json!({"workflow_id":"concurrent","workflow_type":"echo","task_queue":"test","input":envelope(Payload::Null)});
+    let (a, b) = tokio::join!(
+        request(&app_a, "POST", "/api/workflows", body.clone()),
+        request(&app_b, "POST", "/api/workflows", body)
+    );
+    assert!(
+        matches!(
+            (a.0, b.0),
+            (StatusCode::CREATED, StatusCode::CONFLICT)
+                | (StatusCode::CONFLICT, StatusCode::CREATED)
+        ),
+        "{a:?} {b:?}"
+    );
+    register(&app_a, "worker", json!(["echo"]), json!([])).await;
+    let task = poll(&app_a, "worker", "workflow").await;
+    let body = completion(
+        &task,
+        json!([{"type":"complete_workflow","result":envelope(Payload::Long(9))}]),
+    );
+    let path = format!(
+        "/api/worker/workflow-tasks/{}/complete",
+        task["task_id"].as_str().unwrap()
+    );
+    let (a, b) = tokio::join!(
+        request(&app_a, "POST", &path, body.clone()),
+        request(&app_b, "POST", &path, body)
+    );
+    assert_eq!((a.0, b.0), (StatusCode::OK, StatusCode::OK), "{a:?} {b:?}");
+    assert_ne!(a.1["recorded"], b.1["recorded"]);
+    let history = request(
+        &app_a,
+        "GET",
+        &format!(
+            "/api/workflows/concurrent/runs/{}/history",
+            task["run_id"].as_str().unwrap()
+        ),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(history.1["events"].as_array().unwrap().len(), 3);
+    assert_eq!(history.1["events"][2]["event_type"], "WorkflowCompleted");
+    node_a.close().await;
+    node_b.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn history_budget_counts_utf8_bytes_before_hydration() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let started = start(&app, "utf8-budget").await;
+    database
+        .replace_history_payload(json!({"unicode":"界".repeat(3*1024*1024)}))
+        .await;
+    let history = request(
+        &app,
+        "GET",
+        &format!(
+            "/api/workflows/utf8-budget/runs/{}/history",
+            started["run_id"].as_str().unwrap()
+        ),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(history.0, StatusCode::PAYLOAD_TOO_LARGE, "{}", history.1);
+    assert_eq!(history.1["reason"], "history_event_exceeds_page_budget");
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn stored_microseconds_survive_description_and_stale_lease_is_refused() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    start(&app, "precision").await;
+    database
+        .execute("UPDATE workflow_runs SET started_at='2026-01-02T03:04:05.123456Z'")
+        .await;
+    let description = request(&app, "GET", "/api/workflows/precision", Value::Null).await;
+    assert_eq!(description.0, StatusCode::OK, "{}", description.1);
+    let time = chrono::DateTime::parse_from_rfc3339(description.1["started_at"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(time.timestamp_subsec_nanos(), 123456000);
+    register(&app, "worker", json!(["echo"]), json!([])).await;
+    let task = poll(&app, "worker", "workflow").await;
+    database
+        .execute("UPDATE workflow_tasks SET lease_expires_at='2000-01-01T00:00:00.000001Z'")
+        .await;
+    let outcome = request(
+        &app,
+        "POST",
+        &format!(
+            "/api/worker/workflow-tasks/{}/complete",
+            task["task_id"].as_str().unwrap()
+        ),
+        completion(
+            &task,
+            json!([{"type":"complete_workflow","result":envelope(Payload::Null)}]),
+        ),
+    )
+    .await;
+    assert_eq!(outcome.0, StatusCode::CONFLICT, "{}", outcome.1);
+    assert_eq!(outcome.1["reason"], "lease_expired");
+    runtime.close().await;
+    database.remove().await;
+}
+
 fn envelope(value: Payload) -> Value {
     json!({"codec": "avro", "blob": ValueCodec::new().unwrap().encode(&value).unwrap()})
 }
@@ -84,11 +307,8 @@ fn completion(task: &Value, commands: Value) -> Value {
 
 #[tokio::test]
 async fn completion_survives_restart_and_duplicate_receipt_adds_no_history() {
-    let dir = tempfile::tempdir().unwrap();
-    let database = dir.path().join("runtime.sqlite");
-    let runtime = Runtime::open(database.to_str().unwrap(), "test-token".into())
-        .await
-        .unwrap();
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
     let started = start(&app, "persistent").await;
     register(&app, "worker", json!(["echo"]), json!([])).await;
@@ -115,9 +335,7 @@ async fn completion_survives_restart_and_duplicate_receipt_adds_no_history() {
         StatusCode::CONFLICT
     );
     runtime.close().await;
-    let reopened = Runtime::open(database.to_str().unwrap(), "test-token".into())
-        .await
-        .unwrap();
+    let reopened = database.open().await.unwrap();
     let app = router(reopened.clone());
     let description = request(&app, "GET", "/api/workflows/persistent", Value::Null).await;
     assert_eq!(description.1["status"], "completed");
@@ -155,18 +373,14 @@ async fn completion_survives_restart_and_duplicate_receipt_adds_no_history() {
     assert_eq!(next["events"].as_array().unwrap().len(), 1);
     assert_eq!(next["events"][0]["event_type"], "WorkflowCompleted");
     reopened.close().await;
+    database.remove().await;
 }
 
 #[tokio::test]
 async fn independent_nodes_claim_once_and_revoked_attempt_cannot_commit() {
-    let dir = tempfile::tempdir().unwrap();
-    let database = dir.path().join("runtime.sqlite");
-    let node_a = Runtime::open(database.to_str().unwrap(), "test-token".into())
-        .await
-        .unwrap();
-    let node_b = Runtime::open(database.to_str().unwrap(), "test-token".into())
-        .await
-        .unwrap();
+    let database = TestDatabase::new().await;
+    let node_a = database.open().await.unwrap();
+    let node_b = database.open().await.unwrap();
     let app_a = router(node_a.clone());
     let app_b = router(node_b.clone());
     start(&app_a, "fenced").await;
@@ -217,15 +431,13 @@ async fn independent_nodes_claim_once_and_revoked_attempt_cannot_commit() {
     );
     node_a.close().await;
     node_b.close().await;
+    database.remove().await;
 }
 
 #[tokio::test]
 async fn activity_commit_wakes_replay_and_stale_activity_attempt_is_refused() {
-    let dir = tempfile::tempdir().unwrap();
-    let database = dir.path().join("runtime.sqlite");
-    let runtime = Runtime::open(database.to_str().unwrap(), "test-token".into())
-        .await
-        .unwrap();
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
     start(&app, "activity").await;
     register(&app, "worker", json!(["echo"]), json!(["activity-echo"])).await;
@@ -294,18 +506,14 @@ async fn activity_commit_wakes_replay_and_stale_activity_attempt_is_refused() {
         ]
     );
     runtime.close().await;
+    database.remove().await;
 }
 
 #[tokio::test]
 async fn repeated_poll_retains_the_original_claim_and_worker_history_paginates() {
-    let dir = tempfile::tempdir().unwrap();
-    let database = dir.path().join("runtime.sqlite");
-    let node_a = Runtime::open(database.to_str().unwrap(), "test-token".into())
-        .await
-        .unwrap();
-    let node_b = Runtime::open(database.to_str().unwrap(), "test-token".into())
-        .await
-        .unwrap();
+    let database = TestDatabase::new().await;
+    let node_a = database.open().await.unwrap();
+    let node_b = database.open().await.unwrap();
     let app_a = router(node_a.clone());
     let app_b = router(node_b.clone());
     start(&app_a, "first").await;
@@ -337,6 +545,7 @@ async fn repeated_poll_retains_the_original_claim_and_worker_history_paginates()
     assert_ne!(next["task_id"], task["task_id"]);
     node_a.close().await;
     node_b.close().await;
+    database.remove().await;
 }
 
 #[tokio::test]
@@ -367,45 +576,27 @@ async fn existing_php_database_is_refused_without_changes() {
 
 #[tokio::test]
 async fn readiness_and_startup_refuse_a_marker_with_incomplete_tables() {
-    let dir = tempfile::tempdir().unwrap();
-    let database = dir.path().join("runtime.sqlite");
-    let runtime = Runtime::open(database.to_str().unwrap(), "test-token".into())
-        .await
-        .unwrap();
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
     assert_eq!(
         request(&app, "GET", "/api/ready", Value::Null).await.0,
         StatusCode::OK
     );
-    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", database.display()))
-        .await
-        .unwrap();
-    sqlx::query("DROP TABLE dw_poll_receipts")
-        .execute(&pool)
-        .await
-        .unwrap();
-    pool.close().await;
+    database.execute("DROP TABLE dw_poll_receipts").await;
     assert_eq!(
         request(&app, "GET", "/api/ready", Value::Null).await.0,
         StatusCode::SERVICE_UNAVAILABLE
     );
     runtime.close().await;
-    assert!(
-        Runtime::open(database.to_str().unwrap(), "test-token".into())
-            .await
-            .is_err()
-    );
+    assert!(database.open().await.is_err());
+    database.remove().await;
 }
 
 #[tokio::test]
 async fn authentication_precedes_protocol_and_namespace_checks() {
-    let dir = tempfile::tempdir().unwrap();
-    let runtime = Runtime::open(
-        dir.path().join("db.sqlite").to_str().unwrap(),
-        "test-token".into(),
-    )
-    .await
-    .unwrap();
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
     let unauthenticated = app
         .clone()
@@ -443,4 +634,5 @@ async fn authentication_precedes_protocol_and_namespace_checks() {
         StatusCode::NOT_FOUND
     );
     runtime.close().await;
+    database.remove().await;
 }

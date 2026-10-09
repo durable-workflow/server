@@ -106,7 +106,7 @@ async fn guard(State(runtime): State<Runtime>, request: Request, next: Next) -> 
 }
 
 async fn health(State(runtime): State<Runtime>) -> Response {
-    let database = sqlx::query("SELECT 1").execute(&runtime.pool).await.is_ok();
+    let database = runtime.database_live().await;
     (if database { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE },
         Json(json!({"status": if database { "serving" } else { "degraded" }, "checks": {"database": database}}))).into_response()
 }

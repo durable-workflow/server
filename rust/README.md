@@ -34,12 +34,14 @@ The [HTTP slice observations](runtime-build-observations-2026-10-09.md) record
 its larger native build, test and dependency costs.
 The [PostgreSQL observations](postgres-build-observations-2026-10-09.md) include
 typed storage and TLS dependencies, with separate clean/incremental disk costs.
+The [PostgreSQL execution observations](postgres-execution-build-observations-2026-10-09.md)
+record the shared runtime's current clean and incremental costs.
 
 ## PostgreSQL storage foundation
 
 The unpublished binary also provides `schema-bootstrap` and `schema-check`
-commands for PostgreSQL. They prepare or inspect storage; HTTP execution still
-uses SQLite. Set `DW_RUST_EXPERIMENTAL=1`, `DB_CONNECTION=pgsql`, `DB_DATABASE`,
+commands for PostgreSQL. The same backend now executes the limited native HTTP
+workflow/activity slice. Set `DW_RUST_EXPERIMENTAL=1`, `DB_CONNECTION=pgsql`, `DB_DATABASE`,
 `DB_USERNAME`, and the usual `DB_HOST`, `DB_PORT` and `DB_PASSWORD`. The database
 must already exist. `DB_URL` takes precedence over the individual connection
 fields and uses SQLx's PostgreSQL URL options.
@@ -82,8 +84,26 @@ real process kills at two acknowledged uncommitted migration boundaries.
 The published PHP fixture separately creates pending work and a leased activity,
 stops PHP, and verifies native refusal with unchanged row/sequence fingerprints.
 Data in other user schemas is also refused rather than treated as an empty
-public schema. Actual PostgreSQL execution, MySQL/MariaDB, backup-first conversion and complete
-multi-node recovery remain required under #325.
+public schema. MySQL/MariaDB, backup-first conversion and complete multi-node
+recovery remain required under #325.
+
+The execution state machine is shared with SQLite through typed SQLx adapters.
+PostgreSQL retains JSONB and microsecond timestamps; SQLite retains its native
+development text format. PostgreSQL serializes this first default-namespace
+slice with a transaction-scoped advisory lock, distinct from the bootstrap lock.
+An empty poll releases the transaction before waiting. This deliberately bounded
+implementation does not establish throughput or complete multi-node safety.
+
+Set `DW_EXECUTION_POSTGRES_URL` to an isolated create-database role and run
+`cargo test --locked --test execution` to execute the common HTTP scenarios on
+PostgreSQL. Each scenario has its own database; the existing PHP-file refusal
+case remains SQLite-specific. With no such variable, the same suite uses SQLite.
+The shared Action explicitly runs both pinned PostgreSQL versions, unchanged
+PHP/Rust/embedded fixtures in three separate databases, and two native processes
+sharing only their own database. Its restart probe kills one native process,
+checks survivor readiness, starts a replacement, waits for the actual activity
+lease to expire and resumes work through the published PHP SDK. This is a
+bounded lease-recovery check, not full failure or performance qualification.
 
 The shared [codec values](../tests/Fixtures/ServerParity/Codec/v1.json) declare
 logical expectations from the immutable schema: exact long boundaries, finite
@@ -106,7 +126,8 @@ datum decoding or qualifying ingress.
 
 Build with `cargo build --locked` in the same container/mount setup. Run the
 binary with `DW_RUST_EXPERIMENTAL=1`, a nonempty `DW_AUTH_TOKEN`,
-`DB_CONNECTION=sqlite` and `DB_DATABASE` naming its own isolated file.
+`DB_CONNECTION=sqlite` and `DB_DATABASE` naming its own isolated file, or the
+PostgreSQL fields above naming its own isolated database.
 `DW_BIND_ADDRESS` defaults to `127.0.0.1:8080`; set `0.0.0.0:8080` for a
 development container network. Use the same UID and persistent database mount
 across restarts. This opt-in does not authorize use as a production replacement.
