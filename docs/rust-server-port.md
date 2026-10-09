@@ -8,6 +8,12 @@ cutover remain unqualified.
 
 ## Work order and current status
 
+The next slice brings actual MariaDB/MySQL execution to the same state machine
+and differential fixtures. Its DDL cannot use PostgreSQL's atomic bootstrap:
+native initialization needs an explicit ownership intent, version/checksum
+validation and tested safe interruption handling. PHP and unknown databases
+remain refused before mutation until backup-first takeover is qualified.
+
 The current execution slice shares the native workflow/activity state machine
 between SQLite and PostgreSQL, with typed database adapters and explicit
 transaction locking. Qualification runs the unchanged execution fixtures
