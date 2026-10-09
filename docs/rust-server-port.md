@@ -40,7 +40,7 @@ does not prove the remaining acceptance criteria.
 | SQL schema and stored representations | `database/migrations/`, Workflow package `src/migrations/`, model casts, `Workflow\\Serializers\\Serializer`, queue job payloads, exported history and credential digests | [Representation checkpoints](rust-server-storage-audit.md) recorded; complete mapping and executable migration tests pending |
 | Images, architecture, bootstrap, configuration, readiness, metrics and graceful shutdown | `Dockerfile`, `docker/`, `config/`, `docker-compose*.yml`, `k8s/helm/`, `docs/server-reference.md`, small-cluster/multi-region validation docs | Pending |
 | Backup and in-place upgrade | `docs/self-hosted-backup-and-restore.md`, external payload backup holds; last PHP image writes, all PHP roles stop, Rust takes over same DB sequentially | Pending on SQLite, MariaDB/MySQL, PostgreSQL |
-| Throughput, memory, CPU, latency, backlog/drain, idle mixed long polls | `benchmarks/capacity/v1/` and `scripts/benchmark/`; repeated runs and drift checks using frozen artifacts | Development measurements in progress; full performance qualification pending |
+| Throughput, memory, CPU, latency, backlog/drain, idle mixed long polls | `benchmarks/capacity/v1/` and `scripts/benchmark/`; repeated runs and drift checks using frozen artifacts | [Diagnostic PHP reference recorded](../benchmarks/server-port/v1/php-observations-2026-10-09.md); matched comparison and full qualification pending |
 
 Ordinary PHP, Rust and embedded runs use independent databases. Never connect
 different engines to one database concurrently. SQLite multi-node qualification
@@ -102,7 +102,14 @@ checks passed at its exact head, together with the full PHP feature suite.
 The [development reference profile](../benchmarks/server-port/v1/README.md)
 pins the current PHP/SDK tuple and uses existing standard-workflow and mixed
 idle-poll commands. Its preparation is merged in [#327](https://github.com/durable-workflow/server/pull/327).
-Measurement is in progress. The development host's kernel,
+The [diagnostic observations](../benchmarks/server-port/v1/php-observations-2026-10-09.md)
+are complete: three repetitions at 0.25 and 0.5 offered starts/s completed all
+workflows in-window; at 1/s, only 48–51 of 120 completed in-window before the
+remainder drained. The high-rate retry had one readiness 503, and the original
+second run's configured hourly worker exit invalidated its resource comparison.
+All outcomes and failures are retained. Following drift windows passed; sampling
+gaps, missing complete client resource costs and changed background load still
+prevent a PHP/Rust improvement claim. The development host's kernel,
 runtime and SATA storage differ from the standard capacity topology, so that
 profile preserves the full capacity gate and makes no maximum-capacity claim.
 
@@ -119,7 +126,8 @@ evidence; API headroom at that burst size is not qualified. Shared-host backgrou
 work changed between measurements, so a PHP/Rust performance gain still requires
 matched conditions and drift controls.
 
-Next: measure the PHP throughput, memory and idle mixed long-poll reference
-before adding Rust, and expand fixtures using the existing conformance inventory. The rest
+Next: implement the first Rust slice against the shared fixtures, measuring
+clean/incremental compile time and physical build/cache disk use. Expand fixtures
+using the existing conformance inventory. The rest
 of the inventory remains open under #325. No separate defect issues have been
 filed yet.

@@ -50,6 +50,9 @@ history and stage timestamps.
 Record the source commit and input hashes, actual installed package versions,
 resolved image identities, host facts, container limits, UTC boundaries,
 restarts/OOM/swap, raw Docker CPU/memory samples and final database/task counts.
+Start API/resource sampling before admission and continue through the offer
+window, bounded drain and verification. Record any uncovered prefix or tail;
+partial samples cannot establish the complete execution CPU cost or peak.
 Sample all PHP roles and the database/cache, not only HTTP. Report the HTTP
 and complete runtime memory totals separately from SDK/load-generator memory.
 Use a consistent adjacent idle control and retain ordinary health/readiness
@@ -77,7 +80,9 @@ Probe health and readiness from another process while polls are held, and
 record CPU and steady/peak memory for all runtime roles. A task claim, failed
 registration, failed cleanup or unexpected error invalidates the idle run.
 
-The versioned inputs describe planned measurements. Retained raw evidence and
+The [October 9 observations](php-observations-2026-10-09.md) record the completed
+diagnostic reference, including overload, API failures and comparison limits.
+The versioned inputs describe the measurement plan. Retained raw evidence and
 the [port log](../../../docs/rust-server-port.md) distinguish setup, successful
 measurements, invalid runs and remaining qualification work.
 
