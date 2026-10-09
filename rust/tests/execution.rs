@@ -461,6 +461,364 @@ fn completion(task: &Value, commands: Value) -> Value {
     json!({"lease_owner":task["lease_owner"],"workflow_task_attempt":task["workflow_task_attempt"],"commands":commands})
 }
 
+async fn finish_task(app: &Router, task: &Value, commands: Value) -> (StatusCode, Value) {
+    request(
+        app,
+        "POST",
+        &format!(
+            "/api/worker/workflow-tasks/{}/complete",
+            task["task_id"].as_str().unwrap()
+        ),
+        completion(task, commands),
+    )
+    .await
+}
+
+async fn run_history(app: &Router, workflow: &Value, run: &Value) -> Value {
+    let (status, body) = request(
+        app,
+        "GET",
+        &format!(
+            "/api/workflows/{}/runs/{}/history",
+            workflow.as_str().unwrap(),
+            run.as_str().unwrap()
+        ),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["events"].clone()
+}
+
+fn child_command(value: i64) -> Value {
+    json!({"type":"start_child_workflow","workflow_type":"child","arguments":envelope(Payload::Array(vec![Payload::Long(value)]))})
+}
+
+#[tokio::test]
+async fn sequential_children_commit_original_links_results_and_one_parent_resumption() {
+    let database = TestDatabase::new().await;
+    let node_a = database.open().await.unwrap();
+    let node_b = database.open().await.unwrap();
+    let app_a = router(node_a.clone());
+    let app_b = router(node_b.clone());
+    register(&app_a, "parent-worker", json!(["echo"]), json!([])).await;
+    let (status, body) = request(&app_b, "POST", "/api/worker/register", json!({"worker_id":"child-worker","task_queue":"test","runtime":"php","supported_workflow_types":["child"],"supported_activity_types":[],"workflow_command_contracts":{"child":{"signals":["finish"],"queries":[],"updates":[]}}})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let parent = start(&app_a, "children").await;
+    let mut parent_task = poll(&app_a, "parent-worker", "workflow").await;
+    let mut original_children = Vec::new();
+    for (index, value) in [9007199254740993_i64, 42].into_iter().enumerate() {
+        let command = child_command(value);
+        if index == 0 {
+            for (field, option) in [
+                ("parent_close_policy", json!("terminate")),
+                ("cancellation_policy", json!("try_cancel")),
+                ("retry_policy", json!({"maximum_attempts":2})),
+                ("run_timeout_seconds", json!(10)),
+                ("queue", json!("")),
+                ("parallel_group_path", json!([])),
+            ] {
+                let mut unsupported = command.clone();
+                unsupported[field] = option;
+                assert_eq!(
+                    finish_task(&app_a, &parent_task, json!([unsupported]))
+                        .await
+                        .0,
+                    StatusCode::UNPROCESSABLE_ENTITY
+                );
+                assert_eq!(
+                    run_history(&app_a, &parent["workflow_id"], &parent["run_id"])
+                        .await
+                        .as_array()
+                        .unwrap()
+                        .len(),
+                    2
+                );
+                assert!(poll(&app_b, "child-worker", "workflow").await.is_null());
+            }
+        }
+        let commands = json!([command]);
+        let applied = finish_task(&app_a, &parent_task, commands.clone()).await;
+        assert_eq!(applied.0, StatusCode::OK, "{}", applied.1);
+        assert_eq!(applied.1["run_id"], parent["run_id"]);
+        assert_eq!(
+            finish_task(&app_b, &parent_task, commands).await.1["recorded"],
+            false
+        );
+        assert_eq!(
+            finish_task(&app_b, &parent_task, json!([child_command(7)]))
+                .await
+                .0,
+            StatusCode::CONFLICT
+        );
+        assert!(poll(&app_a, "parent-worker", "workflow").await.is_null());
+        let child = poll(&app_b, "child-worker", "workflow").await;
+        assert_eq!(child["workflow_type"], "child");
+        assert_eq!(
+            child["arguments"],
+            envelope(Payload::Array(vec![Payload::Long(value)]))
+        );
+        assert_eq!(child["history_events"].as_array().unwrap().len(), 1);
+        let history = run_history(&app_a, &parent["workflow_id"], &parent["run_id"]).await;
+        let scheduled = &history[2 + index * 3]["payload"];
+        let started = &child["history_events"][0]["payload"];
+        assert_eq!(
+            started["parent_workflow_instance_id"],
+            parent["workflow_id"]
+        );
+        assert_eq!(started["parent_workflow_run_id"], parent["run_id"]);
+        assert_eq!(started["parent_sequence"], index + 1);
+        assert_eq!(started["workflow_link_id"], scheduled["child_call_id"]);
+        assert_eq!(started["child_call_id"], scheduled["workflow_link_id"]);
+        assert_eq!(started["declared_signals"], json!(["finish"]));
+        let described = request(
+            &app_a,
+            "GET",
+            &format!(
+                "/api/workflows/{}/runs/{}",
+                child["workflow_id"].as_str().unwrap(),
+                child["run_id"].as_str().unwrap()
+            ),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(described.0, StatusCode::OK, "{}", described.1);
+        for field in [
+            "execution_timeout_seconds",
+            "run_timeout_seconds",
+            "execution_deadline_at",
+            "run_deadline_at",
+        ] {
+            assert!(described.1[field].is_null());
+        }
+        let complete =
+            json!([{"type":"complete_workflow","result":envelope(Payload::Long(value))}]);
+        let applied = finish_task(&app_b, &child, complete.clone()).await;
+        assert_eq!(applied.0, StatusCode::OK, "{}", applied.1);
+        assert_eq!(applied.1["run_id"], child["run_id"]);
+        assert_eq!(
+            finish_task(&app_a, &child, complete.clone()).await.1["recorded"],
+            false
+        );
+        let (first, second) = tokio::join!(
+            poll(&app_a, "parent-worker", "workflow"),
+            poll(&app_b, "parent-worker", "workflow")
+        );
+        assert_ne!(
+            first.is_null(),
+            second.is_null(),
+            "one durable parent resume claim"
+        );
+        parent_task = if first.is_null() { second } else { first };
+        assert_eq!(parent_task["run_id"], parent["run_id"]);
+        assert_eq!(parent_task["child_workflow_run_id"], child["run_id"]);
+        assert_eq!(parent_task["child_call_id"], scheduled["child_call_id"]);
+        assert_eq!(
+            parent_task["open_wait_id"],
+            format!("child:{}", scheduled["child_call_id"].as_str().unwrap())
+        );
+        assert_eq!(parent_task["resume_source_kind"], "child_workflow_run");
+        assert_eq!(parent_task["resume_source_id"], child["run_id"]);
+        assert_eq!(parent_task["workflow_wait_kind"], "child");
+        assert_eq!(parent_task["workflow_sequence"], index + 1);
+        assert_eq!(parent_task["workflow_event_type"], "ChildRunCompleted");
+        let resolved = &parent_task["history_events"][4 + index * 3]["payload"];
+        assert_eq!(resolved["output"], envelope(Payload::Long(value)));
+        assert_eq!(resolved["result"], resolved["output"]);
+        assert_eq!(resolved["child_workflow_run_id"], child["run_id"]);
+        original_children.push((child, complete));
+    }
+    assert_ne!(
+        original_children[0].0["run_id"],
+        original_children[1].0["run_id"]
+    );
+    assert_eq!(finish_task(&app_a,&parent_task,json!([{"type":"complete_workflow","result":envelope(Payload::Array(vec![Payload::Long(9007199254740993),Payload::Long(42)]))}])).await.0,StatusCode::OK);
+    let final_history = run_history(&app_b, &parent["workflow_id"], &parent["run_id"]).await;
+    assert_eq!(final_history.as_array().unwrap().len(), 9);
+    assert_eq!(final_history[8]["event_type"], "WorkflowCompleted");
+    for (child, commands) in original_children {
+        assert_eq!(
+            finish_task(&app_b, &child, commands).await.1["recorded"],
+            false
+        );
+        assert_eq!(
+            finish_task(
+                &app_b,
+                &child,
+                json!([{"type":"complete_workflow","result":envelope(Payload::Long(7))}])
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            run_history(&app_a, &child["workflow_id"], &child["run_id"])
+                .await
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+    assert_eq!(
+        run_history(&app_a, &parent["workflow_id"], &parent["run_id"]).await,
+        final_history
+    );
+    assert!(poll(&app_b, "parent-worker", "workflow").await.is_null());
+    node_a.close().await;
+    node_b.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn child_lease_expiry_and_fresh_pool_recovery_preserve_original_parent_resolution() {
+    let database = TestDatabase::new().await;
+    let old_node = database.open().await.unwrap();
+    let old_app = router(old_node.clone());
+    register(&old_app, "worker", json!(["echo", "child"]), json!([])).await;
+    let parent = start(&old_app, "child-recovery").await;
+    let parent_task = poll(&old_app, "worker", "workflow").await;
+    assert_eq!(
+        finish_task(
+            &old_app,
+            &parent_task,
+            json!([child_command(9007199254740993)])
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let old = poll(&old_app, "worker", "workflow").await;
+    let commands =
+        json!([{"type":"complete_workflow","result":envelope(Payload::Long(9007199254740993))}]);
+    old_node.close().await;
+    drop(old_app);
+    let replacement = database.open().await.unwrap();
+    let app = router(replacement.clone());
+    register(&app, "replacement", json!(["echo", "child"]), json!([])).await;
+    assert!(poll(&app, "replacement", "workflow").await.is_null());
+    let lease =
+        chrono::DateTime::parse_from_rfc3339(old["lease_expires_at"].as_str().unwrap()).unwrap();
+    let delay = (lease.with_timezone(&chrono::Utc) - chrono::Utc::now())
+        .to_std()
+        .unwrap_or_default()
+        + std::time::Duration::from_millis(100);
+    tokio::time::sleep(delay).await;
+    assert_eq!(
+        finish_task(&app, &old, commands.clone()).await.0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        run_history(&app, &parent["workflow_id"], &parent["run_id"])
+            .await
+            .as_array()
+            .unwrap()
+            .len(),
+        4
+    );
+    assert_eq!(
+        run_history(&app, &old["workflow_id"], &old["run_id"])
+            .await
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let recovered = poll(&app, "replacement", "workflow").await;
+    assert_eq!(recovered["task_id"], old["task_id"]);
+    assert_eq!(recovered["run_id"], old["run_id"]);
+    assert_eq!(recovered["workflow_task_attempt"], 2);
+    assert_eq!(
+        finish_task(&app, &old, commands.clone()).await.0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        finish_task(&app, &recovered, commands.clone()).await.0,
+        StatusCode::OK
+    );
+    let parent_resume = poll(&app, "replacement", "workflow").await;
+    assert_eq!(parent_resume["run_id"], parent["run_id"]);
+    assert_eq!(parent_resume["child_workflow_run_id"], old["run_id"]);
+    assert_eq!(
+        parent_resume["history_events"][4]["payload"]["output"],
+        envelope(Payload::Long(9007199254740993))
+    );
+    assert_eq!(
+        finish_task(&app, &recovered, commands).await.1["recorded"],
+        false
+    );
+    assert_eq!(
+        finish_task(
+            &app,
+            &parent_resume,
+            json!([{"type":"complete_workflow","result":envelope(Payload::Long(9007199254740993))}])
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        run_history(&app, &parent["workflow_id"], &parent["run_id"])
+            .await
+            .as_array()
+            .unwrap()
+            .len(),
+        6
+    );
+    replacement.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn mismatched_child_call_rolls_back_child_terminal_history_and_parent_resume() {
+    for corruption in [
+        "UPDATE workflow_child_calls SET resolved_child_run_id='stale-child-run'",
+        "DELETE FROM workflow_links",
+    ] {
+        let database = TestDatabase::new().await;
+        let runtime = database.open().await.unwrap();
+        let app = router(runtime.clone());
+        register(&app, "worker", json!(["echo", "child"]), json!([])).await;
+        let parent = start(&app, "child-mismatch").await;
+        let parent_task = poll(&app, "worker", "workflow").await;
+        assert_eq!(
+            finish_task(&app, &parent_task, json!([child_command(7)]))
+                .await
+                .0,
+            StatusCode::OK
+        );
+        let child = poll(&app, "worker", "workflow").await;
+        database.execute(corruption).await;
+        let result = finish_task(
+            &app,
+            &child,
+            json!([{"type":"complete_workflow","result":envelope(Payload::Long(7))}]),
+        )
+        .await;
+        assert_eq!(result.0, StatusCode::CONFLICT);
+        assert_eq!(result.1["reason"], "child_call_mismatch");
+        assert_eq!(
+            run_history(&app, &child["workflow_id"], &child["run_id"])
+                .await
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            run_history(&app, &parent["workflow_id"], &parent["run_id"])
+                .await
+                .as_array()
+                .unwrap()
+                .len(),
+            4
+        );
+        assert!(poll(&app, "worker", "workflow").await.is_null());
+        runtime.close().await;
+        database.remove().await;
+    }
+}
+
 async fn update_worker(app: &Router, worker: &str) {
     let (status, body) = request(app, "POST", "/api/worker/register", json!({
         "worker_id":worker,"task_queue":"test","runtime":"php","supported_workflow_types":["echo"],

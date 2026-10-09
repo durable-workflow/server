@@ -82,6 +82,8 @@ where
             "SELECT request_id,task_id,attempt,response,expires_at FROM dw_poll_receipts LIMIT 0",
             "SELECT value,expiration FROM dw_query_cache LIMIT 0",
             "SELECT id,workflow_command_id,workflow_run_id,update_name,status,arguments,result FROM workflow_updates LIMIT 0",
+            "SELECT id,parent_workflow_run_id,sequence,status,resolved_child_run_id,metadata FROM workflow_child_calls LIMIT 0",
+            "SELECT id,parent_workflow_run_id,child_workflow_run_id,sequence FROM workflow_links LIMIT 0",
         ] {
             if Self::query(query).execute(&self.pool).await.is_err() {
                 return false;
@@ -176,30 +178,7 @@ where
         )
         .await?;
         let mut started = identity;
-        let workers = Self::query("SELECT supported_workflow_types,workflow_command_contracts FROM workflow_worker_registrations WHERE namespace='default' AND task_queue=$1 AND status='active' AND workflow_command_contracts IS NOT NULL AND last_heartbeat_at>$2 ORDER BY id DESC LIMIT 100")
-            .bind(queue).bind(DB::bind_time(now() - chrono::Duration::seconds(60))).fetch_all(&mut *tx).await?;
-        for worker in workers {
-            if DB::document_row(&worker, "supported_workflow_types")?
-                .as_array()
-                .is_some_and(|types| types.iter().any(|value| value == workflow_type))
-            {
-                let contracts = DB::document_row(&worker, "workflow_command_contracts")?;
-                if let Some(contract) = contracts.get(workflow_type) {
-                    for (source, target) in [
-                        ("signals", "declared_signals"),
-                        ("signal_contracts", "declared_signal_contracts"),
-                        ("queries", "declared_queries"),
-                        ("query_contracts", "declared_query_contracts"),
-                        ("updates", "declared_updates"),
-                        ("update_contracts", "declared_update_contracts"),
-                        ("update_validators", "declared_update_validators"),
-                    ] {
-                        started[target] = contract[source].clone();
-                    }
-                    break;
-                }
-            }
-        }
+        Self::attach_workflow_contract(&mut tx, queue, workflow_type, &mut started).await?;
         started["execution_timeout_seconds"] = json!(execution_timeout);
         started["run_timeout_seconds"] = json!(run_timeout);
         started["execution_deadline_at"] = json!(execution_deadline);
@@ -237,9 +216,9 @@ where
             "payload_codec": "avro", "input": null, "output": null,
             "input_envelope": wire(&DB::string(&row,"arguments")?), "output_envelope": output.as_deref().map(wire),
             "started_at": DB::instant(&row,"started_at")?, "closed_at": DB::optional_instant(&row,"closed_at")?,
-            "execution_timeout_seconds": DB::number(&row,"execution_timeout_seconds")?,
-            "run_timeout_seconds": DB::number(&row,"run_timeout_seconds")?,
-            "execution_deadline_at": DB::instant(&row,"execution_deadline_at")?, "run_deadline_at": DB::instant(&row,"run_deadline_at")?}),
+            "execution_timeout_seconds": DB::optional_number(&row,"execution_timeout_seconds")?,
+            "run_timeout_seconds": DB::optional_number(&row,"run_timeout_seconds")?,
+            "execution_deadline_at": DB::optional_instant(&row,"execution_deadline_at")?, "run_deadline_at": DB::optional_instant(&row,"run_deadline_at")?}),
         )
     }
 
@@ -382,7 +361,9 @@ where
             .transpose()?
             .and_then(|value| value["sequence"].as_i64())
             .unwrap_or(0);
-        Ok(activities.max(timers).max(wait_sequence))
+        let children = Self::query("SELECT sequence FROM workflow_child_calls WHERE parent_workflow_run_id=$1 ORDER BY sequence DESC LIMIT 1")
+            .bind(run_id).fetch_optional(&mut **tx).await?.map(|row| DB::number(&row,"sequence")).transpose()?.unwrap_or(0);
+        Ok(activities.max(timers).max(wait_sequence).max(children))
     }
 
     pub(super) async fn open_wait(
@@ -783,6 +764,20 @@ where
                     claim["workflow_update_id"] = json!(update_id);
                 }
                 claim["sticky_replay_mode"] = json!("cold_replay");
+                for field in [
+                    "workflow_wait_kind",
+                    "child_call_id",
+                    "child_workflow_run_id",
+                    "resume_source_kind",
+                    "resume_source_id",
+                    "workflow_sequence",
+                    "workflow_event_type",
+                    "open_wait_id",
+                ] {
+                    if let Some(value) = task_payload.get(field) {
+                        claim[field] = value.clone();
+                    }
+                }
                 let page_size = body["history_page_size"].as_i64().unwrap_or(100);
                 let (events, next) =
                     Self::history_page_connection(&mut tx, &run_id, 0, page_size).await?;
@@ -860,6 +855,9 @@ where
                     text(command, "activity_type")?;
                     envelope(command, "arguments")?;
                 }
+                "start_child_workflow" if commands.len() == 1 => {
+                    super::children::validate_child(command)?;
+                }
                 "start_timer" => {
                     reject_fields(command, &["type", "delay_seconds"])?;
                     timer_deadline(command)?;
@@ -904,7 +902,7 @@ where
         }
         if Self::duplicate_receipt(&task, &body)? {
             return Ok(
-                json!({"task_id": task_id, "workflow_task_attempt": body["workflow_task_attempt"],
+                json!({"task_id": task_id, "run_id": DB::string(&task,"workflow_run_id")?, "workflow_task_attempt": body["workflow_task_attempt"],
                 "outcome": "completed", "recorded": false, "reason": "already_completed"}),
             );
         }
@@ -928,6 +926,9 @@ where
         for command in commands {
             if command["type"] == "complete_update" {
                 Self::apply_update(&mut tx, &run, &task, command, sequence + 1).await?;
+            } else if command["type"] == "start_child_workflow" {
+                sequence += 1;
+                Self::start_child(&mut tx, &run, task_id, command, sequence).await?;
             } else if command["type"] == "schedule_activity" {
                 sequence += 1;
                 let activity_id = id();
@@ -1040,13 +1041,17 @@ where
                     .bind(&run_id).fetch_one(&mut *tx).await?;
                 let timers: i64 = Self::scalar("SELECT COUNT(*) FROM workflow_run_timers WHERE workflow_run_id=$1 AND status='pending'")
                     .bind(&run_id).fetch_one(&mut *tx).await?;
+                let children = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status!='completed'")
+                    .bind(&run_id).fetch_one(&mut *tx).await?;
                 if outstanding != 0
                     || timers != 0
+                    || children != 0
                     || Self::open_wait(&mut tx, &run_id).await?.is_some()
                 {
                     return Err(refuse(StatusCode::CONFLICT, "pending_durable_operations"));
                 }
                 let output = envelope(command, "result")?;
+                let closed_at = now();
                 Self::append(
                     &mut tx,
                     &run_id,
@@ -1057,7 +1062,8 @@ where
                 )
                 .await?;
                 Self::query("UPDATE workflow_runs SET status='completed',closed_reason='completed',output=$1,closed_at=$2 WHERE id=$3")
-                    .bind(output).bind(DB::bind_time(now())).bind(&run_id).execute(&mut *tx).await?;
+                    .bind(&output).bind(DB::bind_time(closed_at)).bind(&run_id).execute(&mut *tx).await?;
+                Self::complete_child(&mut tx, &run, &output, closed_at).await?;
             }
         }
         Self::query("UPDATE workflow_tasks SET status='completed' WHERE id=$1")
@@ -1069,7 +1075,7 @@ where
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok(
-            json!({"task_id": task_id, "workflow_task_attempt": body["workflow_task_attempt"], "outcome": "completed", "recorded": true, "reason": null}),
+            json!({"task_id": task_id, "run_id": run_id, "workflow_task_attempt": body["workflow_task_attempt"], "outcome": "completed", "recorded": true, "reason": null}),
         )
     }
 
@@ -1275,8 +1281,10 @@ where
         if !matches!(DB::string(&run, "status")?.as_str(), "running" | "waiting") {
             return Err(refuse(StatusCode::CONFLICT, "run_closed"));
         }
-        if DB::instant(&run, "execution_deadline_at")? <= now()
-            || DB::instant(&run, "run_deadline_at")? <= now()
+        if DB::optional_instant(&run, "execution_deadline_at")?
+            .is_some_and(|deadline| deadline <= now())
+            || DB::optional_instant(&run, "run_deadline_at")?
+                .is_some_and(|deadline| deadline <= now())
         {
             return Err(refuse(StatusCode::CONFLICT, "run_timed_out"));
         }
@@ -1533,7 +1541,7 @@ pub(super) fn reject_fields(body: &Value, allowed: &[&str]) -> Result<()> {
 }
 
 pub(crate) fn capabilities() -> Value {
-    json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "open_condition_wait", "open_signal_wait", "complete_workflow"],
+    json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "start_child_workflow", "open_condition_wait", "open_signal_wait", "complete_workflow"],
         "workflow_memo_updates": false, "cooperative_cancellation": false, "prepared_local_activities": false,
         "worker_sessions": false, "sticky_execution": false, "local_activities": false, "message_streams": false,
         "workflow_updates": true, "query_tasks": true, "query_task_poll_request_idempotency": false})

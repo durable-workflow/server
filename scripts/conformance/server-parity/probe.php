@@ -7,6 +7,11 @@ use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\WorkflowContext;
 use DurableWorkflow\Worker\QueryContext;
+use DurableWorkflow\Transport\Psr18Transport;
+use GuzzleHttp\Client as GuzzleClient;
+use GuzzleHttp\HandlerStack;
+use Psr\Http\Message\RequestInterface;
+use Psr\Http\Message\ResponseInterface;
 use Illuminate\Contracts\Console\Kernel;
 use Illuminate\Support\Facades\Artisan;
 use ServerParity\EchoActivity;
@@ -16,6 +21,8 @@ use ServerParity\TimerWorkflow;
 use ServerParity\SignalsWorkflow;
 use ServerParity\QueriesWorkflow;
 use ServerParity\UpdatesWorkflow;
+use ServerParity\TwoChildrenWorkflow;
+use ServerParity\ChildActivityWorkflow;
 use Workflow\V2\CommandContext;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Models\WorkflowInstance;
@@ -78,6 +85,54 @@ function decodeHistory(array $events, callable $decode): array
     }, $events);
 }
 
+function httpHistory(Client $client, string $workflowId, string $runId): array
+{
+    $events = [];
+    $tokens = [];
+    $next = null;
+    do {
+        $page = $client->workflowHistory($workflowId, $runId, 2, $next);
+        array_push($events, ...$page['events']);
+        $next = $page['next_page_token'] ?? null;
+        if ($next !== null && $next !== '') {
+            if (isset($tokens[$next])) {
+                throw new RuntimeException('History pagination repeated a token.');
+            }
+            $tokens[$next] = true;
+        }
+    } while ($next !== null && $next !== '');
+
+    return $events;
+}
+
+function observedChildTransport(array &$polls, array &$completions): Psr18Transport
+{
+    // Observe real published transport I/O. No response or request is changed,
+    // and authentication headers are never retained.
+    $stack = HandlerStack::create();
+    $stack->push(static function (callable $handler) use (&$polls, &$completions): callable {
+        return static function (RequestInterface $request, array $options) use ($handler, &$polls, &$completions) {
+            return $handler($request, $options)->then(static function (ResponseInterface $response) use ($request, &$polls, &$completions): ResponseInterface {
+                $path = $request->getUri()->getPath();
+                if ($path === '/api/worker/workflow-tasks/poll') {
+                    $body = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+                    if (is_array($body['task'] ?? null)) {
+                        $polls[] = $body['task'];
+                    }
+                } elseif (preg_match('#^/api/worker/workflow-tasks/[^/]+/complete$#', $path)) {
+                    $completions[] = ['path' => $path,
+                        'request' => json_decode((string) $request->getBody(), true, flags: JSON_THROW_ON_ERROR),
+                        'response' => json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR)];
+                }
+
+                return $response;
+            });
+        };
+    });
+
+    return new Psr18Transport(client: new GuzzleClient(['http_errors' => false, 'handler' => $stack]));
+}
+
 // A query request waits for a worker response. Execute the unchanged published
 // client in an independent PHP process so this probe's worker keeps polling.
 if ($mode === 'query') {
@@ -94,7 +149,10 @@ if ($mode === 'query') {
 
 function httpObservation(array $fixture, string $workflowId, string $namespace, string $queue, string $url, string $fixturePath): array
 {
-    $client = new Client($url, namespace: $namespace, token: getenv('DW_PARITY_TOKEN') ?: null);
+    $workflowPolls = [];
+    $workflowCompletions = [];
+    $transport = isset($fixture['child_count']) ? observedChildTransport($workflowPolls, $workflowCompletions) : null;
+    $client = new Client($url, namespace: $namespace, transport: $transport, token: getenv('DW_PARITY_TOKEN') ?: null);
     $handle = null;
     $deliveries = [];
     $queries = [];
@@ -218,6 +276,17 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         }
     }))
         ->registerWorkflow('parity.v1.echo', static fn (WorkflowContext $context, array $value): array => $value)
+        ->registerWorkflow('parity.v1.two_children', static function (WorkflowContext $context, array $value): array {
+            $results = [];
+            foreach ($value['payloads'] as $payload) {
+                $results[] = $context->childWorkflow('parity.v1.child_activity', [$payload], ['queue' => 'server-parity-v1']);
+            }
+
+            return ['child_results' => $results];
+        })
+        ->registerWorkflow('parity.v1.child_activity', static function (WorkflowContext $context, array $value): array {
+            return ['echo' => $context->activity('parity.v1.echo_activity', [$value]), 'source' => 'child-workflow'];
+        })
         ->registerWorkflow('parity.v1.one_activity', static fn (WorkflowContext $context, array $value): array => $context->activity('parity.v1.echo_activity', [$value]))
         ->registerWorkflow('parity.v1.one_timer', static function (WorkflowContext $context, array $value): array {
             foreach ($value['delays'] as $delay) {
@@ -275,21 +344,33 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         }
     }
     $execution = $handle->describeSelectedRun();
-    $events = [];
-    $tokens = [];
-    $next = null;
-    do {
-        // A small page proves history pagination as well as event order.
-        $page = $client->workflowHistory($workflowId, $handle->selectedRunId, 2, $next);
-        array_push($events, ...$page['events']);
-        $next = $page['next_page_token'] ?? null;
-        if ($next !== null && $next !== '') {
-            if (isset($tokens[$next])) {
-                throw new RuntimeException('History pagination repeated a token.');
+    // Small pages prove pagination for parent and original child histories.
+    $events = httpHistory($client, $workflowId, $handle->selectedRunId);
+    foreach ($workflowCompletions as &$completion) {
+        $completion['decoded_commands'] = [];
+        foreach ($completion['request']['commands'] as $command) {
+            $decoded = [];
+            foreach (['arguments', 'result'] as $field) {
+                if (array_key_exists($field, $command)) {
+                    $decoded[$field] = $client->payloadCodec()->decodeEnvelope($command[$field]);
+                }
             }
-            $tokens[$next] = true;
+            $completion['decoded_commands'][] = ['decoded' => $decoded, 'typed_decoded' => array_map(typedValue(...), $decoded)];
         }
-    } while ($next !== null && $next !== '');
+    }
+    unset($completion);
+    $children = [];
+    foreach ($events as $event) {
+        if ($event['event_type'] !== 'ChildRunStarted') {
+            continue;
+        }
+        $child = $client->describeWorkflow($event['payload']['child_workflow_instance_id'], $event['payload']['child_workflow_run_id']);
+        $children[] = ['execution' => $child->raw, 'workflow_id' => $child->workflowId, 'run_id' => $child->runId,
+            'workflow_type' => $child->workflowType, 'namespace' => $child->namespace, 'task_queue' => $child->taskQueue,
+            'status' => $child->status, 'payload_codec' => $child->raw['payload_codec'] ?? null, 'input' => $child->input, 'typed_input' => typedValue($child->input),
+            'output' => $child->output, 'typed_output' => typedValue($child->output),
+            'events' => decodeHistory(httpHistory($client, $child->workflowId, $child->runId), $client->payloadCodec()->decodeEnvelope(...))];
+    }
 
     return [
         'execution' => $execution->raw,
@@ -306,6 +387,9 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'signal_deliveries' => $deliveries,
         'queries' => $queries,
         'updates' => $updates,
+        'children' => $children,
+        'workflow_polls' => $workflowPolls,
+        'workflow_completions' => $workflowCompletions,
     ];
 }
 
@@ -325,6 +409,8 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
             'parity.v1.signals' => SignalsWorkflow::class,
             'parity.v1.queries' => QueriesWorkflow::class,
             'parity.v1.updates' => UpdatesWorkflow::class,
+            'parity.v1.two_children' => TwoChildrenWorkflow::class,
+            'parity.v1.child_activity' => ChildActivityWorkflow::class,
         ],
         'workflows.v2.types.activities' => ['parity.v1.echo_activity' => EchoActivity::class],
     ]);
@@ -336,6 +422,9 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
     }
     $class = isset($fixture['update_values']) ? UpdatesWorkflow::class : (isset($fixture['queries']) ? QueriesWorkflow::class : (isset($fixture['signal_count']) ? SignalsWorkflow::class : (isset($fixture['timer_delays']) ? TimerWorkflow::class
         : ($fixture['activity'] ? OneActivityWorkflow::class : EchoWorkflow::class))));
+    if (isset($fixture['child_count'])) {
+        $class = TwoChildrenWorkflow::class;
+    }
     $stub = WorkflowStub::make($class, $workflowId);
     $arguments = [$fixture['input']];
     if (isset($fixture['signal_count'])) {
@@ -432,6 +521,22 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
         'timestamp' => $event->recorded_at->toISOString(),
         'payload' => $event->payload,
     ])->all();
+    $children = [];
+    foreach ($events as $event) {
+        if ($event['event_type'] !== 'ChildRunStarted') {
+            continue;
+        }
+        $child = WorkflowRun::query()->findOrFail($event['payload']['child_workflow_run_id']);
+        $childEvents = $child->historyEvents()->orderBy('sequence')->get()->map(static fn ($row): array => [
+            'sequence' => $row->sequence, 'event_type' => $row->event_type->value,
+            'timestamp' => $row->recorded_at->toISOString(), 'payload' => $row->payload,
+        ])->all();
+        $children[] = ['execution' => $child->toArray(), 'workflow_id' => $child->workflow_instance_id, 'run_id' => $child->id,
+            'workflow_type' => $child->workflow_type, 'namespace' => $child->namespace, 'task_queue' => $child->queue,
+            'status' => $child->status->value, 'payload_codec' => $child->payload_codec, 'input' => $child->workflowArguments(), 'typed_input' => typedValue($child->workflowArguments()),
+            'output' => $child->workflowOutput(), 'typed_output' => typedValue($child->workflowOutput()),
+            'events' => decodeHistory($childEvents, static fn ($value) => Serializer::unserializeWithCodec('avro', is_array($value) ? $value['blob'] : $value))];
+    }
 
     return [
         'execution' => $run->toArray(),
@@ -449,6 +554,7 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
         'signal_deliveries' => $deliveries,
         'queries' => $queries,
         'updates' => $updates,
+        'children' => $children,
     ];
 }
 

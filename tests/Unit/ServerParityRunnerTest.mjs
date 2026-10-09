@@ -60,6 +60,125 @@ for (const [name, corrupt] of [
 }
 
 const signalFixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/repeated-signal.json', import.meta.url)));
+const childFixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/two-child-workflows.json', import.meta.url)));
+function childObservation(mode = 'http') {
+  const raw = observation();
+  raw.mode = mode;
+  raw.workflow_type = childFixture.workflow_type;
+  raw.input = [childFixture.input];
+  raw.typed_input = {type: 'list', value: [childFixture.typed_value]};
+  raw.output = childFixture.output;
+  raw.typed_output = childFixture.typed_output;
+  raw.execution.output_envelope = {codec: 'avro', blob: 'parent-result-frame'};
+  raw.events = raw.events.slice(0, 2);
+  for (const event of raw.events) event.payload.workflow_type = raw.workflow_type;
+  raw.children = childFixture.input.payloads.map((input, index) => {
+    const child = observation(`-child-${index}`);
+    child.workflow_id = `child-instance-${index}`;
+    child.workflow_type = childFixture.child_workflow_type;
+    child.input = [input];
+    child.typed_input = {type: 'list', value: [childFixture.typed_value.value.payloads.value[index]]};
+    child.output = childFixture.output.child_results[index];
+    child.typed_output = childFixture.typed_output.value.child_results.value[index];
+    child.execution.input_envelope = {codec: 'avro', blob: `child-arguments-frame-${index}`};
+    child.execution.output_envelope = {codec: 'avro', blob: `child-result-frame-${index}`};
+    child.execution.closed_at = '2026-01-01T00:00:01.123456Z';
+    for (const event of child.events.slice(0, 2)) {
+      Object.assign(event.payload, {workflow_instance_id: child.workflow_id, workflow_run_id: child.run_id, workflow_type: child.workflow_type});
+    }
+    const link = {sequence: index + 1, child_call_id: `child-call-${index}`, workflow_link_id: `child-call-${index}`,
+      child_workflow_instance_id: child.workflow_id, child_workflow_run_id: child.run_id,
+      child_workflow_type: child.workflow_type, parent_close_policy: 'abandon', cancellation_policy: 'abandon'};
+    Object.assign(child.events[1].payload, {parent_workflow_instance_id: raw.workflow_id, parent_workflow_run_id: raw.run_id,
+      parent_sequence: index + 1, child_call_id: link.child_call_id, workflow_link_id: link.workflow_link_id});
+    for (const event of child.events.slice(2, 4)) {
+      event.payload.activity = {arguments: child.execution.input_envelope};
+      event.decoded.activity_arguments = [input];
+      event.typed_decoded.activity_arguments = child.typed_input;
+    }
+    child.events[4].decoded.result = input;
+    child.events[4].typed_decoded.result = child.typed_input.value[0];
+    child.events[5].decoded.output = child.output;
+    child.events[5].typed_decoded.output = child.typed_output;
+    if (mode === 'http') child.events.shift();
+    child.events = child.events.map((event, position) => ({...event, sequence: position + 1, timestamp: '2026-01-01T00:00:01Z'}));
+    raw.events.push(
+      {event_type: 'ChildWorkflowScheduled', payload: {...link}, decoded: {}, typed_decoded: {}},
+      {event_type: 'ChildRunStarted', payload: {...link, child_run_number: 1}, decoded: {}, typed_decoded: {}},
+      {event_type: 'ChildRunCompleted', payload: {...link, child_run_number: 1, child_status: 'completed', closed_at: child.execution.closed_at},
+        decoded: {output: child.output, result: child.output}, typed_decoded: {output: child.typed_output, result: child.typed_output}},
+    );
+    return child;
+  });
+  raw.events.push({event_type: 'WorkflowCompleted', payload: {}, decoded: {output: raw.output}, typed_decoded: {output: raw.typed_output}});
+  raw.events = raw.events.map((event, index) => ({...event, sequence: index + 1, timestamp: '2026-01-01T00:00:01Z'}));
+  raw.workflow_polls = [];
+  raw.workflow_completions = [];
+  for (const owner of [raw, ...raw.children]) {
+    const parent = owner === raw;
+    for (let turn = 0; turn < (parent ? 3 : 2); turn++) {
+      const complete = turn === (parent ? 2 : 1);
+      const index = parent ? turn : raw.children.indexOf(owner);
+      const task = {task_id: `task-${owner.workflow_id}-${turn}`, lease_owner: 'published-worker', workflow_task_attempt: 1,
+        workflow_id: owner.workflow_id, run_id: owner.run_id, workflow_type: owner.workflow_type,
+        history_events: structuredClone(owner.events.slice(0, parent ? 2 + turn * 3 : 1 + turn * 3))};
+      if (parent && turn > 0) {
+        const child = raw.children[turn - 1];
+        Object.assign(task, {child_call_id: `child-call-${turn - 1}`, child_workflow_run_id: child.run_id,
+          resume_source_kind: 'child_workflow_run', resume_source_id: child.run_id, workflow_event_type: 'ChildRunCompleted',
+          workflow_sequence: turn, open_wait_id: `child:child-call-${turn - 1}`});
+      }
+      const command = {type: complete ? 'complete_workflow' : parent ? 'start_child_workflow' : 'schedule_activity',
+        ...(parent ? {workflow_type: childFixture.child_workflow_type} : {activity_type: 'parity.v1.echo_activity'}),
+        ...(complete ? {result: owner.execution.output_envelope} : {arguments: raw.children[index].execution.input_envelope})};
+      const decoded = complete ? {result: owner.output} : {arguments: [childFixture.input.payloads[index]]};
+      const typed = complete ? {result: owner.typed_output} : {arguments: {type: 'list', value: [childFixture.typed_value.value.payloads.value[index]]}};
+      raw.workflow_polls.push(task);
+      raw.workflow_completions.push({path: `/api/worker/workflow-tasks/${task.task_id}/complete`,
+        request: {lease_owner: task.lease_owner, workflow_task_attempt: 1, commands: [command]},
+        response: {task_id: task.task_id, run_id: owner.run_id, recorded: true},
+        decoded_commands: [{decoded, typed_decoded: typed}]});
+    }
+  }
+  return structuredClone(raw);
+}
+
+test('sequential child/activity results agree across explicit HTTP and embedded child histories', () => {
+  assert.deepStrictEqual(checkObservation(childFixture, childObservation(), 'test-one-activity'),
+    checkObservation(childFixture, childObservation('embedded'), 'test-one-activity'));
+});
+
+for (const [name, corrupt] of [
+  ['missing real child', raw => {raw.children.pop();}],
+  ['child remains pending', raw => {raw.children[0].status = 'pending';}],
+  ['changed resolved child run', raw => {raw.events[4].payload.child_workflow_run_id = 'another-run';}],
+  ['changed original child link', raw => {raw.events[3].payload.workflow_link_id = 'another-link';}],
+  ['reused child identity', raw => {raw.children[1].workflow_id = raw.children[0].workflow_id;}],
+  ['changed child parent run', raw => {raw.children[0].events[0].payload.parent_workflow_run_id = 'another-parent';}],
+  ['changed original child argument type', raw => {raw.children[0].typed_input.value[0].value.number = {type: 'double', value: 42};}],
+  ['stale previous child result', raw => {raw.events[7].decoded.result = raw.children[0].output;}],
+  ['changed original child policy', raw => {raw.events[2].payload.parent_close_policy = 'terminate';}],
+  ['child closure timestamp differs from committed run', raw => {raw.events[4].payload.closed_at = '2026-01-01T00:00:03Z';}],
+  ['duplicate child terminal effect', raw => {raw.children[0].events.push(structuredClone(raw.children[0].events.at(-1)));}],
+  ['missing nested activity completion', raw => {raw.children[0].events.splice(3, 1);}],
+  ['nested activity stale attempt', raw => {raw.children[0].events[3].payload.activity_attempt_id = 'stale-attempt';}],
+  ['child wrong queue', raw => {raw.children[0].task_queue = 'another-queue';}],
+  ['parent resumes different child', raw => {raw.workflow_polls[1].child_workflow_run_id = raw.children[1].run_id;}],
+  ['completion uses different owner', raw => {raw.workflow_completions[0].request.lease_owner = 'old-worker';}],
+  ['completion uses different attempt', raw => {raw.workflow_completions[0].request.workflow_task_attempt = 2;}],
+  ['worker receives stale parent history', raw => {raw.workflow_polls[1].history_events.pop();}],
+  ['SDK changes scheduled child arguments', raw => {raw.workflow_completions[0].decoded_commands[0].decoded.arguments = ['changed'];}],
+  ['SDK changes committed child result types', raw => {raw.workflow_completions[4].decoded_commands[0].typed_decoded.result = {type: 'null', value: null};}],
+  ['SDK argument frame differs from original child input', raw => {raw.workflow_completions[0].request.commands[0].arguments = {codec: 'avro', blob: 'different-arguments-frame'};}],
+  ['SDK result frame differs from durable child output', raw => {raw.workflow_completions[4].request.commands[0].result = {codec: 'avro', blob: 'different-result-frame'};}],
+]) {
+  test(`refuses ${name}`, () => {
+    const raw = childObservation();
+    corrupt(raw);
+    assert.throws(() => checkObservation(childFixture, raw, 'test-one-activity'));
+  });
+}
+
 function signalObservation(mode = 'http') {
   const raw = observation();
   raw.mode = mode;

@@ -48,6 +48,16 @@ function restartSignalWorkflow(WorkflowContext $context, array $input): array
     return $context->signals('payload')[0][0];
 }
 
+function restartParentWorkflow(WorkflowContext $context, array $input): mixed
+{
+    return $context->childWorkflow('restart.child', [$input]);
+}
+
+function restartChildWorkflow(WorkflowContext $context, array $input): mixed
+{
+    return $context->activity('restart.child.activity', [$input]);
+}
+
 assertRestart($argc === 4, 'Usage: restart.php prepare|finish URL RECEIPT');
 [$script, $phase, $url, $receiptPath] = $argv;
 $client = new Client($url, namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null);
@@ -87,13 +97,35 @@ if ($phase === 'prepare') {
     $signalCommand = $client->signalWorkflow($signalHandle->workflowId, 'payload', [$value], $signalHandle->selectedRunId);
     $signalHistory = $client->workflowHistory($signalHandle->workflowId, $signalHandle->selectedRunId)['events'];
     assertRestart(array_column($signalHistory, 'event_type') === ['StartAccepted', 'WorkflowStarted', 'ConditionWaitOpened', 'SignalReceived'], 'Signal was not durably pending at the kill checkpoint.');
+    // Type routing keeps this dedicated worker from claiming the pending signal
+    // resume. The SDK replayer authors the actual parent child-start command.
+    $client->registerWorker('restart-child-old', 'restart-v1', ['restart.parent', 'restart.child'], []);
+    $parentHandle = $client->startWorkflow('restart.parent', 'rust-restart-parent', 'restart-v1', [$value]);
+    $parentTask = $client->pollWorkflowTask('restart-child-old', 'restart-v1', 0);
+    assertRestart(is_array($parentTask) && $parentTask['run_id'] === $parentHandle->selectedRunId, 'Prepare did not obtain the original parent workflow.');
+    $parentReplay = (new Replayer($client->payloadCodec()))->replay(restartParentWorkflow(...),
+        $parentTask['history_events'], $client->payloadCodec()->decodeEnvelope($parentTask['arguments']), 'restart-v1', $parentTask);
+    assertRestart(count($parentReplay->commands) === 1 && $parentReplay->commands[0]['type'] === 'start_child_workflow', 'SDK did not author the original child start.');
+    $parentCompletion = $client->completeWorkflowTask($parentTask['task_id'], $parentTask['lease_owner'], $parentTask['workflow_task_attempt'], $parentReplay->commands);
+    assertRestart($parentCompletion['recorded'] === true && $parentCompletion['run_id'] === $parentHandle->selectedRunId, 'Original child creation was not acknowledged durably.');
+    $childTask = $client->pollWorkflowTask('restart-child-old', 'restart-v1', 0);
+    assertRestart(is_array($childTask) && $childTask['workflow_type'] === 'restart.child' && $childTask['workflow_task_attempt'] === 1, 'Prepare did not lease the original child workflow.');
+    $parentHistory = $client->workflowHistory($parentHandle->workflowId, $parentHandle->selectedRunId)['events'];
+    assertRestart(array_column($parentHistory, 'event_type') === ['StartAccepted', 'WorkflowStarted', 'ChildWorkflowScheduled', 'ChildRunStarted'], 'Parent was not waiting on its original child at the kill checkpoint.');
+    assertRestart($parentHistory[2]['payload']['child_workflow_run_id'] === $childTask['run_id']
+        && count($childTask['history_events']) === 1 && $childTask['history_events'][0]['event_type'] === 'WorkflowStarted', 'Child lease is not bound to the acknowledged original parent call.');
     $receipt = ['workflow_id' => $handle->workflowId, 'run_id' => $handle->selectedRunId, 'activity' => $activity,
         'timer' => ['workflow_id' => $timerHandle->workflowId, 'run_id' => $timerHandle->selectedRunId, 'scheduled' => $timerHistory[2]['payload']],
         'signal' => ['workflow_id' => $signalHandle->workflowId, 'run_id' => $signalHandle->selectedRunId,
-            'opened' => $signalHistory[2]['payload'], 'received' => $signalHistory[3]['payload'], 'response' => $signalCommand]];
+            'opened' => $signalHistory[2]['payload'], 'received' => $signalHistory[3]['payload'], 'response' => $signalCommand],
+        'child' => ['workflow_id' => $parentHandle->workflowId, 'run_id' => $parentHandle->selectedRunId,
+            'parent_task' => $parentTask, 'parent_commands' => $parentReplay->commands, 'parent_completion' => $parentCompletion,
+            'scheduled' => $parentHistory[2]['payload'], 'started' => $parentHistory[3]['payload'], 'task' => $childTask]];
     file_put_contents($receiptPath, json_encode($receipt, JSON_THROW_ON_ERROR).PHP_EOL);
     echo json_encode(['phase' => $phase, 'outcome' => 'prepared', 'run_id' => $handle->selectedRunId,
-        'lease_expires_at' => $activity['lease_expires_at'], 'pending_timer' => $receipt['timer']], JSON_THROW_ON_ERROR).PHP_EOL;
+        'lease_expires_at' => $activity['lease_expires_at'], 'pending_timer' => $receipt['timer'],
+        'pending_child' => ['parent_run_id' => $parentHandle->selectedRunId, 'child_run_id' => $childTask['run_id'],
+            'task_id' => $childTask['task_id'], 'lease_expires_at' => $childTask['lease_expires_at']]], JSON_THROW_ON_ERROR).PHP_EOL;
     exit(0);
 }
 
@@ -102,7 +134,7 @@ $receipt = json_decode(file_get_contents($receiptPath), true, flags: JSON_THROW_
 $old = $receipt['activity'];
 // Let the real persisted lease expire. Do not edit clocks/rows or revoke the
 // old worker to imitate process-loss recovery.
-$waitUntil = strtotime($old['lease_expires_at']) + 1;
+$waitUntil = max(strtotime($old['lease_expires_at']), strtotime($receipt['child']['task']['lease_expires_at'])) + 1;
 assertRestart($waitUntil - time() < 40, 'Unexpected unbounded lease wait.');
 while (time() < $waitUntil) {
     usleep(100_000);
@@ -114,6 +146,33 @@ try {
     $refused = $exception->status === 409;
 }
 assertRestart($refused, 'Expired pre-kill activity claim was accepted.');
+$child = $receipt['child'];
+$oldChild = $child['task'];
+$staleChildCommands = [['type' => 'complete_workflow', 'result' => $client->payloadCodec()->envelope($value)]];
+$refuseOldChild = function () use ($client, $oldChild, $staleChildCommands): void {
+    $refused = false;
+    try {
+        $client->completeWorkflowTask($oldChild['task_id'], $oldChild['lease_owner'], $oldChild['workflow_task_attempt'], $staleChildCommands);
+    } catch (ServerException $exception) {
+        $refused = $exception->status === 409;
+    }
+    assertRestart($refused, 'Expired pre-kill child workflow claim was accepted.');
+};
+$refuseOldChild();
+$client->registerWorker('restart-child-new', 'restart-v1', ['restart.child'], []);
+$recoveredChild = $client->pollWorkflowTask('restart-child-new', 'restart-v1', 0);
+assertRestart(is_array($recoveredChild) && $recoveredChild['task_id'] === $oldChild['task_id']
+    && $recoveredChild['run_id'] === $oldChild['run_id'] && $recoveredChild['workflow_task_attempt'] === 2
+    && $recoveredChild['lease_owner'] !== $oldChild['lease_owner'], 'Replacement did not recover the original child lease as attempt two.');
+assertRestart(sameRestartValue($oldChild['history_events'], $recoveredChild['history_events'])
+    && sameRestartValue($oldChild['arguments'], $recoveredChild['arguments']), 'Original child input/history changed across process loss.');
+$refuseOldChild();
+$childReplay = (new Replayer($client->payloadCodec()))->replay(restartChildWorkflow(...),
+    $recoveredChild['history_events'], $client->payloadCodec()->decodeEnvelope($recoveredChild['arguments']), 'restart-v1', $recoveredChild);
+assertRestart(count($childReplay->commands) === 1 && $childReplay->commands[0]['type'] === 'schedule_activity', 'Recovered SDK child did not author its real nested activity.');
+$childCompletion = $client->completeWorkflowTask($recoveredChild['task_id'], $recoveredChild['lease_owner'], $recoveredChild['workflow_task_attempt'], $childReplay->commands);
+$childDuplicate = $client->completeWorkflowTask($recoveredChild['task_id'], $recoveredChild['lease_owner'], $recoveredChild['workflow_task_attempt'], $childReplay->commands);
+assertRestart($childCompletion['recorded'] === true && $childDuplicate['recorded'] === false, 'Recovered child turn did not retain its immutable receipt.');
 $worker = null;
 $deadline = microtime(true) + 25;
 $clock = function () use ($client, $receipt, $deadline, &$worker): float {
@@ -123,7 +182,9 @@ $clock = function () use ($client, $receipt, $deadline, &$worker): float {
     }
     if ($client->describeWorkflow($receipt['workflow_id'], $receipt['run_id'])->status === 'completed'
         && $client->describeWorkflow($receipt['timer']['workflow_id'], $receipt['timer']['run_id'])->status === 'completed'
-        && $client->describeWorkflow($receipt['signal']['workflow_id'], $receipt['signal']['run_id'])->status === 'completed') {
+        && $client->describeWorkflow($receipt['signal']['workflow_id'], $receipt['signal']['run_id'])->status === 'completed'
+        && $client->describeWorkflow($receipt['child']['workflow_id'], $receipt['child']['run_id'])->status === 'completed'
+        && $client->describeWorkflow($receipt['child']['task']['workflow_id'], $receipt['child']['task']['run_id'])->status === 'completed') {
         $worker?->requestShutdown();
     }
 
@@ -139,8 +200,15 @@ $worker->registerWorkflow('restart.timer', function (WorkflowContext $context, a
 });
 $worker->registerWorkflow('restart.signals', restartSignalWorkflow(...))
     ->declareSignal('restart.signals', 'payload', static fn (array $value) => null);
+$worker->registerWorkflow('restart.parent', restartParentWorkflow(...));
+$worker->registerWorkflow('restart.child', restartChildWorkflow(...));
 $worker->registerActivity('restart.activity', function (ActivityContext $context, array $input): array {
     assertRestart($context->attemptNumber === 2, 'Recovered worker did not execute attempt two.');
+
+    return $input;
+});
+$worker->registerActivity('restart.child.activity', function (ActivityContext $context, array $input): array {
+    assertRestart($context->attemptNumber === 1, 'Child nested activity was duplicated by recovery.');
 
     return $input;
 });
@@ -188,7 +256,36 @@ assertRestart($signalHistory[4]['payload']['previous_position'] === 0 && $signal
 assertRestart($signalHistory[6]['payload']['workflow_signal_id'] === $signal['received']['signal_id'], 'Recovered condition references a different signal.');
 assertRestart(sameRestartValue([$value], $client->payloadCodec()->decodeEnvelope($signalHistory[3]['payload']['arguments']))
     && sameRestartValue($value, $client->payloadCodec()->decodeEnvelope($signalHistory[5]['payload']['value'])), 'Accepted/applied signal payload changed across process loss.');
+$parentExecution = $client->describeWorkflow($child['workflow_id'], $child['run_id']);
+$childExecution = $client->describeWorkflow($oldChild['workflow_id'], $oldChild['run_id']);
+assertRestart($parentExecution->status === 'completed' && sameRestartValue($value, $parentExecution->output)
+    && $childExecution->status === 'completed' && sameRestartValue($value, $childExecution->output), 'Recovered parent/child durable results differ.');
+$parentHistory = $client->workflowHistory($child['workflow_id'], $child['run_id'])['events'];
+$childHistory = $client->workflowHistory($oldChild['workflow_id'], $oldChild['run_id'])['events'];
+assertRestart(array_column($parentHistory, 'event_type') === ['StartAccepted', 'WorkflowStarted', 'ChildWorkflowScheduled', 'ChildRunStarted', 'ChildRunCompleted', 'WorkflowCompleted'], 'Recovered parent history differs or resolved twice.');
+assertRestart(array_column($childHistory, 'event_type') === ['WorkflowStarted', 'ActivityScheduled', 'ActivityStarted', 'ActivityCompleted', 'WorkflowCompleted'], 'Recovered child history differs or scheduled its activity twice.');
+assertRestart(array_column($parentHistory, 'sequence') === range(1, 6)
+    && array_column($childHistory, 'sequence') === range(1, 5), 'Recovered child-family history is not contiguous.');
+foreach ([2, 3, 4] as $index) {
+    foreach (['sequence', 'workflow_link_id', 'child_call_id', 'child_workflow_instance_id', 'child_workflow_run_id', 'child_workflow_type'] as $key) {
+        assertRestart($parentHistory[$index]['payload'][$key] === $child['scheduled'][$key], 'An acknowledged original child identity changed after the kill.');
+    }
+}
+assertRestart($childHistory[0]['payload']['parent_workflow_instance_id'] === $child['workflow_id']
+    && $childHistory[0]['payload']['parent_workflow_run_id'] === $child['run_id']
+    && $childHistory[0]['payload']['workflow_link_id'] === $child['scheduled']['workflow_link_id'], 'Recovered child refers to another parent/call.');
+assertRestart(sameRestartValue($value, $client->payloadCodec()->decodeEnvelope($parentHistory[4]['payload']['output']))
+    && $parentHistory[4]['payload']['result'] === $parentHistory[4]['payload']['output'], 'Parent did not receive the exact committed child result.');
+$parentDuplicate = $client->completeWorkflowTask($child['parent_task']['task_id'], $child['parent_task']['lease_owner'],
+    $child['parent_task']['workflow_task_attempt'], $child['parent_commands']);
+assertRestart($parentDuplicate['recorded'] === false
+    && sameRestartValue($parentHistory, $client->workflowHistory($child['workflow_id'], $child['run_id'])['events']), 'Retrying acknowledged child creation changed the completed parent history.');
 $client->deregisterWorkerRegistration('restart-old');
+$client->deregisterWorkerRegistration('restart-child-old');
+$client->deregisterWorkerRegistration('restart-child-new');
 echo json_encode(['phase' => $phase, 'outcome' => 'pass', 'run_id' => $execution->runId,
     'stale_claim_refused' => true, 'history' => $history, 'timer_recovered' => true, 'timer_history' => $timerHistory,
-    'signal_recovered' => true, 'signal_history' => $signalHistory], JSON_THROW_ON_ERROR).PHP_EOL;
+    'signal_recovered' => true, 'signal_history' => $signalHistory, 'child_recovered' => true,
+    'stale_child_claim_refused' => true, 'child_claim' => $recoveredChild, 'child_completion' => $childCompletion,
+    'child_duplicate' => $childDuplicate, 'parent_duplicate' => $parentDuplicate,
+    'parent_history' => $parentHistory, 'child_history' => $childHistory], JSON_THROW_ON_ERROR).PHP_EOL;
