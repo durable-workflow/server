@@ -14,6 +14,9 @@ export function checkObservation(fixture, observation, workflowId) {
   equal(observation.payload_codec, 'avro', 'payload codec');
   equal(observation.input, [fixture.input], 'decoded workflow input');
   equal(observation.output, fixture.input, 'decoded workflow result');
+  const typedArguments = {type: 'list', value: [fixture.typed_value]};
+  equal(observation.typed_input, typedArguments, 'decoded workflow input types and exact int64 values');
+  equal(observation.typed_output, fixture.typed_value, 'decoded workflow result types and exact int64 values');
   const events = observation.events;
   equal(events.map(event => event.event_type), fixture.expected_events, 'complete ordered event inventory');
   equal(events.map(event => event.sequence), events.map((_, index) => index + 1), 'durable history sequence');
@@ -44,6 +47,7 @@ export function checkObservation(fixture, observation, workflowId) {
     previousTime = time;
   }
   equal(events.at(-1).decoded.output, fixture.input, 'committed workflow result');
+  equal(events.at(-1).typed_decoded.output, fixture.typed_value, 'committed workflow result types');
   const projectedEvents = events.map(({sequence, event_type}) => ({sequence, event_type}));
   if (fixture.activity) {
     const [scheduled, running, completed] = events.slice(2, 5);
@@ -62,18 +66,21 @@ export function checkObservation(fixture, observation, workflowId) {
     }
     equal(scheduled.decoded.activity_arguments, [fixture.input], 'scheduled activity arguments');
     equal(running.decoded.activity_arguments, [fixture.input], 'started activity arguments');
+    equal(scheduled.typed_decoded.activity_arguments, typedArguments, 'scheduled activity argument types');
+    equal(running.typed_decoded.activity_arguments, typedArguments, 'started activity argument types');
     for (const [index, event] of [running, completed].entries()) {
       equal(event.payload.activity_attempt_id, attempt, 'same committed attempt');
       equal(event.payload.attempt_number, 1, 'one attempt');
       Object.assign(projectedEvents[index + 3], {activity_attempt_id: '@attempt:1', attempt_number: 1});
     }
     equal(completed.decoded.result, fixture.input, 'committed activity result');
+    equal(completed.typed_decoded.result, fixture.typed_value, 'committed activity result types');
   }
   return {
     fixture_id: fixture.id, workflow_id: workflowId, run_id: '@run:1', start_command_id: '@command:1',
     workflow_type: observation.workflow_type, namespace: observation.namespace,
     task_queue: observation.task_queue, status: observation.status, payload_codec: observation.payload_codec,
-    input: observation.input, output: observation.output, execution_timeout_seconds: 3600,
+    input: observation.typed_input, output: observation.typed_output, execution_timeout_seconds: 3600,
     run_timeout_seconds: 600, events: projectedEvents,
   };
 }

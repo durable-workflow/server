@@ -2,7 +2,7 @@
 
 This is the first, deliberately bounded slice of
 [Server #325](https://github.com/durable-workflow/server/issues/325).
-It executes an Avro echo workflow and a one-activity workflow against any
+It executes Avro echo (including an exact large int64) and a one-activity workflow against any
 isolated Server URL using the **published** PHP SDK. The embedded adapter runs
 the same logical cases through a Laravel application, real database queue jobs,
 and the installed Workflow package. Rust will use the HTTP adapter unchanged.
@@ -44,7 +44,8 @@ namespace assignment and maps the fixture's registered type keys to local PHP
 classes. Its database queue runs the real jobs with a 30-second budget; the HTTP
 worker registers, polls and completes with the normal SDK loop.
 
-Each recording retains raw execution/history and decoded values, fixture hashes,
+Each recording retains raw execution/history and decoded values with explicit
+type trees (int64 values use decimal strings to avoid JSON numeric rounding), fixture hashes,
 runner commit, tuple, timestamps and per-case outcomes. No tokens or request
 headers are recorded. `pass` requires persisted completion and the complete
 expected event inventory. A valid observation that disagrees with the fixture
@@ -58,6 +59,10 @@ and activity/attempt relationships. Generated IDs are aliased only after those
 relationships pass. Absolute timestamps remain raw, are checked for order, and
 deadline offsets are checked against persisted start time with the published
 history's second-resolution tolerance. They are not compared across runs.
+
+The current type recorder covers null, boolean, int64, double, string, list and
+map values. Other decoded PHP objects fail explicitly; binary/logical-type and
+empty-map distinctions still need their own fixtures and adapters.
 
 This projection **does not yet compare** actor/authentication metadata, PHP
 class names and source fingerprints, task snapshot transport metadata, retries,

@@ -20,7 +20,7 @@ No Rust runtime, migration, performance improvement or cutover is qualified yet.
 5. Publish exact artifacts through the existing release process and verify
    downstream consumers. Cloud adoption belongs to its separate owner.
 
-The first slice covers only Avro echo and one external activity, completed by
+The first slice covers only Avro echo (including an exact large int64) and one external activity, completed by
 the published PHP SDK and the embedded engine. Its fixtures require exact event
 order, stable public workflow identity, retained run/operation relationships,
 decoded input/result values and one committed completion. Passing these cases
@@ -79,7 +79,9 @@ Workflow package, with an independent SQLite database for each. Hosted
 retains both raw records and the comparison for 90 days. It executes both
 workflows to completion, including the activity, with the published PHP SDK.
 [PR #326](https://github.com/durable-workflow/server/pull/326) owns source checks
-and review. This is two-case correctness evidence, not performance qualification
+and review. The linked initial run covers the two original cases; the PR's current
+fixture Action additionally checks the large int64 and explicit decoded type trees.
+This is bounded correctness evidence, not performance qualification
 or a three-database/three-runtime pass.
 
 Next: measure the PHP capacity and idle mixed long-poll baseline before adding

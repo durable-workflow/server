@@ -1,0 +1,10 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "large-integer",
+  "workflow_type": "parity.v1.echo",
+  "input": {"count": 9007199254740993},
+  "typed_value": {"type": "map", "value": {"count": {"type": "int64", "value": "9007199254740993"}}},
+  "activity": false,
+  "expected_events": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"],
+  "contract": "The portable Avro Value int64 contract preserves the exact signed integer through input, worker completion, stored result and typed history, including values beyond JSON consumers' exact-number range."
+}

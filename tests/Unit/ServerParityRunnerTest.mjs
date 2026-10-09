@@ -19,8 +19,8 @@ function observation(suffix = '') {
     {payload: {...activityFields, activity_attempt_id: attempt, attempt_number: 1}, decoded: {activity_arguments: [fixture.input]}},
     {payload: {...activityFields, activity_attempt_id: attempt, attempt_number: 1}, decoded: {result: fixture.input}},
     {payload: {}, decoded: {output: fixture.input}},
-  ].map((event, index) => ({...event, event_type: fixture.expected_events[index], sequence: index + 1, timestamp: `2026-01-01T00:00:0${index}Z`}));
-  return structuredClone({sdk_php: '2.2.6', workflow_id: 'test-one-activity', run_id: run, workflow_type: fixture.workflow_type, namespace: 'default', task_queue: 'server-parity-v1', status: 'completed', payload_codec: 'avro', input: [fixture.input], output: fixture.input, execution: {started_at: '2026-01-01T00:00:00Z'}, events});
+  ].map((event, index) => ({...event, typed_decoded: Object.fromEntries(Object.keys(event.decoded).map(key => [key, key === 'activity_arguments' ? {type: 'list', value: [fixture.typed_value]} : fixture.typed_value])), event_type: fixture.expected_events[index], sequence: index + 1, timestamp: `2026-01-01T00:00:0${index}Z`}));
+  return structuredClone({sdk_php: '2.2.6', workflow_id: 'test-one-activity', run_id: run, workflow_type: fixture.workflow_type, namespace: 'default', task_queue: 'server-parity-v1', status: 'completed', payload_codec: 'avro', input: [fixture.input], output: fixture.input, typed_input: {type: 'list', value: [fixture.typed_value]}, typed_output: fixture.typed_value, execution: {started_at: '2026-01-01T00:00:00Z'}, events});
 }
 function record(suffix = '') {
   const raw = observation(suffix);
@@ -47,6 +47,8 @@ for (const [name, corrupt] of [
   ['wrong activity arguments', raw => {raw.events[2].decoded.activity_arguments = ['wrong'];}],
   ['wrong activity result', raw => {raw.events[4].decoded.result = 'wrong';}],
   ['wrong typed workflow result', raw => {raw.output.count = '42';}],
+  ['integral double substituted for int64', raw => {raw.typed_output.value.count = {type: 'double', value: 42};}],
+  ['wrong committed history value type', raw => {raw.events[4].typed_decoded.result.value.count = {type: 'double', value: 42};}],
   ['extended run deadline', raw => {raw.events[1].payload.run_deadline_at = '2026-01-01T00:20:00Z';}],
 ]) {
   test(`refuses ${name}`, () => {
@@ -60,6 +62,20 @@ test('a saved pass and copied projection cannot hide corrupted raw history', () 
   const changed = record('-other');
   changed.cases[0].observation.events[4].payload.activity_attempt_id = 'stale';
   assert.throws(() => compareRecords([record(), changed]));
+});
+
+test('a one-unit int64 error beyond JSON precision remains observable', () => {
+  const large = structuredClone(fixture);
+  large.input.count = Number('9007199254740993');
+  large.typed_value.value.count.value = '9007199254740993';
+  const raw = observation();
+  raw.input = [large.input];
+  raw.output = large.input;
+  raw.typed_input = {type: 'list', value: [large.typed_value]};
+  raw.typed_output = structuredClone(large.typed_value);
+  raw.typed_output.value.count.value = '9007199254740992';
+  assert.equal(Number('9007199254740993'), Number('9007199254740992'));
+  assert.throws(() => checkObservation(large, raw, 'test-one-activity'), /decoded workflow result types and exact int64 values/);
 });
 
 test('refuses partial inventories, blocked records and changed fixtures or consumers', () => {

@@ -34,6 +34,24 @@ if (! is_file($sdkAutoload)) {
 }
 require $sdkAutoload;
 
+// Describe already decoded values; the official Avro codec owns wire parsing.
+// Decimal strings retain the complete int64 value across the JSON recorder.
+function typedValue(mixed $value): array
+{
+    if (is_array($value)) {
+        return ['type' => array_is_list($value) ? 'list' : 'map', 'value' => array_map(typedValue(...), $value)];
+    }
+
+    return match (get_debug_type($value)) {
+        'int' => ['type' => 'int64', 'value' => (string) $value],
+        'float' => ['type' => 'double', 'value' => $value],
+        'bool' => ['type' => 'boolean', 'value' => $value],
+        'string' => ['type' => 'string', 'value' => $value],
+        'null' => ['type' => 'null', 'value' => null],
+        default => throw new RuntimeException('No parity type recorder for '.get_debug_type($value)),
+    };
+}
+
 function decodeHistory(array $events, callable $decode): array
 {
     return array_map(static function (array $event) use ($decode): array {
@@ -48,6 +66,7 @@ function decodeHistory(array $events, callable $decode): array
             $decoded['activity_arguments'] = $decode($payload['activity']['arguments']);
         }
         $event['decoded'] = $decoded;
+        $event['typed_decoded'] = array_map(typedValue(...), $decoded);
 
         return $event;
     }, $events);
@@ -170,6 +189,8 @@ try {
         'embedded' => embeddedObservation($fixture, $workflowId, $namespace, $queue, $options['application-root']),
         default => throw new InvalidArgumentException('Mode must be http or embedded.'),
     };
+    $observation['typed_input'] = typedValue($observation['input']);
+    $observation['typed_output'] = typedValue($observation['output']);
     $observation['sdk_php'] = ltrim(InstalledVersions::getPrettyVersion('durable-workflow/sdk'), 'v');
     $observation['php_version'] = PHP_VERSION;
     if ($mode === 'embedded') {
