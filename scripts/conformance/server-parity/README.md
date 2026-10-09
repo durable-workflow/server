@@ -97,9 +97,12 @@ MySQL 8.0/the existing PHP matrix image and MariaDB 10.11.
 PHP/embedded use the exact frozen PHP image;
 Rust uses the PR's exact source. It compares all three and runs the separate
 `restart.php prepare|finish URL RECEIPT` probe around an actual Rust process kill.
-That probe preserves a leased activity and a pending durable timer, waits for its actual lease expiry,
-refuses the old claim and completes both original runs through a fresh published SDK worker.
+That probe preserves a leased activity, a pending durable timer and an acknowledged
+pending signal, waits for the actual activity lease expiry, refuses the old claim
+and completes all three original runs through a fresh published SDK worker.
 The timer must keep its pre-kill identity/deadline and commit exactly one firing.
+The signal must retain its accepted command, typed arguments and original condition
+wait/fingerprint, then advance its cursor and commit application exactly once.
 PostgreSQL and MySQL/MariaDB jobs also use two native nodes with a killed node,
 survivor and replacement sharing only their own database. Separate storage
 checks exercise actual initialization kills, corrupt catalog/history refusal,

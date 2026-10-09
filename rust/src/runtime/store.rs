@@ -348,18 +348,24 @@ where
         // Public control command order and deterministic authored call order
         // are different counters in PHP. Signals must never shift a replayed
         // activity/timer/wait's authored position.
-        let activities = Self::scalar(
-            "SELECT COALESCE(MAX(sequence),0) FROM activity_executions WHERE workflow_run_id=$1",
+        let activities = Self::query(
+            "SELECT sequence FROM activity_executions WHERE workflow_run_id=$1 ORDER BY sequence DESC LIMIT 1",
         )
         .bind(run_id)
-        .fetch_one(&mut **tx)
-        .await?;
-        let timers = Self::scalar(
-            "SELECT COALESCE(MAX(sequence),0) FROM workflow_run_timers WHERE workflow_run_id=$1",
+        .fetch_optional(&mut **tx)
+        .await?
+        .map(|row| DB::number(&row, "sequence"))
+        .transpose()?
+        .unwrap_or(0);
+        let timers = Self::query(
+            "SELECT sequence FROM workflow_run_timers WHERE workflow_run_id=$1 ORDER BY sequence DESC LIMIT 1",
         )
         .bind(run_id)
-        .fetch_one(&mut **tx)
-        .await?;
+        .fetch_optional(&mut **tx)
+        .await?
+        .map(|row| DB::number(&row, "sequence"))
+        .transpose()?
+        .unwrap_or(0);
         let wait = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('SignalWaitOpened','ConditionWaitOpened') ORDER BY sequence DESC LIMIT 1")
             .bind(run_id).fetch_optional(&mut **tx).await?;
         let wait_sequence = wait
@@ -1348,8 +1354,9 @@ pub(super) async fn prepare_signal(
     arguments: String,
 ) -> Result<PreparedSignal> {
     let permit = semaphore
-        .try_acquire_owned()
-        .map_err(|_| refuse(StatusCode::TOO_MANY_REQUESTS, "signal_codec_busy"))?;
+        .acquire_owned()
+        .await
+        .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "signal_codec_unavailable"))?;
     // A cancelled request cannot release this permit while its synchronous
     // official codec job is still running. Each runtime permits one such job.
     tokio::task::spawn_blocking(move || {
