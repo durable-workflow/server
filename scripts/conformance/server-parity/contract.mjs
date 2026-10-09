@@ -61,6 +61,51 @@ export function checkObservation(fixture, observation, workflowId) {
   equal(events.at(-1).decoded.output, output, 'committed workflow result');
   equal(events.at(-1).typed_decoded.output, typedOutput, 'committed workflow result types');
   const projectedEvents = events.map(({sequence, event_type}) => ({sequence, event_type}));
+  const projectedQueries = [];
+  if (fixture.queries) {
+    equal(observation.queries.length, fixture.queries.length, 'complete query observation inventory');
+    equal(started.declared_queries, [fixture.query_name], 'durable query declaration');
+    for (const [index, expected] of fixture.queries.entries()) {
+      const query = observation.queries[index];
+      equal(query.name, fixture.query_name, 'declared query name');
+      equal(query.arguments, fixture.query_arguments, 'decoded query arguments');
+      equal(query.typed_arguments, fixture.typed_query_arguments, 'exact query argument types');
+      for (const execution of [query.before, query.after]) {
+        equal(execution.id ?? execution.run_id, observation.run_id, 'query original run');
+        equal(execution.status, expected.status, 'query does not change run status');
+      }
+      equal(query.history_after, query.history_before, 'query leaves durable history unchanged');
+      const applied = query.history_before.filter(event => event.event_type === 'SignalApplied');
+      equal(applied.length, expected.after_signal_count, 'query observes the intended committed signal state');
+      const prefix = events.slice(0, query.history_before.length).map(({sequence, event_type, payload}) => ({sequence, event_type, payload}));
+      equal(query.history_before.map(({sequence, event_type, payload}) => ({sequence, event_type, payload})), prefix, 'query observes an original history prefix');
+      const result = {request: fixture.query_arguments[0], delivered: expected.after_signal_count,
+        last: expected.after_signal_count ? fixture.signal_value : null};
+      const typedResult = {type: 'map', value: {request: fixture.typed_query_arguments.value[0],
+        delivered: {type: 'int64', value: String(expected.after_signal_count)},
+        last: expected.after_signal_count ? fixture.typed_signal_value : {type: 'null', value: null}}};
+      equal(query.result, result, 'query result comes from real state and request');
+      equal(query.typed_result, typedResult, 'exact query result types');
+      if (observation.mode === 'http') {
+        const task = query.worker.task;
+        nonempty(task.query_task_id, 'actual routed query task');
+        identities.push(task.query_task_id);
+        equal(new Set(identities).size, identities.length, 'distinct query task identities');
+        equal(task.workflow_id, workflowId, 'query task original workflow');
+        equal(task.run_id, observation.run_id, 'query task original run');
+        equal(task.workflow_type, fixture.workflow_type, 'query task workflow type');
+        equal(task.query_name, fixture.query_name, 'query task declared name');
+        equal(task.query_task_attempt, 1, 'first query task attempt');
+        nonempty(task.lease_owner, 'query task lease owner');
+        equal(task.query_arguments.codec, 'avro', 'query task argument codec');
+        equal(query.worker.arguments, fixture.query_arguments, 'worker decoded actual query arguments');
+        equal(query.worker.typed_arguments, fixture.typed_query_arguments, 'worker exact query argument types');
+        equal(task.history_events.filter(event => event.event_type === 'SignalApplied').length, expected.after_signal_count, 'worker receives the intended committed history');
+      }
+      projectedQueries.push({name: query.name, status: expected.status, after_signal_count: expected.after_signal_count,
+        arguments: query.typed_arguments, result: query.typed_result});
+    }
+  }
   if (fixture.signal_count) {
     assert.ok(['http', 'embedded'].includes(observation.mode), 'explicit signal authoring adapter');
     equal(observation.signal_deliveries.length, fixture.signal_count, 'complete delivered signal inventory');
@@ -196,7 +241,7 @@ export function checkObservation(fixture, observation, workflowId) {
     workflow_type: observation.workflow_type, namespace: observation.namespace,
     task_queue: observation.task_queue, status: observation.status, payload_codec: observation.payload_codec,
     input: observation.typed_input, output: observation.typed_output, execution_timeout_seconds: 3600,
-    run_timeout_seconds: 600, events: projectedEvents,
+    run_timeout_seconds: 600, events: projectedEvents, ...(fixture.queries ? {queries: projectedQueries} : {}),
   };
 }
 

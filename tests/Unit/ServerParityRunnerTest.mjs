@@ -93,6 +93,57 @@ function signalObservation(mode = 'http') {
 test('signal delivery/wait relationships agree across explicit service and embedded event shapes', () => {
   assert.deepStrictEqual(checkObservation(signalFixture, signalObservation(), 'test-one-activity'), checkObservation(signalFixture, signalObservation('embedded'), 'test-one-activity'));
 });
+
+const queryFixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/state-queries.json', import.meta.url)));
+function queryObservation(mode = 'http') {
+  const raw = signalObservation(mode);
+  raw.workflow_type = queryFixture.workflow_type;
+  for (const event of raw.events.slice(0, 2)) event.payload.workflow_type = queryFixture.workflow_type;
+  raw.events[1].payload.declared_queries = ['state'];
+  raw.queries = queryFixture.queries.map((expected, index) => {
+    const end = index === 0 ? 3 : index === 1 ? (mode === 'http' ? 8 : 7) : raw.events.length;
+    const history = structuredClone(raw.events.slice(0, end));
+    return {name: 'state', arguments: queryFixture.query_arguments, typed_arguments: queryFixture.typed_query_arguments,
+      before: {run_id: raw.run_id, status: expected.status}, after: {run_id: raw.run_id, status: expected.status},
+      history_before: history, history_after: structuredClone(history),
+      result: {request: queryFixture.query_arguments[0], delivered: expected.after_signal_count,
+        last: index ? queryFixture.signal_value : null},
+      typed_result: {type: 'map', value: {request: queryFixture.typed_query_arguments.value[0],
+        delivered: {type: 'int64', value: String(index)}, last: index ? queryFixture.typed_signal_value : {type: 'null', value: null}}},
+      ...(mode === 'http' ? {worker: {arguments: queryFixture.query_arguments, typed_arguments: queryFixture.typed_query_arguments,
+        task: {query_task_id: `query-${index}`, query_task_attempt: 1, workflow_id: raw.workflow_id, run_id: raw.run_id,
+          workflow_type: queryFixture.workflow_type, query_name: 'state', lease_owner: 'real-worker', query_arguments: {codec: 'avro'},
+          history_events: history}}} : {})};
+  });
+  return structuredClone(raw);
+}
+
+test('waiting, signalled and completed queries preserve real state without history mutation', () => {
+  assert.deepStrictEqual(checkObservation(queryFixture, queryObservation(), 'test-one-activity'),
+    checkObservation(queryFixture, queryObservation('embedded'), 'test-one-activity'));
+});
+
+for (const [name, corrupt] of [
+  ['missing completed query', raw => {raw.queries.pop();}],
+  ['query alters durable history', raw => {raw.queries[0].history_after.push(structuredClone(raw.events[3]));}],
+  ['query changes run status', raw => {raw.queries[0].after.status = 'running';}],
+  ['query targets another run', raw => {raw.queries[0].before.run_id = 'different-run';}],
+  ['query loses exact argument type', raw => {raw.queries[0].typed_arguments.value[0].value.number.type = 'double';}],
+  ['query substitutes workflow result', raw => {raw.queries[1].result = raw.output;}],
+  ['query returns stale state', raw => {raw.queries[1].result.delivered = 0;}],
+  ['query changes last applied value', raw => {raw.queries[1].result.last.count++;}],
+  ['query loses exact result type', raw => {raw.queries[2].typed_result.value.request.value.number.type = 'double';}],
+  ['query worker observes another run', raw => {raw.queries[0].worker.task.run_id = 'different-run';}],
+  ['query worker loses argument type', raw => {raw.queries[0].worker.typed_arguments.value[0].value.number.type = 'double';}],
+  ['query task identity is reused', raw => {raw.queries[1].worker.task.query_task_id = raw.queries[0].worker.task.query_task_id;}],
+  ['query worker receives stale history', raw => {raw.queries[1].worker.task.history_events = raw.queries[0].history_before;}],
+]) {
+  test(`refuses ${name}`, () => {
+    const raw = queryObservation();
+    corrupt(raw);
+    assert.throws(() => checkObservation(queryFixture, raw, 'test-one-activity'));
+  });
+}
 for (const [name, corrupt] of [
   ['deduplicated repeated signal', raw => {raw.events.splice(7, 5);}],
   ['reused signal identity', raw => {raw.events[8].payload.signal_id = raw.events[3].payload.signal_id;}],

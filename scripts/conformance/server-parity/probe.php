@@ -6,6 +6,7 @@ use DurableWorkflow\Client;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\WorkflowContext;
+use DurableWorkflow\Worker\QueryContext;
 use Illuminate\Contracts\Console\Kernel;
 use Illuminate\Support\Facades\Artisan;
 use ServerParity\EchoActivity;
@@ -13,6 +14,7 @@ use ServerParity\EchoWorkflow;
 use ServerParity\OneActivityWorkflow;
 use ServerParity\TimerWorkflow;
 use ServerParity\SignalsWorkflow;
+use ServerParity\QueriesWorkflow;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
@@ -23,7 +25,7 @@ use Workflow\WorkflowOptions;
 
 // Both adapters return observations; contract assertions live in the shared
 // runner. This probe never bootstraps or migrates a target database.
-$options = getopt('', ['mode:', 'fixture:', 'workflow-id:', 'application-root:', 'url:']);
+$options = getopt('', ['mode:', 'fixture:', 'workflow-id:', 'application-root:', 'url:', 'run-id:']);
 $mode = $options['mode'] ?? '';
 $fixture = json_decode(file_get_contents($options['fixture']), true, flags: JSON_THROW_ON_ERROR);
 $workflowId = $options['workflow-id'];
@@ -74,16 +76,79 @@ function decodeHistory(array $events, callable $decode): array
     }, $events);
 }
 
-function httpObservation(array $fixture, string $workflowId, string $namespace, string $queue, string $url): array
+// A query request waits for a worker response. Execute the unchanged published
+// client in an independent PHP process so this probe's worker keeps polling.
+if ($mode === 'query') {
+    try {
+        $client = new Client($options['url'], namespace: $namespace, token: getenv('DW_PARITY_TOKEN') ?: null);
+        $result = $client->queryWorkflow($workflowId, $fixture['query_name'], $fixture['query_arguments'], $options['run-id']);
+        echo json_encode(['result' => $result, 'typed_result' => typedValue($result)], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)."\n";
+        exit(0);
+    } catch (Throwable $error) {
+        fwrite(STDERR, $error::class.': '.$error->getMessage()."\n");
+        exit(1);
+    }
+}
+
+function httpObservation(array $fixture, string $workflowId, string $namespace, string $queue, string $url, string $fixturePath): array
 {
     $client = new Client($url, namespace: $namespace, token: getenv('DW_PARITY_TOKEN') ?: null);
     $handle = null;
     $deliveries = [];
+    $queries = [];
+    $queryTasks = [];
+    $pendingQuery = null;
     $deadline = microtime(true) + 30;
     $worker = null;
-    $worker = (new Worker($client, $queue, clock: static function () use (&$worker, &$handle, &$deliveries, $client, $fixture, $workflowId, $deadline): float {
+    $worker = (new Worker($client, $queue, clock: static function () use (&$worker, &$handle, &$deliveries, &$queries, &$queryTasks, &$pendingQuery, $client, $fixture, $fixturePath, $workflowId, $url, $deadline): float {
         if (microtime(true) > $deadline) {
             throw new RuntimeException('Parity worker exceeded its 30-second completion budget.');
+        }
+        if ($handle !== null && isset($fixture['queries'])) {
+            if ($pendingQuery !== null) {
+                $process = proc_get_status($pendingQuery['process']);
+                if ($process['running']) {
+                    return microtime(true);
+                }
+                $pending = $pendingQuery;
+                $pendingQuery = null;
+                proc_close($pending['process']);
+                $result = file_get_contents($pending['stdout']);
+                $error = file_get_contents($pending['stderr']);
+                unlink($pending['stdout']);
+                unlink($pending['stderr']);
+                if ($process['exitcode'] !== 0) {
+                    throw new RuntimeException('Independent query client failed: '.$error);
+                }
+                $queries[] = [...$pending['observation'], ...json_decode($result, true, flags: JSON_THROW_ON_ERROR),
+                    'after' => $handle->describeSelectedRun()->raw,
+                    'history_after' => $client->workflowHistory($workflowId, $handle->selectedRunId, 100)['events'],
+                    'worker' => $queryTasks[count($queries)] ?? null];
+            }
+            $expected = $fixture['queries'][count($queries)] ?? null;
+            if ($expected !== null) {
+                $execution = $handle->describeSelectedRun();
+                $history = $client->workflowHistory($workflowId, $handle->selectedRunId, 100)['events'];
+                $applied = array_filter($history, static fn (array $event): bool => $event['event_type'] === 'SignalApplied');
+                if ($execution->status === $expected['status'] && count($applied) === $expected['after_signal_count']) {
+                    $stdout = tempnam(sys_get_temp_dir(), 'dw-parity-query-');
+                    $stderr = tempnam(sys_get_temp_dir(), 'dw-parity-query-');
+                    $process = proc_open([PHP_BINARY, __FILE__, '--mode', 'query', '--fixture', $fixturePath,
+                        '--workflow-id', $workflowId, '--url', $url, '--run-id', $handle->selectedRunId],
+                        [0 => ['file', '/dev/null', 'r'], 1 => ['file', $stdout, 'w'], 2 => ['file', $stderr, 'w']], $pipes);
+                    if (! is_resource($process)) {
+                        unlink($stdout);
+                        unlink($stderr);
+                        throw new RuntimeException('Unable to start the real query client.');
+                    }
+                    $pendingQuery = ['process' => $process, 'stdout' => $stdout, 'stderr' => $stderr,
+                        'observation' => ['name' => $fixture['query_name'], 'arguments' => $fixture['query_arguments'],
+                            'typed_arguments' => typedValue($fixture['query_arguments']), 'before' => $execution->raw,
+                            'history_before' => $history]];
+
+                    return microtime(true);
+                }
+            }
         }
         if ($handle !== null && isset($fixture['signal_count']) && count($deliveries) < $fixture['signal_count']) {
             $page = $client->workflowHistory($workflowId, $handle->selectedRunId, 100);
@@ -94,7 +159,8 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
                 $deliveries[] = ['before' => $before, 'response' => $response];
             }
         }
-        if ($worker !== null && $handle !== null && $handle->describeSelectedRun()->isTerminal) {
+        if ($worker !== null && $handle !== null && $handle->describeSelectedRun()->isTerminal
+            && count($queries) === count($fixture['queries'] ?? [])) {
             $worker->requestShutdown();
         }
 
@@ -125,11 +191,35 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
             return $context->signals('payload')[$target - 1][0];
         })
         ->declareSignal('parity.v1.signals', 'payload', static fn (array $value) => null)
+        ->registerWorkflow('parity.v1.queries', static function (WorkflowContext $context, array $value, int $target): array {
+            for ($index = 0; $index < $target; $index++) {
+                $context->waitCondition(fn (): bool => count($context->signals('payload')) > $index, 'payload:'.$index);
+            }
+
+            return $context->signals('payload')[$target - 1][0];
+        })
+        ->declareSignal('parity.v1.queries', 'payload', static fn (array $value) => null)
+        ->registerQuery('parity.v1.queries', 'state', static function (QueryContext $context, array $request) use ($client, &$queryTasks): array {
+            $applied = $context->events('SignalApplied');
+            $queryTasks[] = ['task' => $context->task, 'arguments' => [$request], 'typed_arguments' => typedValue([$request])];
+
+            return ['request' => $request, 'delivered' => count($applied),
+                'last' => $applied === [] ? null : $client->payloadCodec()->decodeEnvelope($applied[array_key_last($applied)]['payload']['value'])];
+        })
         ->registerActivity('parity.v1.echo_activity', static fn (ActivityContext $context, array $value): array => $value);
 
     // run() performs real registration and task execution. The clock observes
     // real time and selected-run completion, without replacing runtime I/O.
-    $worker->run(0);
+    try {
+        $worker->run(0);
+    } finally {
+        if ($pendingQuery !== null) {
+            proc_terminate($pendingQuery['process'], 9);
+            proc_close($pendingQuery['process']);
+            unlink($pendingQuery['stdout']);
+            unlink($pendingQuery['stderr']);
+        }
+    }
     $execution = $handle->describeSelectedRun();
     $events = [];
     $tokens = [];
@@ -160,6 +250,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'output' => $handle->resultOfSelectedRun(1),
         'events' => decodeHistory($events, $client->payloadCodec()->decodeEnvelope(...)),
         'signal_deliveries' => $deliveries,
+        'queries' => $queries,
     ];
 }
 
@@ -177,6 +268,7 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
             'parity.v1.one_activity' => OneActivityWorkflow::class,
             'parity.v1.one_timer' => TimerWorkflow::class,
             'parity.v1.signals' => SignalsWorkflow::class,
+            'parity.v1.queries' => QueriesWorkflow::class,
         ],
         'workflows.v2.types.activities' => ['parity.v1.echo_activity' => EchoActivity::class],
     ]);
@@ -186,8 +278,8 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
             $row->namespace = $namespace;
         });
     }
-    $class = isset($fixture['signal_count']) ? SignalsWorkflow::class : (isset($fixture['timer_delays']) ? TimerWorkflow::class
-        : ($fixture['activity'] ? OneActivityWorkflow::class : EchoWorkflow::class));
+    $class = isset($fixture['queries']) ? QueriesWorkflow::class : (isset($fixture['signal_count']) ? SignalsWorkflow::class : (isset($fixture['timer_delays']) ? TimerWorkflow::class
+        : ($fixture['activity'] ? OneActivityWorkflow::class : EchoWorkflow::class)));
     $stub = WorkflowStub::make($class, $workflowId);
     $arguments = [$fixture['input']];
     if (isset($fixture['signal_count'])) {
@@ -199,6 +291,7 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
         new StartOptions(executionTimeoutSeconds: 3600, runTimeoutSeconds: 600)],
     );
     $deliveries = [];
+    $queries = [];
     $deadline = microtime(true) + 30;
     do {
         Artisan::call('queue:work', [
@@ -206,6 +299,20 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
             '--max-time' => 30, '--sleep' => 0, '--tries' => 1,
         ]);
         $run = WorkflowRun::query()->findOrFail($stub->runId());
+        $expected = $fixture['queries'][count($queries)] ?? null;
+        if ($expected !== null && $run->status->value === $expected['status']
+            && $run->historyEvents()->where('event_type', 'SignalApplied')->count() === $expected['after_signal_count']) {
+            $history = static fn (): array => $run->historyEvents()->orderBy('sequence')->get()->map(static fn ($event): array => [
+                'sequence' => $event->sequence, 'event_type' => $event->event_type->value, 'payload' => $event->payload,
+            ])->all();
+            $before = $run->toArray();
+            $historyBefore = $history();
+            $result = $stub->queryWithArguments($fixture['query_name'], $fixture['query_arguments']);
+            $queries[] = ['name' => $fixture['query_name'], 'arguments' => $fixture['query_arguments'],
+                'typed_arguments' => typedValue($fixture['query_arguments']), 'before' => $before,
+                'after' => $run->fresh()->toArray(), 'history_before' => $historyBefore, 'history_after' => $history(),
+                'result' => $result, 'typed_result' => typedValue($result)];
+        }
         if (isset($fixture['signal_count']) && count($deliveries) < $fixture['signal_count']) {
             $opened = $run->historyEvents()->where('event_type', 'SignalWaitOpened')->count();
             if ($opened > count($deliveries)) {
@@ -246,12 +353,13 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
         'output' => $run->workflowOutput(),
         'events' => decodeHistory($events, static fn ($value) => Serializer::unserializeWithCodec('avro', is_array($value) ? $value['blob'] : $value)),
         'signal_deliveries' => $deliveries,
+        'queries' => $queries,
     ];
 }
 
 try {
     $observation = match ($mode) {
-        'http' => httpObservation($fixture, $workflowId, $namespace, $queue, $options['url']),
+        'http' => httpObservation($fixture, $workflowId, $namespace, $queue, $options['url'], $options['fixture']),
         'embedded' => embeddedObservation($fixture, $workflowId, $namespace, $queue, $options['application-root']),
         default => throw new InvalidArgumentException('Mode must be http or embedded.'),
     };

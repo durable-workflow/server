@@ -1,0 +1,30 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "state-queries",
+  "workflow_type": "parity.v1.queries",
+  "input": {"message": "workflow input λ"},
+  "typed_value": {"type": "map", "value": {"message": {"type": "string", "value": "workflow input λ"}}},
+  "signal_value": {"message": "signal λ", "count": 42, "ready": true, "optional": null},
+  "typed_signal_value": {"type": "map", "value": {
+    "message": {"type": "string", "value": "signal λ"},
+    "count": {"type": "int64", "value": "42"},
+    "ready": {"type": "boolean", "value": true},
+    "optional": {"type": "null", "value": null}
+  }},
+  "activity": false,
+  "signal_count": 2,
+  "query_name": "state",
+  "query_arguments": [{"label": "query λ", "number": 9007199254740993}],
+  "typed_query_arguments": {"type": "list", "value": [{"type": "map", "value": {
+    "label": {"type": "string", "value": "query λ"},
+    "number": {"type": "int64", "value": "9007199254740993"}
+  }}]},
+  "queries": [
+    {"after_signal_count": 0, "status": "waiting"},
+    {"after_signal_count": 1, "status": "waiting"},
+    {"after_signal_count": 2, "status": "completed"}
+  ],
+  "expected_events": ["StartAccepted", "WorkflowStarted", "ConditionWaitOpened", "SignalReceived", "MessageCursorAdvanced", "SignalApplied", "ConditionWaitSatisfied", "ConditionWaitOpened", "SignalReceived", "MessageCursorAdvanced", "SignalApplied", "ConditionWaitSatisfied", "WorkflowCompleted"],
+  "embedded_expected_events": ["StartAccepted", "WorkflowStarted", "SignalWaitOpened", "SignalReceived", "MessageCursorAdvanced", "SignalApplied", "SignalWaitOpened", "SignalReceived", "MessageCursorAdvanced", "SignalApplied", "WorkflowCompleted"],
+  "contract": "Read the original run's committed state before any signal, after the first applied signal while its second wait remains open, and after normal completion. Each query returns its exact typed arguments, the applied delivery count and the last applied value. Querying a completed run is supported. Queries do not append or change workflow history, resolve waits, advance message cursors or change the run's status. The HTTP target uses a real independent query client and published query worker; embedded mode uses its normal replayed query method."
+}

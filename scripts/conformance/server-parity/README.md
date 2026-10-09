@@ -3,7 +3,7 @@
 This is the first, deliberately bounded slice of
 [Server #325](https://github.com/durable-workflow/server/issues/325).
 It executes Avro echo (including an exact large int64), a one-activity workflow,
-one/repeated durable sleeps, and one/repeated signal deliveries against any
+one/repeated durable sleeps, one/repeated signal deliveries and state queries against any
 isolated Server URL using the **published** PHP SDK. The embedded adapter runs
 the same logical cases through a Laravel application, real database queue jobs,
 and the installed Workflow package. Rust will use the HTTP adapter unchanged.
@@ -77,6 +77,13 @@ event inventories preserve that authoring difference: the SDK adds
 `ConditionWaitSatisfied` and checks its original key/fingerprint, while embedded
 `SignalApplied` resolves its original `SignalWaitOpened` ID/sequence. The common
 payload-wait projection is compared only after both complete histories pass.
+
+The state-query fixture reads zero/one/two applied signals: before delivery,
+while the next wait remains open, and after completion. A separate published SDK
+client process sends each blocking HTTP query while the real worker keeps polling.
+Embedded mode calls its normal replayed query method. Both check exact arguments
+and result types, original run/status and unchanged durable history before/after
+each query. HTTP observations retain actual query task, lease and worker snapshot.
 
 The current type recorder covers null, boolean, int64, double, string, list and
 map values. Other decoded PHP objects fail explicitly; binary/logical-type and
