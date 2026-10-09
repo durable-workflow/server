@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use Composer\InstalledVersions;
 use DurableWorkflow\Exception\ServerException;
 
 require dirname(__DIR__, 2).'/benchmarks/capacity/v1/bindings/php/capacity_adapter.php';
@@ -58,6 +59,7 @@ for ($index = 0; $index < $count; $index++) {
                 $result['outcome'] = 'aborted';
             } else {
                 $started = hrtime(true);
+                $result['poll_started_at_unix_seconds'] = microtime(true);
                 try {
                     $response = match ($pollKind) {
                         'activity' => $client->pollActivityTaskResponse($workerId, $queue, $pollSeconds),
@@ -75,6 +77,7 @@ for ($index = 0; $index < $count; $index++) {
                     $result['reason'] = $exception->reason;
                 }
                 $result['poll_elapsed_seconds'] = (hrtime(true) - $started) / 1_000_000_000;
+                $result['poll_finished_at_unix_seconds'] = microtime(true);
             }
         } catch (Throwable $exception) {
             $result['exception'] = $exception::class;
@@ -124,6 +127,8 @@ foreach ($results as $result) {
 $cleanupErrors = count(array_filter($results, static fn (array $row): bool => isset($row['deregister_error'])));
 echo json_encode([
     'probe' => 'idle-'.$kind.'-poll-not-capacity',
+    'sdk_php' => InstalledVersions::getPrettyVersion('durable-workflow/sdk'),
+    'php' => PHP_VERSION,
     'requested_polls' => $count,
     'requested_poll_timeout_seconds' => $pollSeconds,
     'all_registered' => $ready,

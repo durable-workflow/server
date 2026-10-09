@@ -1,6 +1,7 @@
 <?php
 
 declare(strict_types=1);
+use Composer\InstalledVersions;
 
 require dirname(__DIR__, 2).'/benchmarks/capacity/v1/bindings/php/capacity_adapter.php';
 capacityAutoload();
@@ -139,6 +140,7 @@ while (($next < $planned || $pending !== []) && hrtime(true) < $deadlineNs) {
 }
 
 $lastObservationNs = hrtime(true);
+$lastObservationWall = microtime(true);
 foreach ($completed as $id => $sample) {
     try {
         $handle = $started[$id]['handle'];
@@ -197,6 +199,12 @@ foreach ($stageSamples as $stage => $values) {
 $closedInWindow = count(array_filter($completed, static fn (array $sample): bool => $sample['closed_wall'] < $offerEndsWall));
 $result = [
     'probe' => 'fixed-offered-standard-experiment',
+    'sdk_php' => InstalledVersions::getPrettyVersion('durable-workflow/sdk'),
+    'php' => PHP_VERSION,
+    'started_at_unix_seconds' => $beganWall,
+    'offer_end_unix_seconds' => $offerEndsWall,
+    'observed_end_unix_seconds' => $lastObservationWall,
+    'verified_at_unix_seconds' => microtime(true),
     'offered_rate_per_second' => $rate,
     'offer_seconds' => $duration,
     'drain_limit_seconds' => $drain,

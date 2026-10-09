@@ -1,0 +1,99 @@
+{
+  "schema": "durable-workflow.server-port-performance-profile/v1",
+  "profile_version": "1.0.0",
+  "profile_id": "server-port-development-php-amd64-v1",
+  "evidence_class": "development_comparison",
+  "publishable_capacity_claim": false,
+  "status": "measurement_pending",
+  "artifacts": {
+    "server": "durableworkflow/server@sha256:4f8edd005e596718185a65f34224ac81cd584a35f540df6bb3d156078c976081",
+    "server_version": "2.5.13",
+    "workflow_version": "2.5.4",
+    "sdk_php_version": "2.2.6",
+    "sdk_php_lock": "scripts/conformance/server-parity/composer.lock",
+    "mysql": "mysql@sha256:679e7e924f38a3cbb62a3d7df32924b83f7321a602d3f9f967c01b3df18495d6",
+    "mysql_version": "8.4.5",
+    "redis": "redis@sha256:0637954999d01b7c9ce9167db2da50656e2590d3b884f1c600c5f63bb6e6773c",
+    "redis_version": "7.2.16"
+  },
+  "hardware": {
+    "architecture": "x86_64",
+    "logical_cpus": 4,
+    "physical_memory_bytes": 16618160128,
+    "kernel": "5.15.0-198-generic",
+    "docker": "27.5.1",
+    "containerd": "1.7.25",
+    "runc": "1.2.4",
+    "cgroup_version": "2",
+    "cgroup_driver": "systemd",
+    "docker_storage_driver": "overlay2",
+    "durable_volume_filesystem": "ext4",
+    "durable_storage_medium": "sata-ssd",
+    "durable_storage_total_bytes": 105089261568,
+    "concurrent_unrelated_workload": "must_be_recorded_and_invalidate_a_comparison_if_it_changes"
+  },
+  "topology": {
+    "compose": "scripts/perf/server-port-baseline.compose.yml",
+    "network": "isolated_compose_project_bridge",
+    "extra_swap_bytes": 0,
+    "limits": {
+      "server": {"cpu_cores": 1.0, "memory_bytes": 1073741824},
+      "worker": {"cpu_cores": 0.5, "memory_bytes": 536870912},
+      "scheduler": {"cpu_cores": 0.25, "memory_bytes": 268435456},
+      "mysql": {"cpu_cores": 1.0, "memory_bytes": 1073741824},
+      "redis": {"cpu_cores": 0.25, "memory_bytes": 268435456},
+      "sdk-worker": {"cpu_cores": 0.5, "memory_bytes": 536870912},
+      "probe": {"cpu_cores": 0.5, "memory_bytes": 536870912},
+      "collector": {"cpu_cores": 0.25, "memory_bytes": 268435456}
+    }
+  },
+  "workload": {
+    "authority": "benchmarks/capacity/v1/suite.json",
+    "authority_suite_version": "1.9.0",
+    "cell": "one-activity",
+    "workflow_type": "capacity.v1.one_activity",
+    "activity_type": "capacity.v1.echo",
+    "payload_bytes_each_direction": 1024,
+    "codec": "avro",
+    "client_processes": 1,
+    "sdk_worker_processes": 1,
+    "command": "scripts/perf/standard-workflow-offered.php",
+    "warmup_seconds": 60,
+    "offer_seconds": 120,
+    "drain_limit_seconds": 120,
+    "describe_interval_ms": 250,
+    "offered_rates_per_second": [0.25, 0.5, 1.0],
+    "repeats": 3,
+    "baseline_drift_control": "repeat_0.25_before_and_after_higher_rates"
+  },
+  "idle": {
+    "command": "scripts/perf/idle-poll-probe.php",
+    "kind": "mixed",
+    "counts": [6, 12, 24],
+    "requested_timeout_seconds": 10,
+    "worker_wait_cap": 6,
+    "query_wait_cap": 2,
+    "repeats": 3,
+    "ordinary_api_probe": "health_and_ready_during_held_polls",
+    "queue_condition": "no_tasks_or_active_workflows"
+  },
+  "required_evidence": [
+    "source_revision_and_input_hashes",
+    "installed_package_and_resolved_image_versions",
+    "host_identity_and_actual_limits",
+    "offered_accepted_completed_counts_and_bounded_drain",
+    "raw_latency_and_error_outputs",
+    "component_cpu_and_steady_peak_memory",
+    "final_task_queue_and_open_workflow_counts",
+    "container_restarts_oom_and_swap",
+    "idle_empty_backpressure_and_api_headroom",
+    "repeat_variation_and_baseline_drift",
+    "cleanup_receipt"
+  ],
+  "limitations": [
+    "One PHP client and one PHP SDK worker; does not implement the full capacity suite concurrency protocol.",
+    "The standard capacity topology requires a different kernel, runtime and NVMe storage. No capacity-suite qualification is claimed.",
+    "A short offered-rate probe cannot establish maximum sustained capacity or multi-node failover.",
+    "Future Rust comparisons must retain the same workload, consumers, resource envelope and host conditions and qualify their own exact artifacts."
+  ]
+}
