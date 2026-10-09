@@ -123,6 +123,12 @@ three-runtime recordings. Worker history retains event IDs/attribution and
 `recorded_at`; the control API projects sequence/type/`timestamp`/payload.
 Recovery checks their declared common fields and original worker event IDs and
 terminal task attribution without changing either API representation.
+Error filters follow PHP's default ASCII/NUL trim character set, preserve
+Unicode whitespace as part of the type identity and deduplicate in first-seen
+order. A separate reviewed normalization corpus is verified against the actual
+frozen Workflow normalizer. Native parser and HTTP regressions cover this edge,
+including a Unicode-padded nonmatching filter that must still retry. This corpus
+checks normalization; it is additional to the fourteen durable execution cases.
 The native regression also covers explicit non-retryable reports and default
 no-retry behavior, independent pools, original failure rows, concurrent duplicate
 reports/resumption, fresh-pool recovery and stale/conflicting outcomes.

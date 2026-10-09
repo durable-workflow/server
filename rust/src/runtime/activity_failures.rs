@@ -80,7 +80,11 @@ pub(super) fn retry_policy(command: &Value) -> Result<Option<Value>> {
         for value in list {
             let kind = value
                 .as_str()
-                .map(str::trim)
+                // PHP trim() removes these six bytes, not Unicode whitespace.
+                // A Unicode-padded class/type must keep its exact identity.
+                .map(|kind| {
+                    kind.trim_matches(|ch| matches!(ch, ' ' | '\t' | '\n' | '\r' | '\0' | '\x0b'))
+                })
                 .filter(|kind| !kind.is_empty() && kind.len() <= 255)
                 .ok_or_else(|| {
                     refuse(

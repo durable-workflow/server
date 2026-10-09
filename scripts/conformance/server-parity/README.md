@@ -63,6 +63,10 @@ original execution/attempt/task/failure identities, failure type/message/code,
 policy, closed status, exact arguments and one parent resumption. A matching
 filter is non-retryable despite unused budget; exhausting a budget alone does
 not make a failure non-retryable. A nonmatching filter still permits retry.
+Error-type normalization uses PHP's default ASCII/NUL trim set; Unicode spaces
+remain part of the type identity. A separate reviewed normalization corpus in
+`tests/Fixtures/ServerParityNormalization` checks this parser contract in
+addition to the durable cases, with a native HTTP nonmatching-filter regression.
 Embedded replay additionally records `FailureHandled`, while the published
 HTTP protocol omits this catch acknowledgement event. Their complete inventories
 and original embedded handling relationship are explicit fixture expectations;
