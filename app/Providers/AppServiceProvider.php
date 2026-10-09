@@ -5,6 +5,11 @@ namespace App\Providers;
 use App\Auth\ConfiguredAuthProvider;
 use App\Contracts\AuthProvider;
 use App\Contracts\RuntimeSignalControlPlane;
+use App\Database\GuardedMariaDbConnector;
+use App\Database\GuardedMysqlConnector;
+use App\Database\GuardedPostgresConnector;
+use App\Database\GuardedSqliteConnection;
+use App\Database\GuardedSqliteConnector;
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowDurableStream;
 use App\Models\WorkflowDurableStreamItem;
@@ -27,8 +32,12 @@ use App\Support\ValidatedExternalWorkflowUpdateAdmission;
 use App\Support\WorkflowMemoRollingCompatibility;
 use App\Support\WorkflowPackageApiFloor;
 use App\Support\WorkflowTaskLeaseConfiguration;
+use Illuminate\Console\Events\CommandStarting;
 use Illuminate\Contracts\Bus\Dispatcher as BusDispatcher;
+use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
+use Illuminate\Database\Connection;
 use Illuminate\Queue\Events\Looping;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\ServiceProvider;
 use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
 use Workflow\V2\Contracts\ScheduleWorkflowStarter;
@@ -53,6 +62,39 @@ class AppServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
+        Connection::resolverFor('sqlite', static fn ($pdo, $database, $prefix, $config) => new GuardedSqliteConnection($pdo, $database, $prefix, $config));
+        // Install before package boot callbacks or commands can open a database.
+        foreach ([
+            'sqlite' => GuardedSqliteConnector::class,
+            'mysql' => GuardedMysqlConnector::class,
+            'mariadb' => GuardedMariaDbConnector::class,
+            'pgsql' => GuardedPostgresConnector::class,
+        ] as $driver => $connector) {
+            $this->app->bind('db.connector.'.$driver, $connector);
+        }
+
+        // Workers can catch ordinary backend exceptions and keep looping.
+        // Refuse ownership before entering those loops or destructive commands.
+        $this->app->make('events')->listen(CommandStarting::class, static function (CommandStarting $event): void {
+            if (in_array($event->command, ['server:bootstrap', 'db:seed', 'db:wipe'], true)
+                || preg_match('/^(migrate(?::|$)|queue:|schedule:|workflow:)/', $event->command) === 1) {
+                $target = $event->input->getParameterOption('--database', null, true);
+                $connection = DB::connection(is_string($target) && $target !== '' ? $target : null);
+                $connection->getPdo();
+                if ($connection->hasDirectConnection()) {
+                    DB::connection($connection->getName().'::direct')->getPdo();
+                }
+            }
+        });
+        $this->app->booted(function (): void {
+            if ($this->app->runningInConsole()) {
+                // Laravel suppresses these events in APP_ENV=testing. Ownership
+                // safety must still cover SQLite db:wipe's file-truncate path,
+                // which can otherwise bypass the connector entirely.
+                $this->app->make(ConsoleKernel::class)->rerouteSymfonyCommandEvents();
+            }
+        });
+
         $this->normalizeRedisPorts();
 
         // Register before package boot callbacks can enqueue maintenance work.
