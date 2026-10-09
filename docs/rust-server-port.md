@@ -30,8 +30,16 @@ The next slices widen reviewed PHP/Rust/embedded fixtures and native behavior:
 Timer, signal and quiescent query slices are qualified. The next state-update
 fixture applies two distinct values while a workflow waits for a finishing
 signal, repeats each request ID with different arguments, and checks original
-identities/results, state replay and the shared message cursor. Published PHP
-and embedded reference qualification and native implementation remain pending.
+identities/results, state replay and the shared message cursor. All nine cases
+pass and compare on the frozen published PHP and embedded references at
+`ab105eba4aebc5295d1fe08c3bf70a87e1f7e639`; 83 comparator checks pass.
+Native admission, original request receipts, routed update tasks and completion
+fences are implemented; all six database targets and PHP/source checks remain
+to qualify this head. Admission requires a quiescent wait and bounds each run
+to 64 updates, with 64 KiB argument blobs, 256 KiB results and at most 30 seconds
+per completion wait. Waiting releases the transaction and database connection.
+Queued/busy control routing, validators, failure tasks and full update semantics
+remain open.
 Updates are followed by child
 workflows, retries/cancellation, schedules, visibility, authorization/namespaces,
 streams and existing consumers. Each slice must run on the required database

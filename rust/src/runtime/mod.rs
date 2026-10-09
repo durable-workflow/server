@@ -1,4 +1,4 @@
-//! First execution slice, deliberately unpublished and opt-in. Signal/query
+//! First execution slice, deliberately unpublished and opt-in. Signal/query/update
 //! arguments use the official codec on a bounded blocking worker.
 //! Typed database adapters share transitions; existing PHP data requires qualification.
 
@@ -11,6 +11,7 @@ mod queries;
 mod schema;
 mod sqlite;
 mod store;
+mod updates;
 
 pub use execution::Runtime;
 pub use http::router;

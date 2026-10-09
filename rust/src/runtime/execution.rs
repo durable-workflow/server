@@ -199,9 +199,13 @@ impl Runtime {
         body: Value,
     ) -> Result<Value> {
         let arguments = super::envelope(&body, "input")?;
-        let prepared =
-            super::store::prepare_signal(self.signal_codec.clone(), name.to_owned(), arguments)
-                .await?;
+        let prepared = super::store::prepare_control_arguments(
+            self.signal_codec.clone(),
+            name.to_owned(),
+            arguments,
+            "invalid_signal_arguments",
+        )
+        .await?;
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
@@ -221,6 +225,45 @@ impl Runtime {
         }
     }
     delegate!(describe(workflow_id: &str, run_id: Option<&str>) -> Result<Value>);
+    pub(crate) async fn update_workflow(
+        &self,
+        workflow_id: &str,
+        run_id: Option<&str>,
+        name: &str,
+        body: Value,
+    ) -> Result<(StatusCode, Value)> {
+        let arguments = super::envelope(&body, "input")?;
+        if arguments.len() > super::queries::ARGUMENT_BYTES {
+            return Err(refuse(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "update_arguments_exceed_budget",
+            ));
+        }
+        let prepared = super::store::prepare_control_arguments(
+            self.signal_codec.clone(),
+            name.to_owned(),
+            arguments,
+            "invalid_update_arguments",
+        )
+        .await?;
+        match &*self.storage {
+            Storage::Sqlite(store) => {
+                store
+                    .update_workflow(workflow_id, run_id, name, body, prepared)
+                    .await
+            }
+            Storage::Postgres(store) => {
+                store
+                    .update_workflow(workflow_id, run_id, name, body, prepared)
+                    .await
+            }
+            Storage::MySql(store) => {
+                store
+                    .update_workflow(workflow_id, run_id, name, body, prepared)
+                    .await
+            }
+        }
+    }
     pub(crate) async fn query_workflow(
         &self,
         workflow_id: &str,
@@ -241,8 +284,13 @@ impl Runtime {
                 "query_arguments_exceed_budget",
             ));
         }
-        let values =
-            super::queries::decode(self.signal_codec.clone(), arguments.clone(), true).await?;
+        let values = super::queries::decode(
+            self.signal_codec.clone(),
+            arguments.clone(),
+            true,
+            "invalid_query_arguments",
+        )
+        .await?;
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
@@ -270,7 +318,13 @@ impl Runtime {
                 "query_result_exceeds_budget",
             ));
         }
-        super::queries::decode(self.signal_codec.clone(), result, false).await?;
+        super::queries::decode(
+            self.signal_codec.clone(),
+            result,
+            false,
+            "invalid_query_result",
+        )
+        .await?;
         self.finish_query(task_id, body, false).await
     }
     delegate!(finish_query(task_id: &str, body: Value, failed: bool) -> Result<Value>);
@@ -289,6 +343,33 @@ impl Runtime {
     delegate!(heartbeat_task(task_id: &str, body: Value) -> Result<Value>);
     delegate!(task_history(task_id: &str, body: Value) -> Result<Value>);
     pub(crate) async fn complete_workflow(&self, task_id: &str, body: Value) -> Result<Value> {
+        if let Some(commands) = body["commands"].as_array() {
+            for command in commands
+                .iter()
+                .filter(|command| command["type"] == "complete_update")
+            {
+                if commands.len() != 1 {
+                    return Err(refuse(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "invalid_update_task_commands",
+                    ));
+                }
+                let result = super::envelope(command, "result")?;
+                if result.len() > super::queries::RESULT_BYTES {
+                    return Err(refuse(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "update_result_exceeds_budget",
+                    ));
+                }
+                super::queries::decode(
+                    self.signal_codec.clone(),
+                    result,
+                    false,
+                    "invalid_update_result",
+                )
+                .await?;
+            }
+        }
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
