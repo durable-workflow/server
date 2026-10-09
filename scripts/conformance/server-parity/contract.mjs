@@ -78,12 +78,13 @@ export function checkObservation(fixture, observation, workflowId) {
   };
 }
 
-export function compareRecords(records) {
+export function compareRecords(records, expectedFixtureHashes) {
   assert.ok(records.length >= 2, 'at least two recordings are required');
   const reference = records[0];
   for (const record of records) {
     assert.equal(record.schema, 'durable-workflow.server-parity-record/v1');
     assert.equal(record.outcome, 'pass', `${record.target} recording must have passed contract assertions`);
+    assert.deepStrictEqual(record.fixture_hashes, expectedFixtureHashes, 'recording covers the current reviewed fixture corpus');
     assert.ok(record.cases.length > 0, 'recorded fixture inventory must not be empty');
     assert.equal(new Set(record.cases.map(c => c.fixture_id)).size, record.cases.length, 'each fixture is recorded exactly once');
     assert.deepStrictEqual(record.cases.map(c => `${c.fixture_id}.json`).sort(), Object.keys(record.fixture_hashes).sort(), 'every hashed fixture has a recorded case');

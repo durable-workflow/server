@@ -29,8 +29,11 @@ consumer tuple; the default is tests/Fixtures/ServerParity/php-baseline.json.`);
 }
 const json = path => JSON.parse(readFileSync(path, 'utf8'));
 try {
+  const directory = resolve(root, 'tests/Fixtures/ServerParity');
+  const fixtures = readdirSync(directory).filter(name => name !== 'php-baseline.json' && name.endsWith('.json')).sort();
+  const hashes = Object.fromEntries(fixtures.map(name => [name, createHash('sha256').update(readFileSync(resolve(directory, name))).digest('hex')]));
   if (command === 'compare') {
-    compareRecords(files.map(json));
+    compareRecords(files.map(json), hashes);
     console.log(JSON.stringify({outcome: 'pass', recordings: files.length}));
   } else if (command === 'record') {
     if (!['http', 'embedded'].includes(values.mode) || !values.output || !values.target || !/^[a-f0-9]{40}$/.test(values['runner-revision'] ?? '')) {
@@ -39,17 +42,14 @@ try {
     if (values.mode === 'http' && !values.url || values.mode === 'embedded' && !values['application-root']) {
       throw new Error('HTTP mode requires --url; embedded mode requires --application-root');
     }
-    const directory = resolve(root, 'tests/Fixtures/ServerParity');
-    const fixtures = readdirSync(directory).filter(name => name !== 'php-baseline.json' && name.endsWith('.json')).sort();
     const record = {
       schema: 'durable-workflow.server-parity-record/v1', target: values.target, mode: values.mode,
       runner_revision: values['runner-revision'], artifacts: json(values.artifacts ?? resolve(directory, 'php-baseline.json')),
-      started_at: new Date().toISOString(), outcome: 'runner-blocked', fixture_hashes: {}, cases: [],
+      started_at: new Date().toISOString(), outcome: 'runner-blocked', fixture_hashes: hashes, cases: [],
     };
     for (const name of fixtures) {
       const path = resolve(directory, name);
       const fixture = json(path);
-      record.fixture_hashes[name] = createHash('sha256').update(readFileSync(path)).digest('hex');
       const workflowId = `${values.prefix}-${fixture.id}`;
       const arguments_ = [resolve(root, 'scripts/conformance/server-parity/probe.php'), '--mode', values.mode, '--fixture', path, '--workflow-id', workflowId];
       for (const flag of ['url', 'application-root']) {

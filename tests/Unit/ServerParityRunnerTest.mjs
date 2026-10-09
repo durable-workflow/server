@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {checkObservation, compareRecords} from '../../scripts/conformance/server-parity/contract.mjs';
+import {checkObservation, compareRecords as compareCorpusRecords} from '../../scripts/conformance/server-parity/contract.mjs';
 
 const fixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/one-activity.json', import.meta.url)));
+const compareRecords = records => compareCorpusRecords(records, {'one-activity.json': 'fixture-sha'});
 function observation(suffix = '') {
   const run = `run${suffix}`;
   const command = `command${suffix}`;
@@ -81,6 +82,10 @@ test('two empty recordings cannot establish parity', () => {
   empty.cases = [];
   empty.fixture_hashes = {};
   assert.throws(() => compareRecords([empty, structuredClone(empty)]));
+});
+
+test('two matching subsets cannot omit a required current fixture', () => {
+  assert.throws(() => compareCorpusRecords([record(), record('-other')], {'one-activity.json': 'fixture-sha', 'echo.json': 'required-fixture-sha'}));
 });
 
 test('matching recordings cannot omit hashed fixtures or repeat one case', () => {
