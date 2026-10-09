@@ -14,7 +14,7 @@ pub const VALUE_SCHEMA: &str = include_str!("../schema/durable_workflow.protocol
 
 /// Logical values retain bytes/text, list/map and signed 64-bit distinctions.
 /// Map key order is not a wire identity; every key remains a string.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum Value {
     Null,
     Boolean(bool),
@@ -24,6 +24,22 @@ pub enum Value {
     String(String),
     Array(Vec<Value>),
     Map(BTreeMap<String, Value>),
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Null, Self::Null) => true,
+            (Self::Boolean(left), Self::Boolean(right)) => left == right,
+            (Self::Long(left), Self::Long(right)) => left == right,
+            (Self::Double(left), Self::Double(right)) => left.to_bits() == right.to_bits(),
+            (Self::Bytes(left), Self::Bytes(right)) => left == right,
+            (Self::String(left), Self::String(right)) => left == right,
+            (Self::Array(left), Self::Array(right)) => left == right,
+            (Self::Map(left), Self::Map(right)) => left == right,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

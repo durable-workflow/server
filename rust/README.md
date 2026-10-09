@@ -26,3 +26,19 @@ CPU-heavy async deadlines, databases, shared workflow fixtures and safe upgrade
 remain acceptance gates in the [port log](../docs/rust-server-port.md).
 Kache remains an optional task-scoped experiment, with an explicit disk budget;
 no global Cargo wrapper or cleanup daemon is installed.
+
+The shared [codec values](../tests/Fixtures/ServerParity/Codec/v1.json) declare
+logical expectations from the immutable schema: exact long boundaries, finite
+doubles (including negative zero), Unicode, binary values, nested arrays and
+string-keyed maps. The existing long-zero corpus supplies the reviewed golden
+wire. Map order is compared semantically; it is not a byte identity.
+`cargo run --locked --example codec-fixtures -- FIXTURE [OTHER_OBSERVATIONS]`
+checks Rust round trips and optionally decodes the other binding's bytes.
+`scripts/conformance/server-parity/codec.php` verifies those bytes with the
+published Workflow codec and emits PHP bytes for Rust to decode. The ordinary
+HTTP/embedded execution fixtures run separately; codec checks do not replace them.
+
+The framing tests reject truncated headers/datums, unknown fingerprints, trailing
+bytes and non-finite doubles. Strict ingress parity is still open: malformed
+collection blocks, duplicate map keys, recursion/allocation limits and streaming
+external payloads require the existing negative corpus before HTTP integration.
