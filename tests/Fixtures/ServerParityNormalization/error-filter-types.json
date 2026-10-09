@@ -1,0 +1,17 @@
+{
+  "schema": "durable-workflow.server-parity.error-filter-normalization.v1",
+  "input": [
+    " \tRuntimeException\r\n",
+    "RuntimeException",
+    "\u0000InvalidArgumentException\u000b\u0000",
+    "\u2003RuntimeException\u2003",
+    "\u00a0RuntimeException\u00a0"
+  ],
+  "expected": [
+    "RuntimeException",
+    "InvalidArgumentException",
+    "\u2003RuntimeException\u2003",
+    "\u00a0RuntimeException\u00a0"
+  ],
+  "rejected": ["\u0000 \t\r\n\u000b"]
+}

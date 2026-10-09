@@ -2246,7 +2246,7 @@ async fn reported_activity_failure_commits_one_persistent_retry_and_fences_old_o
 
 #[tokio::test]
 async fn terminal_activity_failures_resume_once_and_preserve_original_failure() {
-    // Budget exhaustion, matching filter, explicit report and default policy.
+    // Budget exhaustion, exact filters, explicit report and default policy.
     for (policy, count, reported_non_retryable, non_retryable) in [
         (
             json!({"max_attempts":2,"backoff_seconds":[0],"non_retryable_error_types":[]}),
@@ -2259,6 +2259,12 @@ async fn terminal_activity_failures_resume_once_and_preserve_original_failure() 
             1,
             false,
             true,
+        ),
+        (
+            json!({"max_attempts":2,"backoff_seconds":[0],"non_retryable_error_types":["\u{2003}RuntimeException\u{2003}"]}),
+            2,
+            false,
+            false,
         ),
         (
             json!({"max_attempts":3,"backoff_seconds":[1],"non_retryable_error_types":[]}),

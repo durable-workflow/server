@@ -151,6 +151,33 @@ pub(super) async fn prepare_failure(
     Ok((payload, blob))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn php_error_filter_normalization_preserves_unicode_and_strips_nul() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../tests/Fixtures/ServerParityNormalization/error-filter-types.json"
+        ))
+        .unwrap();
+        let normalized = retry_policy(&json!({"retry_policy": {
+            "max_attempts":2,"backoff_seconds":[1],"non_retryable_error_types":fixture["input"]
+        }}))
+        .unwrap()
+        .unwrap();
+        assert_eq!(normalized["non_retryable_error_types"], fixture["expected"]);
+        for rejected in fixture["rejected"].as_array().unwrap() {
+            assert!(
+                retry_policy(&json!({"retry_policy": {
+                    "max_attempts":2,"non_retryable_error_types":[rejected]
+                }}))
+                .is_err()
+            );
+        }
+    }
+}
+
 impl<DB: Backend> Store<DB>
 where
     for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
