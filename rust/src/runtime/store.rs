@@ -74,6 +74,7 @@ where
             "SELECT id,status,payload,lease_owner,lease_expires_at,attempt_count FROM workflow_tasks LIMIT 0",
             "SELECT id,sequence,activity_type,status,arguments,result,retry_policy,exception,attempt_count,current_attempt_id FROM activity_executions LIMIT 0",
             "SELECT id,workflow_task_id,attempt_number,status FROM activity_attempts LIMIT 0",
+            "SELECT id,workflow_run_id,source_kind,source_id,propagation_kind,failure_category,non_retryable,handled,exception_class,message FROM workflow_failures LIMIT 0",
             "SELECT id,workflow_run_id,sequence,status,delay_seconds,fire_at,fired_at FROM workflow_run_timers LIMIT 0",
             "SELECT id,workflow_command_id,workflow_run_id,signal_name,signal_wait_id,status,arguments FROM workflow_signal_records LIMIT 0",
             "SELECT id,workflow_run_id,command_sequence,message_sequence,status,payload FROM workflow_commands LIMIT 0",
@@ -1058,7 +1059,7 @@ where
                     .execute(&mut *tx)
                     .await?;
             } else {
-                let outstanding: i64 = Self::scalar("SELECT COUNT(*) FROM activity_executions WHERE workflow_run_id=$1 AND status!='completed'")
+                let outstanding: i64 = Self::scalar("SELECT COUNT(*) FROM activity_executions WHERE workflow_run_id=$1 AND status NOT IN ('completed','failed')")
                     .bind(&run_id).fetch_one(&mut *tx).await?;
                 let timers: i64 = Self::scalar("SELECT COUNT(*) FROM workflow_run_timers WHERE workflow_run_id=$1 AND status='pending'")
                     .bind(&run_id).fetch_one(&mut *tx).await?;
@@ -1372,6 +1373,7 @@ where
             "activity_type": DB::string(activity,"activity_type")?, "arguments": wire(&DB::string(activity,"arguments")?),
             "retry_policy":DB::optional_document_row(activity,"retry_policy")?,
             "status":DB::string(activity,"status")?,"attempt_count":DB::number(activity,"attempt_count")?,
+            "closed_at":DB::optional_instant(activity,"closed_at")?,
             "attempt_id":DB::optional_string(activity,"current_attempt_id")?,
             "exception":DB::optional_string(activity,"exception")?.map(|value|wire(&value)),
             "payload_codec": "avro", "queue": DB::string(activity,"queue")?}}),

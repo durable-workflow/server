@@ -1,0 +1,19 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "activity-failure-filtered",
+  "workflow_type": "parity.v1.activity_failure_filtered",
+  "input": {"message": "terminal λ", "large": 9007199254740993, "optional": null},
+  "typed_value": {"type": "map", "value": {"message": {"type": "string", "value": "terminal λ"}, "large": {"type": "int64", "value": "9007199254740993"}, "optional": {"type": "null", "value": null}}},
+  "output": {"echo": {"message": "terminal λ", "large": 9007199254740993, "optional": null}, "caught": {"type": "RuntimeException", "message": "parity terminal λ"}},
+  "typed_output": {"type": "map", "value": {"echo": {"type": "map", "value": {"message": {"type": "string", "value": "terminal λ"}, "large": {"type": "int64", "value": "9007199254740993"}, "optional": {"type": "null", "value": null}}}, "caught": {"type": "map", "value": {"type": {"type": "string", "value": "RuntimeException"}, "message": {"type": "string", "value": "parity terminal λ"}}}}},
+  "activity": false,
+  "terminal_activity_failure": true,
+  "expected_attempts": 1,
+  "non_retryable": true,
+  "failure_activity_type": "parity.v1.terminal_activity",
+  "retry_policy": {"max_attempts": 3, "backoff_seconds": [1], "non_retryable_error_types": ["RuntimeException"]},
+  "failure": {"type": "RuntimeException", "message": "parity terminal λ"},
+  "expected_events": ["StartAccepted", "WorkflowStarted", "ActivityScheduled", "ActivityStarted", "ActivityFailed", "WorkflowCompleted"],
+  "embedded_expected_events": ["StartAccepted", "WorkflowStarted", "ActivityScheduled", "ActivityStarted", "ActivityFailed", "FailureHandled", "WorkflowCompleted"],
+  "contract": "A reported RuntimeException exactly matches the original non-retryable error filter. The first attempt and original activity execution close as failed despite unused retry budget. There is no retry task or ActivityRetryScheduled; exactly one ActivityFailed resumes the workflow once. The unchanged worker catches the durable failure and completes with the original typed input and failure type/message. Retain the original policy, non-retryable classification, failure identity and failure payload. Duplicate failures and closed queue redelivery do not change history."
+}

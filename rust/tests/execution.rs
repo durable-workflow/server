@@ -87,6 +87,59 @@ impl TestDatabase {
         }
     }
 
+    async fn failure_count(&self, activity_id: &str, failure_id: &str, non_retryable: bool) -> i64 {
+        let query = "SELECT COUNT(*) FROM workflow_failures WHERE source_id=$1 AND id=$2 AND non_retryable=$3 AND source_kind='activity_execution' AND propagation_kind='activity' AND failure_category='activity' AND handled=false";
+        match self {
+            Self::Sqlite(dir) => {
+                let pool = sqlx::SqlitePool::connect(&format!(
+                    "sqlite://{}",
+                    dir.path().join("runtime.sqlite").display()
+                ))
+                .await
+                .unwrap();
+                let count = sqlx::query_scalar(query)
+                    .bind(activity_id)
+                    .bind(failure_id)
+                    .bind(non_retryable)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+                count
+            }
+            Self::Postgres { options, .. } => {
+                let pool = sqlx::postgres::PgPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
+                let count = sqlx::query_scalar(query)
+                    .bind(activity_id)
+                    .bind(failure_id)
+                    .bind(non_retryable)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+                count
+            }
+            Self::MySql { options, .. } => {
+                let pool = sqlx::mysql::MySqlPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
+                let count = sqlx::query_scalar("SELECT COUNT(*) FROM workflow_failures WHERE source_id=? AND id=? AND non_retryable=? AND source_kind='activity_execution' AND propagation_kind='activity' AND failure_category='activity' AND handled=false")
+                    .bind(activity_id)
+                    .bind(failure_id)
+                    .bind(non_retryable)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+                count
+            }
+        }
+    }
+
     async fn execute(&self, statement: &'static str) {
         match self {
             Self::Sqlite(dir) => {
@@ -2008,7 +2061,7 @@ async fn reported_activity_failure_commits_one_persistent_retry_and_fences_old_o
         json!({"max_attempts":1.5}),
         json!({"max_attempts":2,"backoff_seconds":[-1]}),
         json!({"max_attempts":2,"backoff_seconds":[i64::MAX]}),
-        json!({"max_attempts":2,"non_retryable_error_types":["RuntimeException"]}),
+        json!({"max_attempts":2,"non_retryable_error_types":[17]}),
         json!({"max_attempts":2,"unsupported":true}),
     ] {
         let refused = finish_task(&app_a,&workflow,json!([{"type":"schedule_activity","activity_type":"retry-activity","arguments":arguments,"retry_policy":invalid}])).await;
@@ -2036,12 +2089,6 @@ async fn reported_activity_failure_commits_one_persistent_retry_and_fences_old_o
     assert_eq!(
         request(&app_b, "POST", &fail_path, wrong_owner).await.0,
         StatusCode::CONFLICT
-    );
-    let mut non_retryable = fail.clone();
-    non_retryable["failure"]["non_retryable"] = json!(true);
-    assert_eq!(
-        request(&app_b, "POST", &fail_path, non_retryable).await.0,
-        StatusCode::UNPROCESSABLE_ENTITY
     );
     assert_eq!(
         run_history(&app_b, &started["workflow_id"], &started["run_id"])
@@ -2140,17 +2187,6 @@ async fn reported_activity_failure_commits_one_persistent_retry_and_fences_old_o
         "/api/worker/activity-tasks/{}/complete",
         second["task_id"].as_str().unwrap()
     );
-    let second_fail_path = format!(
-        "/api/worker/activity-tasks/{}/fail",
-        second["task_id"].as_str().unwrap()
-    );
-    let exhausted = json!({"lease_owner":"worker","activity_attempt_id":second["activity_attempt_id"],"failure":fail["failure"]});
-    assert_eq!(
-        request(&app_c, "POST", &second_fail_path, exhausted)
-            .await
-            .0,
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
     assert_eq!(
         run_history(&app_b, &started["workflow_id"], &started["run_id"])
             .await
@@ -2206,6 +2242,244 @@ async fn reported_activity_failure_commits_one_persistent_retry_and_fences_old_o
     node_b.close().await;
     recovered.close().await;
     database.remove().await;
+}
+
+#[tokio::test]
+async fn terminal_activity_failures_resume_once_and_preserve_original_failure() {
+    // Budget exhaustion, exact filters, explicit report and default policy.
+    for (policy, count, reported_non_retryable, non_retryable) in [
+        (
+            json!({"max_attempts":2,"backoff_seconds":[0],"non_retryable_error_types":[]}),
+            2,
+            false,
+            false,
+        ),
+        (
+            json!({"max_attempts":3,"backoff_seconds":[1],"non_retryable_error_types":["RuntimeException"]}),
+            1,
+            false,
+            true,
+        ),
+        (
+            json!({"max_attempts":2,"backoff_seconds":[0],"non_retryable_error_types":["\u{2003}RuntimeException\u{2003}"]}),
+            2,
+            false,
+            false,
+        ),
+        (
+            json!({"max_attempts":3,"backoff_seconds":[1],"non_retryable_error_types":[]}),
+            1,
+            true,
+            true,
+        ),
+        (Value::Null, 1, false, false),
+    ] {
+        let database = TestDatabase::new().await;
+        let node_a = database.open().await.unwrap();
+        let node_b = database.open().await.unwrap();
+        let app_a = router(node_a.clone());
+        let app_b = router(node_b.clone());
+        let started = start(&app_a, "terminal").await;
+        register(
+            &app_a,
+            "worker",
+            json!(["echo"]),
+            json!(["terminal-activity"]),
+        )
+        .await;
+        let workflow = poll(&app_a, "worker", "workflow").await;
+        let arguments = envelope(Payload::Array(vec![Payload::Long(9007199254740993)]));
+        let scheduled = finish_task(&app_a, &workflow, json!([{"type":"schedule_activity","activity_type":"terminal-activity","arguments":arguments,"retry_policy":policy}])).await;
+        assert_eq!(scheduled.0, StatusCode::OK, "{}", scheduled.1);
+        let first = poll(&app_a, "worker", "activity").await;
+        let mut last = first.clone();
+        let failure = json!({"type":"RuntimeException","message":"terminal λ","non_retryable":reported_non_retryable});
+        if count == 2 {
+            let path = format!(
+                "/api/worker/activity-tasks/{}/fail",
+                first["task_id"].as_str().unwrap()
+            );
+            let receipt = request(&app_a, "POST", &path, json!({"lease_owner":"worker","activity_attempt_id":first["activity_attempt_id"],"failure":failure})).await;
+            assert_eq!(receipt.0, StatusCode::OK, "{}", receipt.1);
+            assert!(poll(&app_b, "worker", "workflow").await.is_null());
+            last = poll(&app_b, "worker", "activity").await;
+            assert_eq!(last["task_id"], receipt.1["next_task_id"]);
+            assert_eq!(
+                last["activity_execution_id"],
+                first["activity_execution_id"]
+            );
+            assert_ne!(last["activity_attempt_id"], first["activity_attempt_id"]);
+        }
+        assert_eq!(last["attempt_number"], count);
+        assert_eq!(last["arguments"], arguments);
+        let path = format!(
+            "/api/worker/activity-tasks/{}/fail",
+            last["task_id"].as_str().unwrap()
+        );
+        let body = json!({"lease_owner":"worker","activity_attempt_id":last["activity_attempt_id"],"failure":failure});
+        let mut wrong = body.clone();
+        wrong["activity_attempt_id"] = json!("wrong-attempt");
+        assert_eq!(
+            request(&app_b, "POST", &path, wrong).await.0,
+            StatusCode::CONFLICT
+        );
+        let (one, two) = tokio::join!(
+            request(&app_a, "POST", &path, body.clone()),
+            request(&app_b, "POST", &path, body.clone())
+        );
+        assert_eq!(one.0, StatusCode::OK, "{}", one.1);
+        assert_eq!(two.0, StatusCode::OK, "{}", two.1);
+        assert_ne!(one.1["recorded"], two.1["recorded"]);
+        let receipt = if one.1["recorded"] == true {
+            one.1
+        } else {
+            two.1
+        };
+        let original = run_history(&app_b, &started["workflow_id"], &started["run_id"]).await;
+        let terminal = &original.as_array().unwrap().last().unwrap()["payload"];
+        assert_eq!(
+            original.as_array().unwrap().last().unwrap()["event_type"],
+            "ActivityFailed"
+        );
+        assert_eq!(
+            original
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|e| e["event_type"] == "ActivityFailed")
+                .count(),
+            1
+        );
+        assert_eq!(
+            terminal["activity_execution_id"],
+            first["activity_execution_id"]
+        );
+        assert_eq!(terminal["activity_attempt_id"], last["activity_attempt_id"]);
+        assert_eq!(terminal["attempt_number"], count);
+        assert_eq!(terminal["activity"]["status"], "failed");
+        assert_eq!(terminal["non_retryable"], non_retryable);
+        assert_eq!(terminal["failure_category"], "activity");
+        assert_eq!(terminal["message"], "terminal λ");
+        assert_eq!(terminal["exception_type"], "RuntimeException");
+        assert_eq!(
+            terminal["exception"],
+            json!({"type":"RuntimeException","message":"terminal λ","code":0,"non_retryable":reported_non_retryable})
+        );
+        assert!(
+            terminal["failure_id"]
+                .as_str()
+                .is_some_and(|s| !s.is_empty())
+        );
+        assert_eq!(
+            database
+                .failure_count(
+                    first["activity_execution_id"].as_str().unwrap(),
+                    terminal["failure_id"].as_str().unwrap(),
+                    non_retryable
+                )
+                .await,
+            1,
+            "original failure row and public history must agree"
+        );
+        assert!(poll(&app_b, "worker", "activity").await.is_null());
+        let mut conflicting = body.clone();
+        conflicting["failure"]["message"] = json!("different");
+        assert_eq!(
+            request(&app_b, "POST", &path, conflicting).await.0,
+            StatusCode::CONFLICT
+        );
+        for claim in [&first, &last] {
+            let stale = format!(
+                "/api/worker/activity-tasks/{}/complete",
+                claim["task_id"].as_str().unwrap()
+            );
+            assert_eq!(request(&app_b, "POST", &stale, json!({"lease_owner":"worker","activity_attempt_id":claim["activity_attempt_id"],"result":envelope(Payload::Null)})).await.0, StatusCode::CONFLICT);
+        }
+        node_a.close().await;
+        let recovered = database.open().await.unwrap();
+        let app_c = router(recovered.clone());
+        assert_eq!(
+            request(&app_c, "POST", &path, body.clone()).await.1["recorded"],
+            false
+        );
+        assert_eq!(
+            run_history(&app_c, &started["workflow_id"], &started["run_id"]).await,
+            original
+        );
+        let (left, right) = tokio::join!(
+            poll(&app_b, "worker", "workflow"),
+            poll(&app_c, "worker", "workflow")
+        );
+        assert_ne!(
+            left.is_null(),
+            right.is_null(),
+            "one terminal parent resumption across nodes"
+        );
+        let resumed = if left.is_null() { right } else { left };
+        assert_eq!(resumed["task_id"], receipt["next_task_id"]);
+        assert_eq!(resumed["run_id"], started["run_id"]);
+        let worker_events = resumed["history_events"].as_array().unwrap();
+        assert_eq!(
+            worker_events.last().unwrap()["workflow_task_id"],
+            last["task_id"]
+        );
+        let event_ids: std::collections::HashSet<_> = worker_events
+            .iter()
+            .map(|event| event["id"].as_str().filter(|id| !id.is_empty()).unwrap())
+            .collect();
+        assert_eq!(event_ids.len(), worker_events.len());
+        // Worker history retains event IDs/attribution and recorded_at;
+        // the control API explicitly returns these four common fields.
+        let control_events: Vec<_> = worker_events
+            .iter()
+            .map(|event| {
+                json!({
+                    "sequence":event["sequence"],"event_type":event["event_type"],
+                    "timestamp":event["recorded_at"],"payload":event["payload"]
+                })
+            })
+            .collect();
+        assert_eq!(json!(control_events), original);
+        let result = envelope(Payload::Long(9007199254740993));
+        assert_eq!(
+            finish_task(
+                &app_c,
+                &resumed,
+                json!([{"type":"complete_workflow","result":result}])
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            finish_task(
+                &app_b,
+                &resumed,
+                json!([{"type":"complete_workflow","result":result}])
+            )
+            .await
+            .1["recorded"],
+            false
+        );
+        let completed = run_history(&app_c, &started["workflow_id"], &started["run_id"]).await;
+        assert_eq!(
+            completed.as_array().unwrap().last().unwrap()["event_type"],
+            "WorkflowCompleted"
+        );
+        assert_eq!(
+            request(&app_b, "POST", &path, body).await.1["recorded"],
+            false
+        );
+        assert_eq!(
+            run_history(&app_b, &started["workflow_id"], &started["run_id"]).await,
+            completed
+        );
+        assert!(poll(&app_b, "worker", "workflow").await.is_null());
+        assert!(poll(&app_c, "worker", "activity").await.is_null());
+        node_b.close().await;
+        recovered.close().await;
+        database.remove().await;
+    }
 }
 
 #[tokio::test]

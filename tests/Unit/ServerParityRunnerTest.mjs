@@ -6,6 +6,8 @@ import {checkObservation, compareRecords as compareCorpusRecords} from '../../sc
 const fixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/one-activity.json', import.meta.url)));
 const reviewed = {'one-activity.json': fixture};
 const retryFixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/activity-retry.json', import.meta.url)));
+const exhaustedFixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/activity-failure-exhausted.json', import.meta.url)));
+const filteredFixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/activity-failure-filtered.json', import.meta.url)));
 const compareRecords = records => compareCorpusRecords(records, {'one-activity.json': 'fixture-sha'}, reviewed);
 function observation(suffix = '') {
   const run = `run${suffix}`;
@@ -96,6 +98,112 @@ test('reported failure retries preserve the common PHP/embedded durable contract
   assert.deepStrictEqual(checkObservation(retryFixture, retryObservation(), 'test-one-activity'),
     checkObservation(retryFixture, retryObservation('embedded'), 'test-one-activity'));
 });
+
+function terminalObservation(fixture, mode = 'http') {
+  const raw = retryObservation(mode);
+  raw.workflow_type = fixture.workflow_type;
+  raw.input = [fixture.input];
+  raw.typed_input = {type: 'list', value: [fixture.typed_value]};
+  raw.output = fixture.output;
+  raw.typed_output = fixture.typed_output;
+  const policy = {snapshot_version: 1, ...fixture.retry_policy, start_to_close_timeout: null,
+    schedule_to_start_timeout: null, schedule_to_close_timeout: null, heartbeat_timeout: null};
+  for (const event of raw.events.slice(0, 2)) event.payload.workflow_type = fixture.workflow_type;
+  for (const event of raw.events.slice(2, -1)) {
+    event.payload.activity_type = fixture.failure_activity_type;
+    Object.assign(event.payload.activity, {retry_policy: structuredClone(policy), status: 'running', attempt_count: event.payload.attempt_number ?? 1});
+    event.decoded = {activity_arguments: [fixture.input]};
+    event.typed_decoded = {activity_arguments: {type: 'list', value: [fixture.typed_value]}};
+  }
+  Object.assign(raw.events[4].payload, {message: fixture.failure.message,
+    exception: mode === 'embedded' ? {class: fixture.failure.type, message: fixture.failure.message}
+      : {...fixture.failure, non_retryable: false}});
+  const failed = raw.events[6];
+  failed.event_type = 'ActivityFailed';
+  Object.assign(failed.payload, {activity_attempt_id: `attempt-${fixture.expected_attempts}`,
+    attempt_number: fixture.expected_attempts, failure_id: 'original-failure', failure_category: 'activity',
+    non_retryable: fixture.non_retryable, message: fixture.failure.message, code: 0,
+    exception_class: fixture.failure.type, exception_type: mode === 'embedded' ? null : fixture.failure.type,
+    exception: mode === 'embedded' ? {class: fixture.failure.type, message: fixture.failure.message}
+      : {...fixture.failure, non_retryable: false}});
+  Object.assign(failed.payload.activity, {status: 'failed', attempt_count: fixture.expected_attempts, closed_at: failed.timestamp});
+  delete failed.payload.result;
+  raw.events.at(-1).decoded = {output: fixture.output};
+  raw.events.at(-1).typed_decoded = {output: fixture.typed_output};
+  if (fixture.expected_attempts === 1) raw.events.splice(4, 2);
+  if (mode === 'embedded') raw.events.splice(-1, 0, {event_type: 'FailureHandled', timestamp: '2026-01-01T00:00:02.125Z',
+    payload: {failure_id: 'original-failure', sequence: 1, failure_category: 'activity', source_kind: 'activity_execution',
+      source_id: 'activity-retry', propagation_kind: 'activity', exception_class: fixture.failure.type,
+      message: fixture.failure.message, handled: true}, decoded: {}, typed_decoded: {}});
+  raw.events.forEach((event, index) => {event.sequence = index + 1;});
+  raw.activity_polls = raw.activity_polls.slice(0, fixture.expected_attempts);
+  for (const task of raw.activity_polls) {
+    task.activity_type = fixture.failure_activity_type;
+    task.retry_policy = structuredClone(policy);
+  }
+  raw.activity_outcomes = raw.activity_polls.map((claim, index) => ({path: `/api/worker/activity-tasks/${claim.task_id}/fail`,
+    request: {activity_attempt_id: claim.activity_attempt_id, lease_owner: claim.lease_owner, failure: {...fixture.failure, non_retryable: false}},
+    response: {task_id: claim.task_id, activity_attempt_id: claim.activity_attempt_id, recorded: true,
+      next_task_id: index + 1 === fixture.expected_attempts ? 'workflow-task-1' : 'activity-task-2'}}));
+  raw.workflow_polls.forEach((task, index) => {
+    task.workflow_type = raw.workflow_type;
+    task.history_events = structuredClone(raw.events.slice(0, index === 0 ? 2 : -1));
+  });
+  Object.assign(raw.workflow_completions[0].request.commands[0], {activity_type: fixture.failure_activity_type, retry_policy: fixture.retry_policy});
+  raw.caught_activity_failure = {type: fixture.failure.type, message: fixture.failure.message,
+    non_retryable: fixture.non_retryable, history_event_type: 'ActivityFailed', payload: structuredClone(failed.payload)};
+  raw.activity_duplicate_receipts = {history_before: ['original-history'], history_after: ['original-history'],
+    ...(mode === 'embedded' ? {redelivered_task_ids: raw.activity_polls.map(task => task.task_id)}
+      : {failures: raw.activity_polls.map(task => ({status: 409, response: {task_id: task.task_id, recorded: false, reason: 'stale_attempt'}}))})};
+  return structuredClone(raw);
+}
+
+for (const fixture of [exhaustedFixture, filteredFixture]) {
+  test(`${fixture.id} preserves catchable failure and common PHP/embedded semantics`, () => {
+    assert.deepStrictEqual(checkObservation(fixture, terminalObservation(fixture), 'test-one-activity'),
+      checkObservation(fixture, terminalObservation(fixture, 'embedded'), 'test-one-activity'));
+  });
+}
+for (const [name, corrupt] of [
+  ['wrong original handled failure', raw => {raw.events.at(-2).payload.failure_id = 'other';}],
+  ['wrong original handled activity', raw => {raw.events.at(-2).payload.source_id = 'other';}],
+  ['unacknowledged embedded catch', raw => {raw.events.at(-2).payload.handled = false;}],
+]) {
+  test(`refuses embedded terminal ${name}`, () => {
+    const raw = terminalObservation(filteredFixture, 'embedded');
+    corrupt(raw);
+    assert.throws(() => checkObservation(filteredFixture, raw, raw.workflow_id));
+  });
+}
+for (const [name, corrupt] of [
+  ['lost failure identity', raw => {raw.events[6].payload.failure_id = null;}],
+  ['reused failure identity', raw => {raw.events[6].payload.failure_id = raw.run_id;}],
+  ['wrong terminal execution', raw => {raw.events[6].payload.activity_execution_id = 'other';}],
+  ['wrong terminal attempt', raw => {raw.events[6].payload.activity_attempt_id = 'attempt-1';}],
+  ['unclosed terminal execution', raw => {raw.events[6].payload.activity.status = 'running';}],
+  ['early terminal closure', raw => {raw.events[6].payload.activity.closed_at = '2026-01-01T00:00:00Z';}],
+  ['budget exhaustion incorrectly non-retryable', raw => {raw.events[6].payload.non_retryable = true;}],
+  ['wrong failure category', raw => {raw.events[6].payload.failure_category = 'workflow';}],
+  ['wrong terminal exception', raw => {raw.events[6].payload.exception.type = 'other';}],
+  ['wrong terminal message', raw => {raw.events[6].payload.message = 'other';}],
+  ['changed terminal arguments', raw => {raw.events[6].payload.activity.arguments.blob = 'other';}],
+  ['lost exact terminal int64', raw => {raw.events[6].typed_decoded.activity_arguments.value[0].value.large.value = '9007199254740992';}],
+  ['changed terminal retry filter', raw => {raw.events[6].payload.activity.retry_policy.non_retryable_error_types.push('RuntimeException');}],
+  ['early terminal retry', raw => {raw.events[5].payload.task.leased_at = '2026-01-01T00:00:02.089999Z';}],
+  ['wrong acknowledged resumption', raw => {raw.activity_outcomes[1].response.next_task_id = 'other';}],
+  ['unacknowledged terminal report', raw => {raw.activity_outcomes[1].response.recorded = false;}],
+  ['intermediate terminal workflow resumption', raw => {raw.workflow_polls.push({});}],
+  ['caught failure loses original payload', raw => {raw.caught_activity_failure.payload.failure_id = 'other';}],
+  ['terminal SDK report targets wrong attempt', raw => {raw.activity_outcomes[1].request.activity_attempt_id = 'attempt-1';}],
+  ['duplicate terminal report commits again', raw => {raw.activity_duplicate_receipts.failures[1].response.recorded = true;}],
+  ['terminal duplicate changes history', raw => {raw.activity_duplicate_receipts.history_after.push('extra');}],
+]) {
+  test(`refuses terminal ${name}`, () => {
+    const raw = terminalObservation(exhaustedFixture);
+    corrupt(raw);
+    assert.throws(() => checkObservation(exhaustedFixture, raw, raw.workflow_id));
+  });
+}
 for (const [name, corrupt] of [
   ['replaced activity identity', raw => {raw.events[5].payload.activity_execution_id = 'different';}],
   ['reused retry attempt', raw => {raw.events[5].payload.activity_attempt_id = 'attempt-1';}],

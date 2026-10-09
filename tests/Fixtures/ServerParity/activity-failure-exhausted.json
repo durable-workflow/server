@@ -1,0 +1,19 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "activity-failure-exhausted",
+  "workflow_type": "parity.v1.activity_failure_exhausted",
+  "input": {"message": "terminal λ", "large": 9007199254740993, "optional": null},
+  "typed_value": {"type": "map", "value": {"message": {"type": "string", "value": "terminal λ"}, "large": {"type": "int64", "value": "9007199254740993"}, "optional": {"type": "null", "value": null}}},
+  "output": {"echo": {"message": "terminal λ", "large": 9007199254740993, "optional": null}, "caught": {"type": "RuntimeException", "message": "parity terminal λ"}},
+  "typed_output": {"type": "map", "value": {"echo": {"type": "map", "value": {"message": {"type": "string", "value": "terminal λ"}, "large": {"type": "int64", "value": "9007199254740993"}, "optional": {"type": "null", "value": null}}}, "caught": {"type": "map", "value": {"type": {"type": "string", "value": "RuntimeException"}, "message": {"type": "string", "value": "parity terminal λ"}}}}},
+  "activity": false,
+  "terminal_activity_failure": true,
+  "expected_attempts": 2,
+  "non_retryable": false,
+  "failure_activity_type": "parity.v1.terminal_activity",
+  "retry_policy": {"max_attempts": 2, "backoff_seconds": [1], "non_retryable_error_types": []},
+  "failure": {"type": "RuntimeException", "message": "parity terminal λ"},
+  "expected_events": ["StartAccepted", "WorkflowStarted", "ActivityScheduled", "ActivityStarted", "ActivityRetryScheduled", "ActivityStarted", "ActivityFailed", "WorkflowCompleted"],
+  "embedded_expected_events": ["StartAccepted", "WorkflowStarted", "ActivityScheduled", "ActivityStarted", "ActivityRetryScheduled", "ActivityStarted", "ActivityFailed", "FailureHandled", "WorkflowCompleted"],
+  "contract": "One authored activity fails both attempts. The first failure schedules one retry at its original one-second deadline without resuming the workflow. Exhausting the two-attempt budget closes the original execution and second attempt, retains the original failure and commits exactly one terminal ActivityFailed and one parent resumption. The unchanged worker replays and catches the durable failure, then completes with the original typed input and failure type/message. Duplicate failures and closed queue redelivery have no durable effect. Terminal failure is not implicitly non-retryable merely because its attempt budget is exhausted."
+}

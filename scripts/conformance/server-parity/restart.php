@@ -41,6 +41,17 @@ function sameRestartValue(mixed $expected, mixed $actual): bool
         : $expected === $actual;
 }
 
+/** Compare the control API's declared fields without losing raw worker events. */
+function restartControlHistory(array $events): array
+{
+    $ids = array_column($events, 'id');
+    assertRestart(count($ids) === count($events) && count(array_unique($ids)) === count($events)
+        && ! in_array('', $ids, true), 'Recovered worker history lost original event identities.');
+
+    return array_map(static fn (array $event): array => ['sequence' => $event['sequence'],
+        'event_type' => $event['event_type'], 'timestamp' => $event['recorded_at'], 'payload' => $event['payload']], $events);
+}
+
 function restartSignalWorkflow(WorkflowContext $context, array $input): array
 {
     $context->waitCondition(fn (): bool => count($context->signals('payload')) > 0, 'restart.payload');
@@ -61,6 +72,17 @@ function restartChildWorkflow(WorkflowContext $context, array $input): mixed
 function restartRetryWorkflow(WorkflowContext $context, array $input): mixed
 {
     return $context->activity('restart.retry.activity', [$input], ['retry_policy' => ['max_attempts' => 2, 'backoff_seconds' => [10]]]);
+}
+
+function restartTerminalWorkflow(WorkflowContext $context, array $input): array
+{
+    try {
+        $context->activity('restart.terminal.activity', [$input], ['retry_policy' => ['max_attempts' => 3, 'backoff_seconds' => [10]]]);
+    } catch (\DurableWorkflow\Exception\ActivityFailed $failure) {
+        return ['echo' => $input, 'caught' => ['type' => $failure->failureType, 'message' => $failure->getMessage(), 'non_retryable' => $failure->nonRetryable]];
+    }
+
+    throw new LogicException('The terminal recovery activity unexpectedly succeeded.');
 }
 
 assertRestart($argc === 4, 'Usage: restart.php prepare|finish URL RECEIPT');
@@ -138,9 +160,30 @@ if ($phase === 'prepare') {
     assertRestart($failureReceipt['next_task_id'] === $retryHistory[4]['payload']['retry_task_id']
         && new DateTimeImmutable($retryHistory[4]['payload']['retry_available_at']) > new DateTimeImmutable(), 'Retry identity/deadline was not retained before the kill.');
     assertRestart($client->pollActivityTask('restart-retry-old', 'restart-retry-v1', 0) === null, 'Retry was claimable before its recorded backoff.');
+    $client->registerWorker('restart-terminal-old', 'restart-terminal-v1', ['restart.terminal'], ['restart.terminal.activity']);
+    $terminalHandle = $client->startWorkflow('restart.terminal', 'rust-restart-terminal', 'restart-terminal-v1', [$value]);
+    $terminalTask = $client->pollWorkflowTask('restart-terminal-old', 'restart-terminal-v1', 0);
+    assertRestart(is_array($terminalTask) && $terminalTask['run_id'] === $terminalHandle->selectedRunId, 'Prepare did not lease the terminal workflow.');
+    $terminalReplay = (new Replayer($client->payloadCodec()))->replay(restartTerminalWorkflow(...),
+        $terminalTask['history_events'], $client->payloadCodec()->decodeEnvelope($terminalTask['arguments']), 'restart-terminal-v1', $terminalTask);
+    $client->completeWorkflowTask($terminalTask['task_id'], $terminalTask['lease_owner'], $terminalTask['workflow_task_attempt'], $terminalReplay->commands);
+    $terminalActivity = $client->pollActivityTask('restart-terminal-old', 'restart-terminal-v1', 0);
+    assertRestart(is_array($terminalActivity) && $terminalActivity['attempt_number'] === 1, 'Prepare did not lease the terminal activity.');
+    // Actual published client reports non-retryable=true with budget remaining.
+    $terminalFailure = $client->failActivityTask($terminalActivity['task_id'], $terminalActivity['activity_attempt_id'],
+        $terminalActivity['lease_owner'], 'restart terminal λ', 'RuntimeException', nonRetryable: true);
+    $terminalHistory = $client->workflowHistory($terminalHandle->workflowId, $terminalHandle->selectedRunId)['events'];
+    assertRestart($terminalFailure['recorded'] === true && array_column($terminalHistory, 'event_type')
+        === ['StartAccepted', 'WorkflowStarted', 'ActivityScheduled', 'ActivityStarted', 'ActivityFailed'], 'Terminal failure was not acknowledged before the kill.');
+    assertRestart($terminalHistory[4]['payload']['non_retryable'] === true
+        && $terminalHistory[4]['payload']['activity']['status'] === 'failed'
+        && $terminalHistory[4]['payload']['activity']['retry_policy']['max_attempts'] === 3, 'Explicit non-retryable report did not close the original activity with unused budget.');
+    assertRestart($client->pollActivityTask('restart-terminal-old', 'restart-terminal-v1', 0) === null, 'Terminal failure unexpectedly scheduled another attempt.');
     $receipt = ['workflow_id' => $handle->workflowId, 'run_id' => $handle->selectedRunId, 'activity' => $activity,
         'retry' => ['workflow_id' => $retryHandle->workflowId, 'run_id' => $retryHandle->selectedRunId,
             'first_claim' => $failedActivity, 'failure_receipt' => $failureReceipt, 'history' => $retryHistory],
+        'terminal' => ['workflow_id' => $terminalHandle->workflowId, 'run_id' => $terminalHandle->selectedRunId,
+            'activity' => $terminalActivity, 'failure_receipt' => $terminalFailure, 'history' => $terminalHistory],
         'timer' => ['workflow_id' => $timerHandle->workflowId, 'run_id' => $timerHandle->selectedRunId, 'scheduled' => $timerHistory[2]['payload']],
         'signal' => ['workflow_id' => $signalHandle->workflowId, 'run_id' => $signalHandle->selectedRunId,
             'opened' => $signalHistory[2]['payload'], 'received' => $signalHistory[3]['payload'], 'response' => $signalCommand],
@@ -152,6 +195,8 @@ if ($phase === 'prepare') {
         'lease_expires_at' => $activity['lease_expires_at'], 'pending_timer' => $receipt['timer'],
         'pending_retry' => ['run_id' => $retryHandle->selectedRunId, 'task_id' => $failureReceipt['next_task_id'],
             'available_at' => $retryHistory[4]['payload']['retry_available_at']],
+        'pending_terminal_resume' => ['run_id' => $terminalHandle->selectedRunId, 'task_id' => $terminalFailure['next_task_id'],
+            'failure_id' => $terminalHistory[4]['payload']['failure_id']],
         'pending_child' => ['parent_run_id' => $parentHandle->selectedRunId, 'child_run_id' => $childTask['run_id'],
             'task_id' => $childTask['task_id'], 'lease_expires_at' => $childTask['lease_expires_at']]], JSON_THROW_ON_ERROR).PHP_EOL;
     exit(0);
@@ -183,6 +228,44 @@ $refuseOldRetryResult = function () use ($client, $firstRetryClaim, $value): voi
     assertRestart($refused, 'The failed pre-kill activity attempt committed a late result.');
 };
 $refuseOldRetryResult();
+$terminal = $receipt['terminal'];
+$terminalActivity = $terminal['activity'];
+assertRestart(sameRestartValue($terminal['history'], $client->workflowHistory($terminal['workflow_id'], $terminal['run_id'])['events']), 'Original acknowledged terminal failure changed after the kill.');
+$terminalFailureDuplicate = $client->failActivityTask($terminalActivity['task_id'], $terminalActivity['activity_attempt_id'],
+    $terminalActivity['lease_owner'], 'restart terminal λ', 'RuntimeException', nonRetryable: true);
+assertRestart($terminalFailureDuplicate['recorded'] === false, 'Pre-kill terminal failure created another outcome or parent resume.');
+$refuseOldTerminalResult = function () use ($client, $terminalActivity, $value): void {
+    $refused = false;
+    try {
+        $client->completeActivityTask($terminalActivity['task_id'], $terminalActivity['activity_attempt_id'], $terminalActivity['lease_owner'], $value);
+    } catch (ServerException $failure) {
+        $refused = $failure->status === 409;
+    }
+    assertRestart($refused, 'The terminal pre-kill attempt committed a late success.');
+};
+$refuseOldTerminalResult();
+$client->registerWorker('restart-terminal-new', 'restart-terminal-v1', ['restart.terminal'], []);
+$terminalClaim = $client->pollWorkflowTask('restart-terminal-new', 'restart-terminal-v1', 0);
+assertRestart(is_array($terminalClaim) && $terminalClaim['task_id'] === $terminal['failure_receipt']['next_task_id']
+    && $terminalClaim['run_id'] === $terminal['run_id']
+    && sameRestartValue(restartControlHistory($terminalClaim['history_events']), $terminal['history'])
+    && $terminalClaim['history_events'][4]['workflow_task_id'] === $terminalActivity['task_id'], 'Recovered terminal resumption lost original task/run/history.');
+$terminalReplay = (new Replayer($client->payloadCodec()))->replay(restartTerminalWorkflow(...),
+    $terminalClaim['history_events'], $client->payloadCodec()->decodeEnvelope($terminalClaim['arguments']), 'restart-terminal-v1', $terminalClaim);
+$terminalResult = ['echo' => $value, 'caught' => ['type' => 'RuntimeException', 'message' => 'restart terminal λ', 'non_retryable' => true]];
+assertRestart(count($terminalReplay->commands) === 1 && $terminalReplay->commands[0]['type'] === 'complete_workflow'
+    && sameRestartValue($terminalResult, $client->payloadCodec()->decodeEnvelope($terminalReplay->commands[0]['result'])), 'Published replay did not catch the original non-retryable failure.');
+$terminalCompletion = $client->completeWorkflowTask($terminalClaim['task_id'], $terminalClaim['lease_owner'], $terminalClaim['workflow_task_attempt'], $terminalReplay->commands);
+$terminalHistory = $client->workflowHistory($terminal['workflow_id'], $terminal['run_id'])['events'];
+assertRestart($terminalCompletion['recorded'] === true && array_column($terminalHistory, 'event_type')
+    === ['StartAccepted', 'WorkflowStarted', 'ActivityScheduled', 'ActivityStarted', 'ActivityFailed', 'WorkflowCompleted']
+    && sameRestartValue(array_slice($terminalHistory, 0, 5), $terminal['history']), 'Terminal recovery changed the acknowledged failure prefix or completed twice.');
+assertRestart(sameRestartValue($terminalResult, $client->describeWorkflow($terminal['workflow_id'], $terminal['run_id'])->output), 'Recovered terminal caught result changed its original typed input.');
+$terminalCompletionDuplicate = $client->completeWorkflowTask($terminalClaim['task_id'], $terminalClaim['lease_owner'], $terminalClaim['workflow_task_attempt'], $terminalReplay->commands);
+assertRestart($terminalCompletionDuplicate['recorded'] === false
+    && sameRestartValue($terminalHistory, $client->workflowHistory($terminal['workflow_id'], $terminal['run_id'])['events']), 'Recovered terminal completion created another outcome.');
+$refuseOldTerminalResult();
+assertRestart($client->pollWorkflowTask('restart-terminal-new', 'restart-terminal-v1', 0) === null, 'Terminal recovery left another parent resumption.');
 $retryWorker = null;
 $retryClaim = null;
 $retryDeadline = microtime(true) + 15;
@@ -370,7 +453,12 @@ $client->deregisterWorkerRegistration('restart-old');
 $client->deregisterWorkerRegistration('restart-child-old');
 $client->deregisterWorkerRegistration('restart-child-new');
 $client->deregisterWorkerRegistration('restart-retry-old');
+$client->deregisterWorkerRegistration('restart-terminal-old');
+$client->deregisterWorkerRegistration('restart-terminal-new');
 echo json_encode(['phase' => $phase, 'outcome' => 'pass', 'run_id' => $execution->runId,
+    'terminal_recovered' => true, 'terminal_history' => $terminalHistory, 'terminal_claim' => $terminalClaim,
+    'terminal_completion' => $terminalCompletion, 'terminal_failure_duplicate' => $terminalFailureDuplicate,
+    'terminal_completion_duplicate' => $terminalCompletionDuplicate,
     'retry_recovered' => true, 'retry_history' => $retryHistory, 'retry_claim' => $retryClaim,
     'retry_failure_duplicate' => $failureDuplicate, 'retry_completion_duplicate' => $retryDuplicate,
     'stale_claim_refused' => true, 'history' => $history, 'timer_recovered' => true, 'timer_history' => $timerHistory,

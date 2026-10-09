@@ -103,6 +103,63 @@ final class RetryActivity extends Activity
     }
 }
 
+#[Type('parity.v1.activity_retry_unmatched_filter')]
+final class UnmatchedFilterWorkflow extends Workflow
+{
+    public function handle(array $value): array
+    {
+        return activity(RetryActivity::class, new ActivityOptions(maxAttempts: 2, backoff: [1], nonRetryableErrorTypes: ['InvalidArgumentException']), $value);
+    }
+}
+
+abstract class CatchingFailureWorkflow extends Workflow
+{
+    abstract protected function options(): ActivityOptions;
+
+    public function handle(array $value): array
+    {
+        try {
+            activity(TerminalActivity::class, $this->options(), $value);
+        } catch (\RuntimeException $failure) {
+            // Embedded replay must restore the original application exception.
+            if ($failure::class !== \RuntimeException::class) {
+                throw $failure;
+            }
+
+            return ['echo' => $value, 'caught' => ['type' => $failure::class, 'message' => $failure->getMessage()]];
+        }
+
+        throw new \LogicException('The terminal fixture activity unexpectedly succeeded.');
+    }
+}
+
+#[Type('parity.v1.activity_failure_exhausted')]
+final class ExhaustedFailureWorkflow extends CatchingFailureWorkflow
+{
+    protected function options(): ActivityOptions
+    {
+        return new ActivityOptions(maxAttempts: 2, backoff: [1]);
+    }
+}
+
+#[Type('parity.v1.activity_failure_filtered')]
+final class FilteredFailureWorkflow extends CatchingFailureWorkflow
+{
+    protected function options(): ActivityOptions
+    {
+        return new ActivityOptions(maxAttempts: 3, backoff: [1], nonRetryableErrorTypes: ['RuntimeException']);
+    }
+}
+
+#[Type('parity.v1.terminal_activity')]
+final class TerminalActivity extends Activity
+{
+    public function handle(array $value): array
+    {
+        throw new \RuntimeException('parity terminal λ');
+    }
+}
+
 #[Type('parity.v1.echo_activity')]
 final class EchoActivity extends Activity
 {
