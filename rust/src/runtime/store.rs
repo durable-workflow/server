@@ -9,6 +9,8 @@ use tokio::sync::Notify;
 use ulid::Ulid;
 
 const LEASE_SECONDS: i64 = 30;
+pub(super) const TASK_CANDIDATES_SQL: &str = "SELECT t.*,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.namespace='default' AND t.queue=$1 AND t.task_type=$2 AND r.status IN ('running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.lease_expires_at<=$3)) AND (t.available_at IS NULL OR t.available_at<=$4) ORDER BY t.available_at,t.id LIMIT 100";
+pub(super) const POLL_RECEIPT_CLEANUP_SQL: &str = "DELETE FROM dw_poll_receipts WHERE expires_at<=$1 AND task_id IN (SELECT id FROM workflow_tasks WHERE status!='leased' OR lease_expires_at<=$2)";
 pub(super) const WORKER_REGISTRATION_SQL: &str = "INSERT INTO workflow_worker_registrations(namespace,worker_id,task_queue,runtime,sdk_version,build_id,supported_workflow_types,supported_activity_types,capabilities,capability_manifest,last_heartbeat_at,created_at,updated_at) VALUES ('default',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT(worker_id,namespace) DO UPDATE SET task_queue=excluded.task_queue,runtime=excluded.runtime,sdk_version=excluded.sdk_version,build_id=excluded.build_id,supported_workflow_types=excluded.supported_workflow_types,supported_activity_types=excluded.supported_activity_types,capabilities=excluded.capabilities,capability_manifest=excluded.capability_manifest,last_heartbeat_at=excluded.last_heartbeat_at,updated_at=excluded.updated_at";
 pub(super) struct Store<DB: Backend> {
     pub(super) pool: Pool<DB>,
@@ -336,8 +338,11 @@ where
         if DB::string(&worker, "task_queue")? != queue {
             return Err(refuse(StatusCode::CONFLICT, "task_queue_mismatch"));
         }
-        Self::query("DELETE FROM dw_poll_receipts WHERE expires_at<=$1 AND task_id IN (SELECT id FROM workflow_tasks WHERE status!='leased' OR lease_expires_at<=$2)")
-            .bind(DB::bind_time(now())).bind(DB::bind_time(now())).execute(&mut *tx).await?;
+        Self::query(DB::POLL_RECEIPT_CLEANUP_SQL)
+            .bind(DB::bind_time(now()))
+            .bind(DB::bind_time(now()))
+            .execute(&mut *tx)
+            .await?;
         let request_id = body
             .get("poll_request_id")
             .map(|_| text(body, "poll_request_id"))
@@ -360,9 +365,19 @@ where
                 "supported_activity_types"
             },
         )?;
-        let candidates = Self::query("SELECT t.*,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.namespace='default' AND t.queue=$1 AND t.task_type=$2 AND r.status IN ('running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.lease_expires_at<=$3)) AND (t.available_at IS NULL OR t.available_at<=$4) ORDER BY t.available_at,t.id LIMIT 100")
-            .bind(queue).bind(kind).bind(DB::bind_time(now())).bind(DB::bind_time(now())).fetch_all(&mut *tx).await?;
+        let candidates = Self::query(DB::TASK_CANDIDATES_SQL)
+            .bind(queue)
+            .bind(kind)
+            .bind(DB::bind_time(now()))
+            .bind(DB::bind_time(now()))
+            .fetch_all(&mut *tx)
+            .await?;
         for task in candidates {
+            // Unsupported stored timestamp shapes fail before leasing work.
+            // Takeover preflight must validate all records, including rows
+            // that are not eligible for this poll's queue/type/deadline.
+            DB::optional_instant(&task, "available_at")?;
+            DB::optional_instant(&task, "lease_expires_at")?;
             let run_id = DB::string(&task, "workflow_run_id")?;
             let activity = if kind == "activity" {
                 let payload: Value = DB::document_row(&task, "payload")?;

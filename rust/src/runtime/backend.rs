@@ -1,5 +1,5 @@
 //! Typed storage differences for one shared native execution state machine.
-use chrono::{DateTime, NaiveDateTime, SecondsFormat, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use serde_json::Value;
 use sqlx::{Database, Encode, MySql, Pool, Postgres, Row, Sqlite, Transaction, Type, types::Json};
 use std::borrow::Cow;
@@ -11,6 +11,8 @@ pub(super) trait Backend: Database {
     type EncodedDocument: for<'q> Encode<'q, Self> + Type<Self> + Send + Sync + 'static;
     const HISTORY_PAGE: &'static str;
     const WORKER_REGISTRATION_SQL: &'static str = super::store::WORKER_REGISTRATION_SQL;
+    const TASK_CANDIDATES_SQL: &'static str = super::store::TASK_CANDIDATES_SQL;
+    const POLL_RECEIPT_CLEANUP_SQL: &'static str = super::store::POLL_RECEIPT_CLEANUP_SQL;
     fn statement(sql: &'static str) -> Cow<'static, str> {
         Cow::Borrowed(sql)
     }
@@ -32,22 +34,68 @@ pub(super) trait Backend: Database {
 }
 
 fn sqlite_instant(value: String) -> Result<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(&value)
-        .map(|time| time.with_timezone(&Utc))
-        .map_err(|_| {
-            super::refuse(
-                axum::http::StatusCode::CONFLICT,
-                "unsupported_stored_timestamp",
-            )
-        })
+    // PHP's Workflow models store UTC SQL timestamps, including microseconds.
+    // Earlier native development data used UTC RFC3339. Keep both readable;
+    // other shapes/offsets require explicit conversion before takeover. The
+    // accepted date prefix must match the SQL ordering expression exactly.
+    if let Ok(time) = DateTime::parse_from_rfc3339(&value)
+        && time.offset().local_minus_utc() == 0
+        && (value.ends_with('Z') || value.ends_with("+00:00"))
+        && value.get(..19) == Some(time.format("%Y-%m-%dT%H:%M:%S").to_string().as_str())
+    {
+        return Ok(time.with_timezone(&Utc));
+    }
+    if let Ok(time) = NaiveDateTime::parse_from_str(&value, "%Y-%m-%d %H:%M:%S%.f")
+        && value.get(..19) == Some(time.format("%Y-%m-%d %H:%M:%S").to_string().as_str())
+    {
+        return Ok(time.and_utc());
+    }
+    Err(super::refuse(
+        axum::http::StatusCode::CONFLICT,
+        "unsupported_stored_timestamp",
+    ))
 }
 
 impl Backend for Sqlite {
     type EncodedTime = String;
     type EncodedDocument = String;
     const HISTORY_PAGE: &'static str = "SELECT * FROM (SELECT *,SUM(length(CAST(payload AS BLOB))) OVER (ORDER BY sequence) AS page_bytes FROM workflow_history_events WHERE workflow_run_id=$1 AND sequence>$2 ORDER BY sequence LIMIT $3) AS page WHERE page_bytes<=8388608 ORDER BY sequence";
+    // Normalize only the two supported UTC storage shapes. Removing trailing
+    // fractional zeros preserves exact decimal ordering, including earlier
+    // native precision; SQLite's floating-point date functions are avoided.
+    const TASK_CANDIDATES_SQL: &'static str = r#"
+WITH utc_tasks AS (
+    SELECT t.*,
+        replace(replace(replace(t.available_at,'T',' '),'Z',''),'+00:00','') AS _dw_available_utc,
+        replace(replace(replace(t.lease_expires_at,'T',' '),'Z',''),'+00:00','') AS _dw_lease_utc
+    FROM workflow_tasks t WHERE t.namespace='default' AND t.queue=$1 AND t.task_type=$2
+), ordered_tasks AS (
+    SELECT *,
+        rtrim(rtrim(CASE WHEN length(_dw_available_utc)=19 THEN _dw_available_utc||'.0' ELSE _dw_available_utc END,'0'),'.') AS _dw_available_order,
+        rtrim(rtrim(CASE WHEN length(_dw_lease_utc)=19 THEN _dw_lease_utc||'.0' ELSE _dw_lease_utc END,'0'),'.') AS _dw_lease_order
+    FROM utc_tasks
+)
+SELECT t.*,r.workflow_type FROM ordered_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id
+WHERE r.status IN ('running','waiting')
+    AND (t.status='ready' OR (t.status='leased' AND t._dw_lease_order<=rtrim(rtrim($3,'0'),'.')))
+    AND (t.available_at IS NULL OR t._dw_available_order<=rtrim(rtrim($4,'0'),'.'))
+ORDER BY t._dw_available_order,t.id LIMIT 100
+"#;
+    const POLL_RECEIPT_CLEANUP_SQL: &'static str = r#"
+WITH utc_receipts AS (
+    SELECT p.namespace,p.worker_id,p.kind,p.request_id,t.status,
+        replace(replace(replace(p.expires_at,'T',' '),'Z',''),'+00:00','') AS receipt_utc,
+        replace(replace(replace(t.lease_expires_at,'T',' '),'Z',''),'+00:00','') AS lease_utc
+    FROM dw_poll_receipts p JOIN workflow_tasks t ON t.id=p.task_id
+)
+DELETE FROM dw_poll_receipts WHERE (namespace,worker_id,kind,request_id) IN (
+    SELECT namespace,worker_id,kind,request_id FROM utc_receipts
+    WHERE rtrim(rtrim(CASE WHEN length(receipt_utc)=19 THEN receipt_utc||'.0' ELSE receipt_utc END,'0'),'.')<=rtrim(rtrim($1,'0'),'.')
+        AND (status!='leased' OR rtrim(rtrim(CASE WHEN length(lease_utc)=19 THEN lease_utc||'.0' ELSE lease_utc END,'0'),'.')<=rtrim(rtrim($2,'0'),'.'))
+)
+"#;
     fn bind_time(time: DateTime<Utc>) -> String {
-        time.to_rfc3339_opts(SecondsFormat::Millis, true)
+        time.format("%Y-%m-%d %H:%M:%S%.6f").to_string()
     }
     fn document(value: &Value) -> String {
         value.to_string()
@@ -228,5 +276,173 @@ impl Backend for MySql {
             return false;
         };
         mysql::verify_history(&mut connection).await.is_ok()
+    }
+}
+
+#[cfg(test)]
+mod timestamp_tests {
+    use super::*;
+    use chrono::SecondsFormat;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn sqlite_php_and_native_deadlines_keep_microsecond_claim_and_receipt_fences() {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = super::super::Runtime::open(
+            directory.path().join("time.sqlite").to_str().unwrap(),
+            "test-token".into(),
+        )
+        .await
+        .unwrap();
+        runtime.start(json!({"workflow_id":"timestamp-fences", "workflow_type":"echo", "task_queue":"test", "input":{"codec":"avro","blob":"wwHioz3/VYAiNwA="}})).await.unwrap();
+        let pool = runtime.sqlite_pool();
+        let clock = DateTime::parse_from_rfc3339("2026-01-02T03:04:05.123456Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        // Values and decisions come from UTC deadline ordering. Execute the
+        // actual compiled claim/cleanup queries with a fixed bound clock; no
+        // float-based SQLite date conversion may round a microsecond fence.
+        for (value, ready) in [
+            ("2026-01-02 03:04:05.123455", true),
+            ("2026-01-02 03:04:05.123456", true),
+            ("2026-01-02 03:04:05.123457", false),
+            ("2026-01-02T03:04:05.123455Z", true),
+            ("2026-01-02T03:04:05.123456Z", true),
+            ("2026-01-02T03:04:05.123457Z", false),
+            ("2026-01-02T03:04:05.123456+00:00", true),
+            ("2026-01-02T03:04:05.123457+00:00", false),
+            ("2026-01-02T03:04:05.123Z", true),
+            ("2026-01-02T03:04:05.124Z", false),
+            ("2026-01-02 03:04:05", true),
+            ("2026-01-02T03:04:06Z", false),
+        ] {
+            sqlx::query(
+                "UPDATE workflow_tasks SET status='ready',available_at=$1,lease_expires_at=NULL",
+            )
+            .bind(value)
+            .execute(pool)
+            .await
+            .unwrap();
+            let available = sqlx::query(Sqlite::TASK_CANDIDATES_SQL)
+                .bind("test")
+                .bind("workflow")
+                .bind(Sqlite::bind_time(clock))
+                .bind(Sqlite::bind_time(clock))
+                .fetch_all(pool)
+                .await
+                .unwrap();
+            assert_eq!(available.len(), usize::from(ready), "availability {value}");
+            sqlx::query(
+                "UPDATE workflow_tasks SET status='leased',available_at=NULL,lease_expires_at=$1",
+            )
+            .bind(value)
+            .execute(pool)
+            .await
+            .unwrap();
+            let expired = sqlx::query(Sqlite::TASK_CANDIDATES_SQL)
+                .bind("test")
+                .bind("workflow")
+                .bind(Sqlite::bind_time(clock))
+                .bind(Sqlite::bind_time(clock))
+                .fetch_all(pool)
+                .await
+                .unwrap();
+            assert_eq!(expired.len(), usize::from(ready), "lease {value}");
+            sqlx::query("INSERT INTO dw_poll_receipts(namespace,worker_id,kind,request_id,task_id,attempt,response,expires_at) SELECT 'default','worker','workflow','receipt',id,1,'{}',$1 FROM workflow_tasks")
+                .bind(value).execute(pool).await.unwrap();
+            sqlx::query(Sqlite::POLL_RECEIPT_CLEANUP_SQL)
+                .bind(Sqlite::bind_time(clock))
+                .bind(Sqlite::bind_time(clock))
+                .execute(pool)
+                .await
+                .unwrap();
+            let retained: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM dw_poll_receipts")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+            assert_eq!(retained, i64::from(!ready), "receipt {value}");
+            sqlx::query("DELETE FROM dw_poll_receipts")
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+        // Expiry and lease are independent fences. An old receipt for a live
+        // lease stays bound; an expired lease does not erase a future receipt.
+        for (expiry, lease, retained) in [
+            (
+                "2026-01-02 03:04:05.123455",
+                "2026-01-02T03:04:05.123457Z",
+                1,
+            ),
+            (
+                "2026-01-02T03:04:05.123457Z",
+                "2026-01-02 03:04:05.123455",
+                1,
+            ),
+            (
+                "2026-01-02T03:04:05.123456Z",
+                "2026-01-02 03:04:05.123456",
+                0,
+            ),
+        ] {
+            sqlx::query("UPDATE workflow_tasks SET status='leased',lease_expires_at=$1")
+                .bind(lease)
+                .execute(pool)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO dw_poll_receipts(namespace,worker_id,kind,request_id,task_id,attempt,response,expires_at) SELECT 'default','worker','workflow','receipt',id,1,'{}',$1 FROM workflow_tasks")
+                .bind(expiry).execute(pool).await.unwrap();
+            sqlx::query(Sqlite::POLL_RECEIPT_CLEANUP_SQL)
+                .bind(Sqlite::bind_time(clock))
+                .bind(Sqlite::bind_time(clock))
+                .execute(pool)
+                .await
+                .unwrap();
+            let actual: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM dw_poll_receipts")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+            assert_eq!(actual, retained, "expiry={expiry}, lease={lease}");
+            sqlx::query("DELETE FROM dw_poll_receipts")
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+        runtime.close().await;
+    }
+
+    #[test]
+    fn sqlite_timestamp_reads_preserve_php_microseconds_and_native_utc_instants() {
+        for value in [
+            "2026-01-02 03:04:05.123456",
+            "2026-01-02T03:04:05.123456Z",
+            "2026-01-02T03:04:05.123456+00:00",
+        ] {
+            let instant = sqlite_instant(value.into()).unwrap();
+            assert_eq!(
+                instant.to_rfc3339_opts(SecondsFormat::Micros, true),
+                "2026-01-02T03:04:05.123456Z"
+            );
+        }
+        for value in ["2026-01-02 03:04:05", "2026-01-02T03:04:05Z"] {
+            assert_eq!(
+                sqlite_instant(value.into())
+                    .unwrap()
+                    .timestamp_subsec_nanos(),
+                0
+            );
+        }
+        for value in [
+            "not-a-date",
+            "2026-02-30 03:04:05.123456",
+            "2026-01-02 03:04:05.123456 trailing",
+            "2026-01-02T03:04:05.123456+02:00",
+            "2026-01-02T03:04:05.123456-02:00",
+            "2026-01-02T03:04:05.123456-00:00",
+            "2026-01-02t03:04:05.123456z",
+            "2026-1-2 03:04:05.123456",
+        ] {
+            assert!(sqlite_instant(value.into()).is_err(), "invalid {value}");
+        }
     }
 }
