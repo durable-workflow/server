@@ -118,7 +118,7 @@ function httpCancellationObservation(array $fixture, string $workflowId, string 
     $fresh->registerWorker($inspectionWorker, $queue, [$fixture['workflow_type']], ['parity.v1.cancel_activity']);
     $remaining = ['workflow' => $fresh->pollWorkflowTask($inspectionWorker, $queue, 0),
         'activity' => $fresh->pollActivityTask($inspectionWorker, $queue, 0)];
-    $fresh->deregisterWorker($inspectionWorker);
+    $fresh->deregisterWorkerRegistration($inspectionWorker);
 
     return ['execution' => $execution->raw, 'workflow_id' => $execution->workflowId, 'run_id' => $execution->runId,
         'workflow_type' => $execution->workflowType, 'namespace' => $execution->namespace, 'task_queue' => $execution->taskQueue,
