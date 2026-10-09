@@ -18,6 +18,10 @@ fi
 # are resolved from the container environment, not from build-time defaults.
 php artisan config:cache
 
+# Cached runtime configuration now identifies the actual database. Connector
+# fences also protect config-cache boot callbacks and direct Artisan roles.
+php artisan server:assert-php-database --allow-unavailable
+
 # Audit the environment against the DW_* contract. Warnings for unknown
 # DW_* vars (typos, silent-drop renames) and deprecated legacy names land
 # in the container log before any request is served. Non-zero exit is

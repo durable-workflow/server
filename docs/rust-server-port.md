@@ -160,8 +160,8 @@ HTTP passes opaque Avro envelopes without invoking the incomplete decoder.
 Discovery/readiness explicitly identify development status, and missing
 commands/effects are refused. A read-only preflight refuses existing PHP data;
 native fresh-database bootstrap does not substitute for sequential backup-first
-takeover. PHP startup refusal remains open, so PHP must never connect to this
-development database. MySQL/PostgreSQL, scoped auth/namespaces, external payloads,
+takeover. Published PHP still has no startup refusal guard, so PHP must never
+connect to this development database. MySQL/PostgreSQL, scoped auth/namespaces, external payloads,
 timers/retries/cancellation, complete capability/consumer matrices and performance
 remain required.
 
@@ -172,8 +172,59 @@ combined state to about 868 MiB. Build-only no-op/comment edits took 0.159/1.513
 seconds. These bounded measurements exclude downloads/startup and make no
 full-server/cache-saving claim.
 
-Next: qualify #330's exact head and repeat its restart evidence in CI, then
-merge it. Implement the PHP refusal boundary and versioned full-schema
-takeover foundation, expanding real execution and differential fixtures across
-the required databases. The rest of the inventory remains open under #325.
+#330 is merged. Its exact head passed the three-runtime comparison, seven
+SQLite transaction/HTTP tests, four codec tests, two-way codec values and an
+actual SIGKILL/replacement-container recovery check in the shared Action. The
+complete PHP feature/source suite and repository/boundary checks also passed.
+
+[The PHP fence in #331](https://github.com/durable-workflow/server/pull/331) establishes PHP refusal before a Rust-marked database can be
+mutated. The reserved, unprefixed `dw_server_schema` relation is the one-way
+ownership fence: its existence refuses PHP even if its rows are empty, malformed
+or from an unknown future version. Removing the marker is not a rollback path.
+Stop every PHP write-capable role before Rust takeover; a connection preflight
+does not make a concurrently mixed fleet safe.
+
+The fence guards Laravel's official SQLite, MySQL/MariaDB and
+PostgreSQL connectors before connection setup can execute durable writes. A
+SQLite file must first be opened read-only, including visible WAL state; an
+immutable snapshot is insufficient. Probe failures must not be mistaken for
+marker absence. The normal container entrypoint checks ownership before
+starting its role, while connector checks protect direct bootstrap, migration,
+worker and scheduler paths and reconnects. Unmarked PHP databases must remain
+usable, and unavailable-backend diagnostics must remain truthful.
+
+Acceptance uses real PHP processes and physical database state: refuse startup
+and write-capable commands against marked SQLite/MySQL/PostgreSQL databases,
+preserve sentinel data and schema, reject empty/future markers, observe a marker
+still in SQLite's WAL, and continue ordinary bootstrap against unmarked data.
+This protection does not claim backup-first conversion, interrupted migration,
+full-schema compatibility or a qualified takeover.
+
+The process fixtures cover physical startup/bootstrap/migration/wipe/worker/
+scheduler refusal, malformed/future markers, reconnects, unmarked bootstrap,
+URI/WAL visibility, nested named-connection wipes, deferred initialization SQL,
+hidden-marker permissions and silent PDO modes. MySQL and PostgreSQL are exercised
+in the feature Action. The additional local MariaDB run uses an actual MariaDB
+11.4.13 deployment. Existing bootstrap, SQLite lock-pressure, unavailable-backend
+and growth-inventory contracts also run; exact-head evidence is linked from #331.
+
+The real SIGKILL fixture initially exposed a recovery regression: SQLite must
+repair a hot rollback journal before reading schema. The fence now recovers a
+private copy with SQLite, checks committed ownership and unchanged input, and
+only then allows ordinary PHP recovery. Fault fixtures verify acknowledged PHP
+data, a marker restored from an uncommitted drop without changing the original,
+concurrent startup, an interrupted probe, a replaced database, actual low-space
+refusal and protection of external super-journal filenames. Root startup and
+Apache's runtime UID have separate private copies. The
+[operator guide](php-database-ownership.md) records temporary disk requirements,
+cleanup and the explicit reserved-name grant needed by table-only MySQL/MariaDB
+roles. This does not claim migration or production takeover qualification.
+Cache-only restart and scheduler-cache maintenance remain usable during a
+database outage; early command preflight targets write-capable roles rather than
+every command sharing their prefix.
+
+Next: implement the versioned full-schema takeover foundation after #331's
+exact-head qualification and merge, expanding real execution and differential
+fixtures across the required databases. The rest of the inventory remains open
+under #325.
 No separate defect issues have been filed yet.

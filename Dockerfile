@@ -32,6 +32,9 @@ RUN apt-get update && apt-get install -y \
 
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
+# Source qualification exercises the actual startup path from this base too.
+COPY --chmod=0755 docker/ensure-sqlite-database.sh /usr/local/bin/server-ensure-sqlite
+
 WORKDIR /app
 
 # ── Dependencies ──────────────────────────────────────────────────────
@@ -90,7 +93,6 @@ RUN cp /tmp/release-composer.json composer.json \
 
 # ── Production image ─────────────────────────────────────────────────
 COPY docker/bootstrap.sh /usr/local/bin/server-bootstrap
-COPY docker/ensure-sqlite-database.sh /usr/local/bin/server-ensure-sqlite
 COPY docker/entrypoint.sh /usr/local/bin/server-entrypoint
 COPY docker/healthcheck.sh /usr/local/bin/server-healthcheck
 COPY docker/process-healthcheck.sh /usr/local/bin/server-process-healthcheck

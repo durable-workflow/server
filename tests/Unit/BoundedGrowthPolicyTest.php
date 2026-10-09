@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit;
 
+use App\Database\PhpDatabaseOwnership;
 use App\Support\WorkerCompatibilityHeartbeatRecorder;
 use FilesystemIterator;
 use PHPUnit\Framework\TestCase;
@@ -77,6 +78,23 @@ class BoundedGrowthPolicyTest extends TestCase
                 "{$metric} is declared in config/dw-bounded-growth.php but was not found in bounded-growth source.",
             );
         }
+    }
+
+    public function test_command_names_are_not_cache_keys_but_dynamic_prefixes_still_need_policy(): void
+    {
+        $commands = $this->serverCommandLiterals();
+        $this->assertNull($this->normalizeServerCacheLiteral('server:bootstrap', $commands));
+        $this->assertNull($this->normalizeServerCacheLiteral('server:assert-php-database', $commands));
+        $prefix = $this->normalizeServerCacheLiteral('server:bootstrap:worker:%s', $commands);
+        $this->assertSame('server:bootstrap:worker:', $prefix);
+        $this->assertFalse($this->sourcePrefixHasPolicy($prefix, $this->declaredCachePrefixes()));
+    }
+
+    public function test_schema_marker_is_not_a_metric_but_unknown_metrics_still_need_policy(): void
+    {
+        $metrics = $this->metricNamesFromSource('SELECT dw_server_schema; dw_unregistered_counter_total{namespace="x"} 1');
+        $this->assertSame(['dw_unregistered_counter_total'], $metrics);
+        $this->assertArrayNotHasKey($metrics[0], $this->policyMetrics());
     }
 
     public function test_cache_policy_entries_have_review_fields(): void
@@ -377,6 +395,7 @@ class BoundedGrowthPolicyTest extends TestCase
     private function serverCachePrefixesInAppSource(): array
     {
         $prefixes = [];
+        $commands = $this->serverCommandLiterals();
 
         foreach ($this->phpFiles(self::$repoRoot.'/app') as $file) {
             $source = file_get_contents($file);
@@ -385,7 +404,7 @@ class BoundedGrowthPolicyTest extends TestCase
             preg_match_all('/[\'"]((?:server:)[^\'"]+)/', $source, $matches);
 
             foreach ($matches[1] ?? [] as $literal) {
-                $prefix = $this->normalizeServerCacheLiteral($literal);
+                $prefix = $this->normalizeServerCacheLiteral($literal, $commands);
 
                 if ($prefix !== null) {
                     $prefixes[$prefix] = $prefix;
@@ -399,8 +418,28 @@ class BoundedGrowthPolicyTest extends TestCase
         return $prefixes;
     }
 
-    private function normalizeServerCacheLiteral(string $literal): ?string
+    /** @return list<string> */
+    private function serverCommandLiterals(): array
     {
+        $commands = [];
+        foreach ([...$this->phpFiles(self::$repoRoot.'/app'), self::$repoRoot.'/routes/console.php'] as $file) {
+            $source = file_get_contents($file);
+            preg_match_all('/(?:\$signature\s*=|Artisan::command\()\s*[\'\"](server:[^\'\"]+)[\'\"]/', $source, $matches);
+            foreach ($matches[1] ?? [] as $signature) {
+                $commands[] = trim($signature);
+                $commands[] = preg_split('/\s+/', trim($signature))[0];
+            }
+        }
+
+        return array_values(array_unique($commands));
+    }
+
+    private function normalizeServerCacheLiteral(string $literal, array $commands = []): ?string
+    {
+        if (in_array(trim($literal), $commands, true)) {
+            return null;
+        }
+
         $literal = preg_replace('/%[a-zA-Z].*$/', '', $literal) ?? $literal;
         $lastColon = strrpos($literal, ':');
 
@@ -452,9 +491,7 @@ class BoundedGrowthPolicyTest extends TestCase
             $source = file_get_contents($file);
             $this->assertNotFalse($source, "{$file} must be readable");
 
-            preg_match_all('/\bdw_[a-z0-9_]+\b/', $source, $matches);
-
-            foreach ($matches[0] ?? [] as $metric) {
+            foreach ($this->metricNamesFromSource($source) as $metric) {
                 $metrics[$metric] = $metric;
             }
         }
@@ -463,6 +500,16 @@ class BoundedGrowthPolicyTest extends TestCase
         sort($metrics);
 
         return $metrics;
+    }
+
+    /** @return list<string> */
+    private function metricNamesFromSource(string $source): array
+    {
+        preg_match_all('/\bdw_[a-z0-9_]+\b/', $source, $matches);
+
+        // The reserved persistence relation is not emitted telemetry. Every
+        // other dw_* identifier still needs a metric policy.
+        return array_values(array_filter($matches[0] ?? [], static fn (string $name): bool => $name !== PhpDatabaseOwnership::MARKER_TABLE));
     }
 
     /**
