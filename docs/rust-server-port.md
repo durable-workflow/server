@@ -383,3 +383,20 @@ Next: qualify backup-first sequential takeover with
 stored-value and migration-interruption fixtures. The capability, consumer,
 performance and operational inventory remains open under #325.
 No separate defect issues have been filed yet.
+
+Final checks of the pending-task correction caught `SQLITE_BUSY` while three
+native runtimes opened one fresh SQLite file, before its HTTP case ran. The [startup
+correction in #337](https://github.com/durable-workflow/server/pull/337)
+fix retries only that transient database error, with at most three attempts;
+each repeats read-only ownership preflight and retains the existing lock limits.
+An unsuccessful bootstrap closes its pool and finishes rollback before retry.
+Other errors and ownership refusals return immediately. Ownership inspection
+checks all user objects, including view-only databases and names such as
+`sqlitex_customer_data`, and repeats the same
+empty/native ownership check under the initialization write lock before DDL.
+The concurrent-runtime fixture exercises sixteen independent fresh databases;
+three unknown-object refusal cases require unchanged file bytes and no WAL/SHM
+creation. Catalog inspection uses SQLite's literal internal-name prefix, so a
+SQL wildcard cannot hide user objects.
+Exact-head qualification is recorded in #337. Ordinary command execution and
+PHP takeover remain outside this startup correction.
