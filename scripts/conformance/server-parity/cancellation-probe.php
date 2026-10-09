@@ -90,6 +90,7 @@ function httpCancellationObservation(array $fixture, string $workflowId, string 
             return $value; // The normal SDK worker must discard its stale result.
         });
     $worker->run(0);
+    $workerActivityOutcomes = $activityOutcomes;
     $execution = $handle->describeSelectedRun();
     $events = httpHistory($client, $workflowId, $handle->selectedRunId);
     $duplicate = cancellationReceipt(static fn (): array => $client->cancelWorkflow($workflowId, 'replacement reason', $handle->selectedRunId));
@@ -120,7 +121,7 @@ function httpCancellationObservation(array $fixture, string $workflowId, string 
         'input' => $execution->input, 'output' => $execution->output,
         'events' => decodeHistory($events, $client->payloadCodec()->decodeEnvelope(...)),
         'workflow_polls' => $polls, 'workflow_completions' => $completions,
-        'activity_polls' => $activityPolls, 'activity_outcomes' => $activityOutcomes,
+        'activity_polls' => $activityPolls, 'activity_outcomes' => $workerActivityOutcomes,
         'cancellation' => ['before' => $before, 'accepted' => $receipt, 'duplicate' => $duplicate,
             'history_before_duplicate' => $events, 'history_after_duplicate' => $afterDuplicate,
             'late_completion' => $late, 'outcome' => $outcome, 'remaining_tasks' => $remaining,
