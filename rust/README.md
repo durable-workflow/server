@@ -32,6 +32,8 @@ The [first build observations](build-observations-2026-10-09.md) record clean,
 no-op, comment-edit and cache results with their disk costs and limits.
 The [HTTP slice observations](runtime-build-observations-2026-10-09.md) record
 its larger native build, test and dependency costs.
+The [PostgreSQL observations](postgres-build-observations-2026-10-09.md) include
+typed storage and TLS dependencies, with separate clean/incremental disk costs.
 
 ## PostgreSQL storage foundation
 
