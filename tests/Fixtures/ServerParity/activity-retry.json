@@ -1,0 +1,28 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "activity-retry",
+  "workflow_type": "parity.v1.activity_retry",
+  "input": {"message": "retry λ", "large": 9007199254740993, "optional": null, "enabled": true},
+  "typed_value": {"type": "map", "value": {
+    "message": {"type": "string", "value": "retry λ"},
+    "large": {"type": "int64", "value": "9007199254740993"},
+    "optional": {"type": "null", "value": null},
+    "enabled": {"type": "boolean", "value": true}
+  }},
+  "output": {"echo": {"message": "retry λ", "large": 9007199254740993, "optional": null, "enabled": true}, "attempt": 2},
+  "typed_output": {"type": "map", "value": {
+    "echo": {"type": "map", "value": {
+      "message": {"type": "string", "value": "retry λ"},
+      "large": {"type": "int64", "value": "9007199254740993"},
+      "optional": {"type": "null", "value": null},
+      "enabled": {"type": "boolean", "value": true}
+    }},
+    "attempt": {"type": "int64", "value": "2"}
+  }},
+  "activity": false,
+  "retry_activity_type": "parity.v1.retry_activity",
+  "retry_policy": {"max_attempts": 2, "backoff_seconds": [1], "non_retryable_error_types": []},
+  "failure": {"type": "RuntimeException", "message": "parity retry λ"},
+  "expected_events": ["StartAccepted", "WorkflowStarted", "ActivityScheduled", "ActivityStarted", "ActivityRetryScheduled", "ActivityStarted", "ActivityCompleted", "WorkflowCompleted"],
+  "contract": "One authored activity throws a retryable RuntimeException on attempt one and returns a distinct typed result on attempt two. Retry keeps the original run, activity execution, command sequence, arguments, queue and idempotency identity; it creates a distinct task and attempt, preserves the closed first-attempt failure and original retry relationship, and cannot claim before its durably recorded one-second backoff deadline. No intermediate workflow resume or terminal ActivityFailed is committed. Only attempt two resolves the activity and workflow. Preserve exact int64 types and immutable duplicate failure/completion receipts with unchanged durable history. This fixture covers reported application failure followed by success, not lease-expiry recovery, terminal/non-retryable failures, timeout retries, cancellation or workflow/child retry policies."
+}

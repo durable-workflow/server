@@ -8,6 +8,7 @@ use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\WorkflowContext;
 use DurableWorkflow\Worker\QueryContext;
 use DurableWorkflow\Transport\Psr18Transport;
+use DurableWorkflow\Exception\ServerException;
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\HandlerStack;
 use Psr\Http\Message\RequestInterface;
@@ -23,6 +24,8 @@ use ServerParity\QueriesWorkflow;
 use ServerParity\UpdatesWorkflow;
 use ServerParity\TwoChildrenWorkflow;
 use ServerParity\ChildActivityWorkflow;
+use ServerParity\ActivityRetryWorkflow;
+use ServerParity\RetryActivity;
 use Workflow\V2\CommandContext;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Models\WorkflowInstance;
@@ -105,14 +108,14 @@ function httpHistory(Client $client, string $workflowId, string $runId): array
     return $events;
 }
 
-function observedChildTransport(array &$polls, array &$completions): Psr18Transport
+function observedChildTransport(array &$polls, array &$completions, array &$activityPolls, array &$activityOutcomes): Psr18Transport
 {
     // Observe real published transport I/O. No response or request is changed,
     // and authentication headers are never retained.
     $stack = HandlerStack::create();
-    $stack->push(static function (callable $handler) use (&$polls, &$completions): callable {
-        return static function (RequestInterface $request, array $options) use ($handler, &$polls, &$completions) {
-            return $handler($request, $options)->then(static function (ResponseInterface $response) use ($request, &$polls, &$completions): ResponseInterface {
+    $stack->push(static function (callable $handler) use (&$polls, &$completions, &$activityPolls, &$activityOutcomes): callable {
+        return static function (RequestInterface $request, array $options) use ($handler, &$polls, &$completions, &$activityPolls, &$activityOutcomes) {
+            return $handler($request, $options)->then(static function (ResponseInterface $response) use ($request, &$polls, &$completions, &$activityPolls, &$activityOutcomes): ResponseInterface {
                 $path = $request->getUri()->getPath();
                 if ($path === '/api/worker/workflow-tasks/poll') {
                     $body = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
@@ -121,6 +124,15 @@ function observedChildTransport(array &$polls, array &$completions): Psr18Transp
                     }
                 } elseif (preg_match('#^/api/worker/workflow-tasks/[^/]+/complete$#', $path)) {
                     $completions[] = ['path' => $path,
+                        'request' => json_decode((string) $request->getBody(), true, flags: JSON_THROW_ON_ERROR),
+                        'response' => json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR)];
+                } elseif ($path === '/api/worker/activity-tasks/poll') {
+                    $body = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+                    if (is_array($body['task'] ?? null)) {
+                        $activityPolls[] = $body['task'];
+                    }
+                } elseif (preg_match('#^/api/worker/activity-tasks/[^/]+/(?:complete|fail)$#', $path)) {
+                    $activityOutcomes[] = ['path' => $path,
                         'request' => json_decode((string) $request->getBody(), true, flags: JSON_THROW_ON_ERROR),
                         'response' => json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR)];
                 }
@@ -151,7 +163,10 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
 {
     $workflowPolls = [];
     $workflowCompletions = [];
-    $transport = isset($fixture['child_count']) ? observedChildTransport($workflowPolls, $workflowCompletions) : null;
+    $activityPolls = [];
+    $activityOutcomes = [];
+    $transport = isset($fixture['child_count']) || isset($fixture['retry_policy'])
+        ? observedChildTransport($workflowPolls, $workflowCompletions, $activityPolls, $activityOutcomes) : null;
     $client = new Client($url, namespace: $namespace, transport: $transport, token: getenv('DW_PARITY_TOKEN') ?: null);
     $handle = null;
     $deliveries = [];
@@ -288,6 +303,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
             return ['echo' => $context->activity('parity.v1.echo_activity', [$value]), 'source' => 'child-workflow'];
         })
         ->registerWorkflow('parity.v1.one_activity', static fn (WorkflowContext $context, array $value): array => $context->activity('parity.v1.echo_activity', [$value]))
+        ->registerWorkflow('parity.v1.activity_retry', static fn (WorkflowContext $context, array $value): array => $context->activity('parity.v1.retry_activity', [$value], ['retry_policy' => ['max_attempts' => 2, 'backoff_seconds' => [1], 'non_retryable_error_types' => []]]))
         ->registerWorkflow('parity.v1.one_timer', static function (WorkflowContext $context, array $value): array {
             foreach ($value['delays'] as $delay) {
                 $context->sleep($delay);
@@ -329,7 +345,14 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
 
             return ['value' => $value, 'applied' => count($context->events('UpdateApplied')) + 1];
         })
-        ->registerActivity('parity.v1.echo_activity', static fn (ActivityContext $context, array $value): array => $value);
+        ->registerActivity('parity.v1.echo_activity', static fn (ActivityContext $context, array $value): array => $value)
+        ->registerActivity('parity.v1.retry_activity', static function (ActivityContext $context, array $value): array {
+            if ($context->attemptNumber === 1) {
+                throw new RuntimeException('parity retry λ');
+            }
+
+            return ['echo' => $value, 'attempt' => $context->attemptNumber];
+        });
 
     // run() performs real registration and task execution. The clock observes
     // real time and selected-run completion, without replacing runtime I/O.
@@ -359,6 +382,28 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         }
     }
     unset($completion);
+    $activityDuplicates = null;
+    if (isset($fixture['retry_policy'])) {
+        $before = httpHistory($client, $workflowId, $handle->selectedRunId);
+        $originalOutcomes = $activityOutcomes;
+        $receipt = static function (callable $submit): array {
+            try {
+                return ['status' => 200, 'response' => $submit()];
+            } catch (ServerException $error) {
+                return ['status' => $error->status, 'response' => $error->details];
+            }
+        };
+        $first = $activityPolls[0];
+        $second = $activityPolls[1];
+        $failed = $receipt(static fn (): array => $client->failActivityTask($first['task_id'], $first['activity_attempt_id'],
+            $first['lease_owner'], $fixture['failure']['message'], $fixture['failure']['type']));
+        $afterFailure = httpHistory($client, $workflowId, $handle->selectedRunId);
+        $completed = $receipt(static fn (): array => $client->completeActivityTask($second['task_id'], $second['activity_attempt_id'],
+            $second['lease_owner'], $fixture['output']));
+        $activityDuplicates = ['failure' => $failed, 'completion' => $completed, 'history_before' => $before,
+            'history_after_failure' => $afterFailure, 'history_after_completion' => httpHistory($client, $workflowId, $handle->selectedRunId)];
+        $activityOutcomes = $originalOutcomes;
+    }
     $children = [];
     foreach ($events as $event) {
         if ($event['event_type'] !== 'ChildRunStarted') {
@@ -390,6 +435,9 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'children' => $children,
         'workflow_polls' => $workflowPolls,
         'workflow_completions' => $workflowCompletions,
+        'activity_polls' => $activityPolls,
+        'activity_outcomes' => $activityOutcomes,
+        'activity_duplicate_receipts' => $activityDuplicates,
     ];
 }
 
@@ -411,8 +459,9 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
             'parity.v1.updates' => UpdatesWorkflow::class,
             'parity.v1.two_children' => TwoChildrenWorkflow::class,
             'parity.v1.child_activity' => ChildActivityWorkflow::class,
+            'parity.v1.activity_retry' => ActivityRetryWorkflow::class,
         ],
-        'workflows.v2.types.activities' => ['parity.v1.echo_activity' => EchoActivity::class],
+        'workflows.v2.types.activities' => ['parity.v1.echo_activity' => EchoActivity::class, 'parity.v1.retry_activity' => RetryActivity::class],
     ]);
     // Namespace belongs to the host Laravel application in embedded mode.
     foreach ([WorkflowInstance::class, WorkflowRun::class, WorkflowTask::class] as $model) {
@@ -424,6 +473,9 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
         : ($fixture['activity'] ? OneActivityWorkflow::class : EchoWorkflow::class))));
     if (isset($fixture['child_count'])) {
         $class = TwoChildrenWorkflow::class;
+    }
+    if (isset($fixture['retry_policy'])) {
+        $class = ActivityRetryWorkflow::class;
     }
     $stub = WorkflowStub::make($class, $workflowId);
     $arguments = [$fixture['input']];
@@ -521,6 +573,19 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
         'timestamp' => $event->recorded_at->toISOString(),
         'payload' => $event->payload,
     ])->all();
+    $activityDuplicates = null;
+    if (isset($fixture['retry_policy'])) {
+        $before = $history();
+        $firstTask = $events[3]['payload']['task']['id'];
+        $secondTask = $events[5]['payload']['task']['id'];
+        \Workflow\V2\Jobs\RunActivityTask::dispatch($firstTask)->onConnection('database')->onQueue($queue);
+        Artisan::call('queue:work', ['connection' => 'database', '--queue' => $queue, '--stop-when-empty' => true, '--max-time' => 30, '--sleep' => 0, '--tries' => 1]);
+        $afterFailure = $history();
+        \Workflow\V2\Jobs\RunActivityTask::dispatch($secondTask)->onConnection('database')->onQueue($queue);
+        Artisan::call('queue:work', ['connection' => 'database', '--queue' => $queue, '--stop-when-empty' => true, '--max-time' => 30, '--sleep' => 0, '--tries' => 1]);
+        $activityDuplicates = ['redelivered_task_ids' => [$firstTask, $secondTask], 'history_before' => $before,
+            'history_after_failure' => $afterFailure, 'history_after_completion' => $history()];
+    }
     $children = [];
     foreach ($events as $event) {
         if ($event['event_type'] !== 'ChildRunStarted') {
@@ -555,6 +620,7 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
         'queries' => $queries,
         'updates' => $updates,
         'children' => $children,
+        'activity_duplicate_receipts' => $activityDuplicates,
     ];
 }
 

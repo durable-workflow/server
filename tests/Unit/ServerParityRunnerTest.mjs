@@ -5,6 +5,7 @@ import {checkObservation, compareRecords as compareCorpusRecords} from '../../sc
 
 const fixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/one-activity.json', import.meta.url)));
 const reviewed = {'one-activity.json': fixture};
+const retryFixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/activity-retry.json', import.meta.url)));
 const compareRecords = records => compareCorpusRecords(records, {'one-activity.json': 'fixture-sha'}, reviewed);
 function observation(suffix = '') {
   const run = `run${suffix}`;
@@ -26,6 +27,103 @@ function observation(suffix = '') {
 function record(suffix = '') {
   const raw = observation(suffix);
   return {schema: 'durable-workflow.server-parity-record/v1', target: `target${suffix}`, outcome: 'pass', runner_revision: 'a'.repeat(40), fixture_hashes: {'one-activity.json': 'fixture-sha'}, artifacts: {sdk_php: '2.2.6'}, cases: [{fixture_id: fixture.id, fixture, observation: raw, projection: checkObservation(fixture, raw, 'test-one-activity')}]};
+}
+
+function retryObservation(mode = 'http') {
+  const raw = observation();
+  raw.mode = mode;
+  raw.workflow_type = retryFixture.workflow_type;
+  raw.input = [retryFixture.input];
+  raw.typed_input = {type: 'list', value: [retryFixture.typed_value]};
+  raw.output = retryFixture.output;
+  raw.typed_output = retryFixture.typed_output;
+  raw.events = raw.events.slice(0, 2);
+  for (const event of raw.events) event.payload.workflow_type = raw.workflow_type;
+  const arguments_ = {type: 'list', value: [retryFixture.typed_value]};
+  const frame = {codec: 'avro', blob: 'original-arguments-frame'};
+  const policy = {snapshot_version: 1, ...retryFixture.retry_policy, start_to_close_timeout: null,
+    schedule_to_start_timeout: null, schedule_to_close_timeout: null, heartbeat_timeout: null};
+  const base = {activity_execution_id: 'activity-retry', activity_type: retryFixture.retry_activity_type, sequence: 1,
+    activity: {id: 'activity-retry', idempotency_key: 'activity-retry', queue: 'server-parity-v1', retry_policy: policy, arguments: frame}};
+  const task = index => ({id: `activity-task-${index}`, lease_owner: `owner-${index}`,
+    available_at: index === 1 ? '2026-01-01T00:00:01Z' : '2026-01-01T00:00:02.090000Z',
+    leased_at: index === 1 ? '2026-01-01T00:00:01Z' : '2026-01-01T00:00:02.100000Z'});
+  raw.events.push(
+    {payload: {...base}, decoded: {activity_arguments: [retryFixture.input]}, typed_decoded: {activity_arguments: arguments_}},
+    {payload: {...base, activity_attempt_id: 'attempt-1', attempt_number: 1, task: task(1)}, decoded: {activity_arguments: [retryFixture.input]}, typed_decoded: {activity_arguments: arguments_}},
+    {payload: {...base, activity_attempt_id: 'attempt-1', retry_after_attempt_id: 'attempt-1', retry_after_attempt: 1,
+      retry_task_id: 'activity-task-2', retry_of_task_id: 'activity-task-1', retry_backoff_seconds: 1,
+      retry_available_at: '2026-01-01T00:00:02.090000Z', max_attempts: 2, retry_policy: policy,
+      message: retryFixture.failure.message, exception_type: mode === 'embedded' ? null : retryFixture.failure.type,
+      exception_class: retryFixture.failure.type,
+      exception: mode === 'embedded' ? {class: retryFixture.failure.type, message: retryFixture.failure.message}
+        : {...retryFixture.failure, non_retryable: false},
+      activity_attempt: {id: 'attempt-1', activity_execution_id: 'activity-retry', task_id: 'activity-task-1',
+        status: 'failed', lease_owner: 'owner-1', closed_at: '2026-01-01T00:00:01.095000Z'}},
+      decoded: {activity_arguments: [retryFixture.input]}, typed_decoded: {activity_arguments: arguments_}},
+    {payload: {...base, activity_attempt_id: 'attempt-2', attempt_number: 2, task: task(2)}, decoded: {activity_arguments: [retryFixture.input]}, typed_decoded: {activity_arguments: arguments_}},
+    {payload: {...base, activity_attempt_id: 'attempt-2', attempt_number: 2, task: task(2), result: {codec: 'avro', blob: 'retry-result-frame'}},
+      decoded: {activity_arguments: [retryFixture.input], result: retryFixture.output}, typed_decoded: {activity_arguments: arguments_, result: retryFixture.typed_output}},
+    {payload: {}, decoded: {output: retryFixture.output}, typed_decoded: {output: retryFixture.typed_output}},
+  );
+  const times = ['00', '00', '00.900', '01', '01.100', '02.110', '02.120', '02.130'];
+  raw.events = raw.events.map((event, index) => ({...structuredClone(event), event_type: retryFixture.expected_events[index], sequence: index + 1,
+    timestamp: `2026-01-01T00:00:${times[index]}Z`}));
+  raw.activity_polls = [1, 2].map(index => ({task_id: `activity-task-${index}`, activity_attempt_id: `attempt-${index}`,
+    activity_execution_id: 'activity-retry', idempotency_key: 'activity-retry', run_id: raw.run_id, workflow_id: raw.workflow_id,
+    activity_type: retryFixture.retry_activity_type, attempt_number: index, lease_owner: `owner-${index}`, retry_policy: policy, arguments: frame}));
+  raw.activity_outcomes = raw.activity_polls.map((claim, index) => ({path: `/api/worker/activity-tasks/${claim.task_id}/${index === 0 ? 'fail' : 'complete'}`,
+    request: {activity_attempt_id: claim.activity_attempt_id, lease_owner: claim.lease_owner,
+      ...(index === 0 ? {failure: {...retryFixture.failure, non_retryable: false}} : {result: {codec: 'avro', blob: 'retry-result-frame'}})},
+    response: {task_id: claim.task_id, activity_attempt_id: claim.activity_attempt_id, recorded: true, ...(index === 0 ? {next_task_id: 'activity-task-2'} : {})}}));
+  raw.workflow_polls = [2, 7].map((prefix, index) => ({task_id: `workflow-task-${index}`, workflow_id: raw.workflow_id,
+    run_id: raw.run_id, workflow_type: raw.workflow_type, lease_owner: 'workflow-owner', workflow_task_attempt: 1,
+    history_events: structuredClone(raw.events.slice(0, prefix))}));
+  raw.workflow_completions = raw.workflow_polls.map((task, index) => ({path: `/api/worker/workflow-tasks/${task.task_id}/complete`,
+    request: {lease_owner: task.lease_owner, workflow_task_attempt: 1, commands: [index === 0
+      ? {type: 'schedule_activity', activity_type: retryFixture.retry_activity_type, arguments: frame, retry_policy: retryFixture.retry_policy}
+      : {type: 'complete_workflow', result: {codec: 'avro', blob: 'workflow-result-frame'}}]},
+    response: {task_id: task.task_id, run_id: raw.run_id, recorded: true}}));
+  raw.execution.output_envelope = {codec: 'avro', blob: 'workflow-result-frame'};
+  raw.activity_duplicate_receipts = {history_before: ['original-history'], history_after_failure: ['original-history'], history_after_completion: ['original-history'],
+    ...(mode === 'embedded' ? {redelivered_task_ids: ['activity-task-1', 'activity-task-2']}
+      : {failure: {status: 409, response: {task_id: 'activity-task-1', recorded: false, reason: 'stale_attempt'}},
+        completion: {status: 200, response: {task_id: 'activity-task-2', recorded: false, reason: 'already_completed'}}})};
+  return structuredClone(raw);
+}
+
+test('reported failure retries preserve the common PHP/embedded durable contract', () => {
+  assert.deepStrictEqual(checkObservation(retryFixture, retryObservation(), 'test-one-activity'),
+    checkObservation(retryFixture, retryObservation('embedded'), 'test-one-activity'));
+});
+for (const [name, corrupt] of [
+  ['replaced activity identity', raw => {raw.events[5].payload.activity_execution_id = 'different';}],
+  ['reused retry attempt', raw => {raw.events[5].payload.activity_attempt_id = 'attempt-1';}],
+  ['reused retry task', raw => {raw.events[5].payload.task.id = 'activity-task-1';}],
+  ['wrong retry ancestor', raw => {raw.events[4].payload.retry_after_attempt_id = 'different';}],
+  ['wrong executed retry task', raw => {raw.events[4].payload.retry_task_id = 'different';}],
+  ['wrong failure owner', raw => {raw.events[4].payload.activity_attempt.lease_owner = 'different';}],
+  ['unclosed failure', raw => {raw.events[4].payload.activity_attempt.status = 'running';}],
+  ['changed failure type', raw => {raw.events[4].payload.exception.type = 'different';}],
+  ['changed failure message', raw => {raw.events[4].payload.message = 'different';}],
+  ['replaced argument bytes', raw => {raw.events[5].payload.activity.arguments.blob = 'different';}],
+  ['changed retry policy', raw => {raw.events[5].payload.activity.retry_policy.max_attempts = 3;}],
+  ['early claim by one microsecond', raw => {raw.events[5].payload.task.leased_at = '2026-01-01T00:00:02.089999Z';}],
+  ['recomputed backoff deadline', raw => {raw.events[5].payload.task.available_at = '2026-01-01T00:00:02.090001Z';}],
+  ['extended failure deadline', raw => {raw.events[4].payload.retry_available_at = '2026-01-01T00:00:03Z';}],
+  ['wrong typed retry result', raw => {raw.events[6].typed_decoded.result.value.echo.value.large.value = '9007199254740992';}],
+  ['SDK claim changed execution', raw => {raw.activity_polls[1].activity_execution_id = 'different';}],
+  ['SDK completion uses stale attempt', raw => {raw.activity_outcomes[1].request.activity_attempt_id = 'attempt-1';}],
+  ['unacknowledged failure', raw => {raw.activity_outcomes[0].response.recorded = false;}],
+  ['intermediate workflow resumption', raw => {raw.workflow_polls.push({});}],
+  ['duplicate failure creates history', raw => {raw.activity_duplicate_receipts.history_after_failure.push('new');}],
+  ['duplicate completion records again', raw => {raw.activity_duplicate_receipts.completion.response.recorded = true;}],
+]) {
+  test(`refuses retry ${name}`, () => {
+    const raw = retryObservation();
+    corrupt(raw);
+    assert.throws(() => checkObservation(retryFixture, raw, raw.workflow_id));
+  });
 }
 
 test('independent generated IDs preserve their original relationships', () => {

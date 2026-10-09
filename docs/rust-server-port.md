@@ -48,7 +48,7 @@ to 64 updates, with 64 KiB argument blobs, 256 KiB results and at most 30 second
 per completion wait. Waiting releases the transaction and database connection.
 Queued/busy control routing, validators, failure tasks and full update semantics
 remain open.
-The next child-workflow fixture calls two children in sequence, each executing
+The qualified tenth child-workflow fixture calls two children in sequence, each executing
 an activity with a distinct typed payload, then returns their committed results
 in order. Preserve parent/call/child-run and activity-attempt relationships,
 registered type keys, original arguments, exact int64 and complete histories.
@@ -57,8 +57,14 @@ inventories must be explicit and checked before projecting their common behavior
 The shared fixture/adapters/comparator are implemented in
 [#343](https://github.com/durable-workflow/server/pull/343). Its reference and
 exact-head qualification outcomes are recorded there. Native successful,
-sequential child creation/completion/resumption is implemented but remains
-unqualified until the exact head passes all six database and PHP checks.
+sequential child creation/completion/resumption passes all ten shared cases,
+20 native HTTP tests, 106 comparator tests and the actual process-kill child
+recovery probe on SQLite, PostgreSQL 16/17, MySQL 8.0/8.4 and MariaDB 10.11 at
+`b51e6aba331bfdcfa2da13fe503dfe5609967c76` in
+[run 37993085836](https://github.com/durable-workflow/server/actions/runs/37993085836).
+PHP/source gates pass (2,601 tests / 57,160 assertions). The merge
+`a4bf3bbf1a4e5d29df35eb29d18d0c30de80ad0e` retains the identical tested tree;
+all main-branch shared and PHP/source checks also pass.
 Child runs retain PHP's nullable default timeout budgets, original parent
 call/link IDs and immutable terminal results. Creation and parent resumption
 commit atomically with the leased workflow task; duplicate completions retain
@@ -66,7 +72,18 @@ their original receipts. Native tests exercise independent pools, real child
 lease expiry, fresh-pool recovery and rollback on inconsistent linkage.
 Retry/cancellation policies, explicit timeouts, parallel groups and parent-close
 actions remain refused or unqualified beyond this success slice.
-Child workflows are followed by retries/cancellation, schedules, visibility, authorization/namespaces,
+The next reviewed fixture reports an application failure on activity attempt one,
+waits its durable one-second retry backoff, and completes the original activity
+and workflow on attempt two with exact int64 payloads. It checks distinct tasks
+and attempts, original execution/idempotency identity, immutable policy/argument
+frames, actual SDK claims/completions and no intermediate workflow resumption.
+HTTP duplicates must leave history unchanged; embedded redelivery uses the real
+queue jobs for both closed tasks. Embedded Throwable class and external worker
+failure type are explicit representations of the same original failure.
+Reference probes complete both published PHP and embedded executions; complete
+reference/comparator and native qualification remain in progress. Terminal and
+non-retryable failures, timeout/lease retries and broader retry policies remain
+separate gates. Retry work is followed by cancellation, schedules, visibility, authorization/namespaces,
 streams and existing consumers. Each slice must run on the required database
 matrix. Read-only upgrade inspection and backup-first takeover remain required,
 but follow wider capability coverage. PHP and unknown databases stay refused.

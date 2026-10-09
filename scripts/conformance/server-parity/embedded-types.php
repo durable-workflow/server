@@ -11,6 +11,7 @@ use Workflow\QueryMethod;
 use Workflow\UpdateMethod;
 use Workflow\V2\Workflow;
 use Workflow\WorkflowOptions;
+use Workflow\V2\Support\ActivityOptions;
 
 use function Workflow\V2\activity;
 use function Workflow\V2\timer;
@@ -77,6 +78,28 @@ final class OneActivityWorkflow extends Workflow
     public function handle(array $value): array
     {
         return activity(EchoActivity::class, $value);
+    }
+}
+
+#[Type('parity.v1.activity_retry')]
+final class ActivityRetryWorkflow extends Workflow
+{
+    public function handle(array $value): array
+    {
+        return activity(RetryActivity::class, new ActivityOptions(maxAttempts: 2, backoff: [1]), $value);
+    }
+}
+
+#[Type('parity.v1.retry_activity')]
+final class RetryActivity extends Activity
+{
+    public function handle(array $value): array
+    {
+        if ($this->attemptCount() === 1) {
+            throw new \RuntimeException('parity retry λ');
+        }
+
+        return ['echo' => $value, 'attempt' => $this->attemptCount()];
     }
 }
 
