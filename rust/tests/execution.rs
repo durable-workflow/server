@@ -366,6 +366,38 @@ async fn existing_php_database_is_refused_without_changes() {
 }
 
 #[tokio::test]
+async fn readiness_and_startup_refuse_a_marker_with_incomplete_tables() {
+    let dir = tempfile::tempdir().unwrap();
+    let database = dir.path().join("runtime.sqlite");
+    let runtime = Runtime::open(database.to_str().unwrap(), "test-token".into())
+        .await
+        .unwrap();
+    let app = router(runtime.clone());
+    assert_eq!(
+        request(&app, "GET", "/api/ready", Value::Null).await.0,
+        StatusCode::OK
+    );
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", database.display()))
+        .await
+        .unwrap();
+    sqlx::query("DROP TABLE dw_poll_receipts")
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+    assert_eq!(
+        request(&app, "GET", "/api/ready", Value::Null).await.0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    runtime.close().await;
+    assert!(
+        Runtime::open(database.to_str().unwrap(), "test-token".into())
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
 async fn authentication_precedes_protocol_and_namespace_checks() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(

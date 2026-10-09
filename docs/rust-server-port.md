@@ -165,8 +165,15 @@ development database. MySQL/PostgreSQL, scoped auth/namespaces, external payload
 timers/retries/cancellation, complete capability/consumer matrices and performance
 remain required.
 
-Next: qualify #330's exact head and repeat its restart evidence in CI, record build costs
-and merge it. Then implement the PHP refusal boundary and versioned full-schema
+The [native build observations](../rust/runtime-build-observations-2026-10-09.md)
+record a clean tests/binary build at 54.65 seconds and 521.4 MiB of targets;
+downloads add 202.6 MiB. Clippy and incremental outputs bring the observed
+combined state to about 868 MiB. Build-only no-op/comment edits took 0.159/1.513
+seconds. These bounded measurements exclude downloads/startup and make no
+full-server/cache-saving claim.
+
+Next: qualify #330's exact head and repeat its restart evidence in CI, then
+merge it. Implement the PHP refusal boundary and versioned full-schema
 takeover foundation, expanding real execution and differential fixtures across
 the required databases. The rest of the inventory remains open under #325.
 No separate defect issues have been filed yet.
