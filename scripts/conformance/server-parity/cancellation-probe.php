@@ -200,5 +200,6 @@ function embeddedCancellationObservation(array $fixture, string $workflowId, str
             'redelivered_task_ids' => CancellationProbeState::$claims, 'fresh_history' => embeddedCancellationHistory($run->id),
             'fresh_execution' => ['id' => $fresh->runId(), 'status' => $fresh->status(), 'cancelled' => $fresh->cancelled(), 'output' => $fresh->output()],
             'failures' => $run->failures()->get()->map->toArray()->all(),
+            'attempts' => $run->activityAttempts()->get()->map->toArray()->all(),
             'tasks' => $run->tasks()->get()->map->toArray()->all()]];
 }

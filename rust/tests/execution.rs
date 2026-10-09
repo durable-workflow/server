@@ -144,19 +144,42 @@ impl TestDatabase {
         let query = "SELECT COUNT(*) FROM workflow_failures WHERE workflow_run_id=$1 AND source_id=$2 AND id=$3 AND source_kind='workflow_run' AND propagation_kind='cancelled' AND failure_category='cancelled' AND handled=false";
         match self {
             Self::Sqlite(dir) => {
-                let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", dir.path().join("runtime.sqlite").display())).await.unwrap();
-                let count = sqlx::query_scalar(query).bind(run).bind(run).bind(failure).fetch_one(&pool).await.unwrap();
+                let pool = sqlx::SqlitePool::connect(&format!(
+                    "sqlite://{}",
+                    dir.path().join("runtime.sqlite").display()
+                ))
+                .await
+                .unwrap();
+                let count = sqlx::query_scalar(query)
+                    .bind(run)
+                    .bind(run)
+                    .bind(failure)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
                 pool.close().await;
                 count
             }
             Self::Postgres { options, .. } => {
-                let pool = sqlx::postgres::PgPoolOptions::new().connect_with(options.as_ref().clone()).await.unwrap();
-                let count = sqlx::query_scalar(query).bind(run).bind(run).bind(failure).fetch_one(&pool).await.unwrap();
+                let pool = sqlx::postgres::PgPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
+                let count = sqlx::query_scalar(query)
+                    .bind(run)
+                    .bind(run)
+                    .bind(failure)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
                 pool.close().await;
                 count
             }
             Self::MySql { options, .. } => {
-                let pool = sqlx::mysql::MySqlPoolOptions::new().connect_with(options.as_ref().clone()).await.unwrap();
+                let pool = sqlx::mysql::MySqlPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
                 let count = sqlx::query_scalar("SELECT COUNT(*) FROM workflow_failures WHERE workflow_run_id=? AND source_id=? AND id=? AND source_kind='workflow_run' AND propagation_kind='cancelled' AND failure_category='cancelled' AND handled=false")
                     .bind(run).bind(run).bind(failure).fetch_one(&pool).await.unwrap();
                 pool.close().await;
@@ -1947,12 +1970,27 @@ async fn immediate_cancellation_closes_original_work_once_and_survives_fresh_poo
         let runtime_b = database.open().await.unwrap();
         let app_a = router(runtime_a.clone());
         let app_b = router(runtime_b.clone());
-        register(&app_a, "cancel-a", json!(["echo"]), json!(["echo-activity"])).await;
-        register(&app_b, "cancel-b", json!(["echo"]), json!(["echo-activity"])).await;
+        register(
+            &app_a,
+            "cancel-a",
+            json!(["echo"]),
+            json!(["echo-activity"]),
+        )
+        .await;
+        register(
+            &app_b,
+            "cancel-b",
+            json!(["echo"]),
+            json!(["echo-activity"]),
+        )
+        .await;
         let started = start(&app_a, phase).await;
         let workflow = json!(phase);
         let run = started["run_id"].clone();
-        let path = format!("/api/workflows/{phase}/runs/{}/cancel", run.as_str().unwrap());
+        let path = format!(
+            "/api/workflows/{phase}/runs/{}/cancel",
+            run.as_str().unwrap()
+        );
         let mut activity_task = Value::Null;
         if phase != "before_claim" {
             let task = poll(&app_a, "cancel-a", "workflow").await;
@@ -1970,63 +2008,155 @@ async fn immediate_cancellation_closes_original_work_once_and_survives_fresh_poo
         }
         let prefix = run_history(&app_b, &workflow, &run).await;
         let body = json!({"reason":"parity cancellation λ"});
-        let (left, right) = tokio::join!(request(&app_a, "POST", &path, body.clone()), request(&app_b, "POST", &path, body.clone()));
-        assert_eq!([left.0, right.0].iter().filter(|s| **s == StatusCode::OK).count(), 1, "{left:?} {right:?}");
-        assert_eq!([left.0, right.0].iter().filter(|s| **s == StatusCode::CONFLICT).count(), 1);
-        let accepted = if left.0 == StatusCode::OK { left.1 } else { right.1 };
+        let (left, right) = tokio::join!(
+            request(&app_a, "POST", &path, body.clone()),
+            request(&app_b, "POST", &path, body.clone())
+        );
+        assert_eq!(
+            [left.0, right.0]
+                .iter()
+                .filter(|s| **s == StatusCode::OK)
+                .count(),
+            1,
+            "{left:?} {right:?}"
+        );
+        assert_eq!(
+            [left.0, right.0]
+                .iter()
+                .filter(|s| **s == StatusCode::CONFLICT)
+                .count(),
+            1
+        );
+        let accepted = if left.0 == StatusCode::OK {
+            left.1
+        } else {
+            right.1
+        };
         assert_eq!(accepted["outcome"], "cancelled");
         let history = run_history(&app_a, &workflow, &run).await;
         let events = history.as_array().unwrap();
-        assert_eq!(&events[..prefix.as_array().unwrap().len()], prefix.as_array().unwrap());
+        assert_eq!(
+            &events[..prefix.as_array().unwrap().len()],
+            prefix.as_array().unwrap()
+        );
         let requested = &events[prefix.as_array().unwrap().len()];
         let terminal = events.last().unwrap();
         assert_eq!(requested["event_type"], "CancelRequested");
         assert_eq!(terminal["event_type"], "WorkflowCancelled");
-        assert_eq!(requested["payload"]["workflow_command_id"], accepted["command_id"]);
-        assert_eq!(terminal["payload"]["workflow_command_id"], accepted["command_id"]);
+        assert_eq!(
+            requested["payload"]["workflow_command_id"],
+            accepted["command_id"]
+        );
+        assert_eq!(
+            terminal["payload"]["workflow_command_id"],
+            accepted["command_id"]
+        );
         assert_eq!(terminal["payload"]["reason"], "parity cancellation λ");
-        assert_eq!(terminal["payload"]["exception_class"], "Workflow\\V2\\Exceptions\\WorkflowCancelledException");
-        assert_eq!(database.cancellation_failure_count(run.as_str().unwrap(), terminal["payload"]["failure_id"].as_str().unwrap()).await, 1);
+        assert_eq!(
+            terminal["payload"]["exception_class"],
+            "Workflow\\V2\\Exceptions\\WorkflowCancelledException"
+        );
+        assert_eq!(
+            database
+                .cancellation_failure_count(
+                    run.as_str().unwrap(),
+                    terminal["payload"]["failure_id"].as_str().unwrap()
+                )
+                .await,
+            1
+        );
         if phase == "pending_timer" {
             let scheduled = &events[2]["payload"];
             let cancelled = &events[4]["payload"];
             assert_eq!(events[4]["event_type"], "TimerCancelled");
-            for field in ["timer_id", "sequence", "delay_seconds", "fire_at"] { assert_eq!(cancelled[field], scheduled[field]); }
+            for field in ["timer_id", "sequence", "delay_seconds", "fire_at"] {
+                assert_eq!(cancelled[field], scheduled[field]);
+            }
         }
-        let stale_path = format!("/api/worker/activity-tasks/{}/complete", activity_task["task_id"].as_str().unwrap_or("unused"));
+        let stale_path = format!(
+            "/api/worker/activity-tasks/{}/complete",
+            activity_task["task_id"].as_str().unwrap_or("unused")
+        );
         let stale_body = json!({"lease_owner":activity_task["lease_owner"],"activity_attempt_id":activity_task["activity_attempt_id"],"result":envelope(Payload::Long(9007199254740993))});
         if phase == "leased_activity" {
             let cancelled = &events[5]["payload"];
             assert_eq!(events[5]["event_type"], "ActivityCancelled");
-            assert_eq!(cancelled["activity_execution_id"], activity_task["activity_execution_id"]);
-            assert_eq!(cancelled["activity_attempt_id"], activity_task["activity_attempt_id"]);
-            assert_eq!(cancelled["activity_attempt"]["task_id"], activity_task["task_id"]);
-            assert_eq!(cancelled["activity_attempt"]["lease_expires_at"], Value::Null);
+            assert_eq!(
+                cancelled["activity_execution_id"],
+                activity_task["activity_execution_id"]
+            );
+            assert_eq!(
+                cancelled["activity_attempt_id"],
+                activity_task["activity_attempt_id"]
+            );
+            assert_eq!(
+                cancelled["activity_attempt"]["task_id"],
+                activity_task["task_id"]
+            );
+            assert_eq!(
+                cancelled["activity_attempt"]["lease_expires_at"],
+                Value::Null
+            );
             let stale = request(&app_a, "POST", &stale_path, stale_body.clone()).await;
             assert_eq!(stale.0, StatusCode::CONFLICT, "{}", stale.1);
             assert_eq!(stale.1["reason"], "stale_attempt");
             assert_eq!(stale.1["recorded"], false);
             assert_eq!(stale.1["task_id"], activity_task["task_id"]);
-            assert_eq!(stale.1["activity_attempt_id"], activity_task["activity_attempt_id"]);
+            assert_eq!(
+                stale.1["activity_attempt_id"],
+                activity_task["activity_attempt_id"]
+            );
         }
         runtime_a.close().await;
         let runtime_c = database.open().await.unwrap();
         let app_c = router(runtime_c.clone());
-        let repeated = request(&app_c, "POST", &path, json!({"reason":"replacement reason"})).await;
+        let repeated = request(
+            &app_c,
+            "POST",
+            &path,
+            json!({"reason":"replacement reason"}),
+        )
+        .await;
         assert_eq!(repeated.0, StatusCode::CONFLICT, "{}", repeated.1);
         assert_eq!(repeated.1["rejection_reason"], "run_not_active");
         assert_ne!(repeated.1["command_id"], accepted["command_id"]);
-        let description = request(&app_c, "GET", &format!("/api/workflows/{phase}"), Value::Null).await.1;
+        let description = request(
+            &app_c,
+            "GET",
+            &format!("/api/workflows/{phase}"),
+            Value::Null,
+        )
+        .await
+        .1;
         assert_eq!(description["status"], "cancelled");
         assert_eq!(description["status_bucket"], "closed");
         assert_eq!(description["is_terminal"], true);
         assert_eq!(description["closed_reason"], "cancelled");
-        assert_eq!(ValueCodec::new().unwrap().decode(description["input_envelope"]["blob"].as_str().unwrap()).unwrap(), Payload::Array(vec![Payload::Long(9007199254740993)]));
+        assert_eq!(
+            ValueCodec::new()
+                .unwrap()
+                .decode(description["input_envelope"]["blob"].as_str().unwrap())
+                .unwrap(),
+            Payload::Array(vec![Payload::Long(9007199254740993)])
+        );
         assert!(poll(&app_c, "cancel-a", "workflow").await.is_null());
         assert!(poll(&app_c, "cancel-a", "activity").await.is_null());
-        if phase == "leased_activity" { assert_eq!(request(&app_c, "POST", &stale_path, stale_body).await.0, StatusCode::CONFLICT); }
+        if phase == "leased_activity" {
+            assert_eq!(
+                request(&app_c, "POST", &stale_path, stale_body).await.0,
+                StatusCode::CONFLICT
+            );
+        }
         assert_eq!(run_history(&app_c, &workflow, &run).await, history);
-        assert_eq!(database.cancellation_failure_count(run.as_str().unwrap(), terminal["payload"]["failure_id"].as_str().unwrap()).await, 1);
+        assert_eq!(
+            database
+                .cancellation_failure_count(
+                    run.as_str().unwrap(),
+                    terminal["payload"]["failure_id"].as_str().unwrap()
+                )
+                .await,
+            1
+        );
         runtime_b.close().await;
         runtime_c.close().await;
         database.remove().await;

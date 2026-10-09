@@ -56,7 +56,7 @@ function cancellationObservation(fixture, mode = 'http') {
     activity_attempt_id: 'cancel-attempt', attempt_number: 1,
     activity: {...activity, status: 'cancelled', closed_at: '2026-01-01T00:00:05Z'},
     activity_attempt: {id: 'cancel-attempt', activity_execution_id: 'cancel-activity', task_id: 'cancel-task',
-      lease_owner: 'cancel-owner', lease_expires_at: null, status: 'cancelled', closed_at: '2026-01-01T00:00:05Z'}},
+      lease_owner: 'cancel-owner', status: 'cancelled', closed_at: '2026-01-01T00:00:05Z'}},
     decoded: {activity_arguments: [fixture.input]}, typed_decoded: {activity_arguments: {type: 'list', value: [fixture.typed_value]}}});
   raw.events.push({payload: {...common, failure_id: 'cancel-failure', failure_category: 'cancelled', closed_reason: 'cancelled',
     exception_class: 'Workflow\\V2\\Exceptions\\WorkflowCancelledException', message: `Workflow cancelled: ${reason}`}, decoded: {}, typed_decoded: {}});
@@ -64,7 +64,7 @@ function cancellationObservation(fixture, mode = 'http') {
   Object.assign(raw.execution, {closed_reason: 'cancelled', closed_at: raw.events.at(-1).timestamp});
   const history = raw.events.map(({decoded, typed_decoded, ...event}) => event);
   const accepted = {command_id: 'cancel-command', command_status: 'accepted', outcome: 'cancelled', command_sequence: 2,
-    workflow_id: raw.workflow_id, run_id: raw.run_id, target_scope: 'run'};
+    workflow_id: raw.workflow_id, run_id: raw.run_id, target_scope: fixture.immediate_cancellation.receipt_target_scope[mode]};
   const stale = {status: 409, response: {reason: 'stale_attempt', recorded: false, task_id: 'cancel-task', activity_attempt_id: 'cancel-attempt',
     activity_status: 'cancelled', attempt_status: 'cancelled', task_status: 'cancelled'}};
   raw.cancellation = {before: history.slice(0, history.findIndex(event => event.event_type === 'CancelRequested')),
@@ -76,7 +76,8 @@ function cancellationObservation(fixture, mode = 'http') {
     late_completion: phase === 'leased_activity' ? stale : null, redelivered_task_ids: phase === 'leased_activity' ? ['cancel-task'] : [],
     failures: [{id: 'cancel-failure', workflow_run_id: raw.run_id, source_kind: 'workflow_run', source_id: raw.run_id,
       propagation_kind: 'cancelled', failure_category: 'cancelled', exception_class: raw.events.at(-1).payload.exception_class,
-      message: raw.events.at(-1).payload.message, handled: false}], tasks: [{id: 'cancel-task', status: 'cancelled', lease_expires_at: null}]};
+      message: raw.events.at(-1).payload.message, handled: false}], tasks: [{id: 'cancel-task', status: 'cancelled', lease_expires_at: null}],
+    attempts: [{id: 'cancel-attempt', workflow_task_id: 'cancel-task', status: 'cancelled', lease_expires_at: null}]};
   raw.workflow_polls = phase === 'before_claim' ? [] : [{}];
   raw.workflow_completions = phase === 'before_claim' ? [] : [{}];
   raw.activity_polls = phase === 'leased_activity' ? [{task_id: 'cancel-task', activity_attempt_id: 'cancel-attempt',

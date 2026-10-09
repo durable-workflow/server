@@ -153,6 +153,13 @@ must submit its result after cancellation and safely discard the stale refusal;
 embedded mode executes and redelivers real queue jobs. Reference qualification
 and native implementation are pending. Cooperative cleanup cancellation,
 child/update cancellation and scoped propagation are separate gates.
+The frozen HTTP selected-run route validates the current run, then records an
+instance-scoped command; embedded `loadRun` records a run-scoped command.
+Fixtures declare and verify both receipt representations before comparing their
+common original-run cancellation. Frozen cancellation attempt history omits
+lease expiry; embedded physical rows and actual HTTP stale-result refusal prove
+lease closure separately. Neither difference changes expected cancellation,
+original identities or fencing.
 
 Timeout/lease retries, uncaught failures and broader retry policies remain
 separate gates. This work is followed by cancellation, schedules, visibility, authorization/namespaces,

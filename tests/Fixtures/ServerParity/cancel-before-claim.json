@@ -27,6 +27,7 @@
   "activity": false,
   "immediate_cancellation": {
     "phase": "before_claim",
+    "receipt_target_scope": {"http": "instance", "embedded": "run"},
     "reason": "parity cancellation λ"
   },
   "expected_events": [

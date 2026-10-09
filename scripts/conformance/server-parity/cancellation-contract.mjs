@@ -32,8 +32,8 @@ export function checkImmediateCancellation(fixture, observation) {
   equal(terminal.payload.closed_reason, 'cancelled', 'terminal cancellation reason');
   equal(terminal.payload.exception_class, 'Workflow\\V2\\Exceptions\\WorkflowCancelledException', 'published cancellation exception identity');
   equal(terminal.payload.message, `Workflow cancelled: ${reason}`, 'original cancellation failure message');
-  equal(terminal.decoded, {}, 'cancellation commits no workflow result');
-  equal(terminal.typed_decoded, {}, 'cancellation has no typed success result');
+  equal(Object.keys(terminal.decoded), [], 'cancellation commits no workflow result');
+  equal(Object.keys(terminal.typed_decoded), [], 'cancellation has no typed success result');
   equal(observation.execution.closed_reason, 'cancelled', 'durable run closure');
   assert.ok(time(observation.execution.closed_at, 'durable cancellation close timestamp') >= time(observation.execution.started_at, 'original start time'), 'cancellation closes the original run');
   const fresh = cancellation.fresh_execution;
@@ -57,7 +57,7 @@ export function checkImmediateCancellation(fixture, observation) {
   for (const receipt of [accepted, duplicate]) {
     equal(receipt.response.workflow_id, observation.workflow_id, 'cancellation receipt workflow');
     equal(receipt.response.run_id, observation.run_id, 'cancellation receipt run');
-    equal(receipt.response.target_scope, 'run', 'explicit selected-run cancellation');
+    equal(receipt.response.target_scope, fixture.immediate_cancellation.receipt_target_scope[observation.mode], 'declared cancellation receipt target scope');
   }
   if (phase === 'pending_timer') {
     const scheduled = events[2].payload;
@@ -94,7 +94,9 @@ export function checkImmediateCancellation(fixture, observation) {
     equal(cancelled.activity_attempt.activity_execution_id, scheduled.activity_execution_id, 'cancelled attempt execution');
     equal(cancelled.activity_attempt.task_id, started.task.id, 'cancelled original leased task');
     equal(cancelled.activity_attempt.lease_owner, started.task.lease_owner, 'original attempt owner');
-    equal(cancelled.activity_attempt.lease_expires_at, null, 'cancelled attempt releases lease');
+    // Frozen PHP omits expiry from this history snapshot. Physical embedded
+    // rows and actual HTTP stale-result refusal separately prove lease closure.
+    equal(Object.hasOwn(cancelled.activity_attempt, 'lease_expires_at'), false, 'published cancelled attempt snapshot omits expiry');
     time(cancelled.activity.closed_at, 'closed activity timestamp');
     time(cancelled.activity_attempt.closed_at, 'closed attempt timestamp');
     identities.push(scheduled.activity_execution_id, started.activity_attempt_id, started.task.id);
@@ -122,6 +124,12 @@ export function checkImmediateCancellation(fixture, observation) {
       }
     } else {
       equal(cancellation.redelivered_task_ids, [started.task.id], 'original cancelled task redelivered through real queue');
+      equal(cancellation.attempts.length, 1, 'one original physical embedded attempt');
+      const attempt = cancellation.attempts[0];
+      equal(attempt.id, started.activity_attempt_id, 'physical cancelled attempt identity');
+      equal(attempt.workflow_task_id, started.task.id, 'physical cancelled task identity');
+      equal(attempt.status, 'cancelled', 'physical attempt cancelled');
+      equal(attempt.lease_expires_at, null, 'physical cancelled attempt releases lease');
     }
   }
   equal(new Set(identities).size, identities.length, 'all cancellation work identities remain distinct');

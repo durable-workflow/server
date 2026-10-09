@@ -27,6 +27,7 @@
   "activity": false,
   "immediate_cancellation": {
     "phase": "pending_timer",
+    "receipt_target_scope": {"http": "instance", "embedded": "run"},
     "reason": "parity cancellation λ",
     "delay_seconds": 60
   },
