@@ -383,3 +383,10 @@ Next: qualify backup-first sequential takeover with
 stored-value and migration-interruption fixtures. The capability, consumer,
 performance and operational inventory remains open under #325.
 No separate defect issues have been filed yet.
+
+Pending-task review found a prerequisite compatibility case: PHP treats a null
+`workflow_tasks.available_at` as immediately available, while the current native
+query excludes it. A focused HTTP regression will cover both workflow and
+activity tasks, preserve original identities and a single durable outcome,
+and keep future-dated work waiting. This correction precedes read-only upgrade
+preflight; it does not enable database takeover.

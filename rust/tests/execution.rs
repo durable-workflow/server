@@ -413,6 +413,46 @@ fn completion(task: &Value, commands: Value) -> Value {
 }
 
 #[tokio::test]
+async fn null_task_availability_is_ready_but_future_work_remains_waiting() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let started = start(&app, "null-availability").await;
+    register(&app, "worker", json!(["echo"]), json!(["activity-echo"])).await;
+
+    database.execute("UPDATE workflow_tasks SET available_at='2100-01-01 00:00:00' WHERE task_type='workflow'").await;
+    assert!(poll(&app, "worker", "workflow").await.is_null());
+    database.execute("UPDATE workflow_tasks SET available_at=NULL WHERE task_type='workflow'").await;
+    let task = poll(&app, "worker", "workflow").await;
+    assert_eq!(task["run_id"], started["run_id"]);
+    assert_eq!(task["workflow_task_attempt"], 1);
+    assert!(poll(&app, "worker", "workflow").await.is_null());
+    let path = format!("/api/worker/workflow-tasks/{}/complete", task["task_id"].as_str().unwrap());
+    let schedule = json!({"type":"schedule_activity","activity_type":"activity-echo","arguments":envelope(Payload::Array(vec![]))});
+    assert_eq!(request(&app, "POST", &path, completion(&task, json!([schedule]))).await.0, StatusCode::OK);
+
+    database.execute("UPDATE workflow_tasks SET available_at='2100-01-01 00:00:00' WHERE task_type='activity'").await;
+    assert!(poll(&app, "worker", "activity").await.is_null());
+    database.execute("UPDATE workflow_tasks SET available_at=NULL WHERE task_type='activity'").await;
+    let activity = poll(&app, "worker", "activity").await;
+    assert_eq!(activity["run_id"], started["run_id"]);
+    assert_eq!(activity["attempt_number"], 1);
+    assert!(poll(&app, "worker", "activity").await.is_null());
+    let path = format!("/api/worker/activity-tasks/{}/complete", activity["task_id"].as_str().unwrap());
+    let result = envelope(Payload::Long(7));
+    let body = json!({"lease_owner":"worker","activity_attempt_id":activity["activity_attempt_id"],"result":result});
+    assert_eq!(request(&app, "POST", &path, body.clone()).await.1["recorded"], true);
+    assert_eq!(request(&app, "POST", &path, body).await.1["recorded"], false);
+    let resumed = poll(&app, "worker", "workflow").await;
+    let path = format!("/api/worker/workflow-tasks/{}/complete", resumed["task_id"].as_str().unwrap());
+    assert_eq!(request(&app, "POST", &path, completion(&resumed, json!([{"type":"complete_workflow","result":result}]))).await.0, StatusCode::OK);
+    let types: Vec<_> = resumed["history_events"].as_array().unwrap().iter().map(|e| e["event_type"].as_str().unwrap()).collect();
+    assert_eq!(types, ["StartAccepted", "WorkflowStarted", "ActivityScheduled", "ActivityStarted", "ActivityCompleted"]);
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
 async fn completion_survives_restart_and_duplicate_receipt_adds_no_history() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
