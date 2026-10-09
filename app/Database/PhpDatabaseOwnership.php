@@ -7,6 +7,8 @@ use PDOException;
 
 final class PhpDatabaseOwnership
 {
+    public const MARKER_TABLE = 'dw_server_schema';
+
     public static function assertSqlite(PDO $connection): void
     {
         if ($connection->query("SELECT 1 FROM sqlite_schema WHERE name = 'dw_server_schema' COLLATE NOCASE LIMIT 1")->fetchColumn() !== false) {
@@ -51,7 +53,7 @@ final class PhpDatabaseOwnership
             'SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace '
             .'WHERE c.relname = ? AND (n.nspname = ANY(current_schemas(false))'.$extra.') LIMIT 1',
         );
-        $query->execute(['dw_server_schema', ...$schemas]);
+        $query->execute([self::MARKER_TABLE, ...$schemas]);
         if ($query->fetchColumn() !== false) {
             throw new PhpDatabaseRefused;
         }
