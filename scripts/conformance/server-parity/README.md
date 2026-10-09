@@ -16,6 +16,11 @@ The padded-reason fixture declares HTTP's published Laravel boundary trim and
 embedded cancellation's verbatim reason separately. The cancellation reason
 normalization corpus pins the full frozen character set and nullable/length
 rules; meaningful history fields are checked before comparing common behavior.
+`tests/Fixtures/ServerParityPending` retains known failing cases separately;
+they are not counted in the passing corpus. Its literal-NUL cancellation
+reproducer blocks full reason parity under Workflow #741: frozen embedded
+PostgreSQL silently truncates the physical failure message. The portable
+Unicode-padded case retains the complete failure/history consistency check.
 
 Requirements: Node 20+, PHP 8.3+ with PDO SQLite/pcntl, and Composer. The pinned
 published Server image contains these tools. Install the exact adapter:

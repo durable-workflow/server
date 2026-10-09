@@ -168,6 +168,17 @@ checks both representations, and a separate corpus pins the complete frozen
 HTTP trim set. The correction and its two native normalization checks are
 prepared; fresh six-configuration qualification is pending. Cooperative cleanup cancellation,
 child/update cancellation and scoped propagation are separate gates.
+The first padded-reason matrix also exposed a published embedded PostgreSQL
+defect: a literal NUL truncates the physical failure message while terminal
+history retains it. PHP HTTP and Rust passed all seventeen cases, and SQLite,
+MySQL and MariaDB embedded comparisons passed; both PostgreSQL embedded
+comparisons reported `product-fail`. [Workflow #741](https://github.com/durable-workflow/workflow/issues/741)
+owns the portable representation/refusal decision and fix. A small reproducer
+is retained in `tests/Fixtures/ServerParityPending/cancel-nul-reason.json`, outside
+the passing corpus. The portable padded-reason case excludes NUL while retaining
+Unicode/invisible whitespace; the full failure/history consistency check remains
+required. NUL is still covered by the separate HTTP normalization corpus. This
+does not qualify literal-NUL cancellation reasons across database families.
 The frozen HTTP selected-run route validates the current run, then records an
 instance-scoped command; embedded `loadRun` records a run-scoped command.
 Fixtures declare and verify both receipt representations before comparing their

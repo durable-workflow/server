@@ -28,7 +28,7 @@
   "immediate_cancellation": {
     "phase": "before_claim",
     "receipt_target_scope": {"http": "instance", "embedded": "run"},
-    "reason": " \t\u0000\u00a0parity cancellation λ\u200b\ud834\udd73\r\n",
+    "reason": " \t\u00a0parity cancellation λ\u200b\ud834\udd73\r\n",
     "http_reason": "parity cancellation λ"
   },
   "expected_events": [
