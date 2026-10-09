@@ -8,6 +8,12 @@ cutover remain unqualified.
 
 ## Work order and current status
 
+The PostgreSQL storage foundation prepares the real timestamp/JSON schema,
+transactional migrations and ownership checks against an independently
+bootstrapped published PHP database. Fresh native bootstrap keeps the full
+existing physical schema; it does not authorize adoption of PHP data. Actual
+PostgreSQL execution and MariaDB/MySQL support remain required next steps.
+
 1. Inventory the current contract, schema and operational surfaces. Establish
    shared reviewed fixtures and a recorder usable against any isolated Server
    URL and a real embedded Laravel engine. Freeze published PHP/consumer artifacts
@@ -267,6 +273,45 @@ record 64.445 seconds for a clean tests/binary build, 541.9 MiB of targets plus
 177.6 MiB of downloads, and 0.137/0.823-second no-op/comment builds. These are
 bounded development measurements, not a full-server or improvement claim.
 
-Next: implement the other database backends and backup-first sequential takeover with stored-value and
-interruption fixtures. The rest of the inventory remains open under #325.
+[The PostgreSQL foundation in #333](https://github.com/durable-workflow/server/pull/333)
+adds native schema bootstrap and read-only inspection commands. Its migration
+uses the actual frozen PHP PostgreSQL schema: 49 tables, 382 indexes including
+primary/unique constraints, 92 constraints and 17 owned sequences. Unlike
+SQLite, timestamps retain six-digit precision and payload metadata uses native
+JSON columns. Native receipts and SQLx history occupy separate relations.
+Startup fixes the development schema to `public`/UTC and refuses PHP data in
+any user schema, corrupt catalogs or unknown history before writable access.
+A transaction-scoped advisory lock serializes initialization; the outer
+transaction commits DDL, ledger and ownership together. PostgreSQL execution
+is not enabled by these commands.
+
+The real local PostgreSQL 17 checks pass six backend cases: concurrent fresh
+nodes, exact typed JSON/int64/microsecond values, SELECT-only inspection,
+existing/custom-schema data refusal, thirteen corrupted catalog/history states,
+and SIGKILLs after ledger creation and before commit. A restarted initializer
+sees no partial schema and creates one valid migration. The actual published
+PHP database also contains a leased activity; after stopping PHP, native
+bootstrap refuses it and all row/sequence fingerprints remain unchanged.
+TLS uses SQLx/Rustls, with a trusted CA and hostname verification; actual
+untrusted certificates and wrong hostnames are refused. Hosted qualification
+targets the pinned PostgreSQL 16 and 17 images, alongside the unchanged
+PHP/Rust/embedded SQLite fixtures and real activity restart.
+
+The first catalog-formatting helper rounded an int64 sequence maximum. Capture
+now uses PHP's exact 64-bit values. A PostgreSQL UNION also inferred the fixed
+`name` type and truncated composed catalog keys; the query explicitly selects
+`text`, and a regression case verifies distinct long constraint identities and
+the exact sequence maximum. These corrections strengthen the schema checks;
+they do not change the reviewed execution fixtures.
+
+The [PostgreSQL build observations](../rust/postgres-build-observations-2026-10-09.md)
+record 86.755 seconds for clean default tests/binary, 747.1 MiB of targets plus
+306.3 MiB of Cargo state, and 0.147/1.614-second no-op/comment builds. Additional
+checking/incremental outputs reach 921.3 MiB of targets. Inputs and exclusions
+are explicit; no full-server or causal performance gain is claimed.
+
+Next: use typed PostgreSQL storage for actual workflow/activity execution and
+shared differential checks, implement MariaDB/MySQL, then qualify backup-first
+sequential takeover with stored-value and interruption fixtures. The rest of
+the inventory remains open under #325.
 No separate defect issues have been filed yet.

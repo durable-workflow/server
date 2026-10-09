@@ -24,6 +24,205 @@ permissions:
   contents: read
 
 jobs:
+  postgres-storage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: existing-php-matrix
+            image: postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
+          - label: postgres-17
+            image: postgres@sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826
+    env:
+      RESOURCE_SCOPE: dw-pg-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ matrix.label }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Bootstrap independent published PHP and native PostgreSQL databases
+        env:
+          POSTGRES_IMAGE: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          mkdir -p cargo-home rust-target parity-evidence pg-state
+          chmod 0777 parity-evidence
+          docker network create "$RESOURCE_SCOPE"
+          docker run -d --name "$RESOURCE_SCOPE-db" --network "$RESOURCE_SCOPE" --network-alias=parity-pg \
+            --user="$(id -u):$(id -g)" --cpus=1 --memory=512m --memory-swap=512m \
+            -e POSTGRES_USER=parity -e POSTGRES_PASSWORD=parity-disposable-password -e POSTGRES_DB=php_ref \
+            -v "$PWD/pg-state:/var/lib/postgresql/data" "$POSTGRES_IMAGE"
+          ready=0
+          for attempt in $(seq 1 30); do
+            if docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
+              --entrypoint pg_isready "$POSTGRES_IMAGE" -h parity-pg -U parity -d php_ref; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
+          docker run --rm --user="$(id -u):$(id -g)" --network=none --entrypoint postgres \
+            "$POSTGRES_IMAGE" --version > parity-evidence/postgres-version.txt
+          docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
+            -e PGPASSWORD=parity-disposable-password --entrypoint createdb "$POSTGRES_IMAGE" -h parity-pg -U parity native_ref
+          image=$(jq -r '.server.images["linux/amd64"]' tests/Fixtures/ServerParity/php-baseline.json)
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
+            -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=php_ref \
+            -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
+            -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
+            "$image" artisan server:bootstrap --force > parity-evidence/published-bootstrap.txt
+          docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" --cpus=2 --memory=2g --memory-swap=2g \
+            -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 \
+            -e DW_TEST_POSTGRES_URL=postgres://parity:parity-disposable-password@parity-pg:5432/php_ref \
+            -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" \
+            -v "$PWD/parity-evidence:/evidence" -w /source/rust --entrypoint bash \
+            rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 -c \
+            'cargo test --locked --lib runtime::postgres::tests::qualification_ -- --ignored --nocapture > /evidence/postgres-tests.txt && cargo build --locked'
+          docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
+            -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=native_ref \
+            -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
+            -v "$PWD/rust-target:/target:ro" --entrypoint /target/debug/durable-workflow-server \
+            rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            schema-bootstrap > parity-evidence/native-bootstrap.json
+          docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
+            -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=native_ref \
+            -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
+            -v "$PWD/rust-target:/target:ro" --entrypoint /target/debug/durable-workflow-server \
+            rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            schema-check > parity-evidence/native-check.json
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
+            -e DB_HOST=parity-pg -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
+            -v "$PWD:/source:ro" -w /source "$image" \
+            scripts/conformance/server-parity/postgres-schema.php compare php_ref native_ref > parity-evidence/catalog-comparison.json
+      - name: Refuse published PHP pending work without changing its data or sequence positions
+        run: |
+          set -euo pipefail
+          image=$(jq -r '.server.images["linux/amd64"]' tests/Fixtures/ServerParity/php-baseline.json)
+          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
+            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+            install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
+          docker run -d --name "$RESOURCE_SCOPE-php" --network "$RESOURCE_SCOPE" --network-alias=parity-php \
+            --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
+            -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=php_ref \
+            -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
+            -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token "$image"
+          ready=0
+          for attempt in $(seq 1 30); do
+            if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
+              -fsS http://parity-php:8080/api/ready > parity-evidence/php-readiness.json; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
+            -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/restart.php \
+            prepare http://parity-php:8080 /evidence/php-pending-receipt.json > parity-evidence/php-pending.json
+          docker stop "$RESOURCE_SCOPE-php"
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
+            -e DB_HOST=parity-pg -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
+            -v "$PWD:/source:ro" -w /source "$image" scripts/conformance/server-parity/postgres-schema.php \
+            snapshot php_ref > parity-evidence/php-before.json
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
+            -e DB_HOST=parity-pg -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
+            -v "$PWD:/source:ro" -w /source "$image" scripts/conformance/server-parity/postgres-schema.php \
+            catalog php_ref > parity-evidence/catalog-before.json
+          if docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
+            -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=php_ref \
+            -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
+            -v "$PWD/rust-target:/target:ro" --entrypoint /target/debug/durable-workflow-server \
+            rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            schema-bootstrap > parity-evidence/php-native-refusal.txt 2>&1; then
+            exit 1
+          fi
+          grep -Fq existing_database_requires_qualified_takeover parity-evidence/php-native-refusal.txt
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
+            -e DB_HOST=parity-pg -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
+            -v "$PWD:/source:ro" -w /source "$image" scripts/conformance/server-parity/postgres-schema.php \
+            snapshot php_ref > parity-evidence/php-after.json
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
+            -e DB_HOST=parity-pg -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
+            -v "$PWD:/source:ro" -w /source "$image" scripts/conformance/server-parity/postgres-schema.php \
+            catalog php_ref > parity-evidence/catalog-after.json
+          cmp parity-evidence/php-before.json parity-evidence/php-after.json
+          cmp parity-evidence/catalog-before.json parity-evidence/catalog-after.json
+      - name: Verify TLS certificate trust and hostname checks
+        env:
+          POSTGRES_IMAGE: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          docker run --rm --user="$(id -u):$(id -g)" --network=none \
+            -v "$PWD/pg-state:/tls" --entrypoint openssl "$POSTGRES_IMAGE" req -x509 -newkey rsa:2048 \
+            -nodes -sha256 -days 1 -keyout /tls/ca.key -out /tls/ca.crt -subj /CN=development-ca \
+            -addext basicConstraints=critical,CA:TRUE > parity-evidence/tls-certificate-generation.txt 2>&1
+          docker run --rm --user="$(id -u):$(id -g)" --network=none \
+            -v "$PWD/pg-state:/tls" --entrypoint openssl "$POSTGRES_IMAGE" req -newkey rsa:2048 \
+            -nodes -sha256 -keyout /tls/server.key -out /tls/server.csr -subj /CN=parity-pg \
+            -addext subjectAltName=DNS:parity-pg -addext basicConstraints=critical,CA:FALSE \
+            -addext extendedKeyUsage=serverAuth >> parity-evidence/tls-certificate-generation.txt 2>&1
+          docker run --rm --user="$(id -u):$(id -g)" --network=none \
+            -v "$PWD/pg-state:/tls" --entrypoint openssl "$POSTGRES_IMAGE" x509 -req \
+            -in /tls/server.csr -CA /tls/ca.crt -CAkey /tls/ca.key -CAcreateserial -days 1 \
+            -copy_extensions copy -out /tls/server.crt >> parity-evidence/tls-certificate-generation.txt 2>&1
+          chmod 0600 pg-state/server.key
+          docker run --rm --user="$(id -u):$(id -g)" --network=none \
+            -v "$PWD/pg-state:/tls" --entrypoint openssl "$POSTGRES_IMAGE" req -x509 -newkey rsa:2048 \
+            -nodes -sha256 -days 1 -keyout /tls/untrusted.key -out /tls/untrusted.crt -subj /CN=untrusted-development-ca \
+            >> parity-evidence/tls-certificate-generation.txt 2>&1
+          docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
+            -e PGPASSWORD=parity-disposable-password --entrypoint psql "$POSTGRES_IMAGE" -h parity-pg -U parity -d native_ref \
+            -c "ALTER SYSTEM SET ssl='on'" > parity-evidence/tls-configuration.txt
+          docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
+            -e PGPASSWORD=parity-disposable-password --entrypoint psql "$POSTGRES_IMAGE" -h parity-pg -U parity -d native_ref \
+            -c 'SELECT pg_reload_conf()' >> parity-evidence/tls-configuration.txt
+          docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
+            -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=native_ref \
+            -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
+            -e DB_SSLMODE=verify-full -e DB_SSLROOTCERT=/tls/ca.crt \
+            -v "$PWD/pg-state/ca.crt:/tls/ca.crt:ro" -v "$PWD/rust-target:/target:ro" \
+            --entrypoint /target/debug/durable-workflow-server \
+            rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            schema-check > parity-evidence/tls-trusted.json
+          if docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
+            -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=native_ref \
+            -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
+            -e DB_SSLMODE=verify-full -e DB_SSLROOTCERT=/tls/untrusted.crt \
+            -v "$PWD/pg-state/untrusted.crt:/tls/untrusted.crt:ro" -v "$PWD/rust-target:/target:ro" \
+            --entrypoint /target/debug/durable-workflow-server \
+            rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            schema-check > parity-evidence/tls-untrusted.txt 2>&1; then
+            exit 1
+          fi
+          if docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
+            -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=pgsql -e DB_HOST="$RESOURCE_SCOPE-db" -e DB_DATABASE=native_ref \
+            -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
+            -e DB_SSLMODE=verify-full -e DB_SSLROOTCERT=/tls/ca.crt \
+            -v "$PWD/pg-state/ca.crt:/tls/ca.crt:ro" -v "$PWD/rust-target:/target:ro" \
+            --entrypoint /target/debug/durable-workflow-server \
+            rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            schema-check > parity-evidence/tls-wrong-hostname.txt 2>&1; then
+            exit 1
+          fi
+          grep -Fq storage_unavailable parity-evidence/tls-untrusted.txt
+          grep -Fq storage_unavailable parity-evidence/tls-wrong-hostname.txt
+      - name: Collect logs and clean owned resources
+        if: always()
+        run: |
+          mkdir -p parity-evidence
+          docker logs "$RESOURCE_SCOPE-php" > parity-evidence/php.log 2>&1 || true
+          docker logs "$RESOURCE_SCOPE-db" > parity-evidence/postgres.log 2>&1 || true
+          docker rm -f "$RESOURCE_SCOPE-php" "$RESOURCE_SCOPE-db" || true
+          docker network rm "$RESOURCE_SCOPE" || true
+      - name: Retain PostgreSQL storage evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: postgres-storage-${{ matrix.label }}
+          path: parity-evidence
+          retention-days: 90
+
   execution-and-codec:
     runs-on: ubuntu-latest
     timeout-minutes: 10
