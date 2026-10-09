@@ -29,6 +29,7 @@ port_image=$(jq -r .artifacts.server benchmarks/server-port/v1/php-baseline.json
 docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
   -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$port_image" \
   install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
+mkdir -p benchmarks/capacity/v1/bindings/php/vendor
 docker compose -p "$port_project" -f "$port_compose" config --quiet
 docker compose -p "$port_project" -f "$port_compose" up -d --wait server worker scheduler sdk-worker
 docker compose -p "$port_project" -f "$port_compose" run --rm --no-deps probe \
