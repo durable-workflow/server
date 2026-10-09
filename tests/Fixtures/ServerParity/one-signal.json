@@ -1,0 +1,19 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "one-signal",
+  "workflow_type": "parity.v1.signals",
+  "input": {"message": "workflow input λ"},
+  "typed_value": {"type": "map", "value": {"message": {"type": "string", "value": "workflow input λ"}}},
+  "signal_value": {"message": "signal λ", "count": 42, "ready": true, "optional": null},
+  "typed_signal_value": {"type": "map", "value": {
+    "message": {"type": "string", "value": "signal λ"},
+    "count": {"type": "int64", "value": "42"},
+    "ready": {"type": "boolean", "value": true},
+    "optional": {"type": "null", "value": null}
+  }},
+  "activity": false,
+  "signal_count": 1,
+  "expected_events": ["StartAccepted", "WorkflowStarted", "ConditionWaitOpened", "SignalReceived", "SignalApplied", "ConditionWaitSatisfied", "WorkflowCompleted"],
+  "embedded_expected_events": ["StartAccepted", "WorkflowStarted", "ConditionWaitOpened", "SignalReceived", "ConditionWaitSatisfied", "WorkflowCompleted"],
+  "contract": "A declared payload signal wakes a durable condition wait. The published SDK reads accepted signal history and returns the signal's decoded typed payload, not its workflow input. The embedded host reads the same persisted signal history. SignalReceived retains command/signal/run identities and Avro arguments; the condition resolution retains its original wait ID/key/fingerprint and references that signal. PHP service mode additionally records SignalApplied for an external workflow; the loadable embedded definition consumes the signal in ConditionWaitSatisfied without that extra event. This explicit adapter difference is retained in raw history and checked before comparing the common signal/wait projection."
+}

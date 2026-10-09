@@ -1,0 +1,19 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "repeated-signal",
+  "workflow_type": "parity.v1.signals",
+  "input": {"message": "workflow input λ"},
+  "typed_value": {"type": "map", "value": {"message": {"type": "string", "value": "workflow input λ"}}},
+  "signal_value": {"message": "signal λ", "count": 42, "ready": true, "optional": null},
+  "typed_signal_value": {"type": "map", "value": {
+    "message": {"type": "string", "value": "signal λ"},
+    "count": {"type": "int64", "value": "42"},
+    "ready": {"type": "boolean", "value": true},
+    "optional": {"type": "null", "value": null}
+  }},
+  "activity": false,
+  "signal_count": 2,
+  "expected_events": ["StartAccepted", "WorkflowStarted", "ConditionWaitOpened", "SignalReceived", "SignalApplied", "ConditionWaitSatisfied", "ConditionWaitOpened", "SignalReceived", "SignalApplied", "ConditionWaitSatisfied", "WorkflowCompleted"],
+  "embedded_expected_events": ["StartAccepted", "WorkflowStarted", "ConditionWaitOpened", "SignalReceived", "ConditionWaitSatisfied", "ConditionWaitOpened", "SignalReceived", "ConditionWaitSatisfied", "WorkflowCompleted"],
+  "contract": "Two identical signal deliveries are two distinct accepted commands and signal records, not an idempotency key. Each wakes a separate deterministic wait, preserving delivery order and the original wait's key/fingerprint. After the first signal the run must remain waiting; after the second it commits the last decoded signal payload once. The same explicit service/embedded SignalApplied difference as one-signal is checked."
+}

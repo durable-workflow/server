@@ -12,6 +12,7 @@ use ServerParity\EchoActivity;
 use ServerParity\EchoWorkflow;
 use ServerParity\OneActivityWorkflow;
 use ServerParity\TimerWorkflow;
+use ServerParity\SignalsWorkflow;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
@@ -58,7 +59,7 @@ function decodeHistory(array $events, callable $decode): array
     return array_map(static function (array $event) use ($decode): array {
         $payload = $event['payload'];
         $decoded = [];
-        foreach (['output', 'result'] as $key) {
+        foreach (['output', 'result', 'arguments', 'value'] as $key) {
             if (array_key_exists($key, $payload)) {
                 $decoded[$key] = $decode($payload[$key]);
             }
@@ -76,18 +77,36 @@ function decodeHistory(array $events, callable $decode): array
 function httpObservation(array $fixture, string $workflowId, string $namespace, string $queue, string $url): array
 {
     $client = new Client($url, namespace: $namespace, token: getenv('DW_PARITY_TOKEN') ?: null);
-    $handle = $client->startWorkflow($fixture['workflow_type'], $workflowId, $queue, [$fixture['input']]);
+    $handle = null;
+    $deliveries = [];
     $deadline = microtime(true) + 30;
     $worker = null;
-    $worker = (new Worker($client, $queue, clock: static function () use (&$worker, $handle, $deadline): float {
+    $worker = (new Worker($client, $queue, clock: static function () use (&$worker, &$handle, &$deliveries, $client, $fixture, $workflowId, $deadline): float {
         if (microtime(true) > $deadline) {
             throw new RuntimeException('Parity worker exceeded its 30-second completion budget.');
         }
-        if ($worker !== null && $handle->describeSelectedRun()->isTerminal) {
+        if ($handle !== null && isset($fixture['signal_count']) && count($deliveries) < $fixture['signal_count']) {
+            $page = $client->workflowHistory($workflowId, $handle->selectedRunId, 100);
+            $opened = array_filter($page['events'], static fn (array $event): bool => $event['event_type'] === 'ConditionWaitOpened');
+            if (count($opened) > count($deliveries)) {
+                $before = $handle->describeSelectedRun()->raw;
+                $response = $client->signalWorkflow($workflowId, 'payload', [$fixture['signal_value']], $handle->selectedRunId);
+                $deliveries[] = ['before' => $before, 'response' => $response];
+            }
+        }
+        if ($worker !== null && $handle !== null && $handle->describeSelectedRun()->isTerminal) {
             $worker->requestShutdown();
         }
 
         return microtime(true);
+    }, diagnosticListener: static function (string $event) use (&$handle, $client, $fixture, $workflowId, $queue): void {
+        if ($event === 'worker.registered') {
+            $arguments = [$fixture['input']];
+            if (isset($fixture['signal_count'])) {
+                $arguments[] = $fixture['signal_count'];
+            }
+            $handle = $client->startWorkflow($fixture['workflow_type'], $workflowId, $queue, $arguments);
+        }
     }))
         ->registerWorkflow('parity.v1.echo', static fn (WorkflowContext $context, array $value): array => $value)
         ->registerWorkflow('parity.v1.one_activity', static fn (WorkflowContext $context, array $value): array => $context->activity('parity.v1.echo_activity', [$value]))
@@ -98,6 +117,14 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
 
             return $value;
         })
+        ->registerWorkflow('parity.v1.signals', static function (WorkflowContext $context, array $value, int $target): array {
+            for ($index = 0; $index < $target; $index++) {
+                $context->waitCondition(fn (): bool => count($context->signals('payload')) > $index, 'payload:'.$index);
+            }
+
+            return $context->signals('payload')[$target - 1][0];
+        })
+        ->declareSignal('parity.v1.signals', 'payload', static fn (array $value) => null)
         ->registerActivity('parity.v1.echo_activity', static fn (ActivityContext $context, array $value): array => $value);
 
     // run() performs real registration and task execution. The clock observes
@@ -132,6 +159,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'input' => $execution->input,
         'output' => $handle->resultOfSelectedRun(1),
         'events' => decodeHistory($events, $client->payloadCodec()->decodeEnvelope(...)),
+        'signal_deliveries' => $deliveries,
     ];
 }
 
@@ -148,6 +176,7 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
             'parity.v1.echo' => EchoWorkflow::class,
             'parity.v1.one_activity' => OneActivityWorkflow::class,
             'parity.v1.one_timer' => TimerWorkflow::class,
+            'parity.v1.signals' => SignalsWorkflow::class,
         ],
         'workflows.v2.types.activities' => ['parity.v1.echo_activity' => EchoActivity::class],
     ]);
@@ -157,14 +186,19 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
             $row->namespace = $namespace;
         });
     }
-    $class = isset($fixture['timer_delays']) ? TimerWorkflow::class
-        : ($fixture['activity'] ? OneActivityWorkflow::class : EchoWorkflow::class);
+    $class = isset($fixture['signal_count']) ? SignalsWorkflow::class : (isset($fixture['timer_delays']) ? TimerWorkflow::class
+        : ($fixture['activity'] ? OneActivityWorkflow::class : EchoWorkflow::class));
     $stub = WorkflowStub::make($class, $workflowId);
+    $arguments = [$fixture['input']];
+    if (isset($fixture['signal_count'])) {
+        $arguments[] = $fixture['signal_count'];
+    }
     $stub->start(
-        $fixture['input'],
+        ...[...$arguments,
         new WorkflowOptions(connection: 'database', queue: $queue),
-        new StartOptions(executionTimeoutSeconds: 3600, runTimeoutSeconds: 600),
+        new StartOptions(executionTimeoutSeconds: 3600, runTimeoutSeconds: 600)],
     );
+    $deliveries = [];
     $deadline = microtime(true) + 30;
     do {
         Artisan::call('queue:work', [
@@ -172,6 +206,16 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
             '--max-time' => 30, '--sleep' => 0, '--tries' => 1,
         ]);
         $run = WorkflowRun::query()->findOrFail($stub->runId());
+        if (isset($fixture['signal_count']) && count($deliveries) < $fixture['signal_count']) {
+            $opened = $run->historyEvents()->where('event_type', 'ConditionWaitOpened')->count();
+            if ($opened > count($deliveries)) {
+                $before = $run->toArray();
+                $command = $stub->attemptSignalWithArguments('payload', [$fixture['signal_value']]);
+                $response = ['accepted' => $command->accepted(), 'command_id' => $command->commandId(),
+                    'workflow_id' => $command->workflowId(), 'run_id' => $command->runId(), 'outcome' => $command->outcome()];
+                $deliveries[] = ['before' => $before, 'response' => $response];
+            }
+        }
         if ($run->status->value === 'completed') {
             break;
         }
@@ -201,6 +245,7 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
         'input' => $run->workflowArguments(),
         'output' => $run->workflowOutput(),
         'events' => decodeHistory($events, static fn ($value) => Serializer::unserializeWithCodec('avro', is_array($value) ? $value['blob'] : $value)),
+        'signal_deliveries' => $deliveries,
     ];
 }
 
@@ -211,6 +256,7 @@ try {
         default => throw new InvalidArgumentException('Mode must be http or embedded.'),
     };
     $observation['typed_input'] = typedValue($observation['input']);
+    $observation['mode'] = $mode;
     $observation['typed_output'] = typedValue($observation['output']);
     $observation['sdk_php'] = ltrim(InstalledVersions::getPrettyVersion('durable-workflow/sdk'), 'v');
     $observation['php_version'] = PHP_VERSION;

@@ -22,13 +22,15 @@ export function checkObservation(fixture, observation, workflowId) {
   equal(observation.task_queue, 'server-parity-v1', 'task queue');
   equal(observation.status, 'completed', 'actual durable completion');
   equal(observation.payload_codec, 'avro', 'payload codec');
-  equal(observation.input, [fixture.input], 'decoded workflow input');
-  equal(observation.output, fixture.input, 'decoded workflow result');
-  const typedArguments = {type: 'list', value: [fixture.typed_value]};
+  const output = fixture.signal_value ?? fixture.input;
+  const typedOutput = fixture.typed_signal_value ?? fixture.typed_value;
+  equal(observation.input, fixture.signal_count ? [fixture.input, fixture.signal_count] : [fixture.input], 'decoded workflow input');
+  equal(observation.output, output, 'decoded workflow result');
+  const typedArguments = {type: 'list', value: [fixture.typed_value, ...(fixture.signal_count ? [{type: 'int64', value: String(fixture.signal_count)}] : [])]};
   equal(observation.typed_input, typedArguments, 'decoded workflow input types and exact int64 values');
-  equal(observation.typed_output, fixture.typed_value, 'decoded workflow result types and exact int64 values');
+  equal(observation.typed_output, typedOutput, 'decoded workflow result types and exact int64 values');
   const events = observation.events;
-  equal(events.map(event => event.event_type), fixture.expected_events, 'complete ordered event inventory');
+  equal(events.map(event => event.event_type), observation.mode === 'embedded' && fixture.embedded_expected_events ? fixture.embedded_expected_events : fixture.expected_events, 'complete ordered event inventory');
   equal(events.map(event => event.sequence), events.map((_, index) => index + 1), 'durable history sequence');
   const accepted = events[0].payload;
   const started = events[1].payload;
@@ -56,9 +58,67 @@ export function checkObservation(fixture, observation, workflowId) {
     assert.ok(Number.isFinite(time) && time >= previousTime, 'ordered recorded timestamps');
     previousTime = time;
   }
-  equal(events.at(-1).decoded.output, fixture.input, 'committed workflow result');
-  equal(events.at(-1).typed_decoded.output, fixture.typed_value, 'committed workflow result types');
+  equal(events.at(-1).decoded.output, output, 'committed workflow result');
+  equal(events.at(-1).typed_decoded.output, typedOutput, 'committed workflow result types');
   const projectedEvents = events.map(({sequence, event_type}) => ({sequence, event_type}));
+  if (fixture.signal_count) {
+    equal(observation.signal_deliveries.length, fixture.signal_count, 'complete delivered signal inventory');
+    equal(started.declared_signals, ['payload'], 'durable signal declaration');
+    let offset = 2;
+    const commonEvents = projectedEvents.slice(0, 2);
+    for (let index = 0; index < fixture.signal_count; index++) {
+      const opened = events[offset++];
+      const received = events[offset++];
+      const applied = observation.mode === 'embedded' ? null : events[offset++];
+      const satisfied = events[offset++];
+      const waitId = opened.payload.condition_wait_id;
+      const signalId = received.payload.signal_id;
+      const commandId = received.payload.workflow_command_id;
+      for (const [value, label] of [[waitId, 'wait'], [signalId, 'signal'], [commandId, 'signal command']]) {
+        nonempty(value, `durable ${label} identity`);
+        identities.push(value);
+      }
+      equal(new Set(identities).size, identities.length, 'distinct wait/signal/command identities');
+      const delivery = observation.signal_deliveries[index];
+      equal(delivery.before.status, 'waiting', 'signal delivered only after a durable wait');
+      equal(delivery.before.id ?? delivery.before.run_id, observation.run_id, 'waiting original run');
+      equal(delivery.response.accepted, true, 'accepted signal command');
+      equal(delivery.response.command_id, commandId, 'acknowledged signal command retained in history');
+      equal(delivery.response.run_id, observation.run_id, 'acknowledged original run');
+      equal(delivery.response.workflow_id, workflowId, 'acknowledged workflow');
+      equal(delivery.response.outcome, 'signal_received', 'signal command outcome');
+      equal(received.payload.workflow_instance_id, workflowId, 'signal workflow relationship');
+      equal(received.payload.workflow_run_id, observation.run_id, 'signal run relationship');
+      equal(received.payload.signal_name, 'payload', 'signal name');
+      equal(received.payload.payload_codec, 'avro', 'signal argument codec');
+      equal(received.decoded.arguments, [fixture.signal_value], 'decoded signal arguments');
+      equal(received.typed_decoded.arguments, {type: 'list', value: [fixture.typed_signal_value]}, 'exact signal argument types');
+      equal(opened.payload.condition_key, `payload:${index}`, 'deterministic wait key');
+      equal(opened.payload.sequence, index + 1, 'deterministic wait command sequence');
+      assert.match(opened.payload.condition_definition_fingerprint, /^sha256:[a-f0-9]{64}$/, 'recorded condition fingerprint');
+      for (const key of ['condition_wait_id', 'condition_key', 'condition_definition_fingerprint', 'sequence']) {
+        equal(satisfied.payload[key], opened.payload[key], `condition resolution retains ${key}`);
+      }
+      equal(satisfied.payload.workflow_signal_id, signalId, 'condition resolved by accepted signal');
+      equal(satisfied.payload.signal_name, 'payload', 'condition resolution signal name');
+      equal(satisfied.payload.signal_wait_id, received.payload.signal_wait_id, 'condition resolution signal wait relationship');
+      nonempty(received.payload.signal_wait_id, 'signal routing wait identity');
+      if (applied) {
+        for (const key of ['workflow_command_id', 'signal_id', 'signal_name', 'signal_wait_id']) {
+          equal(applied.payload[key], received.payload[key], `applied signal retains ${key}`);
+        }
+        equal(applied.decoded.value, fixture.signal_value, 'applied signal value');
+        equal(applied.typed_decoded.value, fixture.typed_signal_value, 'applied signal value types');
+      }
+      commonEvents.push(
+        {event_type: 'ConditionWaitOpened', wait_id: `@wait:${index + 1}`, command_sequence: index + 1, condition_key: `payload:${index}`},
+        {event_type: 'SignalReceived', signal_id: `@signal:${index + 1}`, command_id: `@signal-command:${index + 1}`, signal_name: 'payload', arguments: {type: 'list', value: [fixture.typed_signal_value]}},
+        {event_type: 'ConditionWaitSatisfied', wait_id: `@wait:${index + 1}`, signal_id: `@signal:${index + 1}`, command_sequence: index + 1},
+      );
+    }
+    commonEvents.push({event_type: 'WorkflowCompleted'});
+    projectedEvents.splice(0, projectedEvents.length, ...commonEvents.map((event, index) => ({...event, sequence: index + 1})));
+  }
   if (fixture.timer_delays) {
     for (const [index, delay] of fixture.timer_delays.entries()) {
       const offset = 2 + index * 2;
