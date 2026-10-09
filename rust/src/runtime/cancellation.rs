@@ -12,6 +12,22 @@ use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
+// Frozen PHP HTTP runs Laravel TrimStrings before cancellation validation.
+// Pin its reviewed character set rather than a changing Unicode whitespace
+// predicate. Internal characters and the embedded API's reasons stay intact.
+fn normalize_http_reason(reason: &str) -> &str {
+    reason.trim_matches(|ch| {
+        matches!(ch,
+            '\0' | '\t'..='\r' | ' ' | '\u{85}' | '\u{a0}' | '\u{ad}' |
+            '\u{34f}' | '\u{61c}' | '\u{115f}' | '\u{1160}' | '\u{1680}' |
+            '\u{17b4}' | '\u{17b5}' | '\u{180e}' | '\u{2000}'..='\u{200f}' |
+            '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' |
+            '\u{2060}'..='\u{2065}' | '\u{206a}'..='\u{206f}' | '\u{2800}' |
+            '\u{3000}' | '\u{3164}' | '\u{feff}' | '\u{ffa0}' | '\u{1d159}' |
+            '\u{1d173}'..='\u{1d17a}' | '\u{e0020}')
+    })
+}
+
 pub(super) async fn prepare_reason(
     body: &Value,
     semaphore: Arc<Semaphore>,
@@ -22,6 +38,7 @@ pub(super) async fn prepare_reason(
         Some(value) => Some(
             value
                 .as_str()
+                .map(normalize_http_reason)
                 .filter(|s| s.chars().count() <= 1000)
                 .ok_or_else(|| {
                     refuse(
@@ -67,6 +84,70 @@ pub(super) async fn prepare_reason(
         )
     })??;
     Ok((reason, Some(blob)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reviewed_reasons() -> Value {
+        serde_json::from_str(include_str!(
+            "../../../tests/Fixtures/ServerParityNormalization/cancellation-reasons.json"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn cancellation_boundary_trim_matches_the_frozen_php_character_set() {
+        let expected: std::collections::BTreeSet<_> = reviewed_reasons()["trimmed_codepoints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|point| u32::from_str_radix(&point.as_str().unwrap()[2..], 16).unwrap())
+            .collect();
+        for point in 0..=0x10ffff {
+            if let Some(ch) = char::from_u32(point) {
+                assert_eq!(
+                    normalize_http_reason(&ch.to_string()).is_empty(),
+                    expected.contains(&point),
+                    "U+{point:04X}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_reason_normalizes_before_nullable_unicode_length_validation() {
+        let semaphore = Arc::new(Semaphore::new(1));
+        for case in reviewed_reasons()["cases"].as_array().unwrap() {
+            let (reason, blob) =
+                prepare_reason(&json!({"reason":case["input"]}), semaphore.clone())
+                    .await
+                    .unwrap();
+            assert_eq!(json!(reason), case["expected"]);
+            assert_eq!(blob.is_some(), reason.is_some());
+        }
+        assert_eq!(
+            prepare_reason(&json!({}), semaphore.clone()).await.unwrap(),
+            (None, None)
+        );
+        let valid = format!("\u{a0}{}\u{200b}", "λ".repeat(1000));
+        assert_eq!(
+            prepare_reason(&json!({"reason":valid}), semaphore.clone())
+                .await
+                .unwrap()
+                .0
+                .unwrap(),
+            "λ".repeat(1000)
+        );
+        for invalid in [json!("λ".repeat(1001)), json!(1), json!([])] {
+            assert!(
+                prepare_reason(&json!({"reason":invalid}), semaphore.clone())
+                    .await
+                    .is_err()
+            );
+        }
+    }
 }
 
 impl<DB: Backend> Store<DB>

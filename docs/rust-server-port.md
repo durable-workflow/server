@@ -156,7 +156,17 @@ and compare on frozen PHP/embedded at `99102930002253f9b32dec87236c5e5c98f86a76`
 [38002864344](https://github.com/durable-workflow/server/actions/runs/38002864344)
 compiles, passes its other 22 HTTP tests and fails the new cancellation test on
 the absent endpoint (`501 rust_capability_not_implemented`). Native implementation
-is prepared; all six configuration and recovery gates are pending. Cooperative cleanup cancellation,
+at `7e83dc7e622f6962099d89b74972edba2d3a0bcf` passes all six configurations in
+[run 38003976411](https://github.com/durable-workflow/server/actions/runs/38003976411),
+including all 17 shared cases, 23 native HTTP tests and actual process-kill
+recovery of the original cancelled activity and timer. The retained records
+preserve all 306 fixture snapshots and officially decoded int64 recovery inputs.
+Final review then found that HTTP reasons need Laravel's Unicode/invisible
+boundary trim before nullable/1000-character validation. Embedded cancellation
+preserves its reason verbatim. The reviewed padded-reason fixture explicitly
+checks both representations, and a separate corpus pins the complete frozen
+HTTP trim set. The correction and its two native normalization checks are
+prepared; fresh six-configuration qualification is pending. Cooperative cleanup cancellation,
 child/update cancellation and scoped propagation are separate gates.
 The frozen HTTP selected-run route validates the current run, then records an
 instance-scoped command; embedded `loadRun` records a run-scoped command.
@@ -173,7 +183,7 @@ closed-run result safely; the fixture checks both its actual report and an
 explicit repeated report without changing either response.
 
 Timeout/lease retries, uncaught failures and broader retry policies remain
-separate gates. This work is followed by cancellation, schedules, visibility, authorization/namespaces,
+separate gates. This work is followed by cooperative cancellation, schedules, visibility, authorization/namespaces,
 streams and existing consumers. Each slice must run on the required database
 matrix. Read-only upgrade inspection and backup-first takeover remain required,
 but follow wider capability coverage. PHP and unknown databases stay refused.

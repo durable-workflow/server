@@ -28,7 +28,8 @@
   "immediate_cancellation": {
     "phase": "before_claim",
     "receipt_target_scope": {"http": "instance", "embedded": "run"},
-    "reason": "parity cancellation λ"
+    "reason": " \t\u0000\u00a0parity cancellation λ\u200b\ud834\udd73\r\n",
+    "http_reason": "parity cancellation λ"
   },
   "expected_events": [
     "StartAccepted",
@@ -36,5 +37,5 @@
     "CancelRequested",
     "WorkflowCancelled"
   ],
-  "contract": "Immediate selected-run cancellation closes the original run and open work, retains the original cancellation command/failure and input types, and commits no result. Repeating cancellation is refused with run_not_active and unchanged history. Pending timers retain their original identity/deadline; leased activity outcomes are stale and cannot commit. This does not qualify cooperative cleanup cancellation."
+  "contract": "Immediate selected-run cancellation closes the original run and open work, retains the original cancellation command/failure and input types, and commits no result. HTTP applies the published Laravel Unicode/invisible-character boundary trim before reason validation; embedded attemptCancel preserves the requested reason. Each mode retains its original effective reason throughout terminal history. Repeating cancellation is refused with run_not_active and unchanged history. Pending timers retain their original identity/deadline; leased activity outcomes are stale and cannot commit. This does not qualify cooperative cleanup cancellation."
 }

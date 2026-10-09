@@ -2020,7 +2020,9 @@ async fn immediate_cancellation_closes_original_work_once_and_survives_fresh_poo
             request(&app_b, "POST", &path, json!({"reason":"λ".repeat(1001)})).await;
         assert_eq!(invalid_reason.0, StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(run_history(&app_b, &workflow, &run).await, prefix);
-        let body = json!({"reason":"parity cancellation λ"});
+        // Published HTTP normalizes the reason before validation. Embedded
+        // attemptCancel preserves its reason; the shared fixture declares both.
+        let body = json!({"reason":" \t\0\u{a0}parity cancellation λ\u{200b}\u{1d173}\r\n"});
         let (left, right) = tokio::join!(
             request(&app_a, "POST", &path, body.clone()),
             request(&app_b, "POST", &path, body.clone())

@@ -35,7 +35,10 @@ function record(suffix = '') {
 
 function cancellationObservation(fixture, mode = 'http') {
   const raw = observation();
-  const {phase, reason} = fixture.immediate_cancellation;
+  const {phase} = fixture.immediate_cancellation;
+  const reason = mode === 'http'
+    ? fixture.immediate_cancellation.http_reason ?? fixture.immediate_cancellation.reason
+    : fixture.immediate_cancellation.reason;
   Object.assign(raw, {mode, workflow_type: fixture.workflow_type, status: 'cancelled',
     input: [fixture.input], typed_input: {type: 'list', value: [fixture.typed_value]},
     output: null, typed_output: {type: 'null', value: null}});
@@ -86,6 +89,19 @@ function cancellationObservation(fixture, mode = 'http') {
   raw.activity_outcomes = phase === 'leased_activity' ? [{...stale, path: '/api/worker/activity-tasks/cancel-task/complete',
     request: {activity_attempt_id: 'cancel-attempt', lease_owner: 'cancel-owner'}, decoded_result: fixture.input, typed_result: fixture.typed_value}] : [];
   return structuredClone(raw);
+}
+
+for (const mode of ['http', 'embedded']) {
+  test(`cancellation reason keeps the declared ${mode} boundary representation`, () => {
+    const fixture = cancellationFixtures.find(fixture => fixture.id === 'cancel-before-claim');
+    const raw = cancellationObservation(fixture, mode);
+    const wrong = mode === 'http' ? fixture.immediate_cancellation.reason : fixture.immediate_cancellation.http_reason;
+    for (const event of raw.events.filter(event => ['CancelRequested', 'WorkflowCancelled'].includes(event.event_type))) {
+      event.payload.reason = wrong;
+      if (event.event_type === 'WorkflowCancelled') event.payload.message = `Workflow cancelled: ${wrong}`;
+    }
+    assert.throws(() => checkObservation(fixture, raw, 'test-one-activity'), /cancellation reason/);
+  });
 }
 
 for (const fixture of cancellationFixtures) {

@@ -10,6 +10,12 @@ durable retry, exhausted retry budget and matching/nonmatching error filters aga
 isolated Server URL using the **published** PHP SDK. The embedded adapter runs
 the same logical cases through a Laravel application, real database queue jobs,
 and the installed Workflow package. Rust will use the HTTP adapter unchanged.
+Immediate cancellation covers a run before claim, a leased activity and a
+pending timer, preserving the original reason, command, failure and closed work.
+The padded-reason fixture declares HTTP's published Laravel boundary trim and
+embedded cancellation's verbatim reason separately. The cancellation reason
+normalization corpus pins the full frozen character set and nullable/length
+rules; meaningful history fields are checked before comparing common behavior.
 
 Requirements: Node 20+, PHP 8.3+ with PDO SQLite/pcntl, and Composer. The pinned
 published Server image contains these tools. Install the exact adapter:

@@ -6,7 +6,10 @@ export function checkImmediateCancellation(fixture, observation) {
   const equal = (actual, expected, label) => assert.deepStrictEqual(actual, expected, label);
   const nonempty = (value, label) => assert.ok(typeof value === 'string' && value.length > 0, label);
   const time = (value, label) => { const parsed = Date.parse(value); assert.ok(Number.isFinite(parsed), label); return parsed; };
-  const {phase, reason, delay_seconds: delay} = fixture.immediate_cancellation;
+  const {phase, delay_seconds: delay} = fixture.immediate_cancellation;
+  const reason = observation.mode === 'http'
+    ? fixture.immediate_cancellation.http_reason ?? fixture.immediate_cancellation.reason
+    : fixture.immediate_cancellation.reason;
   const events = observation.events;
   const rawEvents = events.map(({decoded, typed_decoded, ...event}) => event);
   const cancellation = observation.cancellation;
