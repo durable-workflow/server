@@ -384,10 +384,26 @@ stored-value and migration-interruption fixtures. The capability, consumer,
 performance and operational inventory remains open under #325.
 No separate defect issues have been filed yet.
 
+The [pending-task correction in #336](https://github.com/durable-workflow/server/pull/336)
+addresses a prerequisite compatibility case: PHP treats a null
+`workflow_tasks.available_at` as immediately available, while the native query
+excluded it. The focused regression reproduces the native stall; the common
+polling predicate now admits null availability while future-dated work waits.
+PHP and native HTTP cases cover workflow/activity tasks, original run identities,
+duplicate activity completion and the final durable workflow outcome. Exact-head
+hosted qualification is recorded in the PR. This correction precedes read-only upgrade
+preflight; it does not enable database takeover.
+
+The existing activity-completion contract permits a committed retry to return
+`409 stale_attempt` with completed statuses; the PHP fixture checks that response.
+Native receipts currently return `200` with `recorded=false` for an identical
+retry. Both cases check one durable outcome; complete completion-error envelope
+parity remains part of the wider #325 qualification.
+
 Final checks of the pending-task correction caught `SQLITE_BUSY` while three
 native runtimes opened one fresh SQLite file, before its HTTP case ran. The [startup
 correction in #337](https://github.com/durable-workflow/server/pull/337)
-fix retries only that transient database error, with at most three attempts;
+retries only that transient database error, with at most three attempts;
 each repeats read-only ownership preflight and retains the existing lock limits.
 An unsuccessful bootstrap closes its pool and finishes rollback before retry.
 Other errors and ownership refusals return immediately. Ownership inspection

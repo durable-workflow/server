@@ -360,7 +360,7 @@ where
                 "supported_activity_types"
             },
         )?;
-        let candidates = Self::query("SELECT t.*,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.namespace='default' AND t.queue=$1 AND t.task_type=$2 AND r.status IN ('running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.lease_expires_at<=$3)) AND t.available_at<=$4 ORDER BY t.available_at,t.id LIMIT 100")
+        let candidates = Self::query("SELECT t.*,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.namespace='default' AND t.queue=$1 AND t.task_type=$2 AND r.status IN ('running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.lease_expires_at<=$3)) AND (t.available_at IS NULL OR t.available_at<=$4) ORDER BY t.available_at,t.id LIMIT 100")
             .bind(queue).bind(kind).bind(DB::bind_time(now())).bind(DB::bind_time(now())).fetch_all(&mut *tx).await?;
         for task in candidates {
             let run_id = DB::string(&task, "workflow_run_id")?;
