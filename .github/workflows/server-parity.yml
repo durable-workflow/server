@@ -119,6 +119,11 @@ jobs:
             prepare http://parity-rust:8080 /evidence/restart-receipt.json > parity-evidence/restart-prepare.json
           docker kill --signal=KILL "$RESOURCE_SCOPE-rust"
           test "$(docker inspect --format='{{.State.ExitCode}}' "$RESOURCE_SCOPE-rust")" = 137
+          # Compare the actual published PHP schema with the now-stopped native
+          # file. Catalog inspection loads neither engine and opens read-only.
+          docker run --rm --user=1000:1000 --network=none --entrypoint php \
+            -v "$PWD:/source:ro" -v "$PWD/parity-state:/state:ro" -w /source "$image" \
+            scripts/conformance/server-parity/schema.php /state/php.sqlite /state/rust.sqlite > parity-evidence/schema-comparison.json
           docker logs "$RESOURCE_SCOPE-rust" > parity-evidence/rust-killed.log 2>&1
           docker run -d --name "$RESOURCE_SCOPE-recovered" --network "$RESOURCE_SCOPE" --network-alias=parity-recovered \
             --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \

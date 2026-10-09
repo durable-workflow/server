@@ -49,11 +49,14 @@ impl Runtime {
             ));
         }
         let path = Path::new(database);
-        if !path.exists() {
-            std::fs::OpenOptions::new()
+        if !path.exists()
+            && let Err(error) = std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
-                .open(path)?;
+                .open(path)
+            && error.kind() != std::io::ErrorKind::AlreadyExists
+        {
+            return Err(error.into());
         }
         // Preflight read-only, before enabling WAL or executing any migration.
         // A PHP/unknown database cannot be mutated by this development slice.
@@ -97,12 +100,14 @@ impl Runtime {
             // Recheck under the write lock so simultaneous fresh-node startup
             // cannot apply the same bootstrap twice.
             let exists: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM sqlite_master WHERE name='dw_server_schema'",
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='dw_server_schema' COLLATE NOCASE",
             )
             .fetch_one(&mut *tx)
             .await?;
             if exists == 0 {
                 schema::bootstrap(&mut tx).await?;
+            } else {
+                schema::verify(&mut tx).await?;
             }
             tx.commit().await?;
         }
@@ -128,6 +133,13 @@ impl Runtime {
         if !marker.is_ok_and(|rows| rows == [("rust-development".into(), schema::VERSION)]) {
             return false;
         }
+        let Ok(mut connection) = self.pool.acquire().await else {
+            return false;
+        };
+        if schema::verify_history(&mut connection).await.is_err() {
+            return false;
+        }
+        drop(connection);
         for query in [
             "SELECT id,namespace,current_run_id FROM workflow_instances LIMIT 0",
             "SELECT id,status,arguments,output,last_history_sequence,last_command_sequence,run_deadline_at FROM workflow_runs LIMIT 0",
@@ -335,10 +347,12 @@ impl Runtime {
 
     pub(crate) async fn deregister(&self, worker_id: &str) -> Result<Value> {
         let mut tx = self.begin().await?;
-        sqlx::query("DELETE FROM workflow_worker_registrations WHERE namespace='default' AND worker_id=?")
-            .bind(worker_id)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "DELETE FROM workflow_worker_registrations WHERE namespace='default' AND worker_id=?",
+        )
+        .bind(worker_id)
+        .execute(&mut *tx)
+        .await?;
         // Revocation expires the existing fence; later polling creates a new
         // attempt before work can be accepted from another worker.
         let recovered = sqlx::query("UPDATE workflow_tasks SET lease_expires_at=? WHERE namespace='default' AND lease_owner=? AND status='leased'")
@@ -412,11 +426,14 @@ impl Runtime {
                 }
                 return Err(refuse(StatusCode::CONFLICT,"poll_cached_task_expired"));
         }
-        let types: Value = serde_json::from_str(&string(&worker, if kind == "workflow" {
-            "supported_workflow_types"
-        } else {
-            "supported_activity_types"
-        }))?;
+        let types: Value = serde_json::from_str(&string(
+            &worker,
+            if kind == "workflow" {
+                "supported_workflow_types"
+            } else {
+                "supported_activity_types"
+            },
+        ))?;
         let candidates = sqlx::query("SELECT t.*,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.namespace='default' AND t.queue=? AND t.task_type=? AND r.status IN ('running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.lease_expires_at<=?)) AND t.available_at<=? ORDER BY t.available_at,t.id LIMIT 100")
             .bind(queue).bind(kind).bind(now()).bind(now()).fetch_all(&mut *tx).await?;
         for task in candidates {
@@ -774,9 +791,16 @@ fn json_column(value: &Value) -> Option<String> {
     (!value.is_null()).then(|| value.to_string())
 }
 
-async fn record_completion(tx: &mut Transaction<'_, Sqlite>, task_id: &str, body: &Value) -> Result<()> {
+async fn record_completion(
+    tx: &mut Transaction<'_, Sqlite>,
+    task_id: &str,
+    body: &Value,
+) -> Result<()> {
     sqlx::query("INSERT INTO dw_task_completions(task_id,receipt) VALUES (?,?)")
-        .bind(task_id).bind(body.to_string()).execute(&mut **tx).await?;
+        .bind(task_id)
+        .bind(body.to_string())
+        .execute(&mut **tx)
+        .await?;
     Ok(())
 }
 
