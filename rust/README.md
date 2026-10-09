@@ -34,6 +34,8 @@ The [HTTP slice observations](runtime-build-observations-2026-10-09.md) record
 its larger native build, test and dependency costs.
 The [PostgreSQL observations](postgres-build-observations-2026-10-09.md) include
 typed storage and TLS dependencies, with separate clean/incremental disk costs.
+The [PostgreSQL execution observations](postgres-execution-build-observations-2026-10-09.md)
+record the shared runtime's current clean and incremental costs.
 
 ## PostgreSQL storage foundation
 

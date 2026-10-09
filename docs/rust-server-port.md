@@ -317,8 +317,42 @@ record 86.755 seconds for clean default tests/binary, 747.1 MiB of targets plus
 checking/incremental outputs reach 921.3 MiB of targets. Inputs and exclusions
 are explicit; no full-server or causal performance gain is claimed.
 
-Next: use typed PostgreSQL storage for actual workflow/activity execution and
-shared differential checks, implement MariaDB/MySQL, then qualify backup-first
-sequential takeover with stored-value and interruption fixtures. The rest of
-the inventory remains open under #325.
+[PostgreSQL execution in #334](https://github.com/durable-workflow/server/pull/334)
+uses one typed execution state machine for both native backends. JSONB,
+microsecond timestamps and PHP's integer widths retain their physical types.
+Decode failures return bounded errors rather than panicking. SQLite keeps its
+existing native text layout. SQLite history limits now count UTF-8 bytes rather
+than characters; PostgreSQL bounds its JSON serialization before hydration.
+No migration or schema version change is needed for this execution slice.
+
+The common HTTP cases pass on both backends, including concurrent starts and
+completions, independent claims, revoked/expired fences, exact large integers,
+persistent receipts, poll retries, pagination, atomic unsupported-command
+refusal, timestamp precision and oversized Unicode history. PostgreSQL uses
+a transaction-scoped advisory lock for this first default-namespace slice,
+separate from initialization. Empty polls release the transaction before waiting;
+serialization and full CPU/throughput/idle cost remain unqualified.
+
+The [shared hosted run](https://github.com/durable-workflow/server/actions/runs/37943502489)
+passes on the pinned PostgreSQL 16 and 17 images. Each executes the unchanged
+echo, int64 and activity fixtures against independent published PHP, Rust and
+embedded databases. Two native processes share only their own database. The
+probe prepares a leased activity, SIGKILLs one process, verifies survivor
+readiness, starts a replacement, lets the persisted lease expire and finishes
+through the published PHP SDK. It retains original run/history relationships,
+rejects the old claim and records one activity/workflow outcome. This bounded
+case does not establish all failure boundaries, routing or full multi-node HA.
+The existing schema, interruption, read-only PHP refusal, TLS and SQLite/codec
+checks remain in the Action. Existing PHP data is still refused, not converted.
+
+The [execution build observations](../rust/postgres-execution-build-observations-2026-10-09.md)
+record 83.054 seconds for clean default tests/binary, 787.0 MiB of targets plus
+306.4 MiB of Cargo state, and 0.145/1.911-second no-op/comment builds. Retained
+incremental outputs total 825.5 MiB. These bounded development samples do not
+qualify the complete server or establish a causal speedup.
+
+Next: implement MariaDB/MySQL with the same execution fixtures and real
+interruption checks, then qualify backup-first sequential takeover with
+stored-value and migration-interruption fixtures. The capability, consumer,
+performance and operational inventory remains open under #325.
 No separate defect issues have been filed yet.
