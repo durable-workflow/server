@@ -207,6 +207,7 @@ where
         if DB::string(&task, "task_type")? != "activity" {
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
         }
+        Self::cancelled_activity_outcome(&mut tx, &task, &body).await?;
         if Self::duplicate_receipt(&task, &body)? {
             return Ok(
                 json!({"task_id":task_id,"activity_attempt_id":attempt_id,"outcome":"failed","recorded":false,"reason":"already_completed"}),

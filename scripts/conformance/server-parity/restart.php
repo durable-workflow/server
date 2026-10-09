@@ -179,7 +179,31 @@ if ($phase === 'prepare') {
         && $terminalHistory[4]['payload']['activity']['status'] === 'failed'
         && $terminalHistory[4]['payload']['activity']['retry_policy']['max_attempts'] === 3, 'Explicit non-retryable report did not close the original activity with unused budget.');
     assertRestart($client->pollActivityTask('restart-terminal-old', 'restart-terminal-v1', 0) === null, 'Terminal failure unexpectedly scheduled another attempt.');
+    $client->registerWorker('restart-cancel-old', 'restart-cancel-v1', ['restart.cancel'], ['restart.cancel.activity']);
+    $cancelled = [];
+    foreach (['leased_activity', 'pending_timer'] as $cancelPhase) {
+        $cancelHandle = $client->startWorkflow('restart.cancel', 'rust-restart-cancel-'.$cancelPhase, 'restart-cancel-v1', [$value]);
+        $cancelTask = $client->pollWorkflowTask('restart-cancel-old', 'restart-cancel-v1', 0);
+        assertRestart(is_array($cancelTask) && $cancelTask['run_id'] === $cancelHandle->selectedRunId, 'Prepare did not claim original cancellation workflow.');
+        $commands = $cancelPhase === 'pending_timer' ? [['type' => 'start_timer', 'delay_seconds' => 10]]
+            : [['type' => 'schedule_activity', 'activity_type' => 'restart.cancel.activity', 'arguments' => $client->payloadCodec()->envelope([$value])]];
+        $client->completeWorkflowTask($cancelTask['task_id'], $cancelTask['lease_owner'], $cancelTask['workflow_task_attempt'], $commands);
+        $cancelActivity = $cancelPhase === 'leased_activity' ? $client->pollActivityTask('restart-cancel-old', 'restart-cancel-v1', 0) : null;
+        assertRestart($cancelPhase !== 'leased_activity' || (is_array($cancelActivity) && $cancelActivity['attempt_number'] === 1), 'Prepare did not lease original cancelled attempt.');
+        $cancelBefore = $client->workflowHistory($cancelHandle->workflowId, $cancelHandle->selectedRunId)['events'];
+        $cancelAck = $client->cancelWorkflow($cancelHandle->workflowId, 'restart cancellation λ', $cancelHandle->selectedRunId);
+        $cancelHistory = $client->workflowHistory($cancelHandle->workflowId, $cancelHandle->selectedRunId)['events'];
+        $expected = $cancelPhase === 'leased_activity'
+            ? ['StartAccepted', 'WorkflowStarted', 'ActivityScheduled', 'ActivityStarted', 'CancelRequested', 'ActivityCancelled', 'WorkflowCancelled']
+            : ['StartAccepted', 'WorkflowStarted', 'TimerScheduled', 'CancelRequested', 'TimerCancelled', 'WorkflowCancelled'];
+        assertRestart(array_column($cancelHistory, 'event_type') === $expected
+            && sameRestartValue($cancelBefore, array_slice($cancelHistory, 0, count($cancelBefore)))
+            && $cancelAck['command_id'] === $cancelHistory[array_key_last($cancelHistory)]['payload']['workflow_command_id'], 'Cancellation was not acknowledged with original history before the kill.');
+        $cancelled[$cancelPhase] = ['workflow_id' => $cancelHandle->workflowId, 'run_id' => $cancelHandle->selectedRunId,
+            'activity' => $cancelActivity, 'accepted' => $cancelAck, 'history' => $cancelHistory];
+    }
     $receipt = ['workflow_id' => $handle->workflowId, 'run_id' => $handle->selectedRunId, 'activity' => $activity,
+        'cancelled' => $cancelled,
         'retry' => ['workflow_id' => $retryHandle->workflowId, 'run_id' => $retryHandle->selectedRunId,
             'first_claim' => $failedActivity, 'failure_receipt' => $failureReceipt, 'history' => $retryHistory],
         'terminal' => ['workflow_id' => $terminalHandle->workflowId, 'run_id' => $terminalHandle->selectedRunId,
@@ -193,6 +217,7 @@ if ($phase === 'prepare') {
     file_put_contents($receiptPath, json_encode($receipt, JSON_THROW_ON_ERROR).PHP_EOL);
     echo json_encode(['phase' => $phase, 'outcome' => 'prepared', 'run_id' => $handle->selectedRunId,
         'lease_expires_at' => $activity['lease_expires_at'], 'pending_timer' => $receipt['timer'],
+        'cancelled' => $cancelled,
         'pending_retry' => ['run_id' => $retryHandle->selectedRunId, 'task_id' => $failureReceipt['next_task_id'],
             'available_at' => $retryHistory[4]['payload']['retry_available_at']],
         'pending_terminal_resume' => ['run_id' => $terminalHandle->selectedRunId, 'task_id' => $terminalFailure['next_task_id'],
@@ -207,11 +232,62 @@ $receipt = json_decode(file_get_contents($receiptPath), true, flags: JSON_THROW_
 $old = $receipt['activity'];
 // Let the real persisted lease expire. Do not edit clocks/rows or revoke the
 // old worker to imitate process-loss recovery.
-$waitUntil = max(strtotime($old['lease_expires_at']), strtotime($receipt['child']['task']['lease_expires_at'])) + 1;
+$waitUntil = max(strtotime($old['lease_expires_at']), strtotime($receipt['child']['task']['lease_expires_at']),
+    strtotime($receipt['cancelled']['pending_timer']['history'][2]['payload']['fire_at'])) + 1;
 assertRestart($waitUntil - time() < 40, 'Unexpected unbounded lease wait.');
 while (time() < $waitUntil) {
     usleep(100_000);
 }
+$client->registerWorker('restart-cancel-new', 'restart-cancel-v1', ['restart.cancel'], ['restart.cancel.activity']);
+$cancelRecovery = [];
+foreach ($receipt['cancelled'] as $cancelPhase => $cancelled) {
+    $description = $client->describeWorkflow($cancelled['workflow_id'], $cancelled['run_id']);
+    assertRestart($description->status === 'cancelled' && $description->output === null
+        && sameRestartValue($description->input, [$value])
+        && sameRestartValue($cancelled['history'], $client->workflowHistory($cancelled['workflow_id'], $cancelled['run_id'])['events']), 'Process recovery changed original cancelled run/history/input.');
+    $cancelOutcome = null;
+    try {
+        $client->workflowHandle($cancelled['workflow_id'], $cancelled['run_id'])->resultOfSelectedRun(1);
+    } catch (\DurableWorkflow\Exception\WorkflowCancelled $error) {
+        $cancelOutcome = ['type' => $error::class, 'message' => $error->getMessage()];
+    }
+    assertRestart($cancelOutcome === ['type' => \DurableWorkflow\Exception\WorkflowCancelled::class, 'message' => 'restart cancellation λ'], 'Recovered cancellation lost its original typed SDK outcome.');
+    $repeatCancel = null;
+    try {
+        $client->cancelWorkflow($cancelled['workflow_id'], 'replacement cancellation', $cancelled['run_id']);
+    } catch (ServerException $error) {
+        assertRestart($error->status === 409 && ($error->details['rejection_reason'] ?? null) === 'run_not_active', 'Recovered cancellation repeat was not refused.');
+        $repeatCancel = $error->details;
+    }
+    assertRestart(is_array($repeatCancel) && $repeatCancel['command_id'] !== $cancelled['accepted']['command_id'], 'Repeat replaced original cancellation command.');
+    $lateReceipts = [];
+    if (is_array($cancelled['activity'])) {
+        $claim = $cancelled['activity'];
+        foreach (['complete', 'fail'] as $operation) {
+            $refused = false;
+            try {
+                $operation === 'complete'
+                    ? $client->completeActivityTask($claim['task_id'], $claim['activity_attempt_id'], $claim['lease_owner'], $value)
+                    : $client->failActivityTask($claim['task_id'], $claim['activity_attempt_id'], $claim['lease_owner'], 'late failure', 'RuntimeException');
+            } catch (ServerException $error) {
+                $details = $error->details;
+                $refused = $error->status === 409 && $details['recorded'] === false && $details['reason'] === 'run_cancelled'
+                    && $details['outcome'] === 'ignored' && $details['task_id'] === $claim['task_id']
+                    && $details['activity_attempt_id'] === $claim['activity_attempt_id'] && $details['lease_owner'] === $claim['lease_owner']
+                    && $details['task_status'] === 'cancelled' && $details['activity_status'] === 'cancelled' && $details['attempt_status'] === 'cancelled';
+                $lateReceipts[$operation] = $details;
+            }
+            assertRestart($refused, 'Pre-kill cancelled activity committed a late outcome.');
+        }
+    } else {
+        assertRestart(new DateTimeImmutable($cancelled['history'][2]['payload']['fire_at']) < new DateTimeImmutable(), 'Cancelled timer recovery must run after the original timer deadline.');
+    }
+    assertRestart(sameRestartValue($cancelled['history'], $client->workflowHistory($cancelled['workflow_id'], $cancelled['run_id'])['events']), 'Stale/repeated cancellation changed original durable history.');
+    $cancelRecovery[$cancelPhase] = ['execution' => $description->raw, 'outcome' => $cancelOutcome,
+        'history' => $cancelled['history'], 'repeat' => $repeatCancel, 'late_receipts' => $lateReceipts];
+}
+assertRestart($client->pollWorkflowTask('restart-cancel-new', 'restart-cancel-v1', 0) === null
+    && $client->pollActivityTask('restart-cancel-new', 'restart-cancel-v1', 0) === null, 'Cancelled work reactivated after process replacement.');
 $retry = $receipt['retry'];
 $firstRetryClaim = $retry['first_claim'];
 assertRestart(sameRestartValue($retry['history'], $client->workflowHistory($retry['workflow_id'], $retry['run_id'])['events']), 'Acknowledged retry history changed across process loss.');
@@ -455,7 +531,10 @@ $client->deregisterWorkerRegistration('restart-child-new');
 $client->deregisterWorkerRegistration('restart-retry-old');
 $client->deregisterWorkerRegistration('restart-terminal-old');
 $client->deregisterWorkerRegistration('restart-terminal-new');
+$client->deregisterWorkerRegistration('restart-cancel-old');
+$client->deregisterWorkerRegistration('restart-cancel-new');
 echo json_encode(['phase' => $phase, 'outcome' => 'pass', 'run_id' => $execution->runId,
+    'cancellation_recovered' => true, 'cancellation' => $cancelRecovery,
     'terminal_recovered' => true, 'terminal_history' => $terminalHistory, 'terminal_claim' => $terminalClaim,
     'terminal_completion' => $terminalCompletion, 'terminal_failure_duplicate' => $terminalFailureDuplicate,
     'terminal_completion_duplicate' => $terminalCompletionDuplicate,

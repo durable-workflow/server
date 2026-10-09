@@ -1,0 +1,29 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "cancel-nul-reason",
+  "workflow_type": "parity.v1.cancel_before_claim",
+  "input": {"message": "cancel λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {"type": "string", "value": "cancel λ"},
+      "count": {"type": "int64", "value": "9007199254740993"},
+      "optional": {"type": "null", "value": null}
+    }
+  },
+  "activity": false,
+  "immediate_cancellation": {
+    "phase": "before_claim",
+    "receipt_target_scope": {"http": "instance", "embedded": "run"},
+    "reason": "\u0000parity cancellation λ",
+    "http_reason": "parity cancellation λ"
+  },
+  "expected_events": ["StartAccepted", "WorkflowStarted", "CancelRequested", "WorkflowCancelled"],
+  "known_failure": {
+    "issue": "https://github.com/durable-workflow/workflow/issues/741",
+    "runtime": "embedded",
+    "database_family": "postgresql",
+    "status": "pending contract decision and fix; excluded from the passing corpus"
+  },
+  "contract": "An accepted cancellation must not silently truncate its durable failure message relative to its original terminal history. This reproducer retains the current expected original reason/message and deliberately fails on frozen embedded PostgreSQL. PostgreSQL text cannot store literal NUL; the owning issue must choose an explicit portable representation or pre-mutation refusal, then update and qualify that contract. HTTP boundary normalization and embedded verbatim input are explicit. This pending case is not counted as qualified."
+}

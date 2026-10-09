@@ -18,6 +18,41 @@ use function Workflow\V2\timer;
 use function Workflow\V2\signal;
 use function Workflow\V2\child;
 
+#[Type('parity.v1.cancel_before_claim')]
+final class CancelBeforeClaimWorkflow extends Workflow
+{
+    public function handle(array $value): array { return $value; }
+}
+
+#[Type('parity.v1.cancel_pending_timer')]
+final class CancelPendingTimerWorkflow extends Workflow
+{
+    public function handle(array $value): array
+    {
+        timer(60);
+
+        return $value;
+    }
+}
+
+#[Type('parity.v1.cancel_leased_activity')]
+final class CancelLeasedActivityWorkflow extends Workflow
+{
+    public function handle(array $value): array { return activity(CancelActivity::class, $value); }
+}
+
+#[Type('parity.v1.cancel_activity')]
+final class CancelActivity extends Activity
+{
+    public function handle(array $value): array
+    {
+        \CancellationProbeState::$claims[] = $this->taskId;
+        \cancelEmbeddedRun($this->runId());
+
+        return $value;
+    }
+}
+
 #[Type('parity.v1.two_children')]
 final class TwoChildrenWorkflow extends Workflow
 {

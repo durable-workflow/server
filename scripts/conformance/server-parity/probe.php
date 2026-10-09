@@ -136,7 +136,7 @@ function observedChildTransport(array &$polls, array &$completions, array &$acti
                         $activityPolls[] = $body['task'];
                     }
                 } elseif (preg_match('#^/api/worker/activity-tasks/[^/]+/(?:complete|fail)$#', $path)) {
-                    $activityOutcomes[] = ['path' => $path,
+                    $activityOutcomes[] = ['path' => $path, 'status' => $response->getStatusCode(),
                         'request' => json_decode((string) $request->getBody(), true, flags: JSON_THROW_ON_ERROR),
                         'response' => json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR)];
                 }
@@ -699,9 +699,14 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
 }
 
 try {
+    require __DIR__.'/cancellation-probe.php';
     $observation = match ($mode) {
-        'http' => httpObservation($fixture, $workflowId, $namespace, $queue, $options['url'], $options['fixture']),
-        'embedded' => embeddedObservation($fixture, $workflowId, $namespace, $queue, $options['application-root']),
+        'http' => isset($fixture['immediate_cancellation'])
+            ? httpCancellationObservation($fixture, $workflowId, $namespace, $queue, $options['url'])
+            : httpObservation($fixture, $workflowId, $namespace, $queue, $options['url'], $options['fixture']),
+        'embedded' => isset($fixture['immediate_cancellation'])
+            ? embeddedCancellationObservation($fixture, $workflowId, $namespace, $queue, $options['application-root'])
+            : embeddedObservation($fixture, $workflowId, $namespace, $queue, $options['application-root']),
         default => throw new InvalidArgumentException('Mode must be http or embedded.'),
     };
     $observation['typed_input'] = typedValue($observation['input']);

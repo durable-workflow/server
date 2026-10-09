@@ -19,6 +19,11 @@ pub fn router(runtime: Runtime) -> Router {
         .route("/api/cluster/info", get(cluster))
         .route("/api/workflows", post(start))
         .route("/api/workflows/{workflow_id}", get(describe_current))
+        .route("/api/workflows/{workflow_id}/cancel", post(cancel_current))
+        .route(
+            "/api/workflows/{workflow_id}/runs/{run_id}/cancel",
+            post(cancel_run),
+        )
         .route(
             "/api/workflows/{workflow_id}/query/{query_name}",
             post(query_current),
@@ -187,6 +192,26 @@ async fn describe_current(
     Path(workflow_id): Path<String>,
 ) -> Result<Json<Value>> {
     runtime.describe(&workflow_id, None).await.map(Json)
+}
+
+async fn cancel_current(
+    State(runtime): State<Runtime>,
+    Path(workflow_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    let (status, response) = runtime.cancel_workflow(&workflow_id, None, body).await?;
+    Ok((status, Json(response)))
+}
+
+async fn cancel_run(
+    State(runtime): State<Runtime>,
+    Path((workflow_id, run_id)): Path<(String, String)>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    let (status, response) = runtime
+        .cancel_workflow(&workflow_id, Some(&run_id), body)
+        .await?;
+    Ok((status, Json(response)))
 }
 
 async fn signal_current(

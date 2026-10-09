@@ -138,8 +138,63 @@ After replacement, the published SDK client and replayer catch the original
 failure, complete once and reject late success from the closed activity.
 This checkpoint uses explicit client claims/replay; the shared terminal fixtures
 exercise the normal SDK worker loop.
+The final terminal-failure head `ec0e597db9efd13f5f5c2e24adc76aa1a2de5f4d`
+passes all six configurations in [run 38001111544](https://github.com/durable-workflow/server/actions/runs/38001111544)
+and PHP/source gates (2,601 tests / 57,160 assertions). Merge
+`2288e80b8d7610394e38b814afaa62414333d200` retains the identical tested tree;
+its main shared and PHP/source checks also pass.
+
+The next tests-first slice defines three immediate selected-run cancellation
+cases: before workflow claim, with a pending 60-second timer, and with a leased
+activity. Reviewed expectations preserve the original command/run/failure and
+timer/attempt identities, exact int64 input, typed cancellation, immutable
+history, repeat refusal and stale-result fencing. The normal SDK activity worker
+must submit its result after cancellation and safely discard the stale refusal;
+embedded mode executes and redelivers real queue jobs. All seventeen cases pass
+and compare on frozen PHP/embedded at `99102930002253f9b32dec87236c5e5c98f86a76`;
+185 comparator checks pass. Tests-first native run
+[38002864344](https://github.com/durable-workflow/server/actions/runs/38002864344)
+compiles, passes its other 22 HTTP tests and fails the new cancellation test on
+the absent endpoint (`501 rust_capability_not_implemented`). Native implementation
+at `7e83dc7e622f6962099d89b74972edba2d3a0bcf` passes all six configurations in
+[run 38003976411](https://github.com/durable-workflow/server/actions/runs/38003976411),
+including all 17 shared cases, 23 native HTTP tests and actual process-kill
+recovery of the original cancelled activity and timer. The retained records
+preserve all 306 fixture snapshots and officially decoded int64 recovery inputs.
+Final review then found that HTTP reasons need Laravel's Unicode/invisible
+boundary trim before nullable/1000-character validation. Embedded cancellation
+preserves its reason verbatim. The reviewed padded-reason fixture explicitly
+checks both representations, and a separate corpus pins the complete frozen
+HTTP trim set. The correction and its two native normalization checks are
+prepared; fresh six-configuration qualification is pending. Cooperative cleanup cancellation,
+child/update cancellation and scoped propagation are separate gates.
+The first padded-reason matrix also exposed a published embedded PostgreSQL
+defect: a literal NUL truncates the physical failure message while terminal
+history retains it. PHP HTTP and Rust passed all seventeen cases, and SQLite,
+MySQL and MariaDB embedded comparisons passed; both PostgreSQL embedded
+comparisons reported `product-fail`. [Workflow #741](https://github.com/durable-workflow/workflow/issues/741)
+owns the portable representation/refusal decision and fix. A small reproducer
+is retained in `tests/Fixtures/ServerParityPending/cancel-nul-reason.json`, outside
+the passing corpus. The portable padded-reason case excludes NUL while retaining
+Unicode/invisible whitespace; the full failure/history consistency check remains
+required. NUL is still covered by the separate HTTP normalization corpus. This
+does not qualify literal-NUL cancellation reasons across database families.
+The frozen HTTP selected-run route validates the current run, then records an
+instance-scoped command; embedded `loadRun` records a run-scoped command.
+Fixtures declare and verify both receipt representations before comparing their
+common original-run cancellation. Frozen cancellation attempt history omits
+lease expiry; embedded physical rows and actual HTTP stale-result refusal prove
+lease closure separately. Neither difference changes expected cancellation,
+original identities or fencing.
+For a correctly identified attempt on an immediately cancelled run, frozen PHP
+refuses completion with HTTP 409, `run_cancelled`, `outcome: ignored`, the
+original owner/attempt/task and closed statuses. This is distinct from a wrong
+attempt's `stale_attempt` refusal. The normal published SDK worker discards this
+closed-run result safely; the fixture checks both its actual report and an
+explicit repeated report without changing either response.
+
 Timeout/lease retries, uncaught failures and broader retry policies remain
-separate gates. This work is followed by cancellation, schedules, visibility, authorization/namespaces,
+separate gates. This work is followed by cooperative cancellation, schedules, visibility, authorization/namespaces,
 streams and existing consumers. Each slice must run on the required database
 matrix. Read-only upgrade inspection and backup-first takeover remain required,
 but follow wider capability coverage. PHP and unknown databases stay refused.
