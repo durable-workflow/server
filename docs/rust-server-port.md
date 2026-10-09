@@ -113,8 +113,16 @@ All fourteen reviewed fixtures pass against the frozen PHP/embedded artifacts
 at `d116947a70d30cdae66f9c8bd7e5ea6d18126d6a`, and 154 comparator tests pass.
 The tests-first native regression at `5e819617e38e0a528700663905c737a2c615f09f`
 compiles and fails on the missing terminal transition; its other 21 HTTP tests
-pass. Native terminal failure and exact error-type filters are now implemented;
-final shared database and source qualification remain pending.
+pass. Native terminal failure and exact error-type filters are implemented.
+All fourteen shared fixtures, 22 native HTTP tests and the actual terminal-failure
+kill/recovery checkpoint pass on all six configurations in
+[run 37999564905](https://github.com/durable-workflow/server/actions/runs/37999564905)
+at `67e14149f804276e47906fb73ab9b07a92543a4a`. Independent digest/source
+audits verify all 252 reviewed fixture snapshots and recompare the six retained
+three-runtime recordings. Worker history retains event IDs/attribution and
+`recorded_at`; the control API projects sequence/type/`timestamp`/payload.
+Recovery checks their declared common fields and original worker event IDs and
+terminal task attribution without changing either API representation.
 The native regression also covers explicit non-retryable reports and default
 no-retry behavior, independent pools, original failure rows, concurrent duplicate
 reports/resumption, fresh-pool recovery and stale/conflicting outcomes.
