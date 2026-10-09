@@ -73,12 +73,19 @@ inventory and next action. Add expectations from a contract decision before
 recording a new case; never regenerate expected results from PHP output.
 
 The `Shared Server fixtures` Action builds the unpublished Rust development
-runtime once, installs the locked SDK and runs PHP, Rust and embedded targets
-against independent SQLite files. PHP/embedded use the exact frozen PHP image;
+runtime in each job, installs the locked SDK and runs PHP, Rust and embedded targets
+against independent databases. The matrix includes SQLite, PostgreSQL 16/17,
+MySQL 8.0/the existing PHP matrix image and MariaDB 10.11.
+PHP/embedded use the exact frozen PHP image;
 Rust uses the PR's exact source. It compares all three and runs the separate
 `restart.php prepare|finish URL RECEIPT` probe around an actual Rust process kill.
 That probe preserves a leased activity, waits for its actual lease expiry,
 refuses the old claim and completes through a fresh published SDK worker.
-It retains records for 90 days and removes its containers/network after execution.
-This is a correctness safety net, not capacity, multi-node, database-matrix or
-published Rust qualification.
+PostgreSQL and MySQL/MariaDB jobs also use two native nodes with a killed node,
+survivor and replacement sharing only their own database. Separate storage
+checks exercise actual initialization kills, corrupt catalog/history refusal,
+typed values and read-only roles. PHP-pending-data refusal preserves schema,
+rows and sequence/next-ID counters; TLS checks use real CA and hostname validation.
+The Action retains records for 90 days and removes its containers/network after execution.
+This bounded correctness matrix does not qualify capacity, every multi-node
+failure boundary, database takeover or a published Rust artifact.

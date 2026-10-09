@@ -10,7 +10,10 @@ use durable_workflow_server::{
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-use sqlx::{ConnectOptions, Postgres, migrate::MigrateDatabase, postgres::PgConnectOptions};
+use sqlx::{
+    ConnectOptions, MySql, Postgres, migrate::MigrateDatabase, mysql::MySqlConnectOptions,
+    postgres::PgConnectOptions,
+};
 use std::str::FromStr;
 
 enum TestDatabase {
@@ -19,10 +22,35 @@ enum TestDatabase {
         options: Box<PgConnectOptions>,
         url: String,
     },
+    MySql {
+        options: Box<MySqlConnectOptions>,
+        url: String,
+    },
 }
 
 impl TestDatabase {
     async fn new() -> Self {
+        assert!(
+            !(std::env::var_os("DW_EXECUTION_POSTGRES_URL").is_some()
+                && std::env::var_os("DW_EXECUTION_MYSQL_URL").is_some()),
+            "Select one execution backend per run"
+        );
+        if let Ok(url) = std::env::var("DW_EXECUTION_MYSQL_URL") {
+            let name = format!(
+                "dw_execution_{}",
+                ulid::Ulid::new().to_string().to_lowercase()
+            );
+            let options = MySqlConnectOptions::from_str(&url)
+                .unwrap()
+                .database(&name)
+                .timezone(Some("+00:00".into()));
+            let url = options.to_url_lossy().to_string();
+            MySql::create_database(&url).await.unwrap();
+            return Self::MySql {
+                options: Box::new(options),
+                url,
+            };
+        }
         match std::env::var("DW_EXECUTION_POSTGRES_URL") {
             Ok(url) => {
                 let name = format!(
@@ -53,6 +81,9 @@ impl TestDatabase {
             Self::Postgres { options, .. } => {
                 Runtime::open_postgres(options.as_ref().clone(), "test-token".into()).await
             }
+            Self::MySql { options, .. } => {
+                Runtime::open_mysql(options.as_ref().clone(), "test-token".into()).await
+            }
         }
     }
 
@@ -76,12 +107,22 @@ impl TestDatabase {
                 sqlx::query(statement).execute(&pool).await.unwrap();
                 pool.close().await;
             }
+            Self::MySql { options, .. } => {
+                let pool = sqlx::mysql::MySqlPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
+                sqlx::query(statement).execute(&pool).await.unwrap();
+                pool.close().await;
+            }
         }
     }
 
     async fn remove(self) {
-        if let Self::Postgres { url, .. } = self {
-            Postgres::drop_database(&url).await.unwrap();
+        match self {
+            Self::Postgres { url, .. } => Postgres::drop_database(&url).await.unwrap(),
+            Self::MySql { url, .. } => MySql::drop_database(&url).await.unwrap(),
+            Self::Sqlite(_) => {}
         }
     }
 
@@ -108,6 +149,74 @@ impl TestDatabase {
                     .unwrap();
                 sqlx::query("UPDATE workflow_history_events SET payload=$1 WHERE sequence=1")
                     .bind(sqlx::types::Json(payload))
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+            }
+            Self::MySql { options, .. } => {
+                let pool = sqlx::mysql::MySqlPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
+                sqlx::query("UPDATE workflow_history_events SET payload=? WHERE sequence=1")
+                    .bind(sqlx::types::Json(payload))
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+            }
+        }
+    }
+
+    async fn set_time(&self, started_at: bool, value: &str) {
+        let statement = if started_at {
+            "UPDATE workflow_runs SET started_at=$1"
+        } else {
+            "UPDATE workflow_tasks SET lease_expires_at=$1"
+        };
+        let value = chrono::DateTime::parse_from_rfc3339(value)
+            .unwrap()
+            .naive_utc();
+        match self {
+            Self::Sqlite(dir) => {
+                let pool = sqlx::SqlitePool::connect(&format!(
+                    "sqlite://{}",
+                    dir.path().join("runtime.sqlite").display()
+                ))
+                .await
+                .unwrap();
+                sqlx::query(statement)
+                    .bind(value.and_utc().to_rfc3339())
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+            }
+            Self::Postgres { options, .. } => {
+                let pool = sqlx::postgres::PgPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
+                sqlx::query(statement)
+                    .bind(value)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+            }
+            Self::MySql { options, .. } => {
+                let statement = if started_at {
+                    "UPDATE workflow_runs SET started_at=?"
+                } else {
+                    "UPDATE workflow_tasks SET lease_expires_at=?"
+                };
+                let pool = sqlx::mysql::MySqlPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
+                sqlx::query(statement)
+                    .bind(value)
                     .execute(&pool)
                     .await
                     .unwrap();
@@ -201,9 +310,7 @@ async fn stored_microseconds_survive_description_and_stale_lease_is_refused() {
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
     start(&app, "precision").await;
-    database
-        .execute("UPDATE workflow_runs SET started_at='2026-01-02T03:04:05.123456Z'")
-        .await;
+    database.set_time(true, "2026-01-02T03:04:05.123456Z").await;
     let description = request(&app, "GET", "/api/workflows/precision", Value::Null).await;
     assert_eq!(description.0, StatusCode::OK, "{}", description.1);
     let time = chrono::DateTime::parse_from_rfc3339(description.1["started_at"].as_str().unwrap())
@@ -212,7 +319,7 @@ async fn stored_microseconds_survive_description_and_stale_lease_is_refused() {
     register(&app, "worker", json!(["echo"]), json!([])).await;
     let task = poll(&app, "worker", "workflow").await;
     database
-        .execute("UPDATE workflow_tasks SET lease_expires_at='2000-01-01T00:00:00.000001Z'")
+        .set_time(false, "2000-01-01T00:00:00.000001Z")
         .await;
     let outcome = request(
         &app,

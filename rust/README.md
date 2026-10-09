@@ -36,6 +36,8 @@ The [PostgreSQL observations](postgres-build-observations-2026-10-09.md) include
 typed storage and TLS dependencies, with separate clean/incremental disk costs.
 The [PostgreSQL execution observations](postgres-execution-build-observations-2026-10-09.md)
 record the shared runtime's current clean and incremental costs.
+The [MySQL/MariaDB execution observations](mysql-execution-build-observations-2026-10-09.md)
+include all three SQL drivers and their clean and incremental disk costs.
 
 ## PostgreSQL storage foundation
 
@@ -84,8 +86,8 @@ real process kills at two acknowledged uncommitted migration boundaries.
 The published PHP fixture separately creates pending work and a leased activity,
 stops PHP, and verifies native refusal with unchanged row/sequence fingerprints.
 Data in other user schemas is also refused rather than treated as an empty
-public schema. MySQL/MariaDB, backup-first conversion and complete multi-node
-recovery remain required under #325.
+public schema. Backup-first conversion and complete multi-node recovery remain
+required under #325.
 
 The execution state machine is shared with SQLite through typed SQLx adapters.
 PostgreSQL retains JSONB and microsecond timestamps; SQLite retains its native
@@ -104,6 +106,64 @@ sharing only their own database. Its restart probe kills one native process,
 checks survivor readiness, starts a replacement, waits for the actual activity
 lease to expire and resumes work through the published PHP SDK. This is a
 bounded lease-recovery check, not full failure or performance qualification.
+
+## MySQL and MariaDB development execution
+
+The same limited HTTP state machine also has a typed SQLx MySQL adapter.
+Use `DB_CONNECTION=mysql` (or `mariadb`), `DB_DATABASE`, `DB_USERNAME`, and the
+usual `DB_HOST`, `DB_PORT` and `DB_PASSWORD`; the port defaults to 3306.
+`DW_RUST_EXPERIMENTAL=1` remains required. `DB_URL` takes precedence over these
+fields and uses SQLx's MySQL URL options. The database must already exist.
+
+`schema-bootstrap` admits an empty database, this exact completed native
+schema, or an unchanged native initialization with the compiled checksum.
+It refuses published PHP data before writable initialization. MySQL and
+MariaDB have separate physical catalogs captured from the frozen PHP release:
+original columns, defaults, integer widths, JSON representation, timestamp
+precision, indexes and constraints are preserved. An additional polling index
+and separate native receipt tables do not replace PHP columns.
+
+These engines implicitly commit DDL. A dedicated session holds a database
+initialization lock with a 60-second wait limit; a `rust-initializing` marker
+records the intended version and checksum before application DDL begins.
+Interrupted initialization can resume only if every existing table matches
+the compiled catalog, all application tables are empty, and the marker and
+SQLx journal have the recognized version/checksum. The acknowledged journal
+row is retained when finishing interrupted DDL. Changed catalogs, unknown
+history and occupied partial schemas are refused. A marker alone without an
+ownership row is also refused. Readiness requires the final
+`rust-development` marker and successful journal.
+
+`schema-check` checks the complete catalog and history in a read-only
+transaction, including with a SELECT-only role. It creates no tables, journal
+or ownership marker, and changes no application rows or next-ID counters.
+This is development initialization, not PHP database conversion or backup.
+**Never connect PHP to a Rust development database.**
+
+UTC `TIMESTAMP(6)` values and typed JSON retain their PHP physical types;
+MariaDB's JSON alias remains distinct from MySQL's native JSON representation.
+An InnoDB lock on the ownership row serializes this first default-namespace
+slice across native processes. Empty polls release transactions before waiting.
+Full throughput, idle cost and multi-node failure behavior remain unqualified.
+
+TLS uses SQLx/Rustls. `DB_SSLMODE` defaults to `preferred`, which can fall back
+to an unencrypted connection. Use `verify_identity` with `DB_SSLROOTCERT` for
+CA trust and hostname verification, or the equivalent `DB_URL` options.
+
+Set `DW_TEST_MYSQL_URL` to a disposable create-database/create-user role and run
+`cargo test --locked --lib runtime::mysql::tests::qualification_ -- --ignored`.
+Set `DW_EXECUTION_MYSQL_URL` and run `cargo test --locked --test execution` for
+the common HTTP cases. Select one execution backend per run; without a backend
+variable the suite uses SQLite. The shared Action targets pinned MySQL 8.0,
+the existing PHP MySQL matrix image, and MariaDB 10.11. It includes real
+initialization kills, independent PHP/Rust/embedded fixtures, two native
+processes, activity lease recovery, unchanged PHP data on refusal and TLS checks.
+The [hosted qualification](https://github.com/durable-workflow/server/actions/runs/37953419450)
+passes on all three images: seven storage cases and nine common HTTP cases per
+backend, the three unchanged execution fixtures, actual node kill/replacement,
+PHP-data refusal and trusted/untrusted/wrong-hostname TLS checks. The HTTP
+suite's additional PHP-file refusal case remains SQLite-specific. These bounded
+cases do not establish full parity or authorize database takeover.
 
 The shared [codec values](../tests/Fixtures/ServerParity/Codec/v1.json) declare
 logical expectations from the immutable schema: exact long boundaries, finite
@@ -127,7 +187,7 @@ datum decoding or qualifying ingress.
 Build with `cargo build --locked` in the same container/mount setup. Run the
 binary with `DW_RUST_EXPERIMENTAL=1`, a nonempty `DW_AUTH_TOKEN`,
 `DB_CONNECTION=sqlite` and `DB_DATABASE` naming its own isolated file, or the
-PostgreSQL fields above naming its own isolated database.
+PostgreSQL or MySQL fields above naming its own isolated database.
 `DW_BIND_ADDRESS` defaults to `127.0.0.1:8080`; set `0.0.0.0:8080` for a
 development container network. Use the same UID and persistent database mount
 across restarts. This opt-in does not authorize use as a production replacement.

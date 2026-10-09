@@ -9,6 +9,7 @@ use tokio::sync::Notify;
 use ulid::Ulid;
 
 const LEASE_SECONDS: i64 = 30;
+pub(super) const WORKER_REGISTRATION_SQL: &str = "INSERT INTO workflow_worker_registrations(namespace,worker_id,task_queue,runtime,sdk_version,build_id,supported_workflow_types,supported_activity_types,capabilities,capability_manifest,last_heartbeat_at,created_at,updated_at) VALUES ('default',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT(worker_id,namespace) DO UPDATE SET task_queue=excluded.task_queue,runtime=excluded.runtime,sdk_version=excluded.sdk_version,build_id=excluded.build_id,supported_workflow_types=excluded.supported_workflow_types,supported_activity_types=excluded.supported_activity_types,capabilities=excluded.capabilities,capability_manifest=excluded.capability_manifest,last_heartbeat_at=excluded.last_heartbeat_at,updated_at=excluded.updated_at";
 pub(super) struct Store<DB: Backend> {
     pub(super) pool: Pool<DB>,
     wake: Arc<Notify>,
@@ -35,6 +36,14 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
+    fn query(sql: &'static str) -> sqlx::query::Query<'static, DB, DB::Arguments> {
+        // Dialect conversion starts from a compiled static template. Runtime
+        // values are always encoded by bind(), never interpolated into SQL.
+        sqlx::query(sqlx::AssertSqlSafe(DB::statement(sql)))
+    }
+    fn scalar(sql: &'static str) -> sqlx::query::QueryScalar<'static, DB, i64, DB::Arguments> {
+        sqlx::query_scalar(sqlx::AssertSqlSafe(DB::statement(sql)))
+    }
     pub(super) fn new(pool: Pool<DB>) -> Self {
         Self {
             pool,
@@ -42,7 +51,7 @@ where
         }
     }
     pub(super) async fn database_live(&self) -> bool {
-        sqlx::query("SELECT 1").execute(&self.pool).await.is_ok()
+        Self::query("SELECT 1").execute(&self.pool).await.is_ok()
     }
     pub(super) async fn schema_ready(&self) -> bool {
         if !DB::history_ready(&self.pool).await {
@@ -59,7 +68,7 @@ where
             "SELECT task_id,receipt FROM dw_task_completions LIMIT 0",
             "SELECT request_id,task_id,attempt,response,expires_at FROM dw_poll_receipts LIMIT 0",
         ] {
-            if sqlx::query(query).execute(&self.pool).await.is_err() {
+            if Self::query(query).execute(&self.pool).await.is_err() {
                 return false;
             }
         }
@@ -111,7 +120,7 @@ where
             ));
         }
         let mut tx = self.begin().await?;
-        if let Some(existing) = sqlx::query("SELECT r.* FROM workflow_instances i JOIN workflow_runs r ON r.id=i.current_run_id WHERE i.id=$1")
+        if let Some(existing) = Self::query("SELECT r.* FROM workflow_instances i JOIN workflow_runs r ON r.id=i.current_run_id WHERE i.id=$1")
             .bind(workflow_id).fetch_optional(&mut *tx).await? {
             if body["duplicate_policy"] == "use-existing" && matches!(DB::string(&existing,"status")?.as_str(), "running" | "waiting") {
                 return Ok(json!({"workflow_id": workflow_id, "run_id": DB::string(&existing,"id")?,
@@ -125,10 +134,10 @@ where
         let started_at = now();
         let execution_deadline = after(execution_timeout);
         let run_deadline = after(run_timeout.min(execution_timeout));
-        sqlx::query("INSERT INTO workflow_instances(id,namespace,workflow_type,workflow_class,current_run_id,run_count,execution_timeout_seconds,created_at,updated_at,started_at) VALUES ($1,'default',$2,$3,$4,1,$5,$6,$7,$8)")
+        Self::query("INSERT INTO workflow_instances(id,namespace,workflow_type,workflow_class,current_run_id,run_count,execution_timeout_seconds,created_at,updated_at,started_at) VALUES ($1,'default',$2,$3,$4,1,$5,$6,$7,$8)")
             .bind(workflow_id).bind(workflow_type).bind(workflow_type).bind(&run_id).bind(execution_timeout)
             .bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO workflow_runs(id,workflow_instance_id,namespace,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,run_timeout_seconds,execution_deadline_at,run_deadline_at,started_at,created_at,updated_at) VALUES ($1,$2,'default',$3,$4,1,'running','avro',$5,$6,$7,$8,$9,$10,$11,$12)")
+        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,namespace,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,run_timeout_seconds,execution_deadline_at,run_deadline_at,started_at,created_at,updated_at) VALUES ($1,$2,'default',$3,$4,1,'running','avro',$5,$6,$7,$8,$9,$10,$11,$12)")
             .bind(&run_id).bind(workflow_id).bind(workflow_type).bind(workflow_type).bind(arguments)
             .bind(queue).bind(run_timeout).bind(DB::bind_time(execution_deadline)).bind(DB::bind_time(run_deadline))
             .bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut *tx).await?;
@@ -170,7 +179,7 @@ where
     }
 
     pub(crate) async fn describe(&self, workflow_id: &str, run_id: Option<&str>) -> Result<Value> {
-        let row = sqlx::query("SELECT r.*,i.execution_timeout_seconds FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE i.id=$1 AND r.id=COALESCE($2,i.current_run_id) AND r.namespace='default'")
+        let row = Self::query("SELECT r.*,i.execution_timeout_seconds FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE i.id=$1 AND r.id=COALESCE($2,i.current_run_id) AND r.namespace='default'")
             .bind(workflow_id).bind(run_id).fetch_optional(&self.pool).await?
             .ok_or_else(|| refuse(StatusCode::NOT_FOUND, "instance_not_found"))?;
         let output = DB::optional_string(&row, "output")?;
@@ -228,11 +237,21 @@ where
             }
         }
         let runtime = text(&body, "runtime")?;
-        sqlx::query("INSERT INTO workflow_worker_registrations(namespace,worker_id,task_queue,runtime,sdk_version,build_id,supported_workflow_types,supported_activity_types,capabilities,capability_manifest,last_heartbeat_at,created_at,updated_at) VALUES ('default',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT(worker_id,namespace) DO UPDATE SET task_queue=excluded.task_queue,runtime=excluded.runtime,sdk_version=excluded.sdk_version,build_id=excluded.build_id,supported_workflow_types=excluded.supported_workflow_types,supported_activity_types=excluded.supported_activity_types,capabilities=excluded.capabilities,capability_manifest=excluded.capability_manifest,last_heartbeat_at=excluded.last_heartbeat_at,updated_at=excluded.updated_at")
-            .bind(worker_id).bind(queue).bind(runtime).bind(body["sdk_version"].as_str()).bind(body["build_id"].as_str())
-            .bind(DB::document(&body["supported_workflow_types"])).bind(DB::document(&body["supported_activity_types"]))
-            .bind(DB::optional_document(&body["capabilities"])).bind(DB::optional_document(&body["capability_manifest"]))
-            .bind(DB::bind_time(now())).bind(DB::bind_time(now())).bind(DB::bind_time(now())).execute(&self.pool).await?;
+        Self::query(DB::WORKER_REGISTRATION_SQL)
+            .bind(worker_id)
+            .bind(queue)
+            .bind(runtime)
+            .bind(body["sdk_version"].as_str())
+            .bind(body["build_id"].as_str())
+            .bind(DB::document(&body["supported_workflow_types"]))
+            .bind(DB::document(&body["supported_activity_types"]))
+            .bind(DB::optional_document(&body["capabilities"]))
+            .bind(DB::optional_document(&body["capability_manifest"]))
+            .bind(DB::bind_time(now()))
+            .bind(DB::bind_time(now()))
+            .bind(DB::bind_time(now()))
+            .execute(&self.pool)
+            .await?;
         Ok(
             json!({"worker_id": worker_id, "registered": true, "namespace": "default", "task_queue": queue,
             "runtime": body["runtime"], "build_id": body["build_id"], "heartbeat_interval_seconds": 10,
@@ -242,7 +261,7 @@ where
 
     pub(crate) async fn worker_heartbeat(&self, body: Value) -> Result<Value> {
         let worker_id = text(&body, "worker_id")?;
-        let result = sqlx::query("UPDATE workflow_worker_registrations SET last_heartbeat_at=$1 WHERE namespace='default' AND worker_id=$2")
+        let result = Self::query("UPDATE workflow_worker_registrations SET last_heartbeat_at=$1 WHERE namespace='default' AND worker_id=$2")
             .bind(DB::bind_time(now())).bind(worker_id).execute(&self.pool).await?;
         if DB::affected(result) != 1 {
             return Err(refuse(StatusCode::NOT_FOUND, "worker_not_registered"));
@@ -254,7 +273,7 @@ where
 
     pub(crate) async fn deregister(&self, worker_id: &str) -> Result<Value> {
         let mut tx = self.begin().await?;
-        sqlx::query(
+        Self::query(
             "DELETE FROM workflow_worker_registrations WHERE namespace='default' AND worker_id=$1",
         )
         .bind(worker_id)
@@ -262,7 +281,7 @@ where
         .await?;
         // Revocation expires the existing fence; later polling creates a new
         // attempt before work can be accepted from another worker.
-        let recovered = DB::affected(sqlx::query("UPDATE workflow_tasks SET lease_expires_at=$1 WHERE namespace='default' AND lease_owner=$2 AND status='leased'")
+        let recovered = DB::affected(Self::query("UPDATE workflow_tasks SET lease_expires_at=$1 WHERE namespace='default' AND lease_owner=$2 AND status='leased'")
             .bind(DB::bind_time(now())).bind(worker_id).execute(&mut *tx).await?);
         tx.commit().await?;
         self.wake.notify_waiters();
@@ -311,20 +330,20 @@ where
         let worker_id = text(body, "worker_id")?;
         let queue = text(body, "task_queue")?;
         let mut tx = self.begin().await?;
-        let worker = sqlx::query("SELECT supported_workflow_types,supported_activity_types,task_queue FROM workflow_worker_registrations WHERE namespace='default' AND worker_id=$1")
+        let worker = Self::query("SELECT supported_workflow_types,supported_activity_types,task_queue FROM workflow_worker_registrations WHERE namespace='default' AND worker_id=$1")
             .bind(worker_id).fetch_optional(&mut *tx).await?
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "worker_not_registered"))?;
         if DB::string(&worker, "task_queue")? != queue {
             return Err(refuse(StatusCode::CONFLICT, "task_queue_mismatch"));
         }
-        sqlx::query("DELETE FROM dw_poll_receipts WHERE expires_at<=$1 AND task_id IN (SELECT id FROM workflow_tasks WHERE status!='leased' OR lease_expires_at<=$2)")
+        Self::query("DELETE FROM dw_poll_receipts WHERE expires_at<=$1 AND task_id IN (SELECT id FROM workflow_tasks WHERE status!='leased' OR lease_expires_at<=$2)")
             .bind(DB::bind_time(now())).bind(DB::bind_time(now())).execute(&mut *tx).await?;
         let request_id = body
             .get("poll_request_id")
             .map(|_| text(body, "poll_request_id"))
             .transpose()?;
         if let Some(request_id) = request_id
-            && let Some(receipt) = sqlx::query("SELECT p.*,t.status,t.attempt_count,t.lease_owner,t.lease_expires_at FROM dw_poll_receipts p JOIN workflow_tasks t ON t.id=p.task_id WHERE p.namespace='default' AND p.worker_id=$1 AND p.kind=$2 AND p.request_id=$3")
+            && let Some(receipt) = Self::query("SELECT p.*,t.status,t.attempt_count,t.lease_owner,t.lease_expires_at FROM dw_poll_receipts p JOIN workflow_tasks t ON t.id=p.task_id WHERE p.namespace='default' AND p.worker_id=$1 AND p.kind=$2 AND p.request_id=$3")
                 .bind(worker_id).bind(kind).bind(request_id).fetch_optional(&mut *tx).await? {
                 if DB::string(&receipt,"status")? == "leased" && DB::number(&receipt,"attempt")? == DB::number(&receipt,"attempt_count")?
                     && DB::optional_string(&receipt,"lease_owner")?.as_deref() == Some(worker_id)
@@ -341,13 +360,13 @@ where
                 "supported_activity_types"
             },
         )?;
-        let candidates = sqlx::query("SELECT t.*,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.namespace='default' AND t.queue=$1 AND t.task_type=$2 AND r.status IN ('running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.lease_expires_at<=$3)) AND t.available_at<=$4 ORDER BY t.available_at,t.id LIMIT 100")
+        let candidates = Self::query("SELECT t.*,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.namespace='default' AND t.queue=$1 AND t.task_type=$2 AND r.status IN ('running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.lease_expires_at<=$3)) AND t.available_at<=$4 ORDER BY t.available_at,t.id LIMIT 100")
             .bind(queue).bind(kind).bind(DB::bind_time(now())).bind(DB::bind_time(now())).fetch_all(&mut *tx).await?;
         for task in candidates {
             let run_id = DB::string(&task, "workflow_run_id")?;
             let activity = if kind == "activity" {
                 let payload: Value = DB::document_row(&task, "payload")?;
-                sqlx::query("SELECT * FROM activity_executions WHERE id=$1 AND workflow_run_id=$2")
+                Self::query("SELECT * FROM activity_executions WHERE id=$1 AND workflow_run_id=$2")
                     .bind(text(&payload, "activity_execution_id")?)
                     .bind(&run_id)
                     .fetch_optional(&mut *tx)
@@ -368,9 +387,9 @@ where
             let task_id = DB::string(&task, "id")?;
             let attempt = DB::number(&task, "attempt_count")? + 1;
             let expires = after(LEASE_SECONDS);
-            sqlx::query("UPDATE workflow_tasks SET status='leased',lease_owner=$1,lease_expires_at=$2,attempt_count=$3 WHERE id=$4")
+            Self::query("UPDATE workflow_tasks SET status='leased',lease_owner=$1,lease_expires_at=$2,attempt_count=$3 WHERE id=$4")
                 .bind(worker_id).bind(DB::bind_time(expires)).bind(attempt).bind(&task_id).execute(&mut *tx).await?;
-            let run = sqlx::query("SELECT * FROM workflow_runs WHERE id=$1")
+            let run = Self::query("SELECT * FROM workflow_runs WHERE id=$1")
                 .bind(&run_id)
                 .fetch_one(&mut *tx)
                 .await?;
@@ -382,12 +401,12 @@ where
                 let activity_id = DB::string(&activity, "id")?;
                 let attempt_id = id();
                 let started_at = now();
-                sqlx::query("UPDATE activity_attempts SET status='expired',closed_at=$1 WHERE activity_execution_id=$2 AND status='running'")
+                Self::query("UPDATE activity_attempts SET status='expired',closed_at=$1 WHERE activity_execution_id=$2 AND status='running'")
                     .bind(DB::bind_time(started_at)).bind(&activity_id).execute(&mut *tx).await?;
-                sqlx::query("INSERT INTO activity_attempts(id,activity_execution_id,workflow_run_id,workflow_task_id,attempt_number,status,lease_owner,lease_expires_at,started_at) VALUES ($1,$2,$3,$4,$5,'running',$6,$7,$8)")
+                Self::query("INSERT INTO activity_attempts(id,activity_execution_id,workflow_run_id,workflow_task_id,attempt_number,status,lease_owner,lease_expires_at,started_at) VALUES ($1,$2,$3,$4,$5,'running',$6,$7,$8)")
                     .bind(&attempt_id).bind(&activity_id).bind(&run_id).bind(&task_id).bind(attempt)
                     .bind(worker_id).bind(DB::bind_time(expires)).bind(DB::bind_time(started_at)).execute(&mut *tx).await?;
-                sqlx::query("UPDATE activity_executions SET status='running' WHERE id=$1")
+                Self::query("UPDATE activity_executions SET status='running' WHERE id=$1")
                     .bind(&activity_id)
                     .execute(&mut *tx)
                     .await?;
@@ -421,7 +440,7 @@ where
                 claim["next_history_page_token"] = json!(next);
             }
             if let Some(request_id) = request_id {
-                sqlx::query("INSERT INTO dw_poll_receipts(namespace,worker_id,kind,request_id,task_id,attempt,response,expires_at) VALUES ('default',$1,$2,$3,$4,$5,$6,$7)")
+                Self::query("INSERT INTO dw_poll_receipts(namespace,worker_id,kind,request_id,task_id,attempt,response,expires_at) VALUES ('default',$1,$2,$3,$4,$5,$6,$7)")
                     .bind(worker_id).bind(kind).bind(request_id).bind(&task_id).bind(attempt).bind(DB::document(&claim)).bind(DB::bind_time(after(120))).execute(&mut *tx).await?;
             }
             tx.commit().await?;
@@ -439,7 +458,7 @@ where
         if DB::string(&task, "task_type")? != "workflow" {
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
         }
-        sqlx::query("UPDATE workflow_tasks SET lease_expires_at=$1 WHERE id=$2")
+        Self::query("UPDATE workflow_tasks SET lease_expires_at=$1 WHERE id=$2")
             .bind(DB::bind_time(expires))
             .bind(task_id)
             .execute(&mut *tx)
@@ -519,10 +538,10 @@ where
                     })?;
                 let activity_type = text(command, "activity_type")?;
                 let arguments = envelope(command, "arguments")?;
-                sqlx::query("INSERT INTO activity_executions(id,workflow_run_id,sequence,activity_type,activity_class,status,payload_codec,arguments,queue) VALUES ($1,$2,$3,$4,$5,'scheduled','avro',$6,$7)")
+                Self::query("INSERT INTO activity_executions(id,workflow_run_id,sequence,activity_type,activity_class,status,payload_codec,arguments,queue) VALUES ($1,$2,$3,$4,$5,'scheduled','avro',$6,$7)")
                     .bind(&activity_id).bind(&run_id).bind(sequence).bind(activity_type).bind(activity_type)
                     .bind(&arguments).bind(&queue).execute(&mut *tx).await?;
-                let activity = sqlx::query("SELECT * FROM activity_executions WHERE id=$1")
+                let activity = Self::query("SELECT * FROM activity_executions WHERE id=$1")
                     .bind(&activity_id)
                     .fetch_one(&mut *tx)
                     .await?;
@@ -543,7 +562,7 @@ where
                     json!({"activity_execution_id": activity_id}),
                 )
                 .await?;
-                sqlx::query(
+                Self::query(
                     "UPDATE workflow_runs SET status='waiting',last_command_sequence=$1 WHERE id=$2",
                 )
                 .bind(sequence)
@@ -551,7 +570,7 @@ where
                 .execute(&mut *tx)
                 .await?;
             } else {
-                let outstanding: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM activity_executions WHERE workflow_run_id=$1 AND status!='completed'")
+                let outstanding: i64 = Self::scalar("SELECT COUNT(*) FROM activity_executions WHERE workflow_run_id=$1 AND status!='completed'")
                     .bind(&run_id).fetch_one(&mut *tx).await?;
                 if outstanding != 0 {
                     return Err(refuse(StatusCode::CONFLICT, "pending_durable_operations"));
@@ -566,11 +585,11 @@ where
                     None,
                 )
                 .await?;
-                sqlx::query("UPDATE workflow_runs SET status='completed',closed_reason='completed',output=$1,closed_at=$2 WHERE id=$3")
+                Self::query("UPDATE workflow_runs SET status='completed',closed_reason='completed',output=$1,closed_at=$2 WHERE id=$3")
                     .bind(output).bind(DB::bind_time(now())).bind(&run_id).execute(&mut *tx).await?;
             }
         }
-        sqlx::query("UPDATE workflow_tasks SET status='completed' WHERE id=$1")
+        Self::query("UPDATE workflow_tasks SET status='completed' WHERE id=$1")
             .bind(task_id)
             .execute(&mut *tx)
             .await?;
@@ -597,7 +616,7 @@ where
         }
         Self::fence(&task, &body)?;
         let attempt =
-            sqlx::query("SELECT * FROM activity_attempts WHERE id=$1 AND workflow_task_id=$2")
+            Self::query("SELECT * FROM activity_attempts WHERE id=$1 AND workflow_task_id=$2")
                 .bind(attempt_id)
                 .bind(task_id)
                 .fetch_optional(&mut *tx)
@@ -611,7 +630,7 @@ where
         let run_id = DB::string(&task, "workflow_run_id")?;
         let run = Self::active_run(&mut tx, &run_id).await?;
         let activity_id = DB::string(&attempt, "activity_execution_id")?;
-        let activity = sqlx::query("SELECT * FROM activity_executions WHERE id=$1")
+        let activity = Self::query("SELECT * FROM activity_executions WHERE id=$1")
             .bind(&activity_id)
             .fetch_one(&mut *tx)
             .await?;
@@ -628,17 +647,17 @@ where
             None,
         )
         .await?;
-        sqlx::query("UPDATE activity_executions SET status='completed',result=$1 WHERE id=$2")
+        Self::query("UPDATE activity_executions SET status='completed',result=$1 WHERE id=$2")
             .bind(result)
             .bind(&activity_id)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("UPDATE activity_attempts SET status='completed',closed_at=$1 WHERE id=$2")
+        Self::query("UPDATE activity_attempts SET status='completed',closed_at=$1 WHERE id=$2")
             .bind(DB::bind_time(now()))
             .bind(attempt_id)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("UPDATE workflow_tasks SET status='completed' WHERE id=$1")
+        Self::query("UPDATE workflow_tasks SET status='completed' WHERE id=$1")
             .bind(task_id)
             .execute(&mut *tx)
             .await?;
@@ -658,7 +677,7 @@ where
         )
     }
     async fn task_row(tx: &mut Transaction<'_, DB>, task_id: &str) -> Result<DB::Row> {
-        sqlx::query("SELECT t.*,c.receipt FROM workflow_tasks t LEFT JOIN dw_task_completions c ON c.task_id=t.id WHERE t.id=$1 AND t.namespace='default'")
+        Self::query("SELECT t.*,c.receipt FROM workflow_tasks t LEFT JOIN dw_task_completions c ON c.task_id=t.id WHERE t.id=$1 AND t.namespace='default'")
         .bind(task_id)
         .fetch_optional(&mut **tx)
         .await?
@@ -670,7 +689,7 @@ where
         task_id: &str,
         body: &Value,
     ) -> Result<()> {
-        sqlx::query("INSERT INTO dw_task_completions(task_id,receipt) VALUES ($1,$2)")
+        Self::query("INSERT INTO dw_task_completions(task_id,receipt) VALUES ($1,$2)")
             .bind(task_id)
             .bind(DB::document(body))
             .execute(&mut **tx)
@@ -712,7 +731,7 @@ where
     }
 
     async fn active_run(tx: &mut Transaction<'_, DB>, run_id: &str) -> Result<DB::Row> {
-        let run = sqlx::query("SELECT * FROM workflow_runs WHERE id=$1")
+        let run = Self::query("SELECT * FROM workflow_runs WHERE id=$1")
             .bind(run_id)
             .fetch_one(&mut **tx)
             .await?;
@@ -735,7 +754,7 @@ where
         payload: Value,
     ) -> Result<String> {
         let task_id = id();
-        sqlx::query("INSERT INTO workflow_tasks(id,workflow_run_id,namespace,task_type,status,payload,queue,available_at) VALUES ($1,$2,'default',$3,'ready',$4,$5,$6)")
+        Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,namespace,task_type,status,payload,queue,available_at) VALUES ($1,$2,'default',$3,'ready',$4,$5,$6)")
         .bind(&task_id).bind(run_id).bind(kind).bind(DB::document(&payload)).bind(queue).bind(DB::bind_time(now())).execute(&mut **tx).await?;
         Ok(task_id)
     }
@@ -748,9 +767,21 @@ where
         task_id: Option<&str>,
         command_id: Option<&str>,
     ) -> Result<()> {
-        let sequence: i64 = sqlx::query_scalar("UPDATE workflow_runs SET last_history_sequence=last_history_sequence+1 WHERE id=$1 RETURNING CAST(last_history_sequence AS BIGINT)")
-        .bind(run_id).fetch_one(&mut **tx).await?;
-        sqlx::query("INSERT INTO workflow_history_events(id,workflow_run_id,sequence,event_type,payload,workflow_task_id,workflow_command_id,recorded_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
+        // The backend transition lock protects this read and write together.
+        // MySQL has no UPDATE RETURNING; all adapters use this same allocation.
+        let row = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
+            .bind(run_id)
+            .fetch_one(&mut **tx)
+            .await?;
+        let sequence = DB::number(&row, "last_history_sequence")?
+            .checked_add(1)
+            .ok_or_else(|| refuse(StatusCode::CONFLICT, "history_sequence_exhausted"))?;
+        Self::query("UPDATE workflow_runs SET last_history_sequence=$1 WHERE id=$2")
+            .bind(sequence)
+            .bind(run_id)
+            .execute(&mut **tx)
+            .await?;
+        Self::query("INSERT INTO workflow_history_events(id,workflow_run_id,sequence,event_type,payload,workflow_task_id,workflow_command_id,recorded_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
         .bind(id()).bind(run_id).bind(sequence).bind(event_type).bind(DB::document(&payload)).bind(task_id).bind(command_id).bind(DB::bind_time(now())).execute(&mut **tx).await?;
         Ok(())
     }
@@ -796,18 +827,17 @@ where
         use base64::{Engine, engine::general_purpose::STANDARD};
         // Bound serialized history bytes before hydrating JSON. SQLite executes
         // on SQLx's connection worker, outside Tokio request executor threads.
-        let rows = sqlx::query(DB::HISTORY_PAGE)
+        let rows = Self::query(DB::HISTORY_PAGE)
             .bind(run_id)
             .bind(after_sequence)
             .bind(page_size)
             .fetch_all(&mut *connection)
             .await?;
-        let total: i64 = sqlx::query_scalar(
-            "SELECT CAST(last_history_sequence AS BIGINT) FROM workflow_runs WHERE id=$1",
-        )
-        .bind(run_id)
-        .fetch_one(connection)
-        .await?;
+        let row = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
+            .bind(run_id)
+            .fetch_one(connection)
+            .await?;
+        let total = DB::number(&row, "last_history_sequence")?;
         let last = match rows.last() {
             Some(row) => DB::number(row, "sequence")?,
             None => after_sequence,

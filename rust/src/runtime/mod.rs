@@ -1,10 +1,11 @@
 //! First execution slice, deliberately unpublished and opt-in. Avro envelopes
 //! remain opaque: the runtime does not use the unfinished ingress decoder.
-//! SQLite/PostgreSQL share transitions; existing PHP data requires qualification.
+//! Typed database adapters share transitions; existing PHP data requires qualification.
 
 mod backend;
 mod execution;
 mod http;
+pub mod mysql;
 pub mod postgres;
 mod schema;
 mod sqlite;
