@@ -9,6 +9,7 @@
   }},
   "activity": false,
   "timer_delays": [0, 1],
+  "zero_delay_fired_fire_at_optional": true,
   "expected_events": ["StartAccepted", "WorkflowStarted", "TimerScheduled", "TimerFired", "TimerScheduled", "TimerFired", "WorkflowCompleted"],
-  "contract": "Repeated durable sleep, including zero delay, consumes distinct deterministic command sequences and distinct timer IDs. Replaying the first fired timer must not schedule it again or change either original deadline."
+  "contract": "Repeated durable sleep, including zero delay, consumes distinct deterministic command sequences and distinct timer IDs. Replaying the first fired timer must not schedule it again or change either original deadline. Embedded PHP's immediate TimerFired omits fire_at; this fixture explicitly permits only that zero-delay omission. The original TimerScheduled deadline and exact fired_at still determine non-early firing. Positive-delay TimerFired must repeat fire_at unchanged."
 }

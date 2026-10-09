@@ -140,11 +140,23 @@ test('zero and delayed timers retain distinct identities and command sequences',
   assert.equal(checked.events[2].timer_id, '@timer:1');
   assert.equal(checked.events[4].timer_id, '@timer:2');
 });
+test('explicit zero-delay event shape retains scheduled deadline authority', () => {
+  const raw = timerObservation();
+  delete raw.events[3].payload.fire_at;
+  checkObservation(timerFixture, raw, 'test-one-activity');
+  const strict = {...timerFixture, zero_delay_fired_fire_at_optional: false};
+  assert.throws(() => checkObservation(strict, raw, 'test-one-activity'));
+});
 for (const [name, corrupt] of [
   ['early timer firing', raw => {raw.events[5].payload.fired_at = '2026-01-01T00:00:03.999Z';}],
+  ['microsecond-early timer firing', raw => {
+    raw.events[4].payload.fire_at = raw.events[5].payload.fire_at = '2026-01-01T00:00:04.123456Z';
+    raw.events[5].payload.fired_at = '2026-01-01T00:00:04.123455Z';
+  }],
   ['changed timer identity', raw => {raw.events[3].payload.timer_id = 'other';}],
   ['reused timer identity', raw => {raw.events[4].payload.timer_id = raw.events[2].payload.timer_id;}],
   ['extended timer deadline', raw => {raw.events[5].payload.fire_at = '2026-01-01T00:00:06Z';}],
+  ['missing positive-delay deadline', raw => {delete raw.events[5].payload.fire_at;}],
   ['changed timer command sequence', raw => {raw.events[4].payload.sequence = 1;}],
   ['changed timer delay', raw => {raw.events[5].payload.delay_seconds = 2;}],
   ['duplicate timer firing', raw => {raw.events.splice(4, 0, structuredClone(raw.events[3]));}],

@@ -74,6 +74,13 @@ impl TimerScheduler {
             let _ = task.await;
         }
     }
+    fn running(&self) -> bool {
+        self.task
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|task| !task.is_finished())
+    }
 }
 
 impl Drop for TimerScheduler {
@@ -137,7 +144,7 @@ impl Runtime {
     }
 
     async fn verify_ready(&self) -> Result<()> {
-        if !self.schema_ready().await {
+        if !self.storage_ready().await {
             self.close().await;
             return Err(refuse(
                 StatusCode::CONFLICT,
@@ -165,9 +172,12 @@ impl Runtime {
     }
 
     pub(crate) async fn schema_ready(&self) -> bool {
-        if !self.scheduler.healthy.load(Ordering::Relaxed) {
+        if !self.scheduler.running() || !self.scheduler.healthy.load(Ordering::Relaxed) {
             return false;
         }
+        self.storage_ready().await
+    }
+    async fn storage_ready(&self) -> bool {
         match &*self.storage {
             Storage::Sqlite(store) => store.schema_ready().await,
             Storage::Postgres(store) => store.schema_ready().await,

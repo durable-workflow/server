@@ -1,5 +1,15 @@
 import assert from 'node:assert/strict';
 
+function instantNanoseconds(value) {
+  const shape = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.(\d{1,9}))?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
+  const milliseconds = Date.parse(value);
+  assert.ok(shape && Number.isFinite(milliseconds), 'persisted timer timestamp');
+  // Date owns calendar/offset parsing, but truncates fractional milliseconds.
+  // Restore only that omitted fraction using integer arithmetic; never round
+  // a microsecond-early firing into an apparently equal deadline.
+  return BigInt(milliseconds) * 1_000_000n + BigInt((shape[1] ?? '').padEnd(9, '0').slice(3));
+}
+
 // Only this fixture's declared semantics are projected. The full observation
 // remains in the recording, including implementation metadata and timestamps.
 export function checkObservation(fixture, observation, workflowId) {
@@ -57,15 +67,20 @@ export function checkObservation(fixture, observation, workflowId) {
       nonempty(timerId, 'durable timer identity');
       identities.push(timerId);
       equal(new Set(identities).size, identities.length, 'distinct timer and run/command identities');
-      const fireAt = Date.parse(scheduled.payload.fire_at);
-      assert.ok(Number.isFinite(fireAt), 'original persisted timer deadline');
+      const fireAt = instantNanoseconds(scheduled.payload.fire_at);
       const scheduledAt = Date.parse(scheduled.timestamp);
       // Published history timestamps can lose fractional seconds. Preserve the
       // exact payload deadline and allow only that known recorder precision.
-      assert.ok(Math.abs(fireAt - scheduledAt - delay * 1000) < 1000, 'timer retains requested delay');
-      equal(fired.payload.fire_at, scheduled.payload.fire_at, 'firing retains original deadline');
-      const firedAt = Date.parse(fired.payload.fired_at);
-      assert.ok(Number.isFinite(firedAt) && firedAt >= fireAt, 'timer must not fire early');
+      assert.ok(Math.abs(Number(fireAt / 1_000_000n) - scheduledAt - delay * 1000) < 1000, 'timer retains requested delay');
+      // Embedded PHP's immediate TimerFired omits fire_at. The zero-delay
+      // fixture explicitly permits that event shape; positive delays always
+      // require the repeated deadline. Both retain scheduled authority and
+      // must fire at or after its exact timestamp.
+      if (!(delay === 0 && fixture.zero_delay_fired_fire_at_optional && fired.payload.fire_at === undefined)) {
+        equal(fired.payload.fire_at, scheduled.payload.fire_at, 'firing retains original deadline');
+      }
+      const firedAt = instantNanoseconds(fired.payload.fired_at);
+      assert.ok(firedAt >= fireAt, 'timer must not fire early');
       for (const [relative, event] of [scheduled, fired].entries()) {
         equal(event.payload.timer_id, timerId, 'same timer throughout history');
         equal(event.payload.sequence, index + 1, 'deterministic timer command sequence');

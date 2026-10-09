@@ -213,7 +213,9 @@ impl Backend for MySql {
     const HISTORY_PAGE: &'static str = "SELECT h.* FROM (SELECT id,sequence,SUM(payload_bytes) OVER (ORDER BY sequence) AS page_bytes FROM (SELECT id,sequence,LENGTH(CAST(payload AS CHAR CHARACTER SET utf8mb4)) AS payload_bytes FROM workflow_history_events FORCE INDEX (workflow_history_events_workflow_run_id_sequence_unique) WHERE workflow_run_id=? AND sequence>? ORDER BY sequence LIMIT ?) AS sizes) AS page JOIN workflow_history_events h ON h.id=page.id WHERE page.page_bytes<=8388608 ORDER BY page.sequence";
     const WORKER_REGISTRATION_SQL: &'static str = "INSERT INTO workflow_worker_registrations(namespace,worker_id,task_queue,runtime,sdk_version,build_id,supported_workflow_types,supported_activity_types,capabilities,capability_manifest,last_heartbeat_at,created_at,updated_at) VALUES ('default',?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE task_queue=VALUES(task_queue),runtime=VALUES(runtime),sdk_version=VALUES(sdk_version),build_id=VALUES(build_id),supported_workflow_types=VALUES(supported_workflow_types),supported_activity_types=VALUES(supported_activity_types),capabilities=VALUES(capabilities),capability_manifest=VALUES(capability_manifest),last_heartbeat_at=VALUES(last_heartbeat_at),updated_at=VALUES(updated_at)";
     fn statement(sql: &'static str) -> Cow<'static, str> {
-        if !sql.contains('$') {
+        // This driver-owned template already uses '?' bindings and contains a
+        // literal '$.timer_id' JSON path, not a PostgreSQL bind placeholder.
+        if !sql.contains('$') || sql == Self::TIMER_TASK_SQL {
             return Cow::Borrowed(sql);
         }
         // Shared templates use ordered, unique $N positions. Convert only

@@ -15,7 +15,7 @@ streams and existing consumers. Each slice must run on the required database
 matrix. Read-only upgrade inspection and backup-first takeover remain required,
 but follow wider capability coverage. PHP and unknown databases stay refused.
 
-The current execution slice shares the native workflow/activity state machine
+The current execution slice shares the native workflow/activity/timer state machine
 between SQLite, PostgreSQL and MariaDB/MySQL, with typed database adapters and explicit
 transaction locking. Qualification runs the unchanged execution fixtures
 and real lease interruption on each backend, with PHP and embedded targets in
@@ -28,7 +28,7 @@ bootstrapped published PHP database. Fresh native bootstrap keeps the full
 existing physical schema; it does not authorize adoption of PHP data. Actual
 Backup-first database takeover remains unimplemented.
 
-The three current shared fixtures cover echo, an exact int64 and one activity.
+Before the timer slice #339, the three shared fixtures cover echo, an exact int64 and one activity.
 Database bootstrap and storage safety evidence do not increase that semantic
 coverage. Native transitions remain serialized. The diagnostic PHP observations
 are not a matched PHP/Rust performance comparison; that comparison waits for a
@@ -62,7 +62,7 @@ does not prove the remaining acceptance criteria.
 | Worker registration, sessions, leases, fencing, retries, timeouts, heartbeats, routing, affinity, backpressure, versioning | Worker OpenAPI and stream AsyncAPI in `resources/platform-protocol-specs/`; Feature worker/activity/prepared-local/cancellation tests; activity, heartbeat and worker-versioning published runners | Pending |
 | Avro values, external task inputs/results, payload storage and reclamation | `docs/contracts/external-task-{input,result}.md`, `external-payload-storage.md`, external payload OpenAPI; `regression-corpus-policy.json`, `tests/Fixtures/CodecRegression/`, payload Feature tests | PHP/embedded echo slice; Rust codec foundation in #329, full ingress and external payloads pending |
 | Workflow lifecycle, duplicate commands, typed history, continuation, child workflows, cancellation, cleanup replay | Workflow lifecycle, migration, child-workflow and replay runners; Feature cooperative cancellation, history, migration and repeated-signal tests | Echo/activity slice only |
-| Timers, schedules, signals, queries, updates, search attributes, memo, sagas | Corresponding runners in `scripts/conformance/`, manifests in `static/platform-conformance/`; Sample App polyglot experiments | Pending |
+| Timers, schedules, signals, queries, updates, search attributes, memo, sagas | Corresponding runners in `scripts/conformance/`, manifests in `static/platform-conformance/`; Sample App polyglot experiments | Durable sleep slice in #339; other families pending |
 | Local activities, cancellation scopes, worker sessions, streams, service catalog/Nexus, bridge adapters, standalone activities, debugging and repair | `routes/api.php`, `docs/contracts/`, worker/control-plane specifications, corresponding Feature tests and Nexus runner | Pending; not omitted from parity |
 | Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | PHP echo/activity only |
 | SQL schema and stored representations | `database/migrations/`, Workflow package `src/migrations/`, model casts, `Workflow\\Serializers\\Serializer`, queue job payloads, exported history and credential digests | [Representation checkpoints](rust-server-storage-audit.md) recorded; complete mapping and executable migration tests pending |
@@ -443,15 +443,25 @@ microsecond fixture strings without opening a database. Exact-head shared and
 PHP/source qualification is recorded in #338. These are representation tests
 against separate native data, not a sequential takeover or timezone qualification.
 Read-only upgrade preflight, pending poll bindings, timer jobs, credential and
-external payload preservation remain required next work under #325.
+external payload preservation remain required follow-up under #325.
 
 [The timer slice in #339](https://github.com/durable-workflow/server/pull/339)
 adds reviewed one-timer and repeated zero/delayed-sleep fixtures. Their contract
 requires original timer IDs/deadlines, deterministic command sequences,
-non-early firing and one completed typed outcome. Eight new comparator cases
+non-early firing and one completed typed outcome. Eleven new comparator cases
 include corrupted timer identity, delay, sequence, deadline and duplicate/early
 firing counterexamples. The tests-first native regression refuses `start_timer`
 with 422 on the previous execution slice; matrix receipts are in the PR.
+
+The first implementation run completed all five PHP and native SQLite cases,
+but exposed two further differences. Embedded PHP's immediate zero-delay
+`TimerFired` omits `fire_at`; the reviewed repeated-timer fixture explicitly
+permits only that omission. Its scheduled deadline and exact firing timestamp
+remain authoritative; positive-delay firing must repeat the unchanged deadline.
+The comparator retains sub-millisecond precision rather than rounding early
+firing into equality. MySQL's driver-owned JSON-path query must bypass the
+generic PostgreSQL placeholder conversion, which otherwise mistakes a literal
+`$.timer_id` for a binding and panics. The same recovery case requalifies it.
 
 Native scheduling is implemented with persisted PHP-layout timers and timer
 tasks. A bounded background batch rechecks pending work under the existing
@@ -460,6 +470,6 @@ task, and wakes polls after commit. Idle ticks use a read probe; they do not tak
 the transition lock. Shutdown joins the scheduler before closing storage;
 database turn failures suppress readiness and emit a bounded diagnostic until
 the next successful turn. There are no new dependencies or schema changes.
-Qualification is pending. Cancellation/parallel timer groups, expiry recovery,
+Qualification outcomes are recorded in #339. Cancellation/parallel timer groups, expiry recovery,
 missing timer reconstruction, CPU-heavy deadline health, throughput and complete
 operational parity remain open. This slice does not qualify database takeover.

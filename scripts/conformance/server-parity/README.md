@@ -62,6 +62,10 @@ through replay. Generated IDs are aliased only after those
 relationships pass. Absolute timestamps remain raw, are checked for order, and
 deadline offsets are checked against persisted start time with the published
 history's second-resolution tolerance. They are not compared across runs.
+Firing/deadline comparisons preserve fractional precision. Embedded PHP's
+immediate zero-delay firing omits `fire_at`; the repeated-sleep fixture explicitly
+permits only that omission while checking its scheduled deadline and `fired_at`.
+Positive-delay firing must repeat its original deadline.
 
 The current type recorder covers null, boolean, int64, double, string, list and
 map values. Other decoded PHP objects fail explicitly; binary/logical-type and
