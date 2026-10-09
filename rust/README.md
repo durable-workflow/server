@@ -87,17 +87,33 @@ at 1000 records and eight MiB of encoded payloads per page. Requests are capped
 at three MiB and inline envelopes at two MiB. Full customer payload/resource
 limits and external transport remain unqualified.
 
-The native bootstrap uses the existing logical table families, with a versioned
-`dw_server_schema` development marker. It preflights an existing file read-only
-and refuses a nonempty PHP/unknown database before WAL or migrations. This
-refusal is not the upgrade mechanism. Backup-first conversion of the complete
-PHP schema/representations, interrupted takeover and the PHP startup refusal
-guard remain required. **Never connect PHP to a Rust development database.**
+The native development bootstrap creates the complete SQLite schema from the
+frozen published PHP image: 49 tables and 333 explicit indexes. Native completion
+and poll receipts use separate relations. SQLx records a checksummed migration;
+the ledger, schema and version-2 `dw_server_schema` marker commit atomically.
+Concurrent fresh nodes serialize bootstrap. Startup checks the full catalog and
+migration history read-only before enabling WAL or opening writable connections.
+PHP/unknown databases, changed native catalogs/checksums and the old abbreviated
+version-1 development schema are refused without conversion. Keep needed old
+development data separately; this unpublished slice supplies no version-1
+converter. Use a new isolated file for version 2.
+
+This refusal is not the upgrade mechanism. Backup-first conversion of PHP's
+stored representations and interrupted takeover remain required on all three
+database families. The PHP ownership fence is merged in source, while the frozen
+published PHP image still lacks it. **Never connect PHP to a Rust development database.**
 The only enabled namespace/auth setup is `default` with the compatibility token;
 scoped credentials, other namespaces and the full authorization contract remain
 open. Timers, failure/retry policy, cancellation and the rest of the API also
 remain open under #325. Existing databases and published PHP artifacts are
 unchanged by this opt-in crate.
+
+Read-only inspection of an existing WAL database can create temporary `-shm`
+metadata and a zero-byte `-wal`, as described by [SQLite](https://sqlite.org/wal.html#read_only_databases).
+The probe never enables WAL on a PHP/unknown database or writes its data;
+existing database and nonempty journal bytes must remain unchanged. Probe
+connections close explicitly even on refusal. Never use `immutable=1` to bypass
+WAL visibility or manually delete a nonempty journal.
 
 `cargo test --locked --all-targets` exercises file persistence, independent
 connection-pool claims, stale fences, duplicate outcomes/polls, worker history

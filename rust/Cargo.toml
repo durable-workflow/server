@@ -14,7 +14,7 @@ thiserror = "2"
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "json", "query", "tokio"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sqlx = { version = "=0.9.0", default-features = false, features = ["runtime-tokio", "sqlite-bundled"] }
+sqlx = { version = "=0.9.0", default-features = false, features = ["runtime-tokio", "sqlite-bundled", "migrate"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
 ulid = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

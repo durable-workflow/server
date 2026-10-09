@@ -1,8 +1,10 @@
 # Rust Server storage and upgrade audit
 
 This is a source-audit checkpoint for [#325](https://github.com/durable-workflow/server/issues/325),
-not a qualified migration procedure. No Rust takeover, converter or PHP startup
-refusal has been implemented. The reference is published Server `2.5.13`, source
+not a qualified migration procedure. Rust takeover and stored-value conversion
+remain unimplemented. The PHP ownership fence is implemented in source by
+[#331](https://github.com/durable-workflow/server/pull/331); the frozen published
+reference still lacks that fence. The reference is published Server `2.5.13`, source
 `f061d64277f09b11dd9a0844b958bfab6c8e998e`, with Workflow `2.5.4`, source
 `c39025af47e0307103e48d98ead71067ff243ef6`. The exact image and consumer tuple
 is in [the reference manifest](../tests/Fixtures/ServerParity/php-baseline.json).

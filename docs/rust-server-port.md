@@ -223,8 +223,50 @@ Cache-only restart and scheduler-cache maintenance remain usable during a
 database outage; early command preflight targets write-capable roles rather than
 every command sharing their prefix.
 
-Next: implement the versioned full-schema takeover foundation after #331's
-exact-head qualification and merge, expanding real execution and differential
-fixtures across the required databases. The rest of the inventory remains open
-under #325.
+The next foundation aligns fresh native SQLite databases with the complete
+schema created by the frozen published PHP image: 49 tables and 333 explicit
+indexes, including credentials, payload holds, timers, cancellation and legacy
+infrastructure. SQLx records and validates native migration checksums. Worker
+registration uses the existing `workflow_worker_registrations` relation;
+execution timeout stays on the workflow instance. Native completion/poll receipts
+use separate relations rather than replacing PHP-owned columns.
+
+This is a fresh-database development bootstrap, not permission to adopt PHP
+data. PHP databases and the earlier abbreviated native development schema remain
+refused before writable connection setup. No observable protocol capability is
+added. Qualification must compare the actual published PHP catalog with an
+independent native database, preserve the existing execution/restart fixtures,
+and test interrupted/concurrent bootstrap and migration-history mismatches.
+The local implementation passes the existing seven execution tests, four codec
+tests and five new schema cases. The latter check three concurrent fresh nodes,
+real SIGKILLs after migration-ledger creation and before the outer commit,
+read-only refusal of old development data and nine catalog/history corruptions.
+Restart after either acknowledged interruption creates one complete migration
+and passes SQLite integrity checking. The actual published/native catalogs
+match. The [shared hosted run](https://github.com/durable-workflow/server/actions/runs/37929268377)
+passes the unchanged three-runtime fixtures, two-way codec values, native
+schema interruption and actual activity-lease kill/restart. Its catalog check
+retains the original database and existing journal hashes. An earlier inspection
+mount prevented SQLite's temporary WAL metadata access; the corrected fixture
+uses `mode=ro` on stopped engines and a writable disposable metadata directory,
+without an immutable snapshot that could conceal WAL state.
+The final fixture additionally prepares pending work in the published PHP
+database and requires native refusal with unchanged database/journal hashes.
+Its final-head evidence belongs to [#332](https://github.com/durable-workflow/server/pull/332).
+SQLite's [read-only WAL contract](https://sqlite.org/wal.html#read_only_databases)
+permits creating shared-memory metadata and an empty WAL when those files are
+absent. The refusal fixture exposed this behavior on the real published PHP
+database. Native startup now awaits probe closure on success and refusal. The
+receipt treats an absent and exactly zero-byte WAL as equivalent; any nonempty
+WAL, rollback journal and database must retain its exact hash. Unit cases cover
+both a closed WAL database and committed work still present in a nonempty WAL.
+The final local suite passes 16 cases plus the two invoked fault subprocesses;
+formatting, warning-free Clippy and the 72 Docker-isolation policy cases pass.
+The [build observations](../rust/schema-build-observations-2026-10-09.md)
+record 64.445 seconds for a clean tests/binary build, 541.9 MiB of targets plus
+177.6 MiB of downloads, and 0.137/0.823-second no-op/comment builds. These are
+bounded development measurements, not a full-server or improvement claim.
+
+Next: implement the other database backends and backup-first sequential takeover with stored-value and
+interruption fixtures. The rest of the inventory remains open under #325.
 No separate defect issues have been filed yet.
