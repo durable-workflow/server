@@ -124,9 +124,9 @@ jobs:
           docker kill --signal=KILL "$RESOURCE_SCOPE-rust"
           test "$(docker inspect --format='{{.State.ExitCode}}' "$RESOURCE_SCOPE-rust")" = 137
           docker stop "$RESOURCE_SCOPE-server"
-          for suffix in '' -wal -journal; do
-            if test -f "parity-state/php.sqlite$suffix"; then sha256sum "parity-state/php.sqlite$suffix"; fi
-          done > parity-evidence/php-before-native-preflight.sha256
+          docker run --rm --user=1000:1000 --network=none --entrypoint php \
+            -v "$PWD:/source:ro" -v "$PWD/parity-state:/state:ro" -w /source "$image" \
+            scripts/conformance/server-parity/snapshot.php /state/php.sqlite > parity-evidence/php-before-native-preflight.json
           # A real published PHP database has acknowledged and pending work.
           # Native startup must refuse it before WAL setup or migration writes.
           if docker run --rm --user="$(id -u):$(id -g)" --network=none \
@@ -138,10 +138,11 @@ jobs:
             exit 1
           fi
           grep -Fq 'existing_database_requires_qualified_takeover' parity-evidence/php-native-refusal.log
-          for suffix in '' -wal -journal; do
-            if test -f "parity-state/php.sqlite$suffix"; then sha256sum "parity-state/php.sqlite$suffix"; fi
-          done > parity-evidence/php-after-native-preflight.sha256
-          diff -u parity-evidence/php-before-native-preflight.sha256 parity-evidence/php-after-native-preflight.sha256
+          docker run --rm --user=1000:1000 --network=none --entrypoint php \
+            -v "$PWD:/source:ro" -v "$PWD/parity-state:/state:ro" \
+            -v "$PWD/parity-evidence:/evidence:ro" -w /source "$image" \
+            scripts/conformance/server-parity/snapshot.php /state/php.sqlite \
+            /evidence/php-before-native-preflight.json > parity-evidence/php-after-native-preflight.json
           # Both engines are now stopped. PDO opens mode=ro and checks original
           # database/WAL/journal hashes. The disposable fixture directory stays
           # writable so SQLite can manage its shared-memory cache; use Rust's UID.
