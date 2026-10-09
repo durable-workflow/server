@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {checkActivityRetry} from './retry-contract.mjs';
 
 function instantNanoseconds(value) {
   const shape = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.(\d{1,9}))?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
@@ -477,6 +478,7 @@ export function checkObservation(fixture, observation, workflowId) {
       }
     }
   }
+  if (fixture.retry_policy) checkActivityRetry(fixture, observation, identities, projectedEvents, instantNanoseconds);
   if (fixture.activity) {
     const [scheduled, running, completed] = events.slice(2, 5);
     const id = scheduled.payload.activity_execution_id;

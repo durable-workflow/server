@@ -389,4 +389,13 @@ impl Runtime {
         }
     }
     delegate!(complete_activity(task_id: &str, body: Value) -> Result<Value>);
+    pub(crate) async fn fail_activity(&self, task_id: &str, body: Value) -> Result<Value> {
+        let (failure, blob) =
+            super::activity_failures::prepare_failure(&body, self.signal_codec.clone()).await?;
+        match &*self.storage {
+            Storage::Sqlite(store) => store.fail_activity(task_id, body, failure, blob).await,
+            Storage::Postgres(store) => store.fail_activity(task_id, body, failure, blob).await,
+            Storage::MySql(store) => store.fail_activity(task_id, body, failure, blob).await,
+        }
+    }
 }
