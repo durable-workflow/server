@@ -51,3 +51,9 @@ CREATE TABLE worker_registrations (
     definition TEXT NOT NULL, last_heartbeat_at TEXT NOT NULL,
     PRIMARY KEY(namespace, worker_id)
 );
+CREATE TABLE dw_poll_receipts (
+    namespace TEXT NOT NULL, worker_id TEXT NOT NULL, kind TEXT NOT NULL,
+    request_id TEXT NOT NULL, task_id TEXT NOT NULL REFERENCES workflow_tasks(id),
+    attempt INTEGER NOT NULL, response TEXT NOT NULL, expires_at TEXT NOT NULL,
+    PRIMARY KEY(namespace,worker_id,kind,request_id)
+);

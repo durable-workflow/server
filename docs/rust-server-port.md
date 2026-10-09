@@ -2,8 +2,9 @@
 
 [Server #325](https://github.com/durable-workflow/server/issues/325) owns the
 rewrite and its acceptance evidence. PHP remains the default published runtime.
-The unpublished Rust crate has an Avro foundation; no Rust HTTP runtime,
-migration, performance improvement or cutover is qualified yet.
+The unpublished Rust crate has an Avro foundation and an opt-in SQLite HTTP
+execution slice. Full runtime parity, migration, performance improvement and
+cutover remain unqualified.
 
 ## Work order and current status
 
@@ -61,8 +62,9 @@ support is not evidence of multi-node safety.
   IDs in raw evidence. Preserve workflow IDs, event order, command sequences,
   attempt counts and decoded values. Wall-clock observations remain raw.
 - The first Rust foundation uses Apache's official Avro single-object
-  reader/writer with the immutable schema. HTTP/storage architecture remains
-  pending. Avoid unnecessary dependencies and code generation. Record
+  reader/writer with the immutable schema. The first HTTP/storage slice uses
+  Axum/Tokio and SQLx with selected features and native transactions. Avoid
+  unnecessary dependencies and code generation. Record
   clean and incremental compile time plus target-directory size for the first
   runtime slice. Use one task-owned Cargo target directory, low debug information
   for development, bounded build concurrency and cleanup after qualification.
@@ -142,9 +144,29 @@ the existing golden long-zero wire. These are codec checks, not execution of a
 durable workflow on Rust. Malformed collection blocks, duplicate keys, resource
 limits and external payload ingress remain explicit gates before HTTP integration.
 
-Next: qualify the exact source head in CI and measure clean/incremental compile
-time and physical build/cache disk use. Then add the first HTTP/database execution
-slice against the existing shared workflow fixtures. Expand fixtures
-using the existing conformance inventory. The rest
-of the inventory remains open under #325. No separate defect issues have been
-filed yet.
+[#330](https://github.com/durable-workflow/server/pull/330) adds actual HTTP
+execution: published SDK workers lease tasks, commit activity outcomes, replay
+persisted history and complete workflows against an independent native SQLite
+database. The unchanged three fixtures first passed locally against all three
+targets, including exact large-int64 and activity relationships. Transactional
+tests cover persistence, independent connection-pool claims, stale fences,
+duplicate completion/poll receipts, pagination and unsupported-batch refusal.
+An actual SIGKILL with an outstanding activity passed locally through
+the normal SDK loop after restart: the original run/history survived, the old
+expired claim was refused, and attempt two committed one outcome. These checks establish the first bounded
+slice, not full protocol, multi-node, timeout/retry or database parity.
+
+HTTP passes opaque Avro envelopes without invoking the incomplete decoder.
+Discovery/readiness explicitly identify development status, and missing
+commands/effects are refused. A read-only preflight refuses existing PHP data;
+native fresh-database bootstrap does not substitute for sequential backup-first
+takeover. PHP startup refusal remains open, so PHP must never connect to this
+development database. MySQL/PostgreSQL, scoped auth/namespaces, external payloads,
+timers/retries/cancellation, complete capability/consumer matrices and performance
+remain required.
+
+Next: qualify #330's exact head and repeat its restart evidence in CI, record build costs
+and merge it. Then implement the PHP refusal boundary and versioned full-schema
+takeover foundation, expanding real execution and differential fixtures across
+the required databases. The rest of the inventory remains open under #325.
+No separate defect issues have been filed yet.

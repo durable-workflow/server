@@ -114,11 +114,43 @@ impl Runtime {
             }
             tx.commit().await?;
         }
-        Ok(Self {
+        let runtime = Self {
             pool,
             token: token.into(),
             wake: Arc::new(Notify::new()),
-        })
+        };
+        if !runtime.schema_ready().await {
+            return Err(refuse(
+                StatusCode::CONFLICT,
+                "incomplete_development_schema",
+            ));
+        }
+        Ok(runtime)
+    }
+
+    pub(crate) async fn schema_ready(&self) -> bool {
+        let marker: std::result::Result<Vec<(String, i64)>, _> =
+            sqlx::query_as("SELECT engine,version FROM dw_server_schema")
+                .fetch_all(&self.pool)
+                .await;
+        if !marker.is_ok_and(|rows| rows == [("rust-development".into(), 1)]) {
+            return false;
+        }
+        for query in [
+            "SELECT id,namespace,current_run_id FROM workflow_instances LIMIT 0",
+            "SELECT id,status,arguments,output,last_history_sequence,last_command_sequence,run_deadline_at FROM workflow_runs LIMIT 0",
+            "SELECT id,sequence,payload,recorded_at FROM workflow_history_events LIMIT 0",
+            "SELECT id,status,payload,lease_owner,lease_expires_at,attempt_count,receipt FROM workflow_tasks LIMIT 0",
+            "SELECT id,sequence,activity_type,status,arguments,result FROM activity_executions LIMIT 0",
+            "SELECT id,workflow_task_id,attempt_number,status FROM activity_attempts LIMIT 0",
+            "SELECT namespace,worker_id,definition FROM worker_registrations LIMIT 0",
+            "SELECT request_id,task_id,attempt,response,expires_at FROM dw_poll_receipts LIMIT 0",
+        ] {
+            if sqlx::query(query).execute(&self.pool).await.is_err() {
+                return false;
+            }
+        }
+        true
     }
 
     pub async fn close(&self) {
@@ -329,6 +361,15 @@ impl Runtime {
             .filter(|t| *t <= 60)
             .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_poll_timeout"))?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
+        if body
+            .get("history_page_size")
+            .is_some_and(|v| v.as_i64().is_none_or(|n| !(1..=1000).contains(&n)))
+        {
+            return Err(refuse(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_page_size",
+            ));
+        }
         loop {
             // Register the notification before probing; periodic probing also
             // observes work committed by an independent process.
@@ -358,6 +399,22 @@ impl Runtime {
             return Err(refuse(StatusCode::CONFLICT, "task_queue_mismatch"));
         }
         let definition: Value = serde_json::from_str(&string(&worker, "definition"))?;
+        sqlx::query("DELETE FROM dw_poll_receipts WHERE expires_at<=? AND task_id IN (SELECT id FROM workflow_tasks WHERE status!='leased' OR lease_expires_at<=?)")
+            .bind(now()).bind(now()).execute(&mut *tx).await?;
+        let request_id = body
+            .get("poll_request_id")
+            .map(|_| text(body, "poll_request_id"))
+            .transpose()?;
+        if let Some(request_id) = request_id
+            && let Some(receipt) = sqlx::query("SELECT p.*,t.status,t.attempt_count,t.lease_owner,t.lease_expires_at FROM dw_poll_receipts p JOIN workflow_tasks t ON t.id=p.task_id WHERE p.namespace='default' AND p.worker_id=? AND p.kind=? AND p.request_id=?")
+                .bind(worker_id).bind(kind).bind(request_id).fetch_optional(&mut *tx).await? {
+                if string(&receipt,"status") == "leased" && receipt.get::<i64,_>("attempt") == receipt.get::<i64,_>("attempt_count")
+                    && receipt.get::<Option<String>,_>("lease_owner").as_deref() == Some(worker_id)
+                    && receipt.get::<Option<String>,_>("lease_expires_at").is_some_and(|expires| expires > now()) {
+                    return Ok(Some(serde_json::from_str(&string(&receipt,"response"))?));
+                }
+                return Err(refuse(StatusCode::CONFLICT,"poll_cached_task_expired"));
+        }
         let types = &definition[if kind == "workflow" {
             "supported_workflow_types"
         } else {
@@ -435,10 +492,16 @@ impl Runtime {
                 claim["workflow_task_attempt"] = json!(attempt);
                 claim["arguments"] = wire(&string(&run, "arguments"));
                 claim["sticky_replay_mode"] = json!("cold_replay");
-                let events = history_rows(&mut tx, &run_id).await?;
-                claim["total_history_events"] = json!(events.len());
+                let page_size = body["history_page_size"].as_i64().unwrap_or(100);
+                let (events, next) =
+                    history_page_connection(&mut tx, &run_id, 0, page_size).await?;
+                claim["total_history_events"] = json!(run.get::<i64, _>("last_history_sequence"));
                 claim["history_events"] = json!(events);
-                claim["next_history_page_token"] = Value::Null;
+                claim["next_history_page_token"] = json!(next);
+            }
+            if let Some(request_id) = request_id {
+                sqlx::query("INSERT INTO dw_poll_receipts(namespace,worker_id,kind,request_id,task_id,attempt,response,expires_at) VALUES ('default',?,?,?,?,?,?,?)")
+                    .bind(worker_id).bind(kind).bind(request_id).bind(&task_id).bind(attempt).bind(claim.to_string()).bind(after(120)).execute(&mut *tx).await?;
             }
             tx.commit().await?;
             return Ok(Some(claim));
@@ -452,6 +515,9 @@ impl Runtime {
         let task = task_row(&mut tx, task_id).await?;
         fence(&task, &body)?;
         let expires = after(LEASE_SECONDS);
+        if string(&task, "task_type") != "workflow" {
+            return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
+        }
         sqlx::query("UPDATE workflow_tasks SET lease_expires_at=? WHERE id=?")
             .bind(&expires)
             .bind(task_id)
@@ -461,6 +527,22 @@ impl Runtime {
         Ok(
             json!({"task_id": task_id, "workflow_task_attempt": body["workflow_task_attempt"],
             "lease_owner": body["lease_owner"], "lease_expires_at": expires, "renewed": true}),
+        )
+    }
+
+    pub(crate) async fn task_history(&self, task_id: &str, body: Value) -> Result<Value> {
+        let after = super::http::decode_cursor(body["next_history_page_token"].as_str());
+        let mut tx = self.begin().await?;
+        let task = task_row(&mut tx, task_id).await?;
+        if string(&task, "task_type") != "workflow" {
+            return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
+        }
+        fence(&task, &body)?;
+        let run_id = string(&task, "workflow_run_id");
+        let (events, next) = history_page_connection(&mut tx, &run_id, after, 100).await?;
+        tx.commit().await?;
+        Ok(
+            json!({"task_id":task_id,"workflow_task_attempt":body["workflow_task_attempt"],"history_events":events,"next_history_page_token":next}),
         )
     }
 
@@ -783,29 +865,46 @@ fn event(row: SqliteRow) -> Result<Value> {
     )
 }
 
-async fn history_rows(tx: &mut Transaction<'_, Sqlite>, run_id: &str) -> Result<Vec<Value>> {
-    sqlx::query("SELECT * FROM workflow_history_events WHERE workflow_run_id=? ORDER BY sequence LIMIT 1000")
-        .bind(run_id).fetch_all(&mut **tx).await?.into_iter().map(event).collect()
-}
-
 async fn history_page(
     pool: &SqlitePool,
     run_id: &str,
     after_sequence: i64,
     page_size: i64,
 ) -> Result<(Vec<Value>, Option<String>)> {
+    history_page_connection(
+        &mut *pool.acquire().await?,
+        run_id,
+        after_sequence,
+        page_size,
+    )
+    .await
+}
+
+async fn history_page_connection(
+    connection: &mut SqliteConnection,
+    run_id: &str,
+    after_sequence: i64,
+    page_size: i64,
+) -> Result<(Vec<Value>, Option<String>)> {
     use base64::{Engine, engine::general_purpose::STANDARD};
-    let mut rows = sqlx::query("SELECT * FROM workflow_history_events WHERE workflow_run_id=? AND sequence>? ORDER BY sequence LIMIT ?")
-        .bind(run_id).bind(after_sequence).bind(page_size + 1).fetch_all(pool).await?;
-    let more = rows.len() > page_size as usize;
-    if more {
-        rows.pop();
+    // Bound serialized history bytes before hydrating JSON. SQLite executes
+    // on SQLx's connection worker, outside Tokio request executor threads.
+    let rows = sqlx::query("SELECT * FROM (SELECT *,SUM(length(payload)) OVER (ORDER BY sequence) AS page_bytes FROM workflow_history_events WHERE workflow_run_id=? AND sequence>? ORDER BY sequence LIMIT ?) WHERE page_bytes<=8388608 ORDER BY sequence")
+        .bind(run_id).bind(after_sequence).bind(page_size).fetch_all(&mut *connection).await?;
+    let total: i64 =
+        sqlx::query_scalar("SELECT last_history_sequence FROM workflow_runs WHERE id=?")
+            .bind(run_id)
+            .fetch_one(connection)
+            .await?;
+    let last = rows
+        .last()
+        .map_or(after_sequence, |row| row.get::<i64, _>("sequence"));
+    if rows.is_empty() && after_sequence < total {
+        return Err(refuse(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "history_event_exceeds_page_budget",
+        ));
     }
-    let next = if more {
-        rows.last()
-            .map(|row| STANDARD.encode(row.get::<i64, _>("sequence").to_string()))
-    } else {
-        None
-    };
+    let next = (last < total).then(|| STANDARD.encode(last.to_string()));
     Ok((rows.into_iter().map(event).collect::<Result<_>>()?, next))
 }

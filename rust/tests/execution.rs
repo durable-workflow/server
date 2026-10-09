@@ -297,6 +297,49 @@ async fn activity_commit_wakes_replay_and_stale_activity_attempt_is_refused() {
 }
 
 #[tokio::test]
+async fn repeated_poll_retains_the_original_claim_and_worker_history_paginates() {
+    let dir = tempfile::tempdir().unwrap();
+    let database = dir.path().join("runtime.sqlite");
+    let node_a = Runtime::open(database.to_str().unwrap(), "test-token".into())
+        .await
+        .unwrap();
+    let node_b = Runtime::open(database.to_str().unwrap(), "test-token".into())
+        .await
+        .unwrap();
+    let app_a = router(node_a.clone());
+    let app_b = router(node_b.clone());
+    start(&app_a, "first").await;
+    start(&app_a, "second").await;
+    register(&app_a, "worker", json!(["echo"]), json!([])).await;
+    let body = json!({"worker_id":"worker","task_queue":"test","timeout_seconds":0,"history_page_size":1,"poll_request_id":"same-request"});
+    let a = request(
+        &app_a,
+        "POST",
+        "/api/worker/workflow-tasks/poll",
+        body.clone(),
+    )
+    .await;
+    let b = request(&app_b, "POST", "/api/worker/workflow-tasks/poll", body).await;
+    assert_eq!(a.0, StatusCode::OK);
+    assert_eq!(
+        a.1, b.1,
+        "retry on another process obtains the original task/snapshot/fence"
+    );
+    let task = &a.1["task"];
+    assert_eq!(task["history_events"].as_array().unwrap().len(), 1);
+    assert_eq!(task["total_history_events"], 2);
+    let page = request(&app_b,"POST",&format!("/api/worker/workflow-tasks/{}/history",task["task_id"].as_str().unwrap()),json!({
+        "lease_owner":"worker","workflow_task_attempt":1,"next_history_page_token":task["next_history_page_token"]})).await;
+    assert_eq!(page.0, StatusCode::OK);
+    assert_eq!(page.1["history_events"][0]["event_type"], "WorkflowStarted");
+    assert!(page.1["next_history_page_token"].is_null());
+    let next = poll(&app_b, "worker", "workflow").await;
+    assert_ne!(next["task_id"], task["task_id"]);
+    node_a.close().await;
+    node_b.close().await;
+}
+
+#[tokio::test]
 async fn existing_php_database_is_refused_without_changes() {
     let dir = tempfile::tempdir().unwrap();
     let database = dir.path().join("php.sqlite");

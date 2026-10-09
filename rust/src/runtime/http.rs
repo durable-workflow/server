@@ -41,6 +41,10 @@ pub fn router(runtime: Runtime) -> Router {
         )
         .route("/api/worker/activity-tasks/poll", post(poll_activity))
         .route(
+            "/api/worker/workflow-tasks/{task_id}/history",
+            post(task_history),
+        )
+        .route(
             "/api/worker/activity-tasks/{task_id}/complete",
             post(complete_activity),
         )
@@ -108,11 +112,7 @@ async fn health(State(runtime): State<Runtime>) -> Response {
 }
 
 async fn ready(State(runtime): State<Runtime>) -> Response {
-    let marker: std::result::Result<(String, i64), _> =
-        sqlx::query_as("SELECT engine,version FROM dw_server_schema")
-            .fetch_one(&runtime.pool)
-            .await;
-    let ready = marker.is_ok_and(|row| row == ("rust-development".into(), 1));
+    let ready = runtime.schema_ready().await;
     (
         if ready {
             StatusCode::OK
@@ -185,18 +185,28 @@ async fn history(
         ));
     }
     // Match the current public history cursor's sequence/base64 contract.
-    let after = query
-        .next_page_token
-        .as_deref()
-        .and_then(|v| STANDARD.decode(v).ok())
-        .and_then(|bytes| String::from_utf8(bytes).ok())
-        .and_then(|value| value.parse::<i64>().ok())
-        .filter(|n| *n >= 0)
-        .unwrap_or(0);
+    let after = decode_cursor(query.next_page_token.as_deref());
     runtime
         .history(&workflow_id, &run_id, after, page_size)
         .await
         .map(Json)
+}
+
+pub(super) fn decode_cursor(token: Option<&str>) -> i64 {
+    token
+        .and_then(|v| STANDARD.decode(v).ok())
+        .and_then(|b| String::from_utf8(b).ok())
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|n| *n >= 0)
+        .unwrap_or(0)
+}
+
+async fn task_history(
+    State(runtime): State<Runtime>,
+    Path(task_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>> {
+    runtime.task_history(&task_id, body).await.map(Json)
 }
 
 async fn register(
