@@ -16,7 +16,7 @@ use std::str::FromStr;
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
     Postgres {
-        options: PgConnectOptions,
+        options: Box<PgConnectOptions>,
         url: String,
     },
 }
@@ -32,7 +32,10 @@ impl TestDatabase {
                 let options = PgConnectOptions::from_str(&url).unwrap().database(&name);
                 let url = options.to_url_lossy().to_string();
                 Postgres::create_database(&url).await.unwrap();
-                Self::Postgres { options, url }
+                Self::Postgres {
+                    options: Box::new(options),
+                    url,
+                }
             }
             Err(_) => Self::Sqlite(tempfile::tempdir().unwrap()),
         }
@@ -48,7 +51,7 @@ impl TestDatabase {
                 .await
             }
             Self::Postgres { options, .. } => {
-                Runtime::open_postgres(options.clone(), "test-token".into()).await
+                Runtime::open_postgres(options.as_ref().clone(), "test-token".into()).await
             }
         }
     }
@@ -67,7 +70,7 @@ impl TestDatabase {
             }
             Self::Postgres { options, .. } => {
                 let pool = sqlx::postgres::PgPoolOptions::new()
-                    .connect_with(options.clone())
+                    .connect_with(options.as_ref().clone())
                     .await
                     .unwrap();
                 sqlx::query(statement).execute(&pool).await.unwrap();
@@ -100,7 +103,7 @@ impl TestDatabase {
             }
             Self::Postgres { options, .. } => {
                 let pool = sqlx::postgres::PgPoolOptions::new()
-                    .connect_with(options.clone())
+                    .connect_with(options.as_ref().clone())
                     .await
                     .unwrap();
                 sqlx::query("UPDATE workflow_history_events SET payload=$1 WHERE sequence=1")
