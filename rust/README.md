@@ -33,6 +33,56 @@ no-op, comment-edit and cache results with their disk costs and limits.
 The [HTTP slice observations](runtime-build-observations-2026-10-09.md) record
 its larger native build, test and dependency costs.
 
+## PostgreSQL storage foundation
+
+The unpublished binary also provides `schema-bootstrap` and `schema-check`
+commands for PostgreSQL. They prepare or inspect storage; HTTP execution still
+uses SQLite. Set `DW_RUST_EXPERIMENTAL=1`, `DB_CONNECTION=pgsql`, `DB_DATABASE`,
+`DB_USERNAME`, and the usual `DB_HOST`, `DB_PORT` and `DB_PASSWORD`. The database
+must already exist. `DB_URL` takes precedence over the individual connection
+fields and uses SQLx's PostgreSQL URL options.
+
+`schema-bootstrap` admits only an empty `public` schema or this exact native
+version. It refuses existing PHP tables before creating a writable pool. A
+transaction-scoped advisory lock serializes fresh-node bootstrap; SQLx commits
+the full schema, migration checksum and ownership marker together. The schema
+comes from the frozen PHP baseline, including timestamp precision, JSON types,
+defaults, constraints, indexes and sequence ownership. The compiled catalog is
+checked with PostgreSQL's catalog functions. Corruption or unknown history is
+refused, not repaired automatically. This development path fixes `search_path`
+to `public` and UTC; custom schemas remain unqualified.
+
+`schema-check` uses a read-only repeatable-read transaction and works with a
+SELECT-only role. It creates no schema or migration ledger. Both commands close
+probe connections explicitly on refusal. PostgreSQL can keep temporary WAL and
+system bookkeeping as it normally does; refusal means no application schema,
+rows, migration history or sequence positions are changed.
+
+TLS uses SQLx/Rustls. `DB_SSLMODE` defaults to `prefer`, matching PHP's current
+default; it can fall back to an unencrypted server. Use `verify-full` with
+`DB_SSLROOTCERT` for a trusted CA and hostname verification, or configure the
+equivalent options in `DB_URL`. The shared Action checks a real encrypted
+connection and rejects an untrusted certificate and a wrong hostname.
+
+The explicit backend checks require a disposable PostgreSQL role that can
+create databases and roles. In the same build container setup, set
+`DW_TEST_POSTGRES_URL` to that isolated admin database and run:
+
+```sh
+cargo test --locked --lib runtime::postgres::tests::qualification_ -- --ignored --nocapture
+```
+
+The ordinary `cargo test --all-targets` run reports these backend-dependent cases
+as ignored; the shared Action runs them explicitly on both pinned PostgreSQL
+images. They cover concurrent initialization, typed JSON/64-bit/microsecond
+values, SELECT-only inspection, thirteen corrupt catalogs/history states and
+real process kills at two acknowledged uncommitted migration boundaries.
+The published PHP fixture separately creates pending work and a leased activity,
+stops PHP, and verifies native refusal with unchanged row/sequence fingerprints.
+Data in other user schemas is also refused rather than treated as an empty
+public schema. Actual PostgreSQL execution, MySQL/MariaDB, backup-first conversion and complete
+multi-node recovery remain required under #325.
+
 The shared [codec values](../tests/Fixtures/ServerParity/Codec/v1.json) declare
 logical expectations from the immutable schema: exact long boundaries, finite
 doubles (including negative zero), Unicode, binary values, nested arrays and

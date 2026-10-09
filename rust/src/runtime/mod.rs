@@ -3,6 +3,7 @@
 //! SQLite is the first backend; existing PHP databases cannot be bootstrapped.
 
 mod http;
+pub mod postgres;
 mod schema;
 mod store;
 

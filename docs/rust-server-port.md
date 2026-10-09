@@ -8,9 +8,9 @@ cutover remain unqualified.
 
 ## Work order and current status
 
-The next storage foundation targets PostgreSQL's real timestamp/JSON columns,
+The PostgreSQL storage foundation prepares the real timestamp/JSON schema,
 transactional migrations and ownership checks against an independently
-bootstrapped published PHP database. Fresh native bootstrap must keep the full
+bootstrapped published PHP database. Fresh native bootstrap keeps the full
 existing physical schema; it does not authorize adoption of PHP data. Actual
 PostgreSQL execution and MariaDB/MySQL support remain required next steps.
 
