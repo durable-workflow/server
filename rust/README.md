@@ -2,11 +2,12 @@
 
 This crate is an unpublished development foundation for [Server #325](https://github.com/durable-workflow/server/issues/325).
 The published PHP image remains the default. The opt-in Rust HTTP runtime now
-executes the first echo/activity fixtures through an unchanged published SDK.
+executes echo, activity, timer and signal fixtures through an unchanged published SDK.
 It is an incomplete development slice, with no qualified database takeover,
 performance improvement or release. The codec module uses Apache's official
-Avro library; HTTP forwards opaque envelopes without calling its unfinished
-ingress decoder.
+Avro library. Signals decode their arguments with the official codec on bounded
+blocking workers; other execution paths forward opaque envelopes. Complete
+ingress validation and resource limits remain unqualified.
 
 The toolchain is pinned in `rust-toolchain.toml`; dependency resolution is in
 `Cargo.lock`. Compression and Avro schema-generation features are disabled.
@@ -202,7 +203,8 @@ This is not qualification of throughput, CPU-heavy deadlines or multi-node HA.
 Implemented paths cover health/schema readiness, limited capability discovery,
 workflow start/describe/paginated history, worker registration/heartbeat/removal,
 workflow/activity polling, workflow lease renewal and both completion paths.
-`schedule_activity` and `complete_workflow` are the only admitted commands;
+Admitted commands are `schedule_activity`, `start_timer`, `open_condition_wait`,
+`open_signal_wait` and `complete_workflow`;
 unsupported effects/options are refused before batch mutation. Published PHP
 workers replay the persisted activity result and complete the workflow normally.
 Discovery marks the runtime as development, advertises the admitted commands
@@ -237,7 +239,7 @@ database families. The PHP ownership fence is merged in source, while the frozen
 published PHP image still lacks it. **Never connect PHP to a Rust development database.**
 The only enabled namespace/auth setup is `default` with the compatibility token;
 scoped credentials, other namespaces and the full authorization contract remain
-open. Timers, failure/retry policy, cancellation and the rest of the API also
+open. Broader timer/signal semantics, failure/retry policy, cancellation and the rest of the API also
 remain open under #325. Existing databases and published PHP artifacts are
 unchanged by this opt-in crate.
 
@@ -252,8 +254,10 @@ WAL visibility or manually delete a nonempty journal.
 connection-pool claims, stale fences, duplicate outcomes/polls, worker history
 pagination, atomic unsupported-command refusal and read-only PHP refusal.
 The shared Action builds once, cross-decodes the 15 codec cases, executes all
-three reviewed fixtures against separate PHP/Rust/embedded databases, then
-kills the Rust process with a leased activity. The restart probe lets the actual
-lease expire, rejects the old claim and completes through a new published PHP
-SDK worker, retaining original run/history IDs and one committed outcome.
-That bounded kill check does not qualify all failure boundaries or databases.
+seven reviewed fixtures against separate PHP/Rust/embedded databases, then
+kills the Rust process with a leased activity, a pending timer and an acknowledged
+pending signal. The restart probe lets the actual lease expire, rejects the old
+claim and completes through a new published PHP SDK worker. It checks original
+run/history IDs, timer deadline, signal acknowledgement and wait fingerprint,
+one cursor advancement and one committed outcome per workflow on each configured
+database backend. That bounded kill check does not qualify all failure boundaries.

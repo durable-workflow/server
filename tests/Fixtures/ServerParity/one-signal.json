@@ -1,0 +1,19 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "one-signal",
+  "workflow_type": "parity.v1.signals",
+  "input": {"message": "workflow input λ"},
+  "typed_value": {"type": "map", "value": {"message": {"type": "string", "value": "workflow input λ"}}},
+  "signal_value": {"message": "signal λ", "count": 42, "ready": true, "optional": null},
+  "typed_signal_value": {"type": "map", "value": {
+    "message": {"type": "string", "value": "signal λ"},
+    "count": {"type": "int64", "value": "42"},
+    "ready": {"type": "boolean", "value": true},
+    "optional": {"type": "null", "value": null}
+  }},
+  "activity": false,
+  "signal_count": 1,
+  "expected_events": ["StartAccepted", "WorkflowStarted", "ConditionWaitOpened", "SignalReceived", "MessageCursorAdvanced", "SignalApplied", "ConditionWaitSatisfied", "WorkflowCompleted"],
+  "embedded_expected_events": ["StartAccepted", "WorkflowStarted", "SignalWaitOpened", "SignalReceived", "MessageCursorAdvanced", "SignalApplied", "WorkflowCompleted"],
+  "contract": "A declared payload signal wakes a durable wait. The published SDK uses waitCondition with signals(), and the embedded host uses signal(). Both return the decoded signal payload, not the workflow input, advance the message cursor and apply the original accepted command once. The SDK's condition resolution retains its original wait ID/key/fingerprint and references that signal; the embedded direct wait is resolved by SignalApplied retaining the original SignalWaitOpened identity/sequence. These explicitly different authoring API histories are checked in full before comparing their common payload-wait projection."
+}

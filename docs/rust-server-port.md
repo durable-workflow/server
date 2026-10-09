@@ -9,13 +9,13 @@ cutover remain unqualified.
 ## Work order and current status
 
 The next slices widen reviewed PHP/Rust/embedded fixtures and native behavior:
-durable timers first, then signals and queries/updates, followed by child
+durable timer and signal slices lead into queries/updates, followed by child
 workflows, retries/cancellation, schedules, visibility, authorization/namespaces,
 streams and existing consumers. Each slice must run on the required database
 matrix. Read-only upgrade inspection and backup-first takeover remain required,
 but follow wider capability coverage. PHP and unknown databases stay refused.
 
-The current execution slice shares the native workflow/activity/timer state machine
+The current execution slice shares the native workflow/activity/timer/signal state machine
 between SQLite, PostgreSQL and MariaDB/MySQL, with typed database adapters and explicit
 transaction locking. Qualification runs the unchanged execution fixtures
 and real lease interruption on each backend, with PHP and embedded targets in
@@ -61,10 +61,10 @@ does not prove the remaining acceptance criteria.
 | Control plane, namespaces, authorization, errors, visibility | `resources/platform-protocol-specs/control-plane-api.openapi.yaml`, `docs/contracts/auth-composition.md`, `routes/api.php`, Feature control-plane/auth/namespace tests; namespace and principal-attribution published runners | Pending |
 | Worker registration, sessions, leases, fencing, retries, timeouts, heartbeats, routing, affinity, backpressure, versioning | Worker OpenAPI and stream AsyncAPI in `resources/platform-protocol-specs/`; Feature worker/activity/prepared-local/cancellation tests; activity, heartbeat and worker-versioning published runners | Pending |
 | Avro values, external task inputs/results, payload storage and reclamation | `docs/contracts/external-task-{input,result}.md`, `external-payload-storage.md`, external payload OpenAPI; `regression-corpus-policy.json`, `tests/Fixtures/CodecRegression/`, payload Feature tests | PHP/embedded echo slice; Rust codec foundation in #329, full ingress and external payloads pending |
-| Workflow lifecycle, duplicate commands, typed history, continuation, child workflows, cancellation, cleanup replay | Workflow lifecycle, migration, child-workflow and replay runners; Feature cooperative cancellation, history, migration and repeated-signal tests | Echo/activity slice only |
-| Timers, schedules, signals, queries, updates, search attributes, memo, sagas | Corresponding runners in `scripts/conformance/`, manifests in `static/platform-conformance/`; Sample App polyglot experiments | Durable sleep slice in #339; other families pending |
+| Workflow lifecycle, duplicate commands, typed history, continuation, child workflows, cancellation, cleanup replay | Workflow lifecycle, migration, child-workflow and replay runners; Feature cooperative cancellation, history, migration and repeated-signal tests | Bounded echo/activity/timer/signal slice; other lifecycle semantics pending |
+| Timers, schedules, signals, queries, updates, search attributes, memo, sagas | Corresponding runners in `scripts/conformance/`, manifests in `static/platform-conformance/`; Sample App polyglot experiments | Durable sleep slice in #339 and signal waits/delivery in #340; broader semantics and other families pending |
 | Local activities, cancellation scopes, worker sessions, streams, service catalog/Nexus, bridge adapters, standalone activities, debugging and repair | `routes/api.php`, `docs/contracts/`, worker/control-plane specifications, corresponding Feature tests and Nexus runner | Pending; not omitted from parity |
-| Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | PHP echo/activity only |
+| Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | Published PHP SDK echo/activity/timer/signal fixtures; other clients and consumers pending |
 | SQL schema and stored representations | `database/migrations/`, Workflow package `src/migrations/`, model casts, `Workflow\\Serializers\\Serializer`, queue job payloads, exported history and credential digests | [Representation checkpoints](rust-server-storage-audit.md) recorded; complete mapping and executable migration tests pending |
 | Images, architecture, bootstrap, configuration, readiness, metrics and graceful shutdown | `Dockerfile`, `docker/`, `config/`, `docker-compose*.yml`, `k8s/helm/`, `docs/server-reference.md`, small-cluster/multi-region validation docs | Pending |
 | Backup and in-place upgrade | `docs/self-hosted-backup-and-restore.md`, external payload backup holds; last PHP image writes, all PHP roles stop, Rust takes over same DB sequentially | Pending on SQLite, MariaDB/MySQL, PostgreSQL |
@@ -112,6 +112,29 @@ support is not evidence of multi-node safety.
   qualify timer, lease and cancellation deadlines under CPU-heavy load.
 
 ## Evidence and next action
+
+[PR #340](https://github.com/durable-workflow/server/pull/340) widens the corpus
+into one/repeated signal deliveries. The published SDK authors signal-derived
+condition waits; embedded PHP authors direct `signal()` waits. Their full,
+explicit event inventories retain that difference before comparing payload-wait
+semantics, cursor progress, typed values and accepted command/run relationships.
+Initial local reference execution exposed the required `MessageCursorAdvanced`
+event; it is now checked rather than discarded. Both reviewed cases executed
+to completion on the frozen PHP Server and embedded package. Hosted Rust and
+database qualification is recorded in the owning PR and issue; a local reference
+pass alone does not qualify the native slice.
+
+The native slice adds atomic accepted signal records and wait/resume transitions,
+capturing the registered signal declarations in original start history. Public
+control command order and deterministic authored call order are separate;
+signals must not move replayed activity/timer/wait positions. Official Avro
+signal decode/encode runs in `spawn_blocking` with one permit per runtime, held
+until that job finishes even when its HTTP request is cancelled. Transaction
+serialization, full codec resource limits and CPU/deadline qualification remain
+open. Initial signal argument support is positional, without default/variadic
+or class-type conversion; unsupported contracts fail before durable writes.
+Timed/grouped waits, cancellation, full rejection audit parity, authorization
+and namespace coverage still require their own slices.
 
 The initial source and published artifact tuple is in
 [`../tests/Fixtures/ServerParity/php-baseline.json`](../tests/Fixtures/ServerParity/php-baseline.json).

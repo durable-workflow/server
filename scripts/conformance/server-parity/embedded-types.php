@@ -6,10 +6,12 @@ namespace ServerParity;
 
 use Workflow\V2\Activity;
 use Workflow\V2\Attributes\Type;
+use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Workflow;
 
 use function Workflow\V2\activity;
 use function Workflow\V2\timer;
+use function Workflow\V2\signal;
 
 #[Type('parity.v1.echo')]
 final class EchoWorkflow extends Workflow
@@ -48,5 +50,20 @@ final class TimerWorkflow extends Workflow
         }
 
         return $value;
+    }
+}
+
+#[Type('parity.v1.signals')]
+#[Signal('payload', [['name' => 'value', 'type' => 'array']])]
+final class SignalsWorkflow extends Workflow
+{
+    public function handle(array $value, int $target): array
+    {
+        $received = null;
+        for ($index = 0; $index < $target; $index++) {
+            $received = signal('payload');
+        }
+
+        return $received;
     }
 }

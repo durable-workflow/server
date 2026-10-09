@@ -3,7 +3,7 @@
 This is the first, deliberately bounded slice of
 [Server #325](https://github.com/durable-workflow/server/issues/325).
 It executes Avro echo (including an exact large int64), a one-activity workflow,
-and one/repeated durable sleeps against any
+one/repeated durable sleeps, and one/repeated signal deliveries against any
 isolated Server URL using the **published** PHP SDK. The embedded adapter runs
 the same logical cases through a Laravel application, real database queue jobs,
 and the installed Workflow package. Rust will use the HTTP adapter unchanged.
@@ -67,6 +67,17 @@ immediate zero-delay firing omits `fire_at`; the repeated-sleep fixture explicit
 permits only that omission while checking its scheduled deadline and `fired_at`.
 Positive-delay firing must repeat its original deadline.
 
+Signal cases return a payload different from the workflow input and require a
+persisted wait before each delivery. Repeated identical payloads are distinct
+commands under the existing signal API. Check the accepted command/run IDs,
+decoded arguments and result types, authored wait sequence, message sequence,
+cursor advance and single application. The published PHP SDK authors
+`waitCondition` with `signals()`; embedded PHP authors `signal()`. Their explicit
+event inventories preserve that authoring difference: the SDK adds
+`ConditionWaitSatisfied` and checks its original key/fingerprint, while embedded
+`SignalApplied` resolves its original `SignalWaitOpened` ID/sequence. The common
+payload-wait projection is compared only after both complete histories pass.
+
 The current type recorder covers null, boolean, int64, double, string, list and
 map values. Other decoded PHP objects fail explicitly; binary/logical-type and
 empty-map distinctions still need their own fixtures and adapters.
@@ -86,9 +97,12 @@ MySQL 8.0/the existing PHP matrix image and MariaDB 10.11.
 PHP/embedded use the exact frozen PHP image;
 Rust uses the PR's exact source. It compares all three and runs the separate
 `restart.php prepare|finish URL RECEIPT` probe around an actual Rust process kill.
-That probe preserves a leased activity and a pending durable timer, waits for its actual lease expiry,
-refuses the old claim and completes both original runs through a fresh published SDK worker.
+That probe preserves a leased activity, a pending durable timer and an acknowledged
+pending signal, waits for the actual activity lease expiry, refuses the old claim
+and completes all three original runs through a fresh published SDK worker.
 The timer must keep its pre-kill identity/deadline and commit exactly one firing.
+The signal must retain its accepted command, typed arguments and original condition
+wait/fingerprint, then advance its cursor and commit application exactly once.
 PostgreSQL and MySQL/MariaDB jobs also use two native nodes with a killed node,
 survivor and replacement sharing only their own database. Separate storage
 checks exercise actual initialization kills, corrupt catalog/history refusal,
