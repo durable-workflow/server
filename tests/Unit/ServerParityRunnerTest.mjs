@@ -75,3 +75,21 @@ test('refuses partial inventories, blocked records and changed fixtures or consu
     assert.throws(() => compareRecords([record(), changed]));
   }
 });
+
+test('two empty recordings cannot establish parity', () => {
+  const empty = record();
+  empty.cases = [];
+  empty.fixture_hashes = {};
+  assert.throws(() => compareRecords([empty, structuredClone(empty)]));
+});
+
+test('matching recordings cannot omit hashed fixtures or repeat one case', () => {
+  for (const corrupt of [
+    value => {value.fixture_hashes['echo.json'] = 'missing-case-sha';},
+    value => {value.cases.push(structuredClone(value.cases[0]));},
+  ]) {
+    const changed = record();
+    corrupt(changed);
+    assert.throws(() => compareRecords([changed, structuredClone(changed)]));
+  }
+});

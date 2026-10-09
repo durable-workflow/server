@@ -73,7 +73,16 @@ It freezes inputs, not a passing performance result. Fixture and runner commits,
 hardware, resource limits and actual measurement commands belong in each retained
 result. Do not compare performance across concurrent unrelated host workloads.
 
-Next: qualify the first recorder on the frozen PHP image and embedded Workflow,
-then measure the PHP capacity and idle mixed long-poll baseline before adding
-Rust. The rest of the inventory remains open under #325. No separate defect
-issues have been filed yet.
+The first HTTP and embedded recordings passed on the frozen amd64 image and
+Workflow package, with an independent SQLite database for each. Hosted
+[fixture execution](https://github.com/durable-workflow/server/actions/runs/37889245892)
+retains both raw records and the comparison for 90 days. It executes both
+workflows to completion, including the activity, with the published PHP SDK.
+[PR #326](https://github.com/durable-workflow/server/pull/326) owns source checks
+and review. This is two-case correctness evidence, not performance qualification
+or a three-database/three-runtime pass.
+
+Next: measure the PHP capacity and idle mixed long-poll baseline before adding
+Rust, and expand fixtures using the existing conformance inventory. The rest
+of the inventory remains open under #325. No separate defect issues have been
+filed yet.

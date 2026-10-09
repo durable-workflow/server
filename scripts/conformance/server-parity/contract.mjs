@@ -84,6 +84,9 @@ export function compareRecords(records) {
   for (const record of records) {
     assert.equal(record.schema, 'durable-workflow.server-parity-record/v1');
     assert.equal(record.outcome, 'pass', `${record.target} recording must have passed contract assertions`);
+    assert.ok(record.cases.length > 0, 'recorded fixture inventory must not be empty');
+    assert.equal(new Set(record.cases.map(c => c.fixture_id)).size, record.cases.length, 'each fixture is recorded exactly once');
+    assert.deepStrictEqual(record.cases.map(c => `${c.fixture_id}.json`).sort(), Object.keys(record.fixture_hashes).sort(), 'every hashed fixture has a recorded case');
     assert.deepStrictEqual(record.fixture_hashes, reference.fixture_hashes, 'same reviewed fixture bytes');
     assert.deepStrictEqual(record.artifacts, reference.artifacts, 'same consumer tuple');
     assert.equal(record.runner_revision, reference.runner_revision, 'same runner revision');
@@ -92,6 +95,7 @@ export function compareRecords(records) {
     // authority, and a missing or corrupted record must never compare green.
     for (const [index, item] of record.cases.entries()) {
       const baseline = reference.cases[index];
+      assert.equal(item.fixture_id, item.fixture.id, 'case identity matches fixture');
       assert.equal(item.observation.sdk_php, record.artifacts.sdk_php, 'installed published SDK matches tuple');
       if (record.mode === 'embedded') assert.equal(item.observation.workflow_package, record.artifacts.workflow, 'installed Workflow matches tuple');
       assert.deepStrictEqual(item.fixture, baseline.fixture, 'same fixture expectations');
