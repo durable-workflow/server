@@ -150,8 +150,13 @@ activity. Reviewed expectations preserve the original command/run/failure and
 timer/attempt identities, exact int64 input, typed cancellation, immutable
 history, repeat refusal and stale-result fencing. The normal SDK activity worker
 must submit its result after cancellation and safely discard the stale refusal;
-embedded mode executes and redelivers real queue jobs. Reference qualification
-and native implementation are pending. Cooperative cleanup cancellation,
+embedded mode executes and redelivers real queue jobs. All seventeen cases pass
+and compare on frozen PHP/embedded at `99102930002253f9b32dec87236c5e5c98f86a76`;
+185 comparator checks pass. Tests-first native run
+[38002864344](https://github.com/durable-workflow/server/actions/runs/38002864344)
+compiles, passes its other 22 HTTP tests and fails the new cancellation test on
+the absent endpoint (`501 rust_capability_not_implemented`). Native implementation
+is prepared; all six configuration and recovery gates are pending. Cooperative cleanup cancellation,
 child/update cancellation and scoped propagation are separate gates.
 The frozen HTTP selected-run route validates the current run, then records an
 instance-scoped command; embedded `loadRun` records a run-scoped command.

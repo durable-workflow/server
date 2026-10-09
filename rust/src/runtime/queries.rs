@@ -76,7 +76,9 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
-    async fn query_entries(tx: &mut Transaction<'_, DB>) -> Result<Vec<(String, Value)>> {
+    pub(super) async fn query_entries(
+        tx: &mut Transaction<'_, DB>,
+    ) -> Result<Vec<(String, Value)>> {
         let rows = Self::query(DB::QUERY_CACHE_SCAN)
             .fetch_all(&mut **tx)
             .await?;

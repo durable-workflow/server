@@ -4,6 +4,7 @@
 
 mod activity_failures;
 mod backend;
+mod cancellation;
 mod children;
 mod execution;
 mod http;
@@ -40,11 +41,14 @@ pub enum RuntimeError {
         status: StatusCode,
         reason: &'static str,
     },
+    #[error("protocol operation refused")]
+    Protocol { status: StatusCode, response: Value },
 }
 
 impl IntoResponse for RuntimeError {
     fn into_response(self) -> Response {
         let (status, reason) = match self {
+            Self::Protocol { status, response } => return (status, Json(response)).into_response(),
             Self::Refused { status, reason } => (status, reason),
             _ => {
                 // Database errors can contain stored payloads. Keep responses

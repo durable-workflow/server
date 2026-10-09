@@ -69,7 +69,7 @@ where
         }
         for query in [
             "SELECT id,namespace,current_run_id FROM workflow_instances LIMIT 0",
-            "SELECT id,status,arguments,output,last_history_sequence,last_command_sequence,run_deadline_at FROM workflow_runs LIMIT 0",
+            "SELECT id,status,closed_reason,closed_at,last_progress_at,arguments,output,last_history_sequence,last_command_sequence,run_deadline_at FROM workflow_runs LIMIT 0",
             "SELECT id,sequence,payload,recorded_at FROM workflow_history_events LIMIT 0",
             "SELECT id,status,payload,lease_owner,lease_expires_at,attempt_count FROM workflow_tasks LIMIT 0",
             "SELECT id,sequence,activity_type,status,arguments,result,retry_policy,exception,attempt_count,current_attempt_id FROM activity_executions LIMIT 0",
@@ -77,7 +77,7 @@ where
             "SELECT id,workflow_run_id,source_kind,source_id,propagation_kind,failure_category,non_retryable,handled,exception_class,message FROM workflow_failures LIMIT 0",
             "SELECT id,workflow_run_id,sequence,status,delay_seconds,fire_at,fired_at FROM workflow_run_timers LIMIT 0",
             "SELECT id,workflow_command_id,workflow_run_id,signal_name,signal_wait_id,status,arguments FROM workflow_signal_records LIMIT 0",
-            "SELECT id,workflow_run_id,command_sequence,message_sequence,status,payload FROM workflow_commands LIMIT 0",
+            "SELECT id,workflow_run_id,command_sequence,message_sequence,status,target_scope,rejection_reason,accepted_at,applied_at,rejected_at,payload FROM workflow_commands LIMIT 0",
             "SELECT namespace,worker_id,supported_workflow_types,supported_activity_types FROM workflow_worker_registrations LIMIT 0",
             "SELECT task_id,receipt FROM dw_task_completions LIMIT 0",
             "SELECT request_id,task_id,attempt,response,expires_at FROM dw_poll_receipts LIMIT 0",
@@ -209,11 +209,15 @@ where
             .ok_or_else(|| refuse(StatusCode::NOT_FOUND, "instance_not_found"))?;
         let output = DB::optional_string(&row, "output")?;
         let status = DB::string(&row, "status")?;
+        let terminal = matches!(
+            status.as_str(),
+            "completed" | "failed" | "cancelled" | "terminated"
+        );
         Ok(
             json!({"workflow_id": workflow_id, "run_id": DB::string(&row,"id")?, "workflow_type": DB::string(&row,"workflow_type")?,
             "namespace": "default", "task_queue": DB::string(&row,"queue")?, "status": status,
-            "status_bucket": if status == "completed" { "closed" } else { "open" },
-            "is_terminal": status == "completed", "run_number": DB::number(&row,"run_number")?,
+            "status_bucket": if terminal { "closed" } else { "open" },
+            "is_terminal": terminal, "closed_reason": DB::optional_string(&row,"closed_reason")?, "run_number": DB::number(&row,"run_number")?,
             "payload_codec": "avro", "input": null, "output": null,
             "input_envelope": wire(&DB::string(&row,"arguments")?), "output_envelope": output.as_deref().map(wire),
             "started_at": DB::instant(&row,"started_at")?, "closed_at": DB::optional_instant(&row,"closed_at")?,
@@ -1109,6 +1113,7 @@ where
         if DB::string(&task, "task_type")? != "activity" {
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
         }
+        Self::cancelled_activity_outcome(&mut tx, &task, &body).await?;
         if Self::duplicate_receipt(&task, &body)? {
             return Ok(
                 json!({"task_id": task_id, "activity_attempt_id": attempt_id, "outcome": "completed", "recorded": false, "reason": "already_completed"}),

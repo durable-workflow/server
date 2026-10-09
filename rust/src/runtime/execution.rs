@@ -388,6 +388,32 @@ impl Runtime {
             }
         }
     }
+    pub(crate) async fn cancel_workflow(
+        &self,
+        workflow_id: &str,
+        run_id: Option<&str>,
+        body: Value,
+    ) -> Result<(StatusCode, Value)> {
+        let (reason, blob) =
+            super::cancellation::prepare_reason(&body, self.signal_codec.clone()).await?;
+        match &*self.storage {
+            Storage::Sqlite(store) => {
+                store
+                    .cancel_workflow(workflow_id, run_id, reason, blob)
+                    .await
+            }
+            Storage::Postgres(store) => {
+                store
+                    .cancel_workflow(workflow_id, run_id, reason, blob)
+                    .await
+            }
+            Storage::MySql(store) => {
+                store
+                    .cancel_workflow(workflow_id, run_id, reason, blob)
+                    .await
+            }
+        }
+    }
     delegate!(complete_activity(task_id: &str, body: Value) -> Result<Value>);
     pub(crate) async fn fail_activity(&self, task_id: &str, body: Value) -> Result<Value> {
         let (failure, blob) =
