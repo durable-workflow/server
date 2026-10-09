@@ -68,8 +68,8 @@ support is not evidence of multi-node safety.
   before choosing the Rust build setup. Use an explicit cache budget and local
   storage; measure physical disk blocks across cache and targets together. Keep
   cache and build outputs under one container mount so cross-mount copying does
-  not erase sharing. No global Cargo wrapper, service or cleanup is authorized
-  by this experiment. Real-project build speed and disk savings remain pending.
+  not erase sharing. Use a per-run compiler wrapper and scoped cleanup.
+  Real-project build speed and disk savings remain pending.
 - Tokio tasks are [cooperatively scheduled](https://docs.rs/tokio/latest/tokio/task/coop/index.html).
   Potentially expensive replay, decoding and synchronous database operations
   need bounded work away from the async request executor. `spawn_blocking` needs

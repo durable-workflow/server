@@ -43,7 +43,8 @@
       "mysql": {"cpu_cores": 1.0, "memory_bytes": 1073741824},
       "redis": {"cpu_cores": 0.25, "memory_bytes": 268435456},
       "sdk-worker": {"cpu_cores": 0.5, "memory_bytes": 536870912},
-      "probe": {"cpu_cores": 0.5, "memory_bytes": 536870912}
+      "probe": {"cpu_cores": 0.5, "memory_bytes": 536870912},
+      "collector": {"cpu_cores": 0.25, "memory_bytes": 268435456}
     }
   },
   "workload": {
