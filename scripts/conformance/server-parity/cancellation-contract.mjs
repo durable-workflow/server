@@ -114,10 +114,17 @@ export function checkImmediateCancellation(fixture, observation) {
       equal(report.path, `/api/worker/activity-tasks/${claim.task_id}/complete`, 'original stale completion endpoint');
       equal(report.request.activity_attempt_id, claim.activity_attempt_id, 'normal worker submits original attempt');
       equal(report.request.lease_owner, claim.lease_owner, 'normal worker submits original owner');
+      equal(report.decoded_result, fixture.input, 'original stale activity result');
+      equal(report.typed_result, fixture.typed_value, 'exact stale result types');
       for (const receipt of [report, cancellation.late_completion]) {
         equal(receipt.status, 409, 'late activity completion refused');
         equal(receipt.response.recorded, false, 'late activity result is not durable');
-        equal(receipt.response.reason, 'stale_attempt', 'late cancelled attempt fencing');
+        equal(receipt.response.reason, 'run_cancelled', 'late cancelled run fencing');
+        equal(receipt.response.outcome, 'ignored', 'cancelled run ignores late outcome');
+        equal(receipt.response.cancel_requested, true, 'late outcome sees cancellation');
+        equal(receipt.response.can_continue, false, 'late cancelled activity must stop');
+        equal(receipt.response.lease_owner, claim.lease_owner, 'late refusal original owner');
+        equal(receipt.response.lease_expires_at, null, 'late refusal releases lease');
         equal(receipt.response.task_id, claim.task_id, 'late refusal original task');
         equal(receipt.response.activity_attempt_id, claim.activity_attempt_id, 'late refusal original attempt');
         for (const field of ['activity_status', 'attempt_status', 'task_status']) equal(receipt.response[field], 'cancelled', `late refusal ${field}`);

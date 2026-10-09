@@ -91,6 +91,11 @@ function httpCancellationObservation(array $fixture, string $workflowId, string 
         });
     $worker->run(0);
     $workerActivityOutcomes = $activityOutcomes;
+    foreach ($workerActivityOutcomes as &$report) {
+        $report['decoded_result'] = $client->payloadCodec()->decodeEnvelope($report['request']['result']);
+        $report['typed_result'] = typedValue($report['decoded_result']);
+    }
+    unset($report);
     $execution = $handle->describeSelectedRun();
     $events = httpHistory($client, $workflowId, $handle->selectedRunId);
     $duplicate = cancellationReceipt(static fn (): array => $client->cancelWorkflow($workflowId, 'replacement reason', $handle->selectedRunId));

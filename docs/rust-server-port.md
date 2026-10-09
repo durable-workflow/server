@@ -160,6 +160,12 @@ common original-run cancellation. Frozen cancellation attempt history omits
 lease expiry; embedded physical rows and actual HTTP stale-result refusal prove
 lease closure separately. Neither difference changes expected cancellation,
 original identities or fencing.
+For a correctly identified attempt on an immediately cancelled run, frozen PHP
+refuses completion with HTTP 409, `run_cancelled`, `outcome: ignored`, the
+original owner/attempt/task and closed statuses. This is distinct from a wrong
+attempt's `stale_attempt` refusal. The normal published SDK worker discards this
+closed-run result safely; the fixture checks both its actual report and an
+explicit repeated report without changing either response.
 
 Timeout/lease retries, uncaught failures and broader retry policies remain
 separate gates. This work is followed by cancellation, schedules, visibility, authorization/namespaces,

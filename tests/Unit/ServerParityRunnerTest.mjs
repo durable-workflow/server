@@ -65,7 +65,8 @@ function cancellationObservation(fixture, mode = 'http') {
   const history = raw.events.map(({decoded, typed_decoded, ...event}) => event);
   const accepted = {command_id: 'cancel-command', command_status: 'accepted', outcome: 'cancelled', command_sequence: 2,
     workflow_id: raw.workflow_id, run_id: raw.run_id, target_scope: fixture.immediate_cancellation.receipt_target_scope[mode]};
-  const stale = {status: 409, response: {reason: 'stale_attempt', recorded: false, task_id: 'cancel-task', activity_attempt_id: 'cancel-attempt',
+  const stale = {status: 409, response: {reason: 'run_cancelled', outcome: 'ignored', cancel_requested: true, can_continue: false,
+    lease_owner: 'cancel-owner', lease_expires_at: null, recorded: false, task_id: 'cancel-task', activity_attempt_id: 'cancel-attempt',
     activity_status: 'cancelled', attempt_status: 'cancelled', task_status: 'cancelled'}};
   raw.cancellation = {before: history.slice(0, history.findIndex(event => event.event_type === 'CancelRequested')),
     accepted: {status: 200, response: accepted}, duplicate: {status: 409, response: {...accepted,
@@ -83,7 +84,7 @@ function cancellationObservation(fixture, mode = 'http') {
   raw.activity_polls = phase === 'leased_activity' ? [{task_id: 'cancel-task', activity_attempt_id: 'cancel-attempt',
     activity_execution_id: 'cancel-activity', lease_owner: 'cancel-owner', arguments: frame}] : [];
   raw.activity_outcomes = phase === 'leased_activity' ? [{...stale, path: '/api/worker/activity-tasks/cancel-task/complete',
-    request: {activity_attempt_id: 'cancel-attempt', lease_owner: 'cancel-owner'}}] : [];
+    request: {activity_attempt_id: 'cancel-attempt', lease_owner: 'cancel-owner'}, decoded_result: fixture.input, typed_result: fixture.typed_value}] : [];
   return structuredClone(raw);
 }
 

@@ -2099,7 +2099,7 @@ async fn immediate_cancellation_closes_original_work_once_and_survives_fresh_poo
             );
             let stale = request(&app_a, "POST", &stale_path, stale_body.clone()).await;
             assert_eq!(stale.0, StatusCode::CONFLICT, "{}", stale.1);
-            assert_eq!(stale.1["reason"], "stale_attempt");
+            assert_eq!(stale.1["reason"], "run_cancelled");
             assert_eq!(stale.1["recorded"], false);
             assert_eq!(stale.1["task_id"], activity_task["task_id"]);
             assert_eq!(
