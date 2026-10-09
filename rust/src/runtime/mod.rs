@@ -8,7 +8,11 @@ mod store;
 pub use http::router;
 pub use store::Runtime;
 
-use axum::{Json, http::StatusCode, response::{IntoResponse, Response}};
+use axum::{
+    Json,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
 use serde_json::{Value, json};
 
 #[derive(Debug, thiserror::Error)]
@@ -20,7 +24,10 @@ pub enum RuntimeError {
     #[error("{0}")]
     Json(#[from] serde_json::Error),
     #[error("{reason}")]
-    Refused { status: StatusCode, reason: &'static str },
+    Refused {
+        status: StatusCode,
+        reason: &'static str,
+    },
 }
 
 impl IntoResponse for RuntimeError {
@@ -44,7 +51,9 @@ fn refuse(status: StatusCode, reason: &'static str) -> RuntimeError {
 }
 
 fn text<'a>(body: &'a Value, field: &str) -> Result<&'a str> {
-    body.get(field).and_then(Value::as_str).filter(|s| !s.trim().is_empty() && s.len() <= 255)
+    body.get(field)
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty() && s.len() <= 255)
         .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_request"))
 }
 
@@ -53,11 +62,18 @@ fn text<'a>(body: &'a Value, field: &str) -> Result<&'a str> {
 fn envelope(body: &Value, field: &str) -> Result<String> {
     let value = &body[field];
     if value["codec"] != "avro" || value.as_object().is_none_or(|m| m.len() != 2) {
-        return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "unsupported_payload_codec"));
+        return Err(refuse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "unsupported_payload_codec",
+        ));
     }
-    let blob = value["blob"].as_str().filter(|s| !s.is_empty() && s.len() <= 2 * 1024 * 1024)
+    let blob = value["blob"]
+        .as_str()
+        .filter(|s| !s.is_empty() && s.len() <= 2 * 1024 * 1024)
         .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_payload_envelope"))?;
     Ok(blob.to_owned())
 }
 
-fn wire(blob: &str) -> Value { json!({"codec": "avro", "blob": blob}) }
+fn wire(blob: &str) -> Value {
+    json!({"codec": "avro", "blob": blob})
+}

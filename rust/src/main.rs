@@ -8,7 +8,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Err("Rust development runtime requires DW_RUST_EXPERIMENTAL=1; it is not a qualified replacement".into());
     }
     if env::var("DB_CONNECTION").unwrap_or_else(|_| "sqlite".into()) != "sqlite" {
-        return Err("this development slice implements SQLite; MySQL/PostgreSQL remain required port gates".into());
+        return Err(
+            "this development slice implements SQLite; MySQL/PostgreSQL remain required port gates"
+                .into(),
+        );
     }
     let token = env::var("DW_AUTH_TOKEN").map_err(|_| "DW_AUTH_TOKEN is required")?;
     if token.trim().is_empty() {
@@ -20,7 +23,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .parse()?;
     let runtime = Runtime::open(&database, token).await?;
     let listener = tokio::net::TcpListener::bind(address).await?;
-    eprintln!("Rust development runtime listening on {}", listener.local_addr()?);
+    eprintln!(
+        "Rust development runtime listening on {}",
+        listener.local_addr()?
+    );
     axum::serve(listener, router(runtime.clone()))
         .with_graceful_shutdown(async {
             let ctrl_c = tokio::signal::ctrl_c();
