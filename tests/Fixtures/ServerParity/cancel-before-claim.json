@@ -1,0 +1,39 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "cancel-before-claim",
+  "workflow_type": "parity.v1.cancel_before_claim",
+  "input": {
+    "message": "cancel λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "cancel λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "immediate_cancellation": {
+    "phase": "before_claim",
+    "reason": "parity cancellation λ"
+  },
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "CancelRequested",
+    "WorkflowCancelled"
+  ],
+  "contract": "Immediate selected-run cancellation closes the original run and open work, retains the original cancellation command/failure and input types, and commits no result. Repeating cancellation is refused with run_not_active and unchanged history. Pending timers retain their original identity/deadline; leased activity outcomes are stale and cannot commit. This does not qualify cooperative cleanup cancellation."
+}

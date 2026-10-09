@@ -138,6 +138,22 @@ After replacement, the published SDK client and replayer catch the original
 failure, complete once and reject late success from the closed activity.
 This checkpoint uses explicit client claims/replay; the shared terminal fixtures
 exercise the normal SDK worker loop.
+The final terminal-failure head `ec0e597db9efd13f5f5c2e24adc76aa1a2de5f4d`
+passes all six configurations in [run 38001111544](https://github.com/durable-workflow/server/actions/runs/38001111544)
+and PHP/source gates (2,601 tests / 57,160 assertions). Merge
+`2288e80b8d7610394e38b814afaa62414333d200` retains the identical tested tree;
+its main shared and PHP/source checks also pass.
+
+The next tests-first slice defines three immediate selected-run cancellation
+cases: before workflow claim, with a pending 60-second timer, and with a leased
+activity. Reviewed expectations preserve the original command/run/failure and
+timer/attempt identities, exact int64 input, typed cancellation, immutable
+history, repeat refusal and stale-result fencing. The normal SDK activity worker
+must submit its result after cancellation and safely discard the stale refusal;
+embedded mode executes and redelivers real queue jobs. Reference qualification
+and native implementation are pending. Cooperative cleanup cancellation,
+child/update cancellation and scoped propagation are separate gates.
+
 Timeout/lease retries, uncaught failures and broader retry policies remain
 separate gates. This work is followed by cancellation, schedules, visibility, authorization/namespaces,
 streams and existing consumers. Each slice must run on the required database

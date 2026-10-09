@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {checkActivityRetry} from './retry-contract.mjs';
 import {checkTerminalActivityFailure} from './failure-contract.mjs';
+import {checkImmediateCancellation} from './cancellation-contract.mjs';
 
 function instantNanoseconds(value) {
   const shape = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.(\d{1,9}))?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
@@ -22,10 +23,10 @@ export function checkObservation(fixture, observation, workflowId) {
   equal(observation.workflow_type, fixture.workflow_type, 'registered workflow type');
   equal(observation.namespace, 'default', 'namespace');
   equal(observation.task_queue, 'server-parity-v1', 'task queue');
-  equal(observation.status, 'completed', 'actual durable completion');
+  equal(observation.status, fixture.immediate_cancellation ? 'cancelled' : 'completed', 'actual durable terminal state');
   equal(observation.payload_codec, 'avro', 'payload codec');
-  const output = fixture.output ?? fixture.signal_value ?? fixture.input;
-  const typedOutput = fixture.typed_output ?? fixture.typed_signal_value ?? fixture.typed_value;
+  const output = fixture.immediate_cancellation ? null : fixture.output ?? fixture.signal_value ?? fixture.input;
+  const typedOutput = fixture.immediate_cancellation ? {type: 'null', value: null} : fixture.typed_output ?? fixture.typed_signal_value ?? fixture.typed_value;
   equal(observation.input, fixture.signal_count ? [fixture.input, fixture.signal_count] : [fixture.input], 'decoded workflow input');
   equal(observation.output, output, 'decoded workflow result');
   const typedArguments = {type: 'list', value: [fixture.typed_value, ...(fixture.signal_count ? [{type: 'int64', value: String(fixture.signal_count)}] : [])]};
@@ -60,8 +61,12 @@ export function checkObservation(fixture, observation, workflowId) {
     assert.ok(Number.isFinite(time) && time >= previousTime, 'ordered recorded timestamps');
     previousTime = time;
   }
-  equal(events.at(-1).decoded.output, output, 'committed workflow result');
-  equal(events.at(-1).typed_decoded.output, typedOutput, 'committed workflow result types');
+  if (fixture.immediate_cancellation) {
+    checkImmediateCancellation(fixture, observation);
+  } else {
+    equal(events.at(-1).decoded.output, output, 'committed workflow result');
+    equal(events.at(-1).typed_decoded.output, typedOutput, 'committed workflow result types');
+  }
   const projectedEvents = events.map(({sequence, event_type}) => ({sequence, event_type}));
   const projectedQueries = [];
   const projectedUpdates = [];
