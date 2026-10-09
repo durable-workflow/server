@@ -36,20 +36,24 @@ pub(super) trait Backend: Database {
 fn sqlite_instant(value: String) -> Result<DateTime<Utc>> {
     // PHP's Workflow models store UTC SQL timestamps, including microseconds.
     // Earlier native development data used UTC RFC3339. Keep both readable;
-    // non-UTC stored offsets require explicit conversion before takeover.
+    // other shapes/offsets require explicit conversion before takeover. The
+    // accepted date prefix must match the SQL ordering expression exactly.
     if let Ok(time) = DateTime::parse_from_rfc3339(&value)
         && time.offset().local_minus_utc() == 0
+        && (value.ends_with('Z') || value.ends_with("+00:00"))
+        && value.get(..19) == Some(time.format("%Y-%m-%dT%H:%M:%S").to_string().as_str())
     {
         return Ok(time.with_timezone(&Utc));
     }
-    NaiveDateTime::parse_from_str(&value, "%Y-%m-%d %H:%M:%S%.f")
-        .map(|time| time.and_utc())
-        .map_err(|_| {
-            super::refuse(
-                axum::http::StatusCode::CONFLICT,
-                "unsupported_stored_timestamp",
-            )
-        })
+    if let Ok(time) = NaiveDateTime::parse_from_str(&value, "%Y-%m-%d %H:%M:%S%.f")
+        && value.get(..19) == Some(time.format("%Y-%m-%d %H:%M:%S").to_string().as_str())
+    {
+        return Ok(time.and_utc());
+    }
+    Err(super::refuse(
+        axum::http::StatusCode::CONFLICT,
+        "unsupported_stored_timestamp",
+    ))
 }
 
 impl Backend for Sqlite {
@@ -420,12 +424,23 @@ mod timestamp_tests {
                 "2026-01-02T03:04:05.123456Z"
             );
         }
+        for value in ["2026-01-02 03:04:05", "2026-01-02T03:04:05Z"] {
+            assert_eq!(
+                sqlite_instant(value.into())
+                    .unwrap()
+                    .timestamp_subsec_nanos(),
+                0
+            );
+        }
         for value in [
             "not-a-date",
             "2026-02-30 03:04:05.123456",
             "2026-01-02 03:04:05.123456 trailing",
             "2026-01-02T03:04:05.123456+02:00",
             "2026-01-02T03:04:05.123456-02:00",
+            "2026-01-02T03:04:05.123456-00:00",
+            "2026-01-02t03:04:05.123456z",
+            "2026-1-2 03:04:05.123456",
         ] {
             assert!(sqlite_instant(value.into()).is_err(), "invalid {value}");
         }
