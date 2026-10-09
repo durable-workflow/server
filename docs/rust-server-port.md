@@ -9,8 +9,11 @@ cutover remain unqualified.
 Query slice #341 adds a shared state query before signals, after one delivery,
 and after completion. PHP and embedded reference recordings pass; native
 qualification is pending. Native admission uses immutable quiescent snapshots,
-original query contracts and leased transient tasks in the existing cache
-table. Arguments/results use the official codec outside Tokio executor threads.
+original query contracts and leased transient tasks in a separate native
+`dw_query_cache` table. The frozen PHP schema has no Laravel cache table;
+development schema version 3 adds only native bookkeeping and refuses older
+native development databases. PHP-owned relations remain unchanged.
+Arguments/results use the official codec outside Tokio executor threads.
 Bounded pending/result inventory, expiry, independent-pool completion and stale
 fences have dedicated tests. Busy workflow/query routing and query poll-request
 receipts remain unqualified; the latter capability is advertised as false.

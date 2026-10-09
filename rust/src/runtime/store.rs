@@ -80,6 +80,7 @@ where
             "SELECT namespace,worker_id,supported_workflow_types,supported_activity_types FROM workflow_worker_registrations LIMIT 0",
             "SELECT task_id,receipt FROM dw_task_completions LIMIT 0",
             "SELECT request_id,task_id,attempt,response,expires_at FROM dw_poll_receipts LIMIT 0",
+            "SELECT value,expiration FROM dw_query_cache LIMIT 0",
         ] {
             if Self::query(query).execute(&self.pool).await.is_err() {
                 return false;

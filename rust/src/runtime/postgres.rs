@@ -13,7 +13,7 @@ use sqlx::{
 
 use super::{Result, refuse};
 
-pub const VERSION: i64 = 2;
+pub const VERSION: i64 = 3;
 pub const CATALOG_QUERY: &str = include_str!("postgres-catalog.sql");
 type Catalog = Vec<(String, String, Json<Value>)>;
 
@@ -24,7 +24,7 @@ fn migrator() -> &'static Migrator {
             VERSION,
             "full frozen PHP PostgreSQL schema and native receipts".into(),
             MigrationType::Simple,
-            include_str!("../../migrations/postgres/0002_full_schema.sql").into_sql_str(),
+            include_str!("../../migrations/postgres/0003_full_schema.sql").into_sql_str(),
             false,
         )]);
         // The caller's transaction-scoped PostgreSQL advisory lock covers

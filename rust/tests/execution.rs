@@ -588,9 +588,9 @@ async fn queries_fence_recovered_leases_across_pools_without_mutating_the_run() 
         "invalid_query_result"
     );
     match &database {
-        TestDatabase::Sqlite(_) => database.execute("UPDATE cache SET value=json_set(value,'$.lease_until',0) WHERE value LIKE '%\"status\":\"leased\"%'").await,
-        TestDatabase::Postgres{..} => database.execute("UPDATE cache SET value=jsonb_set(value::jsonb,'{lease_until}','0')::text WHERE value LIKE '%\"status\":\"leased\"%'").await,
-        TestDatabase::MySql{..} => database.execute("UPDATE cache SET value=JSON_SET(value,'$.lease_until',0) WHERE value LIKE '%\"status\":\"leased\"%'").await,
+        TestDatabase::Sqlite(_) => database.execute("UPDATE dw_query_cache SET value=json_set(value,'$.lease_until',0) WHERE value LIKE '%\"status\":\"leased\"%'").await,
+        TestDatabase::Postgres{..} => database.execute("UPDATE dw_query_cache SET value=jsonb_set(value::jsonb,'{lease_until}','0')::text WHERE value LIKE '%\"status\":\"leased\"%'").await,
+        TestDatabase::MySql{..} => database.execute("UPDATE dw_query_cache SET value=JSON_SET(value,'$.lease_until',0) WHERE value LIKE '%\"status\":\"leased\"%'").await,
     }
     assert_eq!(
         request(&a, "POST", &finish_path, completion.clone())
@@ -708,7 +708,9 @@ async fn queries_bound_abandoned_requests_reclaim_expired_entries_and_deliver_wo
         .1["reason"],
         "query_task_queue_full"
     );
-    database.execute("UPDATE cache SET expiration=0").await;
+    database
+        .execute("UPDATE dw_query_cache SET expiration=0")
+        .await;
     let waiting = {
         let app = app.clone();
         tokio::spawn(async move {

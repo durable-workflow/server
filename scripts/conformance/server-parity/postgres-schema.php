@@ -70,8 +70,8 @@ if ($argc !== 4) {
     throw new InvalidArgumentException('Compare requires two independent databases.');
 }
 $native = catalog($argv[3]);
-$tables = ['_sqlx_migrations', 'dw_server_schema', 'dw_task_completions', 'dw_poll_receipts'];
-$indexes = ['_sqlx_migrations_pkey', 'dw_task_completions_pkey', 'dw_poll_receipts_pkey', 'dw_workflow_tasks_poll'];
+$tables = ['_sqlx_migrations', 'dw_server_schema', 'dw_task_completions', 'dw_poll_receipts', 'dw_query_cache'];
+$indexes = ['_sqlx_migrations_pkey', 'dw_task_completions_pkey', 'dw_poll_receipts_pkey', 'dw_workflow_tasks_poll', 'dw_query_cache_pkey'];
 $native = array_values(array_filter($native, static function (array $row) use ($tables, $indexes): bool {
     if (in_array($row[0], ['column', 'constraint'], true)) {
         return ! in_array(explode('.', $row[1], 2)[0], $tables, true);

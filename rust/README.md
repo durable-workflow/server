@@ -225,7 +225,7 @@ the existing receipt without another outcome; conflicting retries are refused.
 Query completion follows the PHP broker's terminal lease refusal on repetition.
 Query poll-request receipt idempotency is explicitly advertised as false;
 repeat polling by the active owner retains its existing attempt and snapshot.
-Transient query entries use a native prefix in the preserved cache table, with
+Transient query entries use a native prefix in a separate `dw_query_cache` table, with
 16 pending requests and 64 pending/results combined per default-namespace
 development database. Arguments are capped at 64 KiB, each complete task and
 snapshot at one MiB, result blobs at 256 KiB, and completion bodies at 512 KiB.
@@ -244,13 +244,13 @@ limits and external transport remain unqualified.
 The native development bootstrap creates the complete SQLite schema from the
 frozen published PHP image: 49 tables and 333 explicit indexes. Native completion
 and poll receipts use separate relations. SQLx records a checksummed migration;
-the ledger, schema and version-2 `dw_server_schema` marker commit atomically.
+the ledger, schema and version-3 `dw_server_schema` marker commit atomically.
 Concurrent fresh nodes serialize bootstrap. Startup checks the full catalog and
 migration history read-only before enabling WAL or opening writable connections.
 PHP/unknown databases, changed native catalogs/checksums and the old abbreviated
-version-1 development schema are refused without conversion. Keep needed old
-development data separately; this unpublished slice supplies no version-1
-converter. Use a new isolated file for version 2.
+version-1/version-2 development schemas are refused without conversion. Keep
+needed old development data separately; this unpublished slice supplies no
+older-development converter. Use a new isolated file for version 3.
 
 This refusal is not the upgrade mechanism. Backup-first conversion of PHP's
 stored representations and interrupted takeover remain required on all three

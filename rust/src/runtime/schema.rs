@@ -11,7 +11,7 @@ use tokio::sync::OnceCell;
 
 use super::{Result, refuse};
 
-pub(super) const VERSION: i64 = 2;
+pub(super) const VERSION: i64 = 3;
 
 fn migrator() -> &'static Migrator {
     static MIGRATOR: OnceLock<Migrator> = OnceLock::new();
@@ -20,7 +20,7 @@ fn migrator() -> &'static Migrator {
             VERSION,
             "full frozen PHP schema and native receipts".into(),
             MigrationType::Simple,
-            include_str!("../../migrations/sqlite/0002_full_schema.sql").into_sql_str(),
+            include_str!("../../migrations/sqlite/0003_full_schema.sql").into_sql_str(),
             false,
         )])
     })
@@ -126,7 +126,7 @@ mod tests {
         } else {
             bootstrap(&mut tx).await.unwrap();
             let rows: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM _sqlx_migrations WHERE version=2 AND success=1",
+                "SELECT COUNT(*) FROM _sqlx_migrations WHERE version=3 AND success=1",
             )
             .fetch_one(&mut *tx)
             .await
@@ -275,19 +275,26 @@ mod tests {
 
     #[tokio::test]
     async fn old_development_schema_is_refused_without_conversion() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("runtime.sqlite");
-        let mut connection = SqliteConnection::connect_with(
-            &SqliteConnectOptions::new()
-                .filename(&path)
-                .create_if_missing(true),
-        )
-        .await
-        .unwrap();
-        sqlx::raw_sql("CREATE TABLE dw_server_schema(engine TEXT,version INTEGER); INSERT INTO dw_server_schema VALUES ('rust-development',1); CREATE TABLE acknowledged(id TEXT PRIMARY KEY); INSERT INTO acknowledged VALUES ('keep-this');")
+        for version in [1, 2] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("runtime.sqlite");
+            let mut connection = SqliteConnection::connect_with(
+                &SqliteConnectOptions::new()
+                    .filename(&path)
+                    .create_if_missing(true),
+            )
+            .await
+            .unwrap();
+            sqlx::raw_sql("CREATE TABLE dw_server_schema(engine TEXT,version INTEGER); CREATE TABLE acknowledged(id TEXT PRIMARY KEY); INSERT INTO acknowledged VALUES ('keep-this');")
             .execute(&mut connection).await.unwrap();
-        connection.close().await.unwrap();
-        assert_read_only_refusal(&path).await;
+            sqlx::query("INSERT INTO dw_server_schema VALUES ('rust-development',$1)")
+                .bind(version)
+                .execute(&mut connection)
+                .await
+                .unwrap();
+            connection.close().await.unwrap();
+            assert_read_only_refusal(&path).await;
+        }
     }
 
     #[tokio::test]
