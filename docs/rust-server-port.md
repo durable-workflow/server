@@ -393,3 +393,8 @@ PHP and native HTTP cases cover workflow/activity tasks, original run identities
 duplicate activity completion and the final durable workflow outcome. Exact-head
 hosted qualification is recorded in the PR. This correction precedes read-only upgrade
 preflight; it does not enable database takeover.
+The existing activity-completion contract permits a committed retry to return
+`409 stale_attempt` with completed statuses; the PHP fixture checks that response.
+Native receipts currently return `200` with `recorded=false` for an identical
+retry. Both cases check one durable outcome; complete completion-error envelope
+parity remains part of the wider #325 qualification.

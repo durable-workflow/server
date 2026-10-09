@@ -75,7 +75,9 @@ class ReadyTaskAvailabilityTest extends TestCase
         $this->postJson('/api/worker/activity-tasks/'.$activity->id.'/complete', $body, $headers)
             ->assertOk()->assertJsonPath('recorded', true);
         $this->postJson('/api/worker/activity-tasks/'.$activity->id.'/complete', $body, $headers)
-            ->assertOk()->assertJsonPath('recorded', false);
+            ->assertStatus(409)->assertJsonPath('recorded', false)->assertJsonPath('reason', 'stale_attempt')
+            ->assertJsonPath('activity_status', 'completed')->assertJsonPath('attempt_status', 'completed')
+            ->assertJsonPath('task_status', 'completed');
         $resumed = $this->postJson('/api/worker/workflow-tasks/poll', [
             'worker_id' => 'ready', 'task_queue' => 'availability', 'timeout_seconds' => 0,
         ], $headers)->assertOk()->assertJsonPath('task.run_id', $runId)->json('task');
