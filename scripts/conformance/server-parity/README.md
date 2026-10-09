@@ -5,8 +5,8 @@ This is the first, deliberately bounded slice of
 It executes Avro echo (including an exact large int64), a one-activity workflow,
 one/repeated durable sleeps, one/repeated signal deliveries, state queries and
 state updates with immutable duplicate receipts and two sequential child
-workflows with real nested activities and a reported activity failure with a
-durable retry against any
+workflows with real nested activities, a reported activity failure with a
+durable retry, exhausted retry budget and matching/nonmatching error filters against any
 isolated Server URL using the **published** PHP SDK. The embedded adapter runs
 the same logical cases through a Laravel application, real database queue jobs,
 and the installed Workflow package. Rust will use the HTTP adapter unchanged.
@@ -57,6 +57,17 @@ is `product-fail`; a failed/incomplete probe is `runner-blocked` until diagnosed
 Neither permits a release. CLI failure exits nonzero and keeps the partial record.
 
 The comparison rechecks observations instead of trusting stored pass labels.
+Terminal activity fixtures use actual unchanged workers to report failure,
+replay the original `ActivityFailed` and catch it in workflow code. Check the
+original execution/attempt/task/failure identities, failure type/message/code,
+policy, closed status, exact arguments and one parent resumption. A matching
+filter is non-retryable despite unused budget; exhausting a budget alone does
+not make a failure non-retryable. A nonmatching filter still permits retry.
+Embedded replay additionally records `FailureHandled`, while the published
+HTTP protocol omits this catch acknowledgement event. Their complete inventories
+and original embedded handling relationship are explicit fixture expectations;
+only their declared common catch behavior is compared after these checks pass.
+This does not qualify full failure diagnostics, visibility or uncaught failures.
 It preserves public workflow IDs, event/command order, type keys, namespace and
 queue, decoded input/result types, deadline budgets, start-command relationships
 and activity/attempt relationships. Timer cases require distinct timer IDs,

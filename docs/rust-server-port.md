@@ -72,7 +72,7 @@ their original receipts. Native tests exercise independent pools, real child
 lease expiry, fresh-pool recovery and rollback on inconsistent linkage.
 Retry/cancellation policies, explicit timeouts, parallel groups and parent-close
 actions remain refused or unqualified beyond this success slice.
-The next reviewed fixture reports an application failure on activity attempt one,
+The eleventh reviewed fixture reports an application failure on activity attempt one,
 waits its durable one-second retry backoff, and completes the original activity
 and workflow on attempt two with exact int64 payloads. It checks distinct tasks
 and attempts, original execution/idempotency identity, immutable policy/argument
@@ -90,15 +90,34 @@ transaction closes the original attempt/task, preserves its failure and creates
 one ready retry at the original exact deadline. Polling keeps the original
 activity/idempotency identity and increments the new task's attempt counter.
 No parent task is created until a successful result commits. The current PHP
-tables and native schema version remain unchanged. Exact-head native/database
-and source qualification remain in progress. The process-kill probe now also
-prepares an acknowledged failed attempt and pending ten-second retry. Recovery
-must retain the original failure prefix, retry task/arguments/deadline, execute
-attempt two through the published SDK, commit one result and refuse the old
-failed attempt's late completion. Its actual kill qualification is pending.
-Terminal and
-non-retryable failures, timeout/lease retries and broader retry policies remain
-separate gates. Retry work is followed by cancellation, schedules, visibility, authorization/namespaces,
+tables and native schema version remain unchanged. All eleven shared fixtures,
+21 native HTTP regressions and actual pending-retry process-kill recovery pass
+on all six configurations in [run 37996570260](https://github.com/durable-workflow/server/actions/runs/37996570260)
+at `2dfb99d5ee3097aa5f6b99b43f7d192678e550b1`. Recovery retains the original
+failure prefix, task/arguments/deadline, executes attempt two through the
+published SDK, commits one result and refuses the old failed attempt's late
+completion. PHP/source gates pass (2,601 tests / 57,156 assertions). The merge
+`9fd7ba8ca1acf3b773fb8ba9e97d7cba7b0f84b9` retains the tested tree; its main
+shared, PHP/source and boundary checks also pass.
+
+The next three reviewed fixtures cover exhausted activity retry budget,
+a matching non-retryable error filter and successful retry with a nonmatching
+filter. The unchanged workflow worker must replay and catch the original durable
+failure, then complete with its exact typed input and failure type/message.
+Embedded execution records an additional `FailureHandled` event. The published
+HTTP protocol has no catch acknowledgement command and omits that event. Both
+complete inventories and the original embedded failure/handling relationship
+are checked explicitly before comparing the declared common catch behavior;
+this does not qualify full failure diagnostics or visibility.
+Fixtures/adapters/comparator and a native regression are implemented before
+native terminal failure support. A local filtered-failure diagnostic completes
+against frozen PHP/embedded artifacts, and 151 comparator tests pass; committed
+full reference and native/database/source qualification remain pending.
+The native regression also covers explicit non-retryable reports and default
+no-retry behavior, independent pools, original failure rows, concurrent duplicate
+reports/resumption, fresh-pool recovery and stale/conflicting outcomes.
+Timeout/lease retries, uncaught failures and broader retry policies remain
+separate gates. This work is followed by cancellation, schedules, visibility, authorization/namespaces,
 streams and existing consumers. Each slice must run on the required database
 matrix. Read-only upgrade inspection and backup-first takeover remain required,
 but follow wider capability coverage. PHP and unknown databases stay refused.
