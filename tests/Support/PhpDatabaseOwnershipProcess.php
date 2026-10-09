@@ -5,11 +5,15 @@ use Illuminate\Contracts\Console\Kernel;
 use Illuminate\Support\Facades\DB;
 
 require dirname(__DIR__, 2).'/vendor/autoload.php';
-if ($argv[1] === 'leave-journal') {
+if (in_array($argv[1], ['leave-journal', 'leave-journal-drop-marker'], true)) {
     $writer = new PDO('sqlite:'.getenv('DB_DATABASE'));
     $writer->exec('PRAGMA journal_mode=DELETE');
-    $writer->exec('PRAGMA cache_size=1');
+    // Force dirty-page spill while avoiding hundreds of one-page fsyncs.
+    $writer->exec('PRAGMA cache_size=32');
     $writer->exec('BEGIN IMMEDIATE');
+    if ($argv[1] === 'leave-journal-drop-marker') {
+        $writer->exec('DROP TABLE dw_server_schema');
+    }
     $writer->exec('UPDATE sentinel SET payload = randomblob(1048576)');
     echo 'journal-ready';
     flush();

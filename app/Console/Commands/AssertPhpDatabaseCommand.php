@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Database\PhpDatabaseRefused;
+use App\Database\SqliteOwnershipUnknown;
 use App\Support\BackendUnavailable;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
@@ -22,6 +23,10 @@ final class AssertPhpDatabaseCommand extends Command
             return self::SUCCESS;
         } catch (PhpDatabaseRefused $exception) {
             $this->error($exception->getMessage());
+
+            return self::FAILURE;
+        } catch (SqliteOwnershipUnknown $exception) {
+            $this->error('php_database_ownership_unknown: '.$exception->getMessage().' No connection was released to PHP.');
 
             return self::FAILURE;
         } catch (Throwable $exception) {

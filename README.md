@@ -46,6 +46,8 @@ For a tested recovery sequence, see the
 Readiness checks database connectivity and setup. A successful check does not
 verify database write capacity. See [database storage recovery](docs/database-storage-recovery.md)
 for full disks, tablespaces and temporary storage.
+See [PHP database ownership checks](docs/php-database-ownership.md) for Rust
+schema refusal, database permissions and SQLite crash-recovery capacity.
 
 Install the current CLI for server administration and workflow inspection:
 

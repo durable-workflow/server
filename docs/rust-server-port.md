@@ -177,14 +177,14 @@ SQLite transaction/HTTP tests, four codec tests, two-way codec values and an
 actual SIGKILL/replacement-container recovery check in the shared Action. The
 complete PHP feature/source suite and repository/boundary checks also passed.
 
-The draft [#331](https://github.com/durable-workflow/server/pull/331) establishes PHP refusal before a Rust-marked database can be
+[The PHP fence in #331](https://github.com/durable-workflow/server/pull/331) establishes PHP refusal before a Rust-marked database can be
 mutated. The reserved, unprefixed `dw_server_schema` relation is the one-way
 ownership fence: its existence refuses PHP even if its rows are empty, malformed
 or from an unknown future version. Removing the marker is not a rollback path.
 Stop every PHP write-capable role before Rust takeover; a connection preflight
 does not make a concurrently mixed fleet safe.
 
-The prototype guards Laravel's official SQLite, MySQL/MariaDB and
+The fence guards Laravel's official SQLite, MySQL/MariaDB and
 PostgreSQL connectors before connection setup can execute durable writes. A
 SQLite file must first be opened read-only, including visible WAL state; an
 immutable snapshot is insufficient. Probe failures must not be mistaken for
@@ -200,28 +200,28 @@ still in SQLite's WAL, and continue ordinary bootstrap against unmarked data.
 This protection does not claim backup-first conversion, interrupted migration,
 full-schema compatibility or a qualified takeover.
 
-Fourteen local process tests (154 assertions) pass on SQLite, MySQL and PostgreSQL;
-the MariaDB connector is exercised against that MySQL test server, not an actual
-MariaDB deployment. They cover startup/bootstrap/migration/wipe/worker/scheduler
-refusal, unchanged sentinel/file state, malformed/future markers, reconnects,
-unmarked bootstrap, URI/WAL visibility, nested named-connection wipes, deferred
-PDO initialization SQL, hidden-marker permissions and silent PDO modes. Sixty-six
-existing bootstrap, SQLite lock-pressure and unavailable-backend regressions pass.
+The process fixtures cover physical startup/bootstrap/migration/wipe/worker/
+scheduler refusal, malformed/future markers, reconnects, unmarked bootstrap,
+URI/WAL visibility, nested named-connection wipes, deferred initialization SQL,
+hidden-marker permissions and silent PDO modes. MySQL and PostgreSQL are exercised
+in the feature Action. The additional local MariaDB run uses an actual MariaDB
+11.4.13 deployment. Existing bootstrap, SQLite lock-pressure, unavailable-backend
+and growth-inventory contracts also run; exact-head evidence is linked from #331.
 
-A separate real SIGKILL probe exposes an unresolved compatibility gate: SQLite
-must repair a hot rollback journal before reading schema. The read-only ownership
-probe cannot safely do that to an unknown original database. The prototype fails
-closed with `php_database_ownership_unknown`, preserving both file hashes. That
-also prevents automatic recovery of an unmarked PHP database in this state. Keep
-#331 in draft until ordinary PHP recovery has a qualified safe path; do not merge
-or release this regression merely because the healthy-database tests pass.
-[SQLite's rollback-journal rules](https://www.sqlite.org/lockingv3.html#hot_journals)
-explain why a schema read can require recovery writes. The published PHP image
-and main reference remain unchanged by this draft.
+The real SIGKILL fixture initially exposed a recovery regression: SQLite must
+repair a hot rollback journal before reading schema. The fence now recovers a
+private copy with SQLite, checks committed ownership and unchanged input, and
+only then allows ordinary PHP recovery. Fault fixtures verify acknowledged PHP
+data, a marker restored from an uncommitted drop without changing the original,
+concurrent startup, an interrupted probe, a replaced database, actual low-space
+refusal and protection of external super-journal filenames. Root startup and
+Apache's runtime UID have separate private copies. The
+[operator guide](php-database-ownership.md) records temporary disk requirements,
+cleanup and the explicit reserved-name grant needed by table-only MySQL/MariaDB
+roles. This does not claim migration or production takeover qualification.
 
-Next: resolve that recovery gate without mutating a Rust-owned original before
-ownership is proved, repeat the fault and healthy-database fixtures, then qualify
-the exact head in normal CI and merge. Follow with the versioned full-schema
-takeover foundation, expanding real execution and differential fixtures across
-the required databases. The rest of the inventory remains open under #325.
+Next: qualify and merge the exact #331 head, then implement the versioned
+full-schema takeover foundation, expanding real execution and differential
+fixtures across the required databases. The rest of the inventory remains open
+under #325.
 No separate defect issues have been filed yet.
