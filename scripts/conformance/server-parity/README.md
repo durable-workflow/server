@@ -2,7 +2,8 @@
 
 This is the first, deliberately bounded slice of
 [Server #325](https://github.com/durable-workflow/server/issues/325).
-It executes Avro echo (including an exact large int64) and a one-activity workflow against any
+It executes Avro echo (including an exact large int64), a one-activity workflow,
+and one/repeated durable sleeps against any
 isolated Server URL using the **published** PHP SDK. The embedded adapter runs
 the same logical cases through a Laravel application, real database queue jobs,
 and the installed Workflow package. Rust will use the HTTP adapter unchanged.
@@ -55,10 +56,16 @@ Neither permits a release. CLI failure exits nonzero and keeps the partial recor
 The comparison rechecks observations instead of trusting stored pass labels.
 It preserves public workflow IDs, event/command order, type keys, namespace and
 queue, decoded input/result types, deadline budgets, start-command relationships
-and activity/attempt relationships. Generated IDs are aliased only after those
+and activity/attempt relationships. Timer cases require distinct timer IDs,
+original fire deadlines, non-early firing and deterministic command sequences
+through replay. Generated IDs are aliased only after those
 relationships pass. Absolute timestamps remain raw, are checked for order, and
 deadline offsets are checked against persisted start time with the published
 history's second-resolution tolerance. They are not compared across runs.
+Firing/deadline comparisons preserve fractional precision. Embedded PHP's
+immediate zero-delay firing omits `fire_at`; the repeated-sleep fixture explicitly
+permits only that omission while checking its scheduled deadline and `fired_at`.
+Positive-delay firing must repeat its original deadline.
 
 The current type recorder covers null, boolean, int64, double, string, list and
 map values. Other decoded PHP objects fail explicitly; binary/logical-type and
@@ -66,7 +73,7 @@ empty-map distinctions still need their own fixtures and adapters.
 
 This projection **does not yet compare** actor/authentication metadata, PHP
 class names and source fingerprints, task snapshot transport metadata, retries,
-lease fencing, cancellation, timers, or any other listed port gate. Those fields
+lease fencing, cancellation, timer cancellation/parallel groups, or any other listed port gate. Those fields
 remain in raw observations. They need their own reviewed fixtures; omitting them
 here cannot establish full parity. See `docs/rust-server-port.md` for the complete
 inventory and next action. Add expectations from a contract decision before
@@ -79,8 +86,9 @@ MySQL 8.0/the existing PHP matrix image and MariaDB 10.11.
 PHP/embedded use the exact frozen PHP image;
 Rust uses the PR's exact source. It compares all three and runs the separate
 `restart.php prepare|finish URL RECEIPT` probe around an actual Rust process kill.
-That probe preserves a leased activity, waits for its actual lease expiry,
-refuses the old claim and completes through a fresh published SDK worker.
+That probe preserves a leased activity and a pending durable timer, waits for its actual lease expiry,
+refuses the old claim and completes both original runs through a fresh published SDK worker.
+The timer must keep its pre-kill identity/deadline and commit exactly one firing.
 PostgreSQL and MySQL/MariaDB jobs also use two native nodes with a killed node,
 survivor and replacement sharing only their own database. Separate storage
 checks exercise actual initialization kills, corrupt catalog/history refusal,

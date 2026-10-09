@@ -1,0 +1,14 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "one-timer",
+  "workflow_type": "parity.v1.one_timer",
+  "input": {"message": "timer λ", "delays": [1]},
+  "typed_value": {"type": "map", "value": {
+    "message": {"type": "string", "value": "timer λ"},
+    "delays": {"type": "list", "value": [{"type": "int64", "value": "1"}]}
+  }},
+  "activity": false,
+  "timer_delays": [1],
+  "expected_events": ["StartAccepted", "WorkflowStarted", "TimerScheduled", "TimerFired", "WorkflowCompleted"],
+  "contract": "The published workflow task bridge start_timer command schedules durable sleep. TimerScheduled and TimerFired retain the same timer ID, command sequence, delay and fire_at; fired_at is at or after fire_at. Replay resumes the original run once and commits the original typed input as output."
+}

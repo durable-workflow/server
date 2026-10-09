@@ -33,7 +33,8 @@ try {
   const fixtures = readdirSync(directory).filter(name => name !== 'php-baseline.json' && name.endsWith('.json')).sort();
   const hashes = Object.fromEntries(fixtures.map(name => [name, createHash('sha256').update(readFileSync(resolve(directory, name))).digest('hex')]));
   if (command === 'compare') {
-    compareRecords(files.map(json), hashes);
+    const expectedFixtures = Object.fromEntries(fixtures.map(name => [name, json(resolve(directory, name))]));
+    compareRecords(files.map(json), hashes, expectedFixtures);
     console.log(JSON.stringify({outcome: 'pass', recordings: files.length}));
   } else if (command === 'record') {
     if (!['http', 'embedded'].includes(values.mode) || !values.output || !values.target || !/^[a-f0-9]{40}$/.test(values['runner-revision'] ?? '')) {

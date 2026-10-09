@@ -3,7 +3,14 @@ use super::{Result, mysql::MySqlStorage, postgres::PostgresStorage, refuse, sqli
 use axum::http::StatusCode;
 use serde_json::Value;
 use sqlx::{MySql, Postgres, Sqlite, mysql::MySqlConnectOptions, postgres::PgConnectOptions};
-use std::sync::Arc;
+use std::{
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
+use tokio::{sync::watch, task::JoinHandle};
 
 enum Storage {
     Sqlite(Store<Sqlite>),
@@ -15,6 +22,73 @@ enum Storage {
 pub struct Runtime {
     storage: Arc<Storage>,
     pub(crate) token: Arc<str>,
+    scheduler: Arc<TimerScheduler>,
+}
+
+struct TimerScheduler {
+    stop: watch::Sender<bool>,
+    task: Mutex<Option<JoinHandle<()>>>,
+    healthy: Arc<AtomicBool>,
+}
+
+impl TimerScheduler {
+    fn new() -> Self {
+        let (stop, _) = watch::channel(false);
+        Self {
+            stop,
+            task: Mutex::new(None),
+            healthy: Arc::new(AtomicBool::new(true)),
+        }
+    }
+    fn start(&self, storage: Arc<Storage>) {
+        let mut stop = self.stop.subscribe();
+        let healthy = self.healthy.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = stop.changed() => break,
+                    _ = tokio::time::sleep(Duration::from_millis(250)) => {
+                        // One bounded batch per tick. A failed database turn is
+                        // retried from durable state, without logging payloads.
+                        // Timer transactions use the same cross-node lock as
+                        // completion. CPU/deadline performance is unqualified.
+                        let result = match &*storage {
+                            Storage::Sqlite(store) => store.fire_due_timers().await,
+                            Storage::Postgres(store) => store.fire_due_timers().await,
+                            Storage::MySql(store) => store.fire_due_timers().await,
+                        };
+                        let success = result.is_ok();
+                        if healthy.swap(success,Ordering::Relaxed) && !success {
+                            eprintln!("timer_scheduler_storage_unavailable");
+                        }
+                    }
+                }
+            }
+        });
+        *self.task.lock().unwrap() = Some(task);
+    }
+    async fn close(&self) {
+        self.stop.send_replace(true);
+        let task = self.task.lock().unwrap().take();
+        if let Some(task) = task {
+            let _ = task.await;
+        }
+    }
+    fn running(&self) -> bool {
+        self.task
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|task| !task.is_finished())
+    }
+}
+
+impl Drop for TimerScheduler {
+    fn drop(&mut self) {
+        if let Some(task) = self.task.get_mut().unwrap().take() {
+            task.abort();
+        }
+    }
 }
 
 macro_rules! delegate {
@@ -43,38 +117,34 @@ impl Runtime {
     pub async fn open(database: &str, token: String) -> Result<Self> {
         Self::validate_token(&token)?;
         let store = Store::new(sqlite::open(database).await?);
-        let runtime = Self {
-            storage: Arc::new(Storage::Sqlite(store)),
-            token: token.into(),
-        };
-        runtime.verify_ready().await?;
-        Ok(runtime)
+        Self::from_storage(Storage::Sqlite(store), token).await
     }
 
     pub async fn open_postgres(options: PgConnectOptions, token: String) -> Result<Self> {
         Self::validate_token(&token)?;
         let store = Store::new(PostgresStorage::open(options).await?.into_pool());
-        let runtime = Self {
-            storage: Arc::new(Storage::Postgres(store)),
-            token: token.into(),
-        };
-        runtime.verify_ready().await?;
-        Ok(runtime)
+        Self::from_storage(Storage::Postgres(store), token).await
     }
 
     pub async fn open_mysql(options: MySqlConnectOptions, token: String) -> Result<Self> {
         Self::validate_token(&token)?;
         let store = Store::new(MySqlStorage::open(options).await?.into_pool());
+        Self::from_storage(Storage::MySql(store), token).await
+    }
+
+    async fn from_storage(storage: Storage, token: String) -> Result<Self> {
         let runtime = Self {
-            storage: Arc::new(Storage::MySql(store)),
+            storage: Arc::new(storage),
             token: token.into(),
+            scheduler: Arc::new(TimerScheduler::new()),
         };
         runtime.verify_ready().await?;
+        runtime.scheduler.start(runtime.storage.clone());
         Ok(runtime)
     }
 
     async fn verify_ready(&self) -> Result<()> {
-        if !self.schema_ready().await {
+        if !self.storage_ready().await {
             self.close().await;
             return Err(refuse(
                 StatusCode::CONFLICT,
@@ -85,6 +155,7 @@ impl Runtime {
     }
 
     pub async fn close(&self) {
+        self.scheduler.close().await;
         match &*self.storage {
             Storage::Sqlite(store) => store.close().await,
             Storage::Postgres(store) => store.close().await,
@@ -100,7 +171,19 @@ impl Runtime {
         }
     }
 
-    delegate!(schema_ready() -> bool);
+    pub(crate) async fn schema_ready(&self) -> bool {
+        if !self.scheduler.running() || !self.scheduler.healthy.load(Ordering::Relaxed) {
+            return false;
+        }
+        self.storage_ready().await
+    }
+    async fn storage_ready(&self) -> bool {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.schema_ready().await,
+            Storage::Postgres(store) => store.schema_ready().await,
+            Storage::MySql(store) => store.schema_ready().await,
+        }
+    }
     delegate!(database_live() -> bool);
     delegate!(start(body: Value) -> Result<Value>);
     delegate!(describe(workflow_id: &str, run_id: Option<&str>) -> Result<Value>);
