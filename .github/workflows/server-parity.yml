@@ -119,7 +119,15 @@ jobs:
             prepare http://parity-rust:8080 /evidence/restart-receipt.json > parity-evidence/restart-prepare.json
           docker kill --signal=KILL "$RESOURCE_SCOPE-rust"
           test "$(docker inspect --format='{{.State.ExitCode}}' "$RESOURCE_SCOPE-rust")" = 137
-          docker start "$RESOURCE_SCOPE-rust"
+          docker logs "$RESOURCE_SCOPE-rust" > parity-evidence/rust-killed.log 2>&1
+          docker rm "$RESOURCE_SCOPE-rust"
+          docker run -d --name "$RESOURCE_SCOPE-rust" --network "$RESOURCE_SCOPE" --network-alias=parity-rust \
+            --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
+            -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token \
+            -e DB_DATABASE=/state/rust.sqlite -e DW_BIND_ADDRESS=0.0.0.0:8080 \
+            -v "$PWD/rust-target:/target:ro" -v "$PWD/parity-state:/state" \
+            --entrypoint /target/debug/durable-workflow-server \
+            rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
           ready=0
           for attempt in $(seq 1 30); do
             if docker run --rm --user=1000:1000 --entrypoint curl --network "$RESOURCE_SCOPE" "$image" \
