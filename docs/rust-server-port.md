@@ -2,22 +2,21 @@
 
 [Server #325](https://github.com/durable-workflow/server/issues/325) owns the
 rewrite and its acceptance evidence. PHP remains the default published runtime.
-The unpublished Rust crate has an Avro foundation and an opt-in SQLite/PostgreSQL HTTP
+The unpublished Rust crate has an Avro foundation and an opt-in SQLite/PostgreSQL/MySQL HTTP
 execution slice. Full runtime parity, migration, performance improvement and
 cutover remain unqualified.
 
 ## Work order and current status
 
-The next slice brings actual MariaDB/MySQL execution to the same state machine
-and differential fixtures. Its DDL cannot use PostgreSQL's atomic bootstrap:
-native initialization needs an explicit ownership intent, version/checksum
-validation and tested safe interruption handling. PHP and unknown databases
-remain refused before mutation until backup-first takeover is qualified.
+The next slice qualifies backup-first sequential database takeover, starting
+with stored-representation compatibility and explicit migration boundaries.
+PHP and unknown databases remain refused before mutation until that path is
+implemented and qualified on every required database family.
 
 The current execution slice shares the native workflow/activity state machine
-between SQLite and PostgreSQL, with typed database adapters and explicit
+between SQLite, PostgreSQL and MariaDB/MySQL, with typed database adapters and explicit
 transaction locking. Qualification runs the unchanged execution fixtures
-and real lease interruption on PostgreSQL, with PHP and embedded targets in
+and real lease interruption on each backend, with PHP and embedded targets in
 independent databases. Existing PHP data remains refused until backup-first
 takeover is implemented and qualified.
 
@@ -25,7 +24,7 @@ The PostgreSQL storage foundation prepares the real timestamp/JSON schema,
 transactional migrations and ownership checks against an independently
 bootstrapped published PHP database. Fresh native bootstrap keeps the full
 existing physical schema; it does not authorize adoption of PHP data. Actual
-MariaDB/MySQL execution and backup-first database takeover remain required next steps.
+Backup-first database takeover remains a required next step.
 
 1. Inventory the current contract, schema and operational surfaces. Establish
    shared reviewed fixtures and a recorder usable against any isolated Server
@@ -363,13 +362,24 @@ catalogs retain the frozen PHP MySQL and MariaDB schemas. A bounded session
 lock and checksummed initialization marker account for implicitly committed
 DDL; only unchanged, empty native partial initialization can resume. Existing
 PHP databases, changed catalogs and unknown migration history are refused.
-The Action adds MySQL 8.0, the existing PHP MySQL image and MariaDB 10.11,
-with the same three-runtime fixtures, native activity restart and real schema
-interruption boundaries. Implementation and local checks are in progress;
-these new hosted jobs have not yet established a successful qualification.
+The [hosted qualification](https://github.com/durable-workflow/server/actions/runs/37953419450)
+passes on MySQL 8.0.46, the existing PHP MySQL 8.4.5 image and MariaDB 10.11.19.
+Each runs seven storage cases, including actual process kills at three
+acknowledged initialization boundaries and safe refusal of changed or occupied
+partial initialization. The common HTTP suite passes nine selected-backend
+cases plus its SQLite-specific PHP-file refusal case. All three engines pass
+the unchanged PHP/Rust/embedded fixtures, two-node activity kill/replacement,
+unchanged PHP rows/catalog/next-ID counters on refusal and actual CA/hostname
+TLS acceptance/rejection. PostgreSQL 16/17 and SQLite/codec checks pass in the
+same run. A bounded InnoDB ownership-row lock serializes this development
+slice; these results do not establish complete multi-node HA or performance.
 
-Next: finish MariaDB/MySQL execution and interruption qualification, then
-qualify backup-first sequential takeover with
+The [build observations](../rust/mysql-execution-build-observations-2026-10-09.md)
+record 89.438 seconds for clean default tests/binary, 865.1 MiB of targets plus
+306.4 MiB of Cargo state, and 0.146/1.031-second no-op/comment builds. Retained
+incremental outputs reach 879.9 MiB. Full-server build cost remains unqualified.
+
+Next: qualify backup-first sequential takeover with
 stored-value and migration-interruption fixtures. The capability, consumer,
 performance and operational inventory remains open under #325.
 No separate defect issues have been filed yet.

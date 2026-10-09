@@ -36,6 +36,8 @@ The [PostgreSQL observations](postgres-build-observations-2026-10-09.md) include
 typed storage and TLS dependencies, with separate clean/incremental disk costs.
 The [PostgreSQL execution observations](postgres-execution-build-observations-2026-10-09.md)
 record the shared runtime's current clean and incremental costs.
+The [MySQL/MariaDB execution observations](mysql-execution-build-observations-2026-10-09.md)
+include all three SQL drivers and their clean and incremental disk costs.
 
 ## PostgreSQL storage foundation
 
@@ -156,8 +158,12 @@ variable the suite uses SQLite. The shared Action targets pinned MySQL 8.0,
 the existing PHP MySQL matrix image, and MariaDB 10.11. It includes real
 initialization kills, independent PHP/Rust/embedded fixtures, two native
 processes, activity lease recovery, unchanged PHP data on refusal and TLS checks.
-The action's successful results, rather than the presence of these jobs,
-establish which qualification has actually passed.
+The [hosted qualification](https://github.com/durable-workflow/server/actions/runs/37953419450)
+passes on all three images: seven storage cases and nine common HTTP cases per
+backend, the three unchanged execution fixtures, actual node kill/replacement,
+PHP-data refusal and trusted/untrusted/wrong-hostname TLS checks. The HTTP
+suite's additional PHP-file refusal case remains SQLite-specific. These bounded
+cases do not establish full parity or authorize database takeover.
 
 The shared [codec values](../tests/Fixtures/ServerParity/Codec/v1.json) declare
 logical expectations from the immutable schema: exact long boundaries, finite
