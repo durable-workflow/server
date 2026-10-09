@@ -3,7 +3,8 @@
 This is the first, deliberately bounded slice of
 [Server #325](https://github.com/durable-workflow/server/issues/325).
 It executes Avro echo (including an exact large int64), a one-activity workflow,
-one/repeated durable sleeps, one/repeated signal deliveries and state queries against any
+one/repeated durable sleeps, one/repeated signal deliveries, state queries and
+state updates with immutable duplicate receipts against any
 isolated Server URL using the **published** PHP SDK. The embedded adapter runs
 the same logical cases through a Laravel application, real database queue jobs,
 and the installed Workflow package. Rust will use the HTTP adapter unchanged.

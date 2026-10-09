@@ -22,8 +22,8 @@ export function checkObservation(fixture, observation, workflowId) {
   equal(observation.task_queue, 'server-parity-v1', 'task queue');
   equal(observation.status, 'completed', 'actual durable completion');
   equal(observation.payload_codec, 'avro', 'payload codec');
-  const output = fixture.signal_value ?? fixture.input;
-  const typedOutput = fixture.typed_signal_value ?? fixture.typed_value;
+  const output = fixture.output ?? fixture.signal_value ?? fixture.input;
+  const typedOutput = fixture.typed_output ?? fixture.typed_signal_value ?? fixture.typed_value;
   equal(observation.input, fixture.signal_count ? [fixture.input, fixture.signal_count] : [fixture.input], 'decoded workflow input');
   equal(observation.output, output, 'decoded workflow result');
   const typedArguments = {type: 'list', value: [fixture.typed_value, ...(fixture.signal_count ? [{type: 'int64', value: String(fixture.signal_count)}] : [])]};
@@ -62,6 +62,93 @@ export function checkObservation(fixture, observation, workflowId) {
   equal(events.at(-1).typed_decoded.output, typedOutput, 'committed workflow result types');
   const projectedEvents = events.map(({sequence, event_type}) => ({sequence, event_type}));
   const projectedQueries = [];
+  const projectedUpdates = [];
+  if (fixture.update_values) {
+    equal(observation.updates.length, fixture.update_values.length, 'complete update observation inventory');
+    equal(started.declared_updates, [fixture.update_name], 'original durable update declaration');
+    const acceptedUpdates = events.filter(event => event.event_type === 'UpdateAccepted');
+    const appliedUpdates = events.filter(event => event.event_type === 'UpdateApplied');
+    const completedUpdates = events.filter(event => event.event_type === 'UpdateCompleted');
+    const signalSequence = events.find(event => event.event_type === 'SignalReceived').sequence;
+    for (const [index, value] of fixture.update_values.entries()) {
+      const update = observation.updates[index];
+      const acceptedUpdate = acceptedUpdates[index];
+      const applied = appliedUpdates[index];
+      const completed = completedUpdates[index];
+      const cursor = events[completed.sequence];
+      const updateId = acceptedUpdate.payload.update_id;
+      const commandId = acceptedUpdate.payload.workflow_command_id;
+      nonempty(updateId, 'durable update identity');
+      nonempty(commandId, 'durable update command identity');
+      identities.push(updateId, commandId);
+      equal(new Set(identities).size, identities.length, 'distinct update/command/run identities');
+      equal(update.name, fixture.update_name, 'declared update name');
+      equal(update.request_id, `${workflowId}:update:${index}`, 'original update request ID');
+      equal(update.arguments, [value], 'submitted update arguments');
+      const arguments_ = {type: 'list', value: [fixture.typed_update_values[index]]};
+      equal(update.typed_arguments, arguments_, 'exact submitted update argument types');
+      equal(update.before.id ?? update.before.run_id, observation.run_id, 'update original waiting run');
+      equal(update.before.status, 'waiting', 'update occurs during a durable wait');
+      for (const receipt of [update.accepted, update.duplicate_accepted]) {
+        equal(receipt.command_status ?? (receipt.accepted ? 'accepted' : 'rejected'), 'accepted', 'accepted update command');
+        equal(receipt.update_status, 'accepted', 'update acknowledgment precedes execution');
+        equal(receipt.command_id, commandId, 'repeat request retains its original command');
+        equal(receipt.update_id, updateId, 'repeat request retains its original update');
+        equal(receipt.workflow_id, workflowId, 'update acknowledgment workflow');
+        equal(receipt.run_id, observation.run_id, 'update acknowledgment original run');
+        equal(receipt.update_name, fixture.update_name, 'update acknowledgment name');
+      }
+      equal(update.history_after_duplicate, update.history_after_acceptance, 'pending duplicate has no durable effect');
+      equal(update.history_after_result, update.history_before_result, 'completed duplicate has no durable effect');
+      equal(update.history_after_acceptance.at(-1).payload.update_id, updateId, 'acknowledged update is durably accepted');
+      equal(update.history_before_result.filter(event => event.event_type === 'UpdateCompleted').length, index + 1, 'result observes the correct completed update prefix');
+      for (const event of [acceptedUpdate, applied, completed]) {
+        equal(event.payload.update_id, updateId, 'original update across lifecycle');
+        equal(event.payload.workflow_command_id, commandId, 'original command across update lifecycle');
+        equal(event.payload.workflow_instance_id, workflowId, 'update history workflow');
+        equal(event.payload.workflow_run_id, observation.run_id, 'update history run');
+        equal(event.payload.update_name, fixture.update_name, 'update history declaration');
+      }
+      for (const event of [acceptedUpdate, applied]) {
+        equal(event.decoded.arguments, [value], 'durable original update arguments');
+        equal(event.typed_decoded.arguments, arguments_, 'durable exact update argument types');
+      }
+      assert.ok(Number.isInteger(applied.payload.sequence) && applied.payload.sequence > 0, 'update callback authoring position');
+      equal(completed.payload.sequence, applied.payload.sequence, 'update completion retains callback position');
+      assert.ok(acceptedUpdate.sequence < applied.sequence && applied.sequence < completed.sequence && completed.sequence < signalSequence, 'update lifecycle completes before finishing signal');
+      const result = {value, applied: index + 1};
+      const typedResult = {type: 'map', value: {value: fixture.typed_update_values[index], applied: {type: 'int64', value: String(index + 1)}}};
+      equal(update.result, result, 'completed repeat returns the original stateful update result');
+      equal(update.typed_result, typedResult, 'exact returned update result types');
+      equal(completed.decoded.result, result, 'durable update result');
+      equal(completed.typed_decoded.result, typedResult, 'durable exact update result types');
+      equal(cursor.event_type, 'MessageCursorAdvanced', 'update advances ordered message cursor');
+      equal(cursor.payload.stream_key, `instance:${workflowId}`, 'update cursor stream');
+      equal(cursor.payload.previous_position, index, 'update cursor previous position');
+      equal(cursor.payload.new_position, index + 1, 'update advances cursor exactly once');
+      equal(acceptedUpdate.payload.command.id, commandId, 'update control command identity');
+      equal(acceptedUpdate.payload.command.sequence, index + 2, 'update control command order');
+      equal(acceptedUpdate.payload.command.message_sequence, index + 1, 'update ordered message position');
+      if (observation.mode === 'http') {
+        const worker = update.worker;
+        const task = worker.task;
+        nonempty(task.task_id, 'actual update task identity');
+        identities.push(task.task_id);
+        equal(new Set(identities).size, identities.length, 'distinct update task identities');
+        equal(task.workflow_update_id, updateId, 'update task routes original update');
+        equal(task.workflow_id, workflowId, 'update task original workflow');
+        equal(task.run_id, observation.run_id, 'update task original run');
+        equal(task.workflow_type, fixture.workflow_type, 'update task original workflow type');
+        equal(task.workflow_task_attempt, 1, 'first update task attempt');
+        nonempty(task.lease_owner, 'actual update task lease owner');
+        equal(worker.arguments, [value], 'worker decodes original accepted arguments');
+        equal(worker.typed_arguments, arguments_, 'worker exact accepted argument types');
+        equal(task.history_events.filter(event => event.event_type === 'UpdateApplied').length, index, 'worker sees prior committed updates');
+      }
+      projectedUpdates.push({name: update.name, request_id: update.request_id,
+        arguments: arguments_, result: typedResult, message_sequence: index + 1});
+    }
+  }
   if (fixture.queries) {
     equal(observation.queries.length, fixture.queries.length, 'complete query observation inventory');
     equal(started.declared_queries, [fixture.query_name], 'durable query declaration');
@@ -111,14 +198,18 @@ export function checkObservation(fixture, observation, workflowId) {
     equal(observation.signal_deliveries.length, fixture.signal_count, 'complete delivered signal inventory');
     equal(started.declared_signals, ['payload'], 'durable signal declaration');
     let offset = 2;
+    const signalEvents = fixture.update_values ? events.filter(event =>
+      !['UpdateAccepted', 'UpdateApplied', 'UpdateCompleted'].includes(event.event_type)
+      && !(event.event_type === 'MessageCursorAdvanced' && event.payload.new_position <= fixture.update_values.length)) : events;
+    const updateCount = fixture.update_values?.length ?? 0;
     const commonEvents = projectedEvents.slice(0, 2);
     for (let index = 0; index < fixture.signal_count; index++) {
-      const opened = events[offset++];
-      const received = events[offset++];
-      const cursor = events[offset++];
-      const applied = events[offset++];
+      const opened = signalEvents[offset++];
+      const received = signalEvents[offset++];
+      const cursor = signalEvents[offset++];
+      const applied = signalEvents[offset++];
       const embedded = observation.mode === 'embedded';
-      const satisfied = embedded ? applied : events[offset++];
+      const satisfied = embedded ? applied : signalEvents[offset++];
       const waitId = opened.payload[embedded ? 'signal_wait_id' : 'condition_wait_id'];
       const signalId = received.payload.signal_id;
       const commandId = received.payload.workflow_command_id;
@@ -158,11 +249,11 @@ export function checkObservation(fixture, observation, workflowId) {
       equal(satisfied.payload.signal_wait_id, received.payload.signal_wait_id, 'condition resolution signal wait relationship');
       nonempty(received.payload.signal_wait_id, 'signal routing wait identity');
       equal(cursor.payload.stream_key, `instance:${workflowId}`, 'message cursor stream');
-      equal(cursor.payload.previous_position, index, 'message cursor previous position');
-      equal(cursor.payload.new_position, index + 1, 'message cursor advances once per signal');
+      equal(cursor.payload.previous_position, index + updateCount, 'message cursor previous position');
+      equal(cursor.payload.new_position, index + updateCount + 1, 'message cursor advances once per signal');
       equal(received.payload.command.id, commandId, 'recorded signal command identity');
-      equal(received.payload.command.sequence, index + 2, 'control command sequence is separate from authored wait sequence');
-      equal(received.payload.command.message_sequence, index + 1, 'ordered signal message sequence');
+      equal(received.payload.command.sequence, index + updateCount + 2, 'control command sequence is separate from authored wait sequence');
+      equal(received.payload.command.message_sequence, index + updateCount + 1, 'ordered signal message sequence');
       for (const key of ['workflow_command_id', 'signal_id', 'signal_name', 'signal_wait_id']) {
         equal(applied.payload[key], received.payload[key], `applied signal retains ${key}`);
       }
@@ -171,7 +262,7 @@ export function checkObservation(fixture, observation, workflowId) {
       commonEvents.push(
         {event_type: 'PayloadWaitOpened', wait_id: `@wait:${index + 1}`, command_sequence: index + 1},
         {event_type: 'SignalReceived', signal_id: `@signal:${index + 1}`, command_id: `@signal-command:${index + 1}`, signal_name: 'payload', arguments: {type: 'list', value: [fixture.typed_signal_value]}},
-        {event_type: 'MessageCursorAdvanced', previous_position: index, new_position: index + 1},
+        {event_type: 'MessageCursorAdvanced', previous_position: index + updateCount, new_position: index + updateCount + 1},
         {event_type: 'SignalApplied', signal_id: `@signal:${index + 1}`, command_id: `@signal-command:${index + 1}`, value: fixture.typed_signal_value},
         {event_type: 'PayloadWaitResolved', wait_id: `@wait:${index + 1}`, signal_id: `@signal:${index + 1}`, command_sequence: index + 1},
       );
@@ -242,6 +333,7 @@ export function checkObservation(fixture, observation, workflowId) {
     task_queue: observation.task_queue, status: observation.status, payload_codec: observation.payload_codec,
     input: observation.typed_input, output: observation.typed_output, execution_timeout_seconds: 3600,
     run_timeout_seconds: 600, events: projectedEvents, ...(fixture.queries ? {queries: projectedQueries} : {}),
+    ...(fixture.update_values ? {updates: projectedUpdates} : {}),
   };
 }
 

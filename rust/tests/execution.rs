@@ -461,6 +461,356 @@ fn completion(task: &Value, commands: Value) -> Value {
     json!({"lease_owner":task["lease_owner"],"workflow_task_attempt":task["workflow_task_attempt"],"commands":commands})
 }
 
+async fn update_worker(app: &Router, worker: &str) {
+    let (status, body) = request(app, "POST", "/api/worker/register", json!({
+        "worker_id":worker,"task_queue":"test","runtime":"php","supported_workflow_types":["echo"],
+        "supported_activity_types":[],"capabilities":["workflow_updates"],"workflow_command_contracts":{"echo":{
+            "signals":["finish"],"signal_contracts":[{"name":"finish","parameters":[{"name":"value","type":"int","required":true,"variadic":false,"default_available":false,"allows_null":false}]}],
+            "updates":["set"],"update_validators":[],"update_contracts":[{"name":"set","parameters":[{"name":"value","type":"int","required":true,"variadic":false,"default_available":false,"allows_null":false}]}]
+        }}})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
+async fn open_update_wait(app: &Router, worker: &str) {
+    let task = poll(app, worker, "workflow").await;
+    let path = format!(
+        "/api/worker/workflow-tasks/{}/complete",
+        task["task_id"].as_str().unwrap()
+    );
+    let result = request(
+        app,
+        "POST",
+        &path,
+        completion(
+            &task,
+            json!([{"type":"open_signal_wait","signal_name":"finish"}]),
+        ),
+    )
+    .await;
+    assert_eq!(result.0, StatusCode::OK, "{}", result.1);
+}
+
+#[tokio::test]
+async fn updates_preserve_original_receipts_and_fence_recovered_tasks_across_pools() {
+    let database = TestDatabase::new().await;
+    let first = database.open().await.unwrap();
+    let second = database.open().await.unwrap();
+    let a = router(first.clone());
+    let b = router(second.clone());
+    update_worker(&a, "update-a").await;
+    update_worker(&b, "update-b").await;
+    let started = start(&a, "durable-update").await;
+    let path = format!(
+        "/api/workflows/durable-update/runs/{}/update/set",
+        started["run_id"].as_str().unwrap()
+    );
+    let history_path = format!(
+        "/api/workflows/durable-update/runs/{}/history",
+        started["run_id"].as_str().unwrap()
+    );
+    let input = json!({"input":envelope(Payload::Array(vec![Payload::Long(9007199254740993)])),
+        "request_id":"original-update","wait_for":"accepted"});
+    assert_eq!(
+        request(&a, "POST", &path, input.clone()).await.1["reason"],
+        "update_snapshot_busy"
+    );
+    open_update_wait(&a, "update-a").await;
+    for (test_path, body, reason) in [
+        (
+            path.replace("/update/set", "/update/unknown"),
+            input.clone(),
+            "unknown_update",
+        ),
+        (
+            path.clone(),
+            json!({"input":envelope(Payload::Array(vec![Payload::String("wrong".into())]))}),
+            "invalid_update_arguments",
+        ),
+        (
+            path.clone(),
+            json!({"input":{"codec":"avro","blob":"bad"}}),
+            "invalid_update_arguments",
+        ),
+        (
+            path.clone(),
+            json!({"input":input["input"],"wait_for":"other"}),
+            "invalid_update_wait_policy",
+        ),
+        (
+            path.clone(),
+            json!({"input":input["input"],"wait_timeout_seconds":31}),
+            "unsupported_update_wait_timeout",
+        ),
+    ] {
+        assert_eq!(
+            request(&a, "POST", &test_path, body).await.1["reason"],
+            reason
+        );
+    }
+    let admitted = request(&a, "POST", &path, input.clone()).await;
+    assert_eq!(admitted.0, StatusCode::ACCEPTED, "{}", admitted.1);
+    let before = request(&a, "GET", &history_path, Value::Null).await.1;
+    let mut duplicate = input.clone();
+    duplicate["input"] = envelope(Payload::Array(vec![Payload::String(
+        "must not overwrite original arguments".into(),
+    )]));
+    let repeated = request(&b, "POST", &path, duplicate.clone()).await;
+    assert_eq!(repeated.0, StatusCode::ACCEPTED, "{}", repeated.1);
+    assert_eq!(repeated.1["update_id"], admitted.1["update_id"]);
+    assert_eq!(repeated.1["command_id"], admitted.1["command_id"]);
+    assert_eq!(
+        request(&b, "GET", &history_path, Value::Null).await.1,
+        before
+    );
+    let mut another = input.clone();
+    another["request_id"] = json!("another");
+    assert_eq!(
+        request(&a, "POST", &path, another).await.1["reason"],
+        "update_snapshot_busy"
+    );
+    register(&b, "without-update-handler", json!(["echo"]), json!([])).await;
+    assert!(
+        poll(&b, "without-update-handler", "workflow")
+            .await
+            .is_null()
+    );
+    let old = poll(&a, "update-a", "workflow").await;
+    assert_eq!(old["workflow_update_id"], admitted.1["update_id"]);
+    assert_eq!(old["history_events"].as_array().unwrap().len(), 4);
+    let complete_path = format!(
+        "/api/worker/workflow-tasks/{}/complete",
+        old["task_id"].as_str().unwrap()
+    );
+    let commands = json!([{"type":"complete_update","update_id":admitted.1["update_id"],"result":envelope(Payload::Long(9007199254740993))}]);
+    let original = completion(&old, commands.clone());
+    for (field, value) in [
+        ("lease_owner", json!("wrong")),
+        ("workflow_task_attempt", json!(99)),
+    ] {
+        let mut wrong = original.clone();
+        wrong[field] = value;
+        assert_eq!(
+            request(&b, "POST", &complete_path, wrong).await.0,
+            StatusCode::CONFLICT
+        );
+    }
+    let mut wrong_update = original.clone();
+    wrong_update["commands"][0]["update_id"] = json!("another-update");
+    assert_eq!(
+        request(&a, "POST", &complete_path, wrong_update).await.1["reason"],
+        "update_task_mismatch"
+    );
+    let mut malformed = original.clone();
+    malformed["commands"][0]["result"]["blob"] = json!("not-avro");
+    assert_eq!(
+        request(&a, "POST", &complete_path, malformed).await.1["reason"],
+        "invalid_update_result"
+    );
+    assert_eq!(
+        request(
+            &a,
+            "POST",
+            &complete_path,
+            completion(
+                &old,
+                json!([{"type":"complete_workflow","result":envelope(Payload::Null)}])
+            )
+        )
+        .await
+        .1["reason"],
+        "update_task_mismatch"
+    );
+    assert_eq!(
+        request(&a, "GET", &history_path, Value::Null).await.1,
+        before
+    );
+    database.set_time(false, "2000-01-01T00:00:00Z").await;
+    assert_eq!(
+        request(&a, "POST", &complete_path, original.clone())
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    let recovered = poll(&b, "update-b", "workflow").await;
+    assert_eq!(recovered["task_id"], old["task_id"]);
+    assert_eq!(recovered["workflow_update_id"], old["workflow_update_id"]);
+    assert_eq!(recovered["workflow_task_attempt"], 2);
+    assert_eq!(recovered["history_events"], old["history_events"]);
+    let current = completion(&recovered, commands);
+    // A registration that drops the update handler cannot commit its old lease.
+    register(&b, "update-b", json!(["echo"]), json!([])).await;
+    assert_eq!(
+        request(&b, "POST", &complete_path, current.clone()).await.1["reason"],
+        "update_worker_unavailable"
+    );
+    update_worker(&b, "update-b").await;
+    duplicate["wait_for"] = json!("completed");
+    duplicate["wait_timeout_seconds"] = json!(5);
+    let waiting = {
+        let app = a.clone();
+        let path = path.clone();
+        let body = duplicate.clone();
+        tokio::spawn(async move { request(&app, "POST", &path, body).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    assert!(
+        !waiting.is_finished(),
+        "completion client is waiting on the original accepted update"
+    );
+    let completed = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        request(&b, "POST", &complete_path, current.clone()),
+    )
+    .await
+    .expect("waiting update must release its database pool");
+    assert_eq!(completed.0, StatusCode::OK, "{}", completed.1);
+    let receipt = waiting.await.unwrap();
+    assert_eq!(receipt.0, StatusCode::OK, "{}", receipt.1);
+    assert_eq!(
+        receipt.1["result_envelope"],
+        envelope(Payload::Long(9007199254740993))
+    );
+    assert_eq!(receipt.1["update_id"], admitted.1["update_id"]);
+    assert_eq!(receipt.1["workflow_sequence"], 2);
+    assert_eq!(
+        request(&b, "POST", &complete_path, current).await.1["recorded"],
+        false
+    );
+    assert_eq!(
+        request(&a, "POST", &complete_path, original).await.0,
+        StatusCode::CONFLICT
+    );
+    let completed_history = request(&a, "GET", &history_path, Value::Null).await.1;
+    assert_eq!(
+        completed_history["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| event["event_type"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "StartAccepted",
+            "WorkflowStarted",
+            "SignalWaitOpened",
+            "UpdateAccepted",
+            "UpdateApplied",
+            "UpdateCompleted",
+            "MessageCursorAdvanced"
+        ]
+    );
+    assert_eq!(
+        completed_history["events"][3]["payload"]["update_id"],
+        admitted.1["update_id"]
+    );
+    assert_eq!(
+        completed_history["events"][5]["payload"]["result"],
+        envelope(Payload::Long(9007199254740993))
+    );
+    assert_eq!(
+        request(&a, "GET", "/api/workflows/durable-update", Value::Null)
+            .await
+            .1["status"],
+        "waiting"
+    );
+    assert_eq!(
+        request(
+            &b,
+            "POST",
+            "/api/workflows/durable-update/signal/finish",
+            json!({"input":envelope(Payload::Array(vec![Payload::Long(1)]))})
+        )
+        .await
+        .0,
+        StatusCode::ACCEPTED
+    );
+    let finish = poll(&b, "update-b", "workflow").await;
+    assert!(finish["workflow_update_id"].is_null());
+    let finish_path = format!(
+        "/api/worker/workflow-tasks/{}/complete",
+        finish["task_id"].as_str().unwrap()
+    );
+    assert_eq!(request(&b, "POST", &finish_path, completion(&finish,
+        json!([{"type":"complete_workflow","result":envelope(Payload::Long(9007199254740993))}]))).await.0, StatusCode::OK);
+    first.close().await;
+    second.close().await;
+    let reopened = database.open().await.unwrap();
+    let app = router(reopened.clone());
+    assert_eq!(
+        request(&app, "POST", &path, duplicate).await.1["result_envelope"],
+        envelope(Payload::Long(9007199254740993))
+    );
+    assert_eq!(
+        request(&app, "GET", "/api/workflows/durable-update", Value::Null)
+            .await
+            .1["status"],
+        "completed"
+    );
+    reopened.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn updates_bound_durable_inventory_and_preserve_accepted_work_after_wait_timeout() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    update_worker(&app, "update-worker").await;
+    let started = start(&app, "bounded-updates").await;
+    open_update_wait(&app, "update-worker").await;
+    let path = "/api/workflows/bounded-updates/update/set";
+    for index in 0..64 {
+        let body = json!({"input":envelope(Payload::Array(vec![Payload::Long(index)])),
+            "request_id":format!("bounded:{index}"),"wait_for":"completed","wait_timeout_seconds":0});
+        let receipt = request(&app, "POST", path, body).await;
+        assert_eq!(receipt.0, StatusCode::ACCEPTED, "{}", receipt.1);
+        assert_eq!(receipt.1["wait_timed_out"], true);
+        let task = poll(&app, "update-worker", "workflow").await;
+        assert_eq!(task["workflow_update_id"], receipt.1["update_id"]);
+        let complete_path = format!(
+            "/api/worker/workflow-tasks/{}/complete",
+            task["task_id"].as_str().unwrap()
+        );
+        let result = request(&app, "POST", &complete_path, completion(&task, json!([{
+            "type":"complete_update","update_id":receipt.1["update_id"],"result":envelope(Payload::Long(index))
+        }]))).await;
+        assert_eq!(result.0, StatusCode::OK, "{}", result.1);
+    }
+    let history_path = format!(
+        "/api/workflows/bounded-updates/runs/{}/history?page_size=1000",
+        started["run_id"].as_str().unwrap()
+    );
+    let before = request(&app, "GET", &history_path, Value::Null).await.1;
+    assert_eq!(
+        before["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["event_type"] == "UpdateCompleted")
+            .count(),
+        64
+    );
+    let over_budget = request(&app, "POST", path, json!({
+        "input":envelope(Payload::Array(vec![Payload::Long(65)])),"wait_for":"accepted","request_id":"over-budget"
+    })).await;
+    assert_eq!(over_budget.0, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(over_budget.1["reason"], "update_inventory_exceeds_budget");
+    assert_eq!(
+        request(&app, "GET", &history_path, Value::Null).await.1,
+        before
+    );
+    let duplicate = request(&app, "POST", path, json!({
+        "input":envelope(Payload::Array(vec![Payload::Long(999)])),"request_id":"bounded:0","wait_for":"completed"
+    })).await;
+    assert_eq!(duplicate.0, StatusCode::OK, "{}", duplicate.1);
+    assert_eq!(duplicate.1["result_envelope"], envelope(Payload::Long(0)));
+    assert_eq!(
+        request(&app, "GET", &history_path, Value::Null).await.1,
+        before
+    );
+    runtime.close().await;
+    database.remove().await;
+}
+
 async fn query_worker(app: &Router, worker: &str) {
     let (status, body) = request(app,"POST","/api/worker/register",json!({
         "worker_id":worker,"task_queue":"test","runtime":"php","supported_workflow_types":["echo"],

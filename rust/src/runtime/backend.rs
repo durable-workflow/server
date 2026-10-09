@@ -34,10 +34,12 @@ pub(super) trait Backend: Database {
     fn string(row: &Self::Row, field: &str) -> Result<String>;
     fn optional_string(row: &Self::Row, field: &str) -> Result<Option<String>>;
     fn number(row: &Self::Row, field: &str) -> Result<i64>;
+    fn optional_number(row: &Self::Row, field: &str) -> Result<Option<i64>>;
     fn affected(result: Self::QueryResult) -> u64;
     fn instant(row: &Self::Row, field: &str) -> Result<DateTime<Utc>>;
     fn optional_instant(row: &Self::Row, field: &str) -> Result<Option<DateTime<Utc>>>;
     fn document_row(row: &Self::Row, field: &str) -> Result<Value>;
+    fn optional_document_row(row: &Self::Row, field: &str) -> Result<Option<Value>>;
     fn begin(pool: &Pool<Self>) -> impl Future<Output = Result<Transaction<'static, Self>>> + Send;
     fn history_ready(pool: &Pool<Self>) -> impl Future<Output = bool> + Send;
 }
@@ -119,6 +121,9 @@ DELETE FROM dw_poll_receipts WHERE (namespace,worker_id,kind,request_id) IN (
     fn number(row: &Self::Row, field: &str) -> Result<i64> {
         Ok(row.try_get(field)?)
     }
+    fn optional_number(row: &Self::Row, field: &str) -> Result<Option<i64>> {
+        Ok(row.try_get(field)?)
+    }
     fn affected(result: Self::QueryResult) -> u64 {
         result.rows_affected()
     }
@@ -132,6 +137,12 @@ DELETE FROM dw_poll_receipts WHERE (namespace,worker_id,kind,request_id) IN (
     }
     fn document_row(row: &Self::Row, field: &str) -> Result<Value> {
         Ok(serde_json::from_str(&row.try_get::<String, _>(field)?)?)
+    }
+    fn optional_document_row(row: &Self::Row, field: &str) -> Result<Option<Value>> {
+        match row.try_get::<Option<String>, _>(field)? {
+            Some(value) => Ok(Some(serde_json::from_str(&value)?)),
+            None => Ok(None),
+        }
     }
     async fn begin(pool: &Pool<Self>) -> Result<Transaction<'static, Self>> {
         Ok(pool.begin_with("BEGIN IMMEDIATE").await?)
@@ -182,6 +193,15 @@ impl Backend for Postgres {
         }
         Ok(i64::from(row.try_get::<i16, _>(field)?))
     }
+    fn optional_number(row: &Self::Row, field: &str) -> Result<Option<i64>> {
+        if let Ok(number) = row.try_get::<Option<i64>, _>(field) {
+            return Ok(number);
+        }
+        if let Ok(number) = row.try_get::<Option<i32>, _>(field) {
+            return Ok(number.map(i64::from));
+        }
+        Ok(row.try_get::<Option<i16>, _>(field)?.map(i64::from))
+    }
     fn instant(row: &Self::Row, field: &str) -> Result<DateTime<Utc>> {
         Ok(row.try_get::<NaiveDateTime, _>(field)?.and_utc())
     }
@@ -192,6 +212,11 @@ impl Backend for Postgres {
     }
     fn document_row(row: &Self::Row, field: &str) -> Result<Value> {
         Ok(row.try_get::<Json<Value>, _>(field)?.0)
+    }
+    fn optional_document_row(row: &Self::Row, field: &str) -> Result<Option<Value>> {
+        Ok(row
+            .try_get::<Option<Json<Value>>, _>(field)?
+            .map(|value| value.0))
     }
     async fn begin(pool: &Pool<Self>) -> Result<Transaction<'static, Self>> {
         let mut tx = pool.begin().await?;
@@ -274,6 +299,21 @@ impl Backend for MySql {
             )
         })
     }
+    fn optional_number(row: &Self::Row, field: &str) -> Result<Option<i64>> {
+        if let Ok(number) = row.try_get::<Option<i64>, _>(field) {
+            return Ok(number);
+        }
+        row.try_get::<Option<u64>, _>(field)?
+            .map(|number| {
+                i64::try_from(number).map_err(|_| {
+                    super::refuse(
+                        axum::http::StatusCode::CONFLICT,
+                        "unsupported_stored_integer",
+                    )
+                })
+            })
+            .transpose()
+    }
     fn affected(result: Self::QueryResult) -> u64 {
         result.rows_affected()
     }
@@ -285,6 +325,11 @@ impl Backend for MySql {
     }
     fn document_row(row: &Self::Row, field: &str) -> Result<Value> {
         Ok(row.try_get::<Json<Value>, _>(field)?.0)
+    }
+    fn optional_document_row(row: &Self::Row, field: &str) -> Result<Option<Value>> {
+        Ok(row
+            .try_get::<Option<Json<Value>>, _>(field)?
+            .map(|value| value.0))
     }
     async fn begin(pool: &Pool<Self>) -> Result<Transaction<'static, Self>> {
         let mut tx = pool.begin().await?;

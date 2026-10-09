@@ -24,6 +24,14 @@ pub fn router(runtime: Runtime) -> Router {
             post(query_current),
         )
         .route(
+            "/api/workflows/{workflow_id}/update/{update_name}",
+            post(update_current),
+        )
+        .route(
+            "/api/workflows/{workflow_id}/runs/{run_id}/update/{update_name}",
+            post(update_run),
+        )
+        .route(
             "/api/workflows/{workflow_id}/runs/{run_id}/query/{query_name}",
             post(query_run),
         )
@@ -186,6 +194,28 @@ async fn signal_current(
         StatusCode::ACCEPTED,
         Json(runtime.signal(&workflow_id, None, &name, body).await?),
     ))
+}
+
+async fn update_current(
+    State(runtime): State<Runtime>,
+    Path((workflow_id, name)): Path<(String, String)>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    let (status, result) = runtime
+        .update_workflow(&workflow_id, None, &name, body)
+        .await?;
+    Ok((status, Json(result)))
+}
+
+async fn update_run(
+    State(runtime): State<Runtime>,
+    Path((workflow_id, run_id, name)): Path<(String, String, String)>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    let (status, result) = runtime
+        .update_workflow(&workflow_id, Some(&run_id), &name, body)
+        .await?;
+    Ok((status, Json(result)))
 }
 
 async fn signal_run(

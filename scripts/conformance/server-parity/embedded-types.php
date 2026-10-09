@@ -8,6 +8,7 @@ use Workflow\V2\Activity;
 use Workflow\V2\Attributes\Type;
 use Workflow\V2\Attributes\Signal;
 use Workflow\QueryMethod;
+use Workflow\UpdateMethod;
 use Workflow\V2\Workflow;
 
 use function Workflow\V2\activity;
@@ -20,6 +21,28 @@ final class EchoWorkflow extends Workflow
     public function handle(array $value): array
     {
         return $value;
+    }
+}
+
+#[Type('parity.v1.updates')]
+#[Signal('payload', [['name' => 'value', 'type' => 'array']])]
+final class UpdatesWorkflow extends Workflow
+{
+    private array $values = [];
+
+    public function handle(array $value, int $target): array
+    {
+        signal('payload');
+
+        return ['values' => $this->values];
+    }
+
+    #[UpdateMethod('set_payload')]
+    public function setPayload(array $value): array
+    {
+        $this->values[] = $value;
+
+        return ['value' => $value, 'applied' => count($this->values)];
     }
 }
 

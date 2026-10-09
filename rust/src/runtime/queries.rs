@@ -38,6 +38,7 @@ pub(super) async fn decode(
     semaphore: Arc<Semaphore>,
     blob: String,
     arguments: bool,
+    invalid: &'static str,
 ) -> Result<Vec<crate::codec::Value>> {
     let permit = semaphore
         .acquire_owned()
@@ -45,11 +46,6 @@ pub(super) async fn decode(
         .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "query_codec_unavailable"))?;
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        let invalid = if arguments {
-            "invalid_query_arguments"
-        } else {
-            "invalid_query_result"
-        };
         let codec = crate::codec::ValueCodec::new()
             .map_err(|_| refuse(StatusCode::UNPROCESSABLE_ENTITY, invalid))?;
         let value = codec

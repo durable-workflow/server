@@ -287,3 +287,92 @@ for (const [name, corrupt] of [
     assert.throws(() => checkObservation(timerFixture, raw, 'test-one-activity'));
   });
 }
+
+const updateFixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/state-updates.json', import.meta.url)));
+function updateObservation(mode = 'http') {
+  const signal = signalObservation(mode);
+  const raw = structuredClone(signal);
+  raw.workflow_type = updateFixture.workflow_type;
+  raw.input = [updateFixture.input, 1];
+  raw.typed_input = {type: 'list', value: [updateFixture.typed_value, {type: 'int64', value: '1'}]};
+  raw.output = updateFixture.output;
+  raw.typed_output = updateFixture.typed_output;
+  raw.events = signal.events.slice(0, 3);
+  raw.events[0].payload.workflow_type = raw.events[1].payload.workflow_type = updateFixture.workflow_type;
+  raw.events[1].payload.declared_updates = ['set_payload'];
+  raw.updates = [];
+  for (const [index, value] of updateFixture.update_values.entries()) {
+    const arguments_ = {type: 'list', value: [updateFixture.typed_update_values[index]]};
+    const fields = {update_id: `update-${index}`, workflow_command_id: `update-command-${index}`,
+      workflow_instance_id: raw.workflow_id, workflow_run_id: raw.run_id, update_name: 'set_payload'};
+    raw.events.push({event_type: 'UpdateAccepted', payload: {...fields, command: {id: fields.workflow_command_id, sequence: index + 2, message_sequence: index + 1}},
+      decoded: {arguments: [value]}, typed_decoded: {arguments: arguments_}});
+    const snapshot = structuredClone(raw.events);
+    const result = {value, applied: index + 1};
+    const typedResult = {type: 'map', value: {value: updateFixture.typed_update_values[index], applied: {type: 'int64', value: String(index + 1)}}};
+    const sequence = mode === 'embedded' ? 1 : index + 2;
+    raw.events.push(
+      {event_type: 'UpdateApplied', payload: {...fields, sequence}, decoded: {arguments: [value]}, typed_decoded: {arguments: arguments_}},
+      {event_type: 'UpdateCompleted', payload: {...fields, sequence}, decoded: {result}, typed_decoded: {result: typedResult}},
+      {event_type: 'MessageCursorAdvanced', payload: {stream_key: `instance:${raw.workflow_id}`, previous_position: index, new_position: index + 1}, decoded: {}, typed_decoded: {}},
+    );
+    const receipt = {accepted: true, command_id: fields.workflow_command_id, update_id: fields.update_id,
+      workflow_id: raw.workflow_id, run_id: raw.run_id, update_name: 'set_payload', update_status: 'accepted'};
+    raw.updates.push({name: 'set_payload', request_id: `${raw.workflow_id}:update:${index}`,
+      arguments: [value], typed_arguments: arguments_, before: {status: 'waiting', run_id: raw.run_id},
+      accepted: receipt, duplicate_accepted: structuredClone(receipt),
+      history_after_acceptance: snapshot, history_after_duplicate: structuredClone(snapshot),
+      history_before_result: structuredClone(raw.events), history_after_result: structuredClone(raw.events),
+      result, typed_result: typedResult,
+      ...(mode === 'http' ? {worker: {arguments: [value], typed_arguments: arguments_, task: {
+        task_id: `update-task-${index}`, workflow_update_id: fields.update_id,
+        workflow_id: raw.workflow_id, run_id: raw.run_id, workflow_type: raw.workflow_type,
+        workflow_task_attempt: 1, lease_owner: 'actual-worker', history_events: snapshot}}} : {})});
+  }
+  const received = structuredClone(signal.events[3]);
+  received.payload.command.sequence = 4;
+  received.payload.command.message_sequence = 3;
+  received.decoded.arguments = [updateFixture.signal_value];
+  received.typed_decoded.arguments = {type: 'list', value: [updateFixture.typed_signal_value]};
+  const applied = structuredClone(signal.events[5]);
+  applied.decoded.value = updateFixture.signal_value;
+  applied.typed_decoded.value = updateFixture.typed_signal_value;
+  raw.signal_deliveries = [signal.signal_deliveries[0]];
+  raw.events.push(received,
+    {event_type: 'MessageCursorAdvanced', payload: {stream_key: `instance:${raw.workflow_id}`, previous_position: 2, new_position: 3}, decoded: {}, typed_decoded: {}},
+    applied,
+    ...(mode === 'http' ? [signal.events[6]] : []),
+    {event_type: 'WorkflowCompleted', payload: {}, decoded: {output: updateFixture.output}, typed_decoded: {output: updateFixture.typed_output}},
+  );
+  raw.events = raw.events.map((event, index) => ({...event, sequence: index + 1, timestamp: '2026-01-01T00:00:01Z'}));
+  return structuredClone(raw);
+}
+
+test('updates retain original identities/results through duplicates and mutate workflow state in order', () => {
+  assert.deepStrictEqual(checkObservation(updateFixture, updateObservation(), 'test-one-activity'),
+    checkObservation(updateFixture, updateObservation('embedded'), 'test-one-activity'));
+});
+for (const [name, corrupt] of [
+  ['missing update result', raw => {raw.updates.pop();}],
+  ['duplicate update changes its command', raw => {raw.updates[0].duplicate_accepted.command_id = 'other';}],
+  ['duplicate update changes its identity', raw => {raw.updates[0].duplicate_accepted.update_id = 'other';}],
+  ['pending duplicate appends history', raw => {raw.updates[0].history_after_duplicate.push(raw.events[3]);}],
+  ['completed duplicate appends history', raw => {raw.updates[0].history_after_result.push(raw.events[3]);}],
+  ['update result ignores state', raw => {raw.updates[1].result.applied = 1;}],
+  ['update replaces exact int64 argument', raw => {raw.updates[0].typed_arguments.value[0].value.number.type = 'double';}],
+  ['update replaces exact int64 result', raw => {raw.updates[0].typed_result.value.value.value.number.type = 'double';}],
+  ['update history targets another run', raw => {raw.events[4].payload.workflow_run_id = 'other';}],
+  ['update completion loses original identity', raw => {raw.events[5].payload.update_id = 'other';}],
+  ['update completion changes callback position', raw => {raw.events[5].payload.sequence++;}],
+  ['update advances cursor twice', raw => {raw.events[6].payload.new_position++;}],
+  ['update worker executes another update', raw => {raw.updates[0].worker.task.workflow_update_id = 'other';}],
+  ['update worker sees stale state', raw => {raw.updates[1].worker.task.history_events = raw.updates[0].worker.task.history_events;}],
+  ['finishing signal loses update cursor order', raw => {raw.events[12].payload.previous_position = 0;}],
+  ['workflow forgets first update', raw => {raw.output.values.shift();}],
+]) {
+  test(`refuses ${name}`, () => {
+    const raw = updateObservation();
+    corrupt(raw);
+    assert.throws(() => checkObservation(updateFixture, raw, 'test-one-activity'));
+  });
+}

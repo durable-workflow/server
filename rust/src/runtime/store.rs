@@ -9,7 +9,7 @@ use tokio::sync::{Notify, Semaphore};
 use ulid::Ulid;
 
 const LEASE_SECONDS: i64 = 30;
-pub(super) struct PreparedSignal {
+pub(super) struct PreparedControlArguments {
     pub(super) arguments: String,
     pub(super) values: Vec<crate::codec::Value>,
     pub(super) value: String,
@@ -22,10 +22,10 @@ pub(super) struct Store<DB: Backend> {
     pub(super) pool: Pool<DB>,
     pub(super) wake: Arc<Notify>,
 }
-fn id() -> String {
+pub(super) fn id() -> String {
     Ulid::new().to_string()
 }
-fn now() -> DateTime<Utc> {
+pub(super) fn now() -> DateTime<Utc> {
     DateTime::from_timestamp_millis(Utc::now().timestamp_millis()).expect("current timestamp")
 }
 fn after(seconds: i64) -> DateTime<Utc> {
@@ -81,6 +81,7 @@ where
             "SELECT task_id,receipt FROM dw_task_completions LIMIT 0",
             "SELECT request_id,task_id,attempt,response,expires_at FROM dw_poll_receipts LIMIT 0",
             "SELECT value,expiration FROM dw_query_cache LIMIT 0",
+            "SELECT id,workflow_command_id,workflow_run_id,update_name,status,arguments,result FROM workflow_updates LIMIT 0",
         ] {
             if Self::query(query).execute(&self.pool).await.is_err() {
                 return false;
@@ -189,6 +190,9 @@ where
                         ("signal_contracts", "declared_signal_contracts"),
                         ("queries", "declared_queries"),
                         ("query_contracts", "declared_query_contracts"),
+                        ("updates", "declared_updates"),
+                        ("update_contracts", "declared_update_contracts"),
+                        ("update_validators", "declared_update_validators"),
                     ] {
                         started[target] = contract[source].clone();
                     }
@@ -267,7 +271,7 @@ where
         run_id: Option<&str>,
         name: &str,
         body: Value,
-        prepared: PreparedSignal,
+        prepared: PreparedControlArguments,
     ) -> Result<Value> {
         reject_fields(&body, &["input", "request_id"])?;
         if name.trim().is_empty() || name.len() > 255 {
@@ -381,7 +385,10 @@ where
         Ok(activities.max(timers).max(wait_sequence))
     }
 
-    async fn open_wait(tx: &mut Transaction<'_, DB>, run_id: &str) -> Result<Option<Value>> {
+    pub(super) async fn open_wait(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+    ) -> Result<Option<Value>> {
         let Some(row) = Self::query("SELECT sequence,event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('SignalWaitOpened','ConditionWaitOpened') ORDER BY sequence DESC LIMIT 1")
             .bind(run_id).fetch_optional(&mut **tx).await? else { return Ok(None); };
         let resolution = if DB::string(&row, "event_type")? == "SignalWaitOpened" {
@@ -451,10 +458,11 @@ where
         if direct && (wait["signal_name"] != name || wait["signal_wait_id"] != wait_id) {
             return Err(refuse(StatusCode::CONFLICT, "signal_wait_mismatch"));
         }
-        let prepared = prepare_signal(
+        let prepared = prepare_control_arguments(
             signal_codec,
             name.clone(),
             DB::string(&signal, "arguments")?,
+            "invalid_signal_arguments",
         )
         .await?;
         let command_id = DB::string(&signal, "workflow_command_id")?;
@@ -640,7 +648,7 @@ where
         let worker_id = text(body, "worker_id")?;
         let queue = text(body, "task_queue")?;
         let mut tx = self.begin().await?;
-        let worker = Self::query("SELECT supported_workflow_types,supported_activity_types,task_queue FROM workflow_worker_registrations WHERE namespace='default' AND worker_id=$1")
+        let worker = Self::query("SELECT supported_workflow_types,supported_activity_types,task_queue,workflow_command_contracts,capabilities,status,last_heartbeat_at FROM workflow_worker_registrations WHERE namespace='default' AND worker_id=$1")
             .bind(worker_id).fetch_optional(&mut *tx).await?
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "worker_not_registered"))?;
         if DB::string(&worker, "task_queue")? != queue {
@@ -687,6 +695,23 @@ where
             DB::optional_instant(&task, "available_at")?;
             DB::optional_instant(&task, "lease_expires_at")?;
             let run_id = DB::string(&task, "workflow_run_id")?;
+            let task_payload = DB::document_row(&task, "payload")?;
+            if kind == "workflow"
+                && let Some(update_id) = task_payload["workflow_update_id"].as_str()
+            {
+                let update = Self::query("SELECT update_name FROM workflow_updates WHERE id=$1 AND workflow_run_id=$2 AND status='accepted'")
+                    .bind(update_id).bind(&run_id).fetch_optional(&mut *tx).await?;
+                let Some(update) = update else {
+                    continue;
+                };
+                if !Self::update_worker_supported(
+                    &worker,
+                    &DB::string(&task, "workflow_type")?,
+                    &DB::string(&update, "update_name")?,
+                )? {
+                    continue;
+                }
+            }
             let activity = if kind == "activity" {
                 let payload: Value = DB::document_row(&task, "payload")?;
                 Self::query("SELECT * FROM activity_executions WHERE id=$1 AND workflow_run_id=$2")
@@ -754,6 +779,9 @@ where
             } else {
                 claim["workflow_task_attempt"] = json!(attempt);
                 claim["arguments"] = wire(&DB::string(&run, "arguments")?);
+                if let Some(update_id) = task_payload["workflow_update_id"].as_str() {
+                    claim["workflow_update_id"] = json!(update_id);
+                }
                 claim["sticky_replay_mode"] = json!("cold_replay");
                 let page_size = body["history_page_size"].as_i64().unwrap_or(100);
                 let (events, next) =
@@ -856,6 +884,11 @@ where
                     reject_fields(command, &["type", "signal_name"])?;
                     text(command, "signal_name")?;
                 }
+                "complete_update" if commands.len() == 1 => {
+                    reject_fields(command, &["type", "update_id", "result"])?;
+                    text(command, "update_id")?;
+                    envelope(command, "result")?;
+                }
                 _ => {
                     return Err(refuse(
                         StatusCode::UNPROCESSABLE_ENTITY,
@@ -878,10 +911,24 @@ where
         Self::fence(&task, &body)?;
         let run_id = DB::string(&task, "workflow_run_id")?;
         let run = Self::active_run(&mut tx, &run_id).await?;
+        let task_payload = DB::document_row(&task, "payload")?;
+        let update_id = task_payload["workflow_update_id"].as_str();
+        if commands
+            .iter()
+            .any(|command| command["type"] == "complete_update")
+            != update_id.is_some()
+            || update_id.is_some_and(|update_id| {
+                commands.len() != 1 || commands[0]["update_id"] != update_id
+            })
+        {
+            return Err(refuse(StatusCode::CONFLICT, "update_task_mismatch"));
+        }
         let mut sequence = Self::authored_sequence(&mut tx, &run_id).await?;
         Self::apply_task_signal(&mut tx, &run_id, task_id, &task, signal_codec).await?;
         for command in commands {
-            if command["type"] == "schedule_activity" {
+            if command["type"] == "complete_update" {
+                Self::apply_update(&mut tx, &run, &task, command, sequence + 1).await?;
+            } else if command["type"] == "schedule_activity" {
                 sequence += 1;
                 let activity_id = id();
                 let queue = command
@@ -1220,7 +1267,7 @@ where
         Ok(())
     }
 
-    async fn active_run(tx: &mut Transaction<'_, DB>, run_id: &str) -> Result<DB::Row> {
+    pub(super) async fn active_run(tx: &mut Transaction<'_, DB>, run_id: &str) -> Result<DB::Row> {
         let run = Self::query("SELECT * FROM workflow_runs WHERE id=$1")
             .bind(run_id)
             .fetch_one(&mut **tx)
@@ -1236,7 +1283,7 @@ where
         Ok(run)
     }
 
-    async fn create_task(
+    pub(super) async fn create_task(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
         queue: &str,
@@ -1249,7 +1296,7 @@ where
         Ok(task_id)
     }
 
-    async fn append(
+    pub(super) async fn append(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
         event_type: &str,
@@ -1353,11 +1400,12 @@ fn positive_seconds(body: &Value, field: &str, default: i64) -> Result<i64> {
         .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_timeout"))
 }
 
-pub(super) async fn prepare_signal(
+pub(super) async fn prepare_control_arguments(
     semaphore: Arc<Semaphore>,
     name: String,
     arguments: String,
-) -> Result<PreparedSignal> {
+    invalid: &'static str,
+) -> Result<PreparedControlArguments> {
     let permit = semaphore
         .acquire_owned()
         .await
@@ -1367,15 +1415,12 @@ pub(super) async fn prepare_signal(
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let codec = crate::codec::ValueCodec::new()
-            .map_err(|_| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_signal_arguments"))?;
+            .map_err(|_| refuse(StatusCode::UNPROCESSABLE_ENTITY, invalid))?;
         let crate::codec::Value::Array(values) = codec
             .decode(&arguments)
-            .map_err(|_| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_signal_arguments"))?
+            .map_err(|_| refuse(StatusCode::UNPROCESSABLE_ENTITY, invalid))?
         else {
-            return Err(refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "invalid_signal_arguments",
-            ));
+            return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, invalid));
         };
         let value = match values.as_slice() {
             [] => crate::codec::Value::Null,
@@ -1393,15 +1438,15 @@ pub(super) async fn prepare_signal(
                 crate::codec::Value::Array(vec![]),
             ),
         ]));
-        Ok(PreparedSignal {
+        Ok(PreparedControlArguments {
             arguments,
             values,
-            value: codec.encode(&value).map_err(|_| {
-                refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_signal_arguments")
-            })?,
-            command: codec.encode(&command).map_err(|_| {
-                refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_signal_arguments")
-            })?,
+            value: codec
+                .encode(&value)
+                .map_err(|_| refuse(StatusCode::UNPROCESSABLE_ENTITY, invalid))?,
+            command: codec
+                .encode(&command)
+                .map_err(|_| refuse(StatusCode::UNPROCESSABLE_ENTITY, invalid))?,
         })
     })
     .await
@@ -1474,7 +1519,7 @@ fn timer_deadline(command: &Value) -> Result<DateTime<Utc>> {
         .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_timer_delay"))
 }
 
-fn reject_fields(body: &Value, allowed: &[&str]) -> Result<()> {
+pub(super) fn reject_fields(body: &Value, allowed: &[&str]) -> Result<()> {
     if body
         .as_object()
         .is_none_or(|map| map.keys().any(|key| !allowed.contains(&key.as_str())))
@@ -1491,5 +1536,5 @@ pub(crate) fn capabilities() -> Value {
     json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "open_condition_wait", "open_signal_wait", "complete_workflow"],
         "workflow_memo_updates": false, "cooperative_cancellation": false, "prepared_local_activities": false,
         "worker_sessions": false, "sticky_execution": false, "local_activities": false, "message_streams": false,
-        "workflow_updates": false, "query_tasks": true, "query_task_poll_request_idempotency": false})
+        "workflow_updates": true, "query_tasks": true, "query_task_poll_request_idempotency": false})
 }

@@ -27,6 +27,18 @@ docker run --rm --user="$(id -u):$(id -g)" --cpus=2 --memory=2g --memory-swap=2g
 The pinned development image above is amd64. Supported release architectures,
 CPU-heavy async deadlines, the complete database/fixture matrix and safe upgrade
 remain acceptance gates in the [port log](../docs/rust-server-port.md).
+The development update slice supports original declarations and primitive
+positional contracts, immutable request-ID receipts, routed SDK update tasks,
+normal lease/attempt and registration fences, and durable exact Avro results.
+Updates require a quiescent committed wait; busy workflow/control queues are
+refused explicitly. Each run is bounded to 64 updates, arguments to 64 KiB,
+results to 256 KiB and completion waits to 30 seconds. A timed-out wait leaves
+the accepted update durable. Completed request retries return the original
+result and cannot change arguments or append history. Validators, failed update
+tasks, concurrent queued routing and complete update compatibility remain
+unqualified; shared database qualification is required before merging this slice.
+The existing development schema remains version 3.
+
 Kache remains an optional task-scoped experiment, with an explicit disk budget;
 no global Cargo wrapper or cleanup daemon is installed.
 The [first build observations](build-observations-2026-10-09.md) record clean,
