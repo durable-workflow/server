@@ -393,8 +393,26 @@ PHP and native HTTP cases cover workflow/activity tasks, original run identities
 duplicate activity completion and the final durable workflow outcome. Exact-head
 hosted qualification is recorded in the PR. This correction precedes read-only upgrade
 preflight; it does not enable database takeover.
+
 The existing activity-completion contract permits a committed retry to return
 `409 stale_attempt` with completed statuses; the PHP fixture checks that response.
 Native receipts currently return `200` with `recorded=false` for an identical
 retry. Both cases check one durable outcome; complete completion-error envelope
 parity remains part of the wider #325 qualification.
+
+Final checks of the pending-task correction caught `SQLITE_BUSY` while three
+native runtimes opened one fresh SQLite file, before its HTTP case ran. The [startup
+correction in #337](https://github.com/durable-workflow/server/pull/337)
+retries only that transient database error, with at most three attempts;
+each repeats read-only ownership preflight and retains the existing lock limits.
+An unsuccessful bootstrap closes its pool and finishes rollback before retry.
+Other errors and ownership refusals return immediately. Ownership inspection
+checks all user objects, including view-only databases and names such as
+`sqlitex_customer_data`, and repeats the same
+empty/native ownership check under the initialization write lock before DDL.
+The concurrent-runtime fixture exercises sixteen independent fresh databases;
+three unknown-object refusal cases require unchanged file bytes and no WAL/SHM
+creation. Catalog inspection uses SQLite's literal internal-name prefix, so a
+SQL wildcard cannot hide user objects.
+Exact-head qualification is recorded in #337. Ordinary command execution and
+PHP takeover remain outside this startup correction.

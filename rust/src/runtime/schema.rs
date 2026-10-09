@@ -30,7 +30,7 @@ type Catalog = Vec<(String, String, String, String)>;
 static EXPECTED: OnceCell<Catalog> = OnceCell::const_new();
 
 async fn catalog(connection: &mut SqliteConnection) -> Result<Catalog> {
-    Ok(sqlx::query_as("SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY type,name")
+    Ok(sqlx::query_as("SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE sql IS NOT NULL AND name NOT GLOB 'sqlite_*' ORDER BY type,name")
         .fetch_all(connection).await?)
 }
 
@@ -211,23 +211,27 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_fresh_nodes_share_one_complete_migration() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("runtime.sqlite");
-        let path = path.to_str().unwrap();
-        let (a, b, c) = tokio::join!(
-            super::super::Runtime::open(path, "test-token".into()),
-            super::super::Runtime::open(path, "test-token".into()),
-            super::super::Runtime::open(path, "test-token".into()),
-        );
-        for result in [a, b, c] {
-            let runtime = result.unwrap();
-            assert!(runtime.schema_ready().await);
-            let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
-                .fetch_one(runtime.sqlite_pool())
-                .await
-                .unwrap();
-            assert_eq!(rows, 1);
-            runtime.close().await;
+        // Exercise fresh-file journal setup repeatedly; a single successful
+        // group does not expose the observed startup BUSY race reliably.
+        for _ in 0..16 {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("runtime.sqlite");
+            let path = path.to_str().unwrap();
+            let (a, b, c) = tokio::join!(
+                super::super::Runtime::open(path, "test-token".into()),
+                super::super::Runtime::open(path, "test-token".into()),
+                super::super::Runtime::open(path, "test-token".into()),
+            );
+            for result in [a, b, c] {
+                let runtime = result.unwrap();
+                assert!(runtime.schema_ready().await);
+                let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
+                    .fetch_one(runtime.sqlite_pool())
+                    .await
+                    .unwrap();
+                assert_eq!(rows, 1);
+                runtime.close().await;
+            }
         }
     }
 
@@ -241,6 +245,32 @@ mod tests {
         assert_eq!(std::fs::read(path).unwrap(), before);
         assert!(!path.with_extension("sqlite-wal").exists());
         assert!(!path.with_extension("sqlite-shm").exists());
+    }
+
+    #[tokio::test]
+    async fn user_objects_are_refused_before_journal_or_schema_mutation() {
+        // LIKE's underscore wildcard must not hide names such as sqlitex_*.
+        for statement in [
+            "CREATE VIEW acknowledged_view AS SELECT 'preserve-this' AS value",
+            "CREATE VIEW sqlitex_customer_view AS SELECT 'preserve-this' AS value",
+            "CREATE TABLE sqlitex_customer_data(id TEXT); INSERT INTO sqlitex_customer_data VALUES ('preserve-this')",
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("runtime.sqlite");
+            let mut connection = SqliteConnection::connect_with(
+                &SqliteConnectOptions::new()
+                    .filename(&path)
+                    .create_if_missing(true),
+            )
+            .await
+            .unwrap();
+            sqlx::raw_sql(statement)
+                .execute(&mut connection)
+                .await
+                .unwrap();
+            connection.close().await.unwrap();
+            assert_read_only_refusal(&path).await;
+        }
     }
 
     #[tokio::test]
