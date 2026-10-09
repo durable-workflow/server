@@ -256,15 +256,19 @@ where
         workflow_type: &str,
         name: &str,
     ) -> Result<bool> {
+        let capabilities =
+            DB::optional_document_row(worker, "capabilities")?.unwrap_or(Value::Null);
+        let contracts =
+            DB::optional_document_row(worker, "workflow_command_contracts")?.unwrap_or(Value::Null);
         Ok(DB::string(worker, "status")? == "active"
             && DB::instant(worker, "last_heartbeat_at")? > now() - chrono::Duration::seconds(60)
             && DB::document_row(worker, "supported_workflow_types")?
                 .as_array()
                 .is_some_and(|types| types.iter().any(|value| value == workflow_type))
-            && DB::document_row(worker, "capabilities")?
+            && capabilities
                 .as_array()
                 .is_some_and(|names| names.iter().any(|value| value == "workflow_updates"))
-            && DB::document_row(worker, "workflow_command_contracts")?[workflow_type]["updates"]
+            && contracts[workflow_type]["updates"]
                 .as_array()
                 .is_some_and(|names| names.iter().any(|value| value == name)))
     }
