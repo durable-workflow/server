@@ -290,7 +290,8 @@ impl Backend for MySql {
         let mut tx = pool.begin().await?;
         // InnoDB row locking releases on commit/rollback/process loss. This
         // first slice serializes transitions on its single ownership row.
-        sqlx::query("SELECT engine FROM dw_server_schema WHERE engine='rust-development' AND version=2 FOR UPDATE").fetch_one(&mut *tx).await?;
+        sqlx::query("SELECT engine FROM dw_server_schema WHERE engine='rust-development' AND version=? FOR UPDATE")
+            .bind(mysql::VERSION).fetch_one(&mut *tx).await?;
         Ok(tx)
     }
     async fn history_ready(pool: &Pool<Self>) -> bool {
