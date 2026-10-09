@@ -12,8 +12,8 @@ Builds used two Cargo jobs, a two-CPU container limit, 2 GiB memory with no extr
 swap, and development/test debug information disabled. The development host has
 four Intel i5-6500 cores, ext4 and SATA SSD storage. Dependencies were fetched
 before timing: each command was `cargo test --locked --offline --all-targets`.
-Network/download time, Docker startup and external host workload are not part of
-the shell's reported Cargo wall time. All four focused tests passed in the valid
+Network/download time and Docker startup are outside the shell's reported Cargo
+wall time. Other host work can affect that interval. All four focused tests passed in the valid
 measurement windows. The shared codec/HTTP/embedded checks qualify correctness
 separately; build timing is not a Server runtime performance result.
 
