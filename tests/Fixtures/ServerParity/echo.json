@@ -1,0 +1,9 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "echo",
+  "workflow_type": "parity.v1.echo",
+  "input": {"message": "hello λ", "count": 42, "enabled": true, "optional": null, "items": ["a", "b"]},
+  "activity": false,
+  "expected_events": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"],
+  "contract": "Control-plane Avro input/output and typed durable history; published workflow lifecycle contract."
+}

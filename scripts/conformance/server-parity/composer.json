@@ -1,0 +1,11 @@
+{
+  "name": "durable-workflow/server-parity-probe",
+  "description": "Published PHP SDK adapter for shared Server and embedded fixtures",
+  "type": "project",
+  "license": "MIT",
+  "require": {
+    "php": "^8.3",
+    "durable-workflow/sdk": "2.2.6"
+  },
+  "config": {"allow-plugins": false, "sort-packages": true}
+}

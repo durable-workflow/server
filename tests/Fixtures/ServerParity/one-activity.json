@@ -1,0 +1,9 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "one-activity",
+  "workflow_type": "parity.v1.one_activity",
+  "input": {"message": "activity λ", "count": 42, "enabled": true, "optional": null, "items": ["a", "b"]},
+  "activity": true,
+  "expected_events": ["StartAccepted", "WorkflowStarted", "ActivityScheduled", "ActivityStarted", "ActivityCompleted", "WorkflowCompleted"],
+  "contract": "DW Standard Workflow v1 event shape, with a small typed payload instead of the capacity workload's 1024-byte value. This is a correctness fixture, not a benchmark."
+}
