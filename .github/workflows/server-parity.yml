@@ -8,6 +8,7 @@ on:
       - scripts/conformance/server-parity/**
       - tests/Fixtures/ServerParity/**
       - tests/Unit/ServerParityRunnerTest.mjs
+      - rust/**
   push:
     branches: [main]
     paths:
@@ -16,12 +17,49 @@ on:
       - scripts/conformance/server-parity/**
       - tests/Fixtures/ServerParity/**
       - tests/Unit/ServerParityRunnerTest.mjs
+      - rust/**
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  rust-codec:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Execute official Rust codec and cross-decode with published PHP
+        run: |
+          set -euo pipefail
+          mkdir -p cargo-home rust-target parity-evidence
+          docker run --rm --user="$(id -u):$(id -g)" --cpus=2 --memory=2g --memory-swap=2g \
+            -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 \
+            -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" \
+            -v "$PWD/parity-evidence:/evidence" -w /source/rust --entrypoint bash \
+            rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 -c \
+            'cargo test --locked --all-targets > /evidence/rust-tests.txt && cargo run --locked --example codec-fixtures -- ../tests/Fixtures/ServerParity/Codec/v1.json > /evidence/rust-codec.json'
+          image=$(jq -r '.server.images["linux/amd64"]' tests/Fixtures/ServerParity/php-baseline.json)
+          docker run --rm --user="$(id -u):$(id -g)" --network=none --entrypoint php \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
+            scripts/conformance/server-parity/codec.php tests/Fixtures/ServerParity/Codec/v1.json \
+            /evidence/rust-codec.json > parity-evidence/php-codec.json
+          docker run --rm --user="$(id -u):$(id -g)" --network=none --cpus=2 --memory=2g --memory-swap=2g \
+            -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 \
+            -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" \
+            -v "$PWD/parity-evidence:/evidence" -w /source/rust \
+            rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            cargo run --locked --offline --example codec-fixtures -- \
+            ../tests/Fixtures/ServerParity/Codec/v1.json /evidence/php-codec.json > parity-evidence/cross-decode.json
+      - name: Retain codec evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: rust-server-codec
+          path: parity-evidence
+          retention-days: 90
+          if-no-files-found: error
+
   php-embedded:
     runs-on: ubuntu-latest
     timeout-minutes: 10

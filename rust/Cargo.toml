@@ -1,0 +1,22 @@
+[package]
+name = "durable-workflow-server"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+license = "MIT"
+description = "Development of the compatible Rust Durable Workflow Server"
+
+[dependencies]
+apache-avro = { version = "=0.22.0", default-features = false }
+base64 = "0.22"
+thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1"
+
+[profile.dev]
+debug = 0
+
+[profile.test]
+debug = 0

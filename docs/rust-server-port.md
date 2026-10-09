@@ -2,7 +2,8 @@
 
 [Server #325](https://github.com/durable-workflow/server/issues/325) owns the
 rewrite and its acceptance evidence. PHP remains the default published runtime.
-No Rust runtime, migration, performance improvement or cutover is qualified yet.
+The unpublished Rust crate has an Avro foundation; no Rust HTTP runtime,
+migration, performance improvement or cutover is qualified yet.
 
 ## Work order and current status
 
@@ -32,7 +33,7 @@ does not prove the remaining acceptance criteria.
 | --- | --- | --- |
 | Control plane, namespaces, authorization, errors, visibility | `resources/platform-protocol-specs/control-plane-api.openapi.yaml`, `docs/contracts/auth-composition.md`, `routes/api.php`, Feature control-plane/auth/namespace tests; namespace and principal-attribution published runners | Pending |
 | Worker registration, sessions, leases, fencing, retries, timeouts, heartbeats, routing, affinity, backpressure, versioning | Worker OpenAPI and stream AsyncAPI in `resources/platform-protocol-specs/`; Feature worker/activity/prepared-local/cancellation tests; activity, heartbeat and worker-versioning published runners | Pending |
-| Avro values, external task inputs/results, payload storage and reclamation | `docs/contracts/external-task-{input,result}.md`, `external-payload-storage.md`, external payload OpenAPI; `regression-corpus-policy.json`, `tests/Fixtures/CodecRegression/`, payload Feature tests | Echo slice only; external payloads pending |
+| Avro values, external task inputs/results, payload storage and reclamation | `docs/contracts/external-task-{input,result}.md`, `external-payload-storage.md`, external payload OpenAPI; `regression-corpus-policy.json`, `tests/Fixtures/CodecRegression/`, payload Feature tests | PHP/embedded echo slice; Rust codec foundation in #329, full ingress and external payloads pending |
 | Workflow lifecycle, duplicate commands, typed history, continuation, child workflows, cancellation, cleanup replay | Workflow lifecycle, migration, child-workflow and replay runners; Feature cooperative cancellation, history, migration and repeated-signal tests | Echo/activity slice only |
 | Timers, schedules, signals, queries, updates, search attributes, memo, sagas | Corresponding runners in `scripts/conformance/`, manifests in `static/platform-conformance/`; Sample App polyglot experiments | Pending |
 | Local activities, cancellation scopes, worker sessions, streams, service catalog/Nexus, bridge adapters, standalone activities, debugging and repair | `routes/api.php`, `docs/contracts/`, worker/control-plane specifications, corresponding Feature tests and Nexus runner | Pending; not omitted from parity |
@@ -59,8 +60,9 @@ support is not evidence of multi-node safety.
   databases. Compare their relationships with bijective aliases; retain actual
   IDs in raw evidence. Preserve workflow IDs, event order, command sequences,
   attempt counts and decoded values. Wall-clock observations remain raw.
-- Rust architecture is not selected yet. Choose established libraries after
-  the baseline, avoiding unnecessary dependencies and code generation. Record
+- The first Rust foundation uses Apache's official Avro single-object
+  reader/writer with the immutable schema. HTTP/storage architecture remains
+  pending. Avoid unnecessary dependencies and code generation. Record
   clean and incremental compile time plus target-directory size for the first
   runtime slice. Use one task-owned Cargo target directory, low debug information
   for development, bounded build concurrency and cleanup after qualification.
@@ -69,7 +71,11 @@ support is not evidence of multi-node safety.
   storage; measure physical disk blocks across cache and targets together. Keep
   cache and build outputs under one container mount so cross-mount copying does
   not erase sharing. Use a per-run compiler wrapper and scoped cleanup.
-  Real-project build speed and disk savings remain pending.
+  The [first real crate measurements](../rust/build-observations-2026-10-09.md)
+  observed native clean builds around 22 seconds and 182 MiB targets. Kache
+  restored a fresh target in 3.5 seconds but added cold-build time and retained
+  disk; native no-op/comment-edit builds were faster in-place. Keep it optional.
+  Full-server build cost and any disk-saving claim remain pending.
 - Tokio tasks are [cooperatively scheduled](https://docs.rs/tokio/latest/tokio/task/coop/index.html).
   Potentially expensive replay, decoding and synchronous database operations
   need bounded work away from the async request executor. `spawn_blocking` needs
@@ -126,8 +132,19 @@ evidence; API headroom at that burst size is not qualified. Shared-host backgrou
 work changed between measurements, so a PHP/Rust performance gain still requires
 matched conditions and drift controls.
 
-Next: implement the first Rust slice against the shared fixtures, measuring
-clean/incremental compile time and physical build/cache disk use. Expand fixtures
+The unpublished [Rust foundation](../rust/README.md) in
+[#329](https://github.com/durable-workflow/server/pull/329) implements the Value
+adapter and complete-frame check, retaining exact int64, bytes/text, array/map
+and finite-double distinctions. Its first tests exposed Apache's streaming EOF
+null sentinel; the frame adapter now rejects incomplete datums. Fifteen reviewed
+logical values passed local Rust/PHP cross-decoding in both directions, including
+the existing golden long-zero wire. These are codec checks, not execution of a
+durable workflow on Rust. Malformed collection blocks, duplicate keys, resource
+limits and external payload ingress remain explicit gates before HTTP integration.
+
+Next: qualify the exact source head in CI and measure clean/incremental compile
+time and physical build/cache disk use. Then add the first HTTP/database execution
+slice against the existing shared workflow fixtures. Expand fixtures
 using the existing conformance inventory. The rest
 of the inventory remains open under #325. No separate defect issues have been
 filed yet.

@@ -1,0 +1,29 @@
+{
+  "fixture_schema": "durable-workflow.server-parity-codec/v1",
+  "protocol": {"codec": "avro", "fingerprint": "e2a33dff55802237"},
+  "cases": [
+    {"id": "null", "value": {"type": "null"}},
+    {"id": "true", "value": {"type": "boolean", "value": true}},
+    {"id": "false", "value": {"type": "boolean", "value": false}},
+    {"id": "long-zero", "value": {"type": "long", "value": "0"}, "wire_base64": "wwHioz3/VYAiNwQA"},
+    {"id": "long-min", "value": {"type": "long", "value": "-9223372036854775808"}},
+    {"id": "long-max", "value": {"type": "long", "value": "9223372036854775807"}},
+    {"id": "long-beyond-json-exact", "value": {"type": "long", "value": "9007199254740993"}},
+    {"id": "double", "value": {"type": "double", "value": "1.25"}},
+    {"id": "negative-zero", "value": {"type": "double", "value": "-0.0"}},
+    {"id": "unicode", "value": {"type": "string", "value": "héllo 世界"}},
+    {"id": "binary", "value": {"type": "bytes", "base64": "AAEC/w=="}},
+    {"id": "empty-array", "value": {"type": "array", "items": []}},
+    {"id": "empty-map", "value": {"type": "map", "entries": []}},
+    {"id": "string-map-keys", "value": {"type": "map", "entries": [
+      {"key": "0", "value": {"type": "bytes", "base64": "AP8="}},
+      {"key": "01", "value": {"type": "string", "value": "text"}}
+    ]}},
+    {"id": "nested", "value": {"type": "array", "items": [
+      {"type": "map", "entries": [{"key": "items", "value": {"type": "array", "items": [
+        {"type": "long", "value": "9007199254740993"}, {"type": "null"}
+      ]}}]},
+      {"type": "array", "items": []}, {"type": "map", "entries": []}
+    ]}}
+  ]
+}
