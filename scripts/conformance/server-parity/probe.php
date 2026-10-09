@@ -1,6 +1,23 @@
 <?php
 
 declare(strict_types=1);
+use Composer\InstalledVersions;
+use DurableWorkflow\Client;
+use DurableWorkflow\Worker;
+use DurableWorkflow\Worker\ActivityContext;
+use DurableWorkflow\Worker\WorkflowContext;
+use Illuminate\Contracts\Console\Kernel;
+use Illuminate\Support\Facades\Artisan;
+use ServerParity\EchoActivity;
+use ServerParity\EchoWorkflow;
+use ServerParity\OneActivityWorkflow;
+use Workflow\Serializers\Serializer;
+use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\StartOptions;
+use Workflow\V2\WorkflowStub;
+use Workflow\WorkflowOptions;
 
 // Both adapters return observations; contract assertions live in the shared
 // runner. This probe never bootstraps or migrates a target database.
@@ -8,7 +25,7 @@ $options = getopt('', ['mode:', 'fixture:', 'workflow-id:', 'application-root:',
 $mode = $options['mode'] ?? '';
 $fixture = json_decode(file_get_contents($options['fixture']), true, flags: JSON_THROW_ON_ERROR);
 $workflowId = $options['workflow-id'];
-$namespace = getenv('DW_PARITY_NAMESPACE') ?: 'default';
+$namespace = 'default';
 $queue = 'server-parity-v1';
 $sdkAutoload = getenv('DW_PARITY_SDK_AUTOLOAD') ?: __DIR__.'/vendor/autoload.php';
 if (! is_file($sdkAutoload)) {
@@ -38,11 +55,11 @@ function decodeHistory(array $events, callable $decode): array
 
 function httpObservation(array $fixture, string $workflowId, string $namespace, string $queue, string $url): array
 {
-    $client = new DurableWorkflow\Client($url, namespace: $namespace, token: getenv('DW_PARITY_TOKEN') ?: null);
+    $client = new Client($url, namespace: $namespace, token: getenv('DW_PARITY_TOKEN') ?: null);
     $handle = $client->startWorkflow($fixture['workflow_type'], $workflowId, $queue, [$fixture['input']]);
     $deadline = microtime(true) + 30;
     $worker = null;
-    $worker = (new DurableWorkflow\Worker($client, $queue, clock: static function () use (&$worker, $handle, $deadline): float {
+    $worker = (new Worker($client, $queue, clock: static function () use (&$worker, $handle, $deadline): float {
         if (microtime(true) > $deadline) {
             throw new RuntimeException('Parity worker exceeded its 30-second completion budget.');
         }
@@ -52,9 +69,9 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
 
         return microtime(true);
     }))
-        ->registerWorkflow('parity.v1.echo', static fn (DurableWorkflow\Worker\WorkflowContext $context, array $value): array => $value)
-        ->registerWorkflow('parity.v1.one_activity', static fn (DurableWorkflow\Worker\WorkflowContext $context, array $value): array => $context->activity('parity.v1.echo_activity', [$value]))
-        ->registerActivity('parity.v1.echo_activity', static fn (DurableWorkflow\Worker\ActivityContext $context, array $value): array => $value);
+        ->registerWorkflow('parity.v1.echo', static fn (WorkflowContext $context, array $value): array => $value)
+        ->registerWorkflow('parity.v1.one_activity', static fn (WorkflowContext $context, array $value): array => $context->activity('parity.v1.echo_activity', [$value]))
+        ->registerActivity('parity.v1.echo_activity', static fn (ActivityContext $context, array $value): array => $value);
 
     // run() performs real registration and task execution. The clock observes
     // real time and selected-run completion, without replacing runtime I/O.
@@ -95,32 +112,35 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
 {
     require $root.'/vendor/autoload.php';
     $app = require $root.'/bootstrap/app.php';
-    $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+    $app->make(Kernel::class)->bootstrap();
     require __DIR__.'/embedded-types.php';
     config([
         'queue.default' => 'database',
+        'workflows.v2.task_dispatch_mode' => 'queue',
         'workflows.v2.types.workflows' => [
-            'parity.v1.echo' => ServerParity\EchoWorkflow::class,
-            'parity.v1.one_activity' => ServerParity\OneActivityWorkflow::class,
+            'parity.v1.echo' => EchoWorkflow::class,
+            'parity.v1.one_activity' => OneActivityWorkflow::class,
         ],
-        'workflows.v2.types.activities' => ['parity.v1.echo_activity' => ServerParity\EchoActivity::class],
+        'workflows.v2.types.activities' => ['parity.v1.echo_activity' => EchoActivity::class],
     ]);
     // Namespace belongs to the host Laravel application in embedded mode.
-    Workflow\V2\Models\WorkflowInstance::creating(static function ($instance) use ($namespace): void {
-        $instance->namespace = $namespace;
-    });
-    $class = $fixture['activity'] ? ServerParity\OneActivityWorkflow::class : ServerParity\EchoWorkflow::class;
-    $stub = Workflow\V2\WorkflowStub::make($class, $workflowId);
+    foreach ([WorkflowInstance::class, WorkflowRun::class, WorkflowTask::class] as $model) {
+        $model::creating(static function ($row) use ($namespace): void {
+            $row->namespace = $namespace;
+        });
+    }
+    $class = $fixture['activity'] ? OneActivityWorkflow::class : EchoWorkflow::class;
+    $stub = WorkflowStub::make($class, $workflowId);
     $stub->start(
         $fixture['input'],
-        new Workflow\WorkflowOptions(connection: 'database', queue: $queue),
-        new Workflow\V2\StartOptions(executionTimeoutSeconds: 3600, runTimeoutSeconds: 600),
+        new WorkflowOptions(connection: 'database', queue: $queue),
+        new StartOptions(executionTimeoutSeconds: 3600, runTimeoutSeconds: 600),
     );
-    Illuminate\Support\Facades\Artisan::call('queue:work', [
+    Artisan::call('queue:work', [
         'connection' => 'database', '--queue' => $queue, '--stop-when-empty' => true,
         '--max-time' => 30, '--sleep' => 0, '--tries' => 1,
     ]);
-    $run = Workflow\V2\Models\WorkflowRun::query()->findOrFail($stub->runId());
+    $run = WorkflowRun::query()->findOrFail($stub->runId());
     $events = $run->historyEvents()->orderBy('sequence')->get()->map(static fn ($event): array => [
         'sequence' => $event->sequence,
         'event_type' => $event->event_type->value,
@@ -130,7 +150,7 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
 
     return [
         'execution' => $run->toArray(),
-        'worker_output' => Illuminate\Support\Facades\Artisan::output(),
+        'worker_output' => Artisan::output(),
         'workflow_id' => $run->workflow_instance_id,
         'run_id' => $run->id,
         'workflow_type' => $run->workflow_type,
@@ -139,8 +159,8 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
         'status' => $run->status->value,
         'payload_codec' => $run->payload_codec,
         'input' => $run->workflowArguments(),
-        'output' => $stub->output(),
-        'events' => decodeHistory($events, static fn ($value) => Workflow\Serializers\Serializer::unserializeWithCodec('avro', is_array($value) ? $value['blob'] : $value)),
+        'output' => $run->workflowOutput(),
+        'events' => decodeHistory($events, static fn ($value) => Serializer::unserializeWithCodec('avro', is_array($value) ? $value['blob'] : $value)),
     ];
 }
 
@@ -150,6 +170,11 @@ try {
         'embedded' => embeddedObservation($fixture, $workflowId, $namespace, $queue, $options['application-root']),
         default => throw new InvalidArgumentException('Mode must be http or embedded.'),
     };
+    $observation['sdk_php'] = ltrim(InstalledVersions::getPrettyVersion('durable-workflow/sdk'), 'v');
+    $observation['php_version'] = PHP_VERSION;
+    if ($mode === 'embedded') {
+        $observation['workflow_package'] = ltrim(InstalledVersions::getPrettyVersion('durable-workflow/workflow'), 'v');
+    }
     echo json_encode($observation, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)."\n";
 } catch (Throwable $error) {
     fwrite(STDERR, $error::class.': '.$error->getMessage()."\n");

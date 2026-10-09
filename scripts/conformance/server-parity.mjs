@@ -10,7 +10,7 @@ import {checkObservation, compareRecords} from './server-parity/contract.mjs';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const {values, positionals} = parseArgs({allowPositionals: true, options: {
   mode: {type: 'string'}, url: {type: 'string'}, 'application-root': {type: 'string'},
-  target: {type: 'string'}, output: {type: 'string'}, 'runner-revision': {type: 'string'},
+  target: {type: 'string'}, output: {type: 'string'}, 'runner-revision': {type: 'string', default: process.env.DW_PARITY_RUNNER_REVISION ?? ''},
   artifacts: {type: 'string'}, prefix: {type: 'string', default: 'parity-v1'}, help: {type: 'boolean'},
 }});
 const [command, ...files] = positionals;
@@ -60,12 +60,14 @@ try {
       try {
         if (probe.error || probe.status !== 0) throw new Error(probe.error?.message ?? probe.stderr.trim());
         item.observation = JSON.parse(probe.stdout);
-        record.outcome = 'product-fail';
+        if (item.observation.sdk_php !== record.artifacts.sdk_php || values.mode === 'embedded' && item.observation.workflow_package !== record.artifacts.workflow) {
+          throw new Error('Installed SDK/Workflow packages do not match the frozen tuple');
+        }
+        item.outcome = 'product-fail';
         item.projection = checkObservation(fixture, item.observation, workflowId);
         item.outcome = 'pass';
       } catch (error) {
         item.error = error.message;
-        item.outcome = item.observation ? 'product-fail' : 'runner-blocked';
         record.cases.push(item);
         record.outcome = item.outcome;
         record.finished_at = new Date().toISOString();

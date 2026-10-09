@@ -1,0 +1,94 @@
+name: Shared Server fixtures
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/server-parity.yml
+      - scripts/conformance/server-parity*
+      - scripts/conformance/server-parity/**
+      - tests/Fixtures/ServerParity/**
+      - tests/Unit/ServerParityRunnerTest.mjs
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/server-parity.yml
+      - scripts/conformance/server-parity*
+      - scripts/conformance/server-parity/**
+      - tests/Fixtures/ServerParity/**
+      - tests/Unit/ServerParityRunnerTest.mjs
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  php-embedded:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Execute and compare published PHP and embedded fixtures
+        env:
+          RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: |
+          set -euo pipefail
+          image=$(jq -r '.server.images["linux/amd64"]' tests/Fixtures/ServerParity/php-baseline.json)
+          mkdir -p parity-state parity-evidence
+          chmod 0777 parity-state parity-evidence
+          touch parity-state/php.sqlite parity-state/embedded.sqlite
+          chmod 0666 parity-state/*.sqlite
+          docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
+            -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
+            install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
+          docker run --rm --user=1000:1000 --entrypoint node -v "$PWD:/source:ro" -w /source \
+            "$image" --test tests/Unit/ServerParityRunnerTest.mjs > parity-evidence/comparator-tests.txt
+          docker network create "$RESOURCE_SCOPE"
+          for target in php embedded; do
+            docker run --rm --user=1000:1000 --entrypoint php \
+              -v "$PWD/parity-state:/state" -e DB_CONNECTION=sqlite -e DB_DATABASE="/state/$target.sqlite" \
+              -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
+              "$image" artisan server:bootstrap --force >> parity-evidence/bootstrap.txt
+          done
+          docker run -d --name "$RESOURCE_SCOPE-server" --network "$RESOURCE_SCOPE" --network-alias=parity-server \
+            --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
+            -v "$PWD/parity-state:/state" -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/php.sqlite \
+            -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token "$image"
+          ready=0
+          for attempt in $(seq 1 30); do
+            if docker run --rm --user=1000:1000 --entrypoint curl --network "$RESOURCE_SCOPE" "$image" \
+              -fsS http://parity-server:8080/api/ready > parity-evidence/readiness.json; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
+          export DW_PARITY_RUNNER_REVISION=$(git rev-parse HEAD)
+          docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
+            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
+            --mode http --url http://parity-server:8080 --target php --output /evidence/php.json
+          docker run --rm --user=1000:1000 --entrypoint node \
+            -v "$PWD:/source:ro" -v "$PWD/parity-state:/state" -v "$PWD/parity-evidence:/evidence" -w /source \
+            -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/embedded.sqlite -e DW_MODE=embedded \
+            -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
+            --mode embedded --application-root /app --target embedded --output /evidence/embedded.json
+          docker run --rm --user=1000:1000 --entrypoint node \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
+            scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/embedded.json > parity-evidence/comparison.json
+      - name: Collect Server logs and clean resources
+        if: always()
+        env:
+          RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: |
+          docker logs "$RESOURCE_SCOPE-server" > parity-evidence/server.log 2>&1 || true
+          docker rm -f "$RESOURCE_SCOPE-server" || true
+          docker network rm "$RESOURCE_SCOPE" || true
+      - name: Retain fixture evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: shared-server-fixtures
+          path: parity-evidence
+          retention-days: 90
+          if-no-files-found: error

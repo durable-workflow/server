@@ -26,6 +26,8 @@ export function checkObservation(fixture, observation, workflowId) {
     nonempty(payload.workflow_command_id, 'durable start command identity');
   }
   equal(started.workflow_command_id, accepted.workflow_command_id, 'same accepted start command');
+  const identities = [workflowId, observation.run_id, accepted.workflow_command_id];
+  equal(new Set(identities).size, identities.length, 'distinct workflow/run/command identities');
   equal(accepted.outcome, 'started_new', 'start command outcome');
   equal(started.execution_timeout_seconds, 3600, 'execution timeout');
   equal(started.run_timeout_seconds, 600, 'run timeout');
@@ -50,6 +52,8 @@ export function checkObservation(fixture, observation, workflowId) {
     nonempty(id, 'activity identity');
     nonempty(attempt, 'activity attempt identity');
     assert.notEqual(id, attempt, 'distinct activity and attempt identities');
+    identities.push(id, attempt);
+    equal(new Set(identities).size, identities.length, 'bijective generated identity aliases');
     for (const [index, event] of [scheduled, running, completed].entries()) {
       equal(event.payload.activity_execution_id, id, 'same activity throughout history');
       equal(event.payload.activity_type, 'parity.v1.echo_activity', 'registered activity type');
@@ -88,6 +92,8 @@ export function compareRecords(records) {
     // authority, and a missing or corrupted record must never compare green.
     for (const [index, item] of record.cases.entries()) {
       const baseline = reference.cases[index];
+      assert.equal(item.observation.sdk_php, record.artifacts.sdk_php, 'installed published SDK matches tuple');
+      if (record.mode === 'embedded') assert.equal(item.observation.workflow_package, record.artifacts.workflow, 'installed Workflow matches tuple');
       assert.deepStrictEqual(item.fixture, baseline.fixture, 'same fixture expectations');
       const checked = checkObservation(item.fixture, item.observation, item.projection.workflow_id);
       assert.deepStrictEqual(item.projection, checked, 'projection matches raw observation');
