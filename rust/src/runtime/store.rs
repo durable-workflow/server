@@ -339,7 +339,10 @@ where
             return Err(refuse(StatusCode::CONFLICT, "task_queue_mismatch"));
         }
         Self::query(DB::POLL_RECEIPT_CLEANUP_SQL)
-            .bind(DB::bind_time(now())).bind(DB::bind_time(now())).execute(&mut *tx).await?;
+            .bind(DB::bind_time(now()))
+            .bind(DB::bind_time(now()))
+            .execute(&mut *tx)
+            .await?;
         let request_id = body
             .get("poll_request_id")
             .map(|_| text(body, "poll_request_id"))
@@ -363,8 +366,18 @@ where
             },
         )?;
         let candidates = Self::query(DB::TASK_CANDIDATES_SQL)
-            .bind(queue).bind(kind).bind(DB::bind_time(now())).bind(DB::bind_time(now())).fetch_all(&mut *tx).await?;
+            .bind(queue)
+            .bind(kind)
+            .bind(DB::bind_time(now()))
+            .bind(DB::bind_time(now()))
+            .fetch_all(&mut *tx)
+            .await?;
         for task in candidates {
+            // Unsupported stored timestamp shapes fail before leasing work.
+            // Takeover preflight must validate all records, including rows
+            // that are not eligible for this poll's queue/type/deadline.
+            DB::optional_instant(&task, "available_at")?;
+            DB::optional_instant(&task, "lease_expires_at")?;
             let run_id = DB::string(&task, "workflow_run_id")?;
             let activity = if kind == "activity" {
                 let payload: Value = DB::document_row(&task, "payload")?;

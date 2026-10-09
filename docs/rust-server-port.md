@@ -416,3 +416,23 @@ creation. Catalog inspection uses SQLite's literal internal-name prefix, so a
 SQL wildcard cannot hide user objects.
 Exact-head qualification is recorded in #337. Ordinary command execution and
 PHP takeover remain outside this startup correction.
+
+The [SQLite timestamp correction in #338](https://github.com/durable-workflow/server/pull/338)
+addresses the next stored-representation prerequisite. The frozen published PHP
+Workflow models write UTC SQL timestamps with microseconds; earlier native
+development data used UTC RFC3339. Reads now accept both, while new SQLite writes
+use the PHP UTC shape. Candidate ordering, lease expiry and poll-receipt cleanup
+compare exact decimal timestamps across both shapes without floating-point date
+conversion. Eligible task timestamps are decoded before any lease mutation.
+Non-UTC stored offsets require explicit conversion before takeover.
+
+The tests-first commit reproduces both unsupported PHP timestamp decoding and
+premature same-day availability at a one-microsecond boundary. Twelve fixed-clock
+SQLite cases exercise the actual candidate/receipt queries; the common HTTP
+case seeds the PHP microsecond representation and verifies description precision
+and stale-lease refusal. The frozen PHP model separately reproduces the three
+microsecond fixture strings without opening a database. Exact-head shared and
+PHP/source qualification is recorded in #338. These are representation tests
+against separate native data, not a sequential takeover or timezone qualification.
+Read-only upgrade preflight, pending poll bindings, timer jobs, credential and
+external payload preservation remain required next work under #325.
