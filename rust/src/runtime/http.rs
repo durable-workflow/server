@@ -20,6 +20,14 @@ pub fn router(runtime: Runtime) -> Router {
         .route("/api/workflows", post(start))
         .route("/api/workflows/{workflow_id}", get(describe_current))
         .route(
+            "/api/workflows/{workflow_id}/signal/{signal_name}",
+            post(signal_current),
+        )
+        .route(
+            "/api/workflows/{workflow_id}/runs/{run_id}/signal/{signal_name}",
+            post(signal_run),
+        )
+        .route(
             "/api/workflows/{workflow_id}/runs/{run_id}",
             get(describe_run),
         )
@@ -154,6 +162,32 @@ async fn describe_current(
     Path(workflow_id): Path<String>,
 ) -> Result<Json<Value>> {
     runtime.describe(&workflow_id, None).await.map(Json)
+}
+
+async fn signal_current(
+    State(runtime): State<Runtime>,
+    Path((workflow_id, name)): Path<(String, String)>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(runtime.signal(&workflow_id, None, &name, body).await?),
+    ))
+}
+
+async fn signal_run(
+    State(runtime): State<Runtime>,
+    Path((workflow_id, run_id, name)): Path<(String, String, String)>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(
+            runtime
+                .signal(&workflow_id, Some(&run_id), &name, body)
+                .await?,
+        ),
+    ))
 }
 
 async fn describe_run(

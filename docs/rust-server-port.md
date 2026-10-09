@@ -113,6 +113,28 @@ support is not evidence of multi-node safety.
 
 ## Evidence and next action
 
+[PR #340](https://github.com/durable-workflow/server/pull/340) widens the corpus
+into one/repeated signal deliveries. The published SDK authors signal-derived
+condition waits; embedded PHP authors direct `signal()` waits. Their full,
+explicit event inventories retain that difference before comparing payload-wait
+semantics, cursor progress, typed values and accepted command/run relationships.
+Initial local reference execution exposed the required `MessageCursorAdvanced`
+event; it is now checked rather than discarded. Both reviewed cases executed
+to completion on the frozen PHP Server and embedded package. Hosted Rust and
+database qualification is still pending.
+
+The native slice adds atomic accepted signal records and wait/resume transitions,
+capturing the registered signal declarations in original start history. Public
+control command order and deterministic authored call order are separate;
+signals must not move replayed activity/timer/wait positions. Official Avro
+signal decode/encode runs in `spawn_blocking` with one permit per runtime, held
+until that job finishes even when its HTTP request is cancelled. Transaction
+serialization, full codec resource limits and CPU/deadline qualification remain
+open. Initial signal argument support is positional, without default/variadic
+or class-type conversion; unsupported contracts fail before durable writes.
+Timed/grouped waits, cancellation, full rejection audit parity, authorization
+and namespace coverage still require their own slices.
+
 The initial source and published artifact tuple is in
 [`../tests/Fixtures/ServerParity/php-baseline.json`](../tests/Fixtures/ServerParity/php-baseline.json).
 It freezes inputs, not a passing performance result. Fixture and runner commits,

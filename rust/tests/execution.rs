@@ -462,6 +462,215 @@ fn completion(task: &Value, commands: Value) -> Value {
 }
 
 #[tokio::test]
+async fn buffered_signals_survive_restart_and_each_wait_commits_once() {
+    let database = TestDatabase::new().await;
+    let first = database.open().await.unwrap();
+    let app = router(first.clone());
+    let definition = json!({"worker_id":"signal-worker","task_queue":"test","runtime":"php",
+        "supported_workflow_types":["echo"],"supported_activity_types":[],
+        "workflow_command_contracts":{"echo":{"signals":["payload"],"signal_contracts":[{"name":"payload","parameters":[{"name":"value","position":0,"type":"array","required":true,"variadic":false,"default_available":false,"allows_null":false}]}]}}});
+    assert_eq!(
+        request(&app, "POST", "/api/worker/register", definition)
+            .await
+            .0,
+        StatusCode::CREATED
+    );
+    let started = start(&app, "buffered-signals").await;
+    let task = poll(&app, "signal-worker", "workflow").await;
+    let history_path = format!(
+        "/api/workflows/buffered-signals/runs/{}/history",
+        started["run_id"].as_str().unwrap()
+    );
+    let signal_path = format!(
+        "/api/workflows/buffered-signals/runs/{}/signal/payload",
+        started["run_id"].as_str().unwrap()
+    );
+    let value = Payload::Map(std::collections::BTreeMap::from([
+        ("count".into(), Payload::Long(9007199254740993)),
+        ("message".into(), Payload::String("signal λ".into())),
+    ]));
+    let input = json!({"input":envelope(Payload::Array(vec![value.clone()])),"request_id":"same-request-context"});
+    let accepted_a = request(&app, "POST", &signal_path, input.clone()).await;
+    let accepted_b = request(&app, "POST", &signal_path, input.clone()).await;
+    assert_eq!(accepted_a.0, StatusCode::ACCEPTED, "{}", accepted_a.1);
+    assert_eq!(accepted_b.0, StatusCode::ACCEPTED, "{}", accepted_b.1);
+    assert_ne!(accepted_a.1["command_id"], accepted_b.1["command_id"]);
+    assert_eq!(accepted_a.1["command_sequence"], 2);
+    assert_eq!(accepted_b.1["command_sequence"], 3);
+    // A leased initial task remains the only open task; accepted input waits
+    // durably until completion opens a matching wait.
+    assert!(poll(&app, "signal-worker", "workflow").await.is_null());
+    let before = request(&app, "GET", &history_path, Value::Null).await.1;
+    assert_eq!(before["events"].as_array().unwrap().len(), 4);
+    let signals = [
+        &before["events"][2]["payload"],
+        &before["events"][3]["payload"],
+    ];
+    assert_ne!(signals[0]["signal_id"], signals[1]["signal_id"]);
+    for (index, signal) in signals.iter().enumerate() {
+        assert_eq!(signal["command"]["message_sequence"], index + 1);
+        assert_eq!(signal["workflow_run_id"], started["run_id"]);
+    }
+    for (path, body, expected) in [
+        (
+            signal_path.clone(),
+            json!({"input":envelope(Payload::Array(vec![Payload::Long(1)]))}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            signal_path.clone(),
+            json!({"input":{"codec":"avro","blob":"not-avro"}}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            signal_path.replace("/signal/payload", "/signal/unknown"),
+            input.clone(),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            signal_path.replace(started["run_id"].as_str().unwrap(), "historical-run"),
+            input,
+            StatusCode::CONFLICT,
+        ),
+    ] {
+        assert_eq!(request(&app, "POST", &path, body).await.0, expected);
+        assert_eq!(
+            request(&app, "GET", &history_path, Value::Null).await.1,
+            before
+        );
+    }
+    let complete_path = format!(
+        "/api/worker/workflow-tasks/{}/complete",
+        task["task_id"].as_str().unwrap()
+    );
+    let open = completion(
+        &task,
+        json!([{"type":"open_signal_wait","signal_name":"payload"}]),
+    );
+    assert_eq!(
+        request(&app, "POST", &complete_path, open.clone()).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(&app, "POST", &complete_path, open).await.1["recorded"],
+        false
+    );
+    first.close().await;
+    let a = database.open().await.unwrap();
+    let b = database.open().await.unwrap();
+    let app_a = router(a.clone());
+    let app_b = router(b.clone());
+    let (claim_a, claim_b) = tokio::join!(
+        poll(&app_a, "signal-worker", "workflow"),
+        poll(&app_b, "signal-worker", "workflow")
+    );
+    assert_ne!(claim_a.is_null(), claim_b.is_null());
+    let resumed = if claim_a.is_null() { claim_b } else { claim_a };
+    assert_eq!(resumed["run_id"], started["run_id"]);
+    let resume_path = format!(
+        "/api/worker/workflow-tasks/{}/complete",
+        resumed["task_id"].as_str().unwrap()
+    );
+    let second_wait = completion(
+        &resumed,
+        json!([{"type":"open_signal_wait","signal_name":"payload"}]),
+    );
+    let mut stale = second_wait.clone();
+    stale["workflow_task_attempt"] = json!(99);
+    assert_eq!(
+        request(&app_b, "POST", &resume_path, stale).await.0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        request(&app_a, "POST", &resume_path, second_wait.clone())
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(&app_b, "POST", &resume_path, second_wait).await.1["recorded"],
+        false
+    );
+    let final_task = poll(&app_b, "signal-worker", "workflow").await;
+    let final_path = format!(
+        "/api/worker/workflow-tasks/{}/complete",
+        final_task["task_id"].as_str().unwrap()
+    );
+    let finish = completion(
+        &final_task,
+        json!([{"type":"complete_workflow","result":envelope(value.clone())}]),
+    );
+    assert_eq!(
+        request(&app_b, "POST", &final_path, finish.clone()).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(&app_a, "POST", &final_path, finish).await.1["recorded"],
+        false
+    );
+    let history = request(&app_a, "GET", &history_path, Value::Null).await.1;
+    let events = history["events"].as_array().unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event["event_type"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "StartAccepted",
+            "WorkflowStarted",
+            "SignalReceived",
+            "SignalReceived",
+            "SignalWaitOpened",
+            "MessageCursorAdvanced",
+            "SignalApplied",
+            "SignalWaitOpened",
+            "MessageCursorAdvanced",
+            "SignalApplied",
+            "WorkflowCompleted"
+        ]
+    );
+    for (index, (opened, applied)) in [(4, 6), (7, 9)].into_iter().enumerate() {
+        assert_eq!(events[opened]["payload"]["sequence"], index + 1);
+        assert_eq!(
+            events[opened]["payload"]["signal_wait_id"],
+            signals[index]["signal_wait_id"]
+        );
+        assert_eq!(
+            events[applied]["payload"]["signal_id"],
+            signals[index]["signal_id"]
+        );
+        assert_eq!(
+            events[applied]["payload"]["workflow_command_id"],
+            signals[index]["workflow_command_id"]
+        );
+        assert_eq!(
+            events[applied]["payload"]["signal_wait_id"],
+            signals[index]["signal_wait_id"]
+        );
+        assert_eq!(events[applied]["payload"]["sequence"], index + 1);
+        assert_eq!(
+            ValueCodec::new()
+                .unwrap()
+                .decode(
+                    events[applied]["payload"]["value"]["blob"]
+                        .as_str()
+                        .unwrap()
+                )
+                .unwrap(),
+            value
+        );
+    }
+    assert_eq!(events[5]["payload"]["previous_position"], 0);
+    assert_eq!(events[5]["payload"]["new_position"], 1);
+    assert_eq!(events[8]["payload"]["previous_position"], 1);
+    assert_eq!(events[8]["payload"]["new_position"], 2);
+    assert!(poll(&app_a, "signal-worker", "workflow").await.is_null());
+    a.close().await;
+    b.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
 async fn durable_timer_survives_restart_and_two_nodes_fire_once_without_polling() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();

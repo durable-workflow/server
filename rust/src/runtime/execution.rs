@@ -10,7 +10,10 @@ use std::{
     },
     time::Duration,
 };
-use tokio::{sync::watch, task::JoinHandle};
+use tokio::{
+    sync::{Semaphore, watch},
+    task::JoinHandle,
+};
 
 enum Storage {
     Sqlite(Store<Sqlite>),
@@ -23,6 +26,7 @@ pub struct Runtime {
     storage: Arc<Storage>,
     pub(crate) token: Arc<str>,
     scheduler: Arc<TimerScheduler>,
+    signal_codec: Arc<Semaphore>,
 }
 
 struct TimerScheduler {
@@ -137,6 +141,7 @@ impl Runtime {
             storage: Arc::new(storage),
             token: token.into(),
             scheduler: Arc::new(TimerScheduler::new()),
+            signal_codec: Arc::new(Semaphore::new(1)),
         };
         runtime.verify_ready().await?;
         runtime.scheduler.start(runtime.storage.clone());
@@ -186,6 +191,35 @@ impl Runtime {
     }
     delegate!(database_live() -> bool);
     delegate!(start(body: Value) -> Result<Value>);
+    pub(crate) async fn signal(
+        &self,
+        workflow_id: &str,
+        run_id: Option<&str>,
+        name: &str,
+        body: Value,
+    ) -> Result<Value> {
+        let arguments = super::envelope(&body, "input")?;
+        let prepared =
+            super::store::prepare_signal(self.signal_codec.clone(), name.to_owned(), arguments)
+                .await?;
+        match &*self.storage {
+            Storage::Sqlite(store) => {
+                store
+                    .signal(workflow_id, run_id, name, body, prepared)
+                    .await
+            }
+            Storage::Postgres(store) => {
+                store
+                    .signal(workflow_id, run_id, name, body, prepared)
+                    .await
+            }
+            Storage::MySql(store) => {
+                store
+                    .signal(workflow_id, run_id, name, body, prepared)
+                    .await
+            }
+        }
+    }
     delegate!(describe(workflow_id: &str, run_id: Option<&str>) -> Result<Value>);
     delegate!(
         history(
@@ -201,6 +235,24 @@ impl Runtime {
     delegate!(poll(body: Value, kind: &'static str) -> Result<Value>);
     delegate!(heartbeat_task(task_id: &str, body: Value) -> Result<Value>);
     delegate!(task_history(task_id: &str, body: Value) -> Result<Value>);
-    delegate!(complete_workflow(task_id: &str, body: Value) -> Result<Value>);
+    pub(crate) async fn complete_workflow(&self, task_id: &str, body: Value) -> Result<Value> {
+        match &*self.storage {
+            Storage::Sqlite(store) => {
+                store
+                    .complete_workflow(task_id, body, self.signal_codec.clone())
+                    .await
+            }
+            Storage::Postgres(store) => {
+                store
+                    .complete_workflow(task_id, body, self.signal_codec.clone())
+                    .await
+            }
+            Storage::MySql(store) => {
+                store
+                    .complete_workflow(task_id, body, self.signal_codec.clone())
+                    .await
+            }
+        }
+    }
     delegate!(complete_activity(task_id: &str, body: Value) -> Result<Value>);
 }

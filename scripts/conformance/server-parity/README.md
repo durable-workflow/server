@@ -3,7 +3,7 @@
 This is the first, deliberately bounded slice of
 [Server #325](https://github.com/durable-workflow/server/issues/325).
 It executes Avro echo (including an exact large int64), a one-activity workflow,
-and one/repeated durable sleeps against any
+one/repeated durable sleeps, and one/repeated signal deliveries against any
 isolated Server URL using the **published** PHP SDK. The embedded adapter runs
 the same logical cases through a Laravel application, real database queue jobs,
 and the installed Workflow package. Rust will use the HTTP adapter unchanged.
@@ -66,6 +66,17 @@ Firing/deadline comparisons preserve fractional precision. Embedded PHP's
 immediate zero-delay firing omits `fire_at`; the repeated-sleep fixture explicitly
 permits only that omission while checking its scheduled deadline and `fired_at`.
 Positive-delay firing must repeat its original deadline.
+
+Signal cases return a payload different from the workflow input and require a
+persisted wait before each delivery. Repeated identical payloads are distinct
+commands under the existing signal API. Check the accepted command/run IDs,
+decoded arguments and result types, authored wait sequence, message sequence,
+cursor advance and single application. The published PHP SDK authors
+`waitCondition` with `signals()`; embedded PHP authors `signal()`. Their explicit
+event inventories preserve that authoring difference: the SDK adds
+`ConditionWaitSatisfied` and checks its original key/fingerprint, while embedded
+`SignalApplied` resolves its original `SignalWaitOpened` ID/sequence. The common
+payload-wait projection is compared only after both complete histories pass.
 
 The current type recorder covers null, boolean, int64, double, string, list and
 map values. Other decoded PHP objects fail explicitly; binary/logical-type and
