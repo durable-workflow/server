@@ -52,24 +52,7 @@ async fn open_once(database: &str) -> Result<SqlitePool> {
             .foreign_keys(false),
     )
     .await?;
-    let preflight_result = async {
-        let tables: Vec<String> = sqlx::query_scalar(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
-        )
-        .fetch_all(&mut preflight)
-        .await?;
-        let initialized = tables.iter().any(|name| name == "dw_server_schema");
-        if initialized {
-            schema::verify(&mut preflight).await?;
-        } else if !tables.is_empty() {
-            return Err(refuse(
-                StatusCode::CONFLICT,
-                "existing_database_requires_qualified_takeover",
-            ));
-        }
-        Ok::<_, super::RuntimeError>(initialized)
-    }
-    .await;
+    let preflight_result = inspect(&mut preflight).await;
     // Await SQLite worker shutdown on refusal as well as success. An
     // error return must not abandon the preflight connection until exit.
     preflight.close().await?;
@@ -94,15 +77,8 @@ async fn open_once(database: &str) -> Result<SqlitePool> {
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
         // Recheck under the write lock so simultaneous fresh-node startup
         // cannot apply the same bootstrap twice.
-        let exists: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM sqlite_master WHERE name='dw_server_schema' COLLATE NOCASE",
-        )
-        .fetch_one(&mut *tx)
-        .await?;
-        if exists == 0 {
+        if !inspect(&mut tx).await? {
             schema::bootstrap(&mut tx).await?;
-        } else {
-            schema::verify(&mut tx).await?;
         }
         tx.commit().await?;
         Ok(())
@@ -115,4 +91,23 @@ async fn open_once(database: &str) -> Result<SqlitePool> {
         return Err(error);
     }
     Ok(pool)
+}
+
+async fn inspect(connection: &mut SqliteConnection) -> Result<bool> {
+    let objects: Vec<(String, String)> =
+        sqlx::query_as("SELECT type,name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
+            .fetch_all(&mut *connection)
+            .await?;
+    let initialized = objects
+        .iter()
+        .any(|(kind, name)| kind == "table" && name == "dw_server_schema");
+    if initialized {
+        schema::verify(connection).await?;
+    } else if !objects.is_empty() {
+        return Err(refuse(
+            StatusCode::CONFLICT,
+            "existing_database_requires_qualified_takeover",
+        ));
+    }
+    Ok(initialized)
 }

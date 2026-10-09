@@ -384,11 +384,16 @@ stored-value and migration-interruption fixtures. The capability, consumer,
 performance and operational inventory remains open under #325.
 No separate defect issues have been filed yet.
 
-Final checks of the pending-task correction caught `SQLITE_BUSY` during
-three-node fresh SQLite startup, before its HTTP case ran. The candidate startup
+Final checks of the pending-task correction caught `SQLITE_BUSY` while three
+native runtimes opened one fresh SQLite file, before its HTTP case ran. The [startup
+correction in #337](https://github.com/durable-workflow/server/pull/337)
 fix retries only that transient database error, with at most three attempts;
 each repeats read-only ownership preflight and retains the existing lock limits.
 An unsuccessful bootstrap closes its pool and finishes rollback before retry.
-Other errors and ownership refusals return immediately. The existing real-node
-fixture now exercises sixteen independent fresh databases. Qualification is
-pending; this is no change to ordinary command retry semantics or PHP takeover.
+Other errors and ownership refusals return immediately. Ownership inspection
+checks all user objects, including view-only databases, and repeats the same
+empty/native ownership check under the initialization write lock before DDL.
+The concurrent-runtime fixture exercises sixteen independent fresh databases;
+a view-only refusal case requires unchanged file bytes and no WAL/SHM creation.
+Exact-head qualification is recorded in #337. Ordinary command execution and
+PHP takeover remain outside this startup correction.

@@ -248,6 +248,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn view_only_database_is_refused_before_journal_or_schema_mutation() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("runtime.sqlite");
+        let mut connection = SqliteConnection::connect_with(
+            &SqliteConnectOptions::new()
+                .filename(&path)
+                .create_if_missing(true),
+        )
+        .await
+        .unwrap();
+        sqlx::query("CREATE VIEW acknowledged_view AS SELECT 'preserve-this' AS value")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        connection.close().await.unwrap();
+        assert_read_only_refusal(&path).await;
+    }
+
+    #[tokio::test]
     async fn old_development_schema_is_refused_without_conversion() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("runtime.sqlite");
