@@ -243,13 +243,21 @@ real SIGKILLs after migration-ledger creation and before the outer commit,
 read-only refusal of old development data and nine catalog/history corruptions.
 Restart after either acknowledged interruption creates one complete migration
 and passes SQLite integrity checking. The actual published/native catalogs
-match; hosted fixture qualification remains in progress.
+match. The [shared hosted run](https://github.com/durable-workflow/server/actions/runs/37929268377)
+passes the unchanged three-runtime fixtures, two-way codec values, native
+schema interruption and actual activity-lease kill/restart. Its catalog check
+retains the original database and existing journal hashes. An earlier inspection
+mount prevented SQLite's temporary WAL metadata access; the corrected fixture
+uses `mode=ro` on stopped engines and a writable disposable metadata directory,
+without an immutable snapshot that could conceal WAL state.
+The final fixture additionally prepares pending work in the published PHP
+database and requires native refusal with unchanged database/journal hashes.
+Its final-head evidence belongs to [#332](https://github.com/durable-workflow/server/pull/332).
 The [build observations](../rust/schema-build-observations-2026-10-09.md)
 record 64.445 seconds for a clean tests/binary build, 541.9 MiB of targets plus
 177.6 MiB of downloads, and 0.137/0.823-second no-op/comment builds. These are
 bounded development measurements, not a full-server or improvement claim.
 
-Next: qualify and merge this SQLite schema foundation, then implement the other
-database backends and backup-first sequential takeover with stored-value and
+Next: implement the other database backends and backup-first sequential takeover with stored-value and
 interruption fixtures. The rest of the inventory remains open under #325.
 No separate defect issues have been filed yet.

@@ -117,9 +117,31 @@ jobs:
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/restart.php \
             prepare http://parity-rust:8080 /evidence/restart-receipt.json > parity-evidence/restart-prepare.json
+          docker run --rm --user=1000:1000 --entrypoint php --network "$RESOURCE_SCOPE" \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
+            -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/restart.php \
+            prepare http://parity-server:8080 /evidence/php-refusal-receipt.json > parity-evidence/php-refusal-prepare.json
           docker kill --signal=KILL "$RESOURCE_SCOPE-rust"
           test "$(docker inspect --format='{{.State.ExitCode}}' "$RESOURCE_SCOPE-rust")" = 137
           docker stop "$RESOURCE_SCOPE-server"
+          for suffix in '' -wal -journal; do
+            if test -f "parity-state/php.sqlite$suffix"; then sha256sum "parity-state/php.sqlite$suffix"; fi
+          done > parity-evidence/php-before-native-preflight.sha256
+          # A real published PHP database has acknowledged and pending work.
+          # Native startup must refuse it before WAL setup or migration writes.
+          if docker run --rm --user="$(id -u):$(id -g)" --network=none \
+            -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token -e DB_DATABASE=/state/php.sqlite \
+            -v "$PWD/rust-target:/target:ro" -v "$PWD/parity-state:/state" \
+            --entrypoint /target/debug/durable-workflow-server \
+            rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 \
+            > parity-evidence/php-native-refusal.log 2>&1; then
+            exit 1
+          fi
+          grep -Fq 'existing_database_requires_qualified_takeover' parity-evidence/php-native-refusal.log
+          for suffix in '' -wal -journal; do
+            if test -f "parity-state/php.sqlite$suffix"; then sha256sum "parity-state/php.sqlite$suffix"; fi
+          done > parity-evidence/php-after-native-preflight.sha256
+          diff -u parity-evidence/php-before-native-preflight.sha256 parity-evidence/php-after-native-preflight.sha256
           # Both engines are now stopped. PDO opens mode=ro and checks original
           # database/WAL/journal hashes. The disposable fixture directory stays
           # writable so SQLite can manage its shared-memory cache; use Rust's UID.
