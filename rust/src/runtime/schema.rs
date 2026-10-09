@@ -197,7 +197,7 @@ mod tests {
             let runtime = super::super::Runtime::open(path.to_str().unwrap(), "test-token".into())
                 .await
                 .unwrap();
-            let mut connection = runtime.pool.acquire().await.unwrap();
+            let mut connection = runtime.sqlite_pool().acquire().await.unwrap();
             verify(&mut connection).await.unwrap();
             let integrity: String = sqlx::query_scalar("PRAGMA integrity_check")
                 .fetch_one(&mut *connection)
@@ -223,7 +223,7 @@ mod tests {
             let runtime = result.unwrap();
             assert!(runtime.schema_ready().await);
             let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
-                .fetch_one(&runtime.pool)
+                .fetch_one(runtime.sqlite_pool())
                 .await
                 .unwrap();
             assert_eq!(rows, 1);

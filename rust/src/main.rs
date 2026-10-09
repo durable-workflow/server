@@ -65,21 +65,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
         println!("{{\"backend\":\"pgsql\",\"schema_version\":2,\"status\":\"ready\"}}");
         return Ok(());
     }
-    if env::var("DB_CONNECTION").unwrap_or_else(|_| "sqlite".into()) != "sqlite" {
-        return Err(
-            "this development slice implements SQLite; MySQL/PostgreSQL remain required port gates"
-                .into(),
-        );
-    }
     let token = env::var("DW_AUTH_TOKEN").map_err(|_| "DW_AUTH_TOKEN is required")?;
     if token.trim().is_empty() {
         return Err("DW_AUTH_TOKEN must not be empty".into());
     }
-    let database = env::var("DB_DATABASE").map_err(|_| "DB_DATABASE is required")?;
     let address: SocketAddr = env::var("DW_BIND_ADDRESS")
         .unwrap_or_else(|_| "127.0.0.1:8080".into())
         .parse()?;
-    let runtime = Runtime::open(&database, token).await?;
+    let runtime = match env::var("DB_CONNECTION")
+        .unwrap_or_else(|_| "sqlite".into())
+        .as_str()
+    {
+        "sqlite" => {
+            let database = env::var("DB_DATABASE").map_err(|_| "DB_DATABASE is required")?;
+            Runtime::open(&database, token).await?
+        }
+        "pgsql" => Runtime::open_postgres(postgres_options()?, token).await?,
+        _ => {
+            return Err(
+                "unsupported development database; MySQL remains a required port gate".into(),
+            );
+        }
+    };
     let listener = tokio::net::TcpListener::bind(address).await?;
     eprintln!(
         "Rust development runtime listening on {}",

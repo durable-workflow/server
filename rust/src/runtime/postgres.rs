@@ -83,7 +83,7 @@ async fn verify_scope(connection: &mut PgConnection) -> Result<()> {
     Ok(())
 }
 
-async fn verify_history(connection: &mut PgConnection) -> Result<()> {
+pub(super) async fn verify_history(connection: &mut PgConnection) -> Result<()> {
     let markers: Vec<(String, i64)> =
         sqlx::query_as("SELECT engine,version FROM public.dw_server_schema")
             .fetch_all(&mut *connection)
@@ -148,6 +148,9 @@ pub struct PostgresStorage {
 }
 
 impl PostgresStorage {
+    pub(super) fn into_pool(self) -> PgPool {
+        self.pool
+    }
     /// Inspect before opening a writable pool. The database must already exist;
     /// the only admitted schema is public, with no concurrent PHP writers.
     pub async fn open(connect_options: PgConnectOptions) -> Result<Self> {

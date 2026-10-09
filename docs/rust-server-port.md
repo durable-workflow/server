@@ -2,15 +2,15 @@
 
 [Server #325](https://github.com/durable-workflow/server/issues/325) owns the
 rewrite and its acceptance evidence. PHP remains the default published runtime.
-The unpublished Rust crate has an Avro foundation and an opt-in SQLite HTTP
+The unpublished Rust crate has an Avro foundation and an opt-in SQLite/PostgreSQL HTTP
 execution slice. Full runtime parity, migration, performance improvement and
 cutover remain unqualified.
 
 ## Work order and current status
 
-The next execution slice shares the native workflow/activity state machine
+The current execution slice shares the native workflow/activity state machine
 between SQLite and PostgreSQL, with typed database adapters and explicit
-transaction locking. Qualification must run the unchanged execution fixtures
+transaction locking. Qualification runs the unchanged execution fixtures
 and real lease interruption on PostgreSQL, with PHP and embedded targets in
 independent databases. Existing PHP data remains refused until backup-first
 takeover is implemented and qualified.
@@ -19,7 +19,7 @@ The PostgreSQL storage foundation prepares the real timestamp/JSON schema,
 transactional migrations and ownership checks against an independently
 bootstrapped published PHP database. Fresh native bootstrap keeps the full
 existing physical schema; it does not authorize adoption of PHP data. Actual
-PostgreSQL execution and MariaDB/MySQL support remain required next steps.
+MariaDB/MySQL execution and backup-first database takeover remain required next steps.
 
 1. Inventory the current contract, schema and operational surfaces. Establish
    shared reviewed fixtures and a recorder usable against any isolated Server

@@ -74,10 +74,11 @@ jobs:
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" --cpus=2 --memory=2g --memory-swap=2g \
             -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 \
             -e DW_TEST_POSTGRES_URL=postgres://parity:parity-disposable-password@parity-pg:5432/php_ref \
+            -e DW_EXECUTION_POSTGRES_URL=postgres://parity:parity-disposable-password@parity-pg:5432/php_ref \
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" \
             -v "$PWD/parity-evidence:/evidence" -w /source/rust --entrypoint bash \
             rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 -c \
-            'cargo test --locked --lib runtime::postgres::tests::qualification_ -- --ignored --nocapture > /evidence/postgres-tests.txt && cargo build --locked'
+            'cargo test --locked --lib runtime::postgres::tests::qualification_ -- --ignored --nocapture > /evidence/postgres-tests.txt && cargo test --locked --test execution -- --nocapture > /evidence/postgres-execution-tests.txt && cargo build --locked'
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
             -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=native_ref \
             -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
@@ -94,7 +95,9 @@ jobs:
             -e DB_HOST=parity-pg -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
             -v "$PWD:/source:ro" -w /source "$image" \
             scripts/conformance/server-parity/postgres-schema.php compare php_ref native_ref > parity-evidence/catalog-comparison.json
-      - name: Refuse published PHP pending work without changing its data or sequence positions
+      - name: Compare three runtimes, recover killed native nodes and refuse published PHP takeover
+        env:
+          POSTGRES_IMAGE: ${{ matrix.image }}
         run: |
           set -euo pipefail
           image=$(jq -r '.server.images["linux/amd64"]' tests/Fixtures/ServerParity/php-baseline.json)
@@ -116,6 +119,86 @@ jobs:
             sleep 1
           done
           test "$ready" = 1
+          docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
+            -e PGPASSWORD=parity-disposable-password --entrypoint createdb "$POSTGRES_IMAGE" -h parity-pg -U parity embedded_ref
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
+            -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=embedded_ref \
+            -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
+            -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
+            "$image" artisan server:bootstrap --force > parity-evidence/embedded-bootstrap.txt
+          docker run -d --name "$RESOURCE_SCOPE-native-a" --network "$RESOURCE_SCOPE" --network-alias=parity-native-a \
+            --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
+            -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token -e DW_BIND_ADDRESS=0.0.0.0:8080 \
+            -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=native_ref \
+            -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
+            -v "$PWD/rust-target:/target:ro" --entrypoint /target/debug/durable-workflow-server \
+            rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
+          docker run -d --name "$RESOURCE_SCOPE-native-b" --network "$RESOURCE_SCOPE" --network-alias=parity-native-b \
+            --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
+            -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token -e DW_BIND_ADDRESS=0.0.0.0:8080 \
+            -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=native_ref \
+            -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
+            -v "$PWD/rust-target:/target:ro" --entrypoint /target/debug/durable-workflow-server \
+            rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
+          ready=0
+          for attempt in $(seq 1 30); do
+            if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
+              -fsS http://parity-native-a:8080/api/ready > parity-evidence/native-a-readiness.json; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
+            -fsS http://parity-native-b:8080/api/ready > parity-evidence/native-b-readiness.json
+          export DW_PARITY_RUNNER_REVISION=$(git rev-parse HEAD)
+          docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
+            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
+            --mode http --url http://parity-php:8080 --target php --output /evidence/php.json
+          docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
+            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
+            --mode http --url http://parity-native-a:8080 --target rust --output /evidence/rust.json
+          docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
+            -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=embedded_ref \
+            -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password -e DW_MODE=embedded \
+            -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
+            --mode embedded --application-root /app --target embedded --output /evidence/embedded.json
+          docker run --rm --user=1000:1000 --entrypoint node --network=none \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
+            scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json > parity-evidence/comparison.json
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
+            -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/restart.php \
+            prepare http://parity-native-a:8080 /evidence/native-restart-receipt.json > parity-evidence/native-restart-prepare.json
+          docker kill --signal=KILL "$RESOURCE_SCOPE-native-a"
+          test "$(docker inspect --format='{{.State.ExitCode}}' "$RESOURCE_SCOPE-native-a")" = 137
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
+            -fsS http://parity-native-b:8080/api/ready > parity-evidence/native-survivor-readiness.json
+          docker run -d --name "$RESOURCE_SCOPE-recovered" --network "$RESOURCE_SCOPE" --network-alias=parity-recovered \
+            --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
+            -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token -e DW_BIND_ADDRESS=0.0.0.0:8080 \
+            -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=native_ref \
+            -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
+            -v "$PWD/rust-target:/target:ro" --entrypoint /target/debug/durable-workflow-server \
+            rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
+          ready=0
+          for attempt in $(seq 1 30); do
+            if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
+              -fsS http://parity-recovered:8080/api/ready > parity-evidence/native-restart-readiness.json; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
+            -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/restart.php \
+            finish http://parity-recovered:8080 /evidence/native-restart-receipt.json > parity-evidence/native-restart-finish.json
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/restart.php \
@@ -212,8 +295,11 @@ jobs:
         run: |
           mkdir -p parity-evidence
           docker logs "$RESOURCE_SCOPE-php" > parity-evidence/php.log 2>&1 || true
+          docker logs "$RESOURCE_SCOPE-native-a" > parity-evidence/native-a.log 2>&1 || true
+          docker logs "$RESOURCE_SCOPE-native-b" > parity-evidence/native-b.log 2>&1 || true
+          docker logs "$RESOURCE_SCOPE-recovered" > parity-evidence/native-recovered.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-db" > parity-evidence/postgres.log 2>&1 || true
-          docker rm -f "$RESOURCE_SCOPE-php" "$RESOURCE_SCOPE-db" || true
+          docker rm -f "$RESOURCE_SCOPE-php" "$RESOURCE_SCOPE-native-a" "$RESOURCE_SCOPE-native-b" "$RESOURCE_SCOPE-recovered" "$RESOURCE_SCOPE-db" || true
           docker network rm "$RESOURCE_SCOPE" || true
       - name: Retain PostgreSQL storage evidence
         if: always()
