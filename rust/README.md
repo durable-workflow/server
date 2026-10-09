@@ -26,6 +26,8 @@ CPU-heavy async deadlines, databases, shared workflow fixtures and safe upgrade
 remain acceptance gates in the [port log](../docs/rust-server-port.md).
 Kache remains an optional task-scoped experiment, with an explicit disk budget;
 no global Cargo wrapper or cleanup daemon is installed.
+The [first build observations](build-observations-2026-10-09.md) record clean,
+no-op, comment-edit and cache results with their disk costs and limits.
 
 The shared [codec values](../tests/Fixtures/ServerParity/Codec/v1.json) declare
 logical expectations from the immutable schema: exact long boundaries, finite

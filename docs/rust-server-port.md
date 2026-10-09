@@ -71,7 +71,11 @@ support is not evidence of multi-node safety.
   storage; measure physical disk blocks across cache and targets together. Keep
   cache and build outputs under one container mount so cross-mount copying does
   not erase sharing. Use a per-run compiler wrapper and scoped cleanup.
-  Real-project build speed and disk savings remain pending.
+  The [first real crate measurements](../rust/build-observations-2026-10-09.md)
+  observed native clean builds around 22 seconds and 182 MiB targets. Kache
+  restored a fresh target in 3.5 seconds but added cold-build time and retained
+  disk; native no-op/comment-edit builds were faster in-place. Keep it optional.
+  Full-server build cost and any disk-saving claim remain pending.
 - Tokio tasks are [cooperatively scheduled](https://docs.rs/tokio/latest/tokio/task/coop/index.html).
   Potentially expensive replay, decoding and synchronous database operations
   need bounded work away from the async request executor. `spawn_blocking` needs
