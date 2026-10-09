@@ -237,7 +237,17 @@ refused before writable connection setup. No observable protocol capability is
 added. Qualification must compare the actual published PHP catalog with an
 independent native database, preserve the existing execution/restart fixtures,
 and test interrupted/concurrent bootstrap and migration-history mismatches.
-Implementation and final-head results will be recorded here before merge.
+The local implementation passes the existing seven execution tests, four codec
+tests and four new schema cases. The latter check three concurrent fresh nodes,
+real SIGKILLs after migration-ledger creation and before the outer commit,
+read-only refusal of old development data and nine catalog/history corruptions.
+Restart after either acknowledged interruption creates one complete migration
+and passes SQLite integrity checking. The actual published/native catalogs
+match; hosted fixture qualification remains in progress.
+The [build observations](../rust/schema-build-observations-2026-10-09.md)
+record 64.445 seconds for a clean tests/binary build, 541.9 MiB of targets plus
+177.6 MiB of downloads, and 0.137/0.823-second no-op/comment builds. These are
+bounded development measurements, not a full-server or improvement claim.
 
 Next: qualify and merge this SQLite schema foundation, then implement the other
 database backends and backup-first sequential takeover with stored-value and

@@ -14,11 +14,26 @@ function catalog(string $filename): array
     if (! is_file($filename)) {
         throw new RuntimeException('Schema comparison requires existing SQLite files.');
     }
-    $uri = 'file:'.str_replace('%2F', '/', rawurlencode(realpath($filename))).'?mode=ro';
+    $path = realpath($filename);
+    $originals = [];
+    foreach ([$path, $path.'-wal', $path.'-journal'] as $file) {
+        if (is_file($file)) {
+            $originals[$file] = hash_file('sha256', $file);
+        }
+    }
+    $uri = 'file:'.str_replace('%2F', '/', rawurlencode($path)).'?mode=ro';
     $pdo = new PDO('sqlite:'.$uri, options: [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
 
-    return $pdo->query("SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY type,name")
+    $rows = $pdo->query("SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY type,name")
         ->fetchAll(PDO::FETCH_ASSOC);
+    $pdo = null;
+    foreach ($originals as $file => $hash) {
+        if (! is_file($file) || hash_file('sha256', $file) !== $hash) {
+            throw new RuntimeException('Read-only catalog inspection changed database or journal bytes.');
+        }
+    }
+
+    return $rows;
 }
 
 $php = catalog($argv[1]);
@@ -36,4 +51,5 @@ if ($php !== $native) {
 
 $counts = array_count_values(array_column($php, 'type'));
 echo json_encode(['outcome' => 'pass', 'tables' => $counts['table'] ?? 0, 'indexes' => $counts['index'] ?? 0,
+    'database_and_existing_journals_unchanged' => true,
     'catalog_sha256' => hash('sha256', json_encode($php, JSON_THROW_ON_ERROR))], JSON_THROW_ON_ERROR)."\n";
