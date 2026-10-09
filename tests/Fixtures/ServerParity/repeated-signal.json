@@ -13,7 +13,7 @@
   }},
   "activity": false,
   "signal_count": 2,
-  "expected_events": ["StartAccepted", "WorkflowStarted", "ConditionWaitOpened", "SignalReceived", "SignalApplied", "ConditionWaitSatisfied", "ConditionWaitOpened", "SignalReceived", "SignalApplied", "ConditionWaitSatisfied", "WorkflowCompleted"],
-  "embedded_expected_events": ["StartAccepted", "WorkflowStarted", "ConditionWaitOpened", "SignalReceived", "ConditionWaitSatisfied", "ConditionWaitOpened", "SignalReceived", "ConditionWaitSatisfied", "WorkflowCompleted"],
-  "contract": "Two identical signal deliveries are two distinct accepted commands and signal records, not an idempotency key. Each wakes a separate deterministic wait, preserving delivery order and the original wait's key/fingerprint. After the first signal the run must remain waiting; after the second it commits the last decoded signal payload once. The same explicit service/embedded SignalApplied difference as one-signal is checked."
+  "expected_events": ["StartAccepted", "WorkflowStarted", "ConditionWaitOpened", "SignalReceived", "MessageCursorAdvanced", "SignalApplied", "ConditionWaitSatisfied", "ConditionWaitOpened", "SignalReceived", "MessageCursorAdvanced", "SignalApplied", "ConditionWaitSatisfied", "WorkflowCompleted"],
+  "embedded_expected_events": ["StartAccepted", "WorkflowStarted", "SignalWaitOpened", "SignalReceived", "MessageCursorAdvanced", "SignalApplied", "SignalWaitOpened", "SignalReceived", "MessageCursorAdvanced", "SignalApplied", "WorkflowCompleted"],
+  "contract": "Two identical signal deliveries are distinct accepted commands and signal records, not an idempotency key. Each wakes a separate deterministic wait, preserving delivery order, the original wait identity and one message-cursor advance per applied signal. After the first the original run remains waiting; after the second it commits the last decoded signal payload once. The SDK's condition waits and embedded direct signal waits have the explicit event inventories defined here; raw histories retain that authoring difference."
 }

@@ -207,7 +207,7 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
         ]);
         $run = WorkflowRun::query()->findOrFail($stub->runId());
         if (isset($fixture['signal_count']) && count($deliveries) < $fixture['signal_count']) {
-            $opened = $run->historyEvents()->where('event_type', 'ConditionWaitOpened')->count();
+            $opened = $run->historyEvents()->where('event_type', 'SignalWaitOpened')->count();
             if ($opened > count($deliveries)) {
                 $before = $run->toArray();
                 $command = $stub->attemptSignalWithArguments('payload', [$fixture['signal_value']]);

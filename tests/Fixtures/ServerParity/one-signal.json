@@ -13,7 +13,7 @@
   }},
   "activity": false,
   "signal_count": 1,
-  "expected_events": ["StartAccepted", "WorkflowStarted", "ConditionWaitOpened", "SignalReceived", "SignalApplied", "ConditionWaitSatisfied", "WorkflowCompleted"],
-  "embedded_expected_events": ["StartAccepted", "WorkflowStarted", "ConditionWaitOpened", "SignalReceived", "ConditionWaitSatisfied", "WorkflowCompleted"],
-  "contract": "A declared payload signal wakes a durable condition wait. The published SDK reads accepted signal history and returns the signal's decoded typed payload, not its workflow input. The embedded host reads the same persisted signal history. SignalReceived retains command/signal/run identities and Avro arguments; the condition resolution retains its original wait ID/key/fingerprint and references that signal. PHP service mode additionally records SignalApplied for an external workflow; the loadable embedded definition consumes the signal in ConditionWaitSatisfied without that extra event. This explicit adapter difference is retained in raw history and checked before comparing the common signal/wait projection."
+  "expected_events": ["StartAccepted", "WorkflowStarted", "ConditionWaitOpened", "SignalReceived", "MessageCursorAdvanced", "SignalApplied", "ConditionWaitSatisfied", "WorkflowCompleted"],
+  "embedded_expected_events": ["StartAccepted", "WorkflowStarted", "SignalWaitOpened", "SignalReceived", "MessageCursorAdvanced", "SignalApplied", "WorkflowCompleted"],
+  "contract": "A declared payload signal wakes a durable wait. The published SDK uses waitCondition with signals(), and the embedded host uses signal(). Both return the decoded signal payload, not the workflow input, advance the message cursor and apply the original accepted command once. The SDK's condition resolution retains its original wait ID/key/fingerprint and references that signal; the embedded direct wait is resolved by SignalApplied retaining the original SignalWaitOpened identity/sequence. These explicitly different authoring API histories are checked in full before comparing their common payload-wait projection."
 }

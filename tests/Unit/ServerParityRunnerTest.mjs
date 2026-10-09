@@ -73,14 +73,16 @@ function signalObservation(mode = 'http') {
   for (const event of raw.events) event.payload.workflow_type = signalFixture.workflow_type;
   raw.events[1].payload.declared_signals = ['payload'];
   for (let index = 0; index < signalFixture.signal_count; index++) {
-    const opened = {condition_wait_id: `wait-${index}`, condition_key: `payload:${index}`, condition_definition_fingerprint: `sha256:${'a'.repeat(64)}`, sequence: index + 1};
-    const received = {workflow_instance_id: raw.workflow_id, workflow_run_id: raw.run_id, workflow_command_id: `signal-command-${index}`, signal_id: `signal-${index}`, signal_wait_id: `routing-wait-${index}`, signal_name: 'payload', payload_codec: 'avro'};
+    const opened = mode === 'embedded' ? {signal_wait_id: `wait-${index}`, signal_name: 'payload', sequence: index + 1}
+      : {condition_wait_id: `wait-${index}`, condition_key: `payload:${index}`, condition_definition_fingerprint: `sha256:${'a'.repeat(64)}`, sequence: index + 1};
+    const received = {workflow_instance_id: raw.workflow_id, workflow_run_id: raw.run_id, workflow_command_id: `signal-command-${index}`, signal_id: `signal-${index}`, signal_wait_id: mode === 'embedded' ? `wait-${index}` : `routing-wait-${index}`, signal_name: 'payload', payload_codec: 'avro', command: {id: `signal-command-${index}`, sequence: index + 2, message_sequence: index + 1}};
     raw.signal_deliveries.push({before: {status: 'waiting', run_id: raw.run_id}, response: {accepted: true, command_id: received.workflow_command_id, run_id: raw.run_id, workflow_id: raw.workflow_id, outcome: 'signal_received'}});
     raw.events.push(
-      {event_type: 'ConditionWaitOpened', payload: opened, decoded: {}, typed_decoded: {}},
+      {event_type: mode === 'embedded' ? 'SignalWaitOpened' : 'ConditionWaitOpened', payload: opened, decoded: {}, typed_decoded: {}},
       {event_type: 'SignalReceived', payload: received, decoded: {arguments: [signalFixture.signal_value]}, typed_decoded: {arguments: {type: 'list', value: [signalFixture.typed_signal_value]}}},
-      ...(mode === 'embedded' ? [] : [{event_type: 'SignalApplied', payload: received, decoded: {value: signalFixture.signal_value}, typed_decoded: {value: signalFixture.typed_signal_value}}]),
-      {event_type: 'ConditionWaitSatisfied', payload: {...opened, workflow_signal_id: received.signal_id, signal_name: received.signal_name, signal_wait_id: received.signal_wait_id}, decoded: {}, typed_decoded: {}},
+      {event_type: 'MessageCursorAdvanced', payload: {stream_key: `instance:${raw.workflow_id}`, previous_position: index, new_position: index + 1}, decoded: {}, typed_decoded: {}},
+      {event_type: 'SignalApplied', payload: {...received, ...(mode === 'embedded' ? {sequence: index + 1} : {})}, decoded: {value: signalFixture.signal_value}, typed_decoded: {value: signalFixture.typed_signal_value}},
+      ...(mode === 'embedded' ? [] : [{event_type: 'ConditionWaitSatisfied', payload: {...opened, workflow_signal_id: received.signal_id, signal_name: received.signal_name, signal_wait_id: received.signal_wait_id}, decoded: {}, typed_decoded: {}}]),
     );
   }
   raw.events.push({event_type: 'WorkflowCompleted', payload: {}, decoded: {output: signalFixture.signal_value}, typed_decoded: {output: signalFixture.typed_signal_value}});
@@ -92,18 +94,20 @@ test('signal delivery/wait relationships agree across explicit service and embed
   assert.deepStrictEqual(checkObservation(signalFixture, signalObservation(), 'test-one-activity'), checkObservation(signalFixture, signalObservation('embedded'), 'test-one-activity'));
 });
 for (const [name, corrupt] of [
-  ['deduplicated repeated signal', raw => {raw.events.splice(6, 4);}],
-  ['reused signal identity', raw => {raw.events[7].payload.signal_id = raw.events[3].payload.signal_id;}],
-  ['reused signal command', raw => {raw.events[7].payload.workflow_command_id = raw.events[3].payload.workflow_command_id;}],
+  ['deduplicated repeated signal', raw => {raw.events.splice(7, 5);}],
+  ['reused signal identity', raw => {raw.events[8].payload.signal_id = raw.events[3].payload.signal_id;}],
+  ['reused signal command', raw => {raw.events[8].payload.workflow_command_id = raw.events[3].payload.workflow_command_id;}],
   ['wrong signal run', raw => {raw.events[3].payload.workflow_run_id = 'other-run';}],
   ['changed signal value', raw => {raw.events[3].decoded.arguments = [signalFixture.input];}],
   ['changed signal type', raw => {raw.events[3].typed_decoded.arguments.value[0].value.count.type = 'double';}],
   ['wrong acknowledged command', raw => {raw.signal_deliveries[0].response.command_id = 'other';}],
   ['signal sent before durable wait', raw => {raw.signal_deliveries[0].before.status = 'running';}],
-  ['changed condition fingerprint', raw => {raw.events[5].payload.condition_definition_fingerprint = `sha256:${'b'.repeat(64)}`;}],
-  ['wrong condition signal', raw => {raw.events[5].payload.workflow_signal_id = 'other';}],
+  ['changed condition fingerprint', raw => {raw.events[6].payload.condition_definition_fingerprint = `sha256:${'b'.repeat(64)}`;}],
+  ['wrong condition signal', raw => {raw.events[6].payload.workflow_signal_id = 'other';}],
   ['workflow input substituted for signal result', raw => {raw.output = signalFixture.input;}],
-  ['missing service SignalApplied', raw => {raw.events.splice(4, 1);}],
+  ['missing service SignalApplied', raw => {raw.events.splice(5, 1);}],
+  ['lost message cursor progress', raw => {raw.events[4].payload.new_position = 0;}],
+  ['message order changed', raw => {raw.events[3].payload.command.message_sequence = 2;}],
 ]) {
   test(`refuses ${name}`, () => {
     const raw = signalObservation();

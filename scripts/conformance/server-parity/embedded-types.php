@@ -7,12 +7,11 @@ namespace ServerParity;
 use Workflow\V2\Activity;
 use Workflow\V2\Attributes\Type;
 use Workflow\V2\Attributes\Signal;
-use Workflow\Serializers\Serializer;
 use Workflow\V2\Workflow;
 
 use function Workflow\V2\activity;
 use function Workflow\V2\timer;
-use function Workflow\V2\await;
+use function Workflow\V2\signal;
 
 #[Type('parity.v1.echo')]
 final class EchoWorkflow extends Workflow
@@ -60,22 +59,11 @@ final class SignalsWorkflow extends Workflow
 {
     public function handle(array $value, int $target): array
     {
+        $received = null;
         for ($index = 0; $index < $target; $index++) {
-            await(fn (): bool => count($this->received()) > $index, conditionKey: 'payload:'.$index);
+            $received = signal('payload');
         }
 
-        return $this->received()[$target - 1][0];
-    }
-
-    /** Match the SDK's history-derived signals() in this embedded adapter. */
-    private function received(): array
-    {
-        return $this->run->historyEvents->filter(static fn ($event): bool =>
-            $event->event_type->value === 'SignalReceived' && ($event->payload['signal_name'] ?? null) === 'payload'
-        )->map(static function ($event): array {
-            $arguments = $event->payload['arguments'];
-
-            return Serializer::unserializeWithCodec('avro', is_array($arguments) ? $arguments['blob'] : $arguments);
-        })->values()->all();
+        return $received;
     }
 }

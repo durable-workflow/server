@@ -69,9 +69,11 @@ export function checkObservation(fixture, observation, workflowId) {
     for (let index = 0; index < fixture.signal_count; index++) {
       const opened = events[offset++];
       const received = events[offset++];
-      const applied = observation.mode === 'embedded' ? null : events[offset++];
-      const satisfied = events[offset++];
-      const waitId = opened.payload.condition_wait_id;
+      const cursor = events[offset++];
+      const applied = events[offset++];
+      const embedded = observation.mode === 'embedded';
+      const satisfied = embedded ? applied : events[offset++];
+      const waitId = opened.payload[embedded ? 'signal_wait_id' : 'condition_wait_id'];
       const signalId = received.payload.signal_id;
       const commandId = received.payload.workflow_command_id;
       for (const [value, label] of [[waitId, 'wait'], [signalId, 'signal'], [commandId, 'signal command']]) {
@@ -82,7 +84,7 @@ export function checkObservation(fixture, observation, workflowId) {
       const delivery = observation.signal_deliveries[index];
       equal(delivery.before.status, 'waiting', 'signal delivered only after a durable wait');
       equal(delivery.before.id ?? delivery.before.run_id, observation.run_id, 'waiting original run');
-      equal(delivery.response.accepted, true, 'accepted signal command');
+      equal(delivery.response.command_status ?? (delivery.response.accepted ? 'accepted' : 'rejected'), 'accepted', 'accepted signal command');
       equal(delivery.response.command_id, commandId, 'acknowledged signal command retained in history');
       equal(delivery.response.run_id, observation.run_id, 'acknowledged original run');
       equal(delivery.response.workflow_id, workflowId, 'acknowledged workflow');
@@ -93,27 +95,39 @@ export function checkObservation(fixture, observation, workflowId) {
       equal(received.payload.payload_codec, 'avro', 'signal argument codec');
       equal(received.decoded.arguments, [fixture.signal_value], 'decoded signal arguments');
       equal(received.typed_decoded.arguments, {type: 'list', value: [fixture.typed_signal_value]}, 'exact signal argument types');
-      equal(opened.payload.condition_key, `payload:${index}`, 'deterministic wait key');
       equal(opened.payload.sequence, index + 1, 'deterministic wait command sequence');
-      assert.match(opened.payload.condition_definition_fingerprint, /^sha256:[a-f0-9]{64}$/, 'recorded condition fingerprint');
-      for (const key of ['condition_wait_id', 'condition_key', 'condition_definition_fingerprint', 'sequence']) {
-        equal(satisfied.payload[key], opened.payload[key], `condition resolution retains ${key}`);
+      if (embedded) {
+        equal(opened.payload.signal_name, 'payload', 'direct signal wait name');
+        equal(received.payload.signal_wait_id, waitId, 'received signal routes to original direct wait');
+        equal(applied.payload.sequence, opened.payload.sequence, 'direct signal wait resolution sequence');
+      } else {
+        equal(opened.payload.condition_key, `payload:${index}`, 'deterministic wait key');
+        assert.match(opened.payload.condition_definition_fingerprint, /^sha256:[a-f0-9]{64}$/, 'recorded condition fingerprint');
+        for (const key of ['condition_wait_id', 'condition_key', 'condition_definition_fingerprint', 'sequence']) {
+          equal(satisfied.payload[key], opened.payload[key], `condition resolution retains ${key}`);
+        }
+        equal(satisfied.payload.workflow_signal_id, signalId, 'condition resolved by accepted signal');
       }
-      equal(satisfied.payload.workflow_signal_id, signalId, 'condition resolved by accepted signal');
       equal(satisfied.payload.signal_name, 'payload', 'condition resolution signal name');
       equal(satisfied.payload.signal_wait_id, received.payload.signal_wait_id, 'condition resolution signal wait relationship');
       nonempty(received.payload.signal_wait_id, 'signal routing wait identity');
-      if (applied) {
-        for (const key of ['workflow_command_id', 'signal_id', 'signal_name', 'signal_wait_id']) {
-          equal(applied.payload[key], received.payload[key], `applied signal retains ${key}`);
-        }
-        equal(applied.decoded.value, fixture.signal_value, 'applied signal value');
-        equal(applied.typed_decoded.value, fixture.typed_signal_value, 'applied signal value types');
+      equal(cursor.payload.stream_key, `instance:${workflowId}`, 'message cursor stream');
+      equal(cursor.payload.previous_position, index, 'message cursor previous position');
+      equal(cursor.payload.new_position, index + 1, 'message cursor advances once per signal');
+      equal(received.payload.command.id, commandId, 'recorded signal command identity');
+      equal(received.payload.command.sequence, index + 2, 'control command sequence is separate from authored wait sequence');
+      equal(received.payload.command.message_sequence, index + 1, 'ordered signal message sequence');
+      for (const key of ['workflow_command_id', 'signal_id', 'signal_name', 'signal_wait_id']) {
+        equal(applied.payload[key], received.payload[key], `applied signal retains ${key}`);
       }
+      equal(applied.decoded.value, fixture.signal_value, 'applied signal value');
+      equal(applied.typed_decoded.value, fixture.typed_signal_value, 'applied signal value types');
       commonEvents.push(
-        {event_type: 'ConditionWaitOpened', wait_id: `@wait:${index + 1}`, command_sequence: index + 1, condition_key: `payload:${index}`},
+        {event_type: 'PayloadWaitOpened', wait_id: `@wait:${index + 1}`, command_sequence: index + 1},
         {event_type: 'SignalReceived', signal_id: `@signal:${index + 1}`, command_id: `@signal-command:${index + 1}`, signal_name: 'payload', arguments: {type: 'list', value: [fixture.typed_signal_value]}},
-        {event_type: 'ConditionWaitSatisfied', wait_id: `@wait:${index + 1}`, signal_id: `@signal:${index + 1}`, command_sequence: index + 1},
+        {event_type: 'MessageCursorAdvanced', previous_position: index, new_position: index + 1},
+        {event_type: 'SignalApplied', signal_id: `@signal:${index + 1}`, command_id: `@signal-command:${index + 1}`, value: fixture.typed_signal_value},
+        {event_type: 'PayloadWaitResolved', wait_id: `@wait:${index + 1}`, signal_id: `@signal:${index + 1}`, command_sequence: index + 1},
       );
     }
     commonEvents.push({event_type: 'WorkflowCompleted'});
