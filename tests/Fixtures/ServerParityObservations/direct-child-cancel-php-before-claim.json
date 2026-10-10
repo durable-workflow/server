@@ -1813,6 +1813,28 @@
       }
     },
     "sdk_php": "2.2.6",
-    "php_version": "8.3.35"
+    "php_version": "8.3.35",
+    "workflow_polls": [
+      {
+        "run_id": "01m4hys10addwazs44nwe0rmt1",
+        "workflow_id": "child-reference-before-claim",
+        "workflow_type": "parity.v1.cancelled_child_parent",
+        "workflow_event_type": null,
+        "resume_source_kind": null,
+        "resume_source_id": null,
+        "child_call_id": null,
+        "child_workflow_run_id": null
+      },
+      {
+        "run_id": "01m4hys10addwazs44nwe0rmt1",
+        "workflow_id": "child-reference-before-claim",
+        "workflow_type": "parity.v1.cancelled_child_parent",
+        "workflow_event_type": "ChildRunCancelled",
+        "resume_source_kind": "child_workflow_run",
+        "resume_source_id": "01m4hys1sfhcehhh29zgvvhbmv",
+        "child_call_id": "01M4HYS1SKP55M8ZG23T8BM7ZS",
+        "child_workflow_run_id": "01m4hys1sfhcehhh29zgvvhbmv"
+      }
+    ]
   }
 }

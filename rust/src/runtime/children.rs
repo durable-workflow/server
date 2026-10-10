@@ -1,5 +1,5 @@
-//! Sequential successful children, committed with their original parent call.
-//! Retry, failure, cancellation, parallel groups and parent-close actions remain
+//! Sequential child completion and direct cancellation retain the original call.
+//! Retry, other failure, parallel groups and parent-close actions remain
 //! unqualified and are refused at admission rather than silently discarded.
 use super::{
     Result,
@@ -12,6 +12,12 @@ use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Transaction, Type};
+
+#[derive(Clone, Copy)]
+pub(super) enum ChildResolution<'a> {
+    Completed(&'a str),
+    Cancelled(&'a Value),
+}
 
 pub(super) fn validate_child(command: &Value) -> Result<()> {
     reject_fields(
@@ -101,7 +107,7 @@ where
         // This first slice permits one outstanding authored child. A replayed
         // completion is handled by the enclosing immutable task receipt.
         for sql in [
-            "SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status!='completed'",
+            "SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled')",
             "SELECT COUNT(*) FROM activity_executions WHERE workflow_run_id=$1 AND status!='completed'",
             "SELECT COUNT(*) FROM workflow_run_timers WHERE workflow_run_id=$1 AND status='pending'",
         ] {
@@ -132,7 +138,7 @@ where
         // and deadlines. Do not invent parent defaults for these runs.
         Self::query("INSERT INTO workflow_instances(id,namespace,workflow_type,workflow_class,current_run_id,run_count,started_at,created_at,updated_at) VALUES ($1,'default',$2,$3,$4,1,$5,$6,$7)")
             .bind(&child_instance).bind(workflow_type).bind(workflow_type).bind(&child_run).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut **tx).await?;
-        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,namespace,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,started_at,created_at,updated_at) VALUES ($1,$2,'default',$3,$4,1,'running','avro',$5,$6,$7,$8,$9)")
+        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,namespace,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,started_at,created_at,updated_at) VALUES ($1,$2,'default',$3,$4,1,'pending','avro',$5,$6,$7,$8,$9)")
             .bind(&child_run).bind(&child_instance).bind(workflow_type).bind(workflow_type).bind(&arguments).bind(&queue).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut **tx).await?;
         Self::query("INSERT INTO workflow_child_calls(parent_workflow_run_id,parent_workflow_instance_id,sequence,child_workflow_type,child_workflow_class,resolved_child_instance_id,resolved_child_run_id,parent_close_policy,queue,status,scheduled_at,started_at,arguments,metadata,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,'abandon',$8,'started',$9,$10,$11,$12,$13,$14)")
             .bind(&parent_run).bind(&parent_instance).bind(sequence).bind(workflow_type).bind(workflow_type).bind(&child_instance).bind(&child_run).bind(&queue).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at))
@@ -185,6 +191,15 @@ where
         output: &str,
         closed_at: DateTime<Utc>,
     ) -> Result<()> {
+        Self::resolve_child(tx, child, ChildResolution::Completed(output), closed_at).await
+    }
+
+    pub(super) async fn resolve_child(
+        tx: &mut Transaction<'_, DB>,
+        child: &DB::Row,
+        resolution: ChildResolution<'_>,
+        closed_at: DateTime<Utc>,
+    ) -> Result<()> {
         let child_run = DB::string(child, "id")?;
         let started = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowStarted' ORDER BY sequence LIMIT 1")
             .bind(&child_run).fetch_one(&mut **tx).await?;
@@ -235,8 +250,12 @@ where
         {
             return Err(refuse(StatusCode::CONFLICT, "child_call_mismatch"));
         }
-        Self::query("UPDATE workflow_child_calls SET status='completed',closed_reason='completed',closed_at=$1,updated_at=$2 WHERE id=$3")
-            .bind(DB::bind_time(closed_at)).bind(DB::bind_time(closed_at)).bind(DB::number(call, "id")?).execute(&mut **tx).await?;
+        let (status, event_type) = match resolution {
+            ChildResolution::Completed(_) => ("completed", "ChildRunCompleted"),
+            ChildResolution::Cancelled(_) => ("cancelled", "ChildRunCancelled"),
+        };
+        Self::query("UPDATE workflow_child_calls SET status=$1,closed_reason=$2,closed_at=$3,updated_at=$4 WHERE id=$5")
+            .bind(status).bind(status).bind(DB::bind_time(closed_at)).bind(DB::bind_time(closed_at)).bind(DB::number(call, "id")?).execute(&mut **tx).await?;
         let parent = Self::query("SELECT r.*,i.current_run_id FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE r.id=$1").bind(&parent_run).fetch_one(&mut **tx).await?;
         if DB::string(&parent, "workflow_instance_id")?
             != DB::string(link, "parent_workflow_instance_id")?
@@ -255,8 +274,26 @@ where
         if Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status IN ('ready','leased')").bind(&parent_run).fetch_one(&mut **tx).await? != 0 {
             return Err(refuse(StatusCode::CONFLICT, "child_parent_task_conflict"));
         }
-        Self::append(tx, &parent_run, "ChildRunCompleted", json!({"sequence":sequence,"workflow_link_id":call_id,"child_call_id":call_id,"child_workflow_instance_id":DB::string(child,"workflow_instance_id")?,"child_workflow_run_id":child_run,"child_workflow_class":DB::string(child,"workflow_class")?,"child_workflow_type":DB::string(child,"workflow_type")?,"child_run_number":DB::number(child,"run_number")?,"child_status":"completed","closed_reason":"completed","closed_at":closed_at,"output":wire(output),"result":wire(output),"payload_codec":"avro"}), None, None).await?;
-        Self::create_task(tx, &parent_run, &DB::string(&parent,"queue")?, "workflow", json!({"workflow_wait_kind":"child","child_call_id":call_id,"child_workflow_run_id":child_run,"resume_source_kind":"child_workflow_run","resume_source_id":child_run,"workflow_sequence":sequence,"workflow_event_type":"ChildRunCompleted","open_wait_id":format!("child:{call_id}")})).await?;
+        let mut payload = json!({"sequence":sequence,"workflow_link_id":call_id,"child_call_id":call_id,"child_workflow_instance_id":DB::string(child,"workflow_instance_id")?,"child_workflow_run_id":child_run,"child_workflow_class":DB::string(child,"workflow_class")?,"child_workflow_type":DB::string(child,"workflow_type")?,"child_run_number":DB::number(child,"run_number")?,"child_status":status,"closed_reason":status,"closed_at":closed_at});
+        match resolution {
+            ChildResolution::Completed(output) => {
+                payload["output"] = wire(output);
+                payload["result"] = wire(output);
+                payload["payload_codec"] = json!("avro");
+            }
+            ChildResolution::Cancelled(failure) => {
+                for field in [
+                    "failure_id",
+                    "failure_category",
+                    "exception_class",
+                    "message",
+                ] {
+                    payload[field] = failure[field].clone();
+                }
+            }
+        }
+        Self::append(tx, &parent_run, event_type, payload, None, None).await?;
+        Self::create_task(tx, &parent_run, &DB::string(&parent,"queue")?, "workflow", json!({"workflow_wait_kind":"child","child_call_id":call_id,"child_workflow_run_id":child_run,"resume_source_kind":"child_workflow_run","resume_source_id":child_run,"workflow_sequence":sequence,"workflow_event_type":event_type,"open_wait_id":format!("child:{call_id}")})).await?;
         Ok(())
     }
 }

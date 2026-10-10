@@ -64,6 +64,9 @@ for (const phase of ['before-claim', 'pending-timer']) {
     else Object.assign(mutations, {
       'SDK receives failed child instead': raw => { raw.child_cancellation.caught.failure_type = 'ChildRunFailed'; },
       'SDK loses original child payload': raw => { raw.child_cancellation.caught.payload.child_workflow_run_id = 'replacement'; },
+      'SDK missing parent resumption': raw => { raw.workflow_polls.pop(); },
+      'SDK resumed unrelated child': raw => { raw.workflow_polls.at(-1).child_workflow_run_id = 'replacement'; },
+      'SDK claims cancelled child again': raw => { raw.workflow_polls.push({run_id: raw.children[0].run_id}); },
     });
     for (const [name, mutate] of Object.entries(mutations)) test(`${example.mode} ${phase}: rejects ${name}`, () => {
       const damaged = structuredClone(example);

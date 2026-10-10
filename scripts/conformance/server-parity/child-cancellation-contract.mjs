@@ -128,6 +128,14 @@ export function checkChildCancellation(fixture, observation, identities, project
     for (const [key, value] of Object.entries({id: failure, workflow_run_id: child.run_id, source_kind: 'workflow_run',
       source_id: child.run_id, propagation_kind: 'cancelled', failure_category: 'cancelled', message: diagnostic})) equal(physical[key], value, 'physical original cancellation failure');
   } else {
+    const parentPolls = observation.workflow_polls.filter(poll => poll.run_id === observation.run_id);
+    const childPolls = observation.workflow_polls.filter(poll => poll.run_id === child.run_id);
+    equal(parentPolls.length, 2, 'one parent claim and one original-child resumption');
+    equal(childPolls.length, phase === 'before_claim' ? 0 : 1, 'declared child cancellation claim phase');
+    equal(observation.workflow_polls.length, parentPolls.length + childPolls.length, 'no unrelated claims substitute for original work');
+    const resumed = parentPolls[1];
+    for (const [key, value] of Object.entries({child_call_id: call, child_workflow_run_id: child.run_id,
+      workflow_event_type: 'ChildRunCancelled', resume_source_kind: 'child_workflow_run', resume_source_id: child.run_id})) equal(resumed[key], value, 'SDK polls original cancelled-child resumption');
     equal(caught.class, fixture.child_cancellation.http_parent_exception.class, 'published SDK child cancellation exception');
     equal(caught.failure_type, fixture.child_cancellation.http_parent_exception.failure_type, 'SDK cancellation failure type');
     equal(caught.workflow_type, fixture.child_workflow_type, 'SDK original child type');

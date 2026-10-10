@@ -323,6 +323,28 @@ rejection of corrupted identities, history, diagnostics and duplicate effects.
 The runner now attempts 24 cases: 22 qualified and these two native-pending
 candidates. Native repair and the complete database matrix remain ahead.
 
+Tests-first head `3feb7871` / test merge `55078239` independently confirms all
+288 PHP/embedded observations on the six configurations. Every native recording
+stops at direct child cancellation with `422 cancellation_propagation_not_available`;
+the preceding 30 native HTTP tests/configuration pass. Failure snapshots also
+expose an unclaimed native child described as `running`: only the parent was
+polled, whereas both published references describe the child as `pending`.
+The repair initializes children as pending, resolves direct cancellation through
+the existing checked child-call/link path, records `ChildRunCancelled` with the
+original failure and enqueues one original-parent resumption in the same
+transaction. Closed cancellation receipts retain the published
+`rejected_not_active` outcome. Two added native tests cover fresh pools, physical
+failure persistence, immutable duplicate/stale outcomes and relationship-corruption
+rollback. This implementation awaits native qualification.
+
+The adapter now issues the real SDK cancellation after a committed task-completion
+response, before the single SDK worker can poll again. It changes no request or
+response and synthesizes no history. Two fresh published PHP executions pass:
+before-claim cancellation observes pending state and zero child claims; timer
+cancellation observes waiting state and one child claim. Shared checks additionally
+require one original parent resumption and its original child/call/failure
+relationships. 447 comparator checks pass, including 158 direct-child checks.
+
 Generic HTTP probe failures retain bounded SDK diagnostics and real selected-run
 describe/history/debug reads before timeout shutdown. A real 120-second timer
 proved that the unchanged 30-second budget still fails and retains the original

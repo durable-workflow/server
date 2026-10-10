@@ -59,14 +59,14 @@ require $sdkAutoload;
 require __DIR__.'/observation-values.php';
 require __DIR__.'/probe-failure.php';
 
-function observedChildTransport(array &$polls, array &$completions, array &$activityPolls, array &$activityOutcomes): Psr18Transport
+function observedChildTransport(array &$polls, array &$completions, array &$activityPolls, array &$activityOutcomes, ?Closure $afterCompletion = null): Psr18Transport
 {
     // Observe real published transport I/O. No response or request is changed,
     // and authentication headers are never retained.
     $stack = HandlerStack::create();
-    $stack->push(static function (callable $handler) use (&$polls, &$completions, &$activityPolls, &$activityOutcomes): callable {
-        return static function (RequestInterface $request, array $options) use ($handler, &$polls, &$completions, &$activityPolls, &$activityOutcomes) {
-            return $handler($request, $options)->then(static function (ResponseInterface $response) use ($request, &$polls, &$completions, &$activityPolls, &$activityOutcomes): ResponseInterface {
+    $stack->push(static function (callable $handler) use (&$polls, &$completions, &$activityPolls, &$activityOutcomes, $afterCompletion): callable {
+        return static function (RequestInterface $request, array $options) use ($handler, &$polls, &$completions, &$activityPolls, &$activityOutcomes, $afterCompletion) {
+            return $handler($request, $options)->then(static function (ResponseInterface $response) use ($request, &$polls, &$completions, &$activityPolls, &$activityOutcomes, $afterCompletion): ResponseInterface {
                 $path = $request->getUri()->getPath();
                 if ($path === '/api/worker/workflow-tasks/poll') {
                     $body = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
@@ -77,6 +77,9 @@ function observedChildTransport(array &$polls, array &$completions, array &$acti
                     $completions[] = ['path' => $path,
                         'request' => json_decode((string) $request->getBody(), true, flags: JSON_THROW_ON_ERROR),
                         'response' => json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR)];
+                    if ($response->getStatusCode() === 200 && $afterCompletion !== null) {
+                        $afterCompletion();
+                    }
                 } elseif ($path === '/api/worker/activity-tasks/poll') {
                     $body = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
                     if (is_array($body['task'] ?? null)) {
@@ -116,8 +119,16 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $workflowCompletions = [];
     $activityPolls = [];
     $activityOutcomes = [];
+    $client = $handle = null;
+    $childCancellation = null;
+    // Observe the committed response before this single real SDK worker can
+    // poll its next task. A wall-clock callback cannot guarantee before-claim
+    // cancellation when a server completes successive requests quickly.
+    $afterCompletion = isset($fixture['child_cancellation']) ? static function () use (&$client, &$handle, &$childCancellation, $workflowId, $fixture): void {
+        driveHttpChildCancellation($client, $workflowId, $handle->selectedRunId, $fixture, $childCancellation);
+    } : null;
     $transport = isset($fixture['child_count']) || isset($fixture['child_cancellation']) || isset($fixture['retry_policy'])
-        ? observedChildTransport($workflowPolls, $workflowCompletions, $activityPolls, $activityOutcomes) : null;
+        ? observedChildTransport($workflowPolls, $workflowCompletions, $activityPolls, $activityOutcomes, $afterCompletion) : null;
     $client = new Client($url, namespace: $namespace, transport: $transport, token: getenv('DW_PARITY_TOKEN') ?: null);
     $handle = null;
     $deliveries = [];
@@ -130,7 +141,6 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $caughtFailure = null;
     $diagnostics = [];
     $failureCaptured = false;
-    $childCancellation = null;
     $caughtChildCancellation = null;
     $deadline = microtime(true) + 30;
     $worker = null;
@@ -140,9 +150,6 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
             parityHttpFailureEvidence($error, 'before-worker-shutdown', $workflowId, $handle?->selectedRunId, $url, $namespace, $diagnostics);
             $failureCaptured = true;
             throw $error;
-        }
-        if ($handle !== null && isset($fixture['child_cancellation'])) {
-            driveHttpChildCancellation($client, $workflowId, $handle->selectedRunId, $fixture, $childCancellation);
         }
         if ($handle !== null && isset($fixture['update_values'])) {
             $history = $client->workflowHistory($workflowId, $handle->selectedRunId, 100)['events'];

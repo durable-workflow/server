@@ -1,8 +1,9 @@
-//! Immediate cancellation of root runs. Cooperative cleanup and child/update
-//! propagation remain refused until their separate fixtures are qualified.
+//! Immediate cancellation of root or direct child runs. Propagation trees and
+//! update dependencies remain refused until their separate fixtures qualify.
 use super::{
     Result, RuntimeError,
     backend::Backend,
+    children::ChildResolution,
     refuse,
     store::{Store, id, now, reject_fields},
 };
@@ -186,12 +187,12 @@ where
             "pending" | "running" | "waiting"
         );
         if !closed {
-            let children =
-                Self::scalar("SELECT COUNT(*) FROM workflow_links WHERE child_workflow_run_id=$1")
+            let unsupported_links =
+                Self::scalar("SELECT COUNT(*) FROM workflow_links WHERE child_workflow_run_id=$1 AND link_type!='child_workflow'")
                     .bind(&run_id)
                     .fetch_one(&mut *tx)
                     .await?;
-            let pending_children = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status!='completed'")
+            let pending_children = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled')")
                 .bind(&run_id).fetch_one(&mut *tx).await?;
             let updates = Self::scalar("SELECT COUNT(*) FROM workflow_updates WHERE workflow_run_id=$1 AND status='accepted'")
                 .bind(&run_id).fetch_one(&mut *tx).await?;
@@ -203,7 +204,7 @@ where
                         task["run_id"] == run_id
                             && matches!(task["status"].as_str(), Some("pending" | "leased"))
                     });
-            if children != 0 || pending_children != 0 || updates != 0 || pending_queries {
+            if unsupported_links != 0 || pending_children != 0 || updates != 0 || pending_queries {
                 return Err(refuse(
                     StatusCode::UNPROCESSABLE_ENTITY,
                     "cancellation_propagation_not_available",
@@ -242,7 +243,7 @@ where
             .await?;
         let response = json!({"workflow_id":workflow_id,"run_id":run_id,"requested_run_id":null,"resolved_run_id":run_id,
             "workflow_type":DB::string(&run,"workflow_type")?,"command_id":command_id,"command_sequence":command_sequence,
-            "command_status":status,"command_source":"control_plane","target_scope":"instance","outcome":outcome,
+            "command_status":status,"command_source":"control_plane","target_scope":"instance","outcome":if closed {Some("rejected_not_active")} else {outcome},
             "reason":if closed {rejection} else {reason.as_deref()},"rejection_reason":rejection,"validation_errors":[]});
         if closed {
             tx.commit().await?;
@@ -313,11 +314,12 @@ where
             &mut tx,
             &run_id,
             "WorkflowCancelled",
-            terminal,
+            terminal.clone(),
             None,
             Some(&command_id),
         )
         .await?;
+        Self::resolve_child(&mut tx, &run, ChildResolution::Cancelled(&terminal), at).await?;
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok((StatusCode::OK, response))

@@ -1150,7 +1150,7 @@ where
                     .bind(&run_id).fetch_one(&mut *tx).await?;
                 let timers: i64 = Self::scalar("SELECT COUNT(*) FROM workflow_run_timers WHERE workflow_run_id=$1 AND status='pending'")
                     .bind(&run_id).fetch_one(&mut *tx).await?;
-                let children = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status!='completed'")
+                let children = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled')")
                     .bind(&run_id).fetch_one(&mut *tx).await?;
                 if outstanding != 0
                     || timers != 0
