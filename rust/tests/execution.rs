@@ -25,6 +25,9 @@ mod visibility;
 #[path = "execution/admission.rs"]
 mod admission;
 
+#[path = "execution/namespaces.rs"]
+mod namespaces;
+
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
     Postgres {
@@ -2435,7 +2438,7 @@ async fn cooperative_root_request_requires_original_capable_claim_not_later_regi
             );
         } else {
             assert_eq!(requested.0, StatusCode::ACCEPTED, "{}", requested.1);
-            assert_eq!(requested.1["run_status"], "running");
+            assert_eq!(requested.1["run_status"], "pending");
         }
         runtime.close().await;
         database.remove().await;

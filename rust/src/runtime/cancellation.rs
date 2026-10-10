@@ -171,8 +171,8 @@ where
         blob: Option<String>,
     ) -> Result<(StatusCode, Value)> {
         let mut tx = self.begin().await?;
-        let run = Self::query("SELECT r.* FROM workflow_instances i JOIN workflow_runs r ON r.id=i.current_run_id WHERE i.id=$1 AND i.namespace='default'")
-            .bind(workflow_id).fetch_optional(&mut *tx).await?
+        let run = Self::query("SELECT r.* FROM workflow_instances i JOIN workflow_runs r ON r.id=i.current_run_id WHERE i.id=$1 AND i.namespace=$2")
+            .bind(workflow_id).bind(self.namespace.as_ref()).fetch_optional(&mut *tx).await?
             .ok_or_else(|| refuse(StatusCode::NOT_FOUND, "instance_not_found"))?;
         let run_id = DB::string(&run, "id")?;
         if selected_run.is_some_and(|id| id != run_id) {

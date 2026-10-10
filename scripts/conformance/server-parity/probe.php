@@ -415,6 +415,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         $handle->selectedRunId, $queue, $url, $namespace) : null;
     $admission = isset($fixture['admission']) ? finishHttpAdmission($client, $fixture, $workflowId,
         $handle->selectedRunId, $queue, $url, $namespace) : null;
+    $namespaces = isset($fixture['namespace_isolation']) ? finishHttpNamespaces($client, $fixture, $workflowId, $queue, $url) : null;
     if ($scheduleState !== null) {
         $scheduleState = finishHttpSchedule($client, $fixture, $scheduleState, $workflowId, $handle->selectedRunId);
         $scheduleState['control_receipts'] = $scheduleReceipts;
@@ -497,6 +498,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'workflow_id' => $execution->workflowId,
         'visibility' => $visibility,
         'admission' => $admission,
+        'namespace_isolation' => $namespaces,
         'run_id' => $execution->runId,
         'workflow_type' => $execution->workflowType,
         'namespace' => $execution->namespace,
@@ -675,6 +677,7 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
     }
     $visibility = isset($fixture['visibility']) ? finishEmbeddedVisibility($fixture, $workflowId, $queue, $namespace) : null;
     $admission = isset($fixture['admission']) ? finishEmbeddedAdmission($fixture, $workflowId, $queue) : null;
+    $namespaces = isset($fixture['namespace_isolation']) ? finishEmbeddedNamespaces($fixture, $workflowId, $queue) : null;
     if (isset($fixture['child_cancellation'])) {
         $childCancellation = finishEmbeddedChildCancellation($stub->runId(), $childCancellation);
         $childCancellation['caught'] = ChildCancellationProbeState::$caught;
@@ -733,6 +736,7 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
         'execution' => $run->toArray(),
         'visibility' => $visibility,
         'admission' => $admission,
+        'namespace_isolation' => $namespaces,
         'child_cancellation' => $childCancellation,
         'worker_output' => Artisan::output(),
         'workflow_id' => $run->workflow_instance_id,
@@ -758,6 +762,7 @@ try {
     require __DIR__.'/schedule-probe.php';
     require __DIR__.'/visibility-probe.php';
     require __DIR__.'/admission-probe.php';
+    require __DIR__.'/namespace-probe.php';
     require __DIR__.'/child-cancellation-probe.php';
     require __DIR__.'/cancellation-probe.php';
     require __DIR__.'/cooperative-probe.php';

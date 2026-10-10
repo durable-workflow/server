@@ -26,6 +26,53 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+The twenty-ninth reviewed fixture, `namespace-isolation`, creates two named
+namespaces and completes two original authored activity workflows. HTTP uses the
+unchanged frozen PHP SDK, one queue and the same worker ID in both namespaces.
+Five foreign control requests and three foreign task completion attempts preserve
+the original descriptions and histories. Workflow IDs remain globally reserved;
+worker IDs, poll receipts and leases are scoped by namespace. Completing and
+deregistering the first worker leaves the second namespace's original run and
+registration intact. Embedded mode supplies host namespace binding and executes
+real database-queue jobs; HTTP administration and registration are inapplicable.
+
+Frozen PHP/embedded reference source `55de4c86` passes and independently compares
+both original observations. Corrected tests-first `cb3cf3e5` reproduces both
+namespace failures on all six databases while retaining 39 existing passing HTTP
+tests. Failed recorder/helper revisions and original recordings are retained in
+[#361](https://github.com/durable-workflow/server/pull/361).
+
+Actual PHP keeps the first leased workflow `pending`, then retains `waiting`
+before activity/replay commits. Native polling now preserves that authored
+lifecycle. Foreign-target refusals retain original workflow/run/task/attempt
+identities, canonical diagnostics, complete control contracts and worker
+protocol/capabilities. The unchanged SDK also polls the query queue during an
+activity workflow. That idle poll now scopes registration and cached-task lookup
+to its namespace; a native regression preserves a default-namespace same-ID query
+lease through a foreign poll and its original completion. Named query authoring
+and completion require separate qualification.
+
+The [candidate matrix](https://github.com/durable-workflow/server/actions/runs/38043263104)
+for head `9b5e77664b42d0526aa80065cd3f32af25954c8b` tests merge revision
+`91b49964a84d34d74d0d60621b554fe972f0976e` with current PHP main. All 29
+PHP/Rust/embedded cases pass on SQLite, PostgreSQL 17/18, MySQL 8.0/8.4 and MariaDB
+10.11. All six downloaded artifact digests match and 522 actual observations
+independently compare, including 18 namespace observations. All 42 native HTTP
+tests pass per configuration, SQLite passes 21 library tests, the existing 810
+modeled comparator checks pass and 54 original/corrupted-reference rechecks pass.
+The latter rechecks are not additional workflow executions. PHP/source passes
+2,621 tests. Promotion qualification of the reviewed default corpus is recorded
+in #361; PHP remains the default published runtime.
+
+Native namespace metadata, request binding and the qualified worker transitions
+use bound SQL values and the existing pools, scheduler and serialized transition
+lock. Named operations and commands outside this echo/activity/read/cancel and
+idle-poll slice explicitly refuse before reaching default-scope queries. Wider
+timers/signals/queries/updates/children/schedules/visibility, lifecycle/retention,
+quotas and role profiles remain unqualified. Role tokens need a separate profile:
+enabling them disables the legacy token's full-access bypass, and published
+worker/operator/admin permissions are distinct.
+
 The twenty-eighth reviewed fixture qualifies legacy-token authentication and
 default-namespace admission. It completes an original echo, admits one unclaimed
 peer and executes 16 actual control/worker requests: credential failures before
@@ -48,10 +95,10 @@ All six downloaded artifact digests match; 504 actual observations independently
 compare, including 18 admission observations and 192 HTTP admission requests.
 All 39 native HTTP tests pass per configuration, SQLite passes 21 library tests,
 810 modeled checks pass (114 admission) and PHP/source passes 2,607 tests.
-The reviewed default corpus is now 28; promotion qualification and main
+The reviewed default corpus became 28; promotion qualification and main
 verification are recorded in [#359](https://github.com/durable-workflow/server/pull/359).
 
-Role/principal tokens, tenant restrictions, named-namespace execution, alternate
+Role/principal tokens, tenant restrictions, wider named-namespace execution, alternate
 auth/default configuration and additional control-operation error contracts
 remain open. Malformed/non-scalar selectors fail closed in this development
 slice; their broader PHP contract remains pending.

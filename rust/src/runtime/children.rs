@@ -68,8 +68,13 @@ where
         workflow_type: &str,
         started: &mut Value,
     ) -> Result<()> {
-        let workers = Self::query("SELECT supported_workflow_types,workflow_command_contracts FROM workflow_worker_registrations WHERE namespace='default' AND task_queue=$1 AND status='active' AND workflow_command_contracts IS NOT NULL AND last_heartbeat_at>$2 ORDER BY id DESC LIMIT 100")
-            .bind(queue).bind(DB::bind_time(now() - chrono::Duration::seconds(60))).fetch_all(&mut **tx).await?;
+        let instance = Self::query("SELECT namespace FROM workflow_instances WHERE id=$1")
+            .bind(text(started, "workflow_instance_id")?)
+            .fetch_one(&mut **tx)
+            .await?;
+        let namespace = DB::string(&instance, "namespace")?;
+        let workers = Self::query("SELECT supported_workflow_types,workflow_command_contracts FROM workflow_worker_registrations WHERE task_queue=$1 AND status='active' AND workflow_command_contracts IS NOT NULL AND last_heartbeat_at>$2 AND namespace=$3 ORDER BY id DESC LIMIT 100")
+            .bind(queue).bind(DB::bind_time(now() - chrono::Duration::seconds(60))).bind(&namespace).fetch_all(&mut **tx).await?;
         for worker in workers {
             if DB::document_row(&worker, "supported_workflow_types")?
                 .as_array()

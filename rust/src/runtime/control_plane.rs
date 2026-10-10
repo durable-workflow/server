@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 
 pub(super) enum Operation {
+    Start,
     List,
     Describe,
     DescribeRun,
@@ -12,8 +13,44 @@ pub(super) enum Operation {
 }
 
 impl Operation {
+    pub(super) fn refusal(
+        self,
+        error: super::RuntimeError,
+        workflow_id: &str,
+        run_id: Option<&str>,
+    ) -> super::RuntimeError {
+        let (status, mut body) = match error {
+            super::RuntimeError::Refused { status, reason }
+                if status == axum::http::StatusCode::NOT_FOUND
+                    && matches!(reason, "instance_not_found" | "run_not_found") =>
+            {
+                (
+                    status,
+                    json!({"reason":reason,"message":if reason == "run_not_found" {
+                    "Workflow run not found."
+                } else { "Workflow not found." },"workflow_id":workflow_id}),
+                )
+            }
+            super::RuntimeError::Protocol { status, response }
+                if matches!(self, Self::Start)
+                    && response["reason"] == "workflow_id_reserved_in_namespace" =>
+            {
+                (status, response)
+            }
+            other => return other,
+        };
+        if let Some(run_id) = run_id {
+            body["run_id"] = json!(run_id);
+        }
+        super::RuntimeError::Protocol {
+            status,
+            response: self.response(body),
+        }
+    }
+
     pub(super) fn response(self, mut body: Value) -> Value {
         let (operation, required, success): (&str, &[&str], &[&str]) = match self {
+            Self::Start => ("start", &[], &["workflow_id", "outcome"]),
             Self::List => ("list", &[], &[]),
             Self::Describe => ("describe", &["workflow_id"], &[]),
             Self::DescribeRun => ("describe_run", &["workflow_id"], &["run_id"]),
@@ -25,6 +62,22 @@ impl Operation {
             "contract":{"schema":"durable-workflow.v2.control-plane-response.contract", "version":1,
                 "legacy_field_policy":"reject_non_canonical", "legacy_fields":{"query":"query_name","signal":"signal_name","update":"update_name","wait_policy":"wait_for"},
                 "required_fields":required, "success_fields":success}});
+        if matches!(self, Self::Start) {
+            metadata["contract"]["rejection_fields"] = json!([
+                "workflow_id",
+                "command_status",
+                "command_source",
+                "outcome",
+                "reason",
+                "rejection_reason",
+                "message"
+            ]);
+            metadata["contract"]["rejection_reasons"] = json!([
+                "workflow_id_reserved_in_namespace",
+                "task_queue_draining",
+                "compatibility_blocked"
+            ]);
+        }
         if matches!(self, Self::DescribeRun | Self::History) {
             metadata["contract"]["rejection_fields"] = json!([
                 "workflow_id",
@@ -63,7 +116,11 @@ impl Operation {
             "wait_reason",
             "workflow_count",
             "next_page_token",
+            "command_status",
+            "command_source",
+            "outcome",
             "reason",
+            "rejection_reason",
             "message",
             "remediation",
             "validation_errors",

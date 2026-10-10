@@ -1,5 +1,5 @@
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     extract::{DefaultBodyLimit, Path, Query, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode},
     middleware::{self, Next},
@@ -17,6 +17,11 @@ pub fn router(runtime: Runtime) -> Router {
         .route("/api/health", get(health))
         .route("/api/ready", get(ready))
         .route("/api/cluster/info", get(cluster))
+        .route(
+            "/api/namespaces",
+            get(list_namespaces).post(create_namespace),
+        )
+        .route("/api/namespaces/{namespace}", get(describe_namespace))
         .route("/api/workflows", get(list_workflows).post(start))
         .route("/api/schedules", post(super::schedule_http::create))
         .route(
@@ -135,8 +140,9 @@ pub fn router(runtime: Runtime) -> Router {
         .with_state(runtime)
 }
 
-async fn guard(State(runtime): State<Runtime>, request: Request, next: Next) -> Response {
-    let path = request.uri().path();
+async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next) -> Response {
+    request.extensions_mut().insert(runtime.clone());
+    let path = request.uri().path().to_owned();
     if path == "/api/health" || path == "/api/ready" {
         return next.run(request).await;
     }
@@ -216,7 +222,10 @@ async fn guard(State(runtime): State<Runtime>, request: Request, next: Next) -> 
     }
     // Namespace resolution must precede every runtime mutation. A header wins
     // over the query selector; neither may silently select the default peer.
-    if path != "/api/cluster/info" {
+    if path != "/api/cluster/info"
+        && path != "/api/namespaces"
+        && !path.starts_with("/api/namespaces/")
+    {
         let namespace = if let Some(header) = request.headers().get("x-namespace") {
             header.to_str().unwrap_or("").to_ascii_lowercase()
         } else {
@@ -231,18 +240,81 @@ async fn guard(State(runtime): State<Runtime>, request: Request, next: Next) -> 
                     json!({"reason":"invalid_namespace", "message":"Namespace must be a scalar string."})).await,
             }
         };
-        if namespace != "default" {
+        let exists = match runtime.namespace_exists(&namespace).await {
+            Ok(exists) => exists,
+            Err(error) => return error.into_response(),
+        };
+        if !exists {
             let body = json!({"reason":"namespace_not_found", "namespace":namespace,
                 "message":format!("Namespace '{namespace}' does not exist."),
                 "remediation":"Register the namespace via POST /api/namespaces, or send an X-Namespace header naming an existing namespace."});
             return admission_error(request, worker, StatusCode::NOT_FOUND, body).await;
         }
+        if namespace != "default" && !named_namespace_operation(request.method().as_str(), &path) {
+            return admission_error(request,worker,StatusCode::UNPROCESSABLE_ENTITY,
+                json!({"reason":"development_namespace_operation_unqualified","namespace":namespace,
+                    "message":"This operation is not implemented for named namespaces in the unpublished execution slice."})).await;
+        }
+        request
+            .extensions_mut()
+            .insert(runtime.in_namespace(&namespace));
     }
     let mut response = next.run(request).await;
     response
         .headers_mut()
         .insert(header, HeaderValue::from_static(version));
     response
+}
+
+fn named_namespace_operation(method: &str, path: &str) -> bool {
+    // Keep unimplemented families from reaching default-namespace selectors.
+    // Further families require their own shared namespace fixtures.
+    if path == "/api/workflows" {
+        return method == "POST";
+    }
+    if let Some(path) = path.strip_prefix("/api/workflows/") {
+        let parts: Vec<_> = path.split('/').collect();
+        return matches!(
+            parts.as_slice(),
+            [_] | [_, "cancel"] | [_, "runs", _] | [_, "runs", _, "history" | "cancel"]
+        );
+    }
+    if let Some(path) = path.strip_prefix("/api/worker/") {
+        let parts: Vec<_> = path.split('/').collect();
+        return matches!(
+            parts.as_slice(),
+            ["register" | "heartbeat"]
+                | ["registrations", _]
+                | ["workflow-tasks" | "activity-tasks", "poll"]
+                | ["query-tasks", "poll"]
+                | ["workflow-tasks", _, "complete" | "history" | "heartbeat"]
+                | [
+                    "activity-tasks",
+                    _,
+                    "complete" | "fail" | "heartbeat" | "status"
+                ]
+        );
+    }
+    false
+}
+
+async fn list_namespaces(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
+    Ok(Json(runtime.list_namespaces().await?))
+}
+async fn describe_namespace(
+    Extension(runtime): Extension<Runtime>,
+    Path(namespace): Path<String>,
+) -> Result<Json<Value>> {
+    Ok(Json(runtime.describe_namespace(&namespace).await?))
+}
+async fn create_namespace(
+    Extension(runtime): Extension<Runtime>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    Ok((
+        StatusCode::CREATED,
+        Json(runtime.create_namespace(body).await?),
+    ))
 }
 
 async fn admission_error(
@@ -266,13 +338,13 @@ async fn admission_error(
     response
 }
 
-async fn health(State(runtime): State<Runtime>) -> Response {
+async fn health(Extension(runtime): Extension<Runtime>) -> Response {
     let database = runtime.database_live().await;
     (if database { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE },
         Json(json!({"status": if database { "serving" } else { "degraded" }, "checks": {"database": database}}))).into_response()
 }
 
-async fn ready(State(runtime): State<Runtime>) -> Response {
+async fn ready(Extension(runtime): Extension<Runtime>) -> Response {
     let ready = runtime.schema_ready().await;
     (
         if ready {
@@ -298,10 +370,13 @@ async fn cluster() -> Json<Value> {
 }
 
 async fn start(
-    State(runtime): State<Runtime>,
+    Extension(runtime): Extension<Runtime>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
-    let result = runtime.start(body).await?;
+    let workflow_id = body["workflow_id"].as_str().unwrap_or("").to_owned();
+    let result = runtime.start(body).await.map_err(|error| {
+        super::control_plane::Operation::Start.refusal(error, &workflow_id, None)
+    })?;
     let status = if result["outcome"] == "started_new" {
         StatusCode::CREATED
     } else {
@@ -311,44 +386,57 @@ async fn start(
 }
 
 async fn list_workflows(
-    State(runtime): State<Runtime>,
+    Extension(runtime): Extension<Runtime>,
     Query(query): Query<super::visibility::VisibilityQuery>,
 ) -> Result<Json<Value>> {
     Ok(Json(runtime.list_workflows(query.validate()?).await?))
 }
 
 async fn describe_current(
-    State(runtime): State<Runtime>,
+    Extension(runtime): Extension<Runtime>,
     Path(workflow_id): Path<String>,
 ) -> Result<Json<Value>> {
-    let body = runtime.describe(&workflow_id, None).await?;
+    let body = runtime
+        .describe(&workflow_id, None)
+        .await
+        .map_err(|error| {
+            super::control_plane::Operation::Describe.refusal(error, &workflow_id, None)
+        })?;
     Ok(Json(
         super::control_plane::Operation::Describe.response(body),
     ))
 }
 
 async fn cancel_current(
-    State(runtime): State<Runtime>,
+    Extension(runtime): Extension<Runtime>,
     Path(workflow_id): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
-    let (status, response) = runtime.cancel_workflow(&workflow_id, None, body).await?;
+    let (status, response) = runtime
+        .cancel_workflow(&workflow_id, None, body)
+        .await
+        .map_err(|error| {
+            super::control_plane::Operation::Cancel.refusal(error, &workflow_id, None)
+        })?;
     Ok((status, Json(response)))
 }
 
 async fn cancel_run(
-    State(runtime): State<Runtime>,
+    Extension(runtime): Extension<Runtime>,
     Path((workflow_id, run_id)): Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
     let (status, response) = runtime
         .cancel_workflow(&workflow_id, Some(&run_id), body)
-        .await?;
+        .await
+        .map_err(|error| {
+            super::control_plane::Operation::Cancel.refusal(error, &workflow_id, Some(&run_id))
+        })?;
     Ok((status, Json(response)))
 }
 
 async fn request_cancellation_current(
-    State(runtime): State<Runtime>,
+    Extension(runtime): Extension<Runtime>,
     Path(workflow_id): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
@@ -359,7 +447,7 @@ async fn request_cancellation_current(
 }
 
 async fn request_cancellation_run(
-    State(runtime): State<Runtime>,
+    Extension(runtime): Extension<Runtime>,
     Path((workflow_id, run_id)): Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
@@ -370,7 +458,7 @@ async fn request_cancellation_run(
 }
 
 async fn signal_current(
-    State(runtime): State<Runtime>,
+    Extension(runtime): Extension<Runtime>,
     Path((workflow_id, name)): Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
@@ -381,7 +469,7 @@ async fn signal_current(
 }
 
 async fn update_current(
-    State(runtime): State<Runtime>,
+    Extension(runtime): Extension<Runtime>,
     Path((workflow_id, name)): Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
@@ -392,7 +480,7 @@ async fn update_current(
 }
 
 async fn update_run(
-    State(runtime): State<Runtime>,
+    Extension(runtime): Extension<Runtime>,
     Path((workflow_id, run_id, name)): Path<(String, String, String)>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
@@ -403,7 +491,7 @@ async fn update_run(
 }
 
 async fn signal_run(
-    State(runtime): State<Runtime>,
+    Extension(runtime): Extension<Runtime>,
     Path((workflow_id, run_id, name)): Path<(String, String, String)>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
@@ -418,10 +506,15 @@ async fn signal_run(
 }
 
 async fn describe_run(
-    State(runtime): State<Runtime>,
+    Extension(runtime): Extension<Runtime>,
     Path((workflow_id, run_id)): Path<(String, String)>,
 ) -> Result<Json<Value>> {
-    let body = runtime.describe(&workflow_id, Some(&run_id)).await?;
+    let body = runtime
+        .describe(&workflow_id, Some(&run_id))
+        .await
+        .map_err(|error| {
+            super::control_plane::Operation::DescribeRun.refusal(error, &workflow_id, Some(&run_id))
+        })?;
     Ok(Json(
         super::control_plane::Operation::DescribeRun.response(body),
     ))
@@ -434,7 +527,7 @@ struct HistoryQuery {
 }
 
 async fn history(
-    State(runtime): State<Runtime>,
+    Extension(runtime): Extension<Runtime>,
     Path((workflow_id, run_id)): Path<(String, String)>,
     Query(query): Query<HistoryQuery>,
 ) -> Result<Json<Value>> {
@@ -449,7 +542,10 @@ async fn history(
     let after = decode_cursor(query.next_page_token.as_deref());
     let body = runtime
         .history(&workflow_id, &run_id, after, page_size)
-        .await?;
+        .await
+        .map_err(|error| {
+            super::control_plane::Operation::History.refusal(error, &workflow_id, Some(&run_id))
+        })?;
     Ok(Json(
         super::control_plane::Operation::History.response(body),
     ))
@@ -465,7 +561,7 @@ pub(super) fn decode_cursor(token: Option<&str>) -> i64 {
 }
 
 async fn task_history(
-    State(runtime): State<Runtime>,
+    Extension(runtime): Extension<Runtime>,
     Path(task_id): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
@@ -473,25 +569,25 @@ async fn task_history(
 }
 
 async fn register(
-    State(runtime): State<Runtime>,
+    Extension(runtime): Extension<Runtime>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
     Ok((StatusCode::CREATED, Json(runtime.register(body).await?)))
 }
 async fn worker_heartbeat(
-    State(runtime): State<Runtime>,
+    Extension(runtime): Extension<Runtime>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
     runtime.worker_heartbeat(body).await.map(Json)
 }
 async fn deregister(
-    State(runtime): State<Runtime>,
+    Extension(runtime): Extension<Runtime>,
     Path(worker_id): Path<String>,
 ) -> Result<Json<Value>> {
     runtime.deregister(&worker_id).await.map(Json)
 }
 async fn poll_workflow(
-    State(runtime): State<Runtime>,
+    Extension(runtime): Extension<Runtime>,
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
@@ -501,7 +597,7 @@ async fn poll_workflow(
         .map(Json)
 }
 async fn poll_activity(
-    State(runtime): State<Runtime>,
+    Extension(runtime): Extension<Runtime>,
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
@@ -518,7 +614,7 @@ fn request_protocol(headers: &HeaderMap) -> Result<&str> {
         .ok_or_else(|| refuse(StatusCode::BAD_REQUEST, "missing_protocol_version"))
 }
 async fn heartbeat_task(
-    State(runtime): State<Runtime>,
+    Extension(runtime): Extension<Runtime>,
     Path(task_id): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
@@ -526,7 +622,7 @@ async fn heartbeat_task(
 }
 
 async fn deliver_cancellation(
-    State(runtime): State<Runtime>,
+    Extension(runtime): Extension<Runtime>,
     Path(task_id): Path<String>,
     headers: HeaderMap,
     Json(body): Json<Value>,
@@ -537,22 +633,69 @@ async fn deliver_cancellation(
         .map(Json)
 }
 async fn complete_workflow(
-    State(runtime): State<Runtime>,
+    Extension(runtime): Extension<Runtime>,
     Path(task_id): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
-    runtime.complete_workflow(&task_id, body).await.map(Json)
+    let attempt = body["workflow_task_attempt"].clone();
+    runtime
+        .complete_workflow(&task_id, body)
+        .await
+        .map_err(|error| {
+            completion_refusal(
+                error,
+                &task_id,
+                "workflow_task_attempt",
+                attempt,
+                "Workflow task not found.",
+            )
+        })
+        .map(Json)
 }
 async fn complete_activity(
-    State(runtime): State<Runtime>,
+    Extension(runtime): Extension<Runtime>,
     Path(task_id): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
-    runtime.complete_activity(&task_id, body).await.map(Json)
+    let attempt = body["activity_attempt_id"].clone();
+    runtime
+        .complete_activity(&task_id, body)
+        .await
+        .map_err(|error| {
+            completion_refusal(
+                error,
+                &task_id,
+                "activity_attempt_id",
+                attempt,
+                "Activity task not found.",
+            )
+        })
+        .map(Json)
+}
+
+fn completion_refusal(
+    error: super::RuntimeError,
+    task_id: &str,
+    attempt_field: &str,
+    attempt: Value,
+    message: &str,
+) -> super::RuntimeError {
+    match error {
+        super::RuntimeError::Refused {
+            status,
+            reason: "task_not_found",
+        } if status == StatusCode::NOT_FOUND => {
+            let mut response = json!({"task_id":task_id,"error":message,"reason":"task_not_found",
+                "protocol_version":"1.20","server_capabilities":capabilities()});
+            response[attempt_field] = attempt;
+            super::RuntimeError::Protocol { status, response }
+        }
+        other => other,
+    }
 }
 
 async fn heartbeat_activity(
-    State(runtime): State<Runtime>,
+    Extension(runtime): Extension<Runtime>,
     Path(task_id): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
@@ -560,7 +703,7 @@ async fn heartbeat_activity(
 }
 
 async fn activity_status(
-    State(runtime): State<Runtime>,
+    Extension(runtime): Extension<Runtime>,
     Path(task_id): Path<String>,
     headers: HeaderMap,
     Json(body): Json<Value>,
@@ -571,14 +714,14 @@ async fn activity_status(
         .map(Json)
 }
 async fn fail_activity(
-    State(runtime): State<Runtime>,
+    Extension(runtime): Extension<Runtime>,
     Path(task_id): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
     runtime.fail_activity(&task_id, body).await.map(Json)
 }
 async fn query_current(
-    State(runtime): State<Runtime>,
+    Extension(runtime): Extension<Runtime>,
     Path((workflow_id, name)): Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
@@ -588,7 +731,7 @@ async fn query_current(
         .map(|(status, body)| (status, Json(body)))
 }
 async fn query_run(
-    State(runtime): State<Runtime>,
+    Extension(runtime): Extension<Runtime>,
     Path((workflow_id, run_id, name)): Path<(String, String, String)>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
@@ -598,20 +741,20 @@ async fn query_run(
         .map(|(status, body)| (status, Json(body)))
 }
 async fn poll_query(
-    State(runtime): State<Runtime>,
+    Extension(runtime): Extension<Runtime>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
     runtime.poll_query(body).await.map(Json)
 }
 async fn complete_query(
-    State(runtime): State<Runtime>,
+    Extension(runtime): Extension<Runtime>,
     Path(task_id): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
     runtime.complete_query(&task_id, body).await.map(Json)
 }
 async fn fail_query(
-    State(runtime): State<Runtime>,
+    Extension(runtime): Extension<Runtime>,
     Path(task_id): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {

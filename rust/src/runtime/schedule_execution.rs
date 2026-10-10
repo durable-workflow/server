@@ -163,7 +163,7 @@ where
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "schedule_fire_count_exhausted"))?;
         let mut action = DB::document_row(row, "action")?;
         action["workflow_id"] = json!(id());
-        let started = Self::start_in(tx, &action).await?;
+        let started = Self::start_in(tx, &action, "default").await?;
         let workflow = started["workflow_id"].as_str().unwrap();
         let run = started["run_id"].as_str().unwrap();
         let mut marker = json!({"schedule_id":schedule,"schedule_ulid":key,"timezone":"UTC","overlap_policy":"skip","trigger_number":trigger_number});

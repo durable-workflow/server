@@ -1,0 +1,25 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "namespace-isolation",
+  "review_state": "reviewed",
+  "workflow_type": "parity.v1.echo",
+  "input": {"message": "namespace isolation λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {"type": "map", "value": {
+    "message": {"type": "string", "value": "namespace isolation λ"},
+    "count": {"type": "int64", "value": "9007199254740993"},
+    "optional": {"type": "null", "value": null}
+  }},
+  "activity": false,
+  "expected_events": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"],
+  "namespace_isolation": {
+    "scope": "named_namespaces_legacy_shared_token",
+    "namespace_suffixes": ["-alpha", "-beta"],
+    "peer_suffixes": ["-first", "-second"],
+    "peer_workflow_type": "parity.v1.one_activity",
+    "description": "Shared namespace contract λ",
+    "retention_days": 30,
+    "refused_reason": "foreign namespace must not cancel λ",
+    "expected_events": ["StartAccepted", "WorkflowStarted", "ActivityScheduled", "ActivityStarted", "ActivityCompleted", "WorkflowCompleted"]
+  },
+  "contract": "Actual authored activity workflows in two named namespaces preserve original payloads and histories. HTTP uses the unchanged published SDK, one task queue and the same worker ID in both namespaces. Foreign control-plane reads/mutations and worker completion calls must be refused before affecting the original run. A workflow ID remains globally reserved; it is not reusable in another namespace. Embedded applications supply namespace binding and run real database-queue jobs; HTTP namespace administration and worker registration are inapplicable there. Role tokens, namespace deletion/retention, quotas and cross-namespace orchestration need separate qualification."
+}
