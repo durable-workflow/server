@@ -52,7 +52,7 @@ node --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCoopera
 ```
 
 Use **separate, already bootstrapped databases** for PHP, Rust and embedded.
-The default reviewed corpus now includes 28 cases. Its visibility fixture runs
+The default reviewed corpus now includes 29 cases. Its visibility fixture runs
 the unchanged published CLI 2.2.0 on both HTTP targets. Download its PHAR,
 verify the fixture's pinned checksum, and expose its absolute path to the PHP
 probe with `DW_PARITY_CLI_PHAR`:
@@ -97,6 +97,19 @@ including SDK idle query polling. It is included in the 29-case default corpus
 and can be selected with `--fixture`. Role-token profiles,
 namespace lifecycle/retention and cross-namespace orchestration require separate
 qualification.
+
+The candidate `tests/Fixtures/ServerParityPending/admission-role-tokens.json`
+requires a separate HTTP cohort configured with distinct `DW_AUTH_TOKEN`,
+`DW_WORKER_TOKEN`, `DW_OPERATOR_TOKEN` and `DW_ADMIN_TOKEN`. Set the recorder's
+`DW_PARITY_TOKEN`, `DW_PARITY_WORKER_TOKEN`, `DW_PARITY_OPERATOR_TOKEN` and
+`DW_PARITY_ADMIN_TOKEN` to the corresponding disposable credentials. Select
+this candidate with `--fixture` on every recording and comparison; it does
+not change the default 29-case legacy cohort or frozen consumer tuple. The
+published SDK completes the original echo with the worker token, operator and
+admin reads are exercised, and sixteen actual requests check exact roles and
+auth → role → protocol → namespace precedence. An operator then cancels the
+unchanged original peer. Embedded execution proves the authored lifecycle;
+HTTP roles are inapplicable. This profile is not yet qualified against Rust.
 
 The recorder does not migrate a database. Do not run it against production or
 shared customer namespaces. The admission fixture executes sixteen real HTTP

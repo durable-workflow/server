@@ -26,6 +26,18 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+The next candidate, `admission-role-tokens`, uses a separate configured-token
+cohort and leaves the 29 reviewed legacy-token fixtures unchanged. The published
+SDK completes an original echo using the worker credential; sixteen declared
+requests check worker/operator/admin membership, disabled legacy full-access
+bypass and authentication → role → protocol → namespace precedence. Operator,
+admin and legacy-admin reads must succeed, refusals must preserve an original
+unclaimed peer, and an operator then cancels that same peer. Embedded execution
+checks the authored lifecycle with HTTP authorization explicitly inapplicable.
+Recorder/comparator changes are implemented; PHP/embedded reference execution
+and native authorization implementation/qualification are next. Principal,
+tenant, runtime-credential, signature and actor-attribution cases remain open.
+
 The twenty-ninth reviewed fixture, `namespace-isolation`, creates two named
 namespaces and completes two original authored activity workflows. HTTP uses the
 unchanged frozen PHP SDK, one queue and the same worker ID in both namespaces.

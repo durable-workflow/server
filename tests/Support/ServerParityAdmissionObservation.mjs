@@ -32,12 +32,20 @@ export function admissionObservation(fixture, mode) {
     requests: []};
   if (embedded) state.cleanup = {accepted: true, workflow_id: peerId, run_id: peerRun, command_sequence: 2, outcome: 'cancelled'};
   else {
+    if (fixture.admission.cleanup_auth) {
+      state.cleanup_auth = fixture.admission.cleanup_auth;
+      state.cleanup = {workflow_id: peerId, run_id: peerRun, outcome: 'cancelled'};
+    }
     state.cluster = {worker_protocol: {version: '1.20', server_capabilities: clone(capabilities)}};
     state.requests = fixture.admission.requests.map(expected => {
       const worker = expected.plane === 'worker';
       const read = expected.plane === 'read';
-      const body = read ? clone(peer) : {reason: expected.reason};
+      const body = read && expected.status === 200 ? clone(peer) : {reason: expected.reason};
       if (expected.status === 401) body.message = 'Invalid or missing authentication token.';
+      else if (expected.status === 403) Object.assign(body, {
+        message: 'Authenticated role is not allowed to access this endpoint.',
+        role: expected.role, allowed_roles: clone(expected.allowed_roles),
+      });
       else if (expected.status === 400) {
         const missing = expected.version === null;
         Object.assign(body, {supported_version: worker ? '1.20' : '2', requested_version: expected.version,
