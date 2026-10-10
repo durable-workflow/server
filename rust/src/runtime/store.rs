@@ -165,7 +165,7 @@ where
             .bind(workflow_id).fetch_optional(&mut **tx).await? {
             if DB::optional_string(&existing,"namespace")?.as_deref() != Some(namespace) {
                 return Err(super::RuntimeError::Protocol {status:StatusCode::CONFLICT,
-                    response:json!({"workflow_id":workflow_id,"run_id":null,"reason":"workflow_id_reserved_in_namespace",
+                    response:json!({"workflow_id":workflow_id,"command_status":"rejected","command_source":"control_plane","reason":"workflow_id_reserved_in_namespace",
                         "outcome":"rejected_workflow_id_reserved_in_namespace","rejection_reason":"workflow_id_reserved_in_namespace",
                         "message":format!("Workflow [{workflow_id}] is already reserved in another namespace.")})});
             }

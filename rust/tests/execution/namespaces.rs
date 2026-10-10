@@ -95,12 +95,29 @@ async fn named_namespaces_preserve_original_runs_and_global_workflow_id_reservat
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
         assert_eq!(body["reason"], reason);
+        assert_eq!(body["workflow_id"], "namespace-first");
+        assert_eq!(body["control_plane"]["workflow_id"], "namespace-first");
+        assert_eq!(
+            body["message"],
+            if reason == "run_not_found" {
+                "Workflow run not found."
+            } else {
+                "Workflow not found."
+            }
+        );
+        assert_eq!(body["control_plane"]["message"], body["message"]);
+        if uri != "/api/workflows/namespace-first" {
+            assert_eq!(body["run_id"], first["run_id"]);
+            assert_eq!(body["control_plane"]["run_id"], first["run_id"]);
+        }
     }
     let (status, body) = scoped(&app, "beta", "POST", "/api/workflows",
         json!({"workflow_id":"namespace-first","workflow_type":"echo","task_queue":"test",
             "duplicate_policy":"use-existing","input":envelope(Payload::Array(vec![Payload::Long(7)]))})).await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["reason"], "workflow_id_reserved_in_namespace");
+    assert_eq!(body["control_plane"]["operation"], "start");
+    assert_eq!(body["command_status"], "rejected");
     assert_eq!(
         body["outcome"],
         "rejected_workflow_id_reserved_in_namespace"
@@ -202,6 +219,13 @@ async fn same_worker_id_isolated_claims_completion_and_deregistration_by_namespa
     let refused = scoped(&app, "beta", "POST", &path, commands.clone()).await;
     assert_eq!(refused.0, StatusCode::NOT_FOUND, "{}", refused.1);
     assert_eq!(refused.1["reason"], "task_not_found");
+    assert_eq!(refused.1["task_id"], first_task["task_id"]);
+    assert_eq!(
+        refused.1["workflow_task_attempt"],
+        first_task["workflow_task_attempt"]
+    );
+    assert_eq!(refused.1["error"], "Workflow task not found.");
+    assert_eq!(refused.1["protocol_version"], "1.20");
     let history_path = format!(
         "/api/workflows/namespace-first/runs/{}/history",
         first["run_id"].as_str().unwrap()

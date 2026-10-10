@@ -372,7 +372,10 @@ async fn start(
     Extension(runtime): Extension<Runtime>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
-    let result = runtime.start(body).await?;
+    let workflow_id = body["workflow_id"].as_str().unwrap_or("").to_owned();
+    let result = runtime.start(body).await.map_err(|error| {
+        super::control_plane::Operation::Start.refusal(error, &workflow_id, None)
+    })?;
     let status = if result["outcome"] == "started_new" {
         StatusCode::CREATED
     } else {
@@ -392,7 +395,12 @@ async fn describe_current(
     Extension(runtime): Extension<Runtime>,
     Path(workflow_id): Path<String>,
 ) -> Result<Json<Value>> {
-    let body = runtime.describe(&workflow_id, None).await?;
+    let body = runtime
+        .describe(&workflow_id, None)
+        .await
+        .map_err(|error| {
+            super::control_plane::Operation::Describe.refusal(error, &workflow_id, None)
+        })?;
     Ok(Json(
         super::control_plane::Operation::Describe.response(body),
     ))
@@ -403,7 +411,12 @@ async fn cancel_current(
     Path(workflow_id): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
-    let (status, response) = runtime.cancel_workflow(&workflow_id, None, body).await?;
+    let (status, response) = runtime
+        .cancel_workflow(&workflow_id, None, body)
+        .await
+        .map_err(|error| {
+            super::control_plane::Operation::Cancel.refusal(error, &workflow_id, None)
+        })?;
     Ok((status, Json(response)))
 }
 
@@ -414,7 +427,10 @@ async fn cancel_run(
 ) -> Result<(StatusCode, Json<Value>)> {
     let (status, response) = runtime
         .cancel_workflow(&workflow_id, Some(&run_id), body)
-        .await?;
+        .await
+        .map_err(|error| {
+            super::control_plane::Operation::Cancel.refusal(error, &workflow_id, Some(&run_id))
+        })?;
     Ok((status, Json(response)))
 }
 
@@ -492,7 +508,12 @@ async fn describe_run(
     Extension(runtime): Extension<Runtime>,
     Path((workflow_id, run_id)): Path<(String, String)>,
 ) -> Result<Json<Value>> {
-    let body = runtime.describe(&workflow_id, Some(&run_id)).await?;
+    let body = runtime
+        .describe(&workflow_id, Some(&run_id))
+        .await
+        .map_err(|error| {
+            super::control_plane::Operation::DescribeRun.refusal(error, &workflow_id, Some(&run_id))
+        })?;
     Ok(Json(
         super::control_plane::Operation::DescribeRun.response(body),
     ))
@@ -520,7 +541,10 @@ async fn history(
     let after = decode_cursor(query.next_page_token.as_deref());
     let body = runtime
         .history(&workflow_id, &run_id, after, page_size)
-        .await?;
+        .await
+        .map_err(|error| {
+            super::control_plane::Operation::History.refusal(error, &workflow_id, Some(&run_id))
+        })?;
     Ok(Json(
         super::control_plane::Operation::History.response(body),
     ))
@@ -612,14 +636,61 @@ async fn complete_workflow(
     Path(task_id): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
-    runtime.complete_workflow(&task_id, body).await.map(Json)
+    let attempt = body["workflow_task_attempt"].clone();
+    runtime
+        .complete_workflow(&task_id, body)
+        .await
+        .map_err(|error| {
+            completion_refusal(
+                error,
+                &task_id,
+                "workflow_task_attempt",
+                attempt,
+                "Workflow task not found.",
+            )
+        })
+        .map(Json)
 }
 async fn complete_activity(
     Extension(runtime): Extension<Runtime>,
     Path(task_id): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
-    runtime.complete_activity(&task_id, body).await.map(Json)
+    let attempt = body["activity_attempt_id"].clone();
+    runtime
+        .complete_activity(&task_id, body)
+        .await
+        .map_err(|error| {
+            completion_refusal(
+                error,
+                &task_id,
+                "activity_attempt_id",
+                attempt,
+                "Activity task not found.",
+            )
+        })
+        .map(Json)
+}
+
+fn completion_refusal(
+    error: super::RuntimeError,
+    task_id: &str,
+    attempt_field: &str,
+    attempt: Value,
+    message: &str,
+) -> super::RuntimeError {
+    match error {
+        super::RuntimeError::Refused {
+            status,
+            reason: "task_not_found",
+        } if status == StatusCode::NOT_FOUND => {
+            let mut response = json!({"task_id":task_id,"error":message,"reason":"task_not_found",
+                "protocol_version":"1.20","server_capabilities":capabilities()});
+            response[attempt_field] = attempt;
+            super::RuntimeError::Protocol { status, response }
+        }
+        other => other,
+    }
 }
 
 async fn heartbeat_activity(

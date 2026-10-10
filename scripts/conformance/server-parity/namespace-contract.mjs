@@ -93,10 +93,38 @@ export function checkNamespaces(fixture, observation, workflowId, checkRun) {
       assert.equal(receipt.status, status, id + ' actual transport refusal');
       assert.equal(receipt.response.reason, reason, id + ' canonical refusal');
       assert.equal(receipt.response.workflow_id, ids[0], 'refusal retains original workflow target');
+      const operation = ['describe', 'describe_run', 'history', 'cancel', 'start'][index];
+      const selected = index > 0 && index < 4;
+      if (selected) assert.equal(receipt.response.run_id, state.runs[0].run_id, 'refusal retains original selected run');
+      else assert.equal(receipt.response.run_id, undefined, 'refusal does not invent a run identity');
+      const contract = {
+        schema: 'durable-workflow.v2.control-plane-response.contract', version: 1,
+        legacy_field_policy: 'reject_non_canonical',
+        legacy_fields: {query: 'query_name', signal: 'signal_name', update: 'update_name', wait_policy: 'wait_for'},
+        required_fields: operation === 'start' ? [] : operation === 'history' ? ['workflow_id', 'run_id'] : ['workflow_id'],
+        success_fields: operation === 'start' ? ['workflow_id', 'outcome'] : operation === 'describe_run' ? ['run_id']
+          : operation === 'history' ? ['next_page_token'] : operation === 'cancel' ? ['outcome'] : [],
+      };
+      if (operation === 'describe_run' || operation === 'history') {
+        contract.rejection_fields = ['workflow_id', 'run_id', 'reason', 'message', 'retryable', 'error_id', 'exception'];
+        contract.rejection_reasons = ['control_plane_internal_error'];
+      } else if (operation === 'cancel') {
+        contract.rejection_fields = ['workflow_id', 'run_id', 'reason', 'message', 'remediation'];
+        contract.rejection_reasons = ['v1_projection_read_only'];
+      } else if (operation === 'start') {
+        contract.rejection_fields = ['workflow_id', 'command_status', 'command_source', 'outcome', 'reason', 'rejection_reason', 'message'];
+        contract.rejection_reasons = ['workflow_id_reserved_in_namespace', 'task_queue_draining', 'compatibility_blocked'];
+      }
+      const {control_plane, ...body} = receipt.response;
+      assert.deepStrictEqual(control_plane, {schema: 'durable-workflow.v2.control-plane-response', version: 1,
+        operation, contract, ...body}, 'complete canonical refusal metadata preserves original identities and diagnostics');
       if (id === 'reserved_workflow_id') {
+        assert.equal(receipt.response.command_status, 'rejected', 'original start refusal status');
+        assert.equal(receipt.response.command_source, 'control_plane', 'original start refusal source');
+        assert.equal(receipt.response.rejection_reason, reason, 'original reservation rejection reason');
         assert.equal(receipt.response.outcome, 'rejected_workflow_id_reserved_in_namespace', 'global workflow ID reservation');
         assert.equal(receipt.response.message, `Workflow [${ids[0]}] is already reserved in another namespace.`, 'original reservation diagnostic');
-      }
+      } else assert.equal(receipt.response.message, reason === 'run_not_found' ? 'Workflow run not found.' : 'Workflow not found.', 'canonical missing-target diagnostic');
     }
     assert.deepStrictEqual(state.worker_refusals.map(item => item.kind), ['workflow', 'activity', 'workflow'], 'foreign completion attempts occur before each real commit');
     for (const [index, refusal] of state.worker_refusals.entries()) {
@@ -107,6 +135,16 @@ export function checkNamespaces(fixture, observation, workflowId, checkRun) {
       assert.equal(refusal.before.execution.status, refusal.before.status, 'original description and selected state agree');
       assert.equal(refusal.receipt.status, 404, 'foreign known task transport refusal');
       assert.equal(refusal.receipt.response.reason, 'task_not_found', 'namespace fence precedes same-ID lease authority');
+      const response = refusal.receipt.response;
+      const attemptField = refusal.kind === 'workflow' ? 'workflow_task_attempt' : 'activity_attempt_id';
+      assert.equal(response.task_id, refusal.task_id, 'worker refusal preserves actual original task target');
+      assert.equal(response[attemptField], refusal.request[attemptField], 'worker refusal preserves original supplied attempt');
+      assert.equal(response.error, refusal.kind === 'workflow' ? 'Workflow task not found.' : 'Activity task not found.', 'canonical worker task diagnostic');
+      assert.equal(response.protocol_version, '1.20', 'worker refusal retains protocol version');
+      const claim = state.worker_receipts[0].find(receipt => receipt.path.endsWith('/poll') && receipt.response.task?.task_id === refusal.task_id);
+      assert.ok(claim, 'worker refusal targets an actual original claim');
+      assert.deepStrictEqual(response.server_capabilities, claim.response.server_capabilities, 'worker refusal preserves capabilities advertised with original claim');
+      assert.equal(response.control_plane, undefined, 'worker refusal preserves its response plane');
       assert.equal(refusal.request.lease_owner, state.worker_id, 'foreign completion supplied actual same-ID lease owner');
       const original = state.worker_receipts[0].find(receipt => receipt.path.endsWith('/' + refusal.task_id + '/complete'));
       assert.ok(original, 'refused completion comes from an actual authored original worker request');
