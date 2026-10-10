@@ -1,6 +1,42 @@
 use super::*;
 
 impl TestDatabase {
+    async fn registration_fault(&self, enabled: bool) {
+        match self {
+            Self::Sqlite(dir) => {
+                let pool = sqlx::SqlitePool::connect(&format!(
+                    "sqlite://{}",
+                    dir.path().join("runtime.sqlite").display()
+                ))
+                .await
+                .unwrap();
+                sqlx::raw_sql(if enabled {
+                    "CREATE TRIGGER reject_registration BEFORE INSERT ON dw_worker_registration_incarnations BEGIN SELECT RAISE(ABORT,'qualification registration fault'); END"
+                } else { "DROP TRIGGER reject_registration" }).execute(&pool).await.unwrap();
+                pool.close().await;
+            }
+            Self::Postgres { options, .. } => {
+                let pool = sqlx::postgres::PgPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
+                sqlx::raw_sql(if enabled {
+                    "CREATE FUNCTION reject_registration_incarnation() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'qualification registration fault'; END $$; CREATE TRIGGER reject_registration BEFORE INSERT ON dw_worker_registration_incarnations FOR EACH ROW EXECUTE FUNCTION reject_registration_incarnation()"
+                } else { "DROP TRIGGER reject_registration ON dw_worker_registration_incarnations; DROP FUNCTION reject_registration_incarnation()" }).execute(&pool).await.unwrap();
+                pool.close().await;
+            }
+            Self::MySql { options, .. } => {
+                let pool = sqlx::mysql::MySqlPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
+                sqlx::raw_sql(if enabled {
+                    "CREATE TRIGGER reject_registration BEFORE INSERT ON dw_worker_registration_incarnations FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='qualification registration fault'"
+                } else { "DROP TRIGGER reject_registration" }).execute(&pool).await.unwrap();
+                pool.close().await;
+            }
+        }
+    }
     async fn repair_commands(&self, run_id: &str) -> i64 {
         const SQL: &str = "SELECT COUNT(*) FROM workflow_commands WHERE workflow_run_id=$1 AND requested_workflow_run_id=$2 AND resolved_workflow_run_id=$3 AND command_type='repair' AND target_scope='run' AND status='accepted' AND outcome='repair_dispatched' AND payload_codec='avro' AND payload IS NOT NULL AND accepted_at IS NOT NULL AND applied_at IS NOT NULL";
         match self {
@@ -155,6 +191,165 @@ async fn named(
     )
     .await;
     (status, body)
+}
+
+#[tokio::test]
+async fn live_registration_replacement_releases_original_task_and_preserves_other_namespace() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let worker = "live-worker";
+    let initial = registration(&app, worker).await;
+    let root = start(&app, "live-original").await;
+    let task = poll(&app, worker, "workflow").await;
+    assert_eq!(task["workflow_task_attempt"], 1);
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            "/api/namespaces",
+            json!({"name":"alpha","retention_days":30})
+        )
+        .await
+        .0,
+        StatusCode::CREATED
+    );
+    let alpha = named(&app,"alpha","POST","/api/worker/register",json!({"worker_id":worker,"task_queue":"test","runtime":"php","supported_workflow_types":["echo"],"supported_activity_types":[]})).await;
+    assert_eq!(alpha.0, StatusCode::CREATED);
+    let alpha_root = named(&app,"alpha","POST","/api/workflows",json!({"workflow_id":"alpha-live-original","workflow_type":"echo","task_queue":"test","input":envelope(Payload::Array(vec![Payload::Long(9007199254740993)]))})).await;
+    assert_eq!(alpha_root.0, StatusCode::CREATED);
+    let alpha_task = named(
+        &app,
+        "alpha",
+        "POST",
+        "/api/worker/workflow-tasks/poll",
+        json!({"worker_id":worker,"task_queue":"test","timeout_seconds":0}),
+    )
+    .await
+    .1["task"]
+        .clone();
+    assert_eq!(alpha_task["workflow_task_attempt"], 1);
+    let before = run_history(&app, &root["workflow_id"], &root["run_id"]).await;
+    let current = registration(&app, worker).await;
+    assert_ne!(current["registration_token"], initial["registration_token"]);
+    let repaired = run_history(&app, &root["workflow_id"], &root["run_id"]).await;
+    assert_eq!(
+        repaired, before,
+        "registration release does not append repair history"
+    );
+    assert_eq!(
+        database
+            .repair_commands(root["run_id"].as_str().unwrap())
+            .await,
+        0
+    );
+    let lost = deregister(&app, worker, &initial).await;
+    assert_eq!(lost.0, StatusCode::CONFLICT);
+    assert_eq!(lost.1["reason"], "worker_registration_lost_authority");
+    assert_eq!(lost.1["retryable"], false);
+    let commands =
+        json!([{"type":"complete_workflow","result":envelope(Payload::Long(9007199254740993))}]);
+    let stale = finish_task(&app, &task, commands.clone()).await;
+    assert_eq!(stale.0, StatusCode::CONFLICT);
+    assert_eq!(stale.1["reason"], "task_not_leased");
+    assert_eq!(
+        run_history(&app, &root["workflow_id"], &root["run_id"]).await,
+        repaired
+    );
+    runtime.close().await;
+    drop(app);
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let recovered = poll(&app, worker, "workflow").await;
+    assert_eq!(recovered["task_id"], task["task_id"]);
+    assert_eq!(recovered["run_id"], task["run_id"]);
+    assert_eq!(recovered["workflow_task_attempt"], 2);
+    let stale = finish_task(&app, &task, commands.clone()).await;
+    assert_eq!(stale.0, StatusCode::CONFLICT);
+    assert_eq!(stale.1["reason"], "workflow_task_attempt_mismatch");
+    assert_eq!(stale.1["task_id"], task["task_id"]);
+    assert_eq!(stale.1["workflow_task_attempt"], 1);
+    assert_eq!(
+        run_history(&app, &root["workflow_id"], &root["run_id"]).await,
+        repaired
+    );
+    assert_eq!(
+        finish_task(&app, &recovered, commands.clone()).await.0,
+        StatusCode::OK
+    );
+    // The same worker ID in another namespace retains its original live attempt.
+    let alpha_completion = named(
+        &app,
+        "alpha",
+        "POST",
+        &format!(
+            "/api/worker/workflow-tasks/{}/complete",
+            alpha_task["task_id"].as_str().unwrap()
+        ),
+        completion(&alpha_task, commands),
+    )
+    .await;
+    assert_eq!(alpha_completion.0, StatusCode::OK, "{}", alpha_completion.1);
+    assert_eq!(
+        database
+            .repair_commands(alpha_root.1["run_id"].as_str().unwrap())
+            .await,
+        0
+    );
+    let events = run_history(&app, &root["workflow_id"], &root["run_id"]).await;
+    assert_eq!(events[2]["payload"]["task"]["attempt_count"], 2);
+    assert_eq!(events[2]["payload"]["task"]["repair_count"], 0);
+    assert!(poll(&app, worker, "workflow").await.is_null());
+    assert_eq!(deregister(&app, worker, &current).await.0, StatusCode::OK);
+    runtime.close().await;
+    drop(app);
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn replacement_token_write_failure_restores_original_live_attempt_and_authority() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let worker = "replacement-rollback-worker";
+    let initial = registration(&app, worker).await;
+    let root = start(&app, "replacement-rollback-original").await;
+    let task = poll(&app, worker, "workflow").await;
+    let before = run_history(&app, &root["workflow_id"], &root["run_id"]).await;
+    database.registration_fault(true).await;
+    let failed = request(&app,"POST","/api/worker/register",json!({"worker_id":worker,"task_queue":"replacement-queue","runtime":"php","supported_workflow_types":["echo"],"supported_activity_types":[]})).await;
+    assert_eq!(failed.0, StatusCode::SERVICE_UNAVAILABLE, "{}", failed.1);
+    assert_eq!(failed.1["reason"], "storage_unavailable");
+    assert_eq!(
+        run_history(&app, &root["workflow_id"], &root["run_id"]).await,
+        before
+    );
+    assert_eq!(
+        database
+            .repair_commands(root["run_id"].as_str().unwrap())
+            .await,
+        0
+    );
+    database.registration_fault(false).await;
+    assert_eq!(
+        finish_task(
+            &app,
+            &task,
+            json!([{"type":"complete_workflow","result":envelope(Payload::Long(9007199254740993))}])
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let events = run_history(&app, &root["workflow_id"], &root["run_id"]).await;
+    assert_eq!(events.as_array().unwrap().len(), 3);
+    assert_eq!(events[2]["payload"]["task"]["repair_count"], 0);
+    let receipt = deregister(&app, worker, &initial).await;
+    assert_eq!(receipt.0, StatusCode::OK, "{}", receipt.1);
+    assert_eq!(receipt.1["recovered_workflow_task_count"], 0);
+    runtime.close().await;
+    drop(app);
+    database.remove().await;
 }
 
 #[tokio::test]

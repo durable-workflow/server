@@ -30,6 +30,26 @@ function finishHttpWorkerDeregistration(Client $client, array $fixture, string $
     $originalToken = $state['original_registration']['registration_token'];
     $state['heartbeat'] = $client->heartbeatWorker($workerId);
     $state['original_task'] = $client->pollWorkflowTask($workerId, $queue, 0);
+    $commands = [['type' => 'complete_workflow', 'result' => $client->payloadCodec()->envelope($fixture['input'])]];
+    if ($definition['replace_live_registration'] ?? false) {
+        $initialTask = $state['original_task'];
+        $initialToken = $originalToken;
+        $live = ['initial_registration' => $state['original_registration'], 'initial_task' => $initialTask,
+            'before_replacement' => $reload()];
+        $state['original_registration'] = $registration();
+        $originalToken = $state['original_registration']['registration_token'];
+        $live['after_replacement'] = $reload();
+        $live['superseded'] = fenceReceipt(static fn (): array => $client->deregisterWorkerRegistration($workerId, $initialToken));
+        $live['after_superseded'] = $reload();
+        $initialStale = static fn (): array => $client->completeWorkflowTask($initialTask['task_id'], $workerId, $initialTask['workflow_task_attempt'], $commands);
+        $live['stale_before_poll'] = fenceReceipt($initialStale);
+        $live['after_stale_before_poll'] = $reload();
+        $state['original_task'] = $client->pollWorkflowTask($workerId, $queue, 0);
+        $live['before_stale_after_poll'] = $reload();
+        $live['stale_after_poll'] = fenceReceipt($initialStale);
+        $live['after_stale_after_poll'] = $reload();
+        $state['live_replacement'] = $live;
+    }
     $task = $state['original_task'];
     $state['before_unknown'] = $reload();
     $unknown = str_repeat('0', 32);
@@ -39,7 +59,6 @@ function finishHttpWorkerDeregistration(Client $client, array $fixture, string $
     $state['after_unknown'] = $reload();
     $state['original_receipt'] = $client->deregisterWorkerRegistration($workerId, $originalToken);
     $state['after_original'] = $reload();
-    $commands = [['type' => 'complete_workflow', 'result' => $client->payloadCodec()->envelope($fixture['input'])]];
     $stale = static fn (): array => $client->completeWorkflowTask($task['task_id'], $workerId, $task['workflow_task_attempt'], $commands);
     $state['stale_original'] = fenceReceipt($stale);
     $state['after_stale_original'] = $reload();

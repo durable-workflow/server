@@ -85,3 +85,54 @@ for (const [name, mutate] of Object.entries(mutations)) test(name, () => {
   mutate(s);
   assert.throws(() => check(s));
 });
+
+const liveFixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParityPending/worker-registration-live-lease.json', import.meta.url)));
+function liveModel() {
+  const s = JSON.parse(JSON.stringify(state));
+  const initial = {...run(start),typed_input:{type:'list',value:[liveFixture.typed_value]}};
+  for (const key of ['before_unknown','after_unknown','after_original','after_stale_original','before_superseded',
+    'after_superseded','before_replay','after_replay','after_stale_replay','after_latest','final']) {
+    s[key].typed_input = {type:'list',value:[liveFixture.typed_value]};
+  }
+  s.original_task.workflow_task_attempt=2;
+  s.latest_task.workflow_task_attempt=3;
+  s.stale_original.response.workflow_task_attempt=2;
+  s.stale_after_replay.response.workflow_task_attempt=2;
+  s.final.typed_output=liveFixture.typed_value;
+  s.final.events.at(-1).typed_decoded.output=liveFixture.typed_value;
+  s.final.events.at(-1).payload.task={id:'original-task',attempt_count:4,repair_count:2};
+  const initialToken='f'.repeat(32);
+  s.live_replacement={initial_registration:registration(initialToken),initial_task:task(1),before_replacement:initial,
+    after_replacement:initial,after_superseded:initial,after_stale_before_poll:initial,
+    before_stale_after_poll:s.before_unknown,after_stale_after_poll:s.before_unknown,
+    superseded:failure(409,'worker_registration_lost_authority',initialToken),
+    stale_before_poll:{status:409,response:{reason:'task_not_leased',task_id:'original-task',workflow_task_attempt:1}},
+    stale_after_poll:{status:409,response:{reason:'workflow_task_attempt_mismatch',task_id:'original-task',workflow_task_attempt:1}}};
+  return JSON.parse(JSON.stringify(s));
+}
+const checkLive = s => checkWorkerDeregistration(liveFixture,{mode:'http',run_id:'root-run',worker_deregistration:s},id);
+test('modeled live lease replacement requires unchanged original history and fencing evidence', () => {
+  assert.deepStrictEqual(checkLive(liveModel()),checkWorkerDeregistration(liveFixture,
+    {mode:'embedded',worker_deregistration:{applicable:false,reason:'embedded_has_no_http_worker_registration_lifecycle'}},id));
+});
+const liveMutations={
+  'missing live replacement evidence':s=>{delete s.live_replacement;},
+  'live token reused':s=>{s.live_replacement.initial_registration.registration_token=tokens[0];},
+  'live initial task replaced':s=>{s.live_replacement.initial_task.task_id='foreign-task';},
+  'live initial run replaced':s=>{s.live_replacement.initial_task.run_id='foreign-run';},
+  'live initial lease owner replaced':s=>{s.live_replacement.initial_task.lease_owner='foreign-worker';},
+  'live registration appends repair history':s=>{s.live_replacement.after_replacement.events.push(event('RepairRequested',3));},
+  'live superseded token acknowledged':s=>{s.live_replacement.superseded.status=200;},
+  'live superseded token retryable':s=>{s.live_replacement.superseded.response.retryable=true;},
+  'live old publication accepted before poll':s=>{s.live_replacement.stale_before_poll.status=200;},
+  'live old publication accepted after poll':s=>{s.live_replacement.stale_after_poll.status=200;},
+  'live old attempt silently reused':s=>{s.original_task.workflow_task_attempt=1;},
+  'live refusal mutates full run':s=>{s.live_replacement.after_stale_after_poll.status='completed';},
+  'live repair command reused':s=>{s.final.events[3].payload.workflow_command_id='repair-3';},
+  'live final repair count lost':s=>{s.final.events.at(-1).payload.task.repair_count=1;},
+};
+for (const [name,mutate] of Object.entries(liveMutations)) test(name,()=>{
+  const s=liveModel();
+  mutate(s);
+  assert.throws(()=>checkLive(s));
+});

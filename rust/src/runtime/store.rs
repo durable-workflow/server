@@ -590,6 +590,15 @@ where
         }
         let token = super::worker_incarnations::token().await?;
         let mut tx = self.begin().await?;
+        let previous = Self::query("SELECT worker_id FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2")
+            .bind(self.namespace.as_ref()).bind(worker_id).fetch_optional(&mut *tx).await?;
+        if previous.is_some() {
+            // Match PHP's registration boundary: return original workflow leases
+            // to ready without a repair command/history event. Token rotation
+            // and lease release commit together; failure restores the old attempt.
+            Self::query("UPDATE workflow_tasks SET status='ready',leased_at=NULL,lease_owner=NULL,lease_expires_at=NULL WHERE namespace=$1 AND lease_owner=$2 AND task_type='workflow' AND status='leased'")
+                .bind(self.namespace.as_ref()).bind(worker_id).execute(&mut *tx).await?;
+        }
         Self::query(DB::WORKER_REGISTRATION_SQL)
             .bind(self.namespace.as_ref())
             .bind(worker_id)
@@ -606,10 +615,11 @@ where
             .bind(DB::bind_time(now()))
             .execute(&mut *tx)
             .await?;
-        Self::query("UPDATE workflow_worker_registrations SET workflow_command_contracts=$1 WHERE worker_id=$2 AND namespace=$3")
+        Self::query("UPDATE workflow_worker_registrations SET status='active',workflow_command_contracts=$1 WHERE worker_id=$2 AND namespace=$3")
             .bind(DB::document(body.get("workflow_command_contracts").unwrap_or(&json!({})))).bind(worker_id).bind(self.namespace.as_ref()).execute(&mut *tx).await?;
         self.rotate_incarnation(&mut tx, worker_id, &token).await?;
         tx.commit().await?;
+        self.wake.notify_waiters();
         Ok(
             json!({"worker_id": worker_id, "registration_token":token, "registered": true, "namespace": self.namespace.as_ref(), "task_queue": queue,
             "runtime": body["runtime"], "build_id": body["build_id"], "heartbeat_interval_seconds": 10,
