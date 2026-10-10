@@ -205,7 +205,7 @@ where
             ));
         }
         let mut tx = self.begin().await?;
-        let task = Self::task_row(&mut tx, task_id).await?;
+        let task = self.task_row(&mut tx, task_id).await?;
         if DB::string(&task, "task_type")? != "workflow" {
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
         }

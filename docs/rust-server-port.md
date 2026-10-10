@@ -33,8 +33,31 @@ global workflow-ID reservation, actual cross-namespace completion attempts
 before each original commit, and same-ID registration preservation after
 shutdown. Embedded mode supplies host namespace binding and executes real
 database-queue jobs; HTTP administration and registration are inapplicable.
-Reference execution and native implementation are still pending. This candidate
-does not enlarge the 28-case reviewed corpus. Role tokens need a separate auth
+Frozen PHP/embedded reference source `55de4c86` passes and independently compares
+both actual observations, including five foreign control refusals and three
+foreign task completion attempts. Forty rechecks of those original and
+deliberately corrupted observations verify the comparator's identity, history,
+namespace, registration, transport and exact-int64 checks. The initial recorder
+assumed caller-supplied embedded reservations invoked creating listeners and
+that worker task payloads included namespace. The installed start API supplies
+the reservation's namespace; actual HTTP headers and run relationships bind
+worker tasks. Both recorder assumptions are corrected, with failed originals
+retained. Native tests-first `cb3cf3e5` reproduces namespace-resource admission
+failure on all six configurations, with 39 existing HTTP tests still passing.
+The earlier `9d496621` build failed on a misnamed test cleanup helper and is not
+counted as an execution regression.
+
+The native candidate adds namespace metadata creation/list/description, request
+binding, globally reserved workflow IDs, inherited task namespaces and scoped
+worker registration, polling, receipts, completion and cancellation. It keeps
+bound SQL values and the existing pools, scheduler and serialized transition
+lock. Named-namespace operations outside this echo/activity/read/cancel slice,
+and other authored commands, explicitly refuse before reaching default-scope
+queries. Wider timers/signals/queries/updates/children/schedules/visibility,
+lifecycle/retention, quotas and role profiles still need namespace qualification.
+The six-database Action now includes the candidate alongside the 28 reviewed
+cases; native qualification is pending. This candidate does not enlarge the
+reviewed default corpus. Role tokens need a separate auth
 profile: enabling them disables the legacy token's full-access bypass, and the
 published worker/operator/admin roles have distinct permissions.
 

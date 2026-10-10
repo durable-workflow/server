@@ -82,7 +82,7 @@ WITH utc_tasks AS (
     SELECT t.*,
         replace(replace(replace(t.available_at,'T',' '),'Z',''),'+00:00','') AS _dw_available_utc,
         replace(replace(replace(t.lease_expires_at,'T',' '),'Z',''),'+00:00','') AS _dw_lease_utc
-    FROM workflow_tasks t WHERE t.namespace='default' AND t.queue=$1 AND t.task_type=$2
+    FROM workflow_tasks t WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3
 ), ordered_tasks AS (
     SELECT *,
         rtrim(rtrim(CASE WHEN length(_dw_available_utc)=19 THEN _dw_available_utc||'.0' ELSE _dw_available_utc END,'0'),'.') AS _dw_available_order,
@@ -91,8 +91,8 @@ WITH utc_tasks AS (
 )
 SELECT t.*,r.workflow_type FROM ordered_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id
 WHERE r.status IN ('pending','running','waiting')
-    AND (t.status='ready' OR (t.status='leased' AND t._dw_lease_order<=rtrim(rtrim($3,'0'),'.')))
-    AND (t.available_at IS NULL OR t._dw_available_order<=rtrim(rtrim($4,'0'),'.'))
+    AND (t.status='ready' OR (t.status='leased' AND t._dw_lease_order<=rtrim(rtrim($4,'0'),'.')))
+    AND (t.available_at IS NULL OR t._dw_available_order<=rtrim(rtrim($5,'0'),'.'))
 ORDER BY t._dw_available_order,t.id LIMIT 100
 "#;
     const POLL_RECEIPT_CLEANUP_SQL: &'static str = r#"
@@ -274,7 +274,7 @@ impl Backend for MySql {
     // byte counts for this bounded page. Sorting JSON payloads in the window
     // exhausts MySQL's default sort buffer before the size rejection can run.
     const HISTORY_PAGE: &'static str = "SELECT h.* FROM (SELECT id,sequence,SUM(payload_bytes) OVER (ORDER BY sequence) AS page_bytes FROM (SELECT id,sequence,LENGTH(CAST(payload AS CHAR CHARACTER SET utf8mb4)) AS payload_bytes FROM workflow_history_events FORCE INDEX (workflow_history_events_workflow_run_id_sequence_unique) WHERE workflow_run_id=? AND sequence>? ORDER BY sequence LIMIT ?) AS sizes) AS page JOIN workflow_history_events h ON h.id=page.id WHERE page.page_bytes<=8388608 ORDER BY page.sequence";
-    const WORKER_REGISTRATION_SQL: &'static str = "INSERT INTO workflow_worker_registrations(namespace,worker_id,task_queue,runtime,sdk_version,build_id,supported_workflow_types,supported_activity_types,capabilities,capability_manifest,last_heartbeat_at,created_at,updated_at) VALUES ('default',?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE task_queue=VALUES(task_queue),runtime=VALUES(runtime),sdk_version=VALUES(sdk_version),build_id=VALUES(build_id),supported_workflow_types=VALUES(supported_workflow_types),supported_activity_types=VALUES(supported_activity_types),capabilities=VALUES(capabilities),capability_manifest=VALUES(capability_manifest),last_heartbeat_at=VALUES(last_heartbeat_at),updated_at=VALUES(updated_at)";
+    const WORKER_REGISTRATION_SQL: &'static str = "INSERT INTO workflow_worker_registrations(namespace,worker_id,task_queue,runtime,sdk_version,build_id,supported_workflow_types,supported_activity_types,capabilities,capability_manifest,last_heartbeat_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE task_queue=VALUES(task_queue),runtime=VALUES(runtime),sdk_version=VALUES(sdk_version),build_id=VALUES(build_id),supported_workflow_types=VALUES(supported_workflow_types),supported_activity_types=VALUES(supported_activity_types),capabilities=VALUES(capabilities),capability_manifest=VALUES(capability_manifest),last_heartbeat_at=VALUES(last_heartbeat_at),updated_at=VALUES(updated_at)";
     fn statement(sql: &'static str) -> Cow<'static, str> {
         // This driver-owned template already uses '?' bindings and contains a
         // literal '$.timer_id' JSON path, not a PostgreSQL bind placeholder.
@@ -414,6 +414,7 @@ mod timestamp_tests {
             .await
             .unwrap();
             let available = sqlx::query(Sqlite::TASK_CANDIDATES_SQL)
+                .bind("default")
                 .bind("test")
                 .bind("workflow")
                 .bind(Sqlite::bind_time(clock))
@@ -430,6 +431,7 @@ mod timestamp_tests {
             .await
             .unwrap();
             let expired = sqlx::query(Sqlite::TASK_CANDIDATES_SQL)
+                .bind("default")
                 .bind("test")
                 .bind("workflow")
                 .bind(Sqlite::bind_time(clock))

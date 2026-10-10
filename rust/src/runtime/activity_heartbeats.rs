@@ -38,12 +38,12 @@ where
         let attempt_id = text(&body, "activity_attempt_id")?;
         let owner = text(&body, "lease_owner")?;
         let mut tx = self.begin().await?;
-        let task = Self::task_row(&mut tx, task_id).await?;
+        let task = self.task_row(&mut tx, task_id).await?;
         if DB::string(&task, "task_type")? != "activity" {
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
         }
-        let attempt = Self::query("SELECT a.* FROM activity_attempts a JOIN workflow_tasks t ON t.id=a.workflow_task_id WHERE a.id=$1 AND t.namespace='default'")
-            .bind(attempt_id).fetch_optional(&mut *tx).await?
+        let attempt = Self::query("SELECT a.* FROM activity_attempts a JOIN workflow_tasks t ON t.id=a.workflow_task_id WHERE a.id=$1 AND t.namespace=$2")
+            .bind(attempt_id).bind(self.namespace.as_ref()).fetch_optional(&mut *tx).await?
             .ok_or_else(|| refuse(StatusCode::NOT_FOUND,"attempt_not_found"))?;
         if DB::string(&attempt, "workflow_task_id")? != task_id {
             return Err(refuse(StatusCode::CONFLICT, "task_mismatch"));
@@ -145,7 +145,7 @@ where
             }
         }
         let mut tx = self.begin().await?;
-        let task = Self::task_row(&mut tx, task_id).await?;
+        let task = self.task_row(&mut tx, task_id).await?;
         if DB::string(&task, "task_type")? != "activity" {
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
         }

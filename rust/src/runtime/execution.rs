@@ -144,6 +144,10 @@ impl Runtime {
             signal_codec: Arc::new(Semaphore::new(1)),
         };
         runtime.verify_ready().await?;
+        if let Err(error) = runtime.initialize_namespace_registry().await {
+            runtime.close().await;
+            return Err(error);
+        }
         runtime.scheduler.start(runtime.storage.clone());
         Ok(runtime)
     }
@@ -189,6 +193,27 @@ impl Runtime {
             Storage::MySql(store) => store.schema_ready().await,
         }
     }
+    pub(super) fn in_namespace(&self, namespace: &str) -> Self {
+        if namespace == "default" {
+            return self.clone();
+        }
+        let storage = match &*self.storage {
+            Storage::Sqlite(store) => Storage::Sqlite(store.in_namespace(namespace)),
+            Storage::Postgres(store) => Storage::Postgres(store.in_namespace(namespace)),
+            Storage::MySql(store) => Storage::MySql(store.in_namespace(namespace)),
+        };
+        Self {
+            storage: Arc::new(storage),
+            token: self.token.clone(),
+            scheduler: self.scheduler.clone(),
+            signal_codec: self.signal_codec.clone(),
+        }
+    }
+    delegate!(initialize_namespace_registry() -> Result<()>);
+    delegate!(namespace_exists(name: &str) -> Result<bool>);
+    delegate!(list_namespaces() -> Result<Value>);
+    delegate!(describe_namespace(name: &str) -> Result<Value>);
+    delegate!(create_namespace(body: Value) -> Result<Value>);
     delegate!(database_live() -> bool);
     delegate!(start(body: Value) -> Result<Value>);
     pub(crate) async fn create_schedule(&self, body: Value, context: Value) -> Result<Value> {

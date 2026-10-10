@@ -202,6 +202,39 @@ async fn same_worker_id_isolated_claims_completion_and_deregistration_by_namespa
     let refused = scoped(&app, "beta", "POST", &path, commands.clone()).await;
     assert_eq!(refused.0, StatusCode::NOT_FOUND, "{}", refused.1);
     assert_eq!(refused.1["reason"], "task_not_found");
+    let history_path = format!(
+        "/api/workflows/namespace-first/runs/{}/history",
+        first["run_id"].as_str().unwrap()
+    );
+    let before = scoped(&app, "alpha", "GET", &history_path, Value::Null).await;
+    let unsupported = scoped(
+        &app,
+        "alpha",
+        "POST",
+        &path,
+        completion(
+            &first_task,
+            json!([{"type":"start_timer","delay_seconds":0}]),
+        ),
+    )
+    .await;
+    assert_eq!(unsupported.0, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        unsupported.1["reason"],
+        "development_namespace_command_unqualified"
+    );
+    assert_eq!(
+        scoped(&app, "alpha", "GET", &history_path, Value::Null).await,
+        before
+    );
+    for uri in ["/api/workflows", "/api/schedules/unqualified"] {
+        let unavailable = scoped(&app, "alpha", "GET", uri, Value::Null).await;
+        assert_eq!(unavailable.0, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            unavailable.1["reason"],
+            "development_namespace_operation_unqualified"
+        );
+    }
     assert_eq!(
         scoped(&app, "alpha", "POST", &path, commands).await.0,
         StatusCode::OK

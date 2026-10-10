@@ -12,6 +12,7 @@ mod cooperative;
 mod execution;
 mod http;
 pub mod mysql;
+mod namespaces;
 pub mod postgres;
 mod previews;
 mod queries;
