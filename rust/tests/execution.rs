@@ -2594,6 +2594,7 @@ async fn cooperative_delivery_cleanup_and_original_deadline_survive_fresh_runtim
                 .starts_with(before_reopen)
         );
         let wait_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut cleanup_activity = Value::Null;
         if expired {
             loop {
                 let described =
@@ -2628,12 +2629,49 @@ async fn cooperative_delivery_cleanup_and_original_deadline_survive_fresh_runtim
             assert_eq!(scheduled.0, StatusCode::OK, "{}", scheduled.1);
             let activity = cooperative_poll(&app, "activity").await;
             assert!(!activity.is_null());
+            cleanup_activity = activity.clone();
             let heartbeat_endpoint = format!(
                 "/api/worker/activity-tasks/{}/heartbeat",
                 activity["task_id"].as_str().unwrap()
             );
             let heartbeat = json!({"activity_attempt_id":activity["activity_attempt_id"],"lease_owner":activity["lease_owner"],"details":{"request_id":request_id}});
             let before_heartbeat = run_history(&app, &workflow, &run).await;
+            let status_endpoint = format!(
+                "/api/worker/activity-tasks/{}/status",
+                activity["task_id"].as_str().unwrap()
+            );
+            let status_body = json!({"activity_attempt_id":activity["activity_attempt_id"],"lease_owner":activity["lease_owner"]});
+            assert_eq!(
+                request(&app, "POST", &status_endpoint, status_body.clone())
+                    .await
+                    .0,
+                StatusCode::UNPROCESSABLE_ENTITY
+            );
+            let status =
+                request_protocol(&app, "POST", &status_endpoint, status_body.clone(), "1.20").await;
+            assert_eq!(status.0, StatusCode::OK, "{}", status.1);
+            assert_eq!(status.1["can_continue"], true);
+            assert_eq!(status.1["cancel_requested"], false);
+            assert_eq!(status.1["heartbeat_recorded"], false);
+            assert_eq!(status.1["lease_expires_at"], activity["lease_expires_at"]);
+            assert_eq!(status.1["last_heartbeat_at"], Value::Null);
+            let mut wrong_owner = status_body.clone();
+            wrong_owner["lease_owner"] = json!("other-owner");
+            assert_eq!(
+                request_protocol(&app, "POST", &status_endpoint, wrong_owner, "1.20")
+                    .await
+                    .0,
+                StatusCode::CONFLICT
+            );
+            let mut missing_attempt = status_body;
+            missing_attempt["activity_attempt_id"] = json!("missing-attempt");
+            assert_eq!(
+                request_protocol(&app, "POST", &status_endpoint, missing_attempt, "1.20")
+                    .await
+                    .0,
+                StatusCode::NOT_FOUND
+            );
+            assert_eq!(run_history(&app, &workflow, &run).await, before_heartbeat);
             let mut stale = heartbeat.clone();
             stale["activity_attempt_id"] = json!("stale-attempt");
             let refused = request_protocol(&app, "POST", &heartbeat_endpoint, stale, "1.20").await;
@@ -2697,9 +2735,9 @@ async fn cooperative_delivery_cleanup_and_original_deadline_survive_fresh_runtim
             .map(|event| event["event_type"].as_str().unwrap())
             .collect();
         let fixture: Value = serde_json::from_str(match (phase, expired) {
-            (_, true) => include_str!(
-                "../../tests/Fixtures/ServerParity/cooperative-cleanup-deadline.json"
-            ),
+            (_, true) => {
+                include_str!("../../tests/Fixtures/ServerParity/cooperative-cleanup-deadline.json")
+            }
             ("before_claim", _) => include_str!(
                 "../../tests/Fixtures/ServerParity/cooperative-before-claim-cleanup.json"
             ),
@@ -2764,6 +2802,17 @@ async fn cooperative_delivery_cleanup_and_original_deadline_survive_fresh_runtim
         assert_eq!(described.1["status"], "cancelled");
         assert_eq!(described.1["output_envelope"], Value::Null);
         assert_eq!(cleanup["finished_at"], described.1["closed_at"]);
+        if !cleanup_activity.is_null() {
+            let observed = request_protocol(&app,"POST",
+                &format!("/api/worker/activity-tasks/{}/status",cleanup_activity["task_id"].as_str().unwrap()),
+                json!({"lease_owner":cleanup_activity["lease_owner"],"activity_attempt_id":cleanup_activity["activity_attempt_id"]}),"1.20").await;
+            assert_eq!(observed.0, StatusCode::OK, "{}", observed.1);
+            assert_eq!(observed.1["can_continue"], false);
+            assert_eq!(observed.1["cancel_requested"], true);
+            assert_eq!(observed.1["reason"], "run_cancelled");
+            assert_eq!(observed.1["lease_expires_at"], Value::Null);
+            assert_eq!(run_history(&app, &workflow, &run).await, history);
+        }
         fresh.close().await;
         let recovered = database.open().await.unwrap();
         assert_eq!(

@@ -22,6 +22,94 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
+    pub(crate) async fn activity_status(
+        &self,
+        task_id: &str,
+        body: Value,
+        protocol: &str,
+    ) -> Result<Value> {
+        if !super::cooperative::supports(&json!(["cooperative_cancellation"]), protocol) {
+            return Err(super::RuntimeError::Protocol {
+                status: StatusCode::UNPROCESSABLE_ENTITY,
+                response: json!({"reason":"activity_attempt_status_unavailable","minimum_protocol_version":"1.20"}),
+            });
+        }
+        reject_fields(&body, &["activity_attempt_id", "lease_owner"])?;
+        let attempt_id = text(&body, "activity_attempt_id")?;
+        let owner = text(&body, "lease_owner")?;
+        let mut tx = self.begin().await?;
+        let task = Self::task_row(&mut tx, task_id).await?;
+        if DB::string(&task, "task_type")? != "activity" {
+            return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
+        }
+        let attempt = Self::query("SELECT a.* FROM activity_attempts a JOIN workflow_tasks t ON t.id=a.workflow_task_id WHERE a.id=$1 AND t.namespace='default'")
+            .bind(attempt_id).fetch_optional(&mut *tx).await?
+            .ok_or_else(|| refuse(StatusCode::NOT_FOUND,"attempt_not_found"))?;
+        if DB::string(&attempt, "workflow_task_id")? != task_id {
+            return Err(refuse(StatusCode::CONFLICT, "task_mismatch"));
+        }
+        if DB::optional_string(&attempt, "lease_owner")?.as_deref() != Some(owner) {
+            return Err(refuse(StatusCode::CONFLICT, "lease_owner_mismatch"));
+        }
+        let run_id = DB::string(&task, "workflow_run_id")?;
+        let run = Self::query("SELECT * FROM workflow_runs WHERE id=$1")
+            .bind(&run_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let activity =
+            Self::query("SELECT * FROM activity_executions WHERE id=$1 AND workflow_run_id=$2")
+                .bind(DB::string(&attempt, "activity_execution_id")?)
+                .bind(&run_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        let run_status = DB::string(&run, "status")?;
+        let activity_status = DB::string(&activity, "status")?;
+        let attempt_status = DB::string(&attempt, "status")?;
+        let task_status = DB::string(&task, "status")?;
+        let expires = DB::optional_instant(&attempt, "lease_expires_at")?
+            .or(DB::optional_instant(&task, "lease_expires_at")?);
+        let (can_continue, cancel_requested, reason) = if run_status == "cancelled" {
+            (false, true, Some("run_cancelled"))
+        } else if run_status == "terminated" {
+            (false, true, Some("run_terminated"))
+        } else if attempt_status != "running" {
+            (false, attempt_status == "cancelled", Some("attempt_closed"))
+        } else if activity_status == "cancelled" {
+            (false, true, Some("activity_cancelled"))
+        } else if task_status == "cancelled" {
+            (false, true, Some("task_cancelled"))
+        } else if !matches!(run_status.as_str(), "pending" | "running" | "waiting") {
+            (false, false, Some("run_closed"))
+        } else if activity_status != "running" {
+            (false, false, Some("activity_not_running"))
+        } else if DB::optional_string(&activity, "current_attempt_id")?.as_deref()
+            != Some(attempt_id)
+            || DB::number(&activity, "attempt_count")? != DB::number(&attempt, "attempt_number")?
+        {
+            (false, false, Some("stale_attempt"))
+        } else if DB::number(&task, "attempt_count")? != DB::number(&attempt, "attempt_number")? {
+            (false, false, Some("stale_task"))
+        } else if task_status != "leased" {
+            (false, false, Some("task_not_leased"))
+        } else if expires.is_none_or(|expires| expires <= now())
+            || DB::optional_instant(&task, "lease_expires_at")?
+                .is_none_or(|expires| expires <= now())
+        {
+            (false, false, Some("lease_expired"))
+        } else {
+            (true, false, None)
+        };
+        // Observation preserves the existing lease and never records progress.
+        let response = json!({"task_id":task_id,"activity_attempt_id":attempt_id,"lease_owner":owner,
+            "can_continue":can_continue,"cancel_requested":cancel_requested,"reason":reason,"heartbeat_recorded":false,
+            "lease_expires_at":expires,"last_heartbeat_at":DB::optional_instant(&attempt,"last_heartbeat_at")?.or(DB::optional_instant(&activity,"last_heartbeat_at")?),
+            "run_status":run_status,"run_closed_reason":DB::optional_string(&run,"closed_reason")?,"run_closed_at":DB::optional_instant(&run,"closed_at")?,
+            "activity_status":activity_status,"attempt_status":attempt_status,"task_status":task_status,
+            "deadlines":null,"worker_session":null,"protocol_version":protocol,"server_capabilities":super::store::capabilities()});
+        tx.commit().await?;
+        Ok(response)
+    }
+
     pub(crate) async fn heartbeat_activity(&self, task_id: &str, body: Value) -> Result<Value> {
         reject_fields(
             &body,

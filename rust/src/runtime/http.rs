@@ -82,6 +82,10 @@ pub fn router(runtime: Runtime) -> Router {
         )
         .route("/api/worker/activity-tasks/poll", post(poll_activity))
         .route(
+            "/api/worker/activity-tasks/{task_id}/status",
+            post(activity_status),
+        )
+        .route(
             "/api/worker/activity-tasks/{task_id}/heartbeat",
             post(heartbeat_activity),
         )
@@ -438,6 +442,18 @@ async fn heartbeat_activity(
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
     runtime.heartbeat_activity(&task_id, body).await.map(Json)
+}
+
+async fn activity_status(
+    State(runtime): State<Runtime>,
+    Path(task_id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>> {
+    runtime
+        .activity_status(&task_id, body, request_protocol(&headers)?)
+        .await
+        .map(Json)
 }
 async fn fail_activity(
     State(runtime): State<Runtime>,
