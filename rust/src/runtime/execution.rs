@@ -339,8 +339,9 @@ impl Runtime {
     delegate!(register(body: Value) -> Result<Value>);
     delegate!(worker_heartbeat(body: Value) -> Result<Value>);
     delegate!(deregister(worker_id: &str) -> Result<Value>);
-    delegate!(poll(body: Value, kind: &'static str) -> Result<Value>);
+    delegate!(poll(body: Value, kind: &'static str, protocol_version: &str) -> Result<Value>);
     delegate!(heartbeat_task(task_id: &str, body: Value) -> Result<Value>);
+    delegate!(deliver_cancellation(task_id: &str,body: Value,protocol: &str) -> Result<Value>);
     delegate!(task_history(task_id: &str, body: Value) -> Result<Value>);
     pub(crate) async fn complete_workflow(&self, task_id: &str, body: Value) -> Result<Value> {
         if let Some(commands) = body["commands"].as_array() {
@@ -414,7 +415,52 @@ impl Runtime {
             }
         }
     }
+    pub(crate) async fn request_cancellation(
+        &self,
+        workflow_id: &str,
+        run_id: Option<&str>,
+        body: Value,
+    ) -> Result<(StatusCode, Value)> {
+        let (reason, budget) = super::cooperative::validate_request(&body)?;
+        match &*self.storage {
+            Storage::Sqlite(store) => {
+                store
+                    .request_cancellation(
+                        workflow_id,
+                        run_id,
+                        reason,
+                        budget,
+                        self.signal_codec.clone(),
+                    )
+                    .await
+            }
+            Storage::Postgres(store) => {
+                store
+                    .request_cancellation(
+                        workflow_id,
+                        run_id,
+                        reason,
+                        budget,
+                        self.signal_codec.clone(),
+                    )
+                    .await
+            }
+            Storage::MySql(store) => {
+                store
+                    .request_cancellation(
+                        workflow_id,
+                        run_id,
+                        reason,
+                        budget,
+                        self.signal_codec.clone(),
+                    )
+                    .await
+            }
+        }
+    }
     delegate!(complete_activity(task_id: &str, body: Value) -> Result<Value>);
+    delegate!(heartbeat_activity(task_id: &str, body: Value) -> Result<Value>);
+    delegate!(activity_status(task_id: &str, body: Value, protocol: &str) -> Result<Value>);
     pub(crate) async fn fail_activity(&self, task_id: &str, body: Value) -> Result<Value> {
         let (failure, blob) =
             super::activity_failures::prepare_failure(&body, self.signal_codec.clone()).await?;

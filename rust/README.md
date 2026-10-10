@@ -2,11 +2,14 @@
 
 This crate is an unpublished development foundation for [Server #325](https://github.com/durable-workflow/server/issues/325).
 The published PHP image remains the default. The opt-in Rust HTTP runtime now
-executes echo, activity, timer and signal fixtures through an unchanged published SDK.
+executes 20 reviewed shared fixtures through an unchanged published PHP SDK,
+including bounded root cooperative cleanup at timer boundaries. The port log
+records the six-database matrix and real process-kill recovery evidence.
 It is an incomplete development slice, with no qualified database takeover,
 performance improvement or release. The codec module uses Apache's official
-Avro library. Signals decode their arguments with the official codec on bounded
-blocking workers; other execution paths forward opaque envelopes. Complete
+Avro library. Signals decode arguments and cooperative requests encode their
+canonical context on bounded blocking workers; ordinary author payloads retain
+their opaque envelopes. Complete
 ingress validation and resource limits remain unqualified.
 
 The toolchain is pinned in `rust-toolchain.toml`; dependency resolution is in
@@ -36,7 +39,8 @@ results to 256 KiB and completion waits to 30 seconds. A timed-out wait leaves
 the accepted update durable. Completed request retries return the original
 result and cannot change arguments or append history. Validators, failed update
 tasks, concurrent queued routing and complete update compatibility remain
-unqualified; shared database qualification is required before merging this slice.
+unqualified; shared database qualification for the representative update slice
+is recorded in the port log.
 The existing development schema remains version 3.
 
 Kache remains an optional task-scoped experiment, with an explicit disk budget;

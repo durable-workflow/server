@@ -186,9 +186,10 @@ renders the complete cancellation/termination diagnostic as a JSON string litera
 when it contains NUL, identically in failure storage and terminal history.
 Decoding recovers the original complete diagnostic; ordinary diagnostics remain
 unchanged. Original reasons remain byte-exact in Avro command/history payloads,
-with original failure type, source, run and identity. Source implementation and
-published-artifact qualification are pending; the frozen failing reference is
-retained and does not become a pass from this contract decision.
+with original failure type, source, run and identity. The PHP correction is now
+published in Workflow 2.5.5 and Server 2.5.14. Its separate corrected-tuple Rust
+differential remains pending; the frozen failing reference is retained and
+does not become a pass from publication.
 The final cancellation head `741401bc80e2b13b86ae031f3fe88272855f1d03`
 passes all six configurations in [run 38005623457](https://github.com/durable-workflow/server/actions/runs/38005623457),
 including all 17 shared cases, 23 native HTTP tests/configuration and actual
@@ -216,8 +217,68 @@ attempt's `stale_attempt` refusal. The normal published SDK worker discards this
 closed-run result safely; the fixture checks both its actual report and an
 explicit repeated report without changing either response.
 
+Root cooperative cancellation in
+[#348](https://github.com/durable-workflow/server/pull/348) adds three qualified
+definitions: before claim, after an original timer is scheduled, and expiry of
+a longer shielded cleanup timer. The unchanged PHP SDK 2.2.6 executes all 20
+shared cases on native Rust, frozen PHP Server 2.5.13 and embedded Workflow
+2.5.4 across SQLite, PostgreSQL 17/18, MySQL 8.0/8.4 and MariaDB 10.11.
+The [shared and recovery matrix](https://github.com/durable-workflow/server/actions/runs/38015362532)
+at `5af21079838b5e3e818f43e7d2e8fd0b580ec20e`, including main `605527eb`,
+passes all six configurations. All six ZIP digests and 360 actual snapshots
+are independently reviewed, including 54 root observations. Each configuration
+passes 29 native HTTP tests. The [PHP source checks](https://github.com/durable-workflow/server/actions/runs/38015362517)
+and public boundary checks also pass. The reference comparator rejects 80
+semantic corruptions; all 273 comparator tests pass, including 86 root cases
+and the existing 187 checks. These totals qualify representative fixtures,
+not complete cancellation, migration or performance parity.
+
+Cooperative discovery is enabled in the experimental runtime to run the
+unchanged SDK handshake. Current admission supports root requests with timer
+boundaries; child relationships, existing open activities, waits, updates,
+scoped policies and other delivery call kinds are refused explicitly. This
+bounded slice does not establish broader cooperative-cancellation parity.
+
+The first unchanged SDK candidate exposed the protocol 1.20 activity ownership
+observation hook: the worker calls `/status` before invoking cleanup activity
+code. Native delivery and the shielded timer completed, but the missing hook
+returned HTTP 501 and the SDK abandoned each activity claim. The native hook
+now observes the actual task, attempt, owner, run and existing lease without
+renewing it or recording progress. The unchanged SDK and shared matrix now
+qualify that hook for the supported cleanup slice.
+
+`cooperative-restart.php` adds real pending-cleanup recovery variants to the
+existing externally killed native deployments. Preparation records the original
+canonical context, delivered event identity and acknowledged history before
+the process kill. A fresh SDK worker then checks completed and expired cleanup,
+unchanged request/deadline, original typed activity values, terminal reads and
+late heartbeat/delivery/completion fencing. All twelve actual recovery variants
+pass across the six configurations; job logs retain the external Docker KILL
+and exit-137 check. Independently reviewed receipts preserve the original
+history prefix, root context, delivery event identity and exact int64 values.
+These longer-timer variants do not add cases to the shared corpus.
+
+The actual first request returns HTTP 202; pending and terminal duplicates
+return HTTP 200. The reviewed fixtures now check each recorded transport status,
+request body and response. Corruption checks keep history copies consistent so
+they must reject the changed semantics themselves. The initial native gap run
+compiled on all six configurations and left the 23 existing HTTP tests passing;
+the new test failed because the endpoint is absent. Its initial HTTP 200
+expectation was corrected to the recorded HTTP 202 before implementation.
+
+Deadline qualification runs the installed ordinary Server repair pass against
+actual wall-clock deadlines. It does not construct terminal history, alter time
+or patch the SDK. Embedded mode must be selected before Laravel bootstrap;
+each original timer is observed in the selected run before cancellation.
+Terminal diagnostics use the generated completion/expiry reason, while the
+original caller reason remains in canonical context and cleanup arguments.
+The separate PHP service-mode queue override inconsistency found during setup
+was corrected separately in [#351](https://github.com/durable-workflow/server/pull/351)
+and published as Server 2.5.15. The frozen reference tuple remains unchanged.
+
 Timeout/lease retries, uncaught failures and broader retry policies remain
-separate gates. This work is followed by cooperative cancellation, schedules, visibility, authorization/namespaces,
+separate gates. The next step is the corrected-tuple NUL differential, followed
+by broader cooperative cancellation, schedules, visibility, authorization/namespaces,
 streams and existing consumers. Each slice must run on the required database
 matrix. Read-only upgrade inspection and backup-first takeover remain required,
 but follow wider capability coverage. PHP and unknown databases stay refused.

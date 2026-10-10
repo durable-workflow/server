@@ -15,7 +15,7 @@ use tokio::sync::Semaphore;
 // Frozen PHP HTTP runs Laravel TrimStrings before cancellation validation.
 // Pin its reviewed character set rather than a changing Unicode whitespace
 // predicate. Internal characters and the embedded API's reasons stay intact.
-fn normalize_http_reason(reason: &str) -> &str {
+pub(super) fn normalize_http_reason(reason: &str) -> &str {
     reason.trim_matches(|ch| {
         matches!(ch,
             '\0' | '\t'..='\r' | ' ' | '\u{85}' | '\u{a0}' | '\u{ad}' |
@@ -181,7 +181,10 @@ where
                     "reason":"historical_run_command_rejected","target_scope":"run"}),
             });
         }
-        let closed = !matches!(DB::string(&run, "status")?.as_str(), "running" | "waiting");
+        let closed = !matches!(
+            DB::string(&run, "status")?.as_str(),
+            "pending" | "running" | "waiting"
+        );
         if !closed {
             let children =
                 Self::scalar("SELECT COUNT(*) FROM workflow_links WHERE child_workflow_run_id=$1")
@@ -262,44 +265,7 @@ where
         .await?;
         Self::query("UPDATE workflow_tasks SET status='cancelled',lease_expires_at=NULL,last_error=NULL WHERE workflow_run_id=$1 AND status IN ('ready','leased')")
             .bind(&run_id).execute(&mut *tx).await?;
-        for activity in activities {
-            let activity_id = DB::string(&activity, "id")?;
-            let attempt_id = DB::optional_string(&activity, "current_attempt_id")?;
-            Self::query("UPDATE activity_executions SET status='cancelled',closed_at=COALESCE(closed_at,$1) WHERE id=$2")
-                .bind(DB::bind_time(at)).bind(&activity_id).execute(&mut *tx).await?;
-            let mut attempt_snapshot = Value::Null;
-            let mut task_id = None;
-            if let Some(attempt_id) = &attempt_id {
-                Self::query("UPDATE activity_attempts SET status='cancelled',lease_expires_at=NULL,closed_at=COALESCE(closed_at,$1) WHERE id=$2 AND activity_execution_id=$3 AND workflow_run_id=$4")
-                    .bind(DB::bind_time(at)).bind(attempt_id).bind(&activity_id).bind(&run_id).execute(&mut *tx).await?;
-                let attempt = Self::query("SELECT * FROM activity_attempts WHERE id=$1 AND activity_execution_id=$2 AND workflow_run_id=$3")
-                    .bind(attempt_id).bind(&activity_id).bind(&run_id).fetch_one(&mut *tx).await?;
-                task_id = Some(DB::string(&attempt, "workflow_task_id")?);
-                attempt_snapshot = json!({"id":attempt_id,"activity_execution_id":activity_id,"task_id":task_id,
-                    "attempt_number":DB::number(&attempt,"attempt_number")?,"status":"cancelled",
-                    "lease_owner":DB::optional_string(&attempt,"lease_owner")?,
-                    "started_at":DB::optional_instant(&attempt,"started_at")?,"closed_at":DB::optional_instant(&attempt,"closed_at")?});
-            }
-            let cancelled = Self::query("SELECT * FROM activity_executions WHERE id=$1")
-                .bind(&activity_id)
-                .fetch_one(&mut *tx)
-                .await?;
-            let mut payload = Self::activity_payload(&cancelled)?;
-            payload["workflow_command_id"] = json!(command_id);
-            payload["activity_attempt_id"] = json!(attempt_id);
-            payload["attempt_number"] = json!(DB::number(&cancelled, "attempt_count")?);
-            payload["cancelled_at"] = json!(DB::optional_instant(&cancelled, "closed_at")?);
-            payload["activity_attempt"] = attempt_snapshot;
-            Self::append(
-                &mut tx,
-                &run_id,
-                "ActivityCancelled",
-                payload,
-                task_id.as_deref(),
-                Some(&command_id),
-            )
-            .await?;
-        }
+        Self::cancel_open_activities(&mut tx, &run_id, &command_id, activities, at).await?;
         for timer in timers {
             let timer_id = DB::string(&timer, "id")?;
             Self::query("UPDATE workflow_run_timers SET status='cancelled' WHERE id=$1")
@@ -347,6 +313,54 @@ where
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok((StatusCode::OK, response))
+    }
+
+    pub(super) async fn cancel_open_activities(
+        tx: &mut sqlx::Transaction<'_, DB>,
+        run_id: &str,
+        command_id: &str,
+        activities: Vec<DB::Row>,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        for activity in activities {
+            let activity_id = DB::string(&activity, "id")?;
+            let attempt_id = DB::optional_string(&activity, "current_attempt_id")?;
+            Self::query("UPDATE activity_executions SET status='cancelled',closed_at=COALESCE(closed_at,$1) WHERE id=$2")
+                .bind(DB::bind_time(at)).bind(&activity_id).execute(&mut **tx).await?;
+            let mut attempt_snapshot = Value::Null;
+            let mut task_id = None;
+            if let Some(attempt_id) = &attempt_id {
+                Self::query("UPDATE activity_attempts SET status='cancelled',lease_expires_at=NULL,closed_at=COALESCE(closed_at,$1) WHERE id=$2 AND activity_execution_id=$3 AND workflow_run_id=$4")
+                    .bind(DB::bind_time(at)).bind(attempt_id).bind(&activity_id).bind(run_id).execute(&mut **tx).await?;
+                let attempt = Self::query("SELECT * FROM activity_attempts WHERE id=$1 AND activity_execution_id=$2 AND workflow_run_id=$3")
+                    .bind(attempt_id).bind(&activity_id).bind(run_id).fetch_one(&mut **tx).await?;
+                task_id = Some(DB::string(&attempt, "workflow_task_id")?);
+                attempt_snapshot = json!({"id":attempt_id,"activity_execution_id":activity_id,"task_id":task_id,
+                    "attempt_number":DB::number(&attempt,"attempt_number")?,"status":"cancelled",
+                    "lease_owner":DB::optional_string(&attempt,"lease_owner")?,
+                    "started_at":DB::optional_instant(&attempt,"started_at")?,"closed_at":DB::optional_instant(&attempt,"closed_at")?});
+            }
+            let cancelled = Self::query("SELECT * FROM activity_executions WHERE id=$1")
+                .bind(&activity_id)
+                .fetch_one(&mut **tx)
+                .await?;
+            let mut payload = Self::activity_payload(&cancelled)?;
+            payload["workflow_command_id"] = json!(command_id);
+            payload["activity_attempt_id"] = json!(attempt_id);
+            payload["attempt_number"] = json!(DB::number(&cancelled, "attempt_count")?);
+            payload["cancelled_at"] = json!(DB::optional_instant(&cancelled, "closed_at")?);
+            payload["activity_attempt"] = attempt_snapshot;
+            Self::append(
+                tx,
+                run_id,
+                "ActivityCancelled",
+                payload,
+                task_id.as_deref(),
+                Some(command_id),
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     pub(super) async fn cancelled_activity_outcome(

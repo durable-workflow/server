@@ -245,7 +245,7 @@ where
         }
         if !matches!(
             DB::string(&parent, "status")?.as_str(),
-            "running" | "waiting"
+            "pending" | "running" | "waiting"
         ) || DB::string(&parent, "current_run_id")? != parent_run
         {
             // Abandoned children may finish after their original parent closes.

@@ -3,9 +3,11 @@
 //! Typed database adapters share transitions; existing PHP data requires qualification.
 
 mod activity_failures;
+mod activity_heartbeats;
 mod backend;
 mod cancellation;
 mod children;
+mod cooperative;
 mod execution;
 mod http;
 pub mod mysql;

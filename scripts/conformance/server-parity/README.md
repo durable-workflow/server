@@ -22,12 +22,23 @@ reproducer blocks full reason parity under Workflow #741: frozen embedded
 PostgreSQL silently truncates the physical failure message. The portable
 Unicode-padded case retains the complete failure/history consistency check.
 
+The reviewed root cooperative-cancellation definitions also remain pending
+native qualification. Their adapter uses explicit worker protocol 1.20 and
+the normal published cooperative worker. Cleanup completion is still a
+cancelled workflow; its original context is carried through a real timer,
+activity and heartbeat. A separate expiry case closes the original budget
+before the cleanup activity runs. The HTTP reference needs its ordinary
+`workflow:v2:repair-pass` role running against its isolated database so expired
+cleanup is enforced. Embedded execution invokes the installed watchdog and
+uses `DW_MODE=embedded` before application bootstrap. Neither adapter edits
+time or writes its own history/terminal rows.
+
 Requirements: Node 20+, PHP 8.3+ with PDO SQLite/pcntl, and Composer. The pinned
 published Server image contains these tools. Install the exact adapter:
 
 ```bash
 composer install --working-dir=scripts/conformance/server-parity --no-interaction
-node --test tests/Unit/ServerParityRunnerTest.mjs
+node --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs
 ```
 
 Use **separate, already bootstrapped databases** for PHP, Rust and embedded.
@@ -49,6 +60,22 @@ node scripts/conformance/server-parity.mjs record \
 
 node scripts/conformance/server-parity.mjs compare php.json embedded.json
 ```
+
+Root cleanup recovery uses the unchanged locked PHP SDK and actual wall-clock
+timers against an isolated native database:
+
+```bash
+php scripts/conformance/server-parity/cooperative-restart.php prepare "$URL" receipt.json
+# Kill the owned native process externally, then restart it on the same database.
+php scripts/conformance/server-parity/cooperative-restart.php finish "$RECOVERED_URL" receipt.json
+```
+
+The two variants retain the original root request, deadline, delivered event
+identity and pending shielded timer across the interruption. Completion and
+deadline expiry must both end cancelled; fresh SDK reads and stale worker calls
+check the durable outcome. Their longer cleanup timers provide a real process
+kill checkpoint and do not increase fixture counts. CI performs the actual
+Docker kill and verifies exit code 137 before restarting the native process.
 
 For an adapter installed elsewhere, set `DW_PARITY_SDK_AUTOLOAD` to its locked
 `vendor/autoload.php`. `--artifacts` selects a frozen tuple manifest. The default

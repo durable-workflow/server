@@ -1,0 +1,32 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "cooperative-cleanup-deadline",
+  "workflow_type": "parity.v1.cooperative_cleanup",
+  "input": {
+    "message": "cooperative λ",
+    "count": 9007199254740993,
+    "optional": null,
+    "cleanup_delay_seconds": 60
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {"type": "string", "value": "cooperative λ"},
+      "count": {"type": "int64", "value": "9007199254740993"},
+      "optional": {"type": "null", "value": null},
+      "cleanup_delay_seconds": {"type": "int64", "value": "60"}
+    }
+  },
+  "cooperative_cancellation": {
+    "phase": "pending_timer",
+    "reason": "cooperative cancellation λ",
+    "cleanup_timeout_seconds": 5,
+    "cleanup_outcome": "deadline_expired",
+    "http_request_statuses": [202, 200, 200],
+    "original_delay_seconds": 60
+  },
+  "expected_events": ["StartAccepted", "WorkflowStarted", "TimerScheduled", "CooperativeCancellationRequested", "TimerCancelled", "CooperativeCancellationDelivered", "TimerScheduled", "TimerCancelled", "WorkflowCancelled"],
+  "requester": {"http": {"type": "auth:token", "id": "legacy-token", "label": "Admin"}, "embedded": {"type": "php", "label": "PHP API"}},
+  "review_state": "qualified_shared_matrix",
+  "contract": "Reviewed against published protocol 1.20, PHP Server 2.5.13, Workflow 2.5.4 and PHP SDK 2.2.6. Root context, request identity, reason, requester/source/lineage and original deadline remain immutable. Acceptance leaves the run open; duplicate requests retain the original command and budget before and after closure. The delivery transaction cancels an existing original timer before recording canonical delivery. Shielded cleanup schedules its own timer, then completes a heartbeat and exact-int64 activity, or expires the original budget and cancels the cleanup timer without executing the activity. Remote workflow leases are bounded by that budget; embedded queue lease policy remains host-owned. Terminal diagnostics use the published generated reason separately from the original context reason. Qualified on the six-configuration PHP/Rust/embedded matrix with unchanged SDK execution and real native cleanup process-kill recovery; broader cancellation semantics remain unqualified."
+}
