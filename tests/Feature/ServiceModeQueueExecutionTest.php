@@ -59,6 +59,9 @@ class ServiceModeQueueExecutionTest extends TestCase
             '--sleep' => 0,
             '--tries' => 1,
             '--max-jobs' => 10,
+            // The full suite already occupies more than the worker's 128 MiB
+            // default because this worker runs inside the PHPUnit process.
+            '--memory' => 512,
         ])->run();
         $this->assertSame(0, $exitCode);
 
