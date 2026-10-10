@@ -310,7 +310,7 @@ The separate PHP service-mode queue override inconsistency found during setup
 was corrected separately in [#351](https://github.com/durable-workflow/server/pull/351)
 and published as Server 2.5.15. The frozen reference tuple remains unchanged.
 
-The direct child-cancellation candidates cover cancellation before a child
+The direct child-cancellation cases cover cancellation before a child
 claim and during its committed timer. Actual published PHP 2.5.14 / SDK 2.2.6
 and embedded Workflow 2.5.5 execution on separate SQLite databases completed
 both parents by catching their original cancelled children. The SDK exposes
@@ -320,8 +320,9 @@ child failure message/payload. Embedded replay restores
 and records `FailureHandled`. Shared assertions check those representations
 before projecting common behavior. Saved, trimmed reference observations test
 rejection of corrupted identities, history, diagnostics and duplicate effects.
-The runner now attempts 24 cases: 22 qualified and these two native-pending
-candidates. Native repair and the complete database matrix remain ahead.
+The corpus now contains 24 representative cases. This adds direct child
+cancellation only; propagation trees, parent-close policies, child retries and
+hard-kill child-cancellation recovery remain unqualified.
 
 Tests-first head `3feb7871` / test merge `55078239` independently confirms all
 288 PHP/embedded observations on the six configurations. Every native recording
@@ -335,7 +336,18 @@ original failure and enqueues one original-parent resumption in the same
 transaction. Closed cancellation receipts retain the published
 `rejected_not_active` outcome. Two added native tests cover fresh pools, physical
 failure persistence, immutable duplicate/stale outcomes and relationship-corruption
-rollback. This implementation awaits native qualification.
+rollback.
+
+Repair head `4490f61f` / test merge `65e1fde9` passes
+[all six configurations](https://github.com/durable-workflow/server/actions/runs/38022923876).
+Six downloaded ZIPs match GitHub artifact digests; all 432 PHP/Rust/embedded
+observations independently compare, including 36 direct-child observations.
+All 32 native HTTP tests/configuration and the twelve existing root-cleanup
+kill/restart variants pass, together with TLS and PHP takeover refusal.
+[Source gates](https://github.com/durable-workflow/server/actions/runs/38022923848)
+pass with 2607 PHP tests / 57,222 assertions, the known six deprecations and one
+skip. The final fixture metadata removes its pending-phase claim; that changed
+fixture identity requires qualification again on the final source before merge.
 
 The adapter now issues the real SDK cancellation after a committed task-completion
 response, before the single SDK worker can poll again. It changes no request or
@@ -345,7 +357,7 @@ cancellation observes waiting state and one child claim. Shared checks additiona
 require one original parent resumption and its original child/call/failure
 relationships. 447 comparator checks pass, including 158 direct-child checks.
 
-Generic HTTP probe failures retain bounded SDK diagnostics and real selected-run
+Generic HTTP worker failures retain bounded SDK diagnostics and real selected-run
 describe/history/debug reads before timeout shutdown. A real 120-second timer
 proved that the unchanged 30-second budget still fails and retains the original
 waiting run, scheduled timer and pending timer task diagnostic. Failure reads
