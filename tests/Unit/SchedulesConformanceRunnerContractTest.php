@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Unit;
 
 use App\Support\SchedulesRuntimeContract;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class SchedulesConformanceRunnerContractTest extends TestCase
@@ -406,7 +407,16 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         }
     }
 
-    public function test_published_artifact_runner_passes_install_cell_with_supplied_install_evidence(): void
+    public static function artifactInstallTimestamps(): array
+    {
+        return [
+            'runner generates the observation time' => [null],
+            'original observation time is preserved' => ['2026-10-09T10:00:00Z'],
+        ];
+    }
+
+    #[DataProvider('artifactInstallTimestamps')]
+    public function test_published_artifact_runner_passes_install_cell_with_supplied_install_evidence(?string $suppliedGeneratedAt): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
         if ($nodeBinary === '') {
@@ -419,6 +429,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         $installEvidencePath = $resultDir.'/schedules-artifact-install-evidence.json';
         file_put_contents($installEvidencePath, json_encode([
             'schema' => 'durable-workflow.v2.schedules-runtime.artifact-install-evidence',
+            'generated_at' => $suppliedGeneratedAt,
             'local_product_source_checkouts_used' => false,
             'artifacts' => [
                 ['artifact' => 'server', 'version' => '0.2.244', 'source' => 'docker://durableworkflow/server:0.2.244', 'status' => 'pass'],
@@ -429,9 +440,11 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
             ],
         ], JSON_THROW_ON_ERROR));
 
+        $clockPath = $this->writeAdvancingClock($resultDir);
+
         try {
             $process = proc_open(
-                [$nodeBinary, $repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs'],
+                [$nodeBinary, '--import', $clockPath, $repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs'],
                 [
                     1 => ['pipe', 'w'],
                     2 => ['pipe', 'w'],
@@ -492,6 +505,9 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                 $installScenario['observed_outputs']['artifact_install_evidence'],
                 $result['artifact_install_evidence'],
             );
+            if ($suppliedGeneratedAt !== null) {
+                $this->assertSame($suppliedGeneratedAt, $result['artifact_install_evidence']['generated_at']);
+            }
         } finally {
             $this->removeDirectory($resultDir);
         }
@@ -886,9 +902,11 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
             ],
         ], JSON_THROW_ON_ERROR));
 
+        $clockPath = $this->writeAdvancingClock($resultDir);
+
         try {
             $process = proc_open(
-                [$nodeBinary, $repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs'],
+                [$nodeBinary, '--import', $clockPath, $repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs'],
                 [
                     1 => ['pipe', 'w'],
                     2 => ['pipe', 'w'],
@@ -937,6 +955,9 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
             $scenario = $result['scenario_results']['published_artifact_install_only'];
             $installEvidence = $result['artifact_install_evidence'];
             $scenarioInstallEvidence = $scenario['observed_outputs']['artifact_install_evidence'];
+
+            $this->assertSame($installEvidence, $scenarioInstallEvidence);
+            $this->assertSame($installEvidence, $publishedArtifacts['artifact_install_evidence']);
 
             $this->assertSame('pass', $scenario['status']);
             $this->assertSame([], $scenario['linked_findings']);
@@ -3316,6 +3337,27 @@ JS;
             'stderr' => '',
             'parsed_json' => $payload,
         ];
+    }
+
+    private function writeAdvancingClock(string $resultDir): string
+    {
+        // Every clock read crosses a second boundary, so the assertion cannot
+        // accidentally pass because two independent timestamps match.
+        $clockPath = $resultDir.'/advancing-clock.mjs';
+        file_put_contents($clockPath, <<<'JS'
+const RealDate = Date;
+let next = RealDate.parse('2026-10-10T00:00:00Z');
+globalThis.Date = class extends RealDate {
+  constructor(...args) {
+    super(...(args.length ? args : [next += 1000]));
+  }
+  static now() {
+    return next += 1000;
+  }
+};
+JS);
+
+        return $clockPath;
     }
 
     private function removeDirectory(string $path): void
