@@ -187,9 +187,43 @@ when it contains NUL, identically in failure storage and terminal history.
 Decoding recovers the original complete diagnostic; ordinary diagnostics remain
 unchanged. Original reasons remain byte-exact in Avro command/history payloads,
 with original failure type, source, run and identity. The PHP correction is now
-published in Workflow 2.5.5 and Server 2.5.14. Its separate corrected-tuple Rust
-differential remains pending; the frozen failing reference is retained and
-does not become a pass from publication.
+published in Workflow 2.5.5 and Server 2.5.14. Its corrected-tuple Rust
+differential is qualified below; the frozen failing reference is retained and
+does not become a pass from publication alone.
+
+The separate corrected diagnostic corpus now selects frozen Server 2.5.14 /
+Workflow 2.5.5 from `tests/Fixtures/ServerParityBaselines/php-2.5.14.json`.
+The original 2.5.13 manifest and pending leading-NUL reproducer remain unchanged.
+Two reviewed definitions preserve the leading-NUL embedded case and add an
+interior-NUL reason that reaches HTTP/native storage unchanged. Only a complete
+diagnostic containing NUL is rendered as one JSON string literal; decoding must
+recover the full prefix and reason, while ordinary messages remain unchanged.
+The 22-case corpus records published PHP and embedded references before
+native execution.
+All 289 comparator tests pass, including four corrected diagnostic models and
+twelve synchronized semantic corruptions; these are harness checks, not actual
+completed workflows. Native qualification is recorded in
+[PR #352](https://github.com/durable-workflow/server/pull/352).
+The [actual tests-first run](https://github.com/durable-workflow/server/actions/runs/38018390560)
+at `19fa7f0a` records 264 passing PHP/embedded observations across six database
+configurations, including 24 NUL observations. All existing 29 native HTTP tests
+pass per configuration, but the interior-NUL fixture rejects the native
+unencoded diagnostic on SQLite/MySQL/MariaDB. PostgreSQL 17/18 instead reject
+the history payload because SQLx advertises `jsonb` for the PHP `json` column;
+cancellation returns 503, rolls back, and the subsequent worker completes.
+The native implementation serializes the whole NUL-containing diagnostic and
+binds PostgreSQL documents as `json`, reusing SQLx's encoder and preserving the
+existing schema. A new HTTP regression checks original reasons, physical
+failure/history equality, duplicate refusal, fresh pools and exact int64 input.
+The repaired head `d121dc804977a09d5b9484e602e9fa53b573b384` passes
+[all six configurations](https://github.com/durable-workflow/server/actions/runs/38019202998).
+Independent review verifies all six downloaded ZIP digests and compares 396
+actual PHP/Rust/embedded observations (22 fixtures × three runtimes × six
+configurations), including 36 NUL observations. All 30 native HTTP tests pass
+per configuration. The existing 54 root cleanup observations and twelve
+process-kill cleanup recovery variants also pass; PostgreSQL/MySQL TLS and
+read-only PHP takeover refusal gates remain intact. Qualified totals are now
+22 representative fixtures; broader cancellation and upgrade remain unqualified.
 The final cancellation head `741401bc80e2b13b86ae031f3fe88272855f1d03`
 passes all six configurations in [run 38005623457](https://github.com/durable-workflow/server/actions/runs/38005623457),
 including all 17 shared cases, 23 native HTTP tests/configuration and actual
@@ -277,8 +311,8 @@ was corrected separately in [#351](https://github.com/durable-workflow/server/pu
 and published as Server 2.5.15. The frozen reference tuple remains unchanged.
 
 Timeout/lease retries, uncaught failures and broader retry policies remain
-separate gates. The next step is the corrected-tuple NUL differential, followed
-by broader cooperative cancellation, schedules, visibility, authorization/namespaces,
+separate gates. The next steps are broader cooperative cancellation,
+schedules, visibility, authorization/namespaces,
 streams and existing consumers. Each slice must run on the required database
 matrix. Read-only upgrade inspection and backup-first takeover remain required,
 but follow wider capability coverage. PHP and unknown databases stay refused.

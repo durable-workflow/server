@@ -79,9 +79,13 @@ Docker kill and verifies exit code 137 before restarting the native process.
 
 For an adapter installed elsewhere, set `DW_PARITY_SDK_AUTOLOAD` to its locked
 `vendor/autoload.php`. `--artifacts` selects a frozen tuple manifest. The default
-is `tests/Fixtures/ServerParity/php-baseline.json`; its SDK version must match
+is `tests/Fixtures/ServerParityBaselines/php-2.5.14.json`; its SDK version must match
 the installed lock. A frozen tuple does not prove every listed consumer ran.
-The current command executes only the PHP SDK. The embedded host supplies
+The original `tests/Fixtures/ServerParity/php-baseline.json` remains an immutable
+2.5.13 / Workflow 2.5.4 reference, together with its known NUL reproducer outside
+the passing corpus. The corrected tuple is a separate experiment; its new NUL
+definitions do not qualify from the older records. The current command executes
+only the PHP SDK. The embedded host supplies
 namespace assignment and maps the fixture's registered type keys to local PHP
 classes. Its database queue runs the real jobs with a 30-second budget; the HTTP
 worker registers, polls and completes with the normal SDK loop.

@@ -34,7 +34,15 @@ export function checkImmediateCancellation(fixture, observation) {
   equal(terminal.payload.failure_category, 'cancelled', 'typed cancellation failure category');
   equal(terminal.payload.closed_reason, 'cancelled', 'terminal cancellation reason');
   equal(terminal.payload.exception_class, 'Workflow\\V2\\Exceptions\\WorkflowCancelledException', 'published cancellation exception identity');
-  equal(terminal.payload.message, `Workflow cancelled: ${reason}`, 'original cancellation failure message');
+  const completeDiagnostic = `Workflow cancelled: ${reason}`;
+  const encoding = fixture.immediate_cancellation.diagnostic_encoding;
+  assert.ok(encoding === undefined || encoding === 'json_string_literal_if_nul', 'reviewed diagnostic encoding');
+  const encoded = encoding === 'json_string_literal_if_nul' && completeDiagnostic.includes('\0');
+  equal(terminal.payload.message, encoded ? JSON.stringify(completeDiagnostic) : completeDiagnostic, 'original complete cancellation failure message');
+  if (encoded) {
+    equal(JSON.parse(terminal.payload.message), completeDiagnostic, 'portable diagnostic recovers complete original value');
+    equal(terminal.payload.message.includes('\0'), false, 'portable diagnostic contains no literal NUL');
+  }
   equal(Object.keys(terminal.decoded), [], 'cancellation commits no workflow result');
   equal(Object.keys(terminal.typed_decoded), [], 'cancellation has no typed success result');
   equal(observation.execution.closed_reason, 'cancelled', 'durable run closure');

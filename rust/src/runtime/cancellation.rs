@@ -289,6 +289,14 @@ where
             || "Workflow cancelled.".to_owned(),
             |reason| format!("Workflow cancelled: {reason}"),
         );
+        // Corrected PHP stores the entire diagnostic as one JSON string
+        // literal when NUL would truncate or invalidate a SQL text value.
+        // Keep the original reason in history and ordinary messages unchanged.
+        let message = if message.contains('\0') {
+            serde_json::to_string(&message)?
+        } else {
+            message
+        };
         const EXCEPTION: &str = "Workflow\\V2\\Exceptions\\WorkflowCancelledException";
         Self::query("INSERT INTO workflow_failures(id,workflow_run_id,source_kind,source_id,propagation_kind,failure_category,handled,exception_class,message,file,line,trace_preview,created_at,updated_at) VALUES ($1,$2,'workflow_run',$3,'cancelled','cancelled',FALSE,$4,$5,'',0,'',$6,$7)")
             .bind(&failure_id).bind(&run_id).bind(&run_id).bind(EXCEPTION).bind(&message)

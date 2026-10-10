@@ -7,6 +7,7 @@ on:
       - scripts/conformance/server-parity*
       - scripts/conformance/server-parity/**
       - tests/Fixtures/ServerParity/**
+      - tests/Fixtures/ServerParityBaselines/**
       - tests/Unit/ServerParityRunnerTest.mjs
       - tests/Unit/ServerParityCooperativeContractTest.mjs
       - rust/**
@@ -17,6 +18,7 @@ on:
       - scripts/conformance/server-parity*
       - scripts/conformance/server-parity/**
       - tests/Fixtures/ServerParity/**
+      - tests/Fixtures/ServerParityBaselines/**
       - tests/Unit/ServerParityRunnerTest.mjs
       - tests/Unit/ServerParityCooperativeContractTest.mjs
       - rust/**
@@ -51,7 +53,7 @@ jobs:
       - name: Create TLS fixture certificates
         run: |
           set -euo pipefail
-          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParity/php-baseline.json)
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
           mkdir -p mysql-tls parity-evidence
           chmod 0777 parity-evidence
           docker run --rm --user="$(id -u):$(id -g)" --network=none \
@@ -99,7 +101,7 @@ jobs:
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" --entrypoint mysql \
             "$MYSQL_IMAGE" -h parity-mysql -uroot -pparity-disposable-password \
             -e 'CREATE DATABASE native_ref CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci'
-          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParity/php-baseline.json)
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
             -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=php_ref \
             -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
@@ -132,7 +134,7 @@ jobs:
       - name: Compare three runtimes, recover killed native nodes and refuse published PHP takeover
         run: |
           set -euo pipefail
-          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParity/php-baseline.json)
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
           docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
             -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
@@ -198,14 +200,14 @@ jobs:
             --mode http --url http://parity-php:8080 --target php --output /evidence/php.json
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
-            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
-            --mode http --url http://parity-native-a:8080 --target rust --output /evidence/rust.json
-          docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
-            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=embedded_ref \
             -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password -e DW_MODE=embedded \
             -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
             --mode embedded --application-root /app --target embedded --output /evidence/embedded.json
+          docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
+            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
+            --mode http --url http://parity-native-a:8080 --target rust --output /evidence/rust.json
           docker run --rm --user=1000:1000 --entrypoint node --network=none \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
             scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json > parity-evidence/comparison.json
@@ -368,7 +370,7 @@ jobs:
             "$POSTGRES_IMAGE" --version > parity-evidence/postgres-version.txt
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
             -e PGPASSWORD=parity-disposable-password --entrypoint createdb "$POSTGRES_IMAGE" -h parity-pg -U parity native_ref
-          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParity/php-baseline.json)
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
             -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=php_ref \
             -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
@@ -403,7 +405,7 @@ jobs:
           POSTGRES_IMAGE: ${{ matrix.image }}
         run: |
           set -euo pipefail
-          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParity/php-baseline.json)
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
           docker run --rm --user="$(id -u):$(id -g)" --entrypoint composer \
             -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
@@ -468,14 +470,14 @@ jobs:
             --mode http --url http://parity-php:8080 --target php --output /evidence/php.json
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
-            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
-            --mode http --url http://parity-native-a:8080 --target rust --output /evidence/rust.json
-          docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
-            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=embedded_ref \
             -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password -e DW_MODE=embedded \
             -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
             --mode embedded --application-root /app --target embedded --output /evidence/embedded.json
+          docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
+            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
+            --mode http --url http://parity-native-a:8080 --target rust --output /evidence/rust.json
           docker run --rm --user=1000:1000 --entrypoint node --network=none \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
             scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json > parity-evidence/comparison.json
@@ -638,7 +640,7 @@ jobs:
             -v "$PWD/parity-evidence:/evidence" -w /source/rust --entrypoint bash \
             mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 -c \
             'cargo test --locked --all-targets > /evidence/rust-tests.txt && cargo build --locked && cargo run --locked --example codec-fixtures -- ../tests/Fixtures/ServerParity/Codec/v1.json > /evidence/rust-codec.json'
-          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParity/php-baseline.json)
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
           docker run --rm --user="$(id -u):$(id -g)" --network=none --entrypoint php \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
             scripts/conformance/server-parity/codec.php tests/Fixtures/ServerParity/Codec/v1.json \
@@ -655,7 +657,7 @@ jobs:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: |
           set -euo pipefail
-          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParity/php-baseline.json)
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
           mkdir -p parity-state parity-evidence
           chmod 0777 parity-state parity-evidence
           touch parity-state/php.sqlite parity-state/embedded.sqlite
@@ -705,15 +707,15 @@ jobs:
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
             --mode http --url http://parity-server:8080 --target php --output /evidence/php.json
-          docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
-            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
-            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
-            --mode http --url http://parity-rust:8080 --target rust --output /evidence/rust.json
           docker run --rm --user=1000:1000 --entrypoint node \
             -v "$PWD:/source:ro" -v "$PWD/parity-state:/state" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/embedded.sqlite -e DW_MODE=embedded \
             -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
             --mode embedded --application-root /app --target embedded --output /evidence/embedded.json
+          docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
+            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
+            --mode http --url http://parity-rust:8080 --target rust --output /evidence/rust.json
           docker run --rm --user=1000:1000 --entrypoint node \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
             scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json > parity-evidence/comparison.json
