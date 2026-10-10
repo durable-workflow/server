@@ -9,7 +9,7 @@ import {checkVisibility} from './visibility-contract.mjs';
 import {checkAdmission} from './admission-contract.mjs';
 import {checkNamespaces} from './namespace-contract.mjs';
 import {checkWorkerDeregistration} from './worker-deregistration-contract.mjs';
-import {checkPatchDeployment, checkPublishedPatchArtifacts} from './patch-deployment-contract.mjs';
+import {checkPatchDeployment, checkPublishedPatchArtifacts, checkPatchPackageObservation} from './patch-deployment-contract.mjs';
 import {checkWaitingHistory} from './waiting-history-contract.mjs';
 
 function instantNanoseconds(value) {
@@ -562,7 +562,7 @@ export function checkObservation(fixture, observation, workflowId) {
   };
 }
 
-export function compareRecords(records, expectedFixtureHashes, expectedFixtures) {
+export function compareRecords(records, expectedFixtureHashes, expectedFixtures, expectedArtifacts) {
   assert.ok(records.length >= 2, 'at least two recordings are required');
   const reference = records[0];
   for (const record of records) {
@@ -574,6 +574,7 @@ export function compareRecords(records, expectedFixtureHashes, expectedFixtures)
     assert.deepStrictEqual(record.cases.map(c => `${c.fixture_id}.json`).sort(), Object.keys(record.fixture_hashes).sort(), 'every hashed fixture has a recorded case');
     assert.deepStrictEqual(record.fixture_hashes, reference.fixture_hashes, 'same reviewed fixture bytes');
     assert.deepStrictEqual(record.artifacts, reference.artifacts, 'same consumer tuple');
+    if (expectedArtifacts) assert.deepStrictEqual(record.artifacts, expectedArtifacts, 'recorded tuple matches the selected source manifest');
     assert.equal(record.runner_revision, reference.runner_revision, 'same runner revision');
     assert.deepStrictEqual(record.cases.map(c => c.fixture_id), reference.cases.map(c => c.fixture_id), 'complete same fixture inventory');
     // Recheck raw observations. A saved pass label or edited projection is not
@@ -582,9 +583,10 @@ export function compareRecords(records, expectedFixtureHashes, expectedFixtures)
       const baseline = reference.cases[index];
       assert.equal(item.fixture_id, item.fixture.id, 'case identity matches fixture');
       assert.deepStrictEqual(item.fixture, expectedFixtures[`${item.fixture_id}.json`], 'case expectations match the current reviewed source fixture');
-      if (item.fixture.signal_count || item.fixture.schedule || item.fixture.visibility || item.fixture.admission) assert.equal(item.observation.mode, record.mode, 'observation uses its recording adapter');
+      if (item.fixture.signal_count || item.fixture.schedule || item.fixture.visibility || item.fixture.admission || item.fixture.patch_deployment) assert.equal(item.observation.mode, record.mode, 'observation uses its recording adapter');
       assert.equal(item.observation.sdk_php, record.artifacts.sdk_php, 'installed SDK matches tuple');
       checkPublishedPatchArtifacts(item.fixture, record.artifacts);
+      checkPatchPackageObservation(item.fixture, item.observation, record.artifacts);
       if (record.artifacts.sdk_php_source_commit) assert.equal(item.observation.sdk_php_source, record.artifacts.sdk_php_source_commit, 'installed exact source SDK matches tuple');
       if (record.mode === 'embedded') assert.equal(item.observation.workflow_package, record.artifacts.workflow, 'installed Workflow matches tuple');
       assert.deepStrictEqual(item.fixture, baseline.fixture, 'same fixture expectations');

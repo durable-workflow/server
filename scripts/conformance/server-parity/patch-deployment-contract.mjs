@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 
 export function checkPublishedPatchArtifacts(fixture, artifacts) {
+  if (fixture.patch_deployment?.embedded_clock_probe) {
+    assert.match(artifacts.workflow_source_commit ?? '', /^[a-f0-9]{40}$/);
+    assert.deepEqual(Object.keys(artifacts.workflow_loaded_sources ?? {}).sort(),
+      ['QueryStateReplayer', 'VersionDecisions', 'WorkflowExecutor', 'WorkflowFiberRunner'].map(name => `src/V2/Support/${name}.php`).sort(),
+      'exact published engine source inventory');
+    for (const hash of Object.values(artifacts.workflow_loaded_sources)) assert.match(hash, /^[a-f0-9]{64}$/);
+  }
   const consumer = fixture.patch_deployment?.consumer;
   if (!consumer) return;
   assert.ok(['python', 'rust'].includes(consumer.language), 'reviewed published SDK language');
@@ -10,6 +17,17 @@ export function checkPublishedPatchArtifacts(fixture, artifacts) {
   assert.equal(installed?.version, consumer.version);
   assert.equal(installed?.archive_sha256, consumer.archive_sha256, 'exact published archive in selected profile');
   assert.match(installed?.source_commit ?? '', /^[a-f0-9]{40}$/);
+}
+
+export function checkPatchPackageObservation(fixture, observation, artifacts) {
+  if (!fixture.patch_deployment?.embedded_clock_probe || observation.mode !== 'embedded') return;
+  for (const phase of [observation, observation.patch_deployment?.original, observation.patch_deployment?.replacement]) {
+    assert.ok(phase, 'both actual embedded engine processes');
+    assert.equal(phase.workflow_package, artifacts.workflow, 'actually installed published engine');
+    assert.equal(phase.workflow_source, artifacts.workflow_source_commit, 'actually installed published engine source');
+    assert.deepEqual(phase.workflow_loaded_sources, artifacts.workflow_loaded_sources,
+      'autoloaded engine classes match the exact published source bytes');
+  }
 }
 
 export function checkPatchDeployment(fixture, observation, workflowId) {
@@ -95,6 +113,27 @@ export function checkPatchDeployment(fixture, observation, workflowId) {
     const {task: originalTask, ...originalPayload} = original.events[2].payload;
     assert.deepEqual(originalPayload, spec.marker, 'marker is committed by the original worker');
     assert.deepEqual(originalTask, task, 'original marker task annotation stays immutable');
+  }
+  if (spec.embedded_clock_probe) {
+    assert.equal(marked, true, 'clock probe replays a persisted marker');
+    assert.deepEqual(spec.embedded_clock_probe, {phase: 'replacement', marker_sequences: [1, 1]},
+      'reviewed repeated replacement clock contract');
+    assert.equal(original.embedded_clock_probe, undefined, 'clock observations begin at cold replacement');
+    if (observation.mode === 'embedded') {
+      assert.match(markers[0].timestamp, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/, 'retain original marker microseconds');
+      assert.deepEqual(observation.embedded_clock_probe, replacement.embedded_clock_probe);
+      const clocks = replacement.embedded_clock_probe?.clocks;
+      assert.ok(Array.isArray(clocks), 'actual embedded author clock snapshots');
+      assert.equal(clocks.length, replacement.decisions.length, 'clock snapshots cover every actual replay');
+      for (const snapshot of clocks) assert.deepEqual(snapshot, spec.embedded_clock_probe.marker_sequences.map(sequence => {
+        const marker = original.events.find(event => event.event_type === 'VersionMarkerRecorded' && event.payload.sequence === sequence);
+        assert.ok(marker, 'clock comes from the original persisted marker');
+        return marker.timestamp;
+      }), 'each actual author clock preserves the original marker time');
+    } else {
+      assert.equal(observation.embedded_clock_probe, undefined, 'HTTP observation cannot claim an embedded author helper');
+      assert.equal(replacement.embedded_clock_probe, undefined);
+    }
   }
   assert.equal(observation.events[2 + markerCount].payload.sequence, activitySequence,
     'original activity stays at its authored sequence');

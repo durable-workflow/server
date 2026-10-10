@@ -35,6 +35,13 @@ function record(suffix = '') {
   return {schema: 'durable-workflow.server-parity-record/v1', target: `target${suffix}`, outcome: 'pass', runner_revision: 'a'.repeat(40), fixture_hashes: {'one-activity.json': 'fixture-sha'}, artifacts: {sdk_php: '2.2.6'}, cases: [{fixture_id: fixture.id, fixture, observation: raw, projection: checkObservation(fixture, raw, 'test-one-activity')}]};
 }
 
+test('comparison binds identical recordings to the selected source artifact manifest', () => {
+  const records = [record(), record('-other-database')];
+  compareCorpusRecords(records, {'one-activity.json': 'fixture-sha'}, reviewed, {sdk_php: '2.2.6'});
+  assert.throws(() => compareCorpusRecords(records, {'one-activity.json': 'fixture-sha'}, reviewed,
+    {sdk_php: '2.2.6', workflow: 'required-published-engine'}), /selected source manifest/);
+});
+
 function cancellationObservation(fixture, mode = 'http') {
   const raw = observation();
   const {phase} = fixture.immediate_cancellation;

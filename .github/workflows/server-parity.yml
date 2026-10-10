@@ -321,6 +321,7 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json > parity-evidence/comparison.json
           bash scripts/conformance/server-parity/published-sdk-patch-profile.sh mysql http://parity-php:8080 http://parity-native-a:8080
+          bash scripts/conformance/server-parity/repeated-patch-profile.sh mysql http://parity-php:8080 http://parity-native-a:8080
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint sh \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" -ec '
@@ -645,6 +646,7 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json > parity-evidence/comparison.json
           bash scripts/conformance/server-parity/published-sdk-patch-profile.sh pgsql http://parity-php:8080 http://parity-native-a:8080
+          bash scripts/conformance/server-parity/repeated-patch-profile.sh pgsql http://parity-php:8080 http://parity-native-a:8080
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint sh \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" -ec '
@@ -943,6 +945,7 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json > parity-evidence/comparison.json
           bash scripts/conformance/server-parity/published-sdk-patch-profile.sh sqlite http://parity-server:8080 http://parity-rust:8080
+          bash scripts/conformance/server-parity/repeated-patch-profile.sh sqlite http://parity-server:8080 http://parity-rust:8080
           docker run --rm --user=1000:1000 --entrypoint php --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/restart.php \
