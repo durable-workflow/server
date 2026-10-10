@@ -805,7 +805,7 @@ try {
     $observation['sdk_php'] = ltrim(InstalledVersions::getPrettyVersion('durable-workflow/sdk'), 'v');
     $observation['sdk_php_source'] = InstalledVersions::getReference('durable-workflow/sdk');
     $observation['php_version'] = PHP_VERSION;
-    if ($mode === 'embedded') {
+    if ($mode === 'embedded' && ! isset($observation['workflow_package'])) {
         $observation['workflow_package'] = ltrim(InstalledVersions::getPrettyVersion('durable-workflow/workflow'), 'v');
     }
     echo json_encode($observation, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)."\n";

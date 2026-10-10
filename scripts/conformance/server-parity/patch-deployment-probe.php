@@ -70,6 +70,12 @@ function patchDeploymentObservation(array $fixture, array $options): array
     $observation = $phases[1];
     $observation['patch_deployment'] = ['checkpoint' => $fixture['patch_deployment']['checkpoint'],
         'change_id' => $fixture['patch_deployment']['change_id'], 'original' => $phases[0], 'replacement' => $phases[1]];
+    $directory = getenv('DW_PARITY_FAILURE_EVIDENCE_DIR');
+    if (is_string($directory) && is_dir($directory)) {
+        $name = preg_replace('/[^A-Za-z0-9_.-]/', '_', $options['workflow-id']);
+        @file_put_contents($directory.'/patch-'.$name.'.json', json_encode($observation,
+            JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE)."\n");
+    }
 
     return $observation;
 }

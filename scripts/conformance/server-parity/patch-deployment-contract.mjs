@@ -24,6 +24,7 @@ export function checkPatchDeployment(fixture, observation, workflowId) {
     assert.deepEqual(phase.typed_input, observation.typed_input, 'exact original input');
     assert.equal(phase.payload_codec, 'avro');
     if (observation.mode === 'embedded') {
+      assert.equal(phase.workflow_package, observation.workflow_package, 'unchanged exact embedded package across processes');
       assert.equal(phase.instance.id, workflowId, 'original physical embedded instance');
       assert.equal(phase.instance.namespace, observation.namespace, 'explicit persisted embedded namespace');
       assert.equal(phase.instance.workflow_type, fixture.workflow_type, 'original registered instance type');
