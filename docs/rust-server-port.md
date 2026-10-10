@@ -26,6 +26,19 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+The next pending fixture targets legacy-token authentication and default-namespace
+admission. It completes an original echo, admits one unclaimed peer and executes
+16 actual control/worker requests: credential failures before protocol/namespace
+errors, protocol failures before namespace lookup, unknown header/query namespaces,
+and normalized header/query/configured-default precedence. Fresh original
+descriptions and complete history must remain unchanged after refused mutations;
+only authorized cleanup may cancel that peer. Embedded mode exercises the same
+authored workflow and installed peer lifecycle; HTTP authentication is inapplicable
+there. PHP syntax and 793 modeled comparator checks pass, including 97 admission
+checks. Actual reference recordings and native qualification are pending. The
+reviewed default corpus remains 27. Role/principal tokens, tenant restrictions,
+named-namespace execution and alternate auth/default configuration remain open.
+
 The twenty-seventh reviewed fixture covers default-namespace visibility with one completed authored
 echo and one unclaimed pending peer of a different registered type. It records
 original run identities, size-one pagination, status/type filters, cancellation

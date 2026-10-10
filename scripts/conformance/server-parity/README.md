@@ -48,11 +48,28 @@ published Server image contains these tools. Install the exact adapter:
 
 ```bash
 composer install --working-dir=scripts/conformance/server-parity --no-interaction
-node --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs
+node --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs
 ```
 
 Use **separate, already bootstrapped databases** for PHP, Rust and embedded.
-The default reviewed corpus now includes 26 cases. The two schedule cases can
+The default reviewed corpus now includes 27 cases. Its visibility fixture runs
+the unchanged published CLI 2.2.0 on both HTTP targets. Download its PHAR,
+verify the fixture's pinned checksum, and expose its absolute path to the PHP
+probe with `DW_PARITY_CLI_PHAR`:
+
+```bash
+mkdir -p parity-consumers
+curl --fail --location --output parity-consumers/dw.phar https://github.com/durable-workflow/cli/releases/download/2.2.0/dw.phar
+printf '%s  %s\n' "$(jq -r '.visibility.cli.phar_sha256' tests/Fixtures/ServerParity/visibility-current-runs.json)" parity-consumers/dw.phar | sha256sum -c
+export DW_PARITY_CLI_PHAR="$PWD/parity-consumers/dw.phar"
+```
+
+When running the probe in Docker, mount the PHAR into that container and set
+`DW_PARITY_CLI_PHAR` to its absolute container path. Embedded mode checks the
+installed engine's original persisted summaries and peer cleanup; its namespace
+and workflow identities must match the independent HTTP recordings.
+
+The two schedule cases can
 also be selected explicitly for a bounded inspection:
 
 ```bash
