@@ -310,6 +310,16 @@ The separate PHP service-mode queue override inconsistency found during setup
 was corrected separately in [#351](https://github.com/durable-workflow/server/pull/351)
 and published as Server 2.5.15. The frozen reference tuple remains unchanged.
 
+The next child-cancellation slice begins with two definitions in
+`tests/Fixtures/ServerParityPending/`: direct cancellation before a child claim
+and during its committed timer. The parent catches the original child outcome
+and completes; the child must remain cancelled. The existing happy-path child
+fixture does not qualify either case. The published PHP SDK uses
+`ChildWorkflowFailed` with failure type `ChildRunCancelled`; embedded restoration
+and parent-facing diagnostics require actual reference observations. Candidate
+definitions remain outside the 22-case passing corpus until the adapters,
+shared comparison and native database matrix are reviewed.
+
 Timeout/lease retries, uncaught failures and broader retry policies remain
 separate gates. The next steps are broader cooperative cancellation,
 schedules, visibility, authorization/namespaces,

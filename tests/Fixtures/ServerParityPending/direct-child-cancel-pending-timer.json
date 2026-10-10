@@ -1,0 +1,102 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "direct-child-cancel-pending-timer",
+  "workflow_type": "parity.v1.cancelled_child_parent",
+  "child_workflow_type": "parity.v1.cancelled_child",
+  "input": {
+    "message": "child cancellation λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "child cancellation λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "output": {
+    "value": {
+      "message": "child cancellation λ",
+      "count": 9007199254740993,
+      "optional": null
+    },
+    "child_cancelled": true
+  },
+  "typed_output": {
+    "type": "map",
+    "value": {
+      "value": {
+        "type": "map",
+        "value": {
+          "message": {
+            "type": "string",
+            "value": "child cancellation λ"
+          },
+          "count": {
+            "type": "int64",
+            "value": "9007199254740993"
+          },
+          "optional": {
+            "type": "null",
+            "value": null
+          }
+        }
+      },
+      "child_cancelled": {
+        "type": "boolean",
+        "value": true
+      }
+    }
+  },
+  "activity": false,
+  "child_cancellation": {
+    "phase": "pending_timer",
+    "reason": "direct child cancellation λ",
+    "original_delay_seconds": 60,
+    "http_parent_exception": {
+      "class": "DurableWorkflow\\Exception\\ChildWorkflowFailed",
+      "failure_type": "ChildRunCancelled"
+    },
+    "receipt_target_scope": {
+      "http": "instance",
+      "embedded": "run"
+    }
+  },
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "ChildWorkflowScheduled",
+    "ChildRunStarted",
+    "ChildRunCancelled",
+    "WorkflowCompleted"
+  ],
+  "child_expected_events": [
+    "WorkflowStarted",
+    "TimerScheduled",
+    "CancelRequested",
+    "TimerCancelled",
+    "WorkflowCancelled"
+  ],
+  "embedded_child_expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "TimerScheduled",
+    "CancelRequested",
+    "TimerCancelled",
+    "WorkflowCancelled"
+  ],
+  "review_state": "pending_reference",
+  "contract": "Cancel the original child directly while its parent waits. The parent must observe cancellation of that original child and complete by catching it; no child completion, retry, replacement run or parent cancellation can substitute. Preserve original parent/call/link/child/run and failure relationships, typed exact-int64 input, caller reason, the child's complete cancellation diagnostic and the parent-facing diagnostic naming the original child run. Duplicate cancellation cannot change committed history or failure storage, and fresh clients retain the same outcomes. The PHP SDK exposes ChildWorkflowFailed with failureType ChildRunCancelled; inspect actual embedded exception representation before defining its projection. Observe real published SDK and embedded execution before native implementation. This pending case is outside the passing corpus; propagation trees, parent-close policies, retries and cross-language directions are separate gates."
+}
+
