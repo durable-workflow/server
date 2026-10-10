@@ -38,15 +38,18 @@ and frozen baseline remain unchanged. The
 passes on all six configurations in [#363](https://github.com/durable-workflow/server/pull/363).
 All artifact digests match; independent comparisons pass 12 source-fencing,
 522 default and 18 role-profile observations. Native fencing remains open.
-The next native slice persists registration incarnations in the registration
+[#366](https://github.com/durable-workflow/server/pull/366) persists registration incarnations in the registration
 transaction. Each registration removes at most 64 superseded incarnations in
 its own namespace after ten-minute retention; active identities stay intact.
 It does not advertise fencing or expose a token until the terminal
 transaction and shared native fixture are implemented. Development schema
 version 4 adds native bookkeeping without changing frozen PHP relations or
 rewriting version 3. Older unpublished native databases remain refused without
-mutation; qualified in-place takeover remains a separate gate. Next: implement
-the fenced native transaction and qualify the same original cases, then
+mutation; qualified in-place takeover remains a separate gate. The next draft
+implements fenced deregistration, terminal receipt replay, original-task repair
+commands and task snapshots. Its source profile will add Rust on an independent
+database using the existing compiled binary. This implementation is awaiting
+qualification; published feature artifacts remain held. Next: qualify the same original cases, then
 contention, lost reply, rollback, expiry, role/namespace isolation and bounded
 shutdown failures.
 

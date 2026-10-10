@@ -94,6 +94,10 @@ pub fn router(runtime: Runtime) -> Router {
         .route("/api/worker/register", post(register))
         .route("/api/worker/heartbeat", post(worker_heartbeat))
         .route("/api/worker/registrations/{worker_id}", delete(deregister))
+        .route(
+            "/api/worker/registrations/{worker_id}/deregister",
+            post(deregister_fenced),
+        )
         .route("/api/workers/{worker_id}", delete(deregister))
         .route("/api/worker/workflow-tasks/poll", post(poll_workflow))
         .route(
@@ -620,6 +624,33 @@ async fn deregister(
     Path(worker_id): Path<String>,
 ) -> Result<Json<Value>> {
     runtime.deregister(&worker_id).await.map(Json)
+}
+async fn deregister_fenced(
+    Extension(runtime): Extension<Runtime>,
+    Path(worker_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Response> {
+    match runtime.deregister_fenced(&worker_id, body.clone()).await {
+        Ok(receipt) => Ok(Json(receipt).into_response()),
+        Err(error) => {
+            let Some(reason) = super::worker_incarnations::transient_reason(&error) else {
+                return Err(error);
+            };
+            let mut response = (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "reason":reason,"operation":"deregister_worker","worker_id":worker_id,
+                    "registration_token":body["registration_token"],"outcome":"unknown",
+                    "retryable":true,"retry_after_seconds":1
+                })),
+            )
+                .into_response();
+            response
+                .headers_mut()
+                .insert("retry-after", HeaderValue::from_static("1"));
+            Ok(response)
+        }
+    }
 }
 async fn poll_workflow(
     Extension(runtime): Extension<Runtime>,
