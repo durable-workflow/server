@@ -1314,7 +1314,7 @@ where
             match Self::active_run(&mut tx, &run_id).await {
                 Ok(_) => {}
                 Err(super::RuntimeError::Refused {
-                    reason: "run_timed_out",
+                    reason: "run_timed_out" | "cancellation_deadline_expired",
                     ..
                 }) => continue,
                 Err(error) => return Err(error),
@@ -1420,6 +1420,15 @@ where
                 .is_some_and(|deadline| deadline <= now())
         {
             return Err(refuse(StatusCode::CONFLICT, "run_timed_out"));
+        }
+        if DB::optional_string(&run, "cancellation_request_command_id")?.is_some()
+            && DB::optional_instant(&run, "cancellation_deadline_at")?
+                .is_none_or(|deadline| deadline <= now())
+        {
+            return Err(refuse(
+                StatusCode::CONFLICT,
+                "cancellation_deadline_expired",
+            ));
         }
         Ok(run)
     }
