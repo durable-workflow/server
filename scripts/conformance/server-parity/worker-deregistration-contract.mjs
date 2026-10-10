@@ -5,6 +5,7 @@ export function checkWorkerDeregistration(fixture, observation, workflowId) {
   const state = observation.worker_deregistration;
   const projection = {scope: definition.scope, receipt_retention_seconds: definition.receipt_retention_seconds};
   if (definition.replace_live_registration) projection.replace_live_registration = true;
+  if (definition.sdk_reply_loss) projection.sdk_reply_loss = true;
   assert.ok(state && typeof state === 'object', 'actual worker deregistration observation');
   if (observation.mode === 'embedded') {
     assert.deepStrictEqual(state, {applicable: false, reason: 'embedded_has_no_http_worker_registration_lifecycle'}, 'embedded lifecycle explicitly inapplicable');
@@ -152,5 +153,37 @@ export function checkWorkerDeregistration(fixture, observation, workflowId) {
   assert.equal(state.idle_poll, null, 'no duplicate remaining workflow task');
   assert.deepStrictEqual(receiptFields(state.idle_receipt), {worker_id: workflowId+'-idle-worker', registration_token: state.idle_registration.registration_token,
     outcome: 'deregistered', recovered_workflow_task_count: 0});
+  if (definition.sdk_reply_loss) {
+    const sdk = state.sdk_reply_loss;
+    assert.ok(sdk && typeof sdk === 'object', 'actual SDK reconciliation evidence');
+    assert.equal(sdk.kind, 'client_injected_after_real_http_commit', 'honest fault origin');
+    assert.equal(sdk.bounded_transport, true);
+    assert.equal(sdk.injected_loss_count, 1);
+    assert.ok(Number.isFinite(sdk.shutdown_elapsed_seconds) && sdk.shutdown_elapsed_seconds >= 0
+      && sdk.shutdown_elapsed_seconds <= 10, 'observed reconciliation fits one shutdown budget');
+    assert.deepStrictEqual(sdk.requests.map(r=>[r.method,r.path]), [
+      ['POST','/api/worker/register'],
+      ['POST','/api/worker/registrations/'+workerId+'/deregister'],
+      ['POST','/api/worker/registrations/'+workerId+'/deregister'],
+    ], 'SDK retries shutdown without polling or refreshing registration');
+    assert.equal(sdk.requests[0].status, 201, 'actual SDK registration response');
+    assert.equal(sdk.requests[0].namespace, 'default');
+    assert.match(sdk.requests[0].credential_sha256, /^[a-f0-9]{64}$/);
+    assert.notEqual(sdk.requests[0].credential_sha256, 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', 'credential actually supplied');
+    for (const r of sdk.requests.slice(1)) {
+      assert.equal(r.status, 200, 'real commit and successful receipt reconciliation');
+      assert.equal(r.registration_token, tokens[0], 'retry original accepted incarnation');
+      assert.equal(r.namespace, sdk.requests[0].namespace);
+      assert.equal(r.credential_sha256, sdk.requests[0].credential_sha256);
+      assert.ok(Number.isInteger(r.timeout_seconds) && r.timeout_seconds >= 1 && r.timeout_seconds <= 10,
+        'each SDK shutdown request uses bounded I/O');
+    }
+    assert.ok(sdk.requests[2].timeout_seconds <= sdk.requests[1].timeout_seconds, 'retry timeout does not increase');
+    assert.deepStrictEqual(sdk.diagnostics.filter(d=>d.event==='worker.retrying').map(d=>[d.operation,d.attempt]),
+      [['deregister_worker',1]], 'actual SDK retries the original shutdown once');
+    assert.equal(sdk.diagnostics.filter(d=>d.event==='worker.deregistered').length, 1);
+    assert.equal(sdk.diagnostics.filter(d=>d.event==='worker.stopped').length, 1);
+    assert.equal(sdk.diagnostics.filter(d=>['worker.failed','worker.shutdown_failed','worker.shutdown_retry_unavailable'].includes(d.event)).length, 0);
+  }
   return projection;
 }
