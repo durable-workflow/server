@@ -7,6 +7,7 @@ mod activity_heartbeats;
 mod backend;
 mod cancellation;
 mod children;
+mod control_plane;
 mod cooperative;
 mod execution;
 mod http;
@@ -22,6 +23,7 @@ mod schema;
 mod sqlite;
 mod store;
 mod updates;
+mod visibility;
 
 pub use execution::Runtime;
 pub use http::router;

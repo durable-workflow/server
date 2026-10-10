@@ -17,7 +17,7 @@ pub fn router(runtime: Runtime) -> Router {
         .route("/api/health", get(health))
         .route("/api/ready", get(ready))
         .route("/api/cluster/info", get(cluster))
-        .route("/api/workflows", post(start))
+        .route("/api/workflows", get(list_workflows).post(start))
         .route("/api/schedules", post(super::schedule_http::create))
         .route(
             "/api/schedules/{schedule_id}",
@@ -211,7 +211,7 @@ async fn ready(State(runtime): State<Runtime>) -> Response {
 async fn cluster() -> Json<Value> {
     Json(
         json!({"version": env!("CARGO_PKG_VERSION"), "implementation": "rust", "development": true,
-        "control_plane": {"version": "2"}, "worker_protocol": {"version": "1.20", "server_capabilities": capabilities()},
+        "control_plane": {"version": "2", "request_contract": super::visibility::request_contract()}, "worker_protocol": {"version": "1.20", "server_capabilities": capabilities()},
         "payload_codec": "avro", "qualified_for_php_takeover": false}),
     )
 }
@@ -229,11 +229,21 @@ async fn start(
     Ok((status, Json(result)))
 }
 
+async fn list_workflows(
+    State(runtime): State<Runtime>,
+    Query(query): Query<super::visibility::VisibilityQuery>,
+) -> Result<Json<Value>> {
+    Ok(Json(runtime.list_workflows(query.validate()?).await?))
+}
+
 async fn describe_current(
     State(runtime): State<Runtime>,
     Path(workflow_id): Path<String>,
 ) -> Result<Json<Value>> {
-    runtime.describe(&workflow_id, None).await.map(Json)
+    let body = runtime.describe(&workflow_id, None).await?;
+    Ok(Json(
+        super::control_plane::ReadOperation::Describe.response(body),
+    ))
 }
 
 async fn cancel_current(
@@ -330,10 +340,10 @@ async fn describe_run(
     State(runtime): State<Runtime>,
     Path((workflow_id, run_id)): Path<(String, String)>,
 ) -> Result<Json<Value>> {
-    runtime
-        .describe(&workflow_id, Some(&run_id))
-        .await
-        .map(Json)
+    let body = runtime.describe(&workflow_id, Some(&run_id)).await?;
+    Ok(Json(
+        super::control_plane::ReadOperation::DescribeRun.response(body),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -356,10 +366,12 @@ async fn history(
     }
     // Match the current public history cursor's sequence/base64 contract.
     let after = decode_cursor(query.next_page_token.as_deref());
-    runtime
+    let body = runtime
         .history(&workflow_id, &run_id, after, page_size)
-        .await
-        .map(Json)
+        .await?;
+    Ok(Json(
+        super::control_plane::ReadOperation::History.response(body),
+    ))
 }
 
 pub(super) fn decode_cursor(token: Option<&str>) -> i64 {

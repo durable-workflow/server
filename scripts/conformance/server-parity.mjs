@@ -13,6 +13,7 @@ const {values, positionals} = parseArgs({allowPositionals: true, options: {
   target: {type: 'string'}, output: {type: 'string'}, 'runner-revision': {type: 'string', default: process.env.DW_PARITY_RUNNER_REVISION ?? ''},
   artifacts: {type: 'string'}, prefix: {type: 'string', default: 'parity-v1'}, help: {type: 'boolean'},
   fixture: {type: 'string', multiple: true},
+  'include-fixture': {type: 'string', multiple: true},
 }});
 const [command, ...files] = positionals;
 if (values.help) {
@@ -29,14 +30,19 @@ consumer tuple; the default is tests/Fixtures/ServerParityBaselines/php-2.5.14.j
 Repeat --fixture PATH to record or compare an explicitly selected candidate
 set. Default commands still use only the reviewed ServerParity corpus. Compare
 selected records with the same --fixture paths so current source bytes remain
-authoritative; selected candidates do not enlarge the default passing corpus.`);
+authoritative; selected candidates do not enlarge the default passing corpus.
+--include-fixture PATH adds an explicit candidate to the reviewed default set;
+use that same option when comparing the combined recordings. It cannot be
+combined with --fixture and does not change default fixture discovery.`);
   process.exit(0);
 }
 const json = path => JSON.parse(readFileSync(path, 'utf8'));
 try {
   const directory = resolve(root, 'tests/Fixtures/ServerParity');
+  if (values.fixture?.length && values['include-fixture']?.length) throw new Error('Choose either --fixture or --include-fixture');
   const paths = values.fixture?.length ? values.fixture.map(path => resolve(root, path))
-    : readdirSync(directory).filter(name => name !== 'php-baseline.json' && name.endsWith('.json')).map(name => resolve(directory, name));
+    : [...readdirSync(directory).filter(name => name !== 'php-baseline.json' && name.endsWith('.json')).map(name => resolve(directory, name)),
+      ...(values['include-fixture'] ?? []).map(path => resolve(root, path))];
   if (paths.some(path => !path.endsWith('.json')) || new Set(paths.map(path => basename(path))).size !== paths.length) throw new Error('Selected fixtures require distinct JSON filenames');
   const byName = Object.fromEntries(paths.map(path => [basename(path), path]));
   const fixtures = Object.keys(byName).sort();

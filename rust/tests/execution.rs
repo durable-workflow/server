@@ -19,6 +19,9 @@ use std::str::FromStr;
 #[path = "execution/schedules.rs"]
 mod schedules;
 
+#[path = "execution/visibility.rs"]
+mod visibility;
+
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
     Postgres {
@@ -3285,7 +3288,7 @@ async fn immediate_cancellation_closes_original_work_once_and_survives_fresh_poo
         .await
         .1;
         assert_eq!(description["status"], "cancelled");
-        assert_eq!(description["status_bucket"], "closed");
+        assert_eq!(description["status_bucket"], "failed");
         assert_eq!(description["is_terminal"], true);
         assert_eq!(description["closed_reason"], "cancelled");
         assert_eq!(

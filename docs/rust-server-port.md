@@ -26,6 +26,39 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+The twenty-seventh reviewed fixture covers default-namespace visibility with one completed authored
+echo and one unclaimed pending peer of a different registered type. It records
+original run identities, size-one pagination, status/type filters, cancellation
+cleanup and persisted embedded summaries. HTTP recordings also execute the
+unchanged, checksum-verified published CLI 2.2.0 list/describe/history commands.
+Frozen PHP and embedded recordings pass and compare at `8345e18e`; the actual
+published CLI commands succeed against PHP and refuse the pending status alias.
+All 696 comparator checks pass, including 88 modeled visibility/CLI and selection
+checks. Corrected tests-first source `fbc519f1` compiles on all six databases and
+reproduces missing listing (405) and canonical request-contract metadata, with
+all 35 existing native HTTP tests passing. A later actual CLI run independently
+rejects missing describe/history response metadata despite all 37 native HTTP
+tests passing. The correction supplies operation-specific response contracts,
+original identities and cursors without duplicating payloads in metadata.
+
+The native implementation reads at most 201 authoritative run rows,
+uses bound status/type/substring filters and PHP offset cursors, and adds canonical
+describe buckets/current-run/count fields. SQLite ordering handles both stored
+UTC timestamp forms with exact decimal precision; a native storage regression
+checks nanosecond boundaries and ID ties. The [candidate matrix](https://github.com/durable-workflow/server/actions/runs/38035180354)
+at `0f89276a9aae5f0055e90b24a3fb50339c6462a6` passes all 27 PHP/Rust/embedded
+cases on SQLite, PostgreSQL 17/18, MySQL 8.0/8.4 and MariaDB 10.11. All six
+downloaded artifact digests match; their 486 actual observations independently
+compare, including 18 visibility observations and unchanged CLI 2.2.0 execution
+on both HTTP targets. All 37 native HTTP tests pass per configuration, and the
+SQLite library suite passes 21 tests. PHP/source checks pass 2,607 tests. Fixture
+promotion and final default-corpus qualification are recorded separately in
+[#357](https://github.com/durable-workflow/server/pull/357).
+Persisted PHP summary projections for Waterline, pinned-build fleet visibility,
+structured query grammar and custom search attributes are not part of this slice.
+Broader visibility grammar, metadata, namespaces, streams and Waterline are
+separate acceptance gates.
+
 The next slices widen reviewed PHP/Rust/embedded fixtures and native behavior:
 Timer, signal, quiescent query and state-update slices are qualified. State-update slice
 [#342](https://github.com/durable-workflow/server/pull/342) applies two distinct
@@ -480,13 +513,13 @@ does not prove the remaining acceptance criteria.
 
 | Surface | Current authority and reusable checks | Port status |
 | --- | --- | --- |
-| Control plane, namespaces, authorization, errors, visibility | `resources/platform-protocol-specs/control-plane-api.openapi.yaml`, `docs/contracts/auth-composition.md`, `routes/api.php`, Feature control-plane/auth/namespace tests; namespace and principal-attribution published runners | Pending |
+| Control plane, namespaces, authorization, errors, visibility | `resources/platform-protocol-specs/control-plane-api.openapi.yaml`, `docs/contracts/auth-composition.md`, `routes/api.php`, Feature control-plane/auth/namespace tests; namespace and principal-attribution published runners | Bounded default-namespace listing, canonical buckets and describe/history CLI metadata; broader visibility, namespaces and authorization pending |
 | Worker registration, sessions, leases, fencing, retries, timeouts, heartbeats, routing, affinity, backpressure, versioning | Worker OpenAPI and stream AsyncAPI in `resources/platform-protocol-specs/`; Feature worker/activity/prepared-local/cancellation tests; activity, heartbeat and worker-versioning published runners | Bounded PHP registration, polling, completion/fencing, activity retries and cleanup heartbeat; broader fleet, routing, affinity and timeout policies pending |
 | Avro values, external task inputs/results, payload storage and reclamation | `docs/contracts/external-task-{input,result}.md`, `external-payload-storage.md`, external payload OpenAPI; `regression-corpus-policy.json`, `tests/Fixtures/CodecRegression/`, payload Feature tests | PHP/embedded echo slice; Rust codec foundation in #329, full ingress and external payloads pending |
 | Workflow lifecycle, duplicate commands, typed history, continuation, child workflows, cancellation, cleanup replay | Workflow lifecycle, migration, child-workflow and replay runners; Feature cooperative cancellation, history, migration and repeated-signal tests | Bounded authored completion, activity retry/failure, direct children/cancellation and root cooperative cleanup; broader propagation, replay and continuation semantics pending |
 | Timers, schedules, signals, queries, updates, search attributes, memo, sagas | Corresponding runners in `scripts/conformance/`, manifests in `static/platform-conformance/`; Sample App polyglot experiments | Bounded durable sleep, repeated signals, state queries/updates and two UTC schedule cases; broader policies, search attributes, memo and sagas pending |
 | Local activities, cancellation scopes, worker sessions, streams, service catalog/Nexus, bridge adapters, standalone activities, debugging and repair | `routes/api.php`, `docs/contracts/`, worker/control-plane specifications, corresponding Feature tests and Nexus runner | Pending; not omitted from parity |
-| Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | Published PHP SDK and embedded directions for the 26 bounded fixtures; other languages and CLI/Waterline/Sample App consumers pending |
+| Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | Published PHP SDK and embedded directions for 27 bounded fixtures; unchanged CLI 2.2.0 list/describe/history; other languages, CLI commands, Waterline and Sample App pending |
 | SQL schema and stored representations | `database/migrations/`, Workflow package `src/migrations/`, model casts, `Workflow\\Serializers\\Serializer`, queue job payloads, exported history and credential digests | [Representation checkpoints](rust-server-storage-audit.md) recorded; complete mapping and executable migration tests pending |
 | Images, architecture, bootstrap, configuration, readiness, metrics and graceful shutdown | `Dockerfile`, `docker/`, `config/`, `docker-compose*.yml`, `k8s/helm/`, `docs/server-reference.md`, small-cluster/multi-region validation docs | Pending |
 | Backup and in-place upgrade | `docs/self-hosted-backup-and-restore.md`, external payload backup holds; last PHP image writes, all PHP roles stop, Rust takes over same DB sequentially | Pending on SQLite, MariaDB/MySQL, PostgreSQL |
