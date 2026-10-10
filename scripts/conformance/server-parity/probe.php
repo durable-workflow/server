@@ -419,6 +419,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         $handle->selectedRunId, $queue, $url, $namespace) : null;
     $namespaces = isset($fixture['namespace_isolation']) ? finishHttpNamespaces($client, $fixture, $workflowId, $queue, $url) : null;
     $workerDeregistration = isset($fixture['worker_deregistration']) ? finishHttpWorkerDeregistration($client, $fixture, $workflowId, $queue, $url) : null;
+    $waitingHistory = isset($fixture['waiting_for_history']) ? finishHttpWaitingHistory($client, $fixture, $workflowId, $queue, $url) : null;
     if ($scheduleState !== null) {
         $scheduleState = finishHttpSchedule($client, $fixture, $scheduleState, $workflowId, $handle->selectedRunId);
         $scheduleState['control_receipts'] = $scheduleReceipts;
@@ -503,6 +504,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'admission' => $admission,
         'namespace_isolation' => $namespaces,
         'worker_deregistration' => $workerDeregistration,
+        'waiting_for_history' => $waitingHistory,
         'run_id' => $execution->runId,
         'workflow_type' => $execution->workflowType,
         'namespace' => $execution->namespace,
@@ -768,6 +770,7 @@ try {
     require __DIR__.'/admission-probe.php';
     require __DIR__.'/namespace-probe.php';
     require __DIR__.'/worker-deregistration-probe.php';
+    require __DIR__.'/waiting-history-probe.php';
     require __DIR__.'/child-cancellation-probe.php';
     require __DIR__.'/cancellation-probe.php';
     require __DIR__.'/cooperative-probe.php';
@@ -803,6 +806,9 @@ try {
     }
     $observation['mode'] = $mode;
     $observation['typed_output'] = typedValue($observation['output']);
+    if ($mode === 'embedded' && isset($fixture['waiting_for_history'])) {
+        $observation['waiting_for_history'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_workflow_task_failure_endpoint'];
+    }
     $observation['sdk_php'] = ltrim(InstalledVersions::getPrettyVersion('durable-workflow/sdk'), 'v');
     $observation['sdk_php_source'] = InstalledVersions::getReference('durable-workflow/sdk');
     $observation['php_version'] = PHP_VERSION;

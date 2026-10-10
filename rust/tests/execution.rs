@@ -43,6 +43,9 @@ mod worker_pressure;
 #[path = "execution/version_markers.rs"]
 mod version_markers;
 
+#[path = "execution/waiting_history.rs"]
+mod waiting_history;
+
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
     Postgres {

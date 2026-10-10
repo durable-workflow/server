@@ -112,6 +112,10 @@ pub fn router(runtime: Runtime) -> Router {
             "/api/worker/workflow-tasks/{task_id}/complete",
             post(complete_workflow),
         )
+        .route(
+            "/api/worker/workflow-tasks/{task_id}/fail",
+            post(fail_workflow_task),
+        )
         .route("/api/worker/activity-tasks/poll", post(poll_activity))
         .route(
             "/api/worker/activity-tasks/{task_id}/status",
@@ -734,6 +738,27 @@ async fn complete_workflow(
         })
         .map(Json)
 }
+async fn fail_workflow_task(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>> {
+    let attempt = body["workflow_task_attempt"].clone();
+    runtime
+        .fail_workflow_task(&task_id, body)
+        .await
+        .map_err(|error| {
+            completion_refusal(
+                error,
+                &task_id,
+                "workflow_task_attempt",
+                attempt,
+                "Workflow task not found.",
+            )
+        })
+        .map(Json)
+}
+
 async fn complete_activity(
     Extension(runtime): Extension<Runtime>,
     Path(task_id): Path<String>,

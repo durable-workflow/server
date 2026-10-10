@@ -1,0 +1,17 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "workflow-waiting-history-message",
+  "workflow_type": "parity.v1.echo",
+  "input": {"message": "legacy pending history λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {"type": "map", "value": {"message": {"type": "string", "value": "legacy pending history λ"}, "count": {"type": "int64", "value": "9007199254740993"}, "optional": {"type": "null", "value": null}}},
+  "activity": false,
+  "expected_events": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"],
+  "waiting_for_history": {
+    "failure": {"type": "PhpWorkflowTaskFailure", "message": "workflow task waiting for scheduled history: original activity has no completed history yet"},
+    "peer_suffix": "-pending",
+    "peer_workflow_type": "parity.v1.waiting_peer",
+    "activity_type": "parity.v1.waiting_activity",
+    "expected_peer_events": ["StartAccepted", "WorkflowStarted", "TimerScheduled", "ActivityScheduled", "TimerFired", "ActivityStarted", "ActivityCompleted", "WorkflowCompleted"]
+  },
+  "contract": "Retain PHP's legacy waiting-message classification alongside the structured type. Release the fenced lease without recording a task/workflow failure or repeating the original pending activity. Finish the original run once with its exact typed result. Embedded marks the HTTP acknowledgement control inapplicable."
+}

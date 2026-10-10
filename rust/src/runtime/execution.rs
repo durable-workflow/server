@@ -429,6 +429,7 @@ impl Runtime {
     delegate!(heartbeat_task(task_id: &str, body: Value) -> Result<Value>);
     delegate!(deliver_cancellation(task_id: &str, body: Value, protocol: &str) -> Result<Value>);
     delegate!(task_history(task_id: &str, body: Value) -> Result<Value>);
+    delegate!(fail_workflow_task(task_id: &str, body: Value) -> Result<Value>);
     pub(crate) async fn complete_workflow(&self, task_id: &str, body: Value) -> Result<Value> {
         if let Some(commands) = body["commands"].as_array() {
             for command in commands

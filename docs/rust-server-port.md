@@ -115,20 +115,32 @@ SDK production repairs belong to
 Python duplicate-marker histories require a separate explicit compatibility
 case; they must not silently be treated as malformed disposable histories.
 
-The next slice implements native `record_version_marker` with the frozen
-five-field history payload with its original task annotation and includes marker
-positions in subsequent authored sequence calculation. Two explicitly selected
-fresh-run controls call the patch once, commit one marker at sequence 1, then
-cold-replay the original pending/completed activity at sequence 2. They reuse the current published PHP
-SDK and embedded authoring controls, targets and existing builds. Native tests
-exercise complete-batch refusal without lease/history mutation, frozen field
-projection, receipt replay, restart and later authored turns. Real matrix
-qualification remains pending. Separate fresh repeated-call fixtures stay
+[#376](https://github.com/durable-workflow/server/pull/376) implements native
+`record_version_marker` with its canonical payload and original task annotation,
+and includes marker positions in subsequent authored sequence calculation.
+All six exact-head configurations pass; independently checked official archives
+qualify 720 observations, 58 native tests per configuration, 23 SQLite codec
+tests and 1,283 comparator tests. Single-call cold controls preserve marker
+sequence 1 and original pending/completed activity sequence 2. Main verification
+is recorded in #376. Separate fresh repeated-call fixtures stay
 pending after actual embedded Workflow 2.5.5 recorded duplicate markers in the
 completed-activity case; the pending case was not executed after that failure.
 [Workflow #744](https://github.com/durable-workflow/workflow/issues/744) owns
 the engine repair. Deprecation, arbitrary version ranges, repeated fresh calls
 and cross-SDK duplicate-marker histories remain separate shared gates.
+
+The next slice ports the workflow-task `/fail` waiting acknowledgement used by
+published SDK pending replay. Two pending controls distinguish the structured
+`WorkflowTaskWaitingForHistory` type from PHP's retained message fallback.
+An actual timer resumes a leased replay while the original activity is still
+pending. Acknowledgement must release that lease without adding failure history,
+leave the original run waiting, and allow the same activity and run to finish
+with their exact typed value and immutable history prefix. HTTP lease fencing
+and replay refusal are part of this slice. Embedded mode executes its authored
+echo and explicitly marks this service-only endpoint inapplicable. General
+task-failure retry/blocking policies, pending signal/update draining and the
+actual Rust SDK worker direction require separate qualification. No executed
+result for these new controls is claimed yet.
 
 The source profile now includes Rust on an independent database using the
 already compiled binary. Five dedicated native tests check original-task
