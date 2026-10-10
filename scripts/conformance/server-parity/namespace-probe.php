@@ -163,10 +163,8 @@ function finishEmbeddedNamespaces(array $fixture, string $workflowId, string $qu
     $definition = $fixture['namespace_isolation'];
     $names = array_map(static fn (string $suffix): string => strtolower($workflowId.$suffix), $definition['namespace_suffixes']);
     $ids = array_map(static fn (string $suffix): string => $workflowId.$suffix, $definition['peer_suffixes']);
-    $binding = null;
     // The host supplies namespace binding; descendants inherit their actual
     // original parent. These listeners never write lifecycle/history outcomes.
-    WorkflowInstance::creating(static function ($row) use (&$binding): void { $row->namespace = $binding; });
     WorkflowRun::creating(static function ($row): void {
         $row->namespace = WorkflowInstance::query()->findOrFail($row->workflow_instance_id)->namespace;
     });
@@ -177,8 +175,7 @@ function finishEmbeddedNamespaces(array $fixture, string $workflowId, string $qu
         'worker_refusals' => [], 'runs' => [], 'foreign_selections' => []];
     $handles = [];
     foreach ([0, 1] as $index) {
-        $binding = $names[$index];
-        $handles[] = WorkflowStub::make(\ServerParity\OneActivityWorkflow::class, $ids[$index]);
+        $handles[] = WorkflowStub::make(\ServerParity\OneActivityWorkflow::class, $ids[$index], $names[$index]);
         $handles[$index]->start($fixture['input'], new WorkflowOptions(connection: 'database', queue: $queue),
             new StartOptions(executionTimeoutSeconds: 3600, runTimeoutSeconds: 600));
     }
