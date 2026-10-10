@@ -37,6 +37,9 @@ mod worker_incarnations;
 #[path = "execution/worker_deregistration.rs"]
 mod worker_deregistration;
 
+#[path = "execution/worker_pressure.rs"]
+mod worker_pressure;
+
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
     Postgres {

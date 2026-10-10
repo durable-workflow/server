@@ -55,14 +55,36 @@ Each registration removes at most 64 expired completed or superseded receipts
 in its namespace after ten minutes; active identities stay intact. Explicit
 native maintenance remains a separate gate.
 
+[#370](https://github.com/durable-workflow/server/pull/370) releases original
+workflow leases when the same worker ID registers again, in the same transaction
+as token replacement. It preserves the original history and repair count, as
+the exact PHP source does. Native restart, namespace and token-insert rollback
+cases and the two-case source profile pass on all six configurations; main
+verification also passes. Activity and sticky-lease replacement remain open.
+[#371](https://github.com/durable-workflow/server/pull/371) adds actual SDK
+receipt reconciliation after explicitly client-injected reply loss following
+real HTTP 200 commit. A replacement owns the same original task before the SDK
+retries its unchanged token. All six PR configurations pass and their official
+artifacts independently compare 522 default, 18 role and 54 source observations.
+Models and this observed shutdown timing do not qualify performance or the
+complete shutdown budget. Main verification is recorded in #371.
+
+The next native qualification holds a real independent database transition
+lock through the configured timeout. It checks concurrent health reads,
+structured retryable 503 / Retry-After, unchanged full original reads/history,
+original-attempt completion and same-token repair/replay of another original
+task. Implementation is a test addition; its actual matrix result belongs in
+the owning PR and #325. Shared SDK database pressure, persistent shutdown,
+exhausted total budgets, original-error precedence, explicit native maintenance
+and exact publication remain open under #358.
+
 The source profile now includes Rust on an independent database using the
 already compiled binary. Five dedicated native tests check original-task
 completion after restart and replacement, concurrent independent pools,
 final-receipt-write rollback on each engine family, expired/pruned receipts,
 and two namespaces with live original leases and the same worker ID. Repair
-commands are checked in storage as well as history. Qualification results belong
-to #367; implementation alone does not establish a passing matrix. Next:
-shared real contention, reply loss after commit, SDK retry budgets and original
+commands are checked in storage as well as history. All six PR and main
+configurations pass in #367. Next: shared real contention, SDK retry budgets and original
 failure precedence, then native receipt maintenance and exact published
 PHP/SDK artifacts. No feature publication or performance result is claimed.
 
