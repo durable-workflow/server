@@ -28,7 +28,7 @@ export function checkWorkerDeregistration(fixture, observation, workflowId) {
   assert.equal(new Set(tokens).size, 3, 'every successful registration rotates the incarnation');
   for (const key of ['heartbeat', 'replacement_heartbeat', 'latest_heartbeat']) {
     assert.equal(state[key].worker_id, workerId);
-    assert.equal(state[key].heartbeat_recorded, true, 'heartbeat succeeds without retiring original authority');
+    assert.equal(state[key].acknowledged, true, 'heartbeat succeeds without retiring original authority');
   }
   const task = state.original_task;
   const latest = state.latest_task;
