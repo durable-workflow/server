@@ -239,6 +239,22 @@ boundaries; child relationships, existing open activities, waits, updates,
 scoped policies and other delivery call kinds are refused explicitly. This
 bounded slice does not establish broader cooperative-cancellation parity.
 
+The first unchanged SDK candidate exposed the protocol 1.20 activity ownership
+observation hook: the worker calls `/status` before invoking cleanup activity
+code. Native delivery and the shielded timer completed, but the missing hook
+returned HTTP 501 and the SDK abandoned each activity claim. The native hook
+now observes the actual task, attempt, owner, run and existing lease without
+renewing it or recording progress. Its qualification remains part of the shared
+candidate, rather than a reason to modify the SDK.
+
+`cooperative-restart.php` adds real pending-cleanup recovery variants to the
+existing externally killed native deployments. Preparation records the original
+canonical context, delivered event identity and acknowledged history before
+the process kill. A fresh SDK worker then checks completed and expired cleanup,
+unchanged request/deadline, original typed activity values, terminal reads and
+late heartbeat/delivery/completion fencing. These longer-timer recovery variants
+do not add cases to the shared corpus; their execution remains a gate.
+
 The actual first request returns HTTP 202; pending and terminal duplicates
 return HTTP 200. The reviewed fixtures now check each recorded transport status,
 request body and response. Corruption checks keep history copies consistent so

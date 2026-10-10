@@ -209,10 +209,12 @@ jobs:
           docker run --rm --user=1000:1000 --entrypoint node --network=none \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
             scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json > parity-evidence/comparison.json
-          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint sh \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
-            -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/restart.php \
-            prepare http://parity-native-a:8080 /evidence/native-restart-receipt.json > parity-evidence/native-restart-prepare.json
+            -e DW_PARITY_TOKEN=parity-test-token "$image" -ec '
+              php scripts/conformance/server-parity/restart.php prepare http://parity-native-a:8080 /evidence/native-restart-receipt.json > /evidence/native-restart-prepare.json
+              php scripts/conformance/server-parity/cooperative-restart.php prepare http://parity-native-a:8080 /evidence/cooperative-restart-receipt.json > /evidence/cooperative-restart-prepare.json
+            '
           docker kill --signal=KILL "$RESOURCE_SCOPE-native-a"
           test "$(docker inspect --format='{{.State.ExitCode}}' "$RESOURCE_SCOPE-native-a")" = 137
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
@@ -234,10 +236,12 @@ jobs:
             sleep 1
           done
           test "$ready" = 1
-          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint sh \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
-            -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/restart.php \
-            finish http://parity-recovered:8080 /evidence/native-restart-receipt.json > parity-evidence/native-restart-finish.json
+            -e DW_PARITY_TOKEN=parity-test-token "$image" -ec '
+              php scripts/conformance/server-parity/cooperative-restart.php finish http://parity-recovered:8080 /evidence/cooperative-restart-receipt.json > /evidence/cooperative-restart-finish.json
+              php scripts/conformance/server-parity/restart.php finish http://parity-recovered:8080 /evidence/native-restart-receipt.json > /evidence/native-restart-finish.json
+            '
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/restart.php \
@@ -475,10 +479,12 @@ jobs:
           docker run --rm --user=1000:1000 --entrypoint node --network=none \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
             scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json > parity-evidence/comparison.json
-          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint sh \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
-            -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/restart.php \
-            prepare http://parity-native-a:8080 /evidence/native-restart-receipt.json > parity-evidence/native-restart-prepare.json
+            -e DW_PARITY_TOKEN=parity-test-token "$image" -ec '
+              php scripts/conformance/server-parity/restart.php prepare http://parity-native-a:8080 /evidence/native-restart-receipt.json > /evidence/native-restart-prepare.json
+              php scripts/conformance/server-parity/cooperative-restart.php prepare http://parity-native-a:8080 /evidence/cooperative-restart-receipt.json > /evidence/cooperative-restart-prepare.json
+            '
           docker kill --signal=KILL "$RESOURCE_SCOPE-native-a"
           test "$(docker inspect --format='{{.State.ExitCode}}' "$RESOURCE_SCOPE-native-a")" = 137
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
@@ -500,10 +506,12 @@ jobs:
             sleep 1
           done
           test "$ready" = 1
-          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
+          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint sh \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
-            -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/restart.php \
-            finish http://parity-recovered:8080 /evidence/native-restart-receipt.json > parity-evidence/native-restart-finish.json
+            -e DW_PARITY_TOKEN=parity-test-token "$image" -ec '
+              php scripts/conformance/server-parity/cooperative-restart.php finish http://parity-recovered:8080 /evidence/cooperative-restart-receipt.json > /evidence/cooperative-restart-finish.json
+              php scripts/conformance/server-parity/restart.php finish http://parity-recovered:8080 /evidence/native-restart-receipt.json > /evidence/native-restart-finish.json
+            '
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/restart.php \
@@ -717,6 +725,10 @@ jobs:
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/restart.php \
             prepare http://parity-server:8080 /evidence/php-refusal-receipt.json > parity-evidence/php-refusal-prepare.json
+          docker run --rm --user=1000:1000 --entrypoint php --network "$RESOURCE_SCOPE" \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
+            -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/cooperative-restart.php \
+            prepare http://parity-rust:8080 /evidence/cooperative-restart-receipt.json > parity-evidence/cooperative-restart-prepare.json
           docker kill --signal=KILL "$RESOURCE_SCOPE-rust"
           test "$(docker inspect --format='{{.State.ExitCode}}' "$RESOURCE_SCOPE-rust")" = 137
           docker stop "$RESOURCE_SCOPE-server" "$RESOURCE_SCOPE-php-maintenance"
@@ -763,10 +775,12 @@ jobs:
             sleep 1
           done
           test "$ready" = 1
-          docker run --rm --user=1000:1000 --entrypoint php --network "$RESOURCE_SCOPE" \
+          docker run --rm --user=1000:1000 --entrypoint sh --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
-            -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/restart.php \
-            finish http://parity-recovered:8080 /evidence/restart-receipt.json > parity-evidence/restart-finish.json
+            -e DW_PARITY_TOKEN=parity-test-token "$image" -ec '
+              php scripts/conformance/server-parity/cooperative-restart.php finish http://parity-recovered:8080 /evidence/cooperative-restart-receipt.json > /evidence/cooperative-restart-finish.json
+              php scripts/conformance/server-parity/restart.php finish http://parity-recovered:8080 /evidence/restart-receipt.json > /evidence/restart-finish.json
+            '
       - name: Collect Server logs and clean resources
         if: always()
         env:

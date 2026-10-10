@@ -61,6 +61,22 @@ node scripts/conformance/server-parity.mjs record \
 node scripts/conformance/server-parity.mjs compare php.json embedded.json
 ```
 
+Root cleanup recovery uses the unchanged locked PHP SDK and actual wall-clock
+timers against an isolated native database:
+
+```bash
+php scripts/conformance/server-parity/cooperative-restart.php prepare "$URL" receipt.json
+# Kill the owned native process externally, then restart it on the same database.
+php scripts/conformance/server-parity/cooperative-restart.php finish "$RECOVERED_URL" receipt.json
+```
+
+The two variants retain the original root request, deadline, delivered event
+identity and pending shielded timer across the interruption. Completion and
+deadline expiry must both end cancelled; fresh SDK reads and stale worker calls
+check the durable outcome. Their longer cleanup timers provide a real process
+kill checkpoint and do not increase fixture counts. CI performs the actual
+Docker kill and verifies exit code 137 before restarting the native process.
+
 For an adapter installed elsewhere, set `DW_PARITY_SDK_AUTOLOAD` to its locked
 `vendor/autoload.php`. `--artifacts` selects a frozen tuple manifest. The default
 is `tests/Fixtures/ServerParity/php-baseline.json`; its SDK version must match
