@@ -1,0 +1,31 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "schedule-fixed-rate-one-occurrence",
+  "workflow_type": "parity.v1.echo",
+  "input": {"message": "scheduled execution λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {"type": "string", "value": "scheduled execution λ"},
+      "count": {"type": "int64", "value": "9007199254740993"},
+      "optional": {"type": "null", "value": null}
+    }
+  },
+  "activity": false,
+  "expected_events": ["StartAccepted", "WorkflowStarted", "ScheduleTriggered", "WorkflowCompleted"],
+  "schedule": {
+    "phase": "fixed_rate_one_occurrence",
+    "spec": {"intervals": [{"every": "PT2S"}], "timezone": "UTC"},
+    "overlap_policy": "skip",
+    "jitter_seconds": 0,
+    "max_runs": 1,
+    "action_timeouts": {"execution_timeout_seconds": 3600, "run_timeout_seconds": 600},
+    "steps": ["create", "observe_committed_occurrence", "normal_scheduler_fire", "complete_original_workflow", "observe_two_later_intervals", "fresh_history"],
+    "expected_events": ["ScheduleCreated", "ScheduleTriggered", "ScheduleDeleted"],
+    "exhaustion": {"status": "deleted", "reason": "max_runs_exhausted", "remaining_actions": 0, "next_fire_at": null},
+    "completed_workflows": 1,
+    "later_interval_checks": 2
+  },
+  "review_state": "pending_reference_and_native_qualification",
+  "contract": "Candidate fixed-rate schedule: the installed normal scheduler fires the original committed two-second UTC interval occurrence without moving clocks, editing schedule rows or constructing history. The one allowed action starts a real authored echo workflow which completes with the exact Avro int64 input. Preserve the original schedule identity and occurrence deadline, prohibit early firing, and link schedule history, workflow ScheduleTriggered, original generated workflow/run and durable completion. Exhausting max_runs=1 deletes the schedule with max_runs_exhausted, clears next_fire_at and leaves the already-started workflow able to finish. Observe two later interval boundaries with the normal scheduler still running and require no extra fire or workflow. Retain fresh original history after deletion; verify both published references before reviewing this candidate. Broader cadence, cron/timezone, overlap/backfill/missed-fire policies, namespace/auth, multi-language directions and hard-kill recovery remain separate gates."
+}

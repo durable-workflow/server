@@ -375,6 +375,19 @@ streams and existing consumers. Each slice must run on the required database
 matrix. Read-only upgrade inspection and backup-first takeover remain required,
 but follow wider capability coverage. PHP and unknown databases stay refused.
 
+Two schedule candidates are now defined outside the passing corpus in
+`tests/Fixtures/ServerParityPending`: a manual lifecycle and one fixed-rate
+occurrence with a one-action budget. Published source refuses manual triggers
+while paused with `status_not_triggerable`; exhausting `max_runs` deletes the
+schedule with `max_runs_exhausted`. These source-defined behaviors still require
+actual HTTP/embedded recordings. The planned checks retain original
+schedule/fire/workflow/run/history relationships, exact int64 action input,
+non-early occurrence timing, completed authored work and no later extra fire.
+No candidate recording or native schedule pass is claimed; the qualified total
+remains 24. Next: run and review the two published references, record the actual
+native gap, then implement and qualify this bounded slice on all six database
+configurations before moving its definitions into the passing corpus.
+
 The current execution slice shares the native workflow/activity/timer/signal state machine
 between SQLite, PostgreSQL and MariaDB/MySQL, with typed database adapters and explicit
 transaction locking. Qualification runs the unchanged execution fixtures

@@ -1,0 +1,30 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "schedule-manual-lifecycle",
+  "workflow_type": "parity.v1.echo",
+  "input": {"message": "scheduled execution λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {"type": "string", "value": "scheduled execution λ"},
+      "count": {"type": "int64", "value": "9007199254740993"},
+      "optional": {"type": "null", "value": null}
+    }
+  },
+  "activity": false,
+  "expected_events": ["StartAccepted", "WorkflowStarted", "ScheduleTriggered", "WorkflowCompleted"],
+  "schedule": {
+    "phase": "manual_lifecycle",
+    "spec": {"intervals": [{"every": "P1D"}], "timezone": "UTC"},
+    "overlap_policy": "skip",
+    "jitter_seconds": 0,
+    "action_timeouts": {"execution_timeout_seconds": 3600, "run_timeout_seconds": 600},
+    "steps": ["create", "pause", "trigger_while_paused", "resume", "trigger", "complete_original_workflow", "delete", "trigger_after_delete", "fresh_history"],
+    "paused_trigger": {"outcome": "skipped", "reason": "status_not_triggerable", "starts_workflow": false},
+    "deleted_http_trigger": {"status": 404, "reason": "schedule_not_found"},
+    "expected_events": ["ScheduleCreated", "SchedulePaused", "ScheduleSkipped", "ScheduleResumed", "ScheduleTriggered", "ScheduleDeleted"],
+    "completed_workflows": 1
+  },
+  "review_state": "pending_reference_and_native_qualification",
+  "contract": "Candidate schedule lifecycle: create an active fixed-interval schedule with an occurrence outside the bounded execution window. Pause it, assert a manual trigger is skipped without starting any workflow, resume it and manually trigger one real authored echo workflow. Preserve the original schedule identity, original trigger number, schedule-history/workflow-history relationship, generated workflow instance/run identities, exact Avro int64 action input and stored completed output. Delete the schedule after that workflow completes; HTTP triggering must return schedule_not_found and must not admit another workflow. Retain fresh original schedule history after deletion and assert adapter-specific deletion visibility rather than projecting it away. Verify the published HTTP and embedded representations before reviewing this candidate. Cron/timezone rules, overlap concurrency, backfill, missed fires, namespace/auth, multi-language directions and hard-kill recovery remain separate gates."
+}
