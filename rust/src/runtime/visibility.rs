@@ -87,7 +87,7 @@ pub(super) fn request_contract() -> Value {
 }
 
 fn response(body: Value) -> Value {
-    super::control_plane::ReadOperation::List.response(body)
+    super::control_plane::Operation::List.response(body)
 }
 
 fn validation(field: &'static str, message: &'static str) -> RuntimeError {
