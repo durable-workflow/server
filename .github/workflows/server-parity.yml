@@ -92,7 +92,7 @@ jobs:
           sha256sum scripts/conformance/server-parity/published-sdk-patch/rust/{Cargo.toml,Cargo.lock,src/main.rs} \
             scripts/conformance/server-parity/published-sdk-patch/{python.py,requirements.txt} > published-sdk-adapters/source-hashes.sha256
           cd published-sdk-adapters
-          rg --files --hidden --no-ignore -0 -g '!SHA256SUMS' | sort -z | xargs -0 sha256sum > SHA256SUMS
+          find . -type f ! -path ./SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
           sha256sum -c SHA256SUMS >/dev/null
       - name: Share thin adapters without build trees or caches
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
