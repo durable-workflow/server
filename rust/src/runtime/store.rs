@@ -1690,7 +1690,7 @@ pub(super) fn reject_fields(body: &Value, allowed: &[&str]) -> Result<()> {
 
 pub(crate) fn capabilities() -> Value {
     json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "start_child_workflow", "open_condition_wait", "open_signal_wait", "complete_workflow"],
-        "workflow_memo_updates": false, "cooperative_cancellation": false, "prepared_local_activities": false,
+        "workflow_memo_updates": false, "cooperative_cancellation": true, "prepared_local_activities": false,
         "worker_sessions": false, "sticky_execution": false, "local_activities": false, "message_streams": false,
         "workflow_updates": true, "query_tasks": true, "query_task_poll_request_idempotency": false})
 }

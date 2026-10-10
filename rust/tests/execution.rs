@@ -2698,13 +2698,13 @@ async fn cooperative_delivery_cleanup_and_original_deadline_survive_fresh_runtim
             .collect();
         let fixture: Value = serde_json::from_str(match (phase, expired) {
             (_, true) => include_str!(
-                "../../tests/Fixtures/ServerParityPending/cooperative-cleanup-deadline.json"
+                "../../tests/Fixtures/ServerParity/cooperative-cleanup-deadline.json"
             ),
             ("before_claim", _) => include_str!(
-                "../../tests/Fixtures/ServerParityPending/cooperative-before-claim-cleanup.json"
+                "../../tests/Fixtures/ServerParity/cooperative-before-claim-cleanup.json"
             ),
             _ => include_str!(
-                "../../tests/Fixtures/ServerParityPending/cooperative-pending-timer-cleanup.json"
+                "../../tests/Fixtures/ServerParity/cooperative-pending-timer-cleanup.json"
             ),
         })
         .unwrap();

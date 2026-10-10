@@ -154,6 +154,12 @@ jobs:
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" --entrypoint mysql \
             "$MYSQL_IMAGE" -h parity-mysql -uroot -pparity-disposable-password \
             -e 'CREATE DATABASE embedded_ref CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci'
+          docker run -d --name "$RESOURCE_SCOPE-php-maintenance" --network "$RESOURCE_SCOPE" \
+            --user=1000:1000 --cpus=0.25 --memory=256m --memory-swap=256m --entrypoint sh \
+            -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=php_ref \
+            -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
+            -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
+            "$image" -ec 'while :; do php artisan workflow:v2:repair-pass --json; sleep 1; done'
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
             -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=embedded_ref \
             -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
@@ -236,7 +242,7 @@ jobs:
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/restart.php \
             prepare http://parity-php:8080 /evidence/php-pending-receipt.json > parity-evidence/php-pending.json
-          docker stop "$RESOURCE_SCOPE-php"
+          docker stop "$RESOURCE_SCOPE-php" "$RESOURCE_SCOPE-php-maintenance"
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
             -e DB_HOST=parity-mysql -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
             -v "$PWD:/source:ro" -w /source "$image" scripts/conformance/server-parity/mysql-schema.php \
@@ -302,11 +308,12 @@ jobs:
         run: |
           mkdir -p parity-evidence
           docker logs "$RESOURCE_SCOPE-php" > parity-evidence/php.log 2>&1 || true
+          docker logs "$RESOURCE_SCOPE-php-maintenance" > parity-evidence/php-maintenance.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-native-a" > parity-evidence/native-a.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-native-b" > parity-evidence/native-b.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-recovered" > parity-evidence/native-recovered.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-db" > parity-evidence/database.log 2>&1 || true
-          docker rm -f "$RESOURCE_SCOPE-php" "$RESOURCE_SCOPE-native-a" "$RESOURCE_SCOPE-native-b" "$RESOURCE_SCOPE-recovered" "$RESOURCE_SCOPE-db" || true
+          docker rm -f "$RESOURCE_SCOPE-php" "$RESOURCE_SCOPE-php-maintenance" "$RESOURCE_SCOPE-native-a" "$RESOURCE_SCOPE-native-b" "$RESOURCE_SCOPE-recovered" "$RESOURCE_SCOPE-db" || true
           docker network rm "$RESOURCE_SCOPE" || true
       - name: Retain MySQL execution evidence
         if: always()
@@ -413,6 +420,12 @@ jobs:
           test "$ready" = 1
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
             -e PGPASSWORD=parity-disposable-password --entrypoint createdb "$POSTGRES_IMAGE" -h parity-pg -U parity embedded_ref
+          docker run -d --name "$RESOURCE_SCOPE-php-maintenance" --network "$RESOURCE_SCOPE" \
+            --user=1000:1000 --cpus=0.25 --memory=256m --memory-swap=256m --entrypoint sh \
+            -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=php_ref \
+            -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
+            -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
+            "$image" -ec 'while :; do php artisan workflow:v2:repair-pass --json; sleep 1; done'
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
             -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=embedded_ref \
             -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
@@ -495,7 +508,7 @@ jobs:
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/restart.php \
             prepare http://parity-php:8080 /evidence/php-pending-receipt.json > parity-evidence/php-pending.json
-          docker stop "$RESOURCE_SCOPE-php"
+          docker stop "$RESOURCE_SCOPE-php" "$RESOURCE_SCOPE-php-maintenance"
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
             -e DB_HOST=parity-pg -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
             -v "$PWD:/source:ro" -w /source "$image" scripts/conformance/server-parity/postgres-schema.php \
@@ -587,11 +600,12 @@ jobs:
         run: |
           mkdir -p parity-evidence
           docker logs "$RESOURCE_SCOPE-php" > parity-evidence/php.log 2>&1 || true
+          docker logs "$RESOURCE_SCOPE-php-maintenance" > parity-evidence/php-maintenance.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-native-a" > parity-evidence/native-a.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-native-b" > parity-evidence/native-b.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-recovered" > parity-evidence/native-recovered.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-db" > parity-evidence/postgres.log 2>&1 || true
-          docker rm -f "$RESOURCE_SCOPE-php" "$RESOURCE_SCOPE-native-a" "$RESOURCE_SCOPE-native-b" "$RESOURCE_SCOPE-recovered" "$RESOURCE_SCOPE-db" || true
+          docker rm -f "$RESOURCE_SCOPE-php" "$RESOURCE_SCOPE-php-maintenance" "$RESOURCE_SCOPE-native-a" "$RESOURCE_SCOPE-native-b" "$RESOURCE_SCOPE-recovered" "$RESOURCE_SCOPE-db" || true
           docker network rm "$RESOURCE_SCOPE" || true
       - name: Retain PostgreSQL storage evidence
         if: always()
@@ -674,6 +688,11 @@ jobs:
             test "$ready" = 1
           done
           export DW_PARITY_RUNNER_REVISION=$(git rev-parse HEAD)
+          docker run -d --name "$RESOURCE_SCOPE-php-maintenance" --network "$RESOURCE_SCOPE" \
+            --user=1000:1000 --cpus=0.25 --memory=256m --memory-swap=256m --entrypoint sh \
+            -v "$PWD/parity-state:/state" -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/php.sqlite \
+            -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
+            "$image" -ec 'while :; do php artisan workflow:v2:repair-pass --json; sleep 1; done'
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
@@ -700,7 +719,7 @@ jobs:
             prepare http://parity-server:8080 /evidence/php-refusal-receipt.json > parity-evidence/php-refusal-prepare.json
           docker kill --signal=KILL "$RESOURCE_SCOPE-rust"
           test "$(docker inspect --format='{{.State.ExitCode}}' "$RESOURCE_SCOPE-rust")" = 137
-          docker stop "$RESOURCE_SCOPE-server"
+          docker stop "$RESOURCE_SCOPE-server" "$RESOURCE_SCOPE-php-maintenance"
           docker run --rm --user=1000:1000 --network=none --entrypoint php \
             -v "$PWD:/source:ro" -v "$PWD/parity-state:/state:ro" -w /source "$image" \
             scripts/conformance/server-parity/snapshot.php /state/php.sqlite > parity-evidence/php-before-native-preflight.json
@@ -754,9 +773,11 @@ jobs:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: |
           docker logs "$RESOURCE_SCOPE-server" > parity-evidence/server.log 2>&1 || true
+          docker logs "$RESOURCE_SCOPE-php-maintenance" > parity-evidence/php-maintenance.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-rust" > parity-evidence/rust.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-recovered" > parity-evidence/rust-recovered.log 2>&1 || true
           docker rm -f "$RESOURCE_SCOPE-server" || true
+          docker rm -f "$RESOURCE_SCOPE-php-maintenance" || true
           docker rm -f "$RESOURCE_SCOPE-rust" || true
           docker rm -f "$RESOURCE_SCOPE-recovered" || true
           docker network rm "$RESOURCE_SCOPE" || true

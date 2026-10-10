@@ -4,7 +4,7 @@ import {readFileSync} from 'node:fs';
 import {checkObservation} from '../../scripts/conformance/server-parity/contract.mjs';
 
 const fixtures = ['cooperative-before-claim-cleanup', 'cooperative-pending-timer-cleanup', 'cooperative-cleanup-deadline'].map(name =>
-  JSON.parse(readFileSync(new URL(`../Fixtures/ServerParityPending/${name}.json`, import.meta.url))));
+  JSON.parse(readFileSync(new URL(`../Fixtures/ServerParity/${name}.json`, import.meta.url))));
 const at = seconds => new Date(Date.UTC(2026, 0, 1) + seconds * 1000).toISOString().replace('Z', '123Z');
 const typed = value => value === null ? {type: 'null', value: null} : Array.isArray(value)
   ? {type: 'list', value: value.map(typed)} : typeof value === 'object'

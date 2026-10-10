@@ -27,6 +27,6 @@
   },
   "expected_events": ["StartAccepted", "WorkflowStarted", "TimerScheduled", "CooperativeCancellationRequested", "TimerCancelled", "CooperativeCancellationDelivered", "TimerScheduled", "TimerFired", "ActivityScheduled", "ActivityStarted", "ActivityHeartbeatRecorded", "ActivityCompleted", "WorkflowCancelled"],
   "requester": {"http": {"type": "auth:token", "id": "legacy-token", "label": "Admin"}, "embedded": {"type": "php", "label": "PHP API"}},
-  "review_state": "reference_reviewed_pending_native_qualification",
+  "review_state": "reference_reviewed_native_matrix_candidate",
   "contract": "Reviewed against published protocol 1.20, PHP Server 2.5.13, Workflow 2.5.4 and PHP SDK 2.2.6. Root context, request identity, reason, requester/source/lineage and original deadline remain immutable. Acceptance leaves the run open; duplicate requests retain the original command and budget before and after closure. The delivery transaction cancels an existing original timer before recording canonical delivery. Shielded cleanup schedules its own timer, then completes a heartbeat and exact-int64 activity, or expires the original budget and cancels the cleanup timer without executing the activity. Remote workflow leases are bounded by that budget; embedded queue lease policy remains host-owned. Terminal diagnostics use the published generated reason separately from the original context reason. This reviewed definition stays outside passing fixture totals until native execution and the full shared matrix qualify."
 }

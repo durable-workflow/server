@@ -218,15 +218,26 @@ explicit repeated report without changing either response.
 
 The next root cooperative-cancellation slice is in draft
 [#348](https://github.com/durable-workflow/server/pull/348). Its three reviewed
-pending definitions execute before claim, after an original timer is scheduled,
+candidate definitions execute before claim, after an original timer is scheduled,
 and through expiry of a longer shielded cleanup timer. All three execute and
 compare on the frozen published PHP Server and embedded Workflow references
 with the unchanged PHP SDK 2.2.6. The reference review rejects 80 corrupted
 observations; all 273 comparator tests pass, including 86 root cancellation
-model/corruption cases and the existing 187 tests. These local reference
-executions do not increase the 17-case passing native corpus. Native request,
-delivery, immutable claim proof, cleanup replay, deadline enforcement and the
-six-configuration qualification are pending.
+model/corruption cases and the existing 187 tests. Native request, immutable
+claim proof, timer-boundary delivery, durable cleanup and original deadline
+enforcement are implemented; the supplemental native tests pass across all six
+database configurations. All 306 existing 17-case snapshots from the foundation
+are independently reviewed, with six actual ZIP digests verified. The three
+new definitions now run in the shared suite as a 20-case candidate. They do not
+increase qualified totals until unchanged SDK and embedded execution passes
+the full matrix and its retained evidence is reviewed. Process-kill cleanup
+recovery also remains a gate before this draft is accepted.
+
+Cooperative discovery is enabled in the experimental candidate to run the
+unchanged SDK handshake. Current admission supports root requests with timer
+boundaries; child relationships, existing open activities, waits, updates,
+scoped policies and other delivery call kinds are refused explicitly. This
+bounded slice does not establish broader cooperative-cancellation parity.
 
 The actual first request returns HTTP 202; pending and terminal duplicates
 return HTTP 200. The reviewed fixtures now check each recorded transport status,
