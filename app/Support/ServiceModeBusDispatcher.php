@@ -10,7 +10,7 @@ use Workflow\V2\Jobs\RunWorkflowTask;
 
 /**
  * Decorates the default Bus Dispatcher to suppress queue dispatch of workflow
- * and activity task jobs in service mode. The package's TaskDispatcher creates
+ * and activity task jobs in service polling mode. The package's TaskDispatcher creates
  * the database row (WorkflowTask in Ready status) before calling dispatch(),
  * so the row is already available for external workers to poll. Timer tasks
  * pass through because they don't require user workflow/activity classes.
