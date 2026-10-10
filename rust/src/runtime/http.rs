@@ -88,6 +88,7 @@ pub fn router(runtime: Runtime) -> Router {
         .route("/api/worker/register", post(register))
         .route("/api/worker/heartbeat", post(worker_heartbeat))
         .route("/api/worker/registrations/{worker_id}", delete(deregister))
+        .route("/api/workers/{worker_id}", delete(deregister))
         .route("/api/worker/workflow-tasks/poll", post(poll_workflow))
         .route(
             "/api/worker/workflow-tasks/{task_id}/deliver-cancellation",

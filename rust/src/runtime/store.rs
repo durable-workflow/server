@@ -607,15 +607,18 @@ where
 
     pub(crate) async fn deregister(&self, worker_id: &str) -> Result<Value> {
         let mut tx = self.begin().await?;
-        Self::query(
+        let deleted = Self::query(
             "DELETE FROM workflow_worker_registrations WHERE namespace='default' AND worker_id=$1",
         )
         .bind(worker_id)
         .execute(&mut *tx)
         .await?;
+        if DB::affected(deleted) == 0 {
+            return Err(refuse(StatusCode::NOT_FOUND, "worker_not_found"));
+        }
         // Revocation expires the existing fence; later polling creates a new
         // attempt before work can be accepted from another worker.
-        let recovered = DB::affected(Self::query("UPDATE workflow_tasks SET lease_expires_at=$1 WHERE namespace='default' AND lease_owner=$2 AND status='leased'")
+        let recovered = DB::affected(Self::query("UPDATE workflow_tasks SET lease_expires_at=$1 WHERE namespace='default' AND lease_owner=$2 AND status='leased' AND task_type='workflow'")
             .bind(DB::bind_time(now())).bind(worker_id).execute(&mut *tx).await?);
         tx.commit().await?;
         self.wake.notify_waiters();

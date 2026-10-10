@@ -120,6 +120,30 @@ async fn complete_original(app: &Router, worker: &str, schedule: &str, trigger: 
         4
     );
     assert!(poll(app, worker, "workflow").await.is_null());
+    let cleanup_worker = format!("{worker}-idle-control");
+    register(app, &cleanup_worker, json!(["echo"]), json!([])).await;
+    assert!(poll(app, &cleanup_worker, "workflow").await.is_null());
+    let removed = request(
+        app,
+        "DELETE",
+        &format!("/api/workers/{cleanup_worker}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(removed.0, StatusCode::OK, "{}", removed.1);
+    assert_eq!(
+        removed.1,
+        json!({"worker_id":cleanup_worker,"outcome":"deregistered","recovered_workflow_task_count":0})
+    );
+    let absent = request(
+        app,
+        "DELETE",
+        &format!("/api/worker/registrations/{cleanup_worker}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(absent.0, StatusCode::NOT_FOUND);
+    assert_eq!(absent.1["reason"], "worker_not_found");
 }
 
 #[tokio::test]
