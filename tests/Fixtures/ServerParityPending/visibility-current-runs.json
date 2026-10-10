@@ -1,0 +1,35 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "visibility-current-runs",
+  "workflow_type": "parity.v1.echo",
+  "input": {"message": "visible execution λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {"type": "string", "value": "visible execution λ"},
+      "count": {"type": "int64", "value": "9007199254740993"},
+      "optional": {"type": "null", "value": null}
+    }
+  },
+  "activity": false,
+  "expected_events": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"],
+  "visibility": {
+    "phase": "completed_and_pending_current_runs",
+    "scope": "default_namespace_original_id_prefix",
+    "peer_suffix": "-pending",
+    "peer_workflow_type": "parity.v1.one_activity",
+    "peer_status_before_cleanup": "pending",
+    "page_size": 1,
+    "status_filters": ["running", "completed", "failed"],
+    "rejected_status_alias": "pending",
+    "cleanup": {"status": "cancelled", "reason": "visibility probe cleanup λ"},
+    "cli": {
+      "version": "2.2.0",
+      "source_commit": "52066d4c542a8c9dcb3f456f291fa1720c561697",
+      "phar_sha256": "fce532e6a49737aef9cb8a137fd66219928b2595764462be33b12a0fdf5abc7c",
+      "commands": ["workflow:list", "workflow:describe", "workflow:history"]
+    }
+  },
+  "review_state": "pending_reference_and_native_qualification",
+  "contract": "Candidate default-namespace visibility and published CLI consumption. Complete one original authored echo workflow with exact Avro int64 input/result, then admit one original unclaimed pending peer of a different registered workflow type without constructing history or editing rows. Scope reads by their original workflow-id prefix; page at size one and preserve deterministic order, current-run identities, canonical cursors and exact terminal/pending status buckets. Check running/completed/failed and workflow-type filters against the original executions. Execute checksum-verified unchanged CLI 2.2.0 list/describe/history on both HTTP targets, retaining exit codes and decoded output; filtered listing must use the advertised canonical request contract and refuse the pending status alias. Embedded checks use the installed engine's persisted visibility summaries and fresh original history. Cancel the original pending peer for cleanup and require failed-bucket visibility to retain its original cancelled run. Broader visibility-query grammar, custom search attributes/memo, continuation/historical runs, other namespaces/roles, streaming consumers and Waterline remain separate gates."
+}

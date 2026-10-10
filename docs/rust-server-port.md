@@ -26,6 +26,16 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+The next candidate is default-namespace visibility with one completed authored
+echo and one unclaimed pending peer of a different registered type. It records
+original run identities, size-one pagination, status/type filters, cancellation
+cleanup and persisted embedded summaries. HTTP recordings also execute the
+unchanged, checksum-verified published CLI 2.2.0 list/describe/history commands.
+The pending fixture does not enlarge the reviewed 26-case corpus. Reference
+behavior, native listing and CLI request-contract metadata remain unqualified.
+Broader visibility grammar, metadata, namespaces, streams and Waterline are
+separate acceptance gates.
+
 The next slices widen reviewed PHP/Rust/embedded fixtures and native behavior:
 Timer, signal, quiescent query and state-update slices are qualified. State-update slice
 [#342](https://github.com/durable-workflow/server/pull/342) applies two distinct
