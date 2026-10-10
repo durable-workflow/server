@@ -6,7 +6,7 @@ import {admissionObservation} from '../Support/ServerParityAdmissionObservation.
 
 // Modeled examples exercise rejection of corrupt evidence; actual role
 // qualification requires independent published PHP/native/embedded execution.
-const fixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParityPending/admission-role-tokens.json', import.meta.url)));
+const fixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParityProfiles/role-tokens/admission-role-tokens.json', import.meta.url)));
 const examples = ['http', 'embedded'].map(mode => admissionObservation(fixture, mode));
 const check = raw => checkObservation(fixture, raw, 'admission-reference-auth-namespace');
 test('modeled role-token adapters project equally', () => assert.deepStrictEqual(check(examples[0]), check(examples[1])));

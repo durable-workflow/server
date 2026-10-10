@@ -2,7 +2,7 @@
 
 This crate is an unpublished development foundation for [Server #325](https://github.com/durable-workflow/server/issues/325).
 The published PHP image remains the default. The opt-in Rust HTTP runtime now
-executes 22 reviewed shared fixtures through an unchanged published PHP SDK,
+executes 29 default shared fixtures and a separate role-token profile through an unchanged published PHP SDK,
 including bounded root cooperative cleanup at timer boundaries and portable
 NUL cancellation diagnostics. The port log
 records the six-database matrix and real process-kill recovery evidence.
@@ -17,6 +17,18 @@ The toolchain is pinned in `rust-toolchain.toml`; dependency resolution is in
 `Cargo.lock`. Compression and Avro schema-generation features are disabled.
 Development/test debug information is disabled to bound artifact size. This
 does not select release optimization or remove the later profiling requirement.
+
+The HTTP executable requires `DW_RUST_EXPERIMENTAL=1` and nonempty
+`DW_AUTH_TOKEN`. With no role tokens, the legacy credential keeps compatibility
+access. Configuring any `DW_WORKER_TOKEN`, `DW_OPERATOR_TOKEN` or
+`DW_ADMIN_TOKEN` disables that bypass: the legacy credential becomes admin,
+and task polling/completion requires the worker role. Roles are exact membership;
+admin does not imply worker. Registration and cluster discovery allow all
+three roles. The [shared harness](../scripts/conformance/server-parity/README.md)
+documents the separate profile and independent databases.
+Principal/custom-provider, signature/no-auth, runtime-credential, historical
+role-token alias and disabled-backward-compatibility configurations refuse
+startup before storage opens while those profiles remain unqualified.
 
 Run language tooling in a runtime container as the checkout's owner:
 

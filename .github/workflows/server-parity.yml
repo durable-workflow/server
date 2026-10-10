@@ -15,6 +15,7 @@ on:
       - tests/Unit/ServerParityScheduleContractTest.mjs
       - tests/Support/ServerParityScheduleObservation.mjs
       - tests/Fixtures/ServerParityPending/**
+      - tests/Fixtures/ServerParityProfiles/**
       - tests/Unit/ServerParityVisibilityContractTest.mjs
       - tests/Unit/ServerParityAdmissionContractTest.mjs
       - tests/Unit/ServerParityRoleTokenContractTest.mjs
@@ -36,6 +37,7 @@ on:
       - tests/Unit/ServerParityScheduleContractTest.mjs
       - tests/Support/ServerParityScheduleObservation.mjs
       - tests/Fixtures/ServerParityPending/**
+      - tests/Fixtures/ServerParityProfiles/**
       - tests/Unit/ServerParityVisibilityContractTest.mjs
       - tests/Unit/ServerParityAdmissionContractTest.mjs
       - tests/Unit/ServerParityRoleTokenContractTest.mjs
