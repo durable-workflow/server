@@ -39,7 +39,7 @@ function finishHttpWorkerDeregistration(Client $client, array $fixture, string $
     $state['after_unknown'] = $reload();
     $state['original_receipt'] = $client->deregisterWorkerRegistration($workerId, $originalToken);
     $state['after_original'] = $reload();
-    $commands = [['type' => 'complete_workflow', 'result' => $client->payloadCodec()->encodeEnvelope($fixture['input'])]];
+    $commands = [['type' => 'complete_workflow', 'result' => $client->payloadCodec()->envelope($fixture['input'])]];
     $stale = static fn (): array => $client->completeWorkflowTask($task['task_id'], $workerId, $task['workflow_task_attempt'], $commands);
     $state['stale_original'] = fenceReceipt($stale);
     $state['after_stale_original'] = $reload();

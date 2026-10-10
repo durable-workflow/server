@@ -5,6 +5,7 @@
 /storage/*.key
 /vendor
 /scripts/conformance/server-parity/vendor/
+/scripts/conformance/server-parity/worker-fencing-sdk/vendor/
 /benchmarks/capacity/v1/bindings/php/vendor/
 /benchmarks/capacity/v1/bindings/python/.deps/
 /benchmarks/capacity/v1/bindings/rust/target/
