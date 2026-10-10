@@ -29,7 +29,7 @@ for target in php rust; do
   docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
     --network "$RESOURCE_SCOPE" --entrypoint node "${shared[@]}" "$image" \
     scripts/conformance/server-parity.mjs record --mode http --url "$url" --target "$target" \
-    --prefix "published-sdk-$target" --artifacts "$profile/artifacts.json" "${fixtures[@]}" \
+    --prefix published-sdk-v1 --artifacts "$profile/artifacts.json" "${fixtures[@]}" \
     --output "/evidence/published-sdk-patch/$target.json"
 done
 case "$backend" in
@@ -44,7 +44,7 @@ docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
   --network "$RESOURCE_SCOPE" --entrypoint node "${shared[@]}" "${embedded[@]}" \
   -e DW_MODE=embedded -e CACHE_STORE=file -e QUEUE_CONNECTION=database "$image" \
   scripts/conformance/server-parity.mjs record --mode embedded --application-root /app --target embedded \
-  --prefix published-sdk-embedded --artifacts "$profile/artifacts.json" "${fixtures[@]}" \
+  --prefix published-sdk-v1 --artifacts "$profile/artifacts.json" "${fixtures[@]}" \
   --output /evidence/published-sdk-patch/embedded.json
 docker run --rm --user=1000:1000 --network=none --entrypoint node "${shared[@]}" "$image" \
   scripts/conformance/server-parity.mjs compare /evidence/published-sdk-patch/php.json \
