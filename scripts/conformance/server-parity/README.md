@@ -89,6 +89,13 @@ HTTP audit context and embedded deletion visibility. The PHP qualification
 sequences installed repair and evaluator commands in one maintenance loop;
 concurrent SQLite contention remains separately tracked in Server #355.
 
+The pending `tests/Fixtures/ServerParityPending/namespace-isolation.json` can be
+selected with `--fixture` for reference qualification. It uses the existing
+legacy shared-token configuration and two real authored activity workflows in
+named namespaces. The default reviewed corpus remains 28. Role-token profiles,
+namespace lifecycle/retention and cross-namespace orchestration require separate
+qualification.
+
 The recorder does not migrate a database. Do not run it against production or
 shared customer namespaces. The admission fixture executes sixteen real HTTP
 requests, checks authentication/version/namespace precedence and preserves the

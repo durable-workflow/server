@@ -7,6 +7,7 @@ import {checkCooperativeCancellation} from './cooperative-contract.mjs';
 import {checkSchedule, scheduledWorkflowIdentity} from './schedule-contract.mjs';
 import {checkVisibility} from './visibility-contract.mjs';
 import {checkAdmission} from './admission-contract.mjs';
+import {checkNamespaces} from './namespace-contract.mjs';
 
 function instantNanoseconds(value) {
   const shape = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.(\d{1,9}))?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
@@ -28,7 +29,7 @@ export function checkObservation(fixture, observation, workflowId) {
   equal(observation.workflow_id, workflowId, 'public workflow identity');
   nonempty(observation.run_id, 'run identity');
   equal(observation.workflow_type, fixture.workflow_type, 'registered workflow type');
-  equal(observation.namespace, 'default', 'namespace');
+  equal(observation.namespace, fixture.namespace ?? 'default', 'namespace');
   equal(observation.task_queue, 'server-parity-v1', 'task queue');
   const cancelled = Boolean(fixture.immediate_cancellation || fixture.cooperative_cancellation);
   equal(observation.status, cancelled ? 'cancelled' : 'completed', 'actual durable terminal state');
@@ -84,6 +85,7 @@ export function checkObservation(fixture, observation, workflowId) {
   const schedule = fixture.schedule ? checkSchedule(fixture, observation, identities, projectedEvents, instantNanoseconds) : null;
   const visibility = fixture.visibility ? checkVisibility(fixture, observation, workflowId, instantNanoseconds) : null;
   const admission = fixture.admission ? checkAdmission(fixture, observation, workflowId) : null;
+  const namespaces = fixture.namespace_isolation ? checkNamespaces(fixture, observation, workflowId, checkObservation) : null;
   const cooperative = fixture.cooperative_cancellation
     ? checkCooperativeCancellation(fixture, observation, identities, projectedEvents, instantNanoseconds) : null;
   if (fixture.child_cancellation) {
@@ -545,6 +547,7 @@ export function checkObservation(fixture, observation, workflowId) {
     ...(schedule ? {schedule} : {}),
     ...(visibility ? {visibility} : {}),
     ...(admission ? {admission} : {}),
+    ...(namespaces ? {namespace_isolation: namespaces} : {}),
   };
 }
 

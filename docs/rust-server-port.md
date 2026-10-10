@@ -26,6 +26,18 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+The pending `namespace-isolation` fixture adds two original authored activity
+workflows in named namespaces. HTTP uses the unchanged frozen PHP SDK, one queue
+and the same worker ID in both namespaces. It retains foreign control refusals,
+global workflow-ID reservation, actual cross-namespace completion attempts
+before each original commit, and same-ID registration preservation after
+shutdown. Embedded mode supplies host namespace binding and executes real
+database-queue jobs; HTTP administration and registration are inapplicable.
+Reference execution and native implementation are still pending. This candidate
+does not enlarge the 28-case reviewed corpus. Role tokens need a separate auth
+profile: enabling them disables the legacy token's full-access bypass, and the
+published worker/operator/admin roles have distinct permissions.
+
 The twenty-eighth reviewed fixture qualifies legacy-token authentication and
 default-namespace admission. It completes an original echo, admits one unclaimed
 peer and executes 16 actual control/worker requests: credential failures before
