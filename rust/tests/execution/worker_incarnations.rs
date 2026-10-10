@@ -1,5 +1,164 @@
 use super::*;
 
+impl TestDatabase {
+    async fn seed_expired_incarnations(&self, namespace: &str, first: usize, count: usize) {
+        const INSERT: &str = "INSERT INTO dw_worker_registration_incarnations(token,namespace,worker_id,status,finished_at,created_at,updated_at) VALUES ($1,$2,'expired-worker','superseded','2000-01-01 00:00:00.000000','2000-01-01 00:00:00.000000','2000-01-01 00:00:00.000000')";
+        const AGE: &str = "UPDATE dw_worker_registration_incarnations SET created_at='2000-01-01 00:00:00.000000',updated_at='2000-01-01 00:00:00.000000' WHERE namespace=$1 AND status='active'";
+        match self {
+            Self::Sqlite(dir) => {
+                let pool = sqlx::SqlitePool::connect(&format!(
+                    "sqlite://{}",
+                    dir.path().join("runtime.sqlite").display()
+                ))
+                .await
+                .unwrap();
+                sqlx::query(AGE)
+                    .bind(namespace)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                for index in first..first + count {
+                    sqlx::query(INSERT)
+                        .bind(format!("{index:032x}"))
+                        .bind(namespace)
+                        .execute(&pool)
+                        .await
+                        .unwrap();
+                }
+                pool.close().await;
+            }
+            Self::Postgres { options, .. } => {
+                let pool = sqlx::postgres::PgPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
+                sqlx::query(AGE)
+                    .bind(namespace)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                for index in first..first + count {
+                    sqlx::query(INSERT)
+                        .bind(format!("{index:032x}"))
+                        .bind(namespace)
+                        .execute(&pool)
+                        .await
+                        .unwrap();
+                }
+                pool.close().await;
+            }
+            Self::MySql { options, .. } => {
+                let pool = sqlx::mysql::MySqlPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
+                sqlx::query("UPDATE dw_worker_registration_incarnations SET created_at='2000-01-01 00:00:00.000000',updated_at='2000-01-01 00:00:00.000000' WHERE namespace=? AND status='active'").bind(namespace).execute(&pool).await.unwrap();
+                for index in first..first + count {
+                    sqlx::query("INSERT INTO dw_worker_registration_incarnations(token,namespace,worker_id,status,finished_at,created_at,updated_at) VALUES (?,?,'expired-worker','superseded','2000-01-01 00:00:00.000000','2000-01-01 00:00:00.000000','2000-01-01 00:00:00.000000')")
+                        .bind(format!("{index:032x}")).bind(namespace).execute(&pool).await.unwrap();
+                }
+                pool.close().await;
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn retirement_cleanup_is_bounded_and_preserves_recent_active_and_foreign_identities() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            "/api/namespaces",
+            json!({"name":"alpha","retention_days":30})
+        )
+        .await
+        .0,
+        StatusCode::CREATED
+    );
+    registered(&app, "default").await;
+    registered(&app, "alpha").await;
+    let current = database.incarnations("default", "incarnation-worker").await;
+    let foreign = database.incarnations("alpha", "incarnation-worker").await;
+    database.seed_expired_incarnations("default", 1, 65).await;
+    database.seed_expired_incarnations("alpha", 1000, 2).await;
+    let expired_foreign = database.incarnations("alpha", "expired-worker").await;
+    let mut registration = definition();
+    registration["worker_id"] = json!("cleanup-worker");
+    assert_eq!(
+        scoped(
+            &app,
+            "default",
+            "POST",
+            "/api/worker/register",
+            registration.clone()
+        )
+        .await
+        .0,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        database
+            .incarnations("default", "expired-worker")
+            .await
+            .len(),
+        1,
+        "one pass removes at most 64"
+    );
+    assert_eq!(
+        database.incarnations("default", "incarnation-worker").await,
+        current,
+        "old active identity remains bound"
+    );
+    assert_eq!(
+        database.incarnations("alpha", "incarnation-worker").await,
+        foreign
+    );
+    assert_eq!(
+        database.incarnations("alpha", "expired-worker").await,
+        expired_foreign
+    );
+    assert_eq!(
+        scoped(
+            &app,
+            "default",
+            "POST",
+            "/api/worker/register",
+            registration
+        )
+        .await
+        .0,
+        StatusCode::CREATED
+    );
+    assert!(
+        database
+            .incarnations("default", "expired-worker")
+            .await
+            .is_empty()
+    );
+    let recent = database.incarnations("default", "cleanup-worker").await;
+    assert_eq!(
+        recent.len(),
+        2,
+        "recent superseded identity retains the full interval"
+    );
+    active(&recent);
+    assert_eq!(
+        database.incarnations("default", "incarnation-worker").await,
+        current
+    );
+    assert_eq!(
+        database.incarnations("alpha", "expired-worker").await,
+        expired_foreign
+    );
+    runtime.close().await;
+    drop(app);
+    database.remove().await;
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct Incarnation {
     token: String,

@@ -39,7 +39,9 @@ passes on all six configurations in [#363](https://github.com/durable-workflow/s
 All artifact digests match; independent comparisons pass 12 source-fencing,
 522 default and 18 role-profile observations. Native fencing remains open.
 The next native slice persists registration incarnations in the registration
-transaction. It does not advertise fencing or expose a token until the terminal
+transaction. Each registration removes at most 64 superseded incarnations in
+its own namespace after ten-minute retention; active identities stay intact.
+It does not advertise fencing or expose a token until the terminal
 transaction and shared native fixture are implemented. Development schema
 version 4 adds native bookkeeping without changing frozen PHP relations or
 rewriting version 3. Older unpublished native databases remain refused without

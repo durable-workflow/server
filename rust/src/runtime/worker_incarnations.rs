@@ -115,6 +115,13 @@ where
             .bind(token).bind(self.namespace.as_ref()).bind(worker_id)
             .bind(DB::bind_time(timestamp)).bind(DB::bind_time(timestamp))
             .execute(&mut **tx).await?;
+        // Bound retirement bookkeeping during registration churn. Keep the
+        // complete ten-minute interval; active identities are never selected.
+        // The derived table also supports MySQL's self-table DELETE rules.
+        Self::query("DELETE FROM dw_worker_registration_incarnations WHERE token IN (SELECT token FROM (SELECT token FROM dw_worker_registration_incarnations WHERE namespace=$1 AND status='superseded' AND finished_at<=$2 ORDER BY finished_at,token LIMIT 64) AS expired_incarnations)")
+            .bind(self.namespace.as_ref())
+            .bind(DB::bind_time(timestamp - chrono::Duration::seconds(600)))
+            .execute(&mut **tx).await?;
         Ok(())
     }
 }
