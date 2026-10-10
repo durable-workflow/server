@@ -1,0 +1,19 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "workflow-task-transient-retry",
+  "workflow_type": "parity.v1.echo",
+  "input": {"message": "task retry λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {"type": "map", "value": {"message": {"type": "string", "value": "task retry λ"}, "count": {"type": "int64", "value": "9007199254740993"}, "optional": {"type": "null", "value": null}}},
+  "activity": false,
+  "expected_events": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"],
+  "workflow_task_retry": {
+    "peer_suffix": "-retry",
+    "peer_workflow_type": "parity.v1.task_retry",
+    "failures": [
+      {"type": "RuntimeException", "message": "temporary parity processor unavailable λ"},
+      {"type": "ParityWorkerTransientError", "message": "second transient parity failure"}
+    ],
+    "expected_peer_events": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"]
+  },
+  "contract": "An ordinary leased workflow-task error is a task failure, not a terminal workflow failure. Each accepted report creates one fresh retry task on the original run, carries its attempt count forward and preserves its full history prefix and typed input. Stale reports, duplicate failure reports and late completion of a failed lease are refused without another retry or history mutation. Two real failures then a successful retry finish the same original run once with exact output. Replay-blocking failures, manual repair, message draining and complete retry/backoff policy remain separate gates. Embedded executes the authored echo and explicitly marks the HTTP-only retry endpoint inapplicable."
+}

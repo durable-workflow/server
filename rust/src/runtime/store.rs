@@ -967,8 +967,8 @@ where
     }
 
     pub(crate) async fn fail_workflow_task(&self, task_id: &str, body: Value) -> Result<Value> {
-        // The published endpoint also handles retryable and blocked replay
-        // failures. This development slice admits only its waiting contract.
+        // Waiting acknowledgement and ordinary task retry are separate
+        // transitions. Blocked replay/manual repair remain explicit gates.
         text(&body, "lease_owner")?;
         if body["workflow_task_attempt"]
             .as_i64()
@@ -1018,14 +1018,20 @@ where
             .and_then(Value::as_str)
             .unwrap_or("")
             .trim_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '\0' | '\x0b'));
-        if !kind.eq_ignore_ascii_case("WorkflowTaskWaitingForHistory")
-            && !format!("{kind} {message}")
+        let waiting = kind.eq_ignore_ascii_case("WorkflowTaskWaitingForHistory")
+            || format!("{kind} {message}")
                 .to_ascii_lowercase()
-                .contains("workflow task waiting for scheduled history")
-        {
+                .contains("workflow task waiting for scheduled history");
+        if !waiting && super::task_failures::blocks_replay(&body["failure"]) {
             return Err(refuse(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "development_workflow_task_failure_unqualified",
+            ));
+        }
+        if !waiting && self.namespace.as_ref() != "default" {
+            return Err(refuse(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "development_workflow_task_retry_namespace_unqualified",
             ));
         }
         let mut tx = self.begin().await?;
@@ -1033,9 +1039,9 @@ where
         if DB::string(&task, "task_type")? != "workflow" {
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
         }
-        Self::fence(&task, &body)?;
         let run_id = DB::string(&task, "workflow_run_id")?;
         let run = Self::active_run(&mut tx, &run_id).await?;
+        Self::fence(&task, &body)?;
         let mut payload = DB::document_row(&task, "payload")?;
         let signals = Self::scalar("SELECT COUNT(*) FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received'")
             .bind(&run_id).fetch_one(&mut *tx).await?;
@@ -1053,8 +1059,69 @@ where
         {
             return Err(refuse(
                 StatusCode::UNPROCESSABLE_ENTITY,
-                "development_workflow_task_waiting_messages_unqualified",
+                if waiting {
+                    "development_workflow_task_waiting_messages_unqualified"
+                } else {
+                    "development_workflow_task_retry_messages_unqualified"
+                },
             ));
+        }
+        if !waiting {
+            // Do not append history or create a new run. A failed lease and
+            // its optional fresh retry commit together under the backend lock.
+            for (field, target) in [("type", "failure_type"), ("reason", "failure_reason")] {
+                if let Some(value) = failure
+                    .get(field)
+                    .and_then(Value::as_str)
+                    .map(super::task_failures::php_trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    payload[target] = json!(value);
+                }
+            }
+            if let Some(sequence) = failure.get("sequence").and_then(Value::as_i64) {
+                payload["failure_sequence"] = json!(sequence);
+            }
+            Self::query("UPDATE workflow_tasks SET status='failed',lease_expires_at=NULL,last_error=$1,payload=$2 WHERE id=$3")
+                .bind(message).bind(DB::document(&payload)).bind(task_id).execute(&mut *tx).await?;
+            let open = Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status IN ('ready','leased')")
+                .bind(&run_id).fetch_one(&mut *tx).await?;
+            let mut next_task_id = None;
+            if open == 0 {
+                for field in [
+                    "failure_reason",
+                    "failure_sequence",
+                    "failure_type",
+                    "replay_blocked",
+                    "replay_blocked_reason",
+                    "replay_blocked_failure_type",
+                ] {
+                    payload
+                        .as_object_mut()
+                        .ok_or_else(|| {
+                            refuse(
+                                StatusCode::UNPROCESSABLE_ENTITY,
+                                "invalid_workflow_task_payload",
+                            )
+                        })?
+                        .remove(field);
+                }
+                payload["workflow_task_retry_of"] = json!(task_id);
+                payload["workflow_task_retry_after_error"] = json!(message);
+                let next = id();
+                // Copy routing in SQL so JSON/null representations remain
+                // native to each backend. A new lease increments this carried
+                // attempt count rather than restarting it at one.
+                Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,namespace,task_type,status,attempt_count,available_at,payload,connection,queue,compatibility,priority,fairness_key,fairness_weight) SELECT $1,r.id,r.namespace,'workflow','ready',t.attempt_count,$2,$3,COALESCE(t.connection,r.connection),COALESCE(t.queue,r.queue),COALESCE(t.compatibility,r.compatibility),COALESCE(t.priority,r.priority,5),COALESCE(t.fairness_key,r.fairness_key),COALESCE(t.fairness_weight,r.fairness_weight,1) FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.id=$4")
+                    .bind(&next).bind(DB::bind_time(now())).bind(DB::document(&payload)).bind(task_id).execute(&mut *tx).await?;
+                next_task_id = Some(next);
+            }
+            tx.commit().await?;
+            self.wake.notify_waiters();
+            return Ok(
+                json!({"task_id":task_id,"workflow_task_attempt":body["workflow_task_attempt"],
+                "outcome":"failed","recorded":true,"reason":null,"next_task_id":next_task_id}),
+            );
         }
         payload["waiting_for_history_acknowledged"] = json!(true);
         payload["waiting_for_history_message"] = json!(message);

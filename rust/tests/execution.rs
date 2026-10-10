@@ -46,6 +46,9 @@ mod version_markers;
 #[path = "execution/waiting_history.rs"]
 mod waiting_history;
 
+#[path = "execution/task_retry.rs"]
+mod task_retry;
+
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
     Postgres {

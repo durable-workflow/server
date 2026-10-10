@@ -11,6 +11,7 @@ import {checkNamespaces} from './namespace-contract.mjs';
 import {checkWorkerDeregistration} from './worker-deregistration-contract.mjs';
 import {checkPatchDeployment, checkPublishedPatchArtifacts, checkPatchPackageObservation} from './patch-deployment-contract.mjs';
 import {checkWaitingHistory} from './waiting-history-contract.mjs';
+import {checkTaskRetry} from './task-retry-contract.mjs';
 
 function instantNanoseconds(value) {
   const shape = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.(\d{1,9}))?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
@@ -92,6 +93,7 @@ export function checkObservation(fixture, observation, workflowId) {
   const workerDeregistration = fixture.worker_deregistration ? checkWorkerDeregistration(fixture, observation, workflowId) : null;
   const patchDeployment = fixture.patch_deployment ? checkPatchDeployment(fixture, observation, workflowId) : null;
   const waitingHistory = fixture.waiting_for_history ? checkWaitingHistory(fixture, observation, workflowId) : null;
+  const taskRetry = fixture.workflow_task_retry ? checkTaskRetry(fixture, observation, workflowId) : null;
   const cooperative = fixture.cooperative_cancellation
     ? checkCooperativeCancellation(fixture, observation, identities, projectedEvents, instantNanoseconds) : null;
   if (fixture.child_cancellation) {
@@ -559,6 +561,7 @@ export function checkObservation(fixture, observation, workflowId) {
     ...(workerDeregistration ? {worker_deregistration: workerDeregistration} : {}),
     ...(patchDeployment ? {patch_deployment: patchDeployment} : {}),
     ...(waitingHistory ? {waiting_for_history: waitingHistory} : {}),
+    ...(taskRetry ? {workflow_task_retry: taskRetry} : {}),
   };
 }
 

@@ -21,6 +21,7 @@ on:
       - tests/Unit/ServerParityRoleTokenContractTest.mjs
       - tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs
       - tests/Unit/ServerParityWaitingHistoryContractTest.mjs
+      - tests/Unit/ServerParityTaskRetryContractTest.mjs
       - tests/Unit/ServerParityPublishedPatchContractTest.mjs
       - tests/Unit/ServerParityPublishedPatchTransportTest.mjs
       - tests/Support/ServerParityAdmissionObservation.mjs
@@ -47,6 +48,7 @@ on:
       - tests/Unit/ServerParityRoleTokenContractTest.mjs
       - tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs
       - tests/Unit/ServerParityWaitingHistoryContractTest.mjs
+      - tests/Unit/ServerParityTaskRetryContractTest.mjs
       - tests/Unit/ServerParityPublishedPatchContractTest.mjs
       - tests/Unit/ServerParityPublishedPatchTransportTest.mjs
       - tests/Support/ServerParityAdmissionObservation.mjs
@@ -288,7 +290,8 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-pending.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
-            --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=embedded_ref \
@@ -300,7 +303,8 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-pending.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
-            --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION -e DW_PARITY_CLI_PHAR "$image" scripts/conformance/server-parity.mjs record \
@@ -310,7 +314,8 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-pending.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
-            --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json
           docker run --rm --user=1000:1000 --entrypoint node --network=none \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
             scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json \
@@ -319,7 +324,8 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-pending.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
-            --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json > parity-evidence/comparison.json
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json > parity-evidence/comparison.json
           bash scripts/conformance/server-parity/published-sdk-patch-profile.sh mysql http://parity-php:8080 http://parity-native-a:8080
           bash scripts/conformance/server-parity/repeated-patch-profile.sh mysql http://parity-php:8080 http://parity-native-a:8080
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint sh \
@@ -615,7 +621,8 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-pending.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
-            --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=embedded_ref \
@@ -627,7 +634,8 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-pending.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
-            --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION -e DW_PARITY_CLI_PHAR "$image" scripts/conformance/server-parity.mjs record \
@@ -637,7 +645,8 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-pending.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
-            --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json
           docker run --rm --user=1000:1000 --entrypoint node --network=none \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
             scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json \
@@ -646,7 +655,8 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-pending.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
-            --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json > parity-evidence/comparison.json
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json > parity-evidence/comparison.json
           bash scripts/conformance/server-parity/published-sdk-patch-profile.sh pgsql http://parity-php:8080 http://parity-native-a:8080
           bash scripts/conformance/server-parity/repeated-patch-profile.sh pgsql http://parity-php:8080 http://parity-native-a:8080
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint sh \
@@ -867,7 +877,7 @@ jobs:
             -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run --rm --user=1000:1000 --entrypoint node -v "$PWD:/source:ro" -w /source \
-            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs > parity-evidence/comparator-tests.txt
+            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityTaskRetryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs > parity-evidence/comparator-tests.txt
           docker network create "$RESOURCE_SCOPE"
           docker run -d --name "$RESOURCE_SCOPE-rust" --network "$RESOURCE_SCOPE" --network-alias=parity-rust \
             --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
@@ -917,7 +927,8 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-pending.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
-            --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json
           docker run --rm --user=1000:1000 --entrypoint node \
             -v "$PWD:/source:ro" -v "$PWD/parity-state:/state" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/embedded.sqlite -e DW_MODE=embedded \
@@ -928,7 +939,8 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-pending.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
-            --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION -e DW_PARITY_CLI_PHAR "$image" scripts/conformance/server-parity.mjs record \
@@ -938,7 +950,8 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-pending.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
-            --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json
           docker run --rm --user=1000:1000 --entrypoint node \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
             scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json \
@@ -947,7 +960,8 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-pending.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
-            --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json > parity-evidence/comparison.json
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
+            --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json > parity-evidence/comparison.json
           bash scripts/conformance/server-parity/published-sdk-patch-profile.sh sqlite http://parity-server:8080 http://parity-rust:8080
           bash scripts/conformance/server-parity/repeated-patch-profile.sh sqlite http://parity-server:8080 http://parity-rust:8080
           docker run --rm --user=1000:1000 --entrypoint php --network "$RESOURCE_SCOPE" \

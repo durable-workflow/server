@@ -201,7 +201,8 @@ export function checkPatchDeployment(fixture, observation, workflowId) {
         }
         if (phase === replacement && spec.consumer && item.status === 503) {
           assert.equal(item.method, 'POST');
-          assert.equal(item.path, '/api/worker/workflow-tasks/poll', 'only workflow poll pressure is tolerated');
+          assert.ok(['/api/worker/workflow-tasks/poll', '/api/worker/activity-tasks/poll'].includes(item.path),
+            'only workflow/activity poll pressure is tolerated');
           checkPatchPollPressureResponse(item.response);
           assert.match(item.response_retry_after ?? '', /^[1-9][0-9]*$/, 'positive explicit Retry-After');
           assert.ok(Number.isSafeInteger(Number(item.response_retry_after)) && Number(item.response_retry_after) <= 25,
@@ -209,8 +210,9 @@ export function checkPatchDeployment(fixture, observation, workflowId) {
           assert.equal(item.client_cancelled, false);
           assert.equal(item.transport_error, null);
           assert.equal(item.request.worker_id, `${workflowId}:replacement`);
+          assert.equal(item.request.task_queue, observation.task_queue);
           assert.ok(typeof item.request.poll_request_id === 'string' && item.request.poll_request_id.length > 0);
-          const retry = phase.requests.slice(index + 1).find(request => request.path === item.path
+          const retry = phase.requests.slice(index + 1).find(request => request.method === item.method && request.path === item.path
             && request.request?.poll_request_id === item.request.poll_request_id && request.status >= 200 && request.status < 300);
           assert.ok(retry, 'same original poll request succeeds after pressure');
           assert.deepEqual(retry.request, item.request, 'retry changes no poll authority or request fields');
