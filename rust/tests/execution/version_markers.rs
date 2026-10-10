@@ -37,8 +37,16 @@ async fn markers_survive_restart_and_advance_later_authored_turns_once() {
         StatusCode::OK
     );
     let prefix = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    let mut marker_payload = prefix[2]["payload"].clone();
+    let original_task = marker_payload
+        .as_object_mut()
+        .unwrap()
+        .remove("task")
+        .unwrap();
+    assert_eq!(original_task["id"], task["task_id"]);
+    assert_eq!(original_task["lease_owner"], task["lease_owner"]);
     assert_eq!(
-        prefix[2]["payload"],
+        marker_payload,
         json!({"sequence":1,"change_id":"first λ","version":1,"min_supported":-1,"max_supported":1})
     );
     assert_eq!(prefix[3]["payload"]["sequence"], 2);
@@ -178,7 +186,8 @@ async fn invalid_marker_batches_preserve_original_lease_and_full_history() {
     );
     let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
     assert_eq!(history[2]["payload"]["version"], -3);
-    assert_eq!(history[2]["payload"].as_object().unwrap().len(), 5);
+    assert_eq!(history[2]["payload"].as_object().unwrap().len(), 6);
+    assert_eq!(history[2]["payload"]["task"]["id"], task["task_id"]);
     assert_eq!(history.as_array().unwrap().len(), 4);
     runtime.close().await;
     database.remove().await;

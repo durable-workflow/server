@@ -3,21 +3,21 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {checkPatchDeployment} from '../../scripts/conformance/server-parity/patch-deployment-contract.mjs';
 
-for (const family of ['insertion', 'marked']) for (const checkpoint of ['pending', 'completed']) {
+for (const family of ['insertion', 'marked', 'created']) for (const checkpoint of ['pending', 'completed']) {
   const fixture = JSON.parse(readFileSync(new URL(`../Fixtures/ServerParityPending/patch-${family}-activity-${checkpoint}.json`, import.meta.url)));
-  const marked = family === 'marked';
+  const marked = family !== 'insertion';
   const checkpointLength = (checkpoint === 'pending' ? 3 : 5) + Number(marked);
   function model(mode = 'http') {
     const events = fixture.expected_events.map((event_type, index) => ({event_type, sequence: index + 1,
       timestamp: `2026-01-01T00:00:0${index}Z`, payload: event_type === 'VersionMarkerRecorded'
-        ? structuredClone(fixture.patch_deployment.marker) : {sequence: marked ? 2 : 1, activity_execution_id: 'original-activity'}}));
+        ? {...structuredClone(fixture.patch_deployment.marker), task: {id: 'task', type: 'workflow', status: 'leased', lease_owner: 'original-worker'}} : {sequence: marked ? 2 : 1, activity_execution_id: 'original-activity'}}));
     const base = {mode, sdk_php: '2.2.6', sdk_php_source: 'a'.repeat(40), workflow_id: 'test', run_id: 'original-run',
       workflow_type: fixture.workflow_type, namespace: 'default', task_queue: 'server-parity-v1',
       payload_codec: 'avro', typed_input: {type: 'list', value: [fixture.typed_value]}};
     base.workflow_package = '2.5.5';
     base.instance = {id: 'test', namespace: 'default', workflow_type: fixture.workflow_type, current_run_id: 'original-run'};
     const workflow = commands => ({method: 'POST', path: '/api/worker/workflow-tasks/task/complete',
-      status: 200, request: {commands}});
+      status: 200, request: {commands, lease_owner: 'original-worker'}});
     const activity = {method: 'POST', path: '/api/worker/activity-tasks/activity/complete', status: 200, request: {}};
     const original = {...base, phase: 'original', pid: 101, status: 'waiting', output: null,
       decisions: marked ? [fixture.patch_deployment.expected_decisions] : [],

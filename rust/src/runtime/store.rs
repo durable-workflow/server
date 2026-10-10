@@ -1109,6 +1109,7 @@ where
                 sequence += 1;
                 let mut payload = version_marker_payload(command)?;
                 payload["sequence"] = json!(sequence);
+                payload["task"] = Self::task_snapshot(&task)?;
                 Self::append(
                     &mut tx,
                     &run_id,

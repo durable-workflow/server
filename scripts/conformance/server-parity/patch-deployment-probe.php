@@ -136,10 +136,12 @@ function patchHttpPhase(array $fixture, array $options): array
         });
     $worker->registerWorkflow($fixture['workflow_type'], static function (WorkflowContext $context, array $value) use ($phase, $fixture): array {
         if ($phase === 'replacement' || ($fixture['patch_deployment']['original_patch'] ?? false)) {
-            $first = $context->patched(PatchDeploymentState::$changeId);
-            $second = $context->patched(PatchDeploymentState::$changeId);
-            PatchDeploymentState::$decisions[] = [$first, $second];
-            if ([$first, $second] !== PatchDeploymentState::$expectedDecisions) {
+            $decisions = [];
+            foreach (PatchDeploymentState::$expectedDecisions as $_) {
+                $decisions[] = $context->patched(PatchDeploymentState::$changeId);
+            }
+            PatchDeploymentState::$decisions[] = $decisions;
+            if ($decisions !== PatchDeploymentState::$expectedDecisions) {
                 throw new LogicException('Patch decisions differ from the declared deployment contract.');
             }
         }

@@ -68,16 +68,21 @@ artifacts and retained Python duplicate-marker histories remain separate gates
 under SDK Python #103 and SDK Rust #80.
 
 The fresh marker controls add
-`--include-fixture tests/Fixtures/ServerParityPending/patch-marked-activity-pending.json`
-and `--include-fixture tests/Fixtures/ServerParityPending/patch-marked-activity-completed.json`
+`--include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-pending.json`
+and `--include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-completed.json`
 on every recording and comparison. CI selects all four pending controls beside
-the unchanged 29 defaults. A fresh worker calls the same patch ID twice and
+the unchanged 29 defaults. A fresh worker calls the patch ID once and
 commits exactly one frozen marker at sequence 1 plus an activity at sequence 2.
-A separate cold process repeats both calls, chooses true twice and completes the
+A separate cold process calls it again, chooses true and completes the
 original activity/run without another marker. The full original checkpoint,
 five-field marker, actual SDK requests and exact typed outcome are retained.
 Real qualification of these fresh marker cases is recorded in their owning PR;
-it does not qualify deprecation or Python/Rust SDK directions.
+it does not qualify deprecation or Python/Rust SDK directions. The separate
+`patch-marked-activity-pending/completed` definitions preserve the reviewed
+fresh repeated-call contract. They are excluded from CI selection while
+[Workflow #744](https://github.com/durable-workflow/workflow/issues/744) repairs
+the observed embedded duplicate-marker behavior; their expectations remain
+unchanged.
 
 Its visibility fixture runs
 the unchanged published CLI 2.2.0 on both HTTP targets. Download its PHAR,

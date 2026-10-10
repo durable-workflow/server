@@ -1,0 +1,11 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "patch-created-activity-pending",
+  "workflow_type": "parity.v1.one_activity",
+  "input": {"message": "created patch λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {"type": "map", "value": {"message": {"type": "string", "value": "created patch λ"}, "count": {"type": "int64", "value": "9007199254740993"}, "optional": {"type": "null", "value": null}}},
+  "activity": true,
+  "patch_deployment": {"change_id": "parity.add-new-step", "checkpoint": "activity_pending", "repeated_calls": 1, "original_patch": true, "expected_decisions": [true], "marker": {"sequence": 1, "change_id": "parity.add-new-step", "version": 1, "min_supported": -1, "max_supported": 1}},
+  "expected_events": ["StartAccepted", "WorkflowStarted", "VersionMarkerRecorded", "ActivityScheduled", "ActivityStarted", "ActivityCompleted", "WorkflowCompleted"],
+  "contract": "A fresh original worker calls patched once and chooses true, committing one frozen five-field marker with the original task annotation at authored sequence 1 and the original activity at sequence 2. Stop after actual activity scheduling. A separate cold process calls patched once again and finishes the same original activity/run without another marker or activity, preserving the complete checkpoint, durable identities and exact typed outcome. This single-call PHP SDK 2.2.6 / embedded Workflow 2.5.5 control qualifies marker creation and cold replay. Fresh repeated calls remain explicitly pending in the separate patch-marked fixtures, blocked by Workflow #744; Python/Rust SDK directions and legacy duplicate-marker interoperability remain separate gates."
+}

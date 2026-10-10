@@ -58,8 +58,15 @@ export function checkPatchDeployment(fixture, observation, workflowId) {
   if (marked) {
     assert.deepEqual(spec.marker, {sequence: 1, change_id: spec.change_id, version: 1, min_supported: -1, max_supported: 1},
       'reviewed fresh patched marker');
-    assert.deepEqual(markers[0].payload, spec.marker, 'exact frozen five-field marker without newer fields');
-    assert.deepEqual(original.events[2].payload, spec.marker, 'marker is committed by the original worker');
+    const {task, ...payload} = markers[0].payload;
+    assert.deepEqual(payload, spec.marker, 'exact frozen five-field marker with original task annotation');
+    assert.ok(task && typeof task.id === 'string' && task.id.length > 0, 'original marker task identity');
+    assert.equal(task.type, 'workflow');
+    assert.equal(task.status, 'leased');
+    assert.ok(typeof task.lease_owner === 'string' && task.lease_owner.length > 0, 'original marker authority');
+    const {task: originalTask, ...originalPayload} = original.events[2].payload;
+    assert.deepEqual(originalPayload, spec.marker, 'marker is committed by the original worker');
+    assert.deepEqual(originalTask, task, 'original marker task annotation stays immutable');
   }
   assert.equal(observation.events[2 + markerCount].payload.sequence, activitySequence,
     'original activity stays at its authored sequence');
@@ -76,6 +83,8 @@ export function checkPatchDeployment(fixture, observation, workflowId) {
       const command = oldCompletions[0].request.commands[0];
       const {sequence, ...fields} = spec.marker;
       for (const [name, value] of Object.entries(fields)) assert.equal(command[name], value, 'actual SDK marker request');
+      assert.equal(markers[0].payload.task.id, oldCompletions[0].path.split('/').at(-2), 'original accepted marker task');
+      assert.equal(markers[0].payload.task.lease_owner, oldCompletions[0].request.lease_owner, 'original marker lease owner');
     }
     assert.equal(oldCompletions[0].request.commands[markerCount].activity_type, 'parity.v1.echo_activity');
     assert.ok(newCompletions.length > 0);
