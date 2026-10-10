@@ -5,6 +5,7 @@ declare(strict_types=1);
 use DurableWorkflow\Client;
 use DurableWorkflow\Transport\Psr18Transport;
 use DurableWorkflow\Worker;
+use DurableWorkflow\Worker\ActivityContext;
 use DurableWorkflow\Worker\WorkflowContext;
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\HandlerStack;
@@ -131,7 +132,7 @@ function patchHttpPhase(array $fixture, array $options): array
         return $context->activity('parity.v1.echo_activity', [$value]);
     });
     if ($phase === 'replacement' || $fixture['patch_deployment']['checkpoint'] === 'activity_completed') {
-        $worker->registerActivity('parity.v1.echo_activity', static fn ($context, array $value): array => $value);
+        $worker->registerActivity('parity.v1.echo_activity', static fn (ActivityContext $context, array $value): array => $value);
     }
     $worker->run(0);
     $execution = $client->describeWorkflow($workflowId, $handle->selectedRunId);
