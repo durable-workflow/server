@@ -154,7 +154,15 @@ export function checkSchedule(fixture, observation, identities, projectedEvents,
   identities.push(state.schedule_id, scheduleUlid);
   equal(history.map(event => event.event_type), fixture.schedule.expected_events, 'complete schedule audit inventory');
   equal(history.map(event => event.sequence), history.map((_, index) => index + 1), 'schedule audit order');
-  equal(state.created_history, history.slice(0, 1), 'original committed creation audit');
+  // The ordinary HTTP scheduler may commit the original due occurrence
+  // between create and the first history read. Retain the exact observed
+  // prefix; the complete original identity, deadline and quota checks below
+  // apply to every event whether that initial read sees one or three.
+  if (!manual && !embedded) {
+    assert.ok(state.created_history.length >= 1 && state.created_history.length <= 3,
+      'initial schedule history contains the committed creation and no extra fire');
+    equal(state.created_history, history.slice(0, state.created_history.length), 'initial read retains the exact original audit prefix');
+  } else equal(state.created_history, history.slice(0, 1), 'original committed creation audit');
   equal(state.history_before_worker, history.slice(0, manual ? 5 : 3), 'original trigger before worker history');
   equal(state.history_after_workflow, state.history_before_worker, 'authored completion does not replace schedule audit');
   equal(created.payload.spec, fixture.schedule.spec, 'durable schedule specification');

@@ -18,6 +18,18 @@ for (const phase of ['manual-lifecycle', 'fixed-rate-one-occurrence']) {
   const examples = ['http', 'embedded'].map(mode => scheduleObservation(fixture, mode));
   const check = raw => checkObservation(fixture, raw, `schedule-reference-${phase === 'manual-lifecycle' ? 'manual' : 'rate'}`);
   test(`${phase}: modeled schedule adapters project equally`, () => assert.deepStrictEqual(check(examples[0]), check(examples[1])));
+  if (phase === 'fixed-rate-one-occurrence') {
+    test('fixed-rate HTTP initial read may already see the original scheduler commit', () => {
+      const expected = check(examples[0]);
+      for (const length of [2, 3]) {
+        const raw = structuredClone(examples[0]);
+        raw.schedule.created_history = structuredClone(raw.schedule.fresh_history.slice(0, length));
+        assert.deepStrictEqual(check(raw), expected);
+        raw.schedule.created_history.at(-1).sequence = 99;
+        assert.throws(() => check(raw), /exact original audit prefix/);
+      }
+    });
+  }
   for (const example of examples) {
     const mutations = {
       'replacement schedule': raw => { raw.schedule.schedule_id = 'replacement'; },

@@ -389,7 +389,7 @@ This explains the stopped role, not the original occurrence's failure.
 The comparator checks retain original
 schedule/fire/workflow/run/history relationships, exact int64 action input,
 non-early occurrence timing, completed authored work and no later extra fire.
-The 157 deterministic schedule checks reject damaged identity, quota, history,
+The 161 deterministic schedule checks reject damaged identity, quota, history,
 typed payload, admission timing, deletion and post-close observations. They are
 comparator examples, not additional executions. Frozen embedded resume can
 record the caller model's stale zero skip count; the manual definition explicitly
@@ -402,11 +402,32 @@ maintenance loop. It deliberately excludes overlapping maintenance writes and
 does not close #355. All four raw observations compare at adapter source
 0212604f5a7a1c47b5664227b4483a6328ca520d. The first receipt with an incorrectly
 entered runner SHA is retained and excluded; the valid records use Git's revision.
-Two native regressions at f3823878f21293e869cc58a450df3cb5d54cb0f3 compile and
-fail at the expected 501 schedule creation on all six databases, while the
-32 existing HTTP regressions pass on each. No native schedule pass is claimed;
-the qualified total remains 24. Next: implement and qualify this bounded slice
-on all six configurations before moving its definitions into the passing corpus.
+The tests-first native regressions compile and fail at the expected 501 schedule
+creation on all six databases, with the preceding 32 HTTP tests passing.
+Native now implements this bounded UTC interval slice, including manual
+pause/resume/skips, retained audit history, original due occurrence admission
+and one-action exhaustion. Start, workflow marker, schedule audit, accounting
+and exhaustion share one transaction; an injected audit failure verifies rollback
+without consuming the original occurrence or quota. Unsupported calendar,
+timezone and overlap policies remain refused.
+Three native HTTP regressions additionally cover close/reopen recovery and two
+competing nodes admitting one original occurrence. This is graceful schedule
+restart evidence, not schedule process-kill qualification. All 35 native SQLite
+HTTP tests pass at `3213ce16`, together with the projection and atomic rollback
+units. Its shared run stops earlier at frozen PHP worker shutdown contention;
+that failure is retained separately. Complete six-configuration shared schedule
+qualification remains pending and the reviewed corpus remains 24.
+
+Qualification has already exposed missing completion status, the SDK
+control-plane worker deletion route, MariaDB DECIMAL promotion when selecting
+an aggregate unsigned sequence, and null decoded fields in fresh native workflow
+descriptions. Native repairs retain the original stored envelopes and use a
+bounded blocking codec worker to project display values after the database read.
+The comparator also permits the first HTTP fixed-rate history read to see an
+already committed original occurrence, requiring an exact original audit prefix
+and the same final identity, deadline, history and quota checks. All 608 comparator
+tests pass; they are not extra execution observations. Move the two definitions
+into the reviewed corpus only after the complete native/shared matrix passes.
 
 The current execution slice shares the native workflow/activity/timer/signal state machine
 between SQLite, PostgreSQL and MariaDB/MySQL, with typed database adapters and explicit
