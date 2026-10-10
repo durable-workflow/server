@@ -31,6 +31,9 @@ mod role_tokens;
 #[path = "execution/namespaces.rs"]
 mod namespaces;
 
+#[path = "execution/worker_incarnations.rs"]
+mod worker_incarnations;
+
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
     Postgres {

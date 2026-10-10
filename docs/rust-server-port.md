@@ -33,10 +33,22 @@ original receipt replay after replacement, two explicit repair commands and
 completion by a real SDK worker. Embedded execution runs the authored echo and
 marks HTTP registration inapplicable. This source-reference cohort does not
 qualify native fencing or published feature artifacts; the default 29 fixtures
-and frozen baseline remain unchanged. The hosted PHP/embedded database matrix
-is being added before native implementation. Next: implement the fenced native
-transaction and qualify the same original cases, then contention, lost reply,
-rollback, expiry, role/namespace isolation and bounded shutdown failures.
+and frozen baseline remain unchanged. The
+[source-reference matrix](https://github.com/durable-workflow/server/actions/runs/38050246000)
+passes on all six configurations in [#363](https://github.com/durable-workflow/server/pull/363).
+All artifact digests match; independent comparisons pass 12 source-fencing,
+522 default and 18 role-profile observations. Native fencing remains open.
+The next native slice persists registration incarnations in the registration
+transaction. Each registration removes at most 64 superseded incarnations in
+its own namespace after ten-minute retention; active identities stay intact.
+It does not advertise fencing or expose a token until the terminal
+transaction and shared native fixture are implemented. Development schema
+version 4 adds native bookkeeping without changing frozen PHP relations or
+rewriting version 3. Older unpublished native databases remain refused without
+mutation; qualified in-place takeover remains a separate gate. Next: implement
+the fenced native transaction and qualify the same original cases, then
+contention, lost reply, rollback, expiry, role/namespace isolation and bounded
+shutdown failures.
 
 The separate reviewed `role-tokens/admission-role-tokens` profile completes an
 original authored echo using the unchanged published SDK and the worker token.
