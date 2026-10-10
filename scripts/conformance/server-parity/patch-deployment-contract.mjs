@@ -1,5 +1,17 @@
 import assert from 'node:assert/strict';
 
+export function checkPublishedPatchArtifacts(fixture, artifacts) {
+  const consumer = fixture.patch_deployment?.consumer;
+  if (!consumer) return;
+  assert.ok(['python', 'rust'].includes(consumer.language), 'reviewed published SDK language');
+  assert.match(consumer.archive_sha256, /^[a-f0-9]{64}$/);
+  assert.equal(artifacts[`sdk_${consumer.language}`], consumer.version, 'consumer version matches selected profile');
+  const installed = artifacts.published_sdk_artifacts?.[consumer.language];
+  assert.equal(installed?.version, consumer.version);
+  assert.equal(installed?.archive_sha256, consumer.archive_sha256, 'exact published archive in selected profile');
+  assert.match(installed?.source_commit ?? '', /^[a-f0-9]{40}$/);
+}
+
 export function checkPatchDeployment(fixture, observation, workflowId) {
   const spec = fixture.patch_deployment;
   const marked = spec.original_patch === true;
@@ -22,8 +34,8 @@ export function checkPatchDeployment(fixture, observation, workflowId) {
     assert.equal(phase.namespace, observation.namespace);
     assert.equal(phase.task_queue, observation.task_queue);
     assert.equal(phase.mode, observation.mode);
-    assert.equal(phase.sdk_php, observation.sdk_php, 'unchanged exact SDK version');
-    assert.equal(phase.sdk_php_source, observation.sdk_php_source, 'unchanged exact SDK source');
+    assert.equal(phase.sdk_php, observation.sdk_php, 'exact PHP original worker / observation reader');
+    assert.equal(phase.sdk_php_source, observation.sdk_php_source, 'exact PHP original worker / observation reader source');
     assert.deepEqual(phase.typed_input, observation.typed_input, 'exact original input');
     assert.equal(phase.payload_codec, 'avro');
     if (observation.mode === 'embedded') {
@@ -32,6 +44,19 @@ export function checkPatchDeployment(fixture, observation, workflowId) {
       assert.equal(phase.instance.namespace, observation.namespace, 'explicit persisted embedded namespace');
       assert.equal(phase.instance.workflow_type, fixture.workflow_type, 'original registered instance type');
       assert.equal(phase.instance.current_run_id, observation.run_id, 'original current run across replacement');
+    }
+  }
+  if (spec.consumer) {
+    assert.equal(spec.start_before_worker_registration, true, 'explicit legacy start before a worker advertises identity');
+    assert.notEqual(original.events[1].payload.workflow_definition_fingerprint_source, 'worker',
+      'this legacy control must not bypass a recorded worker definition fingerprint');
+    if (observation.mode === 'http') assert.ok(original.events[1].payload.workflow_definition_fingerprint == null,
+      'actual HTTP legacy start has no advertised definition fingerprint');
+    if (observation.mode === 'embedded') assert.deepStrictEqual(replacement.consumer,
+      {applicable: false, reason: 'embedded_executes_php_author_definitions'});
+    else {
+      assert.deepStrictEqual(replacement.consumer, spec.consumer, 'actual explicitly pinned published replacement SDK');
+      assert.equal(replacement.worker_finished, true, 'published worker returns after shutdown');
     }
   }
   const checkpointLength = (spec.checkpoint === 'activity_pending' ? 3 : 5) + markerCount;
@@ -77,6 +102,11 @@ export function checkPatchDeployment(fixture, observation, workflowId) {
     const newCompletions = commands(replacement);
     assert.equal(oldCompletions.length, 1, 'one accepted original authored turn');
     assert.equal(oldCompletions[0].status, 200);
+    if (spec.consumer) {
+      assert.equal(spec.original_sticky_ttl_seconds, 1, 'explicit bounded affinity expiry before cold replacement');
+      assert.equal(oldCompletions[0].request.sticky_cache?.ttl_seconds, spec.original_sticky_ttl_seconds,
+        'actual original SDK uses the declared affinity budget');
+    }
     assert.deepEqual(oldCompletions[0].request.commands.map(command => command.type),
       [...(marked ? ['record_version_marker'] : []), 'schedule_activity']);
     if (marked) {
@@ -91,10 +121,17 @@ export function checkPatchDeployment(fixture, observation, workflowId) {
     assert.deepEqual(newCompletions.flatMap(item => item.request.commands.map(command => command.type)),
       ['complete_workflow'], 'replacement neither reschedules old activity nor emits marker/new activity');
     for (const phase of [original, replacement]) {
-      assert.ok(phase.diagnostics.includes('worker.registered'));
-      assert.ok(phase.diagnostics.includes('worker.stopped'));
-      assert.ok(!phase.diagnostics.some(event => ['worker.failed', 'worker.handler_failed', 'worker.shutdown_failed'].includes(event)),
-        'no hidden worker or shutdown failure');
+      if (phase === replacement && spec.consumer) {
+        assert.equal(phase.requests.filter(item => item.method === 'POST' && item.path === '/api/worker/register').length, 1,
+          'real published SDK registration');
+        assert.equal(phase.requests.filter(item => item.method === 'DELETE' && item.path.startsWith('/api/worker/registrations/')).length, 1,
+          'real published SDK deregistration');
+      } else {
+        assert.ok(phase.diagnostics.includes('worker.registered'));
+        assert.ok(phase.diagnostics.includes('worker.stopped'));
+        assert.ok(!phase.diagnostics.some(event => ['worker.failed', 'worker.handler_failed', 'worker.shutdown_failed'].includes(event)),
+          'no hidden worker or shutdown failure');
+      }
       for (const item of phase.requests) assert.ok(item.status >= 200 && item.status < 300, 'all observed I/O succeeds');
     }
     const outcomes = phase => phase.requests.filter(item => item.method === 'POST'

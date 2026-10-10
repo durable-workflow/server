@@ -1,0 +1,14 @@
+[package]
+name = "server-parity-published-rust-patch"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+durable-workflow = "=3.4.2"
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+
+[profile.dev]
+debug = 0
+incremental = false

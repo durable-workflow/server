@@ -1,5 +1,31 @@
 # Shared Server fixtures
 
+The separate `published-sdk-patch-replay` profile adds four cold replacement
+directions: Rust SDK 3.4.2 and Python SDK 2.5.1 after an original PHP SDK 2.2.6
+worker. The run starts before any worker advertises a definition fingerprint;
+the complete start payload is checked. Migration between worker-fingerprinted
+definitions is a separate gate, and the frozen PHP matching guard stays intact.
+The original worker leaves its activity pending or completed. Its explicitly declared
+one-second sticky affinity expires before the cold replacement takes work;
+immediate sticky-owner failover remains a separate gate. Registry checksums, the Rust
+Cargo lock and Python wheel/dependency hashes are explicit. Both patch calls
+must choose false, retain activity sequence 1 and finish the same original run
+with exact typed values and unchanged checkpoint history. The observer forwards
+original HTTP bytes, including compression, and keeps credentials out of its
+journal. Full transport bytes stay in the raw sidecar; repeated read/poll
+capability manifests are summarized in the phase observation. Embedded runs the
+corresponding PHP author definitions and explicitly
+marks the language SDK direction inapplicable.
+
+CI builds the Rust SDK adapter once with no debug information or incremental
+compilation. It shares only that binary, locked Python packages and identity
+receipts across existing database jobs, reusing their already compiled Server
+and isolated targets. The original 29-case baseline and older source/fault
+tuples remain unchanged. New product qualification is pending; this profile
+does not qualify a live pending-history failure exchange, fresh repeated calls,
+retained duplicate markers or performance. Workflow #744's separately repaired
+engine requires its own exact source/publication and workflow-clock evidence.
+
 The two pending `workflow-waiting-history-{type,message}` controls explicitly
 exercise the published workflow-task failure endpoint through PHP SDK 2.2.6.
 A timer resumes a replay while its original activity remains unresolved.

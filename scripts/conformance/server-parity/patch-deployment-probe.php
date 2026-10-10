@@ -83,6 +83,9 @@ function patchDeploymentObservation(array $fixture, array $options): array
 
 function patchHttpPhase(array $fixture, array $options): array
 {
+    if ($options['patch-phase'] === 'replacement' && isset($fixture['patch_deployment']['consumer'])) {
+        return patchPublishedSdkPhase($fixture, $options);
+    }
     $phase = $options['patch-phase'];
     $workflowId = $options['workflow-id'];
     $queue = 'server-parity-v1';
@@ -119,8 +122,13 @@ function patchHttpPhase(array $fixture, array $options): array
         transport: new Psr18Transport(client: new GuzzleClient(['http_errors' => false, 'handler' => $stack])));
     if ($phase === 'replacement') {
         $handle = $client->workflowHandle($workflowId, $options['run-id']);
+    } elseif (($fixture['patch_deployment']['start_before_worker_registration'] ?? false) === true) {
+        // This explicit legacy history starts before a worker has advertised
+        // a definition fingerprint. Do not override recorded worker identity.
+        $handle = $client->startWorkflow($fixture['workflow_type'], $workflowId, $queue, [$fixture['input']]);
     }
     $worker = new Worker($client, $queue, workerId: $workflowId.':'.$phase,
+        stickyCacheTtlSeconds: $fixture['patch_deployment']['original_sticky_ttl_seconds'] ?? 300,
         clock: static function () use ($options): float {
             if (microtime(true) > (float) $options['patch-deadline']) {
                 throw new RuntimeException('Patch deployment exceeded its original 30-second budget.');
@@ -130,7 +138,7 @@ function patchHttpPhase(array $fixture, array $options): array
         },
         diagnosticListener: static function (string $event) use (&$handle, $client, $workflowId, $queue, $fixture, $phase, &$diagnostics): void {
             $diagnostics[] = $event;
-            if ($event === 'worker.registered' && $phase === 'original') {
+            if ($event === 'worker.registered' && $phase === 'original' && $handle === null) {
                 $handle = $client->startWorkflow($fixture['workflow_type'], $workflowId, $queue, [$fixture['input']]);
             }
         });
@@ -161,6 +169,101 @@ function patchHttpPhase(array $fixture, array $options): array
         'namespace' => $execution->namespace, 'task_queue' => $execution->taskQueue, 'status' => $execution->status,
         'payload_codec' => $execution->raw['payload_codec'], 'input' => $execution->input, 'output' => $execution->output,
         'events' => $events];
+}
+
+/** Observe an unmodified published worker through a byte-preserving local proxy. */
+function patchPublishedSdkPhase(array $fixture, array $options): array
+{
+    $consumer = $fixture['patch_deployment']['consumer'];
+    $directory = __DIR__.'/published-sdk-patch';
+    $journal = tempnam(sys_get_temp_dir(), 'parity-sdk-');
+    $proxy = proc_open(['node', $directory.'/observe-http.mjs', $options['url'], $journal],
+        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $proxyPipes);
+    if (! is_resource($proxy)) {
+        unlink($journal);
+        throw new RuntimeException('Could not start the SDK HTTP observer.');
+    }
+    fclose($proxyPipes[0]);
+    try {
+        $url = trim(fgets($proxyPipes[1]));
+        if (! preg_match('#^http://127\.0\.0\.1:[0-9]+$#', $url)) {
+            throw new RuntimeException('SDK observer did not bind its local port.');
+        }
+        $arguments = match ($consumer['language']) {
+            'rust' => [getenv('DW_PARITY_RUST_PATCH_WORKER') ?: '/target/debug/server-parity-published-rust-patch'],
+            'python' => ['python3', $directory.'/python.py'],
+            default => throw new RuntimeException('Unsupported published patch consumer.'),
+        };
+        array_push($arguments, $url, $options['workflow-id'], $options['run-id'], $fixture['patch_deployment']['change_id']);
+        $process = proc_open($arguments, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+        if (! is_resource($process)) {
+            throw new RuntimeException('Could not start the published SDK worker.');
+        }
+        fclose($pipes[0]);
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $status = proc_close($process);
+        $evidence = getenv('DW_PARITY_FAILURE_EVIDENCE_DIR');
+        if (is_string($evidence) && is_dir($evidence)) {
+            $name = preg_replace('/[^A-Za-z0-9_.-]/', '_', $options['workflow-id']);
+            file_put_contents($evidence.'/consumer-'.$name.'-raw.json', json_encode([
+                'consumer' => $consumer, 'stdout' => $stdout, 'stderr' => $stderr,
+                'exit_status' => $status, 'transport_jsonl' => file_get_contents($journal),
+            ], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE)."\n");
+        }
+        $requests = array_map(static function ($line): array {
+            $request = json_decode($line, true, flags: JSON_THROW_ON_ERROR);
+            foreach (['request', 'response'] as $key) {
+                $body = $request[$key.'_body'];
+                $request[$key] = $body === '' ? null : json_decode($body, true, flags: JSON_THROW_ON_ERROR);
+            }
+            unset($request['request_body'], $request['response_body'], $request['response_bytes_base64']);
+            if ($request['method'] === 'GET' || str_ends_with($request['path'], '/poll')) {
+                // Full read/poll bytes remain in the raw sidecar. Avoid copying
+                // every repeated capability manifest into all three phases.
+                $request['response'] = array_intersect_key($request['response'] ?? [],
+                    array_flip(['task', 'poll_status', 'workflow_id', 'run_id', 'status']));
+                $request['response_projection'] = 'read_or_poll_summary';
+            }
+
+            return $request;
+        },
+            file($journal, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES));
+        if ($status !== 0) {
+            $evidence = getenv('DW_PARITY_FAILURE_EVIDENCE_DIR');
+            if (is_string($evidence) && is_dir($evidence)) {
+                $name = preg_replace('/[^A-Za-z0-9_.-]/', '_', $options['workflow-id']);
+                file_put_contents($evidence.'/failure-'.$name.'-consumer.json', json_encode([
+                    'consumer' => $consumer, 'requests' => $requests, 'stdout' => $stdout,
+                    'stderr' => $stderr, 'exit_status' => $status,
+                ], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE)."\n");
+            }
+            throw new RuntimeException('Published SDK worker failed: '.trim($stderr));
+        }
+        $result = json_decode($stdout, true, flags: JSON_THROW_ON_ERROR);
+        if ($result['language'] !== $consumer['language'] || $result['sdk_version'] !== $consumer['version']) {
+            throw new RuntimeException('Actual published worker differs from the selected consumer.');
+        }
+        $client = new Client($options['url'], namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null);
+        $execution = $client->describeWorkflow($options['workflow-id'], $options['run-id']);
+        $events = decodeHistory(httpHistory($client, $options['workflow-id'], $options['run-id']), $client->payloadCodec()->decodeEnvelope(...));
+
+        return ['phase' => 'replacement', 'pid' => $result['pid'], 'decisions' => $result['decisions'],
+            'consumer' => $consumer, 'worker_finished' => $result['worker_finished'], 'requests' => $requests,
+            'execution' => $execution->raw, 'workflow_id' => $options['workflow-id'], 'run_id' => $execution->runId,
+            'workflow_type' => $execution->workflowType, 'namespace' => $execution->namespace,
+            'task_queue' => $execution->taskQueue, 'status' => $execution->status,
+            'payload_codec' => $execution->raw['payload_codec'], 'input' => $execution->input,
+            'output' => $execution->output, 'events' => $events];
+    } finally {
+        proc_terminate($proxy);
+        fclose($proxyPipes[1]);
+        fclose($proxyPipes[2]);
+        proc_close($proxy);
+        unlink($journal);
+    }
 }
 
 function patchEmbeddedPhase(array $fixture, array $options): array
@@ -206,6 +309,8 @@ function patchEmbeddedPhase(array $fixture, array $options): array
     } while (! $done);
 
     return ['phase' => $phase, 'pid' => getmypid(), 'decisions' => PatchDeploymentState::$decisions,
+        ...(isset($fixture['patch_deployment']['consumer']) && $phase === 'replacement'
+            ? ['consumer' => ['applicable' => false, 'reason' => 'embedded_executes_php_author_definitions']] : []),
         'instance' => WorkflowInstance::query()->findOrFail($run->workflow_instance_id)->toArray(),
         'worker_output' => Artisan::output(), 'execution' => $run->toArray(), 'workflow_id' => $run->workflow_instance_id,
         'run_id' => $run->id, 'workflow_type' => $run->workflow_type, 'namespace' => $run->namespace,

@@ -1,0 +1,53 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "patch-python-activity-pending",
+  "workflow_type": "parity.v1.one_activity",
+  "input": {
+    "message": "legacy patch λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "legacy patch λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": true,
+  "patch_deployment": {
+    "change_id": "parity.add-new-step",
+    "checkpoint": "activity_pending",
+    "repeated_calls": 2,
+    "original_sticky_ttl_seconds": 1,
+    "start_before_worker_registration": true,
+    "expected_decisions": [
+      false,
+      false
+    ],
+    "consumer": {
+      "language": "python",
+      "version": "2.5.1",
+      "archive_sha256": "5bf872c64b1490f6e6232ac35de727693e78ef516fc0c2fe07b903d51863ddf8"
+    }
+  },
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "ActivityScheduled",
+    "ActivityStarted",
+    "ActivityCompleted",
+    "WorkflowCompleted"
+  ],
+  "contract": "The original published PHP SDK worker exits at the declared activity checkpoint. A separate cold published python 2.5.1 worker inserts the same patch ID twice, chooses false twice and completes the same activity and original run without a new marker or activity. Preserve all checkpoint bytes, original activity sequence 1 and the exact typed int64 result. Observe actual published SDK HTTP registration, completion and shutdown without modifying transport bytes. Embedded mode runs the corresponding original/replacement PHP author definitions and explicitly declares the language SDK direction inapplicable. This separately selected consumer profile leaves the frozen default and existing source/fault tuples unchanged. It does not qualify a live pending-history failure exchange, retained duplicate markers, fresh repeated marker creation or performance."
+}

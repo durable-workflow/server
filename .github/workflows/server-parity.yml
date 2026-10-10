@@ -21,6 +21,8 @@ on:
       - tests/Unit/ServerParityRoleTokenContractTest.mjs
       - tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs
       - tests/Unit/ServerParityWaitingHistoryContractTest.mjs
+      - tests/Unit/ServerParityPublishedPatchContractTest.mjs
+      - tests/Unit/ServerParityPublishedPatchTransportTest.mjs
       - tests/Support/ServerParityAdmissionObservation.mjs
       - tests/Support/ServerParityVisibilityObservation.mjs
       - rust/**
@@ -45,6 +47,8 @@ on:
       - tests/Unit/ServerParityRoleTokenContractTest.mjs
       - tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs
       - tests/Unit/ServerParityWaitingHistoryContractTest.mjs
+      - tests/Unit/ServerParityPublishedPatchContractTest.mjs
+      - tests/Unit/ServerParityPublishedPatchTransportTest.mjs
       - tests/Support/ServerParityAdmissionObservation.mjs
       - tests/Support/ServerParityVisibilityObservation.mjs
       - rust/**
@@ -52,9 +56,55 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
+  published-sdk-adapters:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Build the locked published SDK adapter once
+        run: |
+          set -euo pipefail
+          mkdir -p sdk-cargo sdk-target published-sdk-adapters/python-packages
+          docker run --rm --user="$(id -u):$(id -g)" --cpus=2 --memory=2g --memory-swap=2g \
+            -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 \
+            -e CARGO_INCREMENTAL=0 -e CARGO_PROFILE_DEV_DEBUG=0 \
+            -v "$PWD:/source:ro" -v "$PWD/sdk-cargo:/cargo" -v "$PWD/sdk-target:/target" \
+            -w /source/scripts/conformance/server-parity/published-sdk-patch/rust \
+            mirror.gcr.io/library/rust@sha256:300ec56abce8cc9448ddea2172747d048ed902a3090e6b57babb2bf19f754081 \
+            cargo build --locked > published-sdk-adapters/rust-sdk-build.txt 2>&1
+          cp sdk-target/debug/server-parity-published-rust-patch published-sdk-adapters/rust-worker
+          cp scripts/conformance/server-parity/published-sdk-patch/rust/Cargo.lock published-sdk-adapters/Cargo.lock
+          docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=512m --memory-swap=512m \
+            -v "$PWD:/source:ro" -v "$PWD/published-sdk-adapters:/adapters" \
+            mirror.gcr.io/library/python@sha256:bf44cdfcb76cd3b41e879bc058fc37ec5872002ccfde7fcb765e218cde0cd79c \
+            python -m pip install --disable-pip-version-check --no-cache-dir --no-compile --only-binary=:all: --require-hashes \
+            --target /adapters/python-packages --report /adapters/python-install-report.json \
+            -r /source/scripts/conformance/server-parity/published-sdk-patch/requirements.txt \
+            > published-sdk-adapters/python-install.txt 2>&1
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityProfiles/published-sdk-patch-replay/artifacts.json)
+          docker run --rm --user=1000:1000 --network=none --entrypoint node \
+            -v "$PWD:/source:ro" -v "$PWD/published-sdk-adapters:/adapters" -w /source "$image" \
+            scripts/conformance/server-parity/published-sdk-patch/identity.mjs /adapters \
+            tests/Fixtures/ServerParityProfiles/published-sdk-patch-replay/artifacts.json
+          printf '%s\n' "$GITHUB_SHA" > published-sdk-adapters/runner-revision.txt
+          sha256sum scripts/conformance/server-parity/published-sdk-patch/rust/{Cargo.toml,Cargo.lock,src/main.rs} \
+            scripts/conformance/server-parity/published-sdk-patch/{python.py,requirements.txt} > published-sdk-adapters/source-hashes.sha256
+          cd published-sdk-adapters
+          rg --files --hidden --no-ignore -0 -g '!SHA256SUMS' | sort -z | xargs -0 sha256sum > SHA256SUMS
+          sha256sum -c SHA256SUMS >/dev/null
+      - name: Share thin adapters without build trees or caches
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: published-sdk-patch-adapters
+          path: published-sdk-adapters
+          retention-days: 90
+          if-no-files-found: error
+
   mysql-execution:
+    needs: published-sdk-adapters
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -76,6 +126,10 @@ jobs:
       DB_MEMORY: ${{ matrix.memory }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Fetch this run's published SDK adapters
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name published-sdk-patch-adapters --dir published-sdk-adapters
       - name: Create TLS fixture certificates
         run: |
           set -euo pipefail
@@ -265,6 +319,7 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json > parity-evidence/comparison.json
+          bash scripts/conformance/server-parity/published-sdk-patch-profile.sh mysql http://parity-php:8080 http://parity-native-a:8080
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint sh \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" -ec '
@@ -402,6 +457,7 @@ jobs:
           retention-days: 90
 
   postgres-storage:
+    needs: published-sdk-adapters
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -416,6 +472,10 @@ jobs:
       RESOURCE_SCOPE: dw-pg-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ matrix.label }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Fetch this run's published SDK adapters
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name published-sdk-patch-adapters --dir published-sdk-adapters
       - name: Bootstrap independent published PHP and native PostgreSQL databases
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
@@ -581,6 +641,7 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json > parity-evidence/comparison.json
+          bash scripts/conformance/server-parity/published-sdk-patch-profile.sh pgsql http://parity-php:8080 http://parity-native-a:8080
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint sh \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" -ec '
@@ -750,10 +811,15 @@ jobs:
           retention-days: 90
 
   execution-and-codec:
+    needs: published-sdk-adapters
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Fetch this run's published SDK adapters
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name published-sdk-patch-adapters --dir published-sdk-adapters
       - name: Execute official Rust codec and cross-decode with published PHP
         run: |
           set -euo pipefail
@@ -790,7 +856,7 @@ jobs:
             -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run --rm --user=1000:1000 --entrypoint node -v "$PWD:/source:ro" -w /source \
-            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs > parity-evidence/comparator-tests.txt
+            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs > parity-evidence/comparator-tests.txt
           docker network create "$RESOURCE_SCOPE"
           docker run -d --name "$RESOURCE_SCOPE-rust" --network "$RESOURCE_SCOPE" --network-alias=parity-rust \
             --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
@@ -871,6 +937,7 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json > parity-evidence/comparison.json
+          bash scripts/conformance/server-parity/published-sdk-patch-profile.sh sqlite http://parity-server:8080 http://parity-rust:8080
           docker run --rm --user=1000:1000 --entrypoint php --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/restart.php \
