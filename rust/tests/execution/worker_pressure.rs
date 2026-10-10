@@ -226,6 +226,11 @@ async fn real_shutdown_lock_pressure_preserves_original_leases_and_retries_same_
     );
     let stale = finish_task(&app, &recoverable, commands.clone()).await;
     assert_eq!(stale.0, StatusCode::CONFLICT);
+    assert_eq!(stale.1["reason"], "lease_owner_mismatch");
+    let mut obsolete_attempt = recovered.clone();
+    obsolete_attempt["workflow_task_attempt"] = recoverable["workflow_task_attempt"].clone();
+    let stale = finish_task(&app, &obsolete_attempt, commands.clone()).await;
+    assert_eq!(stale.0, StatusCode::CONFLICT);
     assert_eq!(stale.1["reason"], "workflow_task_attempt_mismatch");
     assert_eq!(
         run_history(&app, &second["workflow_id"], &second["run_id"]).await,
