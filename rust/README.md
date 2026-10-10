@@ -29,6 +29,8 @@ documents the separate profile and independent databases.
 Principal/custom-provider, signature/no-auth, runtime-credential, historical
 role-token alias and disabled-backward-compatibility configurations refuse
 startup before storage opens while those profiles remain unqualified.
+Unparseable auth environment values also refuse startup; they cannot silently
+turn a configured role into an absent credential.
 
 Run language tooling in a runtime container as the checkout's owner:
 

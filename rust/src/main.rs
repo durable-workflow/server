@@ -56,12 +56,22 @@ fn mysql_options() -> Result<MySqlConnectOptions, Box<dyn Error>> {
     })
 }
 
+fn auth_value(key: &str) -> Result<Option<String>, Box<dyn Error>> {
+    match env::var(key) {
+        Ok(value) => Ok(Some(value)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => {
+            Err("unsupported development authentication configuration".into())
+        }
+    }
+}
+
 fn validate_auth_configuration() -> Result<(), Box<dyn Error>> {
     // Unqualified credentials must not silently leave a full-access legacy
     // guard in place. These profiles require their own contract qualification.
     for key in ["DW_AUTH_DRIVER", "WORKFLOW_SERVER_AUTH_DRIVER"] {
-        if let Ok(value) = env::var(key) {
-            if !value.is_empty() && value != "token" {
+        if let Some(value) = auth_value(key)? {
+            if value != "token" {
                 return Err("unsupported development authentication configuration".into());
             }
         }
@@ -75,7 +85,7 @@ fn validate_auth_configuration() -> Result<(), Box<dyn Error>> {
         "WORKFLOW_SERVER_OPERATOR_TOKEN",
         "WORKFLOW_SERVER_ADMIN_TOKEN",
     ] {
-        if env::var(key).is_ok_and(|value| !value.is_empty()) {
+        if auth_value(key)?.is_some_and(|value| !value.is_empty()) {
             return Err("unsupported development authentication configuration".into());
         }
     }
@@ -83,7 +93,7 @@ fn validate_auth_configuration() -> Result<(), Box<dyn Error>> {
         "DW_RUNTIME_CREDENTIALS_ENABLED",
         "WORKFLOW_SERVER_RUNTIME_CREDENTIALS_ENABLED",
     ] {
-        if env::var(key).is_ok_and(|value| {
+        if auth_value(key)?.is_some_and(|value| {
             !matches!(
                 value.to_ascii_lowercase().as_str(),
                 "" | "0" | "false" | "off" | "no"
@@ -96,10 +106,10 @@ fn validate_auth_configuration() -> Result<(), Box<dyn Error>> {
         "DW_AUTH_BACKWARD_COMPATIBLE",
         "WORKFLOW_SERVER_AUTH_BACKWARD_COMPATIBLE",
     ] {
-        if env::var(key).is_ok_and(|value| {
+        if auth_value(key)?.is_some_and(|value| {
             !matches!(
                 value.to_ascii_lowercase().as_str(),
-                "" | "1" | "true" | "on" | "yes"
+                "1" | "true" | "on" | "yes"
             )
         }) {
             return Err("unsupported development authentication configuration".into());
@@ -166,7 +176,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     validate_auth_configuration()?;
-    let token = env::var("DW_AUTH_TOKEN").map_err(|_| "DW_AUTH_TOKEN is required")?;
+    let worker_token = auth_value("DW_WORKER_TOKEN")?;
+    let operator_token = auth_value("DW_OPERATOR_TOKEN")?;
+    let admin_token = auth_value("DW_ADMIN_TOKEN")?;
+    let token = auth_value("DW_AUTH_TOKEN")?.ok_or("DW_AUTH_TOKEN is required")?;
     if token.trim().is_empty() {
         return Err("DW_AUTH_TOKEN must not be empty".into());
     }
@@ -187,11 +200,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             return Err("unsupported development database".into());
         }
     };
-    let runtime = runtime.with_role_tokens(
-        env::var("DW_WORKER_TOKEN").ok(),
-        env::var("DW_OPERATOR_TOKEN").ok(),
-        env::var("DW_ADMIN_TOKEN").ok(),
-    );
+    let runtime = runtime.with_role_tokens(worker_token, operator_token, admin_token);
     let listener = tokio::net::TcpListener::bind(address).await?;
     eprintln!(
         "Rust development runtime listening on {}",

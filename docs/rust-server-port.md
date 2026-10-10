@@ -64,6 +64,10 @@ The cohort reuses the existing CI binary; owned cleanup always runs.
 Unqualified principal, custom-provider, signature/no-auth, runtime-credential,
 alias-role and disabled-backward-compatibility settings refuse startup before
 opening storage. The development runtime still requires `DW_AUTH_TOKEN`.
+Auth environment values must parse as UTF-8. Invalid text cannot become an
+absent role credential and restore legacy bypass; empty driver and
+backward-compatibility settings refuse explicitly. Actual native process
+checks exercise raw environment bytes before storage selection.
 Principal/tenant/runtime credentials, role-only configuration, signatures,
 namespace administration and actor attribution require separate qualification.
 Full authorization, performance, takeover and cutover remain open.

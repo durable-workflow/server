@@ -42,15 +42,20 @@ esac
 database() {
   if test "$backend" = sqlite; then printf '/state/%s.sqlite' "$1"; else printf '%s' "$1"; fi
 }
-for setting in DW_AUTH_DRIVER=none DW_PRINCIPAL_TOKENS=[] DW_AUTH_BACKWARD_COMPATIBLE=false DW_RUNTIME_CREDENTIALS_ENABLED=true; do
+configuration_case=0
+for setting in DW_AUTH_DRIVER=none DW_AUTH_DRIVER= DW_PRINCIPAL_TOKENS=[] DW_AUTH_BACKWARD_COMPATIBLE=false DW_AUTH_BACKWARD_COMPATIBLE= DW_RUNTIME_CREDENTIALS_ENABLED=true; do
+  configuration_case=$((configuration_case + 1))
   key="${setting%%=*}"
   if docker run --rm --user=1000:1000 --network=none --entrypoint /target/debug/durable-workflow-server \
     -v "$PWD/rust-target:/target:ro" -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-role-legacy \
-    -e "$setting" "$rust_image" > "parity-evidence/roles-unqualified-$key.txt" 2>&1; then
+    -e "$setting" "$rust_image" > "parity-evidence/roles-unqualified-$configuration_case-$key.txt" 2>&1; then
     exit 1
   fi
-  grep -Fq 'unsupported development authentication configuration' "parity-evidence/roles-unqualified-$key.txt"
+  grep -Fq 'unsupported development authentication configuration' "parity-evidence/roles-unqualified-$configuration_case-$key.txt"
 done
+docker run --rm --user=1000:1000 --network=none --entrypoint php \
+  -v "$PWD:/source:ro" -v "$PWD/rust-target:/target:ro" "$image" \
+  /source/scripts/conformance/server-parity/auth-config-probe.php > parity-evidence/roles-raw-auth-configuration.json
 for target in php embedded; do
   docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
     "${db_mount[@]}" "${db_env[@]}" -e DB_DATABASE="$(database role_"$target"_ref)" \
