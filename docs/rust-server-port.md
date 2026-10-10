@@ -34,11 +34,19 @@ and normalized header/query/configured-default precedence. Fresh original
 descriptions and complete history must remain unchanged after refused mutations;
 only authorized cleanup may cancel that peer. Embedded mode exercises the same
 authored workflow and installed peer lifecycle; HTTP authentication is inapplicable
-there. PHP syntax and 793 modeled comparator checks pass, including 97 admission
+there. PHP syntax and 810 modeled comparator checks pass, including 114 admission
 checks. Actual selected PHP/embedded recordings pass and compare at
 `5ce593302df3e73b4530cced7366dc89e130fd19`; PHP exercises all 16 real HTTP
 requests, while both adapters preserve and cancel their original peer. Native
-qualification is pending. The
+qualification is pending. Tests-first source `6d12a021d09703d21140757bb35b725aea56338f`
+compiles on the six-configuration [matrix](https://github.com/durable-workflow/server/actions/runs/38038120014).
+The downloaded SQLite result preserves all 37 existing passing HTTP tests and
+reproduces two admission failures: the noncanonical authentication response and
+an unknown query namespace cancelling the default peer. Native corrections
+resolve header/query/default precedence before dispatch and produce versioned,
+plane-specific refusal metadata. Malformed/non-scalar namespace selectors fail
+closed in this development slice; their broader PHP contract remains pending.
+The
 reviewed default corpus remains 27. Role/principal tokens, tenant restrictions,
 named-namespace execution and alternate auth/default configuration remain open.
 

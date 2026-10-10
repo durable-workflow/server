@@ -44,6 +44,11 @@ for (const example of examples) {
       'wrong worker capability envelope': raw => { raw.admission.requests[2].response.server_capabilities.workflow_task_poll_request_idempotency = false; },
       'missing control response contract': raw => { delete raw.admission.requests[0].response.control_plane; },
       'metadata replaces original peer': raw => { raw.admission.requests[0].response.control_plane.run_id = 'replacement'; },
+      'control body replaces original peer': raw => { raw.admission.requests[0].response.run_id = 'replacement'; },
+      'control metadata changes diagnostic': raw => { raw.admission.requests[0].response.control_plane.reason = 'different'; },
+      'control response weakens legacy policy': raw => { raw.admission.requests[0].response.control_plane.contract.legacy_field_policy = 'ignore'; },
+      'control response drops field contract': raw => { delete raw.admission.requests[0].response.control_plane.contract.rejection_fields; },
+      'control response changes allowed reasons': raw => { raw.admission.requests[0].response.control_plane.contract.rejection_reasons = ['different']; },
       'unknown query selects default': raw => { const r = raw.admission.requests.find(r => r.id === 'control_unknown_query'); r.response.reason = null; r.status = 200; },
       'positive read selects other namespace': raw => { raw.admission.requests.at(-1).response.namespace = 'other'; },
       'positive read hides mutation': raw => { raw.admission.requests.at(-1).response.status = 'cancelled'; },
@@ -52,6 +57,11 @@ for (const example of examples) {
       mutations[`${expected.id} wrong status`] = raw => { raw.admission.requests.find(r => r.id === expected.id).status = 500; };
       mutations[`${expected.id} wrong plane`] = raw => { raw.admission.requests.find(r => r.id === expected.id).headers = {control: '', worker: ''}; };
       mutations[`${expected.id} wrong reason`] = raw => { raw.admission.requests.find(r => r.id === expected.id).response.reason = 'different'; };
+      if (expected.status === 400) {
+        mutations[`${expected.id} loses diagnostic`] = raw => { const r = raw.admission.requests.find(r => r.id === expected.id); delete r.response[expected.plane === 'worker' ? 'error' : 'message']; };
+        mutations[`${expected.id} loses remediation`] = raw => { delete raw.admission.requests.find(r => r.id === expected.id).response.remediation; };
+      }
+      if (expected.status === 404) mutations[`${expected.id} loses remediation`] = raw => { delete raw.admission.requests.find(r => r.id === expected.id).response.remediation; };
     }
   }
   for (const [name, mutate] of Object.entries(mutations)) test(`${example.mode}: refuses ${name}`, () => {

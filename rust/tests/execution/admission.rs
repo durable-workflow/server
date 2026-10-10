@@ -200,6 +200,29 @@ async fn admission_namespace_query_refuses_mutation_and_header_precedence_normal
     assert_eq!(worker.0, StatusCode::NOT_FOUND);
     assert_eq!(worker.2["reason"], "namespace_not_found");
     assert_eq!(worker.2["namespace"], "ghost");
+    let malformed = admission_http(
+        &app,
+        "POST",
+        &format!("{path}/cancel?namespace%5B%5D=default"),
+        false,
+        Some("test-token"),
+        Some("2"),
+        None,
+        json!({"reason":"must never become durable"}),
+    )
+    .await;
+    assert_eq!(malformed.0, StatusCode::BAD_REQUEST);
+    assert_eq!(malformed.2["reason"], "invalid_namespace");
+    assert_eq!(
+        request(&app, "GET", &path, Value::Null).await.1["status"],
+        "pending"
+    );
+    assert_eq!(
+        request(&app, "GET", &format!("{path}/history"), Value::Null)
+            .await
+            .1,
+        before
+    );
     runtime.close().await;
     database.remove().await;
 }

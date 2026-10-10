@@ -38,13 +38,35 @@ export function admissionObservation(fixture, mode) {
       const read = expected.plane === 'read';
       const body = read ? clone(peer) : {reason: expected.reason};
       if (expected.status === 401) body.message = 'Invalid or missing authentication token.';
-      else if (expected.status === 400) Object.assign(body, {supported_version: worker ? '1.20' : '2', requested_version: expected.version});
+      else if (expected.status === 400) {
+        const missing = expected.version === null;
+        Object.assign(body, {supported_version: worker ? '1.20' : '2', requested_version: expected.version,
+          [worker ? 'error' : 'message']: missing ? worker ? 'Missing worker protocol version header.' : 'Missing control-plane version header.'
+            : worker ? 'Unsupported worker protocol version.' : 'Unsupported control-plane version.',
+          remediation: missing ? worker ? 'Send the X-Durable-Workflow-Protocol-Version: 1.20 header on worker protocol requests.'
+            : 'Send the X-Durable-Workflow-Control-Plane-Version: 2 header on control-plane requests.'
+            : worker ? `Worker requested protocol version ${expected.version}; this server supports 1.20. Workers may target any 1.x version with x ≤ 20. Upgrade the worker to a release that targets a compatible version, or connect to a server that matches.`
+              : `Client requested control-plane version ${expected.version}; this server only supports 2. Upgrade the client to a release that targets control-plane 2, or connect to a server that supports ${expected.version}.`});
+      }
       else if (expected.status === 404) Object.assign(body, {namespace: fixture.admission.unknown_namespace,
-        message: `Namespace '${fixture.admission.unknown_namespace}' does not exist.`});
+        message: `Namespace '${fixture.admission.unknown_namespace}' does not exist.`,
+        remediation: 'Register the namespace via POST /api/namespaces, or send an X-Namespace header naming an existing namespace.'});
       if (worker) Object.assign(body, {protocol_version: '1.20', server_capabilities: clone(capabilities)});
-      else body.control_plane = {schema: 'durable-workflow.v2.control-plane-response', version: 1,
+      else {
+        Object.assign(body, {workflow_id: peerId, run_id: peerRun});
+        body.control_plane = {schema: 'durable-workflow.v2.control-plane-response', version: 1,
         operation: read ? 'describe_run' : 'cancel', workflow_id: peerId, run_id: peerRun,
-        contract: {schema: 'durable-workflow.v2.control-plane-response.contract', version: 1}};
+        contract: {schema: 'durable-workflow.v2.control-plane-response.contract', version: 1,
+          legacy_field_policy: 'reject_non_canonical',
+          legacy_fields: {query: 'query_name', signal: 'signal_name', update: 'update_name', wait_policy: 'wait_for'},
+          required_fields: ['workflow_id'], success_fields: read ? ['run_id'] : ['outcome'],
+          rejection_fields: read ? ['workflow_id', 'run_id', 'reason', 'message', 'retryable', 'error_id', 'exception']
+            : ['workflow_id', 'run_id', 'reason', 'message', 'remediation'],
+          rejection_reasons: [read ? 'control_plane_internal_error' : 'v1_projection_read_only']}};
+        for (const field of ['reason', 'message', 'namespace', 'remediation']) {
+          if (Object.hasOwn(body, field)) body.control_plane[field] = clone(body[field]);
+        }
+      }
       return {id: expected.id, method: read ? 'GET' : 'POST',
         path: (worker ? '/api/worker/workflow-tasks/poll' : `/api/workflows/${peerId}/runs/${peerRun}` + (read ? '' : '/cancel'))
           + (expected.query_namespace === null ? '' : '?namespace=' + expected.query_namespace),

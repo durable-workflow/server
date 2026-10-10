@@ -79,6 +79,20 @@ export function checkAdmission(fixture, observation, workflowId) {
         assert.equal(metadata.run_id, peerRun, 'admission metadata original run');
         assert.equal(metadata.contract?.schema, 'durable-workflow.v2.control-plane-response.contract', 'admission response field contract');
         assert.equal(metadata.contract.version, 1, 'admission response field contract version');
+        assert.deepStrictEqual(metadata.contract, {
+          schema: 'durable-workflow.v2.control-plane-response.contract', version: 1,
+          legacy_field_policy: 'reject_non_canonical',
+          legacy_fields: {query: 'query_name', signal: 'signal_name', update: 'update_name', wait_policy: 'wait_for'},
+          required_fields: ['workflow_id'], success_fields: read ? ['run_id'] : ['outcome'],
+          rejection_fields: read ? ['workflow_id', 'run_id', 'reason', 'message', 'retryable', 'error_id', 'exception']
+            : ['workflow_id', 'run_id', 'reason', 'message', 'remediation'],
+          rejection_reasons: [read ? 'control_plane_internal_error' : 'v1_projection_read_only'],
+        }, 'complete original control response field contract');
+        assert.equal(body.workflow_id, peerId, 'control refusal retains original workflow');
+        assert.equal(body.run_id, peerRun, 'control refusal retains original run');
+        for (const field of ['reason', 'message', 'namespace', 'remediation']) {
+          assert.deepStrictEqual(metadata[field], body[field], 'control metadata preserves original diagnostic');
+        }
       }
       if (expected.status === 401) {
         assert.equal(body.message, 'Invalid or missing authentication token.', 'canonical authentication failure');
@@ -87,9 +101,19 @@ export function checkAdmission(fixture, observation, workflowId) {
         assert.equal(body.supported_version, worker ? '1.20' : '2', 'original supported protocol');
         assert.equal(body.requested_version, expected.version, 'original refused protocol');
         assert.equal(body.namespace, undefined, 'protocol refusal precedes namespace lookup');
+        const missing = expected.version === null;
+        assert.equal(body[worker ? 'error' : 'message'], missing
+          ? worker ? 'Missing worker protocol version header.' : 'Missing control-plane version header.'
+          : worker ? 'Unsupported worker protocol version.' : 'Unsupported control-plane version.', 'canonical original protocol diagnostic');
+        assert.equal(body.remediation, missing
+          ? worker ? 'Send the X-Durable-Workflow-Protocol-Version: 1.20 header on worker protocol requests.'
+            : 'Send the X-Durable-Workflow-Control-Plane-Version: 2 header on control-plane requests.'
+          : worker ? `Worker requested protocol version ${expected.version}; this server supports 1.20. Workers may target any 1.x version with x ≤ 20. Upgrade the worker to a release that targets a compatible version, or connect to a server that matches.`
+            : `Client requested control-plane version ${expected.version}; this server only supports 2. Upgrade the client to a release that targets control-plane 2, or connect to a server that supports ${expected.version}.`, 'canonical original protocol remediation');
       } else if (expected.status === 404) {
         assert.equal(body.namespace, definition.unknown_namespace, 'original refused namespace');
         assert.equal(body.message, `Namespace '${definition.unknown_namespace}' does not exist.`, 'canonical unknown namespace failure');
+        assert.equal(body.remediation, 'Register the namespace via POST /api/namespaces, or send an X-Namespace header naming an existing namespace.', 'canonical namespace remediation');
       } else {
         assert.equal(body.namespace, 'default', 'resolved canonical default namespace');
         assert.equal(body.workflow_id, peerId, 'selected read original workflow');
