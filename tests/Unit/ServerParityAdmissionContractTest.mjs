@@ -4,7 +4,7 @@ import {readFileSync} from 'node:fs';
 import {checkObservation} from '../../scripts/conformance/server-parity/contract.mjs';
 import {admissionObservation} from '../Support/ServerParityAdmissionObservation.mjs';
 
-const fixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParityPending/admission-auth-namespace.json', import.meta.url)));
+const fixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/admission-auth-namespace.json', import.meta.url)));
 const examples = ['http', 'embedded'].map(mode => admissionObservation(fixture, mode));
 const check = raw => checkObservation(fixture, raw, 'admission-reference-auth-namespace');
 test('modeled admission adapters project equally', () => assert.deepStrictEqual(check(examples[0]), check(examples[1])));

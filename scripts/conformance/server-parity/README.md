@@ -52,7 +52,7 @@ node --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCoopera
 ```
 
 Use **separate, already bootstrapped databases** for PHP, Rust and embedded.
-The default reviewed corpus now includes 27 cases. Its visibility fixture runs
+The default reviewed corpus now includes 28 cases. Its visibility fixture runs
 the unchanged published CLI 2.2.0 on both HTTP targets. Download its PHAR,
 verify the fixture's pinned checksum, and expose its absolute path to the PHP
 probe with `DW_PARITY_CLI_PHAR`:
@@ -90,7 +90,11 @@ sequences installed repair and evaluator commands in one maintenance loop;
 concurrent SQLite contention remains separately tracked in Server #355.
 
 The recorder does not migrate a database. Do not run it against production or
-shared customer namespaces. Use a fresh prefix or database for each recording;
+shared customer namespaces. The admission fixture executes sixteen real HTTP
+requests, checks authentication/version/namespace precedence and preserves the
+original pending peer through refusals. Named namespaces and role/principal
+authorization require additional qualification. Use a fresh prefix or database
+for each recording;
 use the same prefix across the targets being compared.
 
 ```bash
