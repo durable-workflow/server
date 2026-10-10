@@ -16,6 +16,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = { version = "0.11", default-features = false }
 sqlx = { version = "=0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "sqlite-bundled", "postgres", "mysql", "migrate", "chrono", "json"] }
+subtle = "=2.6.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
 ulid = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }

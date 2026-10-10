@@ -35,8 +35,23 @@ admin and legacy-admin reads must succeed, refusals must preserve an original
 unclaimed peer, and an operator then cancels that same peer. Embedded execution
 checks the authored lifecycle with HTTP authorization explicitly inapplicable.
 Recorder/comparator source `160425df` passes the actual frozen PHP/embedded
-recordings and their independent comparison. The native tests expose the
-single-token guard; native authorization implementation/qualification is next. Principal,
+recordings and their independent comparison. Tests-first `8c3564e5` reproduces
+both native failures on all six configurations in
+[run 38045677626](https://github.com/durable-workflow/server/actions/runs/38045677626):
+configured-role credentials return 401 instead of role 403, and the legacy
+credential still claims worker tasks with 200 instead of 403. Each configuration
+retains 42 existing passing HTTP tests; all six downloaded artifact digests match.
+The native guard now matches configured worker/operator/admin tokens before the
+legacy token, disables legacy full-access bypass when any role is configured,
+and checks exact endpoint membership before protocol and namespace lookup.
+Immutable configuration survives namespace selection. Token-content comparison
+uses the already locked [subtle 2.6.1 primitive](https://docs.rs/subtle/2.6.1/subtle/trait.ConstantTimeEq.html);
+there is no new transitive dependency. Unqualified principal, custom-provider,
+signature/no-auth, runtime-credential, alias-role and disabled-backward-compatibility
+settings refuse startup before opening storage. All 840 modeled comparator
+checks pass. The separate six-database PHP/Rust/embedded cohort reuses the
+existing CI binary and keeps independent databases; native execution
+qualification is next. Principal,
 tenant, runtime-credential, signature and actor-attribution cases remain open.
 
 The twenty-ninth reviewed fixture, `namespace-isolation`, creates two named

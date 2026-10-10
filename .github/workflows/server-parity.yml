@@ -17,6 +17,7 @@ on:
       - tests/Fixtures/ServerParityPending/**
       - tests/Unit/ServerParityVisibilityContractTest.mjs
       - tests/Unit/ServerParityAdmissionContractTest.mjs
+      - tests/Unit/ServerParityRoleTokenContractTest.mjs
       - tests/Support/ServerParityAdmissionObservation.mjs
       - tests/Support/ServerParityVisibilityObservation.mjs
       - rust/**
@@ -37,6 +38,7 @@ on:
       - tests/Fixtures/ServerParityPending/**
       - tests/Unit/ServerParityVisibilityContractTest.mjs
       - tests/Unit/ServerParityAdmissionContractTest.mjs
+      - tests/Unit/ServerParityRoleTokenContractTest.mjs
       - tests/Support/ServerParityAdmissionObservation.mjs
       - tests/Support/ServerParityVisibilityObservation.mjs
       - rust/**
@@ -298,6 +300,8 @@ jobs:
             catalog php_ref > parity-evidence/catalog-after.json
           cmp parity-evidence/php-before.json parity-evidence/php-after.json
           cmp parity-evidence/catalog-before.json parity-evidence/catalog-after.json
+      - name: Compare separate configured role-token cohort
+        run: bash scripts/conformance/server-parity/role-profile.sh mysql
       - name: Verify TLS certificate trust and hostname checks
         run: |
           set -euo pipefail
@@ -572,6 +576,10 @@ jobs:
             catalog php_ref > parity-evidence/catalog-after.json
           cmp parity-evidence/php-before.json parity-evidence/php-after.json
           cmp parity-evidence/catalog-before.json parity-evidence/catalog-after.json
+      - name: Compare separate configured role-token cohort
+        env:
+          POSTGRES_IMAGE: ${{ matrix.image }}
+        run: bash scripts/conformance/server-parity/role-profile.sh pgsql
       - name: Verify TLS certificate trust and hostname checks
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
@@ -692,7 +700,7 @@ jobs:
             -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run --rm --user=1000:1000 --entrypoint node -v "$PWD:/source:ro" -w /source \
-            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs > parity-evidence/comparator-tests.txt
+            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs > parity-evidence/comparator-tests.txt
           docker network create "$RESOURCE_SCOPE"
           docker run -d --name "$RESOURCE_SCOPE-rust" --network "$RESOURCE_SCOPE" --network-alias=parity-rust \
             --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
@@ -813,6 +821,10 @@ jobs:
               php scripts/conformance/server-parity/cooperative-restart.php finish http://parity-recovered:8080 /evidence/cooperative-restart-receipt.json > /evidence/cooperative-restart-finish.json
               php scripts/conformance/server-parity/restart.php finish http://parity-recovered:8080 /evidence/restart-receipt.json > /evidence/restart-finish.json
             '
+      - name: Compare separate configured role-token cohort
+        env:
+          RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: bash scripts/conformance/server-parity/role-profile.sh sqlite
       - name: Collect Server logs and clean resources
         if: always()
         env:

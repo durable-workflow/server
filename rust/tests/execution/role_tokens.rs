@@ -207,3 +207,76 @@ async fn configured_worker_completes_original_lease_without_legacy_poll_bypass()
     runtime.close().await;
     database.remove().await;
 }
+
+#[tokio::test]
+async fn partial_roles_disable_legacy_bypass_and_collisions_match_worker_first() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let legacy = router(runtime.clone());
+    register(&legacy, "partial-role-worker", json!(["echo"]), json!([])).await;
+    let original = start(&legacy, "partial-role-original").await;
+    let path = format!(
+        "/api/workflows/partial-role-original/runs/{}",
+        original["run_id"].as_str().unwrap()
+    );
+    let partial = router(
+        runtime
+            .clone()
+            .with_role_tokens(Some("worker-token".into()), None, None),
+    );
+    let poll_body =
+        json!({"worker_id":"partial-role-worker","task_queue":"test","timeout_seconds":0});
+    let denied = call(
+        &partial,
+        "test-token",
+        "POST",
+        "/api/worker/workflow-tasks/poll",
+        poll_body.clone(),
+    )
+    .await;
+    assert_eq!(denied.0, StatusCode::FORBIDDEN, "{}", denied.1);
+    assert_eq!(denied.1["role"], "admin");
+    assert_eq!(
+        call(&partial, "test-token", "GET", &path, Value::Null)
+            .await
+            .1["status"],
+        "pending"
+    );
+    let collision = router(runtime.clone().with_role_tokens(
+        Some("test-token".into()),
+        None,
+        Some("test-token".into()),
+    ));
+    let refused_read = call(&collision, "test-token", "GET", &path, Value::Null).await;
+    assert_eq!(refused_read.0, StatusCode::FORBIDDEN, "{}", refused_read.1);
+    assert_eq!(
+        refused_read.1["role"], "worker",
+        "configured worker precedes configured admin and legacy tokens"
+    );
+    let claimed = call(
+        &collision,
+        "test-token",
+        "POST",
+        "/api/worker/workflow-tasks/poll",
+        poll_body,
+    )
+    .await;
+    assert_eq!(claimed.0, StatusCode::OK, "{}", claimed.1);
+    let task = &claimed.1["task"];
+    assert_eq!(task["run_id"], original["run_id"]);
+    let complete_path = format!(
+        "/api/worker/workflow-tasks/{}/complete",
+        task["task_id"].as_str().unwrap()
+    );
+    let completed = call(&collision, "test-token", "POST", &complete_path,
+        completion(task, json!([{"type":"complete_workflow","result":envelope(Payload::Long(9007199254740993))}]))).await;
+    assert_eq!(completed.0, StatusCode::OK, "{}", completed.1);
+    assert_eq!(
+        call(&partial, "test-token", "GET", &path, Value::Null)
+            .await
+            .1["status"],
+        "completed"
+    );
+    runtime.close().await;
+    database.remove().await;
+}
