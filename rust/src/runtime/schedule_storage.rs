@@ -121,9 +121,15 @@ where
         if let Some(context) = context {
             payload["command_context"] = context.clone();
         }
-        let position = Self::query("SELECT COALESCE(MAX(sequence),0) AS last_sequence FROM workflow_schedule_history_events WHERE workflow_schedule_id=$1")
-            .bind(schedule).fetch_one(&mut **tx).await?;
-        let previous = DB::number(&position, "last_sequence")?;
+        // The transition lock already serializes appenders. Read the physical
+        // integer column: MariaDB promotes COALESCE(MAX(unsigned),0) to DECIMAL.
+        let position = Self::query("SELECT sequence FROM workflow_schedule_history_events WHERE workflow_schedule_id=$1 ORDER BY sequence DESC LIMIT 1")
+            .bind(schedule).fetch_optional(&mut **tx).await?;
+        let previous = position
+            .as_ref()
+            .map(|row| DB::number(row, "sequence"))
+            .transpose()?
+            .unwrap_or(0);
         let sequence = previous
             .checked_add(1)
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "schedule_history_sequence_exhausted"))?;
