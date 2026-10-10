@@ -815,7 +815,7 @@ try {
     if ($mode === 'embedded' && ! isset($observation['workflow_package'])) {
         $observation['workflow_package'] = ltrim(InstalledVersions::getPrettyVersion('durable-workflow/workflow'), 'v');
     }
-    if ($mode === 'embedded' && isset($fixture['patch_deployment']['embedded_clock_probe'])) {
+    if ($mode === 'embedded' && isset($fixture['patch_deployment']['embedded_clock_probe']) && ! isset($observation['workflow_source'])) {
         $observation['workflow_source'] = InstalledVersions::getReference('durable-workflow/workflow');
         $observation['workflow_loaded_sources'] = [];
         foreach (['VersionDecisions', 'WorkflowExecutor', 'WorkflowFiberRunner', 'QueryStateReplayer'] as $name) {
