@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Api;
 
 use App\Support\AvroPayloadEnvelopeResolver;
+use App\Support\BackendLockPressure;
+use App\Support\ControlPlaneMutationRetrier;
 use App\Support\ControlPlaneProtocol;
 use App\Support\NamespaceDurableStateException;
 use App\Support\NamespaceExternalPayloadStorage;
@@ -30,6 +32,7 @@ class ScheduleController
         private readonly SearchAttributeValueValidator $searchAttributeValues,
         private readonly ScheduleVisibilityQuery $visibilityQuery,
         private readonly NamespaceExternalPayloadStorage $externalPayloadStorage,
+        private readonly ControlPlaneMutationRetrier $controlMutations,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -477,14 +480,18 @@ class ScheduleController
             : null;
 
         try {
-            $result = ScheduleManager::triggerDetailed(
+            $result = $this->controlMutations->run(fn () => ScheduleManager::triggerDetailed(
                 $schedule,
                 $overlap,
                 $this->commandContexts->make($request, $scheduleId, 'schedule.trigger'),
-            );
+            ));
         } catch (NamespaceDurableStateException $exception) {
             throw $exception;
         } catch (\Throwable $e) {
+            if (BackendLockPressure::is($e)) {
+                throw $e;
+            }
+
             return ControlPlaneProtocol::json([
                 'schedule_id' => $scheduleId,
                 'outcome' => 'trigger_failed',
