@@ -25,7 +25,9 @@ export function checkTaskRetry(fixture, observation, workflowId) {
     assert.equal(value.task_queue, 'server-parity-v1');
     assert.equal(value.payload_codec, 'avro');
     assert.deepStrictEqual(value.typed_input, {type: 'list', value: [fixture.typed_value]});
-    assert.equal(value.status, terminal ? 'completed' : 'running');
+    // The published projection stays pending until a durable command advances
+    // history; acquiring or retrying this task alone does not make it running.
+    assert.equal(value.status, terminal ? 'completed' : 'pending');
     assert.deepStrictEqual(value.typed_output, terminal ? fixture.typed_value : {type: 'null', value: null});
     assert.deepStrictEqual(terminal ? value.events.slice(0, 2) : value.events, prefix);
   }
@@ -50,6 +52,7 @@ export function checkTaskRetry(fixture, observation, workflowId) {
       assert.equal(step[key].status, 409);
       assert.equal(step[key].response.task_id, step.task.task_id);
       assert.equal(step[key].response.workflow_task_attempt, index + 1 + (key === 'stale' ? 1 : 0));
+      assert.equal(step[key].response.reason, key === 'stale' ? 'workflow_task_attempt_mismatch' : 'task_not_leased');
     }
     const accepted = step.accepted;
     for (const [key, expected] of Object.entries({task_id: step.task.task_id,
@@ -78,6 +81,7 @@ export function checkTaskRetry(fixture, observation, workflowId) {
   assert.equal(state.late_failure.status, 409);
   assert.equal(state.late_failure.response.task_id, state.last_task.task_id);
   assert.equal(state.late_failure.response.workflow_task_attempt, definition.failures.length + 1);
+  assert.equal(state.late_failure.response.reason, 'task_not_leased');
   assert.deepStrictEqual(state.after_terminal_refusal, state.final);
   const late = fails.at(-1);
   assert.equal(late.status, 409);

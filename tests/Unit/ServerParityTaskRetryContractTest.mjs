@@ -10,9 +10,9 @@ function model() {
     ...(i===2 ? {typed_decoded:{output:fixture.typed_value}} : {})}));
   const before = {workflow_id:'test-retry',run_id:'peer-run',workflow_type:'parity.v1.task_retry',namespace:'default',
     task_queue:'server-parity-v1',payload_codec:'avro',typed_input:{type:'list',value:[fixture.typed_value]},
-    typed_output:{type:'null',value:null},status:'running',events:events.slice(0,2)};
+    typed_output:{type:'null',value:null},status:'pending',events:events.slice(0,2)};
   const task = i=>({task_id:'task-'+i,workflow_id:'test-retry',run_id:'peer-run',lease_owner:'test-retry-worker',workflow_task_attempt:i});
-  const refusal = (i, stale=false)=>({status:409,response:{task_id:'task-'+i,workflow_task_attempt:i+(stale?1:0)}});
+  const refusal = (i, stale=false)=>({status:409,response:{task_id:'task-'+i,workflow_task_attempt:i+(stale?1:0),reason:stale?'workflow_task_attempt_mismatch':'task_not_leased'}});
   const requests = [];
   const steps = fixture.workflow_task_retry.failures.map((failure, index)=>{
     const i=index+1, accepted={task_id:'task-'+i,workflow_task_attempt:i,outcome:'failed',recorded:true,reason:null,next_task_id:'task-'+(i+1)};
@@ -53,6 +53,8 @@ for (const [label, mutate] of [
   ['prefix changed',s=>s.steps[1].after_refusals.events[0].timestamp='changed'],
   ['input int64 rounded',s=>s.steps[0].after_accepted.typed_input.value[0].value.count.value='9007199254740992'],
   ['workflow fails instead of retrying',s=>s.steps[0].after_accepted.status='failed'],
+  ['leasing changes the published pending projection',s=>s.before.status='running'],
+  ['stale failure loses its fencing reason',s=>s.steps[0].stale.response.reason='other-refusal'],
   ['output int64 rounded',s=>s.final.typed_output.value.count.value='9007199254740992'],
   ['different final task',s=>s.last_task.task_id='other-task'],
   ['extra retry after terminal completion',s=>s.idle_poll=s.last_task],
