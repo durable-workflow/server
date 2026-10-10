@@ -3,6 +3,11 @@
 set -euo pipefail
 scope_identity="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$GITHUB_JOB"
 case "$RESOURCE_SCOPE" in *"$scope_identity"*) ;; *) exit 2 ;; esac
+if ! docker network inspect "$RESOURCE_SCOPE" > /dev/null 2>&1; then
+  docker network create "$RESOURCE_SCOPE"
+fi
+mkdir -p parity-evidence
+chmod a+w parity-evidence
 backend="$1"
 tuple=tests/Fixtures/ServerParityProfiles/worker-fencing/source-tuple.json
 fixture=tests/Fixtures/ServerParityPending/worker-registration-fencing.json
@@ -53,7 +58,12 @@ database() {
 for target in php embedded; do
   storage="$PWD/parity-fence-state/$target-storage"
   mkdir -p "$storage/framework/cache/data" "$storage/framework/sessions" "$storage/framework/views" "$storage/logs"
-  chmod -R a+rwX parity-fence-state
+done
+# Prepare both host-owned trees before PHP creates UID1000-owned cache files.
+# Hosted runner UID and container UID differ; never chmod generated files later.
+chmod -R a+rwX parity-fence-state
+for target in php embedded; do
+  storage="$PWD/parity-fence-state/$target-storage"
   docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
     -v "$PWD/parity-fence-source:/app:ro" -v "$storage:/app/storage" \
     -v "$PWD/parity-fence-state/$target-cache:/app/bootstrap/cache" "${db_mount[@]}" \

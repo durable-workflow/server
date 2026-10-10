@@ -307,6 +307,7 @@ jobs:
       - name: Compare separate configured role-token cohort
         run: bash scripts/conformance/server-parity/role-profile.sh mysql
       - name: Compare pinned PHP and embedded worker-fencing source cohort
+        if: ${{ !cancelled() }}
         run: bash scripts/conformance/server-parity/worker-fencing-profile.sh mysql
       - name: Verify TLS certificate trust and hostname checks
         run: |
@@ -593,6 +594,7 @@ jobs:
           POSTGRES_IMAGE: ${{ matrix.image }}
         run: bash scripts/conformance/server-parity/role-profile.sh pgsql
       - name: Compare pinned PHP and embedded worker-fencing source cohort
+        if: ${{ !cancelled() }}
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
         run: bash scripts/conformance/server-parity/worker-fencing-profile.sh pgsql
@@ -848,6 +850,7 @@ jobs:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: bash scripts/conformance/server-parity/role-profile.sh sqlite
       - name: Compare pinned PHP and embedded worker-fencing source cohort
+        if: ${{ !cancelled() }}
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: bash scripts/conformance/server-parity/worker-fencing-profile.sh sqlite
