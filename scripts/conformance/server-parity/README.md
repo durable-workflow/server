@@ -401,7 +401,31 @@ its actual contention refusal immediately rather than waiting five seconds.
 The recorded timing remains authoritative. Separate PHP application CLI connections
 record actual session values before and after configuration. These samples do
 not represent the HTTP connection or native pool. No default tuple, production
-setting or published SDK is changed. The new hosted pressure result is pending;
-successful temporary recovery within ten seconds does not qualify persistent
+setting or published SDK is changed. All six configurations pass this temporary
+pressure cohort in #373, including independent checks of its official artifacts.
+Successful temporary recovery within ten seconds does not qualify persistent
 pressure, exhaustion of the entire shutdown budget, original-error precedence,
 performance or publication.
+
+The same explicit pressure profile now also selects pending
+`worker-sdk-persistent-pressure` and `worker-sdk-original-failure`. The
+independent writer remains held until the actual SDK returns failure after
+spending its original shutdown budget. Requests must keep the original
+token/namespace/credential and use decreasing bounded timeouts. Persistent
+503s and a real bounded I/O timeout remain uncertain outcomes; the SDK cannot
+claim deregistration success. Full original reads are checked after the first
+actual refusal while the writer remains held. The original-error case declares
+one actual SDK workflow poll with an invalid fixture credential; its real HTTP
+401 becomes the worker error. Exact exception identity must survive the separate
+shutdown failure. No SQL errors or responses are mocked.
+
+Only after the SDK returns does the fixture release the lock. A separate
+control client reconciles and replays the original token, permitting an already
+in-flight request to have committed. Full original history/read preservation,
+one original receipt, replacement fences, two deliberate repair commands and
+eventual actual SDK completion of that same peer are checked. This does not
+restart the stopped worker's budget. Embedded execution labels HTTP shutdown
+inapplicable. The frozen default, three-case source tuple and fault manifest
+are unchanged; the profile reuses compiled Rust and locked dependencies. These
+two new real executions are pending hosted qualification. Explicit native
+maintenance, published artifacts and broader #325 remain open.

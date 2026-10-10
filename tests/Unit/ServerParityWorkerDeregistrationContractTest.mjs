@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
 import {checkWorkerDeregistration} from '../../scripts/conformance/server-parity/worker-deregistration-contract.mjs';
 
 // Modeled evidence checks cannot qualify actual lifecycle execution.
@@ -260,4 +261,89 @@ const pressureMutations={
 };
 for(const [name,mutate] of Object.entries(pressureMutations)) test(name,()=>{
   const s=pressureModel();mutate(s);assert.throws(()=>checkPressure(s));
+});
+
+const persistentFixtures=[false,true].map(original=>JSON.parse(readFileSync(new URL('../Fixtures/ServerParityPending/'+
+  (original?'worker-sdk-original-failure':'worker-sdk-persistent-pressure')+'.json',import.meta.url))));
+function persistentModel(fixture=persistentFixtures[0]) {
+  const s=JSON.parse(JSON.stringify(pressureModel()).replaceAll(JSON.stringify(pressureFixture.input.message),JSON.stringify(fixture.input.message)));
+  const source=s.sdk_database_pressure;delete s.sdk_database_pressure;
+  const original=fixture.worker_deregistration.original_worker_failure;
+  const shutdownError={class:'DurableWorkflow\\Exception\\TransportException',status:null,reason:null,same_as_returned_error:!original};
+  const returned=original?{class:'DurableWorkflow\\Exception\\ServerException',status:401,reason:'unauthorized',same_as_returned_error:true}:shutdownError;
+  const requests=[source.requests[0],...[9,8,7,6,5,3].map(timeout=>({...source.requests[1],timeout_seconds:timeout,elapsed_seconds:0.05}))];
+  if(original) requests.splice(1,0,{method:'POST',path:'/api/worker/workflow-tasks/poll',status:401,namespace:'default',timeout_seconds:5,
+    credential_sha256:createHash('sha256').update('Bearer parity-intentionally-invalid-fixture-credential').digest('hex'),elapsed_seconds:0.05});
+  s.sdk_persistent_pressure={kind:'real_independent_database_write_lock_held_until_sdk_returns',backend:'sqlite',bounded_transport:true,
+    shutdown_elapsed_seconds:9.1,lock_release:'after_sdk_return_before_manual_reconciliation',original_worker_failure:original,
+    request_fault:original?'one_actual_sdk_workflow_poll_with_invalid_fixture_credential':null,
+    reference_php_session_before:source.reference_php_session_before,reference_php_session_after:source.reference_php_session_after,
+    requests,failures:Array.from({length:6},()=>source.failures[0]),sdk_receipt:null,returned_error:returned,
+    diagnostics:[...(original?[{event:'worker.failed',error:returned}]:[]),
+      ...Array.from({length:6},(_,i)=>({event:'worker.retrying',operation:'deregister_worker',attempt:i+1})),
+      {event:'worker.shutdown_failed',error:shutdownError},...(original?[{event:'worker.stopped'}]:[])],
+    manual_reconciliation:{status:200,response:s.original_receipt},manual_replay:{status:200,response:s.original_receipt},
+    before_manual_replay:s.after_original,after_manual_replay:s.after_original};
+  return JSON.parse(JSON.stringify(s));
+}
+const checkPersistent=(s,fixture=persistentFixtures[0])=>checkWorkerDeregistration(fixture,
+  {mode:'http',run_id:'root-run',worker_deregistration:s},id);
+for(const fixture of persistentFixtures) test('modeled persistent budget exhaustion and original-error precedence '+fixture.id,()=>{
+  assert.deepStrictEqual(checkPersistent(persistentModel(fixture),fixture),checkWorkerDeregistration(fixture,
+    {mode:'embedded',worker_deregistration:{applicable:false,reason:'embedded_has_no_http_worker_registration_lifecycle'}},id));
+});
+for(const backend of ['mysql','pgsql']) test('modeled persistent '+backend+' second request I/O timeout is an uncertain outcome',()=>{
+  const s=persistentModel(),p=s.sdk_persistent_pressure;p.backend=backend;
+  p.reference_php_session_before={origin:'php_application_cli_connection',driver:backend,
+    setting:backend==='mysql'?'innodb_lock_wait_timeout':'lock_timeout',value:backend==='mysql'?50:'0'};
+  p.reference_php_session_after={...p.reference_php_session_before,value:backend==='mysql'?5:'5s'};
+  p.requests=[p.requests[0],{...p.requests[1],elapsed_seconds:5},
+    {...p.requests[2],status:0,timeout_seconds:3,elapsed_seconds:3,retry_after:''}];
+  p.failures=[p.failures[0],{status:null,response:null}];
+  p.diagnostics=p.diagnostics.filter(d=>d.event!=='worker.retrying'||d.attempt===1);
+  checkPersistent(s);
+  p.failures[1].response={outcome:'rolled_back'};assert.throws(()=>checkPersistent(s));
+});
+const firstFence=s=>s.sdk_persistent_pressure.requests.find(r=>r.path.endsWith('/deregister'));
+const persistentMutations={
+  'persistent pressure absent':s=>{delete s.sdk_persistent_pressure;},
+  'persistent lock is a mock':s=>{s.sdk_persistent_pressure.kind='mock_sql_error';},
+  'persistent lock released before SDK failure':s=>{s.sdk_persistent_pressure.lock_release='before_retry';},
+  'persistent I/O unbounded':s=>{s.sdk_persistent_pressure.bounded_transport=false;},
+  'persistent budget restarted':s=>{s.sdk_persistent_pressure.shutdown_elapsed_seconds=11;},
+  'persistent failure did not spend budget':s=>{s.sdk_persistent_pressure.shutdown_elapsed_seconds=1;},
+  'persistent CLI session origin hidden':s=>{s.sdk_persistent_pressure.reference_php_session_after.origin='native_pool';},
+  'persistent declared limit not configured':s=>{s.sdk_persistent_pressure.reference_php_session_after.value=0;},
+  'persistent refusal changed original history':s=>{s.after_pressure.events.push(event('RepairRequested',3));},
+  'persistent SDK secretly succeeded':s=>{firstFence(s).status=200;},
+  'persistent terminal response retried':s=>{firstFence(s).status=409;},
+  'persistent retry changes token':s=>{firstFence(s).registration_token=tokens[2];},
+  'persistent retry changes namespace':s=>{firstFence(s).namespace='foreign';},
+  'persistent retry changes credential':s=>{firstFence(s).credential_sha256='b'.repeat(64);},
+  'persistent reply omits Retry-After':s=>{firstFence(s).retry_after='';},
+  'persistent retry target lost':s=>{s.sdk_persistent_pressure.failures[0].response.worker_id='other';},
+  'persistent unknown response called success':s=>{s.sdk_persistent_pressure.failures[0].response.outcome='deregistered';},
+  'persistent timeouts reset':s=>{s.sdk_persistent_pressure.requests.at(-1).timeout_seconds=9;},
+  'persistent I/O timeout absent':s=>{firstFence(s).timeout_seconds=null;},
+  'persistent I/O exceeds remaining budget':s=>{firstFence(s).elapsed_seconds=10;},
+  'persistent resumes registration':s=>{s.sdk_persistent_pressure.requests.push({method:'POST',path:'/api/worker/register'});},
+  'persistent acknowledges failure':s=>{s.sdk_persistent_pressure.sdk_receipt=s.original_receipt;},
+  'persistent shutdown diagnostic hidden':s=>{s.sdk_persistent_pressure.diagnostics=s.sdk_persistent_pressure.diagnostics.filter(d=>d.event!=='worker.shutdown_failed');},
+  'persistent original exception precedence reversed':s=>{s.sdk_persistent_pressure.diagnostics.find(d=>d.event==='worker.shutdown_failed').error.same_as_returned_error=
+    !s.sdk_persistent_pressure.diagnostics.find(d=>d.event==='worker.shutdown_failed').error.same_as_returned_error;},
+  'persistent manual reconciliation failed':s=>{s.sdk_persistent_pressure.manual_reconciliation.status=503;},
+  'persistent manual replay repairs twice':s=>{s.sdk_persistent_pressure.manual_replay.response.recovered_workflow_task_count=2;},
+  'persistent manual replay changes original read':s=>{s.sdk_persistent_pressure.after_manual_replay.events.push(event('RepairRequested',4));},
+};
+for(const fixture of persistentFixtures) for(const [name,mutate] of Object.entries(persistentMutations)) test(name+' '+fixture.id,()=>{
+  const s=persistentModel(fixture);mutate(s);assert.throws(()=>checkPersistent(s,fixture));
+});
+test('modeled original worker error requires actual authentication refusal and exact returned exception',()=>{
+  const fixture=persistentFixtures[1];
+  for(const mutate of [s=>{s.sdk_persistent_pressure.requests[1].status=200;},
+    s=>{s.sdk_persistent_pressure.request_fault='injected_exception';},
+    s=>{s.sdk_persistent_pressure.returned_error.status=503;},
+    s=>{s.sdk_persistent_pressure.diagnostics.find(d=>d.event==='worker.failed').error.same_as_returned_error=false;}]) {
+    const s=persistentModel(fixture);mutate(s);assert.throws(()=>checkPersistent(s,fixture));
+  }
 });

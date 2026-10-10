@@ -77,16 +77,28 @@ original reads/history, original-attempt completion and same-token repair/replay
 of another original task. Each cell passes 56 native tests; the independently
 compared default, role and source cohorts total 594 observations.
 
-The next shared SDK fixture holds an independent database write lock through
-the real HTTP 503, then releases it and requires the SDK to retry its original
-token with a smaller remaining request budget. A separate fault manifest
-declares five-second reference limits. Actual PHP application CLI session
-samples before and after that configuration are labeled separately from HTTP
-and native pool sessions. This fixture reuses the existing Rust binary and exact
-PHP/SDK sources and locks. Its hosted qualification is pending; modeled checks
-do not qualify database execution. Persistent shutdown, exhausted total budgets,
-original-error precedence, explicit native maintenance and exact publication
-remain open under #358.
+[#373](https://github.com/durable-workflow/server/pull/373) qualifies shared SDK
+temporary database pressure on all six configurations. An independent writer
+remains held through actual HTTP 503; after release, an original authority task
+completes and the SDK retries its original token using a smaller remaining
+request budget. Independent artifact comparisons verify 612 default, role,
+source and pressure observations. The separate fault manifest declares
+five-second reference limits and labels actual before/after PHP application CLI
+session samples separately from HTTP/native sessions. SQLite can refuse
+immediately despite its sampled busy timeout. Existing binaries and exact
+PHP/SDK sources and locks are reused. Main verification is recorded in #373.
+
+The next paired shared fixtures retain that independent writer until the SDK
+returns failure after spending its bounded shutdown budget. A declared invalid
+fixture credential on one actual HTTP poll produces an original worker error
+for the second case. Diagnostics and exception identity must preserve that
+error while separately reporting shutdown failure. After release, a control
+client reconciles the original token rather than assuming an in-flight timeout
+rolled back. Receipt replay and final original-peer recovery must record each
+repair once. These new hosted results are pending; modeled checks do not qualify
+database execution. Persistent shutdown, budget exhaustion, original-error
+precedence, explicit native maintenance and exact publication remain open
+under #358.
 
 The source profile now includes Rust on an independent database using the
 already compiled binary. Five dedicated native tests check original-task

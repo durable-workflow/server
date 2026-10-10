@@ -18,7 +18,9 @@ case "$tag" in
       --fixture tests/Fixtures/ServerParityPending/worker-sdk-reply-reconciliation.json) ;;
   pressure)
     tuple=tests/Fixtures/ServerParityProfiles/worker-pressure/source-tuple.json
-    fixtures=(--fixture tests/Fixtures/ServerParityPending/worker-sdk-database-pressure.json) ;;
+    fixtures=(--fixture tests/Fixtures/ServerParityPending/worker-sdk-database-pressure.json
+      --fixture tests/Fixtures/ServerParityPending/worker-sdk-persistent-pressure.json
+      --fixture tests/Fixtures/ServerParityPending/worker-sdk-original-failure.json) ;;
   *) exit 2 ;;
 esac
 php_ref=$(jq -r '.server.source_commit' "$tuple")
