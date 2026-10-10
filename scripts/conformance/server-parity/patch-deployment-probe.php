@@ -55,6 +55,14 @@ function patchDeploymentObservation(array $fixture, array $options): array
         fclose($pipes[2]);
         $status = proc_close($process);
         if ($status !== 0) {
+            $directory = getenv('DW_PARITY_FAILURE_EVIDENCE_DIR');
+            if (is_string($directory) && is_dir($directory)) {
+                $name = preg_replace('/[^A-Za-z0-9_.-]/', '_', $options['workflow-id']);
+                @file_put_contents($directory.'/failure-'.$name.'-patch.json', json_encode([
+                    'failed_phase' => $phase, 'completed_phases' => $phases,
+                    'error' => trim($stderr),
+                ], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE)."\n");
+            }
             throw new RuntimeException('Patch '.$phase.' worker failed: '.trim($stderr));
         }
         $phases[] = json_decode($stdout, true, flags: JSON_THROW_ON_ERROR);
@@ -162,7 +170,7 @@ function patchEmbeddedPhase(array $fixture, array $options): array
     }
     $phase = $options['patch-phase'];
     if ($phase === 'original') {
-        $stub = WorkflowStub::make(\ServerParityPatch\DeploymentWorkflow::class, $options['workflow-id']);
+        $stub = WorkflowStub::make(\ServerParityPatch\DeploymentWorkflow::class, $options['workflow-id'], 'default');
         $stub->start($fixture['input'], new WorkflowOptions(connection: 'database', queue: 'server-parity-v1'),
             new StartOptions(executionTimeoutSeconds: 3600, runTimeoutSeconds: 600));
     } else {
@@ -188,6 +196,7 @@ function patchEmbeddedPhase(array $fixture, array $options): array
     } while (! $done);
 
     return ['phase' => $phase, 'pid' => getmypid(), 'decisions' => PatchDeploymentState::$decisions,
+        'instance' => WorkflowInstance::query()->findOrFail($run->workflow_instance_id)->toArray(),
         'worker_output' => Artisan::output(), 'execution' => $run->toArray(), 'workflow_id' => $run->workflow_instance_id,
         'run_id' => $run->id, 'workflow_type' => $run->workflow_type, 'namespace' => $run->namespace,
         'task_queue' => $run->queue, 'status' => $run->status->value, 'payload_codec' => $run->payload_codec,

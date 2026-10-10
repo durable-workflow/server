@@ -11,6 +11,7 @@ for (const checkpoint of ['pending', 'completed']) {
     const base = {mode, sdk_php: '2.2.6', sdk_php_source: 'a'.repeat(40), workflow_id: 'test', run_id: 'original-run',
       workflow_type: fixture.workflow_type, namespace: 'default', task_queue: 'server-parity-v1',
       payload_codec: 'avro', typed_input: {type: 'list', value: [fixture.typed_value]}};
+    base.instance = {id: 'test', namespace: 'default', workflow_type: fixture.workflow_type, current_run_id: 'original-run'};
     const workflow = commands => ({method: 'POST', path: '/api/worker/workflow-tasks/task/complete',
       status: 200, request: {commands}});
     const activity = {method: 'POST', path: '/api/worker/activity-tasks/activity/complete', status: 200, request: {}};
@@ -51,6 +52,17 @@ for (const checkpoint of ['pending', 'completed']) {
         assert.throws(() => checkPatchDeployment(fixture, raw, 'test'));
       });
     }
+  }
+  for (const [label, mutate] of [
+    ['missing physical namespace', x => x.original.instance.namespace = null],
+    ['replacement crosses namespace', x => x.replacement.instance.namespace = 'other'],
+    ['instance points at another run', x => x.replacement.instance.current_run_id = 'new-run'],
+    ['instance identity changes', x => x.replacement.instance.id = 'new-instance'],
+  ]) {
+    test(`${checkpoint} embedded: model rejects ${label}`, () => {
+      const raw = model('embedded'); mutate(raw.patch_deployment);
+      assert.throws(() => checkPatchDeployment(fixture, raw, 'test'));
+    });
   }
   for (const [label, mutate] of [
     ['marker emitted', x => x.requests.find(item => item.path.includes('workflow-tasks')).request.commands.push({type: 'record_version_marker'})],

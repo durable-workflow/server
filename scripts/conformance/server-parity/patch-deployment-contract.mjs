@@ -23,6 +23,12 @@ export function checkPatchDeployment(fixture, observation, workflowId) {
     assert.equal(phase.sdk_php_source, observation.sdk_php_source, 'unchanged exact SDK source');
     assert.deepEqual(phase.typed_input, observation.typed_input, 'exact original input');
     assert.equal(phase.payload_codec, 'avro');
+    if (observation.mode === 'embedded') {
+      assert.equal(phase.instance.id, workflowId, 'original physical embedded instance');
+      assert.equal(phase.instance.namespace, observation.namespace, 'explicit persisted embedded namespace');
+      assert.equal(phase.instance.workflow_type, fixture.workflow_type, 'original registered instance type');
+      assert.equal(phase.instance.current_run_id, observation.run_id, 'original current run across replacement');
+    }
   }
   const checkpointLength = spec.checkpoint === 'activity_pending' ? 3 : 5;
   assert.ok(['activity_pending', 'activity_completed'].includes(spec.checkpoint));
