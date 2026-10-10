@@ -11,7 +11,8 @@ chmod a+w parity-evidence
 backend="$1"
 tuple=tests/Fixtures/ServerParityProfiles/worker-fencing/source-tuple.json
 fixtures=(--fixture tests/Fixtures/ServerParityPending/worker-registration-fencing.json
-  --fixture tests/Fixtures/ServerParityPending/worker-registration-live-lease.json)
+  --fixture tests/Fixtures/ServerParityPending/worker-registration-live-lease.json
+  --fixture tests/Fixtures/ServerParityPending/worker-sdk-reply-reconciliation.json)
 php_ref=$(jq -r '.server.source_commit' "$tuple")
 git fetch origin "$php_ref"
 test "$(git rev-parse "$php_ref^{tree}")" = "$(jq -r '.server.source_tree' "$tuple")"

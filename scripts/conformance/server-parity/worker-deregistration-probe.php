@@ -16,9 +16,15 @@ function fenceReceipt(callable $request): array
     }
 }
 
-function finishHttpWorkerDeregistration(Client $client, array $fixture, string $workflowId, string $queue): array
+function finishHttpWorkerDeregistration(Client $client, array $fixture, string $workflowId, string $queue, string $url): array
 {
     $definition = $fixture['worker_deregistration'];
+    if ($definition['sdk_reply_loss'] ?? false) {
+        // The frozen published adapter does not have the source bounded
+        // transport interface. Load the fault adapter only for its source case.
+        require_once __DIR__.'/sdk-reply-probe.php';
+        return finishSdkReplyReconciliation($client, $fixture, $workflowId, $queue, $url);
+    }
     $peerId = $workflowId.$definition['peer_suffix'];
     $workerId = $workflowId.'-fenced-worker';
     $peer = $client->startWorkflow($definition['peer_workflow_type'], $peerId, $queue, [$fixture['input']]);
@@ -80,16 +86,22 @@ function finishHttpWorkerDeregistration(Client $client, array $fixture, string $
     $state['latest_heartbeat'] = $client->heartbeatWorker($workerId);
     $state['latest_receipt'] = $client->deregisterWorkerRegistration($workerId, $latestToken);
     $state['after_latest'] = $reload();
+    return finishWorkerDeregistrationRecovery($client, $fixture, $workflowId, $queue, $peerId, $peer->selectedRunId, $state);
+}
+
+function finishWorkerDeregistrationRecovery(Client $client, array $fixture, string $workflowId, string $queue, string $peerId, string $runId, array $state): array
+{
+    $definition = $fixture['worker_deregistration'];
     $worker = null;
     $deadline = microtime(true) + 15;
     $worker = (new Worker($client, $queue, workerId: $workflowId.'-recovery-worker',
-        clock: static function () use (&$worker, $peer, $deadline): float {
+        clock: static function () use (&$worker, $client, $peerId, $runId, $deadline): float {
             if (microtime(true) > $deadline) { throw new RuntimeException('Original fenced workflow did not recover.'); }
-            if ($peer->describeSelectedRun()->status === 'completed') { $worker->requestShutdown(); }
+            if ($client->describeWorkflow($peerId, $runId)->status === 'completed') { $worker->requestShutdown(); }
             return microtime(true);
         }))->registerWorkflow($definition['peer_workflow_type'], static fn (WorkflowContext $context, array $value): array => $value);
     $worker->run(0);
-    $state['final'] = $reload();
+    $state['final'] = namespaceHttpRun($client, $peerId, $runId);
     $idleId = $workflowId.'-idle-worker';
     $state['idle_registration'] = $client->registerWorker($idleId, $queue, [$definition['peer_workflow_type']], []);
     $state['idle_poll'] = $client->pollWorkflowTask($idleId, $queue, 0);

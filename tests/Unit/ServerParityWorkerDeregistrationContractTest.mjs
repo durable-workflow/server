@@ -136,3 +136,48 @@ for (const [name,mutate] of Object.entries(liveMutations)) test(name,()=>{
   mutate(s);
   assert.throws(()=>checkLive(s));
 });
+
+const replyFixture=JSON.parse(readFileSync(new URL('../Fixtures/ServerParityPending/worker-sdk-reply-reconciliation.json',import.meta.url)));
+function replyModel() {
+  const s=JSON.parse(JSON.stringify(state));
+  for(const key of ['before_unknown','after_unknown','after_original','after_stale_original','before_superseded',
+    'after_superseded','before_replay','after_replay','after_stale_replay','after_latest','final']) {
+    s[key].typed_input={type:'list',value:[replyFixture.typed_value]};
+  }
+  s.final.typed_output=replyFixture.typed_value;
+  s.final.events.at(-1).typed_decoded.output=replyFixture.typed_value;
+  const request=(path,status,token=null,timeout=null)=>({method:'POST',path,status,namespace:'default',
+    credential_sha256:'a'.repeat(64),registration_token:token,timeout_seconds:timeout});
+  const shutdown='/api/worker/registrations/'+worker+'/deregister';
+  s.sdk_reply_loss={kind:'client_injected_after_real_http_commit',bounded_transport:true,injected_loss_count:1,
+    shutdown_elapsed_seconds:0.5,requests:[request('/api/worker/register',201),request(shutdown,200,tokens[0],9),request(shutdown,200,tokens[0],9)],
+    diagnostics:[{event:'worker.retrying',operation:'deregister_worker',attempt:1},{event:'worker.deregistered'},{event:'worker.stopped'}]};
+  return JSON.parse(JSON.stringify(s));
+}
+const checkReply=s=>checkWorkerDeregistration(replyFixture,{mode:'http',run_id:'root-run',worker_deregistration:s},id);
+test('modeled SDK reply reconciliation retains its real lifecycle and explicit client fault origin',()=>{
+  assert.deepStrictEqual(checkReply(replyModel()),checkWorkerDeregistration(replyFixture,
+    {mode:'embedded',worker_deregistration:{applicable:false,reason:'embedded_has_no_http_worker_registration_lifecycle'}},id));
+});
+const replyMutations={
+  'missing SDK reconciliation evidence':s=>{delete s.sdk_reply_loss;},
+  'client fault mislabeled as TCP disconnect':s=>{s.sdk_reply_loss.kind='tcp_disconnect';},
+  'SDK has unbounded transport':s=>{s.sdk_reply_loss.bounded_transport=false;},
+  'SDK fault never injected':s=>{s.sdk_reply_loss.injected_loss_count=0;},
+  'SDK fault injected repeatedly':s=>{s.sdk_reply_loss.injected_loss_count=2;},
+  'SDK shutdown exceeds its budget':s=>{s.sdk_reply_loss.shutdown_elapsed_seconds=11;},
+  'SDK resumes task polling':s=>{s.sdk_reply_loss.requests.push({method:'POST',path:'/api/worker/workflow-tasks/poll'});},
+  'SDK refreshes its incarnation':s=>{s.sdk_reply_loss.requests[2].path='/api/worker/register';},
+  'SDK first shutdown never commits':s=>{s.sdk_reply_loss.requests[1].status=503;},
+  'SDK retry receives terminal refusal':s=>{s.sdk_reply_loss.requests[2].status=409;},
+  'SDK retry changes token':s=>{s.sdk_reply_loss.requests[2].registration_token=tokens[2];},
+  'SDK retry changes namespace':s=>{s.sdk_reply_loss.requests[2].namespace='foreign';},
+  'SDK retry changes credential':s=>{s.sdk_reply_loss.requests[2].credential_sha256='b'.repeat(64);},
+  'SDK retry is unbounded':s=>{s.sdk_reply_loss.requests[2].timeout_seconds=null;},
+  'SDK retry increases request timeout':s=>{s.sdk_reply_loss.requests[2].timeout_seconds=10;},
+  'SDK retry diagnostic missing':s=>{s.sdk_reply_loss.diagnostics.shift();},
+  'SDK silently hides shutdown failure':s=>{s.sdk_reply_loss.diagnostics.push({event:'worker.shutdown_failed'});},
+};
+for(const [name,mutate] of Object.entries(replyMutations)) test(name,()=>{
+  const s=replyModel();mutate(s);assert.throws(()=>checkReply(s));
+});

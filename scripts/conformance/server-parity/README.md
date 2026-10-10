@@ -355,6 +355,19 @@ original reads remain unchanged across replacement and stale-publication
 refusals, and the same task later completes through the existing fenced recovery
 sequence. Activity replacement and sticky-execution semantics remain separate
 qualification gates. Embedded mode records this HTTP lifecycle as inapplicable.
+The third selected case, `worker-sdk-reply-reconciliation`, runs the exact
+source SDK's worker shutdown. Controlled setup leases the original task under
+its accepted SDK incarnation and requests shutdown before SDK polling. After
+the actual HTTP 200 commit, the client adapter loses that reply deliberately;
+replacement registrations and a claim of the same original task happen before
+the SDK retries. Wire statuses, original token/namespace/credential hash,
+bounded request timeouts and SDK diagnostics are retained. The shared contract
+checks immutable receipt reconciliation and preservation of the replacement's
+original lease/history, followed by actual SDK recovery and typed completion.
+This is explicitly client-injected reply loss, not a TCP disconnect. Observing
+this path within ten seconds does not qualify persistent pressure, exhausted
+shutdown budgets or original worker failure precedence. The source transport
+class loads only for this case, leaving the frozen default SDK adapter intact.
 Cleanup and logs belong to the owning workflow's always-run steps. Select the
 pending fixtures with repeated `--fixture` arguments and the source manifest
 with `--artifacts` when recording; compare all three records with those same

@@ -418,7 +418,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $admission = isset($fixture['admission']) ? finishHttpAdmission($client, $fixture, $workflowId,
         $handle->selectedRunId, $queue, $url, $namespace) : null;
     $namespaces = isset($fixture['namespace_isolation']) ? finishHttpNamespaces($client, $fixture, $workflowId, $queue, $url) : null;
-    $workerDeregistration = isset($fixture['worker_deregistration']) ? finishHttpWorkerDeregistration($client, $fixture, $workflowId, $queue) : null;
+    $workerDeregistration = isset($fixture['worker_deregistration']) ? finishHttpWorkerDeregistration($client, $fixture, $workflowId, $queue, $url) : null;
     if ($scheduleState !== null) {
         $scheduleState = finishHttpSchedule($client, $fixture, $scheduleState, $workflowId, $handle->selectedRunId);
         $scheduleState['control_receipts'] = $scheduleReceipts;
