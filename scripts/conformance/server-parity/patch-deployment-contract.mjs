@@ -1,5 +1,15 @@
 import assert from 'node:assert/strict';
 
+export function checkPatchPollPressureResponse(response) {
+  assert.ok(response && typeof response === 'object' && !Array.isArray(response), 'actual pressure response summary');
+  assert.equal(response.task, null, 'pressure response carries no leased task');
+  assert.equal(response.poll_status, 'backend_lock_pressure', 'only declared backend lock pressure');
+  assert.ok(Object.keys(response).every(key => ['task', 'poll_status', 'reason', 'message'].includes(key)),
+    'pressure summary contains only core fields and published optional diagnostics');
+  if (Object.hasOwn(response, 'reason')) assert.equal(response.reason, 'backend_lock_pressure', 'diagnostic reason agrees');
+  if (Object.hasOwn(response, 'message')) assert.equal(typeof response.message, 'string', 'published diagnostic message is text');
+}
+
 export function checkPublishedPatchArtifacts(fixture, artifacts) {
   if (fixture.patch_deployment?.embedded_clock_probe) {
     assert.match(artifacts.workflow_source_commit ?? '', /^[a-f0-9]{40}$/);
@@ -192,7 +202,7 @@ export function checkPatchDeployment(fixture, observation, workflowId) {
         if (phase === replacement && spec.consumer && item.status === 503) {
           assert.equal(item.method, 'POST');
           assert.equal(item.path, '/api/worker/workflow-tasks/poll', 'only workflow poll pressure is tolerated');
-          assert.deepEqual(item.response, {task: null, poll_status: spec.workflow_poll_retry.poll_status});
+          checkPatchPollPressureResponse(item.response);
           assert.match(item.response_retry_after ?? '', /^[1-9][0-9]*$/, 'positive explicit Retry-After');
           assert.ok(Number.isSafeInteger(Number(item.response_retry_after)) && Number(item.response_retry_after) <= 25,
             'retry hint fits the actual published worker deadline');

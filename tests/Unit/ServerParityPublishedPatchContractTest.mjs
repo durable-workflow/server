@@ -69,6 +69,15 @@ for (const language of ['rust', 'python']) for (const checkpoint of ['pending', 
     return raw;
   }
   test(`${language} ${checkpoint}: model accepts same-request pressure recovery`, () => checkPatchDeployment(fixture, pressureModel(), 'test'));
+  for (const [name, diagnostics] of [
+    ['reason', {reason: 'backend_lock_pressure'}],
+    ['message', {message: 'Retry this poll with backoff.'}],
+    ['reason and message', {reason: 'backend_lock_pressure', message: 'Retry this poll with backoff.'}],
+  ]) test(`${language} ${checkpoint}: model accepts published optional pressure ${name}`, () => {
+    const raw = pressureModel();
+    Object.assign(raw.patch_deployment.replacement.requests[1].response, diagnostics);
+    checkPatchDeployment(fixture, raw, 'test');
+  });
   for (const [name, mutate] of [
     ['missing Retry-After', requests => delete requests[1].response_retry_after],
     ['zero Retry-After', requests => requests[1].response_retry_after = '0'],
@@ -79,6 +88,9 @@ for (const language of ['rust', 'python']) for (const checkpoint of ['pending', 
     ['no successful retry', requests => requests.splice(2, 1)],
     ['hidden leased task', requests => requests[1].response.task = {task_id: 'unknown-task'}],
     ['other pressure', requests => requests[1].response.poll_status = 'other'],
+    ['contradicting pressure reason', requests => requests[1].response.reason = 'backend_unavailable'],
+    ['nontext diagnostic message', requests => requests[1].response.message = {retry: true}],
+    ['unreviewed pressure summary field', requests => requests[1].response.status = 'completed'],
   ]) test(`${language} ${checkpoint}: model rejects ${name}`, () => {
     const raw = pressureModel(); mutate(raw.patch_deployment.replacement.requests);
     assert.throws(() => checkPatchDeployment(fixture, raw, 'test'));

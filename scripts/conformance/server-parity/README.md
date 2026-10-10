@@ -48,6 +48,10 @@ same worker's shutdown query poll after accepted workflow completion is allowed.
 An incidental workflow poll 503 must identify backend lock pressure, include a
 positive Retry-After that fits the worker deadline, and recover by retrying the
 same poll ID and unchanged request. Other HTTP and network errors fail the case.
+The compact pressure observation may also contain the published PHP response's
+diagnostic `reason` and `message`; their values/types are checked, and a reason
+must agree with `backend_lock_pressure`. Full response bytes remain unchanged
+in the raw sidecar. Extra summary fields do not bypass the check.
 These controls do not establish complete fault or retry-budget qualification.
 
 CI builds the Rust SDK adapter once with no debug information or incremental

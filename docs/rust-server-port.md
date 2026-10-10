@@ -176,7 +176,16 @@ freezes the complete embedded dependency lock to prevent registry drift.
 Two local SQLite
 PHP/embedded pairs pass at `0f95493d4d0d8f99c5221cca64b8af7c3bfd984d`, including
 the real cold replacement clocks and unchanged full checkpoint history.
-All six PHP/native/embedded differential executions remain unqualified. CI
+The earlier locked candidate's two-case subset independently passes on all
+six configurations (36 observations), but its complete run failed later in
+MySQL 8.4 pressure qualification after the database disappeared; the cause is
+unconfirmed. A subsequent SQLite run exposed a comparator error: the published
+PHP lock-pressure response also carries diagnostic reason/message fields.
+The checker now validates those optional fields while still requiring a null
+task, the exact pressure status, positive bounded Retry-After and a successful
+byte-identical poll retry. The original failed recording stays unchanged; its
+real published Rust worker completed the original run and independently passes
+the corrected check. The current complete matrix remains unqualified. CI
 reuses its existing native binary and HTTP targets, installs only the separately
 selected embedded engine and gives it a new isolated database. The frozen baseline and other profiles
 stay unchanged. Retained duplicate-marker cross-SDK histories need a separate
