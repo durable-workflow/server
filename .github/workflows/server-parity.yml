@@ -11,7 +11,7 @@ on:
       - tests/Unit/ServerParityRunnerTest.mjs
       - tests/Unit/ServerParityCooperativeContractTest.mjs
       - tests/Unit/ServerParityChildCancellationContractTest.mjs
-      - tests/Fixtures/ServerParityObservations/**
+      - tests/Support/ServerParityChildCancellationObservation.mjs
       - rust/**
   push:
     branches: [main]
@@ -24,7 +24,7 @@ on:
       - tests/Unit/ServerParityRunnerTest.mjs
       - tests/Unit/ServerParityCooperativeContractTest.mjs
       - tests/Unit/ServerParityChildCancellationContractTest.mjs
-      - tests/Fixtures/ServerParityObservations/**
+      - tests/Support/ServerParityChildCancellationObservation.mjs
       - rust/**
   workflow_dispatch:
 

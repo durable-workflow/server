@@ -2,13 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {checkObservation} from '../../scripts/conformance/server-parity/contract.mjs';
+import {childCancellationObservation} from '../Support/ServerParityChildCancellationObservation.mjs';
 
 const read = path => JSON.parse(readFileSync(new URL(path, import.meta.url)));
 for (const phase of ['before-claim', 'pending-timer']) {
   const fixture = read(`../Fixtures/ServerParity/direct-child-cancel-${phase}.json`);
-  const examples = ['php', 'embedded'].map(mode => read(`../Fixtures/ServerParityObservations/direct-child-cancel-${mode}-${phase}.json`).observation);
+  const examples = ['http', 'embedded'].map(mode => childCancellationObservation(fixture, mode));
   const check = raw => checkObservation(fixture, raw, `child-reference-${phase}`);
-  test(`${phase}: published SDK and embedded representations project equally`, () => {
+  test(`${phase}: modeled SDK and embedded representations project equally`, () => {
     assert.deepStrictEqual(check(examples[0]), check(examples[1]));
   });
   for (const example of examples) {

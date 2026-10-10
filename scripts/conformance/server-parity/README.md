@@ -38,7 +38,7 @@ Direct child-cancellation cases additionally exercise cancellation before
 claim and during a committed child timer. Published PHP, native and embedded
 execution pass the six-configuration matrix. The embedded-only
 `FailureHandled` event and parent-facing diagnostic are asserted before common
-projection. Saved reference observations are comparator examples, not extra
+projection. Deterministic unit examples model these representations, not extra
 qualified workflow cases. HTTP failure capture uses bounded real SDK reads of
 the original run and first original child before timeout shutdown, preserving
 the 30-second execution budget and recording diagnostic read refusals honestly.
