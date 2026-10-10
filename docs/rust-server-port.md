@@ -190,6 +190,20 @@ with original failure type, source, run and identity. The PHP correction is now
 published in Workflow 2.5.5 and Server 2.5.14. Its separate corrected-tuple Rust
 differential remains pending; the frozen failing reference is retained and
 does not become a pass from publication.
+
+The separate corrected diagnostic candidate now selects frozen Server 2.5.14 /
+Workflow 2.5.5 from `tests/Fixtures/ServerParityBaselines/php-2.5.14.json`.
+The original 2.5.13 manifest and pending leading-NUL reproducer remain unchanged.
+Two candidate definitions preserve the leading-NUL embedded case and add an
+interior-NUL reason that reaches HTTP/native storage unchanged. Only a complete
+diagnostic containing NUL is rendered as one JSON string literal; decoding must
+recover the full prefix and reason, while ordinary messages remain unchanged.
+The 22-case candidate records published PHP and embedded references before
+native execution. Qualified totals remain 20 until the new matrix is reviewed.
+All 289 comparator tests pass, including four corrected diagnostic models and
+twelve synchronized semantic corruptions; these are harness checks, not actual
+completed workflows. Native diagnostic implementation and qualification remain
+pending.
 The final cancellation head `741401bc80e2b13b86ae031f3fe88272855f1d03`
 passes all six configurations in [run 38005623457](https://github.com/durable-workflow/server/actions/runs/38005623457),
 including all 17 shared cases, 23 native HTTP tests/configuration and actual

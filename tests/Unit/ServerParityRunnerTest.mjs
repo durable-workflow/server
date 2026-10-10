@@ -10,6 +10,8 @@ const exhaustedFixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerPari
 const filteredFixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/activity-failure-filtered.json', import.meta.url)));
 const cancellationFixtures = ['before-claim', 'pending-timer', 'leased-activity'].map(phase =>
   JSON.parse(readFileSync(new URL(`../Fixtures/ServerParity/cancel-${phase}.json`, import.meta.url))));
+const nulCancellationFixtures = ['leading', 'interior'].map(position =>
+  JSON.parse(readFileSync(new URL(`../Fixtures/ServerParity/cancel-${position}-nul-reason.json`, import.meta.url))));
 const compareRecords = records => compareCorpusRecords(records, {'one-activity.json': 'fixture-sha'}, reviewed);
 function observation(suffix = '') {
   const run = `run${suffix}`;
@@ -62,7 +64,9 @@ function cancellationObservation(fixture, mode = 'http') {
       lease_owner: 'cancel-owner', status: 'cancelled', closed_at: '2026-01-01T00:00:05Z'}},
     decoded: {activity_arguments: [fixture.input]}, typed_decoded: {activity_arguments: {type: 'list', value: [fixture.typed_value]}}});
   raw.events.push({payload: {...common, failure_id: 'cancel-failure', failure_category: 'cancelled', closed_reason: 'cancelled',
-    exception_class: 'Workflow\\V2\\Exceptions\\WorkflowCancelledException', message: `Workflow cancelled: ${reason}`}, decoded: {}, typed_decoded: {}});
+    exception_class: 'Workflow\\V2\\Exceptions\\WorkflowCancelledException', message:
+      fixture.immediate_cancellation.diagnostic_encoding === 'json_string_literal_if_nul' && reason.includes('\0')
+        ? JSON.stringify(`Workflow cancelled: ${reason}`) : `Workflow cancelled: ${reason}`}, decoded: {}, typed_decoded: {}});
   raw.events = raw.events.map((event, index) => ({...event, sequence: index + 1, event_type: fixture.expected_events[index], timestamp: `2026-01-01T00:00:0${index}Z`}));
   Object.assign(raw.execution, {closed_reason: 'cancelled', closed_at: raw.events.at(-1).timestamp});
   const history = raw.events.map(({decoded, typed_decoded, ...event}) => event);
@@ -89,6 +93,30 @@ function cancellationObservation(fixture, mode = 'http') {
   raw.activity_outcomes = phase === 'leased_activity' ? [{...stale, path: '/api/worker/activity-tasks/cancel-task/complete',
     request: {activity_attempt_id: 'cancel-attempt', lease_owner: 'cancel-owner'}, decoded_result: fixture.input, typed_result: fixture.typed_value}] : [];
   return structuredClone(raw);
+}
+
+for (const fixture of nulCancellationFixtures) for (const mode of ['http', 'embedded']) {
+  test(`${fixture.id} preserves the complete ${mode} diagnostic contract`, () => {
+    const raw = cancellationObservation(fixture, mode);
+    checkObservation(fixture, raw, 'test-one-activity');
+    const reason = mode === 'http' ? fixture.immediate_cancellation.http_reason : fixture.immediate_cancellation.reason;
+    if (reason.includes('\0')) assert.equal(JSON.parse(raw.events.at(-1).payload.message), `Workflow cancelled: ${reason}`);
+    else assert.equal(raw.events.at(-1).payload.message, `Workflow cancelled: ${reason}`);
+  });
+  for (const [label, message] of [
+    ['reason-only literal', raw => JSON.stringify(raw.events.at(-1).payload.reason)],
+    ['prefix outside literal', raw => `Workflow cancelled: ${JSON.stringify(raw.events.at(-1).payload.reason)}`],
+    ['truncated diagnostic', raw => `Workflow cancelled: ${raw.events.at(-1).payload.reason.split('\0')[0]}`],
+  ]) test(`${fixture.id} rejects synchronized ${mode} ${label}`, () => {
+    const raw = cancellationObservation(fixture, mode);
+    let wrong = message(raw);
+    if (wrong === raw.events.at(-1).payload.message) wrong += ' corrupted';
+    raw.events.at(-1).payload.message = wrong;
+    for (const field of ['history_before_duplicate', 'history_after_duplicate', 'fresh_history'])
+      raw.cancellation[field].at(-1).payload.message = wrong;
+    for (const failure of raw.cancellation.failures) failure.message = wrong;
+    assert.throws(() => checkObservation(fixture, raw, 'test-one-activity'), /complete cancellation failure message/);
+  });
 }
 
 for (const mode of ['http', 'embedded']) {
