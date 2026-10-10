@@ -64,3 +64,17 @@ docker run --rm --user=1000:1000 --network=none --entrypoint node "${shared[@]}"
   scripts/conformance/server-parity.mjs compare /evidence/repeated-patch/php/record.json \
   /evidence/repeated-patch/rust/record.json /evidence/repeated-patch/embedded/record.json \
   --artifacts "$profile/artifacts.json" "${fixtures[@]}" > parity-evidence/repeated-patch/comparison.json
+case "$backend" in
+  mysql)
+    docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint mysql "$MYSQL_IMAGE" \
+      -h parity-mysql -uroot -pparity-disposable-password -e 'DROP DATABASE embedded_repeated_ref' ;;
+  pgsql)
+    docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" -e PGPASSWORD=parity-disposable-password \
+      --entrypoint dropdb "$POSTGRES_IMAGE" -h parity-pg -U parity embedded_repeated_ref ;;
+  sqlite) rm -- parity-repeated-state/embedded.sqlite ;;
+esac
+# Preserve the installed lock and raw results, then retire only this profile's
+# assembled application before the next cohort.
+docker run --rm --user=1000:1000 --network=none --entrypoint sh \
+  -v "$PWD/parity-repeated-state/embedded-app:/runtime" "$image" \
+  -c 'find /runtime -mindepth 1 -maxdepth 1 -exec rm -r -- {} +'

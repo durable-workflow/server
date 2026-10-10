@@ -438,6 +438,9 @@ jobs:
           docker logs "$RESOURCE_SCOPE-native-b" > parity-evidence/native-b.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-recovered" > parity-evidence/native-recovered.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-db" > parity-evidence/database.log 2>&1 || true
+          docker inspect --format '{{json .State}}' "$RESOURCE_SCOPE-db" > parity-evidence/database-state.json 2>&1 || true
+          docker inspect --format '{{json .HostConfig.Memory}}' "$RESOURCE_SCOPE-db" > parity-evidence/database-memory-limit.json 2>&1 || true
+          docker stats --no-stream --format '{{json .}}' "$RESOURCE_SCOPE-db" > parity-evidence/database-stats.json 2>&1 || true
           for profile in fence pressure; do
             for target in php native; do
               docker logs "$RESOURCE_SCOPE-$profile-$target" > "parity-evidence/$profile-$target.log" 2>&1 || true
@@ -795,6 +798,9 @@ jobs:
           docker logs "$RESOURCE_SCOPE-native-b" > parity-evidence/native-b.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-recovered" > parity-evidence/native-recovered.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-db" > parity-evidence/postgres.log 2>&1 || true
+          docker inspect --format '{{json .State}}' "$RESOURCE_SCOPE-db" > parity-evidence/database-state.json 2>&1 || true
+          docker inspect --format '{{json .HostConfig.Memory}}' "$RESOURCE_SCOPE-db" > parity-evidence/database-memory-limit.json 2>&1 || true
+          docker stats --no-stream --format '{{json .}}' "$RESOURCE_SCOPE-db" > parity-evidence/database-stats.json 2>&1 || true
           for profile in fence pressure; do
             for target in php native; do
               docker logs "$RESOURCE_SCOPE-$profile-$target" > "parity-evidence/$profile-$target.log" 2>&1 || true
