@@ -1,0 +1,11 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "patch-insertion-activity-pending",
+  "workflow_type": "parity.v1.one_activity",
+  "input": {"message": "legacy patch λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {"type": "map", "value": {"message": {"type": "string", "value": "legacy patch λ"}, "count": {"type": "int64", "value": "9007199254740993"}, "optional": {"type": "null", "value": null}}},
+  "activity": true,
+  "patch_deployment": {"change_id": "parity.add-new-step", "checkpoint": "activity_pending", "repeated_calls": 2, "expected_decisions": [false, false]},
+  "expected_events": ["StartAccepted", "WorkflowStarted", "ActivityScheduled", "ActivityStarted", "ActivityCompleted", "WorkflowCompleted"],
+  "contract": "An original worker schedules an unmarked activity at command sequence 1 and exits before the declared checkpoint can be advanced by a replacement. A separate cold PHP process inserts the same patched() ID twice before that original activity. Both calls choose false without consuming or shifting the original command; no new activity or version marker is committed. Finish the same original activity and run with one typed outcome, preserving all checkpoint events and durable IDs. Embedded mode uses separate original/replacement author definitions under the same registered type and actual queue jobs. This explicitly selected pending fixture is a PHP SDK/embedded deployment control, not yet Python/Rust SDK or published-successor qualification. Existing Python duplicate-marker histories are a separate compatibility case under SDK Python #103 and SDK Rust #80."
+}

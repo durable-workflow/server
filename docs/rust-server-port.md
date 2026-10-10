@@ -88,17 +88,28 @@ session samples separately from HTTP/native sessions. SQLite can refuse
 immediately despite its sampled busy timeout. Existing binaries and exact
 PHP/SDK sources and locks are reused. Main verification is recorded in #373.
 
-The next paired shared fixtures retain that independent writer until the SDK
-returns failure after spending its bounded shutdown budget. A declared invalid
-fixture credential on one actual HTTP poll produces an original worker error
-for the second case. Diagnostics and exception identity must preserve that
-error while separately reporting shutdown failure. After release, a control
-client reconciles the original token rather than assuming an in-flight timeout
-rolled back. Receipt replay and final original-peer recovery must record each
-repair once. These new hosted results are pending; modeled checks do not qualify
-database execution. Persistent shutdown, budget exhaustion, original-error
-precedence, explicit native maintenance and exact publication remain open
-under #358.
+[#374](https://github.com/durable-workflow/server/pull/374) qualifies persistent
+SDK shutdown pressure and exact original-worker-error precedence on all six
+configurations. The independent writer stays held until the SDK returns after
+spending its original ten-second budget. A declared invalid fixture credential
+on one real HTTP poll produces the original 401 error; shutdown failure remains
+separately visible. After release, a control client reconciles the original
+token because a timed-out request may still commit. Immutable receipt replay
+and original-peer completion check each repair once. Official archives and
+raw comparisons independently verify 648 observations. Main verification is
+recorded in #374. Complete authority/error families, explicit native receipt
+maintenance and exact published-artifact qualification remain open under #358.
+
+Two explicitly selected pending patch-deployment fixtures now define insertion
+before an original pending or completed activity. Separate worker processes must
+choose the legacy branch twice without shifting sequence 1, adding a marker or
+repeating the original activity. PHP SDK and embedded controls are next; Python
+and Rust SDK adapters and corrected published artifacts remain unqualified.
+SDK production repairs belong to
+[Python #103](https://github.com/durable-workflow/sdk-python/issues/103) and
+[Rust #80](https://github.com/durable-workflow/sdk-rust/issues/80). Existing
+Python duplicate-marker histories require a separate explicit compatibility
+case; they must not silently be treated as malformed disposable histories.
 
 The source profile now includes Rust on an independent database using the
 already compiled binary. Five dedicated native tests check original-task
