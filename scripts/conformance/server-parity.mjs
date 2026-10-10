@@ -3,7 +3,7 @@ import {readFileSync, writeFileSync, readdirSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {dirname, resolve} from 'node:path';
+import {basename, dirname, resolve} from 'node:path';
 import {parseArgs} from 'node:util';
 import {checkObservation, compareRecords} from './server-parity/contract.mjs';
 
@@ -12,6 +12,7 @@ const {values, positionals} = parseArgs({allowPositionals: true, options: {
   mode: {type: 'string'}, url: {type: 'string'}, 'application-root': {type: 'string'},
   target: {type: 'string'}, output: {type: 'string'}, 'runner-revision': {type: 'string', default: process.env.DW_PARITY_RUNNER_REVISION ?? ''},
   artifacts: {type: 'string'}, prefix: {type: 'string', default: 'parity-v1'}, help: {type: 'boolean'},
+  fixture: {type: 'string', multiple: true},
 }});
 const [command, ...files] = positionals;
 if (values.help) {
@@ -24,16 +25,24 @@ Requires Node 20+ and PHP 8.3+ with the locked adapter installed. Each target
 must have its own isolated, already bootstrapped database. Set DW_PARITY_TOKEN
 for the HTTP target; it is never recorded. Use the same --prefix on all targets
 and a fresh database or prefix for a new run. --artifacts selects the exact
-consumer tuple; the default is tests/Fixtures/ServerParityBaselines/php-2.5.14.json.`);
+consumer tuple; the default is tests/Fixtures/ServerParityBaselines/php-2.5.14.json.
+Repeat --fixture PATH to record or compare an explicitly selected candidate
+set. Default commands still use only the reviewed ServerParity corpus. Compare
+selected records with the same --fixture paths so current source bytes remain
+authoritative; selected candidates do not enlarge the default passing corpus.`);
   process.exit(0);
 }
 const json = path => JSON.parse(readFileSync(path, 'utf8'));
 try {
   const directory = resolve(root, 'tests/Fixtures/ServerParity');
-  const fixtures = readdirSync(directory).filter(name => name !== 'php-baseline.json' && name.endsWith('.json')).sort();
-  const hashes = Object.fromEntries(fixtures.map(name => [name, createHash('sha256').update(readFileSync(resolve(directory, name))).digest('hex')]));
+  const paths = values.fixture?.length ? values.fixture.map(path => resolve(root, path))
+    : readdirSync(directory).filter(name => name !== 'php-baseline.json' && name.endsWith('.json')).map(name => resolve(directory, name));
+  if (paths.some(path => !path.endsWith('.json')) || new Set(paths.map(path => basename(path))).size !== paths.length) throw new Error('Selected fixtures require distinct JSON filenames');
+  const byName = Object.fromEntries(paths.map(path => [basename(path), path]));
+  const fixtures = Object.keys(byName).sort();
+  const hashes = Object.fromEntries(fixtures.map(name => [name, createHash('sha256').update(readFileSync(byName[name])).digest('hex')]));
   if (command === 'compare') {
-    const expectedFixtures = Object.fromEntries(fixtures.map(name => [name, json(resolve(directory, name))]));
+    const expectedFixtures = Object.fromEntries(fixtures.map(name => [name, json(byName[name])]));
     compareRecords(files.map(json), hashes, expectedFixtures);
     console.log(JSON.stringify({outcome: 'pass', recordings: files.length}));
   } else if (command === 'record') {
@@ -49,7 +58,7 @@ try {
       started_at: new Date().toISOString(), outcome: 'runner-blocked', fixture_hashes: hashes, cases: [],
     };
     for (const name of fixtures) {
-      const path = resolve(directory, name);
+      const path = byName[name];
       const fixture = json(path);
       const workflowId = `${values.prefix}-${fixture.id}`;
       const arguments_ = [resolve(root, 'scripts/conformance/server-parity/probe.php'), '--mode', values.mode, '--fixture', path, '--workflow-id', workflowId];

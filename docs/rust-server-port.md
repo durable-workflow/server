@@ -379,12 +379,25 @@ Two schedule candidates are now defined outside the passing corpus in
 `tests/Fixtures/ServerParityPending`: a manual lifecycle and one fixed-rate
 occurrence with a one-action budget. Published source refuses manual triggers
 while paused with `status_not_triggerable`; exhausting `max_runs` deletes the
-schedule with `max_runs_exhausted`. These source-defined behaviors still require
-actual HTTP/embedded recordings. The planned checks retain original
+schedule with `max_runs_exhausted`. Actual manual observations now agree across
+HTTP/embedded adapters, and embedded execution completed the original fixed-rate
+occurrence. The HTTP original fixed-rate observation hit SQLite write contention
+under concurrent ordinary repair; Server #355 owns current-stable reproduction
+and the intended failed-occurrence contract. The initial evaluator's `sh -ec`
+wrapper also stopped on that failure; the published harness uses `sh -c`.
+This explains the stopped role, not the original occurrence's failure.
+The comparator checks retain original
 schedule/fire/workflow/run/history relationships, exact int64 action input,
 non-early occurrence timing, completed authored work and no later extra fire.
-No candidate recording or native schedule pass is claimed; the qualified total
-remains 24. Next: run and review the two published references, record the actual
+The 157 deterministic schedule checks reject damaged identity, quota, history,
+typed payload, admission timing, deletion and post-close observations. They are
+comparator examples, not additional executions. Frozen embedded resume can
+record the caller model's stale zero skip count; the manual definition explicitly
+pins that audit representation while requiring the fresh description and later
+trigger to retain the actual skip. HTTP legacy-admin audit context is checked
+before common projection; this is not broad authorization qualification.
+No complete schedule recording or native schedule pass is claimed; the qualified
+total remains 24. Next: complete the two published references, record the actual
 native gap, then implement and qualify this bounded slice on all six database
 configurations before moving its definitions into the passing corpus.
 

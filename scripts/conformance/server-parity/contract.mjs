@@ -4,6 +4,7 @@ import {checkActivityRetry} from './retry-contract.mjs';
 import {checkTerminalActivityFailure} from './failure-contract.mjs';
 import {checkImmediateCancellation} from './cancellation-contract.mjs';
 import {checkCooperativeCancellation} from './cooperative-contract.mjs';
+import {checkSchedule, scheduledWorkflowIdentity} from './schedule-contract.mjs';
 
 function instantNanoseconds(value) {
   const shape = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.(\d{1,9}))?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
@@ -20,6 +21,8 @@ function instantNanoseconds(value) {
 export function checkObservation(fixture, observation, workflowId) {
   const equal = (actual, expected, label) => assert.deepStrictEqual(actual, expected, label);
   const nonempty = (value, label) => assert.ok(typeof value === 'string' && value.length > 0, label);
+  const scheduleId = fixture.schedule ? workflowId : null;
+  if (fixture.schedule) workflowId = scheduledWorkflowIdentity(observation, scheduleId);
   equal(observation.workflow_id, workflowId, 'public workflow identity');
   nonempty(observation.run_id, 'run identity');
   equal(observation.workflow_type, fixture.workflow_type, 'registered workflow type');
@@ -76,6 +79,7 @@ export function checkObservation(fixture, observation, workflowId) {
   const projectedQueries = [];
   const projectedUpdates = [];
   const projectedChildren = [];
+  const schedule = fixture.schedule ? checkSchedule(fixture, observation, identities, projectedEvents, instantNanoseconds) : null;
   const cooperative = fixture.cooperative_cancellation
     ? checkCooperativeCancellation(fixture, observation, identities, projectedEvents, instantNanoseconds) : null;
   if (fixture.child_cancellation) {
@@ -526,7 +530,7 @@ export function checkObservation(fixture, observation, workflowId) {
     equal(completed.typed_decoded.result, fixture.typed_value, 'committed activity result types');
   }
   return {
-    fixture_id: fixture.id, workflow_id: workflowId, run_id: '@run:1', start_command_id: '@command:1',
+    fixture_id: fixture.id, workflow_id: scheduleId ?? workflowId, run_id: '@run:1', start_command_id: '@command:1',
     workflow_type: observation.workflow_type, namespace: observation.namespace,
     task_queue: observation.task_queue, status: observation.status, payload_codec: observation.payload_codec,
     input: observation.typed_input, output: observation.typed_output, execution_timeout_seconds: 3600,
@@ -534,6 +538,7 @@ export function checkObservation(fixture, observation, workflowId) {
     ...(fixture.update_values ? {updates: projectedUpdates} : {}),
     ...(fixture.child_count || fixture.child_cancellation ? {children: projectedChildren} : {}),
     ...(cooperative ? {cooperative} : {}),
+    ...(schedule ? {schedule} : {}),
   };
 }
 

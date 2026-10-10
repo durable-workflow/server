@@ -48,10 +48,27 @@ published Server image contains these tools. Install the exact adapter:
 
 ```bash
 composer install --working-dir=scripts/conformance/server-parity --no-interaction
-node --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs
+node --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs
 ```
 
 Use **separate, already bootstrapped databases** for PHP, Rust and embedded.
+Pending schedule candidates can be selected without changing the default corpus:
+
+```bash
+node scripts/conformance/server-parity.mjs record --mode http --url "$URL" --target php --runner-revision "$SHA" --output php-schedules.json --fixture tests/Fixtures/ServerParityPending/schedule-manual-lifecycle.json --fixture tests/Fixtures/ServerParityPending/schedule-fixed-rate-one-occurrence.json
+node scripts/conformance/server-parity.mjs compare php-schedules.json embedded-schedules.json --fixture tests/Fixtures/ServerParityPending/schedule-manual-lifecycle.json --fixture tests/Fixtures/ServerParityPending/schedule-fixed-rate-one-occurrence.json
+```
+
+The HTTP reference additionally needs the installed `schedule:evaluate` role.
+Use the published harness's `sh -c` loop and retain failed evaluation reports;
+do not stop or erase the failed original occurrence by changing its deadline.
+The embedded adapter restores the installed normal PHP-class starter in its
+Server fixture host and uses the real `ScheduleManager` against wall time.
+These candidates are not yet qualified: Server #355 owns the observed frozen
+PHP SQLite failed occurrence under concurrent repair. Their comparator models
+the paused-trigger refusal, original fixed-rate occurrence, quota deletion,
+authored completion, HTTP audit context and embedded deletion visibility.
+
 The recorder does not migrate a database. Do not run it against production or
 shared customer namespaces. Use a fresh prefix or database for each recording;
 use the same prefix across the targets being compared.
