@@ -966,6 +966,116 @@ where
         )
     }
 
+    pub(crate) async fn fail_workflow_task(&self, task_id: &str, body: Value) -> Result<Value> {
+        // The published endpoint also handles retryable and blocked replay
+        // failures. This development slice admits only its waiting contract.
+        text(&body, "lease_owner")?;
+        if body["workflow_task_attempt"]
+            .as_i64()
+            .is_none_or(|attempt| attempt < 1)
+        {
+            return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_request"));
+        }
+        let failure = body["failure"].as_object().ok_or_else(|| {
+            refuse(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_workflow_task_failure",
+            )
+        })?;
+        let message = failure
+            .get("message")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                refuse(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "invalid_workflow_task_failure",
+                )
+            })?;
+        for (field, limit) in [("type", 512), ("reason", 191), ("stack_trace", usize::MAX)] {
+            if failure.get(field).is_some_and(|value| {
+                !value.is_null()
+                    && value
+                        .as_str()
+                        .is_none_or(|text| text.chars().count() > limit)
+            }) {
+                return Err(refuse(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "invalid_workflow_task_failure",
+                ));
+            }
+        }
+        if failure.get("sequence").is_some_and(|value| {
+            !value.is_null() && value.as_i64().is_none_or(|sequence| sequence < 1)
+        }) {
+            return Err(refuse(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_workflow_task_failure",
+            ));
+        }
+        let kind = failure
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '\0' | '\x0b'));
+        if !kind.eq_ignore_ascii_case("WorkflowTaskWaitingForHistory")
+            && !format!("{kind} {message}")
+                .to_ascii_lowercase()
+                .contains("workflow task waiting for scheduled history")
+        {
+            return Err(refuse(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "development_workflow_task_failure_unqualified",
+            ));
+        }
+        let mut tx = self.begin().await?;
+        let task = self.task_row(&mut tx, task_id).await?;
+        if DB::string(&task, "task_type")? != "workflow" {
+            return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
+        }
+        Self::fence(&task, &body)?;
+        let run_id = DB::string(&task, "workflow_run_id")?;
+        let run = Self::active_run(&mut tx, &run_id).await?;
+        let mut payload = DB::document_row(&task, "payload")?;
+        let signals = Self::scalar("SELECT COUNT(*) FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received'")
+            .bind(&run_id).fetch_one(&mut *tx).await?;
+        let updates = Self::scalar(
+            "SELECT COUNT(*) FROM workflow_updates WHERE workflow_run_id=$1 AND status='accepted'",
+        )
+        .bind(&run_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if signals != 0
+            || updates != 0
+            || payload["workflow_signal_id"].is_string()
+            || payload["workflow_update_id"].is_string()
+            || Self::cancellation_request(&run)?.is_some()
+        {
+            return Err(refuse(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "development_workflow_task_waiting_messages_unqualified",
+            ));
+        }
+        payload["waiting_for_history_acknowledged"] = json!(true);
+        payload["waiting_for_history_message"] = json!(message);
+        if !kind.is_empty() {
+            payload["waiting_for_history_failure_type"] = json!(kind);
+        }
+        Self::query("UPDATE workflow_tasks SET status='completed',lease_expires_at=NULL,payload=$1 WHERE id=$2")
+            .bind(DB::document(&payload)).bind(task_id).execute(&mut *tx).await?;
+        Self::query("UPDATE workflow_runs SET status='waiting',last_progress_at=$1 WHERE id=$2")
+            .bind(DB::bind_time(now()))
+            .bind(&run_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        self.wake.notify_waiters();
+        Ok(
+            json!({"task_id":task_id,"workflow_task_attempt":body["workflow_task_attempt"],
+            "outcome":"waiting_for_history","recorded":true,"reason":null,"next_task_id":null}),
+        )
+    }
+
     pub(crate) async fn complete_workflow(
         &self,
         task_id: &str,
@@ -1468,7 +1578,10 @@ where
         if DB::string(task, "status")? != "completed" {
             return Ok(false);
         }
-        let receipt: Value = DB::document_row(task, "receipt")?;
+        // A waiting acknowledgement completes the lease without a command
+        // receipt. A later completion must refuse it, not decode SQL NULL.
+        let receipt = DB::optional_document_row(task, "receipt")?
+            .ok_or_else(|| refuse(StatusCode::CONFLICT, "task_not_leased"))?;
         if receipt == *body {
             return Ok(true);
         }

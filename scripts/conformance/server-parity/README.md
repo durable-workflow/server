@@ -1,5 +1,15 @@
 # Shared Server fixtures
 
+The two pending `workflow-waiting-history-{type,message}` controls explicitly
+exercise the published workflow-task failure endpoint through PHP SDK 2.2.6.
+A timer resumes a replay while its original activity remains unresolved.
+Structured-type and retained message-fallback acknowledgements must release
+the lease without failure history or an unsolicited retry, fence stale and
+duplicate requests, and preserve the exact activity and workflow outcome.
+Embedded executes its authored echo and declares this HTTP endpoint
+inapplicable. These controls do not qualify a Rust SDK worker direction,
+general task-failure policies, or pending message/cancellation acknowledgement.
+
 This is the first, deliberately bounded slice of
 [Server #325](https://github.com/durable-workflow/server/issues/325).
 It executes Avro echo (including an exact large int64), a one-activity workflow,
