@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
+import {spawnSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import {checkObservation} from '../../scripts/conformance/server-parity/contract.mjs';
 import {visibilityObservation} from '../Support/ServerParityVisibilityObservation.mjs';
 
@@ -15,6 +17,18 @@ const changeCli = (raw, name, mutate) => {
   receipt.stdout = JSON.stringify(receipt.document);
 };
 test('modeled visibility adapters project equally', () => assert.deepStrictEqual(check(examples[0]), check(examples[1])));
+const runner = fileURLToPath(new URL('../../scripts/conformance/server-parity.mjs', import.meta.url));
+test('combined candidate selection refuses duplicate reviewed fixture identities', () => {
+  const outcome = spawnSync(process.execPath, [runner, 'compare', '--include-fixture', 'tests/Fixtures/ServerParity/one-activity.json'], {encoding: 'utf8'});
+  assert.equal(outcome.status, 1);
+  assert.match(outcome.stderr, /distinct JSON filenames/);
+});
+test('candidate selection refuses mixing replacement and additive inventories', () => {
+  const path = 'tests/Fixtures/ServerParityPending/visibility-current-runs.json';
+  const outcome = spawnSync(process.execPath, [runner, 'compare', '--fixture', path, '--include-fixture', path], {encoding: 'utf8'});
+  assert.equal(outcome.status, 1);
+  assert.match(outcome.stderr, /Choose either --fixture or --include-fixture/);
+});
 for (const example of examples) {
   const mutations = {
     'missing actual visibility': raw => { delete raw.visibility; },
