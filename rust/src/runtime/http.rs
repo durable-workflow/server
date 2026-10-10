@@ -17,7 +17,7 @@ pub fn router(runtime: Runtime) -> Router {
         .route("/api/health", get(health))
         .route("/api/ready", get(ready))
         .route("/api/cluster/info", get(cluster))
-        .route("/api/workflows", post(start))
+        .route("/api/workflows", get(list_workflows).post(start))
         .route("/api/schedules", post(super::schedule_http::create))
         .route(
             "/api/schedules/{schedule_id}",
@@ -211,7 +211,7 @@ async fn ready(State(runtime): State<Runtime>) -> Response {
 async fn cluster() -> Json<Value> {
     Json(
         json!({"version": env!("CARGO_PKG_VERSION"), "implementation": "rust", "development": true,
-        "control_plane": {"version": "2"}, "worker_protocol": {"version": "1.20", "server_capabilities": capabilities()},
+        "control_plane": {"version": "2", "request_contract": super::visibility::request_contract()}, "worker_protocol": {"version": "1.20", "server_capabilities": capabilities()},
         "payload_codec": "avro", "qualified_for_php_takeover": false}),
     )
 }
@@ -227,6 +227,13 @@ async fn start(
         StatusCode::OK
     };
     Ok((status, Json(result)))
+}
+
+async fn list_workflows(
+    State(runtime): State<Runtime>,
+    Query(query): Query<super::visibility::VisibilityQuery>,
+) -> Result<Json<Value>> {
+    Ok(Json(runtime.list_workflows(query.validate()?).await?))
 }
 
 async fn describe_current(

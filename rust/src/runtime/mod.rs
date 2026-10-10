@@ -22,6 +22,7 @@ mod schema;
 mod sqlite;
 mod store;
 mod updates;
+mod visibility;
 
 pub use execution::Runtime;
 pub use http::router;

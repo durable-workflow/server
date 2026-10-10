@@ -252,6 +252,16 @@ impl Runtime {
         };
         super::previews::describe(self.signal_codec.clone(), description).await
     }
+    pub(crate) async fn list_workflows(
+        &self,
+        filter: super::visibility::VisibilityFilter,
+    ) -> Result<Value> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.list_workflows(&filter).await,
+            Storage::Postgres(store) => store.list_workflows(&filter).await,
+            Storage::MySql(store) => store.list_workflows(&filter).await,
+        }
+    }
     pub(crate) async fn update_workflow(
         &self,
         workflow_id: &str,

@@ -31,8 +31,22 @@ echo and one unclaimed pending peer of a different registered type. It records
 original run identities, size-one pagination, status/type filters, cancellation
 cleanup and persisted embedded summaries. HTTP recordings also execute the
 unchanged, checksum-verified published CLI 2.2.0 list/describe/history commands.
-The pending fixture does not enlarge the reviewed 26-case corpus. Reference
-behavior, native listing and CLI request-contract metadata remain unqualified.
+The pending fixture does not enlarge the reviewed 26-case corpus. Frozen PHP
+and embedded recordings pass and compare at `8345e18e`; the actual published CLI
+commands succeed against PHP and refuse the pending status alias. All 686
+comparator checks pass, including 78 modeled visibility/CLI checks. Corrected
+tests-first source `fbc519f1` compiles on SQLite and reproduces missing listing
+(405) and missing canonical request-contract metadata, with all 35 existing
+native HTTP tests passing. An earlier helper-name compilation failure is not
+runtime-gap evidence.
+
+The native implementation candidate reads at most 201 authoritative run rows,
+uses bound status/type/substring filters and PHP offset cursors, and adds canonical
+describe buckets/current-run/count fields. SQLite ordering handles both stored
+UTC timestamp forms with exact decimal precision. Native listing, CLI behavior
+and the six-database shared candidate remain unqualified until their checks pass.
+Persisted PHP summary projections for Waterline, pinned-build fleet visibility,
+structured query grammar and custom search attributes are not part of this slice.
 Broader visibility grammar, metadata, namespaces, streams and Waterline are
 separate acceptance gates.
 

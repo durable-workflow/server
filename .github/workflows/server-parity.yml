@@ -208,23 +208,31 @@ jobs:
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
             -fsS http://parity-native-b:8080/api/ready > parity-evidence/native-b-readiness.json
           export DW_PARITY_RUNNER_REVISION=$(git rev-parse HEAD)
+          mkdir -p parity-consumers
+          curl --fail --location --retry 3 --output parity-consumers/dw.phar https://github.com/durable-workflow/cli/releases/download/2.2.0/dw.phar
+          printf '%s  %s\n' "$(jq -r '.visibility.cli.phar_sha256' tests/Fixtures/ServerParityPending/visibility-current-runs.json)" parity-consumers/dw.phar | sha256sum -c > parity-evidence/cli-artifact.txt
+          export DW_PARITY_CLI_PHAR=/source/parity-consumers/dw.phar
+          fixtures=(--fixture tests/Fixtures/ServerParityPending/visibility-current-runs.json)
+          for fixture in tests/Fixtures/ServerParity/*.json; do
+            if [ "$fixture" != tests/Fixtures/ServerParity/php-baseline.json ]; then fixtures+=(--fixture "$fixture"); fi
+          done
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
-            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
-            --mode http --url http://parity-php:8080 --target php --output /evidence/php.json
+            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION -e DW_PARITY_CLI_PHAR "$image" scripts/conformance/server-parity.mjs record \
+            --mode http --url http://parity-php:8080 --target php --output /evidence/php.json "${fixtures[@]}"
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=embedded_ref \
             -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password -e DW_MODE=embedded \
             -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
-            --mode embedded --application-root /app --target embedded --output /evidence/embedded.json
+            --mode embedded --application-root /app --target embedded --output /evidence/embedded.json "${fixtures[@]}"
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
-            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
-            --mode http --url http://parity-native-a:8080 --target rust --output /evidence/rust.json
+            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION -e DW_PARITY_CLI_PHAR "$image" scripts/conformance/server-parity.mjs record \
+            --mode http --url http://parity-native-a:8080 --target rust --output /evidence/rust.json "${fixtures[@]}"
           docker run --rm --user=1000:1000 --entrypoint node --network=none \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
-            scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json > parity-evidence/comparison.json
+            scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json "${fixtures[@]}" > parity-evidence/comparison.json
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint sh \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" -ec '
@@ -478,23 +486,31 @@ jobs:
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \
             -fsS http://parity-native-b:8080/api/ready > parity-evidence/native-b-readiness.json
           export DW_PARITY_RUNNER_REVISION=$(git rev-parse HEAD)
+          mkdir -p parity-consumers
+          curl --fail --location --retry 3 --output parity-consumers/dw.phar https://github.com/durable-workflow/cli/releases/download/2.2.0/dw.phar
+          printf '%s  %s\n' "$(jq -r '.visibility.cli.phar_sha256' tests/Fixtures/ServerParityPending/visibility-current-runs.json)" parity-consumers/dw.phar | sha256sum -c > parity-evidence/cli-artifact.txt
+          export DW_PARITY_CLI_PHAR=/source/parity-consumers/dw.phar
+          fixtures=(--fixture tests/Fixtures/ServerParityPending/visibility-current-runs.json)
+          for fixture in tests/Fixtures/ServerParity/*.json; do
+            if [ "$fixture" != tests/Fixtures/ServerParity/php-baseline.json ]; then fixtures+=(--fixture "$fixture"); fi
+          done
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
-            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
-            --mode http --url http://parity-php:8080 --target php --output /evidence/php.json
+            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION -e DW_PARITY_CLI_PHAR "$image" scripts/conformance/server-parity.mjs record \
+            --mode http --url http://parity-php:8080 --target php --output /evidence/php.json "${fixtures[@]}"
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=embedded_ref \
             -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password -e DW_MODE=embedded \
             -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
-            --mode embedded --application-root /app --target embedded --output /evidence/embedded.json
+            --mode embedded --application-root /app --target embedded --output /evidence/embedded.json "${fixtures[@]}"
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
-            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
-            --mode http --url http://parity-native-a:8080 --target rust --output /evidence/rust.json
+            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION -e DW_PARITY_CLI_PHAR "$image" scripts/conformance/server-parity.mjs record \
+            --mode http --url http://parity-native-a:8080 --target rust --output /evidence/rust.json "${fixtures[@]}"
           docker run --rm --user=1000:1000 --entrypoint node --network=none \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
-            scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json > parity-evidence/comparison.json
+            scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json "${fixtures[@]}" > parity-evidence/comparison.json
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint sh \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" -ec '
@@ -712,6 +728,14 @@ jobs:
             test "$ready" = 1
           done
           export DW_PARITY_RUNNER_REVISION=$(git rev-parse HEAD)
+          mkdir -p parity-consumers
+          curl --fail --location --retry 3 --output parity-consumers/dw.phar https://github.com/durable-workflow/cli/releases/download/2.2.0/dw.phar
+          printf '%s  %s\n' "$(jq -r '.visibility.cli.phar_sha256' tests/Fixtures/ServerParityPending/visibility-current-runs.json)" parity-consumers/dw.phar | sha256sum -c > parity-evidence/cli-artifact.txt
+          export DW_PARITY_CLI_PHAR=/source/parity-consumers/dw.phar
+          fixtures=(--fixture tests/Fixtures/ServerParityPending/visibility-current-runs.json)
+          for fixture in tests/Fixtures/ServerParity/*.json; do
+            if [ "$fixture" != tests/Fixtures/ServerParity/php-baseline.json ]; then fixtures+=(--fixture "$fixture"); fi
+          done
           docker run -d --name "$RESOURCE_SCOPE-php-maintenance" --network "$RESOURCE_SCOPE" \
             --user=1000:1000 --cpus=0.25 --memory=256m --memory-swap=256m --entrypoint sh \
             -v "$PWD/parity-state:/state" -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/php.sqlite \
@@ -719,20 +743,20 @@ jobs:
             "$image" -c 'while :; do php artisan workflow:v2:repair-pass --json; php artisan schedule:evaluate --limit=100 --json; sleep 1; done'
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
-            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
-            --mode http --url http://parity-server:8080 --target php --output /evidence/php.json
+            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION -e DW_PARITY_CLI_PHAR "$image" scripts/conformance/server-parity.mjs record \
+            --mode http --url http://parity-server:8080 --target php --output /evidence/php.json "${fixtures[@]}"
           docker run --rm --user=1000:1000 --entrypoint node \
             -v "$PWD:/source:ro" -v "$PWD/parity-state:/state" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/embedded.sqlite -e DW_MODE=embedded \
             -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
-            --mode embedded --application-root /app --target embedded --output /evidence/embedded.json
+            --mode embedded --application-root /app --target embedded --output /evidence/embedded.json "${fixtures[@]}"
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
-            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
-            --mode http --url http://parity-rust:8080 --target rust --output /evidence/rust.json
+            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION -e DW_PARITY_CLI_PHAR "$image" scripts/conformance/server-parity.mjs record \
+            --mode http --url http://parity-rust:8080 --target rust --output /evidence/rust.json "${fixtures[@]}"
           docker run --rm --user=1000:1000 --entrypoint node \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
-            scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json > parity-evidence/comparison.json
+            scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json "${fixtures[@]}" > parity-evidence/comparison.json
           docker run --rm --user=1000:1000 --entrypoint php --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/restart.php \
