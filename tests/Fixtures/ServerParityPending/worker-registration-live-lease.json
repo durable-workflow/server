@@ -1,0 +1,25 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "worker-registration-live-lease",
+  "workflow_type": "parity.v1.echo",
+  "input": {"message": "live registration replacement λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {"type": "map", "value": {
+    "message": {"type": "string", "value": "live registration replacement λ"},
+    "count": {"type": "int64", "value": "9007199254740993"},
+    "optional": {"type": "null", "value": null}
+  }},
+  "activity": false,
+  "expected_events": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"],
+  "worker_deregistration": {
+    "scope": "same_connection_default_namespace_registration_receipt",
+    "schema": "durable-workflow.v2.worker-deregistration.v1",
+    "receipt_retention_seconds": 600,
+    "replace_live_registration": true,
+    "peer_suffix": "-leased",
+    "peer_workflow_type": "parity.v1.echo",
+    "expected_peer_events": ["StartAccepted", "WorkflowStarted", "RepairRequested", "RepairRequested", "WorkflowCompleted"],
+    "first_stale_reason": "task_not_leased",
+    "replacement_stale_reason": "workflow_task_attempt_mismatch",
+    "recovered_workflow_task_count": 1
+  }
+}
