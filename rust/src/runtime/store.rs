@@ -15,7 +15,7 @@ pub(super) struct PreparedControlArguments {
     pub(super) value: String,
     pub(super) command: String,
 }
-pub(super) const TASK_CANDIDATES_SQL: &str = "SELECT t.*,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.namespace='default' AND t.queue=$1 AND t.task_type=$2 AND r.status IN ('running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.lease_expires_at<=$3)) AND (t.available_at IS NULL OR t.available_at<=$4) ORDER BY t.available_at,t.id LIMIT 100";
+pub(super) const TASK_CANDIDATES_SQL: &str = "SELECT t.*,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.namespace='default' AND t.queue=$1 AND t.task_type=$2 AND r.status IN ('pending','running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.lease_expires_at<=$3)) AND (t.available_at IS NULL OR t.available_at<=$4) ORDER BY t.available_at,t.id LIMIT 100";
 pub(super) const POLL_RECEIPT_CLEANUP_SQL: &str = "DELETE FROM dw_poll_receipts WHERE expires_at<=$1 AND task_id IN (SELECT id FROM workflow_tasks WHERE status!='leased' OR lease_expires_at<=$2)";
 pub(super) const WORKER_REGISTRATION_SQL: &str = "INSERT INTO workflow_worker_registrations(namespace,worker_id,task_queue,runtime,sdk_version,build_id,supported_workflow_types,supported_activity_types,capabilities,capability_manifest,last_heartbeat_at,created_at,updated_at) VALUES ('default',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT(worker_id,namespace) DO UPDATE SET task_queue=excluded.task_queue,runtime=excluded.runtime,sdk_version=excluded.sdk_version,build_id=excluded.build_id,supported_workflow_types=excluded.supported_workflow_types,supported_activity_types=excluded.supported_activity_types,capabilities=excluded.capabilities,capability_manifest=excluded.capability_manifest,last_heartbeat_at=excluded.last_heartbeat_at,updated_at=excluded.updated_at";
 pub(super) struct Store<DB: Backend> {
@@ -140,7 +140,7 @@ where
         let mut tx = self.begin().await?;
         if let Some(existing) = Self::query("SELECT r.* FROM workflow_instances i JOIN workflow_runs r ON r.id=i.current_run_id WHERE i.id=$1")
             .bind(workflow_id).fetch_optional(&mut *tx).await? {
-            if body["duplicate_policy"] == "use-existing" && matches!(DB::string(&existing,"status")?.as_str(), "running" | "waiting") {
+            if body["duplicate_policy"] == "use-existing" && matches!(DB::string(&existing,"status")?.as_str(), "pending" | "running" | "waiting") {
                 return Ok(json!({"workflow_id": workflow_id, "run_id": DB::string(&existing,"id")?,
                     "workflow_type": DB::string(&existing,"workflow_type")?, "namespace": "default",
                     "status": DB::string(&existing,"status")?, "payload_codec": "avro", "outcome": "used_existing_active"}));
@@ -155,7 +155,7 @@ where
         Self::query("INSERT INTO workflow_instances(id,namespace,workflow_type,workflow_class,current_run_id,run_count,execution_timeout_seconds,created_at,updated_at,started_at) VALUES ($1,'default',$2,$3,$4,1,$5,$6,$7,$8)")
             .bind(workflow_id).bind(workflow_type).bind(workflow_type).bind(&run_id).bind(execution_timeout)
             .bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut *tx).await?;
-        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,namespace,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,run_timeout_seconds,execution_deadline_at,run_deadline_at,started_at,created_at,updated_at) VALUES ($1,$2,'default',$3,$4,1,'running','avro',$5,$6,$7,$8,$9,$10,$11,$12)")
+        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,namespace,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,run_timeout_seconds,execution_deadline_at,run_deadline_at,started_at,created_at,updated_at) VALUES ($1,$2,'default',$3,$4,1,'pending','avro',$5,$6,$7,$8,$9,$10,$11,$12)")
             .bind(&run_id).bind(workflow_id).bind(workflow_type).bind(workflow_type).bind(&arguments)
             .bind(queue).bind(run_timeout).bind(DB::bind_time(execution_deadline)).bind(DB::bind_time(run_deadline))
             .bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut *tx).await?;
@@ -198,7 +198,7 @@ where
         self.wake.notify_waiters();
         Ok(
             json!({"workflow_id": workflow_id, "run_id": run_id, "workflow_type": workflow_type,
-            "namespace": "default", "status": "running", "payload_codec": "avro", "outcome": "started_new",
+            "namespace": "default", "status": "pending", "payload_codec": "avro", "outcome": "started_new",
             "command_status": "accepted", "command_source": "control_plane", "reason": null, "rejection_reason": null}),
         )
     }
@@ -594,7 +594,12 @@ where
         )
     }
 
-    pub(crate) async fn poll(&self, body: Value, kind: &'static str) -> Result<Value> {
+    pub(crate) async fn poll(
+        &self,
+        body: Value,
+        kind: &'static str,
+        protocol_version: &str,
+    ) -> Result<Value> {
         text(&body, "worker_id")?;
         text(&body, "task_queue")?;
         let timeout = body
@@ -616,7 +621,7 @@ where
             // Register the notification before probing; periodic probing also
             // observes work committed by an independent process.
             let wake = self.wake.notified();
-            if let Some(task) = self.claim(&body, kind).await? {
+            if let Some(task) = self.claim(&body, kind, protocol_version).await? {
                 return Ok(
                     json!({"task": task, "poll_status": "task", "server_capabilities": capabilities()}),
                 );
@@ -630,11 +635,16 @@ where
         }
     }
 
-    async fn claim(&self, body: &Value, kind: &str) -> Result<Option<Value>> {
+    async fn claim(
+        &self,
+        body: &Value,
+        kind: &str,
+        protocol_version: &str,
+    ) -> Result<Option<Value>> {
         let worker_id = text(body, "worker_id")?;
         let queue = text(body, "task_queue")?;
         let mut tx = self.begin().await?;
-        let worker = Self::query("SELECT supported_workflow_types,supported_activity_types,task_queue,workflow_command_contracts,capabilities,status,last_heartbeat_at FROM workflow_worker_registrations WHERE namespace='default' AND worker_id=$1")
+        let worker = Self::query("SELECT * FROM workflow_worker_registrations WHERE namespace='default' AND worker_id=$1")
             .bind(worker_id).fetch_optional(&mut *tx).await?
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "worker_not_registered"))?;
         if DB::string(&worker, "task_queue")? != queue {
@@ -681,7 +691,26 @@ where
             DB::optional_instant(&task, "available_at")?;
             DB::optional_instant(&task, "lease_expires_at")?;
             let run_id = DB::string(&task, "workflow_run_id")?;
-            let task_payload = DB::document_row(&task, "payload")?;
+            let mut task_payload = DB::document_row(&task, "payload")?;
+            let run = Self::query("SELECT * FROM workflow_runs WHERE id=$1")
+                .bind(&run_id)
+                .fetch_one(&mut *tx)
+                .await?;
+            let cancellation = Self::cancellation_request(&run)?;
+            if cancellation.is_some()
+                && (DB::optional_instant(&run, "cancellation_deadline_at")?
+                    .is_none_or(|deadline| deadline <= now())
+                    || kind == "workflow"
+                        && (!super::cooperative::supports(
+                            &DB::optional_document_row(&worker, "capabilities")?
+                                .unwrap_or(Value::Null),
+                            protocol_version,
+                        ) || DB::string(&worker, "status")? != "active"
+                            || DB::instant(&worker, "last_heartbeat_at")?
+                                <= now() - chrono::Duration::seconds(60)))
+            {
+                continue;
+            }
             if kind == "workflow"
                 && let Some(update_id) = task_payload["workflow_update_id"].as_str()
             {
@@ -719,15 +748,27 @@ where
                 continue;
             }
             let task_id = DB::string(&task, "id")?;
-            let attempt = DB::number(&task, "attempt_count")? + 1;
-            let expires = after(LEASE_SECONDS);
+            let attempt = DB::number(&task, "attempt_count")?
+                .checked_add(1)
+                .ok_or_else(|| refuse(StatusCode::CONFLICT, "task_attempt_exhausted"))?;
+            let expires = Self::cancellation_lease_expiry(&run)?;
             let leased_at = now();
-            Self::query("UPDATE workflow_tasks SET status='leased',lease_owner=$1,lease_expires_at=$2,attempt_count=$3,leased_at=$4 WHERE id=$5")
-                .bind(worker_id).bind(DB::bind_time(expires)).bind(attempt).bind(DB::bind_time(leased_at)).bind(&task_id).execute(&mut *tx).await?;
-            let run = Self::query("SELECT * FROM workflow_runs WHERE id=$1")
-                .bind(&run_id)
-                .fetch_one(&mut *tx)
-                .await?;
+            if kind == "workflow" {
+                task_payload[super::cooperative::CLAIM_KEY] = json!({"registration_id":DB::number(&worker,"id")?,
+                    "worker_id":worker_id,"namespace":"default","protocol_version":protocol_version,
+                    "capabilities":DB::optional_document_row(&worker,"capabilities")?.unwrap_or(json!([])),
+                    "updated_at":DB::instant(&worker,"updated_at")?,"last_heartbeat_at":DB::instant(&worker,"last_heartbeat_at")?,
+                    "task_id":task_id,"run_id":run_id,"lease_owner":worker_id,"attempt":attempt});
+            }
+            Self::query("UPDATE workflow_tasks SET status='leased',lease_owner=$1,lease_expires_at=$2,attempt_count=$3,leased_at=$4,payload=$5 WHERE id=$6")
+                .bind(worker_id).bind(DB::bind_time(expires)).bind(attempt).bind(DB::bind_time(leased_at))
+                .bind(DB::document(&task_payload)).bind(&task_id).execute(&mut *tx).await?;
+            if kind == "workflow" && DB::string(&run, "status")? == "pending" {
+                Self::query("UPDATE workflow_runs SET status='running' WHERE id=$1")
+                    .bind(&run_id)
+                    .execute(&mut *tx)
+                    .await?;
+            }
             let mut claim = json!({"task_id": task_id, "workflow_id": DB::string(&run,"workflow_instance_id")?,
                 "run_id": run_id, "workflow_instance_id": DB::string(&run,"workflow_instance_id")?, "workflow_run_id": run_id,
                 "workflow_type": DB::string(&run,"workflow_type")?, "namespace": "default", "payload_codec": "avro",
@@ -779,6 +820,9 @@ where
                     claim["workflow_update_id"] = json!(update_id);
                 }
                 claim["sticky_replay_mode"] = json!("cold_replay");
+                if let Some(cancellation) = cancellation {
+                    claim["cancellation_request"] = cancellation;
+                }
                 for field in [
                     "workflow_wait_kind",
                     "child_call_id",
@@ -1317,7 +1361,10 @@ where
             .bind(run_id)
             .fetch_one(&mut **tx)
             .await?;
-        if !matches!(DB::string(&run, "status")?.as_str(), "running" | "waiting") {
+        if !matches!(
+            DB::string(&run, "status")?.as_str(),
+            "pending" | "running" | "waiting"
+        ) {
             return Err(refuse(StatusCode::CONFLICT, "run_closed"));
         }
         if DB::optional_instant(&run, "execution_deadline_at")?

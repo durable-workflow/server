@@ -6,6 +6,7 @@ mod activity_failures;
 mod backend;
 mod cancellation;
 mod children;
+mod cooperative;
 mod execution;
 mod http;
 pub mod mysql;

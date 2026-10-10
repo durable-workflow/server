@@ -339,7 +339,7 @@ impl Runtime {
     delegate!(register(body: Value) -> Result<Value>);
     delegate!(worker_heartbeat(body: Value) -> Result<Value>);
     delegate!(deregister(worker_id: &str) -> Result<Value>);
-    delegate!(poll(body: Value, kind: &'static str) -> Result<Value>);
+    delegate!(poll(body: Value, kind: &'static str, protocol_version: &str) -> Result<Value>);
     delegate!(heartbeat_task(task_id: &str, body: Value) -> Result<Value>);
     delegate!(task_history(task_id: &str, body: Value) -> Result<Value>);
     pub(crate) async fn complete_workflow(&self, task_id: &str, body: Value) -> Result<Value> {
@@ -410,6 +410,49 @@ impl Runtime {
             Storage::MySql(store) => {
                 store
                     .cancel_workflow(workflow_id, run_id, reason, blob)
+                    .await
+            }
+        }
+    }
+    pub(crate) async fn request_cancellation(
+        &self,
+        workflow_id: &str,
+        run_id: Option<&str>,
+        body: Value,
+    ) -> Result<(StatusCode, Value)> {
+        let (reason, budget) = super::cooperative::validate_request(&body)?;
+        match &*self.storage {
+            Storage::Sqlite(store) => {
+                store
+                    .request_cancellation(
+                        workflow_id,
+                        run_id,
+                        reason,
+                        budget,
+                        self.signal_codec.clone(),
+                    )
+                    .await
+            }
+            Storage::Postgres(store) => {
+                store
+                    .request_cancellation(
+                        workflow_id,
+                        run_id,
+                        reason,
+                        budget,
+                        self.signal_codec.clone(),
+                    )
+                    .await
+            }
+            Storage::MySql(store) => {
+                store
+                    .request_cancellation(
+                        workflow_id,
+                        run_id,
+                        reason,
+                        budget,
+                        self.signal_codec.clone(),
+                    )
                     .await
             }
         }

@@ -15,7 +15,7 @@ use tokio::sync::Semaphore;
 // Frozen PHP HTTP runs Laravel TrimStrings before cancellation validation.
 // Pin its reviewed character set rather than a changing Unicode whitespace
 // predicate. Internal characters and the embedded API's reasons stay intact.
-fn normalize_http_reason(reason: &str) -> &str {
+pub(super) fn normalize_http_reason(reason: &str) -> &str {
     reason.trim_matches(|ch| {
         matches!(ch,
             '\0' | '\t'..='\r' | ' ' | '\u{85}' | '\u{a0}' | '\u{ad}' |
@@ -181,7 +181,10 @@ where
                     "reason":"historical_run_command_rejected","target_scope":"run"}),
             });
         }
-        let closed = !matches!(DB::string(&run, "status")?.as_str(), "running" | "waiting");
+        let closed = !matches!(
+            DB::string(&run, "status")?.as_str(),
+            "pending" | "running" | "waiting"
+        );
         if !closed {
             let children =
                 Self::scalar("SELECT COUNT(*) FROM workflow_links WHERE child_workflow_run_id=$1")

@@ -138,7 +138,10 @@ where
             .ok_or_else(|| refuse(StatusCode::NOT_FOUND, "instance_not_found"))?;
         let run_id = DB::string(&run, "id")?;
         let status = DB::string(&run, "status")?;
-        if !matches!(status.as_str(), "running" | "waiting" | "completed") {
+        if !matches!(
+            status.as_str(),
+            "pending" | "running" | "waiting" | "completed"
+        ) {
             return Err(refuse(
                 StatusCode::CONFLICT,
                 "query_unavailable_for_run_status",

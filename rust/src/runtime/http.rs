@@ -1,7 +1,7 @@
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path, Query, Request, State},
-    http::{HeaderValue, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{delete, get, post},
@@ -20,6 +20,14 @@ pub fn router(runtime: Runtime) -> Router {
         .route("/api/workflows", post(start))
         .route("/api/workflows/{workflow_id}", get(describe_current))
         .route("/api/workflows/{workflow_id}/cancel", post(cancel_current))
+        .route(
+            "/api/workflows/{workflow_id}/request-cancellation",
+            post(request_cancellation_current),
+        )
+        .route(
+            "/api/workflows/{workflow_id}/runs/{run_id}/request-cancellation",
+            post(request_cancellation_run),
+        )
         .route(
             "/api/workflows/{workflow_id}/runs/{run_id}/cancel",
             post(cancel_run),
@@ -111,7 +119,7 @@ async fn guard(State(runtime): State<Runtime>, request: Request, next: Next) -> 
     } else {
         "x-durable-workflow-control-plane-version"
     };
-    let version = if worker { "1.19" } else { "2" };
+    let version = if worker { "1.20" } else { "2" };
     let requested = request.headers().get(header).and_then(|v| v.to_str().ok());
     let compatible = if worker {
         requested.is_some_and(|v| {
@@ -119,7 +127,7 @@ async fn guard(State(runtime): State<Runtime>, request: Request, next: Next) -> 
                 major == "1"
                     && !minor.is_empty()
                     && minor.bytes().all(|c| c.is_ascii_digit())
-                    && minor.parse::<u8>().is_ok_and(|n| n <= 19)
+                    && minor.parse::<u8>().is_ok_and(|n| n <= 20)
             })
         })
     } else {
@@ -169,7 +177,7 @@ async fn ready(State(runtime): State<Runtime>) -> Response {
 async fn cluster() -> Json<Value> {
     Json(
         json!({"version": env!("CARGO_PKG_VERSION"), "implementation": "rust", "development": true,
-        "control_plane": {"version": "2"}, "worker_protocol": {"version": "1.19", "server_capabilities": capabilities()},
+        "control_plane": {"version": "2"}, "worker_protocol": {"version": "1.20", "server_capabilities": capabilities()},
         "payload_codec": "avro", "qualified_for_php_takeover": false}),
     )
 }
@@ -210,6 +218,28 @@ async fn cancel_run(
 ) -> Result<(StatusCode, Json<Value>)> {
     let (status, response) = runtime
         .cancel_workflow(&workflow_id, Some(&run_id), body)
+        .await?;
+    Ok((status, Json(response)))
+}
+
+async fn request_cancellation_current(
+    State(runtime): State<Runtime>,
+    Path(workflow_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    let (status, response) = runtime
+        .request_cancellation(&workflow_id, None, body)
+        .await?;
+    Ok((status, Json(response)))
+}
+
+async fn request_cancellation_run(
+    State(runtime): State<Runtime>,
+    Path((workflow_id, run_id)): Path<(String, String)>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>)> {
+    let (status, response) = runtime
+        .request_cancellation(&workflow_id, Some(&run_id), body)
         .await?;
     Ok((status, Json(response)))
 }
@@ -335,15 +365,30 @@ async fn deregister(
 }
 async fn poll_workflow(
     State(runtime): State<Runtime>,
+    headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
-    runtime.poll(body, "workflow").await.map(Json)
+    runtime
+        .poll(body, "workflow", request_protocol(&headers)?)
+        .await
+        .map(Json)
 }
 async fn poll_activity(
     State(runtime): State<Runtime>,
+    headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
-    runtime.poll(body, "activity").await.map(Json)
+    runtime
+        .poll(body, "activity", request_protocol(&headers)?)
+        .await
+        .map(Json)
+}
+
+fn request_protocol(headers: &HeaderMap) -> Result<&str> {
+    headers
+        .get("x-durable-workflow-protocol-version")
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| refuse(StatusCode::BAD_REQUEST, "missing_protocol_version"))
 }
 async fn heartbeat_task(
     State(runtime): State<Runtime>,
