@@ -396,7 +396,9 @@ executes the authored echo and labels HTTP shutdown inapplicable.
 The fault manifest explicitly declares five-second waits. SQLite uses the
 existing PHP busy timeout; PostgreSQL changes only the isolated PHP database's
 lock timeout; MySQL/MariaDB saves and restores the task-owned database server's
-global lock wait on script exit. Separate PHP application CLI connections
+global lock wait on script exit. These are configured limits; SQLite may return
+its actual contention refusal immediately rather than waiting five seconds.
+The recorded timing remains authoritative. Separate PHP application CLI connections
 record actual session values before and after configuration. These samples do
 not represent the HTTP connection or native pool. No default tuple, production
 setting or published SDK is changed. The new hosted pressure result is pending;

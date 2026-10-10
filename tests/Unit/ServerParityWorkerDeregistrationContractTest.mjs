@@ -215,6 +215,11 @@ function pressureModel() {
   return JSON.parse(JSON.stringify(s));
 }
 const checkPressure=s=>checkWorkerDeregistration(pressureFixture,{mode:'http',run_id:'root-run',worker_deregistration:s},id);
+test('modeled SQLite immediate real contention refusal still consumes SDK retry budget',()=>{
+  const s=pressureModel();const sdk=s.sdk_database_pressure;
+  sdk.shutdown_elapsed_seconds=1.38;sdk.requests[1].elapsed_seconds=0.05;
+  sdk.requests[2].timeout_seconds=8;checkPressure(s);
+});
 test('modeled real SDK pressure evidence requires original authority completion and bounded same-token retry',()=>{
   assert.deepStrictEqual(checkPressure(pressureModel()),checkWorkerDeregistration(pressureFixture,
     {mode:'embedded',worker_deregistration:{applicable:false,reason:'embedded_has_no_http_worker_registration_lifecycle'}},id));
@@ -225,12 +230,14 @@ for(const backend of ['mysql','pgsql']) test('modeled declared fault limit and s
     setting:backend==='mysql'?'innodb_lock_wait_timeout':'lock_timeout',value:backend==='mysql'?50:'0'};
   sdk.reference_php_session_after={...sdk.reference_php_session_before,value:backend==='mysql'?5:'5s'};
   checkPressure(s);
+  sdk.requests[1].elapsed_seconds=0.05;
+  assert.throws(()=>checkPressure(s),'row-lock wait floor remains required for '+backend);
 });
 const pressureMutations={
   'pressure never executed':s=>{delete s.sdk_database_pressure;},
   'pressure is a mocked failure':s=>{s.sdk_database_pressure.kind='injected_transport_error';},
   'pressure exceeds shutdown budget':s=>{s.sdk_database_pressure.shutdown_elapsed_seconds=11;},
-  'pressure never waits for the database':s=>{s.sdk_database_pressure.requests[1].elapsed_seconds=0.1;},
+  'pressure response duration is unmeasured':s=>{s.sdk_database_pressure.requests[1].elapsed_seconds=0;},
   'pressure response was success':s=>{s.sdk_database_pressure.requests[1].status=200;},
   'pressure header has no retry delay':s=>{s.sdk_database_pressure.requests[1].retry_after='0';},
   'pressure retry resets its budget':s=>{s.sdk_database_pressure.requests[2].timeout_seconds=9;},
