@@ -10,8 +10,12 @@ class WorkerRegistration extends Model
 
     protected $table = 'workflow_worker_registrations';
 
+    // Incarnation fences are returned only by the worker registration API.
+    protected $hidden = ['registration_token'];
+
     protected $fillable = [
         'worker_id',
+        'registration_token',
         'namespace',
         'task_queue',
         'runtime',

@@ -14,6 +14,7 @@ use Symfony\Component\HttpFoundation\Response;
 final class EnforceStorageAdmission
 {
     private const DRAIN_ACTIONS = [
+        'WorkerDeregistrationController@destroyFenced',
         'WorkerController@heartbeat',
         'WorkerController@heartbeatWorkflowTask',
         'WorkerController@completeWorkflowTask',

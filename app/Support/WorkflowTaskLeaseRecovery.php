@@ -26,6 +26,7 @@ final class WorkflowTaskLeaseRecovery
         Request $request,
         string $namespace,
         WorkflowTask $task,
+        bool $strict = false,
     ): void {
         if ($task->task_type !== TaskType::Workflow) {
             return;
@@ -65,7 +66,10 @@ final class WorkflowTaskLeaseRecovery
                     metadata: $metadata,
                 ))
                 ->attemptRepair();
-        } catch (Throwable) {
+        } catch (Throwable $exception) {
+            if ($strict) {
+                throw $exception;
+            }
             // Repair is best-effort on the worker fence path.
         }
     }
@@ -80,6 +84,7 @@ final class WorkflowTaskLeaseRecovery
         Request $request,
         string $namespace,
         WorkflowTask $candidate,
+        bool $strict = false,
     ): bool {
         $task = DB::transaction(function () use ($namespace, $candidate): ?WorkflowTask {
             /** @var WorkflowTask|null $task */
@@ -116,7 +121,7 @@ final class WorkflowTaskLeaseRecovery
             return false;
         }
 
-        $this->recoverExpiredTaskLease($request, $namespace, $task);
+        $this->recoverExpiredTaskLease($request, $namespace, $task, strict: $strict);
 
         return true;
     }
