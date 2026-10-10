@@ -122,6 +122,11 @@ test('candidate CLI compares selected current fixture bytes without enlarging th
     const result = spawnSync(process.execPath, ['scripts/conformance/server-parity.mjs', 'compare', ...selected, ...records], {cwd: root, encoding: 'utf8'});
     assert.equal(result.status, 0, result.stderr);
     assert.deepStrictEqual(JSON.parse(result.stdout), {outcome: 'pass', recordings: 2});
+    const substituted = JSON.parse(readFileSync(records[1]));
+    substituted.mode = 'http';
+    writeFileSync(records[1], JSON.stringify(substituted));
+    const wrongAdapter = spawnSync(process.execPath, ['scripts/conformance/server-parity.mjs', 'compare', ...selected, ...records], {cwd: root, encoding: 'utf8'});
+    assert.notEqual(wrongAdapter.status, 0, 'embedded raw observations cannot impersonate HTTP qualification');
     const mismatch = spawnSync(process.execPath, ['scripts/conformance/server-parity.mjs', 'compare', ...records], {cwd: root, encoding: 'utf8'});
     assert.notEqual(mismatch.status, 0, 'selected candidates cannot impersonate the default corpus');
     const duplicate = spawnSync(process.execPath, ['scripts/conformance/server-parity.mjs', 'compare', ...selected, '--fixture', files[0], ...records], {cwd: root, encoding: 'utf8'});
