@@ -17,6 +17,7 @@ on:
       - tests/Fixtures/ServerParityPending/**
       - tests/Unit/ServerParityVisibilityContractTest.mjs
       - tests/Unit/ServerParityAdmissionContractTest.mjs
+      - tests/Support/ServerParityAdmissionObservation.mjs
       - tests/Support/ServerParityVisibilityObservation.mjs
       - rust/**
   push:
@@ -36,6 +37,7 @@ on:
       - tests/Fixtures/ServerParityPending/**
       - tests/Unit/ServerParityVisibilityContractTest.mjs
       - tests/Unit/ServerParityAdmissionContractTest.mjs
+      - tests/Support/ServerParityAdmissionObservation.mjs
       - tests/Support/ServerParityVisibilityObservation.mjs
       - rust/**
   workflow_dispatch:

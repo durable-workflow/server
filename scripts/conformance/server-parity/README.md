@@ -48,7 +48,7 @@ published Server image contains these tools. Install the exact adapter:
 
 ```bash
 composer install --working-dir=scripts/conformance/server-parity --no-interaction
-node --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs
+node --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs
 ```
 
 Use **separate, already bootstrapped databases** for PHP, Rust and embedded.
