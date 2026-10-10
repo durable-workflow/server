@@ -1,0 +1,17 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "workflow-waiting-history-type",
+  "workflow_type": "parity.v1.echo",
+  "input": {"message": "pending history λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {"type": "map", "value": {"message": {"type": "string", "value": "pending history λ"}, "count": {"type": "int64", "value": "9007199254740993"}, "optional": {"type": "null", "value": null}}},
+  "activity": false,
+  "expected_events": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"],
+  "waiting_for_history": {
+    "failure": {"type": "WorkflowTaskWaitingForHistory", "message": "history is not ready yet"},
+    "peer_suffix": "-pending",
+    "peer_workflow_type": "parity.v1.waiting_peer",
+    "activity_type": "parity.v1.waiting_activity",
+    "expected_peer_events": ["StartAccepted", "WorkflowStarted", "TimerScheduled", "ActivityScheduled", "TimerFired", "ActivityStarted", "ActivityCompleted", "WorkflowCompleted"]
+  },
+  "contract": "A structured pending-history report acknowledges the original lease without failure history or task retry. A real timer resumes the replay while its original activity is unresolved; after acknowledgement that same activity and run finish once with the original typed value. Embedded has no HTTP fail endpoint and marks this control inapplicable after executing the authored echo."
+}
