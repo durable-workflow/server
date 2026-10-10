@@ -1,0 +1,29 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "cooperative-cleanup-deadline",
+  "workflow_type": "parity.v1.cooperative_cleanup",
+  "input": {
+    "message": "cooperative λ",
+    "count": 9007199254740993,
+    "optional": null,
+    "cleanup_delay_seconds": 60
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {"type": "string", "value": "cooperative λ"},
+      "count": {"type": "int64", "value": "9007199254740993"},
+      "optional": {"type": "null", "value": null},
+      "cleanup_delay_seconds": {"type": "int64", "value": "60"}
+    }
+  },
+  "cooperative_cancellation": {
+    "phase": "pending_timer",
+    "reason": "cooperative cancellation λ",
+    "cleanup_timeout_seconds": 1,
+    "cleanup_outcome": "deadline_expired",
+    "original_delay_seconds": 60
+  },
+  "review_state": "pending_reference_execution",
+  "contract": "Root cooperative cancellation preserves the accepted request, original reason, root workflow/run/request identity, requester/source/lineage and original deadline. Acceptance leaves the run open. Duplicates retain the same accepted command and budget even after closure. Canonical delivery is committed at the original authored timer boundary; only delivery cancels the original pending timer. Replayed shielded cleanup executes its own timer and an exact-int64 activity before the original deadline, or expires that original deadline without claiming completed cleanup or accepting late outcomes. Renewable leases never extend the request budget. Generated terminal diagnostics are checked separately from the original reason in canonical context. This pending definition is excluded from passing fixture totals until its complete event contract is reviewed against actual published PHP and embedded execution."
+}
