@@ -7,8 +7,8 @@ native_url="$3"
 test -n "$RESOURCE_SCOPE"
 profile=tests/Fixtures/ServerParityProfiles/published-sdk-patch-replay
 image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' "$profile/artifacts.json")
-mkdir -p parity-evidence/published-sdk-patch
-chmod 0777 parity-evidence/published-sdk-patch
+mkdir -p parity-evidence/published-sdk-patch/{php,rust,embedded}
+chmod 0777 parity-evidence/published-sdk-patch parity-evidence/published-sdk-patch/{php,rust,embedded}
 (cd published-sdk-adapters && sha256sum -c SHA256SUMS) > parity-evidence/published-sdk-patch/adapter-integrity.txt
 test "$(cat published-sdk-adapters/runner-revision.txt)" = "$(git rev-parse HEAD)"
 sha256sum -c published-sdk-adapters/source-hashes.sha256 >> parity-evidence/published-sdk-patch/adapter-integrity.txt
@@ -31,7 +31,7 @@ for target in php rust; do
     --network "$RESOURCE_SCOPE" --entrypoint node "${shared[@]}" "$image" \
     scripts/conformance/server-parity.mjs record --mode http --url "$url" --target "$target" \
     --prefix published-sdk-v1 --artifacts "$profile/artifacts.json" "${fixtures[@]}" \
-    --output "/evidence/published-sdk-patch/$target.json"
+    --output "/evidence/published-sdk-patch/$target/record.json"
 done
 case "$backend" in
   mysql) embedded=(-e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=embedded_ref
@@ -46,8 +46,8 @@ docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
   -e DW_MODE=embedded -e CACHE_STORE=file -e QUEUE_CONNECTION=database "$image" \
   scripts/conformance/server-parity.mjs record --mode embedded --application-root /app --target embedded \
   --prefix published-sdk-v1 --artifacts "$profile/artifacts.json" "${fixtures[@]}" \
-  --output /evidence/published-sdk-patch/embedded.json
+  --output /evidence/published-sdk-patch/embedded/record.json
 docker run --rm --user=1000:1000 --network=none --entrypoint node "${shared[@]}" "$image" \
-  scripts/conformance/server-parity.mjs compare /evidence/published-sdk-patch/php.json \
-  /evidence/published-sdk-patch/rust.json /evidence/published-sdk-patch/embedded.json \
+  scripts/conformance/server-parity.mjs compare /evidence/published-sdk-patch/php/record.json \
+  /evidence/published-sdk-patch/rust/record.json /evidence/published-sdk-patch/embedded/record.json \
   "${fixtures[@]}" > parity-evidence/published-sdk-patch/comparison.json
