@@ -171,7 +171,9 @@ Workflow 2.5.7. The old Server image still packages Workflow 2.5.5; its componen
 version is explicit in this new tuple. The embedded cold replacement must observe
 the first marker's recorded clock after both calls. Normal Composer installation,
 actual installed references and hashes of four autoloaded replay classes bind
-both embedded processes to the selected published source. Two local SQLite
+both embedded processes to the selected published source. The profile also
+freezes the complete embedded dependency lock to prevent registry drift.
+Two local SQLite
 PHP/embedded pairs pass at `0f95493d4d0d8f99c5221cca64b8af7c3bfd984d`, including
 the real cold replacement clocks and unchanged full checkpoint history.
 All six PHP/native/embedded differential executions remain unqualified. CI

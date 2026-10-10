@@ -10,10 +10,10 @@ controls, stopped with the original activity pending or completed. Both calls
 choose true, retain one marker at authored sequence 1, and resume the original
 activity at sequence 2 in a cold replacement process. It uses the job's existing
 HTTP targets and a separate embedded database. The embedded application is
-assembled with normal Composer installation from the frozen published Server
-application and the published Workflow package selected in the profile manifest;
+assembled with locked Composer installation from the frozen published Server
+application and the complete dependency set selected in the profile manifest;
 the HTTP reference image retains its older packaged engine. Installed references
-and hashes of the actual autoloaded replay classes are checked in both embedded
+the complete installed dependency lock and hashes of the actual autoloaded replay classes are checked in both embedded
 processes. Actual author `Workflow::now()` snapshots after both replacement
 calls must equal the original marker timestamp, preserving every microsecond.
 This embedded component observation makes no service SDK clock-helper claim.

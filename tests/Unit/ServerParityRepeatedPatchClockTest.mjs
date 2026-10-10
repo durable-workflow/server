@@ -1,10 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
 import {checkPatchDeployment, checkPublishedPatchArtifacts, checkPatchPackageObservation} from '../../scripts/conformance/server-parity/patch-deployment-contract.mjs';
 
 const directory = new URL('../Fixtures/ServerParityProfiles/repeated-patch-clock/', import.meta.url);
 const artifacts = JSON.parse(readFileSync(new URL('artifacts.json', directory)));
+test('selected embedded project locks its complete published dependency set', () => {
+  const bytes = readFileSync(new URL('embedded/composer.lock', directory));
+  assert.equal(createHash('sha256').update(bytes).digest('hex'), artifacts.embedded_composer_lock_sha256);
+  const engine = JSON.parse(bytes).packages.find(package_ => package_.name === 'durable-workflow/workflow');
+  assert.equal(engine.version.replace(/^v/, ''), artifacts.workflow);
+  assert.equal(engine.source.reference, artifacts.workflow_source_commit);
+  assert.equal(engine.dist.reference, artifacts.workflow_source_commit);
+});
 for (const checkpoint of ['pending', 'completed']) {
   const fixture = JSON.parse(readFileSync(new URL(`patch-repeated-activity-${checkpoint}.json`, directory)));
   function model(mode = 'embedded') {
@@ -17,6 +26,7 @@ for (const checkpoint of ['pending', 'completed']) {
       namespace: 'default', task_queue: 'server-parity-v1', payload_codec: 'avro',
       typed_input: {type: 'list', value: [fixture.typed_value]},
       workflow_package: artifacts.workflow, workflow_source: artifacts.workflow_source_commit,
+      embedded_composer_lock_sha256: artifacts.embedded_composer_lock_sha256,
       workflow_loaded_sources: artifacts.workflow_loaded_sources,
       instance: {id: 'test', namespace: 'default', workflow_type: fixture.workflow_type, current_run_id: 'original-run'}};
     const completion = commands => ({method: 'POST', path: '/api/worker/workflow-tasks/task/complete', status: 200,
@@ -70,6 +80,8 @@ for (const checkpoint of ['pending', 'completed']) {
     ['old installed version', x => x.workflow_package = '2.5.5'],
     ['wrong installed reference', x => x.workflow_source = 'a'.repeat(40)],
     ['reference missing', x => delete x.workflow_source],
+    ['dependency lock changed', x => x.embedded_composer_lock_sha256 = '0'.repeat(64)],
+    ['dependency lock missing', x => delete x.embedded_composer_lock_sha256],
     ['loaded source missing', x => delete x.workflow_loaded_sources],
     ...Object.keys(artifacts.workflow_loaded_sources).map(path => [`old loaded ${path}`, x => x.workflow_loaded_sources[path] = '0'.repeat(64)]),
   ]) test(`${checkpoint} ${phase}: model rejects ${name}`, () => {

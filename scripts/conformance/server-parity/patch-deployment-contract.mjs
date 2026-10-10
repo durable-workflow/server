@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 export function checkPublishedPatchArtifacts(fixture, artifacts) {
   if (fixture.patch_deployment?.embedded_clock_probe) {
     assert.match(artifacts.workflow_source_commit ?? '', /^[a-f0-9]{40}$/);
+    assert.match(artifacts.embedded_composer_lock_sha256 ?? '', /^[a-f0-9]{64}$/);
     assert.deepEqual(Object.keys(artifacts.workflow_loaded_sources ?? {}).sort(),
       ['QueryStateReplayer', 'VersionDecisions', 'WorkflowExecutor', 'WorkflowFiberRunner'].map(name => `src/V2/Support/${name}.php`).sort(),
       'exact published engine source inventory');
@@ -25,6 +26,8 @@ export function checkPatchPackageObservation(fixture, observation, artifacts) {
     assert.ok(phase, 'both actual embedded engine processes');
     assert.equal(phase.workflow_package, artifacts.workflow, 'actually installed published engine');
     assert.equal(phase.workflow_source, artifacts.workflow_source_commit, 'actually installed published engine source');
+    assert.equal(phase.embedded_composer_lock_sha256, artifacts.embedded_composer_lock_sha256,
+      'complete installed embedded dependencies match the selected lock');
     assert.deepEqual(phase.workflow_loaded_sources, artifacts.workflow_loaded_sources,
       'autoloaded engine classes match the exact published source bytes');
   }

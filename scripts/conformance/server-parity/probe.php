@@ -817,6 +817,7 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['patch_deployment']['embedded_clock_probe']) && ! isset($observation['workflow_source'])) {
         $observation['workflow_source'] = InstalledVersions::getReference('durable-workflow/workflow');
+        $observation['embedded_composer_lock_sha256'] = hash_file('sha256', $options['application-root'].'/composer.lock');
         $observation['workflow_loaded_sources'] = [];
         foreach (['VersionDecisions', 'WorkflowExecutor', 'WorkflowFiberRunner', 'QueryStateReplayer'] as $name) {
             $class = new ReflectionClass('Workflow\\V2\\Support\\'.$name);

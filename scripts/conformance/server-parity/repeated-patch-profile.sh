@@ -8,7 +8,7 @@ native_url="$3"
 test -n "$RESOURCE_SCOPE"
 profile=tests/Fixtures/ServerParityProfiles/repeated-patch-clock
 image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' "$profile/artifacts.json")
-version=$(jq -r '.workflow' "$profile/artifacts.json")
+lock=$(jq -r '.embedded_composer_lock_sha256' "$profile/artifacts.json")
 mkdir -p parity-evidence/repeated-patch/{php,rust,embedded} parity-repeated-state/embedded-app
 chmod 0777 parity-evidence/repeated-patch parity-evidence/repeated-patch/{php,rust,embedded} parity-repeated-state parity-repeated-state/embedded-app
 shared=(-v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source
@@ -48,7 +48,8 @@ runtime=(-v "$PWD/parity-repeated-state/embedded-app:/runtime" -e DW_MODE=embedd
   -e DW_SERVER_KEY=base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=)
 docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --entrypoint sh \
   -v "$PWD:/source:ro" "${runtime[@]}" -w /runtime -e COMPOSER_HOME=/tmp/composer \
-  -e DW_PARITY_EMBEDDED_VERSION="$version" "$image" /source/scripts/conformance/server-parity/repeated-patch-install.sh \
+  -e DW_PARITY_EMBEDDED_PROFILE="/source/$profile/embedded" -e DW_PARITY_EMBEDDED_LOCK_SHA256="$lock" \
+  "$image" /source/scripts/conformance/server-parity/repeated-patch-install.sh \
   > parity-evidence/repeated-patch/embedded-install.txt 2>&1
 cp parity-repeated-state/embedded-app/composer.lock parity-evidence/repeated-patch/embedded-composer.lock
 docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
