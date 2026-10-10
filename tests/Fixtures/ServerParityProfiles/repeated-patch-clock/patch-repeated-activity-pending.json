@@ -1,0 +1,19 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "patch-repeated-activity-pending",
+  "workflow_type": "parity.v1.one_activity",
+  "input": {"message": "repeated patch clock λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {"type": "map", "value": {"message": {"type": "string", "value": "repeated patch clock λ"}, "count": {"type": "int64", "value": "9007199254740993"}, "optional": {"type": "null", "value": null}}},
+  "activity": true,
+  "patch_deployment": {
+    "change_id": "parity.repeated-patch",
+    "checkpoint": "activity_pending",
+    "repeated_calls": 2,
+    "original_patch": true,
+    "expected_decisions": [true, true],
+    "marker": {"sequence": 1, "change_id": "parity.repeated-patch", "version": 1, "min_supported": -1, "max_supported": 1},
+    "embedded_clock_probe": {"phase": "replacement", "marker_sequences": [1, 1]}
+  },
+  "expected_events": ["StartAccepted", "WorkflowStarted", "VersionMarkerRecorded", "ActivityScheduled", "ActivityStarted", "ActivityCompleted", "WorkflowCompleted"],
+  "contract": "Both calls to one fresh patch choose true and persist one five-field marker at authored sequence 1, followed by the original activity at sequence 2. Stop after actual activity scheduling. A cold replacement repeats both calls and finishes the same original activity and run once, retaining the complete checkpoint and exact int64 outcome. Embedded uses installed published Workflow 2.5.7 and also records the actual clock returned by its author helper after each replacement call; both must equal the original marker's recorded timestamp. The HTTP control uses published PHP Server 2.5.14 with its packaged Workflow 2.5.5 and PHP SDK 2.2.6; the embedded clock observation does not claim a service SDK clock helper. Python/Rust marked replay and older duplicate-marker histories remain separate gates."
+}
