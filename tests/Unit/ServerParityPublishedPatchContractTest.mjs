@@ -60,15 +60,29 @@ for (const language of ['rust', 'python']) for (const checkpoint of ['pending', 
     const raw = model(); mutate(raw.patch_deployment.replacement);
     assert.throws(() => checkPatchDeployment(fixture, raw, 'test'));
   });
-  function pressureModel() {
+  function pressureModel(path = '/api/worker/workflow-tasks/poll') {
     const raw = model();
     const request = {worker_id: 'test:replacement', task_queue: 'server-parity-v1', poll_request_id: 'original-poll', timeout_seconds: 1};
-    const pressure = {method: 'POST', path: '/api/worker/workflow-tasks/poll', status: 503, request,
+    const pressure = {method: 'POST', path, status: 503, request,
       response: {task: null, poll_status: 'backend_lock_pressure'}, response_retry_after: '1', client_cancelled: false, transport_error: null};
     raw.patch_deployment.replacement.requests.splice(1, 0, pressure, {...structuredClone(pressure), status: 200, response: {task: {task_id: 'original-task'}}});
     return raw;
   }
   test(`${language} ${checkpoint}: model accepts same-request pressure recovery`, () => checkPatchDeployment(fixture, pressureModel(), 'test'));
+  test(`${language} ${checkpoint}: model accepts same-request activity poll pressure recovery`, () =>
+    checkPatchDeployment(fixture, pressureModel('/api/worker/activity-tasks/poll'), 'test'));
+  for (const [name, mutate] of [
+    ['hidden activity lease', requests => requests[1].response.task = {task_id: 'unreported-lease'}],
+    ['changed activity retry request', requests => requests[2].request.poll_request_id = 'another-poll'],
+    ['different activity recovery method', requests => requests[2].method = 'GET'],
+    ['different activity queue', requests => { requests[1].request.task_queue = 'other'; requests[2].request.task_queue = 'other'; }],
+    ['activity completion pressure', requests => { requests[1].path = '/api/worker/activity-tasks/task/complete'; requests[2].path = requests[1].path; }],
+    ['query poll pressure', requests => { requests[1].path = '/api/worker/query-tasks/poll'; requests[2].path = requests[1].path; }],
+    ['missing activity Retry-After', requests => delete requests[1].response_retry_after],
+  ]) test(`${language} ${checkpoint}: activity pressure model rejects ${name}`, () => {
+    const raw = pressureModel('/api/worker/activity-tasks/poll'); mutate(raw.patch_deployment.replacement.requests);
+    assert.throws(() => checkPatchDeployment(fixture, raw, 'test'));
+  });
   for (const [name, diagnostics] of [
     ['reason', {reason: 'backend_lock_pressure'}],
     ['message', {message: 'Retry this poll with backoff.'}],
@@ -85,6 +99,8 @@ for (const language of ['rust', 'python']) for (const checkpoint of ['pending', 
     ['missing poll identity', requests => delete requests[1].request.poll_request_id],
     ['new retry identity', requests => requests[2].request.poll_request_id = 'new-poll'],
     ['changed retry request', requests => requests[2].request.timeout_seconds = 2],
+    ['different workflow recovery method', requests => requests[2].method = 'GET'],
+    ['different workflow queue', requests => { requests[1].request.task_queue = 'other'; requests[2].request.task_queue = 'other'; }],
     ['no successful retry', requests => requests.splice(2, 1)],
     ['hidden leased task', requests => requests[1].response.task = {task_id: 'unknown-task'}],
     ['other pressure', requests => requests[1].response.poll_status = 'other'],
