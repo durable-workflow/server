@@ -25,7 +25,7 @@ async fn visible(app: &Router, query: &str) -> Value {
 #[tokio::test]
 async fn visibility_pages_filter_original_runs_and_preserve_cancelled_peer() {
     let database = TestDatabase::new().await;
-    let runtime = database.runtime().await;
+    let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
     register(
         &app,
@@ -126,7 +126,7 @@ async fn visibility_pages_filter_original_runs_and_preserve_cancelled_peer() {
 #[tokio::test]
 async fn visibility_advertises_canonical_cli_contract_and_bounds_pages() {
     let database = TestDatabase::new().await;
-    let runtime = database.runtime().await;
+    let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
     let cluster = request(&app, "GET", "/api/cluster/info", Value::Null).await;
     assert_eq!(
