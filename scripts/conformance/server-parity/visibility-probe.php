@@ -168,7 +168,11 @@ function finishEmbeddedVisibility(array $fixture, string $workflowId, string $qu
             $state['type_filters'][$name] = $rows((clone $base)->where('workflow_type', $type));
         }
     } finally {
-        $state['cleanup_accepted'] = $peer->attemptCancel($definition['cleanup']['reason']);
+        $result = $peer->attemptCancel($definition['cleanup']['reason']);
+        $state['cleanup'] = ['accepted' => $result->accepted(), 'command_id' => $result->commandId(),
+            'command_sequence' => $result->commandSequence(), 'workflow_id' => $result->workflowId(),
+            'run_id' => $result->resolvedRunId(), 'status' => $result->status(),
+            'outcome' => $result->outcome(), 'reason' => $result->reason()];
     }
     $peerRun->refresh();
     $state['peer_after'] = $peerRun->toArray();
