@@ -125,7 +125,7 @@ async fn invalid_or_stale_waiting_reports_leave_original_attempt_usable() {
         json!({"message":"wait","type":"WorkflowTaskWaitingForHistory","reason":false}),
         json!({"message":"wait","type":"WorkflowTaskWaitingForHistory","sequence":0}),
         json!({"message":"wait","type":"WorkflowTaskWaitingForHistory","stack_trace":[]}),
-        json!({"message":"ordinary retryable failure","type":"WorkerFailure"}),
+        json!({"message":"replay failed","type":"WorkerFailure"}),
     ] {
         assert_eq!(
             report(&app, &task, waiting(&task, failure)).await.0,

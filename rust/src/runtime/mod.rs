@@ -23,6 +23,7 @@ mod schedules;
 mod schema;
 mod sqlite;
 mod store;
+mod task_failures;
 mod updates;
 mod visibility;
 mod worker_incarnations;

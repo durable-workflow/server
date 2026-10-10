@@ -200,6 +200,20 @@ execution. Workflow #744 owns the published engine repair and its downstream
 follow-through. A Server package pin retains #358's fault/budget and unpublished
 PHP fencing/schema release gates; it does not qualify a new Server release.
 
+[#381](https://github.com/durable-workflow/server/pull/381) implements ordinary
+workflow-task failure retries on the original run. A failed lease and its new
+ready task commit together, carrying attempt count and routing without adding
+failure history. The explicit fixture reports two real errors, checks stale,
+duplicate and late-outcome refusal, then completes once with exact typed output.
+The frozen PHP control established that this run stays `pending` during retry
+and a terminal late failure reports `run_closed`. Native SQLite restart and
+independent-pool races pass; full six-configuration qualification is tracked in
+#381. The frozen default corpus stays unchanged. Embedded executes its echo
+control and explicitly marks the service-only retry endpoint inapplicable.
+Replay-blocking failures are still refused rather than automatically retried;
+blocked replay/manual repair, message-bearing retries, nondefault namespaces,
+complete retry/backoff policy and published SDK worker directions remain gates.
+
 The source profile now includes Rust on an independent database using the
 already compiled binary. Five dedicated native tests check original-task
 completion after restart and replacement, concurrent independent pools,
