@@ -6,7 +6,7 @@ import {fileURLToPath} from 'node:url';
 import {basename, dirname, resolve} from 'node:path';
 import {parseArgs} from 'node:util';
 import {checkObservation, compareRecords} from './server-parity/contract.mjs';
-import {checkPublishedPatchArtifacts} from './server-parity/patch-deployment-contract.mjs';
+import {checkPublishedPatchArtifacts, checkPatchPackageObservation} from './server-parity/patch-deployment-contract.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const {values, positionals} = parseArgs({allowPositionals: true, options: {
@@ -50,7 +50,7 @@ try {
   const hashes = Object.fromEntries(fixtures.map(name => [name, createHash('sha256').update(readFileSync(byName[name])).digest('hex')]));
   if (command === 'compare') {
     const expectedFixtures = Object.fromEntries(fixtures.map(name => [name, json(byName[name])]));
-    compareRecords(files.map(json), hashes, expectedFixtures);
+    compareRecords(files.map(json), hashes, expectedFixtures, values.artifacts ? json(values.artifacts) : undefined);
     console.log(JSON.stringify({outcome: 'pass', recordings: files.length}));
   } else if (command === 'record') {
     if (!['http', 'embedded'].includes(values.mode) || !values.output || !values.target || !/^[a-f0-9]{40}$/.test(values['runner-revision'] ?? '')) {
@@ -79,12 +79,14 @@ try {
       try {
         if (probe.error || probe.status !== 0) throw new Error(probe.error?.message ?? probe.stderr.trim());
         item.observation = JSON.parse(probe.stdout);
+        if (item.observation.mode !== values.mode) throw new Error('Observation does not use the selected recording adapter');
         if (item.observation.sdk_php !== record.artifacts.sdk_php || values.mode === 'embedded' && item.observation.workflow_package !== record.artifacts.workflow) {
           throw new Error('Installed SDK/Workflow packages do not match the frozen tuple');
         }
         if (record.artifacts.sdk_php_source_commit && item.observation.sdk_php_source !== record.artifacts.sdk_php_source_commit) {
           throw new Error('Installed SDK source does not match the selected source-feature tuple');
         }
+        checkPatchPackageObservation(fixture, item.observation, record.artifacts);
         item.outcome = 'product-fail';
         item.projection = checkObservation(fixture, item.observation, workflowId);
         item.outcome = 'pass';

@@ -815,6 +815,15 @@ try {
     if ($mode === 'embedded' && ! isset($observation['workflow_package'])) {
         $observation['workflow_package'] = ltrim(InstalledVersions::getPrettyVersion('durable-workflow/workflow'), 'v');
     }
+    if ($mode === 'embedded' && isset($fixture['patch_deployment']['embedded_clock_probe']) && ! isset($observation['workflow_source'])) {
+        $observation['workflow_source'] = InstalledVersions::getReference('durable-workflow/workflow');
+        $observation['embedded_composer_lock_sha256'] = hash_file('sha256', $options['application-root'].'/composer.lock');
+        $observation['workflow_loaded_sources'] = [];
+        foreach (['VersionDecisions', 'WorkflowExecutor', 'WorkflowFiberRunner', 'QueryStateReplayer'] as $name) {
+            $class = new ReflectionClass('Workflow\\V2\\Support\\'.$name);
+            $observation['workflow_loaded_sources']['src/V2/Support/'.$name.'.php'] = hash_file('sha256', $class->getFileName());
+        }
+    }
     echo json_encode($observation, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)."\n";
 } catch (Throwable $error) {
     fwrite(STDERR, $error::class.': '.$error->getMessage()."\n");

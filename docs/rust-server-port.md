@@ -147,21 +147,52 @@ and main PHP verification pass. Independently checked official archives qualify
 12 explicit embedded inapplicability records; main PHP reports 2,625 tests and
 58,522 assertions.
 
-The next separately pinned profile executes published Rust SDK 3.4.2 and Python
-SDK 2.5.1 as cold replacement workers after an original PHP-authored activity
-checkpoint. The run is accepted before a worker advertises a definition
-fingerprint, and the original start payload must prove that legacy condition.
-Migration between worker-fingerprinted definitions is a separate gate. The cold
-replacement follows the explicitly declared one-second affinity expiry.
-Immediate sticky-owner failover remains separate. Each must replay the two
-legacy patch calls without markers or a
-shifted activity and finish the same run with the immutable prefix and typed
-int64 outcome. Embedded runs its corresponding PHP author definitions. One
-locked SDK adapter build is shared across the six CI database configurations;
-no build trees or dependency caches are uploaded. Actual product qualification
-of this new profile remains pending. The frozen baseline and existing fault
-tuples are unchanged. Workflow #744's repeated/duplicate-marker and replay-clock
-repair requires its own exact implementation and publication evidence.
+[#378](https://github.com/durable-workflow/server/pull/378) qualifies the separate
+published Rust SDK 3.4.2 / Python SDK 2.5.1 cold-replacement profile after an
+original PHP-authored activity checkpoint. Starts precede an advertised worker
+fingerprint, and the original worker declares one-second affinity. Both legacy
+patch calls choose false, preserve activity sequence 1 and finish the original
+run with unchanged history and exact typed int64 output. All six candidate and
+main configurations pass. Independent official archive comparisons verify 828
+observations: the four new fixtures add 48 actual HTTP executions and 24 embedded
+authored counterparts across the matrix. Each cell has 61 native tests; SQLite
+has 23 codec and 1,517 modeled comparator tests. PHP reports 2,625 tests and
+58,522 assertions. Native discovery now includes the exact PHP carrier auth
+manifest; the byte observer forwards background query cancellation and requires
+successful same-request pressure recovery. The locked SDK adapter builds once
+per workflow and shares thin artifacts without target trees or dependency caches.
+Worker-fingerprinted migration, immediate sticky failover, complete fault budgets
+and performance remain separate gates.
+
+The `repeated-patch-clock` profile in
+[#379](https://github.com/durable-workflow/server/pull/379) declares two fresh repeated-call
+checkpoints against the published PHP HTTP reference and installed embedded
+Workflow 2.5.7. The old Server image still packages Workflow 2.5.5; its component
+version is explicit in this new tuple. The embedded cold replacement must observe
+the first marker's recorded clock after both calls. Normal Composer installation,
+actual installed references and hashes of four autoloaded replay classes bind
+both embedded processes to the selected published source. The profile also
+freezes the complete embedded dependency lock to prevent registry drift.
+Two local SQLite
+PHP/embedded pairs pass at `0f95493d4d0d8f99c5221cca64b8af7c3bfd984d`, including
+the real cold replacement clocks and unchanged full checkpoint history.
+The earlier locked candidate's two-case subset independently passes on all
+six configurations (36 observations), but its complete run failed later in
+MySQL 8.4 pressure qualification after the database disappeared; the cause is
+unconfirmed. A subsequent SQLite run exposed a comparator error: the published
+PHP lock-pressure response also carries diagnostic reason/message fields.
+The checker now validates those optional fields while still requiring a null
+task, the exact pressure status, positive bounded Retry-After and a successful
+byte-identical poll retry. The original failed recording stays unchanged; its
+real published Rust worker completed the original run and independently passes
+the corrected check. The current complete matrix remains unqualified. CI
+reuses its existing native binary and HTTP targets, installs only the separately
+selected embedded engine and gives it a new isolated database. The frozen baseline and other profiles
+stay unchanged. Retained duplicate-marker cross-SDK histories need a separate
+real published-worker fixture; source inspection alone does not prove that
+execution. Workflow #744 owns the published engine repair and its downstream
+follow-through. A Server package pin retains #358's fault/budget and unpublished
+PHP fencing/schema release gates; it does not qualify a new Server release.
 
 The source profile now includes Rust on an independent database using the
 already compiled binary. Five dedicated native tests check original-task

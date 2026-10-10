@@ -26,6 +26,8 @@ final class PatchDeploymentState
     public static string $changeId;
     public static array $expectedDecisions;
     public static array $decisions = [];
+    public static bool $observeClock = false;
+    public static array $clocks = [];
 }
 
 /** Original and replacement use different processes and author definitions. */
@@ -273,6 +275,7 @@ function patchEmbeddedPhase(array $fixture, array $options): array
     $app = require $root.'/bootstrap/app.php';
     $app->make(Kernel::class)->bootstrap();
     require __DIR__.'/embedded-types.php';
+    PatchDeploymentState::$observeClock = ($fixture['patch_deployment']['embedded_clock_probe']['phase'] ?? null) === $options['patch-phase'];
     $definition = ($fixture['patch_deployment']['original_patch'] ?? false) ? 'replacement' : $options['patch-phase'];
     require __DIR__.'/patch-deployment-'.$definition.'.php';
     config(['queue.default' => 'database', 'workflows.v2.task_dispatch_mode' => 'queue',
@@ -309,6 +312,7 @@ function patchEmbeddedPhase(array $fixture, array $options): array
     } while (! $done);
 
     return ['phase' => $phase, 'pid' => getmypid(), 'decisions' => PatchDeploymentState::$decisions,
+        ...(PatchDeploymentState::$observeClock ? ['embedded_clock_probe' => ['clocks' => PatchDeploymentState::$clocks]] : []),
         ...(isset($fixture['patch_deployment']['consumer']) && $phase === 'replacement'
             ? ['consumer' => ['applicable' => false, 'reason' => 'embedded_executes_php_author_definitions']] : []),
         'instance' => WorkflowInstance::query()->findOrFail($run->workflow_instance_id)->toArray(),

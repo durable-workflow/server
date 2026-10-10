@@ -5,6 +5,26 @@ contract as the frozen PHP reference. Published workers validate this manifest
 before registration; it declares client setting precedence and secret redaction,
 with mTLS and signed headers reserved.
 
+The explicit `repeated-patch-clock` profile selects two fresh repeated-patch
+controls, stopped with the original activity pending or completed. Both calls
+choose true, retain one marker at authored sequence 1, and resume the original
+activity at sequence 2 in a cold replacement process. It uses the job's existing
+HTTP targets and a separate embedded database. The embedded application is
+assembled with locked Composer installation from the frozen published Server
+application and the complete dependency set selected in the profile manifest;
+the HTTP reference image retains its older packaged engine. Installed references
+the complete installed dependency lock and hashes of the actual autoloaded replay classes are checked in both embedded
+processes. Actual author `Workflow::now()` snapshots after both replacement
+calls must equal the original marker timestamp, preserving every microsecond.
+This embedded component observation makes no service SDK clock-helper claim.
+Run `bash scripts/conformance/server-parity/repeated-patch-profile.sh BACKEND
+PHP_URL NATIVE_URL` after the ordinary targets and adapter are prepared, with
+the same `RESOURCE_SCOPE` and database-image variables as the owning CI job.
+Its two cases remain explicitly selected rather than changing the frozen corpus.
+Compare with the same `--artifacts` manifest to bind raw package observations
+and fixture bytes to reviewed source. Older consistent duplicate-marker histories
+and Python/Rust marked replay remain separate qualifications.
+
 The separate `published-sdk-patch-replay` profile adds four cold replacement
 directions: Rust SDK 3.4.2 and Python SDK 2.5.1 after an original PHP SDK 2.2.6
 worker. The run starts before any worker advertises a definition fingerprint;
@@ -28,6 +48,10 @@ same worker's shutdown query poll after accepted workflow completion is allowed.
 An incidental workflow poll 503 must identify backend lock pressure, include a
 positive Retry-After that fits the worker deadline, and recover by retrying the
 same poll ID and unchanged request. Other HTTP and network errors fail the case.
+The compact pressure observation may also contain the published PHP response's
+diagnostic `reason` and `message`; their values/types are checked, and a reason
+must agree with `backend_lock_pressure`. Full response bytes remain unchanged
+in the raw sidecar. Extra summary fields do not bypass the check.
 These controls do not establish complete fault or retry-budget qualification.
 
 CI builds the Rust SDK adapter once with no debug information or incremental

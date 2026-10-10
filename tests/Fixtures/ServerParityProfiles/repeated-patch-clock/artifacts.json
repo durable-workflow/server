@@ -1,0 +1,31 @@
+{
+  "schema": "durable-workflow.server-port-artifacts/v1",
+  "server": {
+    "version": "2.5.14",
+    "source_commit": "152ee0f36df2e67e74c8997c573b3f9c68479eb2",
+    "workflow": "2.5.5",
+    "workflow_source_commit": "26a840f25f487676d4e7eb6d75ba1391931566a5",
+    "images": {
+      "linux/amd64": "durableworkflow/server@sha256:28fa0f3968ea253c727aad7fe583bb61c788553f1e4b96ece6ea4570d20faf42",
+      "linux/arm64": "durableworkflow/server@sha256:480c14456ea5bf1e5460af877504a444239ab6c4b9f712156071096cebbfc56c"
+    }
+  },
+  "workflow": "2.5.7",
+  "workflow_source_commit": "e9a767b08c426234c25d2969adcb09473e7af56e",
+  "embedded_composer_lock_sha256": "0e49d47b4b7c6bd7d352e7cb04c13aaa7c83f9172060aaf256adef42564a4ad3",
+  "workflow_loaded_sources": {
+    "src/V2/Support/VersionDecisions.php": "7b57ad40b2514738ccdc377b576d731a16f12d9b55aa628bb5dbb79eac00cdd1",
+    "src/V2/Support/WorkflowExecutor.php": "ece1207630be200271925f5770792f03e6bd55224a2abf7a6be86793fdfddaea",
+    "src/V2/Support/WorkflowFiberRunner.php": "7d7e81529870b06f737707a7880e0ca69c612d047079eabe100c8cd9aa46fb24",
+    "src/V2/Support/QueryStateReplayer.php": "19cbe47c37ceba07ac63d9f061711c28b6d7770ddff0cea822a8867dcde710e4"
+  },
+  "sdk_php": "2.2.6",
+  "sdk_php_source_commit": "290fa427a76ffc6ea226bcd59749374aa7a89efa",
+  "sdk_python": "2.5.0",
+  "sdk_rust": "3.4.1",
+  "cli": "2.2.0",
+  "waterline": "2.3.1",
+  "sample_app_commit": "4427a537e092f9d92c96d2a4867b9186e0e75ccd",
+  "capacity_suite": "1.9.0",
+  "performance_status": "not_measured"
+}

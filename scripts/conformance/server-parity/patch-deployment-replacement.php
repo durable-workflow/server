@@ -13,10 +13,17 @@ final class DeploymentWorkflow extends Workflow
     public function handle(array $value): array
     {
         $decisions = [];
+        $clocks = [];
         foreach (\PatchDeploymentState::$expectedDecisions as $_) {
             $decisions[] = self::patched(\PatchDeploymentState::$changeId);
+            if (\PatchDeploymentState::$observeClock) {
+                $clocks[] = self::now()->toISOString();
+            }
         }
         \PatchDeploymentState::$decisions[] = $decisions;
+        if (\PatchDeploymentState::$observeClock) {
+            \PatchDeploymentState::$clocks[] = $clocks;
+        }
         if ($decisions !== \PatchDeploymentState::$expectedDecisions) {
             throw new \LogicException('Patch decisions differ from the declared deployment contract.');
         }
