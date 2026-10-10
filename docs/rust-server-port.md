@@ -35,7 +35,10 @@ descriptions and complete history must remain unchanged after refused mutations;
 only authorized cleanup may cancel that peer. Embedded mode exercises the same
 authored workflow and installed peer lifecycle; HTTP authentication is inapplicable
 there. PHP syntax and 793 modeled comparator checks pass, including 97 admission
-checks. Actual reference recordings and native qualification are pending. The
+checks. Actual selected PHP/embedded recordings pass and compare at
+`5ce593302df3e73b4530cced7366dc89e130fd19`; PHP exercises all 16 real HTTP
+requests, while both adapters preserve and cancel their original peer. Native
+qualification is pending. The
 reviewed default corpus remains 27. Role/principal tokens, tenant restrictions,
 named-namespace execution and alternate auth/default configuration remain open.
 
