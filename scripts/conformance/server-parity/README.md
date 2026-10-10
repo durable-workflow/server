@@ -373,5 +373,35 @@ pending fixtures with repeated `--fixture` arguments and the source manifest
 with `--artifacts` when recording; compare all three records with those same
 fixtures. The native terminal transaction and original task recovery passed #367;
 role/namespace boundaries, expiry/pruning and rollback have dedicated native
-tests. Real contention, transport
-reply loss and the SDK shutdown budget remain separate qualification gates.
+tests. Native real contention passes all six configurations in #372; client
+reply-loss reconciliation passes #371. Complete SDK shutdown qualification
+remains separate from these bounded cases.
+
+`worker-fencing-profile.sh <backend> pressure` selects only the pending
+`worker-sdk-database-pressure` fixture and the separate
+`ServerParityProfiles/worker-pressure/source-tuple.json` manifest. Its exact
+PHP/SDK source references and locks match the preceding source cohort. It
+reuses that cohort's dependencies and the already compiled Rust binary, with
+three additional isolated databases and separate records/comparison.
+
+An independent PDO connection holds a real SQLite writer or original worker row
+lock while the actual SDK submits fenced shutdown. The contract requires the
+real HTTP 503 and Retry-After, unchanged original peer and authority reads while
+the lock remains held, completion of the authority's original attempt after
+release, and an actual SDK retry of the same token/namespace/credential using a
+smaller bounded timeout. The recovered peer then follows the same receipt,
+replacement, stale-publication and typed SDK completion contract. Embedded mode
+executes the authored echo and labels HTTP shutdown inapplicable.
+
+The fault manifest explicitly declares five-second waits. SQLite uses the
+existing PHP busy timeout; PostgreSQL changes only the isolated PHP database's
+lock timeout; MySQL/MariaDB saves and restores the task-owned database server's
+global lock wait on script exit. These are configured limits; SQLite may return
+its actual contention refusal immediately rather than waiting five seconds.
+The recorded timing remains authoritative. Separate PHP application CLI connections
+record actual session values before and after configuration. These samples do
+not represent the HTTP connection or native pool. No default tuple, production
+setting or published SDK is changed. The new hosted pressure result is pending;
+successful temporary recovery within ten seconds does not qualify persistent
+pressure, exhaustion of the entire shutdown budget, original-error precedence,
+performance or publication.

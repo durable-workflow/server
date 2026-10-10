@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {checkSdkDatabasePressure} from './worker-pressure-contract.mjs';
 
 export function checkWorkerDeregistration(fixture, observation, workflowId) {
   const definition = fixture.worker_deregistration;
@@ -6,6 +7,7 @@ export function checkWorkerDeregistration(fixture, observation, workflowId) {
   const projection = {scope: definition.scope, receipt_retention_seconds: definition.receipt_retention_seconds};
   if (definition.replace_live_registration) projection.replace_live_registration = true;
   if (definition.sdk_reply_loss) projection.sdk_reply_loss = true;
+  if (definition.sdk_database_pressure) projection.sdk_database_pressure = true;
   assert.ok(state && typeof state === 'object', 'actual worker deregistration observation');
   if (observation.mode === 'embedded') {
     assert.deepStrictEqual(state, {applicable: false, reason: 'embedded_has_no_http_worker_registration_lifecycle'}, 'embedded lifecycle explicitly inapplicable');
@@ -185,5 +187,6 @@ export function checkWorkerDeregistration(fixture, observation, workflowId) {
     assert.equal(sdk.diagnostics.filter(d=>d.event==='worker.stopped').length, 1);
     assert.equal(sdk.diagnostics.filter(d=>['worker.failed','worker.shutdown_failed','worker.shutdown_retry_unavailable'].includes(d.event)).length, 0);
   }
+  if (definition.sdk_database_pressure) checkSdkDatabasePressure(fixture,state,workflowId,tokens[0]);
   return projection;
 }

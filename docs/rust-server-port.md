@@ -69,14 +69,24 @@ artifacts independently compare 522 default, 18 role and 54 source observations.
 Models and this observed shutdown timing do not qualify performance or the
 complete shutdown budget. Main verification is recorded in #371.
 
-The next native qualification holds a real independent database transition
-lock through the configured timeout. It checks concurrent health reads,
-structured retryable 503 / Retry-After, unchanged full original reads/history,
-original-attempt completion and same-token repair/replay of another original
-task. Implementation is a test addition; its actual matrix result belongs in
-the owning PR and #325. Shared SDK database pressure, persistent shutdown,
-exhausted total budgets, original-error precedence, explicit native maintenance
-and exact publication remain open under #358.
+[#372](https://github.com/durable-workflow/server/pull/372) qualifies a real
+independent native database transition lock through the existing five-second
+timeout on all six configurations, including main verification. It checks
+concurrent health reads, actual retryable HTTP 503 / Retry-After, unchanged full
+original reads/history, original-attempt completion and same-token repair/replay
+of another original task. Each cell passes 56 native tests; the independently
+compared default, role and source cohorts total 594 observations.
+
+The next shared SDK fixture holds an independent database write lock through
+the real HTTP 503, then releases it and requires the SDK to retry its original
+token with a smaller remaining request budget. A separate fault manifest
+declares five-second reference limits. Actual PHP application CLI session
+samples before and after that configuration are labeled separately from HTTP
+and native pool sessions. This fixture reuses the existing Rust binary and exact
+PHP/SDK sources and locks. Its hosted qualification is pending; modeled checks
+do not qualify database execution. Persistent shutdown, exhausted total budgets,
+original-error precedence, explicit native maintenance and exact publication
+remain open under #358.
 
 The source profile now includes Rust on an independent database using the
 already compiled binary. Five dedicated native tests check original-task
