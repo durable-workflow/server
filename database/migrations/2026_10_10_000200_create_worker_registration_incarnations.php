@@ -16,7 +16,7 @@ return new class extends Migration
             $table->unsignedInteger('recovered_workflow_task_count')->default(0);
             $table->timestamp('finished_at', 6)->nullable()->index();
             $table->timestamps(6);
-            $table->index(['namespace', 'worker_id']);
+            $table->index(['namespace', 'worker_id'], 'dw_worker_incarnation_scope_idx');
         });
     }
 
