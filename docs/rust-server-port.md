@@ -34,8 +34,9 @@ bypass and authentication → role → protocol → namespace precedence. Operat
 admin and legacy-admin reads must succeed, refusals must preserve an original
 unclaimed peer, and an operator then cancels that same peer. Embedded execution
 checks the authored lifecycle with HTTP authorization explicitly inapplicable.
-Recorder/comparator changes are implemented; PHP/embedded reference execution
-and native authorization implementation/qualification are next. Principal,
+Recorder/comparator source `160425df` passes the actual frozen PHP/embedded
+recordings and their independent comparison. The native tests expose the
+single-token guard; native authorization implementation/qualification is next. Principal,
 tenant, runtime-credential, signature and actor-attribution cases remain open.
 
 The twenty-ninth reviewed fixture, `namespace-isolation`, creates two named

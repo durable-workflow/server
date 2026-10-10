@@ -25,6 +25,7 @@ enum Storage {
 pub struct Runtime {
     storage: Arc<Storage>,
     pub(crate) token: Arc<str>,
+    pub(crate) role_tokens: [Option<Arc<str>>; 3],
     scheduler: Arc<TimerScheduler>,
     signal_codec: Arc<Semaphore>,
 }
@@ -108,6 +109,19 @@ macro_rules! delegate {
 }
 
 impl Runtime {
+    /// Immutable configured-token cohort. Database transitions and scheduler
+    /// stay shared; configuring credentials does not mutate process state.
+    pub fn with_role_tokens(
+        mut self,
+        worker: Option<String>,
+        operator: Option<String>,
+        admin: Option<String>,
+    ) -> Self {
+        self.role_tokens = [worker, operator, admin]
+            .map(|token| token.filter(|value| !value.is_empty()).map(Arc::from));
+        self
+    }
+
     fn validate_token(token: &str) -> Result<()> {
         if token.trim().is_empty() {
             return Err(refuse(
@@ -140,6 +154,7 @@ impl Runtime {
         let runtime = Self {
             storage: Arc::new(storage),
             token: token.into(),
+            role_tokens: [None, None, None],
             scheduler: Arc::new(TimerScheduler::new()),
             signal_codec: Arc::new(Semaphore::new(1)),
         };
