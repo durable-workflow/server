@@ -309,6 +309,9 @@ jobs:
       - name: Compare pinned PHP, embedded and native worker-fencing source cohort
         if: ${{ !cancelled() }}
         run: bash scripts/conformance/server-parity/worker-fencing-profile.sh mysql
+      - name: Compare SDK temporary database pressure with declared fault limits
+        if: ${{ !cancelled() }}
+        run: bash scripts/conformance/server-parity/worker-fencing-profile.sh mysql pressure
       - name: Verify TLS certificate trust and hostname checks
         run: |
           set -euo pipefail
@@ -352,10 +355,12 @@ jobs:
           docker logs "$RESOURCE_SCOPE-native-b" > parity-evidence/native-b.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-recovered" > parity-evidence/native-recovered.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-db" > parity-evidence/database.log 2>&1 || true
-          docker logs "$RESOURCE_SCOPE-fence-php" > parity-evidence/fence-php.log 2>&1 || true
-          docker rm -f "$RESOURCE_SCOPE-fence-php" || true
-          docker logs "$RESOURCE_SCOPE-fence-native" > parity-evidence/fence-native.log 2>&1 || true
-          docker rm -f "$RESOURCE_SCOPE-fence-native" || true
+          for profile in fence pressure; do
+            for target in php native; do
+              docker logs "$RESOURCE_SCOPE-$profile-$target" > "parity-evidence/$profile-$target.log" 2>&1 || true
+              docker rm -f "$RESOURCE_SCOPE-$profile-$target" || true
+            done
+          done
           for target in php native; do
             docker logs "$RESOURCE_SCOPE-role-$target" > "parity-evidence/roles-$target.log" 2>&1 || true
             docker rm -f "$RESOURCE_SCOPE-role-$target" || true
@@ -600,6 +605,11 @@ jobs:
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
         run: bash scripts/conformance/server-parity/worker-fencing-profile.sh pgsql
+      - name: Compare SDK temporary database pressure with declared fault limits
+        if: ${{ !cancelled() }}
+        env:
+          POSTGRES_IMAGE: ${{ matrix.image }}
+        run: bash scripts/conformance/server-parity/worker-fencing-profile.sh pgsql pressure
       - name: Verify TLS certificate trust and hostname checks
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
@@ -669,10 +679,12 @@ jobs:
           docker logs "$RESOURCE_SCOPE-native-b" > parity-evidence/native-b.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-recovered" > parity-evidence/native-recovered.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-db" > parity-evidence/postgres.log 2>&1 || true
-          docker logs "$RESOURCE_SCOPE-fence-php" > parity-evidence/fence-php.log 2>&1 || true
-          docker rm -f "$RESOURCE_SCOPE-fence-php" || true
-          docker logs "$RESOURCE_SCOPE-fence-native" > parity-evidence/fence-native.log 2>&1 || true
-          docker rm -f "$RESOURCE_SCOPE-fence-native" || true
+          for profile in fence pressure; do
+            for target in php native; do
+              docker logs "$RESOURCE_SCOPE-$profile-$target" > "parity-evidence/$profile-$target.log" 2>&1 || true
+              docker rm -f "$RESOURCE_SCOPE-$profile-$target" || true
+            done
+          done
           for target in php native; do
             docker logs "$RESOURCE_SCOPE-role-$target" > "parity-evidence/roles-$target.log" 2>&1 || true
             docker rm -f "$RESOURCE_SCOPE-role-$target" || true
@@ -858,6 +870,11 @@ jobs:
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: bash scripts/conformance/server-parity/worker-fencing-profile.sh sqlite
+      - name: Compare SDK temporary database pressure with declared fault limits
+        if: ${{ !cancelled() }}
+        env:
+          RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: bash scripts/conformance/server-parity/worker-fencing-profile.sh sqlite pressure
       - name: Collect Server logs and clean resources
         if: always()
         env:
@@ -867,10 +884,12 @@ jobs:
           docker logs "$RESOURCE_SCOPE-php-maintenance" > parity-evidence/php-maintenance.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-rust" > parity-evidence/rust.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-recovered" > parity-evidence/rust-recovered.log 2>&1 || true
-          docker logs "$RESOURCE_SCOPE-fence-php" > parity-evidence/fence-php.log 2>&1 || true
-          docker rm -f "$RESOURCE_SCOPE-fence-php" || true
-          docker logs "$RESOURCE_SCOPE-fence-native" > parity-evidence/fence-native.log 2>&1 || true
-          docker rm -f "$RESOURCE_SCOPE-fence-native" || true
+          for profile in fence pressure; do
+            for target in php native; do
+              docker logs "$RESOURCE_SCOPE-$profile-$target" > "parity-evidence/$profile-$target.log" 2>&1 || true
+              docker rm -f "$RESOURCE_SCOPE-$profile-$target" || true
+            done
+          done
           for target in php native; do
             docker logs "$RESOURCE_SCOPE-role-$target" > "parity-evidence/roles-$target.log" 2>&1 || true
             docker rm -f "$RESOURCE_SCOPE-role-$target" || true

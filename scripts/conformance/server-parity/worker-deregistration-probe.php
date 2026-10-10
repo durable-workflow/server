@@ -19,6 +19,10 @@ function fenceReceipt(callable $request): array
 function finishHttpWorkerDeregistration(Client $client, array $fixture, string $workflowId, string $queue, string $url): array
 {
     $definition = $fixture['worker_deregistration'];
+    if ($definition['sdk_database_pressure'] ?? false) {
+        require_once __DIR__.'/sdk-pressure-probe.php';
+        return finishSdkDatabasePressure($client, $fixture, $workflowId, $queue, $url);
+    }
     if ($definition['sdk_reply_loss'] ?? false) {
         // The frozen published adapter does not have the source bounded
         // transport interface. Load the fault adapter only for its source case.

@@ -181,3 +181,76 @@ const replyMutations={
 for(const [name,mutate] of Object.entries(replyMutations)) test(name,()=>{
   const s=replyModel();mutate(s);assert.throws(()=>checkReply(s));
 });
+
+const pressureFixture=JSON.parse(readFileSync(new URL('../Fixtures/ServerParityPending/worker-sdk-database-pressure.json',import.meta.url)));
+function pressureModel() {
+  const s=replyModel();
+  delete s.sdk_reply_loss;
+  for(const key of ['before_unknown','after_unknown','after_original','after_stale_original','before_superseded',
+    'after_superseded','before_replay','after_replay','after_stale_replay','after_latest','final']) {
+    s[key].typed_input={type:'list',value:[pressureFixture.typed_value]};
+  }
+  s.final.typed_output=pressureFixture.typed_value;
+  s.final.events.at(-1).typed_decoded.output=pressureFixture.typed_value;
+  s.before_pressure=s.before_unknown;
+  s.after_pressure=s.before_unknown;
+  const request=(path,status,timeout=null)=>({method:'POST',path,status,namespace:'default',credential_sha256:'a'.repeat(64),
+    registration_token:timeout===null?null:tokens[0],timeout_seconds:timeout,elapsed_seconds:status===503?5:0.1,retry_after:status===503?'1':''});
+  const authorityId=id+'-authority';
+  const before={workflow_id:authorityId,run_id:'authority-run',namespace:'default',status:'pending',
+    typed_input:{type:'list',value:[pressureFixture.typed_value]},events:start.map(e=>({...e,payload:{workflow_instance_id:authorityId,workflow_run_id:'authority-run'}}))};
+  const completed={...before,status:'completed',typed_output:pressureFixture.typed_value,execution:{output_envelope:output},
+    events:[...before.events,{event_type:'WorkflowCompleted',sequence:3,typed_decoded:{output:pressureFixture.typed_value},
+      payload:{output,task:{id:'authority-task',attempt_count:1,repair_count:0}}}]};
+  s.sdk_database_pressure={kind:'real_independent_database_write_lock',backend:'sqlite',bounded_transport:true,shutdown_elapsed_seconds:6.5,
+    reference_php_session_before:{origin:'php_application_cli_connection',driver:'sqlite',setting:'busy_timeout',value:5000},
+    reference_php_session_after:{origin:'php_application_cli_connection',driver:'sqlite',setting:'busy_timeout',value:5000},
+    requests:[request('/api/worker/register',201),request('/api/worker/registrations/'+worker+'/deregister',503,9),
+      request('/api/worker/registrations/'+worker+'/deregister',200,3)],
+    failures:[{status:503,response:{reason:'backend_lock_pressure',operation:'deregister_worker',worker_id:worker,
+      registration_token:tokens[0],outcome:'unknown',retryable:true,retry_after_seconds:1}}],
+    diagnostics:[{event:'worker.retrying',operation:'deregister_worker',attempt:1},{event:'worker.deregistered'},{event:'worker.stopped'}],
+    authority:{workflow_id:authorityId,run_id:'authority-run',task:{...task(1),workflow_id:authorityId,run_id:'authority-run',task_id:'authority-task'},
+      before,after_pressure:before,completion:{status:200,response:{}},final:completed}};
+  return JSON.parse(JSON.stringify(s));
+}
+const checkPressure=s=>checkWorkerDeregistration(pressureFixture,{mode:'http',run_id:'root-run',worker_deregistration:s},id);
+test('modeled real SDK pressure evidence requires original authority completion and bounded same-token retry',()=>{
+  assert.deepStrictEqual(checkPressure(pressureModel()),checkWorkerDeregistration(pressureFixture,
+    {mode:'embedded',worker_deregistration:{applicable:false,reason:'embedded_has_no_http_worker_registration_lifecycle'}},id));
+});
+for(const backend of ['mysql','pgsql']) test('modeled declared fault limit and separately labeled '+backend+' session samples',()=>{
+  const s=pressureModel();const sdk=s.sdk_database_pressure;sdk.backend=backend;
+  sdk.reference_php_session_before={origin:'php_application_cli_connection',driver:backend,
+    setting:backend==='mysql'?'innodb_lock_wait_timeout':'lock_timeout',value:backend==='mysql'?50:'0'};
+  sdk.reference_php_session_after={...sdk.reference_php_session_before,value:backend==='mysql'?5:'5s'};
+  checkPressure(s);
+});
+const pressureMutations={
+  'pressure never executed':s=>{delete s.sdk_database_pressure;},
+  'pressure is a mocked failure':s=>{s.sdk_database_pressure.kind='injected_transport_error';},
+  'pressure exceeds shutdown budget':s=>{s.sdk_database_pressure.shutdown_elapsed_seconds=11;},
+  'pressure never waits for the database':s=>{s.sdk_database_pressure.requests[1].elapsed_seconds=0.1;},
+  'pressure response was success':s=>{s.sdk_database_pressure.requests[1].status=200;},
+  'pressure header has no retry delay':s=>{s.sdk_database_pressure.requests[1].retry_after='0';},
+  'pressure retry resets its budget':s=>{s.sdk_database_pressure.requests[2].timeout_seconds=9;},
+  'pressure retry refreshes registration':s=>{s.sdk_database_pressure.requests[2].path='/api/worker/register';},
+  'pressure retry changes token':s=>{s.sdk_database_pressure.requests[2].registration_token=tokens[2];},
+  'pressure retry changes namespace':s=>{s.sdk_database_pressure.requests[2].namespace='other';},
+  'pressure retry changes credential':s=>{s.sdk_database_pressure.requests[2].credential_sha256='b'.repeat(64);},
+  'pressure terminal refusal retried':s=>{s.sdk_database_pressure.failures[0].status=409;},
+  'pressure unknown outcome hidden':s=>{s.sdk_database_pressure.failures[0].response.outcome='deregistered';},
+  'pressure old authority silently replaced':s=>{s.sdk_database_pressure.authority.task.workflow_task_attempt=2;},
+  'pressure changes original peer':s=>{s.after_pressure.status='completed';},
+  'pressure changes another original history':s=>{s.sdk_database_pressure.authority.after_pressure.events.push(event('RepairRequested',3));},
+  'pressure original attempt never completes':s=>{s.sdk_database_pressure.authority.completion.status=409;},
+  'pressure original authority completes another task':s=>{s.sdk_database_pressure.authority.final.events.at(-1).payload.task.id='foreign-task';},
+  'pressure original authority repaired':s=>{s.sdk_database_pressure.authority.final.events.at(-1).payload.task.repair_count=1;},
+  'pressure original typed output changed':s=>{s.sdk_database_pressure.authority.final.typed_output={type:'null',value:null};},
+  'pressure session sample mislabeled':s=>{s.sdk_database_pressure.reference_php_session_after.origin='native_pool';},
+  'pressure session not configured':s=>{s.sdk_database_pressure.reference_php_session_after.value=0;},
+  'pressure SDK failure hidden':s=>{s.sdk_database_pressure.diagnostics.push({event:'worker.shutdown_failed'});},
+};
+for(const [name,mutate] of Object.entries(pressureMutations)) test(name,()=>{
+  const s=pressureModel();mutate(s);assert.throws(()=>checkPressure(s));
+});
