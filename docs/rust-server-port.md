@@ -310,15 +310,26 @@ The separate PHP service-mode queue override inconsistency found during setup
 was corrected separately in [#351](https://github.com/durable-workflow/server/pull/351)
 and published as Server 2.5.15. The frozen reference tuple remains unchanged.
 
-The next child-cancellation slice begins with two definitions in
-`tests/Fixtures/ServerParityPending/`: direct cancellation before a child claim
-and during its committed timer. The parent catches the original child outcome
-and completes; the child must remain cancelled. The existing happy-path child
-fixture does not qualify either case. The published PHP SDK uses
-`ChildWorkflowFailed` with failure type `ChildRunCancelled`; embedded restoration
-and parent-facing diagnostics require actual reference observations. Candidate
-definitions remain outside the 22-case passing corpus until the adapters,
-shared comparison and native database matrix are reviewed.
+The direct child-cancellation candidates cover cancellation before a child
+claim and during its committed timer. Actual published PHP 2.5.14 / SDK 2.2.6
+and embedded Workflow 2.5.5 execution on separate SQLite databases completed
+both parents by catching their original cancelled children. The SDK exposes
+`ChildWorkflowFailed` with failure type `ChildRunCancelled` and the original
+child failure message/payload. Embedded replay restores
+`WorkflowCancelledException`, names the child run in its parent-facing message
+and records `FailureHandled`. Shared assertions check those representations
+before projecting common behavior. Saved, trimmed reference observations test
+rejection of corrupted identities, history, diagnostics and duplicate effects.
+The runner now attempts 24 cases: 22 qualified and these two native-pending
+candidates. Native repair and the complete database matrix remain ahead.
+
+Generic HTTP probe failures retain bounded SDK diagnostics and real selected-run
+describe/history/debug reads before timeout shutdown. A real 120-second timer
+proved that the unchanged 30-second budget still fails and retains the original
+waiting run, scheduled timer and pending timer task diagnostic. Failure reads
+use a separate one-second request budget; inaccessible debug state is recorded
+as an inspection failure. This capture is diagnostic evidence, not a completed
+workflow or a diagnosis of the earlier unexplained PHP timer timeout.
 
 Timeout/lease retries, uncaught failures and broader retry policies remain
 separate gates. The next steps are broader cooperative cancellation,

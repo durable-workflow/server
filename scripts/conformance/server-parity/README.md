@@ -33,6 +33,15 @@ cleanup is enforced. Embedded execution invokes the installed watchdog and
 uses `DW_MODE=embedded` before application bootstrap. Neither adapter edits
 time or writes its own history/terminal rows.
 
+Direct child-cancellation candidates additionally exercise cancellation before
+claim and during a committed child timer. Actual SQLite PHP/embedded references
+passed; native repair and the full matrix remain pending. The embedded-only
+`FailureHandled` event and parent-facing diagnostic are asserted before common
+projection. Saved reference observations are comparator examples, not extra
+qualified workflow cases. HTTP failure capture uses bounded real SDK reads of
+the original run and first original child before timeout shutdown, preserving
+the 30-second execution budget and recording diagnostic read refusals honestly.
+
 Requirements: Node 20+, PHP 8.3+ with PDO SQLite/pcntl, and Composer. The pinned
 published Server image contains these tools. Install the exact adapter:
 

@@ -24,6 +24,8 @@ use ServerParity\QueriesWorkflow;
 use ServerParity\UpdatesWorkflow;
 use ServerParity\TwoChildrenWorkflow;
 use ServerParity\ChildActivityWorkflow;
+use ServerParity\CancelledChildParentWorkflow;
+use ServerParity\CancelledChildWorkflow;
 use ServerParity\ActivityRetryWorkflow;
 use ServerParity\RetryActivity;
 use ServerParity\UnmatchedFilterWorkflow;
@@ -55,6 +57,7 @@ if (! is_file($sdkAutoload)) {
 require $sdkAutoload;
 
 require __DIR__.'/observation-values.php';
+require __DIR__.'/probe-failure.php';
 
 function observedChildTransport(array &$polls, array &$completions, array &$activityPolls, array &$activityOutcomes): Psr18Transport
 {
@@ -113,7 +116,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $workflowCompletions = [];
     $activityPolls = [];
     $activityOutcomes = [];
-    $transport = isset($fixture['child_count']) || isset($fixture['retry_policy'])
+    $transport = isset($fixture['child_count']) || isset($fixture['child_cancellation']) || isset($fixture['retry_policy'])
         ? observedChildTransport($workflowPolls, $workflowCompletions, $activityPolls, $activityOutcomes) : null;
     $client = new Client($url, namespace: $namespace, transport: $transport, token: getenv('DW_PARITY_TOKEN') ?: null);
     $handle = null;
@@ -125,11 +128,21 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $pendingUpdate = null;
     $pendingQuery = null;
     $caughtFailure = null;
+    $diagnostics = [];
+    $failureCaptured = false;
+    $childCancellation = null;
+    $caughtChildCancellation = null;
     $deadline = microtime(true) + 30;
     $worker = null;
-    $worker = (new Worker($client, $queue, clock: static function () use (&$worker, &$handle, &$deliveries, &$queries, &$queryTasks, &$pendingQuery, &$updates, &$updateTasks, &$pendingUpdate, $client, $fixture, $fixturePath, $workflowId, $url, $deadline): float {
+    $worker = (new Worker($client, $queue, clock: static function () use (&$worker, &$handle, &$deliveries, &$queries, &$queryTasks, &$pendingQuery, &$updates, &$updateTasks, &$pendingUpdate, &$diagnostics, &$failureCaptured, &$childCancellation, $namespace, $client, $fixture, $fixturePath, $workflowId, $url, $deadline): float {
         if (microtime(true) > $deadline) {
-            throw new RuntimeException('Parity worker exceeded its 30-second completion budget.');
+            $error = new RuntimeException('Parity worker exceeded its 30-second completion budget.');
+            parityHttpFailureEvidence($error, 'before-worker-shutdown', $workflowId, $handle?->selectedRunId, $url, $namespace, $diagnostics);
+            $failureCaptured = true;
+            throw $error;
+        }
+        if ($handle !== null && isset($fixture['child_cancellation'])) {
+            driveHttpChildCancellation($client, $workflowId, $handle->selectedRunId, $fixture, $childCancellation);
         }
         if ($handle !== null && isset($fixture['update_values'])) {
             $history = $client->workflowHistory($workflowId, $handle->selectedRunId, 100)['events'];
@@ -230,7 +243,11 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         }
 
         return microtime(true);
-    }, diagnosticListener: static function (string $event) use (&$handle, $client, $fixture, $workflowId, $queue): void {
+    }, diagnosticListener: static function (string $event, array $details) use (&$handle, &$diagnostics, $client, $fixture, $workflowId, $queue): void {
+        $diagnostics[] = parityWorkerDiagnostic($event, $details);
+        if (count($diagnostics) > 200) {
+            array_shift($diagnostics);
+        }
         if ($event === 'worker.registered') {
             $arguments = [$fixture['input']];
             if (isset($fixture['signal_count'])) {
@@ -240,6 +257,26 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         }
     }))
         ->registerWorkflow('parity.v1.echo', static fn (WorkflowContext $context, array $value): array => $value)
+        ->registerWorkflow('parity.v1.cancelled_child_parent', static function (WorkflowContext $context, array $value) use (&$caughtChildCancellation): array {
+            try {
+                $context->childWorkflow('parity.v1.cancelled_child', [$value], ['queue' => 'server-parity-v1']);
+            } catch (\DurableWorkflow\Exception\ChildWorkflowFailed $error) {
+                if ($error->failureType !== 'ChildRunCancelled') {
+                    throw $error;
+                }
+                $caughtChildCancellation = ['class' => $error::class, 'message' => $error->getMessage(),
+                    'failure_type' => $error->failureType, 'workflow_type' => $error->workflowType, 'payload' => $error->failure];
+
+                return ['value' => $value, 'child_cancelled' => true];
+            }
+
+            throw new LogicException('The original child unexpectedly completed.');
+        })
+        ->registerWorkflow('parity.v1.cancelled_child', static function (WorkflowContext $context, array $value): array {
+            $context->sleep(60);
+
+            return $value;
+        })
         ->registerWorkflow('parity.v1.two_children', static function (WorkflowContext $context, array $value): array {
             $results = [];
             foreach ($value['payloads'] as $payload) {
@@ -335,6 +372,13 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     // real time and selected-run completion, without replacing runtime I/O.
     try {
         $worker->run(0);
+    } catch (Throwable $error) {
+        if (! $failureCaptured) {
+            parityHttpFailureEvidence($error, 'after-worker-shutdown', $workflowId, $handle?->selectedRunId, $url, $namespace, $diagnostics,
+                ['workflow_polls' => $workflowPolls, 'workflow_completions' => $workflowCompletions,
+                    'activity_polls' => $activityPolls, 'activity_outcomes' => $activityOutcomes]);
+        }
+        throw $error;
     } finally {
         if ($pendingQuery !== null) {
             proc_terminate($pendingQuery['process'], 9);
@@ -359,6 +403,10 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         }
     }
     unset($completion);
+    if (isset($fixture['child_cancellation'])) {
+        $childCancellation = finishHttpChildCancellation($client, $workflowId, $handle->selectedRunId, $childCancellation, $url, $namespace);
+        $childCancellation['caught'] = $caughtChildCancellation;
+    }
     $activityDuplicates = null;
     if (isset($fixture['retry_policy']) && ! isset($fixture['terminal_activity_failure'])) {
         $before = httpHistory($client, $workflowId, $handle->selectedRunId);
@@ -413,6 +461,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
 
     return [
         'execution' => $execution->raw,
+        'child_cancellation' => $childCancellation,
         'workflow_id' => $execution->workflowId,
         'run_id' => $execution->runId,
         'workflow_type' => $execution->workflowType,
@@ -454,6 +503,8 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
             'parity.v1.updates' => UpdatesWorkflow::class,
             'parity.v1.two_children' => TwoChildrenWorkflow::class,
             'parity.v1.child_activity' => ChildActivityWorkflow::class,
+            'parity.v1.cancelled_child_parent' => CancelledChildParentWorkflow::class,
+            'parity.v1.cancelled_child' => CancelledChildWorkflow::class,
             'parity.v1.activity_retry' => ActivityRetryWorkflow::class,
             'parity.v1.activity_retry_unmatched_filter' => UnmatchedFilterWorkflow::class,
             'parity.v1.activity_failure_exhausted' => ExhaustedFailureWorkflow::class,
@@ -479,6 +530,7 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
         'parity.v1.activity_retry_unmatched_filter' => UnmatchedFilterWorkflow::class,
         'parity.v1.activity_failure_exhausted' => ExhaustedFailureWorkflow::class,
         'parity.v1.activity_failure_filtered' => FilteredFailureWorkflow::class,
+        'parity.v1.cancelled_child_parent' => CancelledChildParentWorkflow::class,
         default => $class,
     };
     $stub = WorkflowStub::make($class, $workflowId);
@@ -496,11 +548,16 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
     $updates = [];
     $pendingUpdate = null;
     $deadline = microtime(true) + 30;
+    $childCancellation = null;
     do {
         Artisan::call('queue:work', [
             'connection' => 'database', '--queue' => $queue, '--stop-when-empty' => true,
             '--max-time' => 30, '--sleep' => 0, '--tries' => 1,
+            ...isset($fixture['child_cancellation']) ? ['--once' => true] : [],
         ]);
+        if (isset($fixture['child_cancellation'])) {
+            driveEmbeddedChildCancellation($stub->runId(), $fixture, $childCancellation);
+        }
         $run = WorkflowRun::query()->findOrFail($stub->runId());
         $history = static fn (): array => $run->historyEvents()->orderBy('sequence')->get()->map(static fn ($event): array => [
             'sequence' => $event->sequence, 'event_type' => $event->event_type->value, 'payload' => $event->payload,
@@ -571,6 +628,10 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
         usleep(50000);
     } while (true);
     $run = WorkflowRun::query()->findOrFail($stub->runId());
+    if (isset($fixture['child_cancellation'])) {
+        $childCancellation = finishEmbeddedChildCancellation($stub->runId(), $childCancellation);
+        $childCancellation['caught'] = ChildCancellationProbeState::$caught;
+    }
     $events = $run->historyEvents()->orderBy('sequence')->get()->map(static fn ($event): array => [
         'sequence' => $event->sequence,
         'event_type' => $event->event_type->value,
@@ -623,6 +684,7 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
 
     return [
         'execution' => $run->toArray(),
+        'child_cancellation' => $childCancellation,
         'worker_output' => Artisan::output(),
         'workflow_id' => $run->workflow_instance_id,
         'run_id' => $run->id,
@@ -643,6 +705,7 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
 }
 
 try {
+    require __DIR__.'/child-cancellation-probe.php';
     require __DIR__.'/cancellation-probe.php';
     require __DIR__.'/cooperative-probe.php';
     $observation = match ($mode) {

@@ -1,6 +1,6 @@
 {
   "schema": "durable-workflow.server-parity-fixture/v1",
-  "id": "direct-child-cancel-before-claim",
+  "id": "direct-child-cancel-pending-timer",
   "workflow_type": "parity.v1.cancelled_child_parent",
   "child_workflow_type": "parity.v1.cancelled_child",
   "input": {
@@ -61,7 +61,7 @@
   },
   "activity": false,
   "child_cancellation": {
-    "phase": "before_claim",
+    "phase": "pending_timer",
     "reason": "direct child cancellation λ",
     "original_delay_seconds": 60,
     "http_parent_exception": {
@@ -81,18 +81,31 @@
     "ChildRunCancelled",
     "WorkflowCompleted"
   ],
+  "embedded_expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "ChildWorkflowScheduled",
+    "ChildRunStarted",
+    "ChildRunCancelled",
+    "FailureHandled",
+    "WorkflowCompleted"
+  ],
   "child_expected_events": [
     "WorkflowStarted",
+    "TimerScheduled",
     "CancelRequested",
+    "TimerCancelled",
     "WorkflowCancelled"
   ],
   "embedded_child_expected_events": [
     "StartAccepted",
     "WorkflowStarted",
+    "TimerScheduled",
     "CancelRequested",
+    "TimerCancelled",
     "WorkflowCancelled"
   ],
-  "review_state": "pending_reference",
-  "contract": "Cancel the original child directly while its parent waits. The parent must observe cancellation of that original child and complete by catching it; no child completion, retry, replacement run or parent cancellation can substitute. Preserve original parent/call/link/child/run and failure relationships, typed exact-int64 input, caller reason, the child's complete cancellation diagnostic and the parent-facing diagnostic naming the original child run. Duplicate cancellation cannot change committed history or failure storage, and fresh clients retain the same outcomes. The PHP SDK exposes ChildWorkflowFailed with failureType ChildRunCancelled; inspect actual embedded exception representation before defining its projection. Observe real published SDK and embedded execution before native implementation. This pending case is outside the passing corpus; propagation trees, parent-close policies, retries and cross-language directions are separate gates."
+  "review_state": "reference_observed_native_pending",
+  "contract": "Cancel the original child directly while its parent waits. The parent must catch cancellation of that original child and complete. Preserve parent/call/link/child/run and failure relationships, exact typed int64 input, caller reason and the complete child failure diagnostic. The published PHP SDK exposes ChildWorkflowFailed with failureType ChildRunCancelled and the original child resolution payload/message. Embedded execution catches WorkflowCancelledException with a parent-facing message naming the original child run and commits FailureHandled; assert these adapter representations before comparing common behavior. Duplicate cancellation preserves both histories and embedded physical child failure storage; fresh reads retain the original outcomes. Actual isolated SQLite references passed, but native and the full database matrix remain unqualified. Propagation trees, parent-close policies, retries and cross-language directions are separate gates."
 }
 

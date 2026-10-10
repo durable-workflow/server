@@ -1,0 +1,2008 @@
+{
+  "capture_source": {
+    "server": "2.5.14",
+    "workflow": "2.5.5",
+    "sdk_php": "2.2.6",
+    "database": "isolated SQLite",
+    "original_sha256": "16d655157e10c543e9298ed1df9bc8fb99b4482d041051a540e06635572abec2"
+  },
+  "observation": {
+    "execution": {
+      "workflow_id": "child-reference-pending-timer",
+      "run_id": "01m4hys5dzf8wpe7f49236apxm",
+      "namespace": "default",
+      "workflow_type": "parity.v1.cancelled_child_parent",
+      "business_key": null,
+      "status": "completed",
+      "status_bucket": "completed",
+      "is_terminal": true,
+      "closed_reason": "completed",
+      "task_queue": "server-parity-v1",
+      "run_number": 1,
+      "run_count": 1,
+      "is_current_run": true,
+      "continued_from_run_id": null,
+      "resume_step_sequence": null,
+      "recovery_kind": null,
+      "compatibility_status": "compatible",
+      "compatibility_supported_in_fleet": true,
+      "payload_codec": "avro",
+      "execution_timeout_seconds": 3600,
+      "run_timeout_seconds": 600,
+      "execution_deadline_at": "2026-10-10T04:47:49+00:00",
+      "run_deadline_at": "2026-10-10T03:57:49+00:00",
+      "input": [
+        {
+          "message": "child cancellation λ",
+          "count": 9007199254740992,
+          "optional": null
+        }
+      ],
+      "output": {
+        "value": {
+          "message": "child cancellation λ",
+          "count": 9007199254740992,
+          "optional": null
+        },
+        "child_cancelled": true
+      },
+      "input_envelope": {
+        "codec": "avro",
+        "blob": "wwHioz3/VYAiNwwCDgYObWVzc2FnZQoqY2hpbGQgY2FuY2VsbGF0aW9uIM67CmNvdW50BIKAgICAgIAgEG9wdGlvbmFsAAAA"
+      },
+      "output_envelope": {
+        "codec": "avro",
+        "blob": "wwHioz3/VYAiNw4ECnZhbHVlDgYObWVzc2FnZQoqY2hpbGQgY2FuY2VsbGF0aW9uIM67CmNvdW50BIKAgICAgIAgEG9wdGlvbmFsAAAeY2hpbGRfY2FuY2VsbGVkAgEA"
+      },
+      "started_at": "2026-10-10T03:47:49.823017Z",
+      "closed_at": "2026-10-10T03:47:53.650812Z",
+      "last_progress_at": "2026-10-10T03:47:53+00:00",
+      "wait_kind": null,
+      "wait_reason": null,
+      "memo": [],
+      "search_attributes": [],
+      "actions": {
+        "can_signal": false,
+        "can_query": false,
+        "can_update": false,
+        "can_cancel": false,
+        "can_terminate": false,
+        "can_repair": false,
+        "can_archive": true
+      },
+      "commands_scope": "selected_run",
+      "updates_scope": "selected_run",
+      "updates": []
+    },
+    "child_cancellation": {
+      "workflow_id": "01m4hys65cbr298p98g80ck6vw",
+      "run_id": "01m4hys65db5p3hqdejf1f7p57",
+      "child_before": {
+        "workflow_id": "01m4hys65cbr298p98g80ck6vw",
+        "run_id": "01m4hys65db5p3hqdejf1f7p57",
+        "namespace": "default",
+        "workflow_type": "parity.v1.cancelled_child",
+        "business_key": null,
+        "status": "waiting",
+        "status_bucket": "running",
+        "is_terminal": false,
+        "closed_reason": null,
+        "task_queue": "server-parity-v1",
+        "run_number": 1,
+        "run_count": 1,
+        "is_current_run": true,
+        "continued_from_run_id": null,
+        "resume_step_sequence": null,
+        "recovery_kind": null,
+        "compatibility_status": "compatible",
+        "compatibility_supported_in_fleet": true,
+        "payload_codec": "avro",
+        "execution_timeout_seconds": null,
+        "run_timeout_seconds": null,
+        "execution_deadline_at": null,
+        "run_deadline_at": null,
+        "input": [
+          {
+            "message": "child cancellation λ",
+            "count": 9007199254740992,
+            "optional": null
+          }
+        ],
+        "output": null,
+        "input_envelope": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCDgYObWVzc2FnZQoqY2hpbGQgY2FuY2VsbGF0aW9uIM67CmNvdW50BIKAgICAgIAgEG9wdGlvbmFsAAAA"
+        },
+        "output_envelope": null,
+        "started_at": "2026-10-10T03:47:50.572699Z",
+        "closed_at": null,
+        "last_progress_at": "2026-10-10T03:47:52+00:00",
+        "wait_kind": "timer",
+        "wait_reason": "Waiting for timer",
+        "memo": [],
+        "search_attributes": [],
+        "actions": {
+          "can_signal": true,
+          "can_query": true,
+          "can_update": false,
+          "can_cancel": true,
+          "can_terminate": true,
+          "can_repair": true,
+          "can_archive": false
+        },
+        "commands_scope": "selected_run",
+        "updates_scope": "selected_run",
+        "updates": []
+      },
+      "child_history_before": [
+        {
+          "sequence": 1,
+          "event_type": "WorkflowStarted",
+          "timestamp": "2026-10-10T03:47:50.584320Z",
+          "principal": null,
+          "payload": {
+            "workflow_class": "parity.v1.cancelled_child",
+            "workflow_type": "parity.v1.cancelled_child",
+            "workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "parent_workflow_instance_id": "child-reference-pending-timer",
+            "parent_workflow_run_id": "01m4hys5dzf8wpe7f49236apxm",
+            "parent_sequence": 1,
+            "workflow_link_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_call_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "retry_policy": null,
+            "timeout_policy": null,
+            "execution_timeout_seconds": null,
+            "run_timeout_seconds": null,
+            "execution_deadline_at": null,
+            "run_deadline_at": null
+          }
+        },
+        {
+          "sequence": 2,
+          "event_type": "TimerScheduled",
+          "timestamp": "2026-10-10T03:47:52.179467Z",
+          "principal": null,
+          "payload": {
+            "timer_id": "01m4hys7qjk53zqtwq9g0xp3c0",
+            "sequence": 1,
+            "delay_seconds": 60,
+            "fire_at": "2026-10-10T03:48:52.178508Z"
+          }
+        }
+      ],
+      "parent_history_before": [
+        {
+          "sequence": 1,
+          "event_type": "StartAccepted",
+          "timestamp": "2026-10-10T03:47:49.827371Z",
+          "principal": {
+            "type": "auth:token",
+            "id": "legacy-token",
+            "label": "Admin"
+          },
+          "payload": {
+            "workflow_command_id": "01m4hys5e1vv7awqc0gfys4wry",
+            "workflow_instance_id": "child-reference-pending-timer",
+            "workflow_run_id": "01m4hys5dzf8wpe7f49236apxm",
+            "workflow_class": "parity.v1.cancelled_child_parent",
+            "workflow_type": "parity.v1.cancelled_child_parent",
+            "business_key": null,
+            "visibility_labels": null,
+            "memo": null,
+            "search_attributes": null,
+            "outcome": "started_new"
+          }
+        },
+        {
+          "sequence": 2,
+          "event_type": "WorkflowStarted",
+          "timestamp": "2026-10-10T03:47:49.830785Z",
+          "principal": {
+            "type": "auth:token",
+            "id": "legacy-token",
+            "label": "Admin"
+          },
+          "payload": {
+            "workflow_class": "parity.v1.cancelled_child_parent",
+            "workflow_type": "parity.v1.cancelled_child_parent",
+            "workflow_instance_id": "child-reference-pending-timer",
+            "workflow_run_id": "01m4hys5dzf8wpe7f49236apxm",
+            "workflow_command_id": "01m4hys5e1vv7awqc0gfys4wry",
+            "execution_timeout_seconds": 3600,
+            "run_timeout_seconds": 600,
+            "execution_deadline_at": "2026-10-10T04:47:49+00:00",
+            "run_deadline_at": "2026-10-10T03:57:49+00:00",
+            "workflow_definition_fingerprint": "sha256:ac014d67d955e2bdfbf03e76af3efddf0babeb45c44d5d5f936743ee8bc29034",
+            "workflow_definition_fingerprint_source": "worker"
+          }
+        },
+        {
+          "sequence": 3,
+          "event_type": "ChildWorkflowScheduled",
+          "timestamp": "2026-10-10T03:47:50.577565Z",
+          "principal": null,
+          "payload": {
+            "sequence": 1,
+            "workflow_link_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_call_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "child_workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "child_workflow_class": "parity.v1.cancelled_child",
+            "child_workflow_type": "parity.v1.cancelled_child",
+            "parent_close_policy": "abandon",
+            "cancellation_policy": "abandon",
+            "retry_policy": null,
+            "timeout_policy": null
+          }
+        },
+        {
+          "sequence": 4,
+          "event_type": "ChildRunStarted",
+          "timestamp": "2026-10-10T03:47:50.580398Z",
+          "principal": null,
+          "payload": {
+            "sequence": 1,
+            "workflow_link_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_call_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "child_workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "child_workflow_class": "parity.v1.cancelled_child",
+            "child_workflow_type": "parity.v1.cancelled_child",
+            "child_run_number": 1,
+            "parent_close_policy": "abandon",
+            "cancellation_policy": "abandon",
+            "retry_policy": null,
+            "timeout_policy": null,
+            "execution_timeout_seconds": null,
+            "run_timeout_seconds": null,
+            "execution_deadline_at": null,
+            "run_deadline_at": null
+          }
+        }
+      ],
+      "accepted": {
+        "status": 200,
+        "response": {
+          "outcome": "cancelled",
+          "workflow_id": "01m4hys65cbr298p98g80ck6vw",
+          "run_id": "01m4hys65db5p3hqdejf1f7p57",
+          "requested_run_id": null,
+          "resolved_run_id": "01m4hys65db5p3hqdejf1f7p57",
+          "command_id": "01m4hys7yy3hbz63v98vz9v938",
+          "command_sequence": 1,
+          "target_scope": "instance",
+          "workflow_type": "parity.v1.cancelled_child",
+          "command_status": "accepted",
+          "command_source": "control_plane",
+          "reason": "direct child cancellation λ",
+          "rejection_reason": null,
+          "validation_errors": []
+        }
+      },
+      "child_history_before_duplicate": [
+        {
+          "sequence": 1,
+          "event_type": "WorkflowStarted",
+          "timestamp": "2026-10-10T03:47:50.584320Z",
+          "principal": null,
+          "payload": {
+            "workflow_class": "parity.v1.cancelled_child",
+            "workflow_type": "parity.v1.cancelled_child",
+            "workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "parent_workflow_instance_id": "child-reference-pending-timer",
+            "parent_workflow_run_id": "01m4hys5dzf8wpe7f49236apxm",
+            "parent_sequence": 1,
+            "workflow_link_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_call_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "retry_policy": null,
+            "timeout_policy": null,
+            "execution_timeout_seconds": null,
+            "run_timeout_seconds": null,
+            "execution_deadline_at": null,
+            "run_deadline_at": null
+          }
+        },
+        {
+          "sequence": 2,
+          "event_type": "TimerScheduled",
+          "timestamp": "2026-10-10T03:47:52.179467Z",
+          "principal": null,
+          "payload": {
+            "timer_id": "01m4hys7qjk53zqtwq9g0xp3c0",
+            "sequence": 1,
+            "delay_seconds": 60,
+            "fire_at": "2026-10-10T03:48:52.178508Z"
+          }
+        },
+        {
+          "sequence": 3,
+          "event_type": "CancelRequested",
+          "timestamp": "2026-10-10T03:47:52.415768Z",
+          "principal": {
+            "type": "auth:token",
+            "id": "legacy-token",
+            "label": "Admin"
+          },
+          "payload": {
+            "workflow_command_id": "01m4hys7yy3hbz63v98vz9v938",
+            "workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "command_type": "cancel",
+            "reason": "direct child cancellation λ"
+          }
+        },
+        {
+          "sequence": 4,
+          "event_type": "TimerCancelled",
+          "timestamp": "2026-10-10T03:47:52.421143Z",
+          "principal": {
+            "type": "auth:token",
+            "id": "legacy-token",
+            "label": "Admin"
+          },
+          "payload": {
+            "timer_id": "01m4hys7qjk53zqtwq9g0xp3c0",
+            "sequence": 1,
+            "delay_seconds": 60,
+            "fire_at": "2026-10-10T03:48:52.178508Z",
+            "cancelled_at": "2026-10-10T03:47:52.420733Z"
+          }
+        },
+        {
+          "sequence": 5,
+          "event_type": "WorkflowCancelled",
+          "timestamp": "2026-10-10T03:47:52.425667Z",
+          "principal": {
+            "type": "auth:token",
+            "id": "legacy-token",
+            "label": "Admin"
+          },
+          "payload": {
+            "workflow_command_id": "01m4hys7yy3hbz63v98vz9v938",
+            "workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "failure_id": "01m4hys7z9bwwvx3jjhn425mhq",
+            "failure_category": "cancelled",
+            "closed_reason": "cancelled",
+            "exception_class": "Workflow\\V2\\Exceptions\\WorkflowCancelledException",
+            "message": "Workflow cancelled: direct child cancellation λ",
+            "reason": "direct child cancellation λ"
+          }
+        }
+      ],
+      "parent_history_before_duplicate": [
+        {
+          "sequence": 1,
+          "event_type": "StartAccepted",
+          "timestamp": "2026-10-10T03:47:49.827371Z",
+          "principal": {
+            "type": "auth:token",
+            "id": "legacy-token",
+            "label": "Admin"
+          },
+          "payload": {
+            "workflow_command_id": "01m4hys5e1vv7awqc0gfys4wry",
+            "workflow_instance_id": "child-reference-pending-timer",
+            "workflow_run_id": "01m4hys5dzf8wpe7f49236apxm",
+            "workflow_class": "parity.v1.cancelled_child_parent",
+            "workflow_type": "parity.v1.cancelled_child_parent",
+            "business_key": null,
+            "visibility_labels": null,
+            "memo": null,
+            "search_attributes": null,
+            "outcome": "started_new"
+          }
+        },
+        {
+          "sequence": 2,
+          "event_type": "WorkflowStarted",
+          "timestamp": "2026-10-10T03:47:49.830785Z",
+          "principal": {
+            "type": "auth:token",
+            "id": "legacy-token",
+            "label": "Admin"
+          },
+          "payload": {
+            "workflow_class": "parity.v1.cancelled_child_parent",
+            "workflow_type": "parity.v1.cancelled_child_parent",
+            "workflow_instance_id": "child-reference-pending-timer",
+            "workflow_run_id": "01m4hys5dzf8wpe7f49236apxm",
+            "workflow_command_id": "01m4hys5e1vv7awqc0gfys4wry",
+            "execution_timeout_seconds": 3600,
+            "run_timeout_seconds": 600,
+            "execution_deadline_at": "2026-10-10T04:47:49+00:00",
+            "run_deadline_at": "2026-10-10T03:57:49+00:00",
+            "workflow_definition_fingerprint": "sha256:ac014d67d955e2bdfbf03e76af3efddf0babeb45c44d5d5f936743ee8bc29034",
+            "workflow_definition_fingerprint_source": "worker"
+          }
+        },
+        {
+          "sequence": 3,
+          "event_type": "ChildWorkflowScheduled",
+          "timestamp": "2026-10-10T03:47:50.577565Z",
+          "principal": null,
+          "payload": {
+            "sequence": 1,
+            "workflow_link_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_call_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "child_workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "child_workflow_class": "parity.v1.cancelled_child",
+            "child_workflow_type": "parity.v1.cancelled_child",
+            "parent_close_policy": "abandon",
+            "cancellation_policy": "abandon",
+            "retry_policy": null,
+            "timeout_policy": null
+          }
+        },
+        {
+          "sequence": 4,
+          "event_type": "ChildRunStarted",
+          "timestamp": "2026-10-10T03:47:50.580398Z",
+          "principal": null,
+          "payload": {
+            "sequence": 1,
+            "workflow_link_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_call_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "child_workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "child_workflow_class": "parity.v1.cancelled_child",
+            "child_workflow_type": "parity.v1.cancelled_child",
+            "child_run_number": 1,
+            "parent_close_policy": "abandon",
+            "cancellation_policy": "abandon",
+            "retry_policy": null,
+            "timeout_policy": null,
+            "execution_timeout_seconds": null,
+            "run_timeout_seconds": null,
+            "execution_deadline_at": null,
+            "run_deadline_at": null
+          }
+        },
+        {
+          "sequence": 5,
+          "event_type": "ChildRunCancelled",
+          "timestamp": "2026-10-10T03:47:52.432756Z",
+          "principal": null,
+          "payload": {
+            "sequence": 1,
+            "workflow_link_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_call_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "child_workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "child_workflow_class": "parity.v1.cancelled_child",
+            "child_workflow_type": "parity.v1.cancelled_child",
+            "child_run_number": 1,
+            "child_status": "cancelled",
+            "closed_reason": "cancelled",
+            "closed_at": "2026-10-10T03:47:52.424188Z",
+            "failure_id": "01m4hys7z9bwwvx3jjhn425mhq",
+            "failure_category": "cancelled",
+            "exception_class": "Workflow\\V2\\Exceptions\\WorkflowCancelledException",
+            "message": "Workflow cancelled: direct child cancellation λ"
+          }
+        }
+      ],
+      "duplicate": {
+        "status": 409,
+        "response": {
+          "outcome": "rejected_not_active",
+          "workflow_id": "01m4hys65cbr298p98g80ck6vw",
+          "run_id": "01m4hys65db5p3hqdejf1f7p57",
+          "requested_run_id": null,
+          "resolved_run_id": "01m4hys65db5p3hqdejf1f7p57",
+          "command_id": "01m4hys892nqz69znyvnaf5pcj",
+          "command_sequence": 2,
+          "target_scope": "instance",
+          "workflow_type": "parity.v1.cancelled_child",
+          "command_status": "rejected",
+          "command_source": "control_plane",
+          "reason": "run_not_active",
+          "rejection_reason": "run_not_active",
+          "validation_errors": [],
+          "accepted": false
+        }
+      },
+      "child_history_after_duplicate": [
+        {
+          "sequence": 1,
+          "event_type": "WorkflowStarted",
+          "timestamp": "2026-10-10T03:47:50.584320Z",
+          "principal": null,
+          "payload": {
+            "workflow_class": "parity.v1.cancelled_child",
+            "workflow_type": "parity.v1.cancelled_child",
+            "workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "parent_workflow_instance_id": "child-reference-pending-timer",
+            "parent_workflow_run_id": "01m4hys5dzf8wpe7f49236apxm",
+            "parent_sequence": 1,
+            "workflow_link_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_call_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "retry_policy": null,
+            "timeout_policy": null,
+            "execution_timeout_seconds": null,
+            "run_timeout_seconds": null,
+            "execution_deadline_at": null,
+            "run_deadline_at": null
+          }
+        },
+        {
+          "sequence": 2,
+          "event_type": "TimerScheduled",
+          "timestamp": "2026-10-10T03:47:52.179467Z",
+          "principal": null,
+          "payload": {
+            "timer_id": "01m4hys7qjk53zqtwq9g0xp3c0",
+            "sequence": 1,
+            "delay_seconds": 60,
+            "fire_at": "2026-10-10T03:48:52.178508Z"
+          }
+        },
+        {
+          "sequence": 3,
+          "event_type": "CancelRequested",
+          "timestamp": "2026-10-10T03:47:52.415768Z",
+          "principal": {
+            "type": "auth:token",
+            "id": "legacy-token",
+            "label": "Admin"
+          },
+          "payload": {
+            "workflow_command_id": "01m4hys7yy3hbz63v98vz9v938",
+            "workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "command_type": "cancel",
+            "reason": "direct child cancellation λ"
+          }
+        },
+        {
+          "sequence": 4,
+          "event_type": "TimerCancelled",
+          "timestamp": "2026-10-10T03:47:52.421143Z",
+          "principal": {
+            "type": "auth:token",
+            "id": "legacy-token",
+            "label": "Admin"
+          },
+          "payload": {
+            "timer_id": "01m4hys7qjk53zqtwq9g0xp3c0",
+            "sequence": 1,
+            "delay_seconds": 60,
+            "fire_at": "2026-10-10T03:48:52.178508Z",
+            "cancelled_at": "2026-10-10T03:47:52.420733Z"
+          }
+        },
+        {
+          "sequence": 5,
+          "event_type": "WorkflowCancelled",
+          "timestamp": "2026-10-10T03:47:52.425667Z",
+          "principal": {
+            "type": "auth:token",
+            "id": "legacy-token",
+            "label": "Admin"
+          },
+          "payload": {
+            "workflow_command_id": "01m4hys7yy3hbz63v98vz9v938",
+            "workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "failure_id": "01m4hys7z9bwwvx3jjhn425mhq",
+            "failure_category": "cancelled",
+            "closed_reason": "cancelled",
+            "exception_class": "Workflow\\V2\\Exceptions\\WorkflowCancelledException",
+            "message": "Workflow cancelled: direct child cancellation λ",
+            "reason": "direct child cancellation λ"
+          }
+        }
+      ],
+      "parent_history_after_duplicate": [
+        {
+          "sequence": 1,
+          "event_type": "StartAccepted",
+          "timestamp": "2026-10-10T03:47:49.827371Z",
+          "principal": {
+            "type": "auth:token",
+            "id": "legacy-token",
+            "label": "Admin"
+          },
+          "payload": {
+            "workflow_command_id": "01m4hys5e1vv7awqc0gfys4wry",
+            "workflow_instance_id": "child-reference-pending-timer",
+            "workflow_run_id": "01m4hys5dzf8wpe7f49236apxm",
+            "workflow_class": "parity.v1.cancelled_child_parent",
+            "workflow_type": "parity.v1.cancelled_child_parent",
+            "business_key": null,
+            "visibility_labels": null,
+            "memo": null,
+            "search_attributes": null,
+            "outcome": "started_new"
+          }
+        },
+        {
+          "sequence": 2,
+          "event_type": "WorkflowStarted",
+          "timestamp": "2026-10-10T03:47:49.830785Z",
+          "principal": {
+            "type": "auth:token",
+            "id": "legacy-token",
+            "label": "Admin"
+          },
+          "payload": {
+            "workflow_class": "parity.v1.cancelled_child_parent",
+            "workflow_type": "parity.v1.cancelled_child_parent",
+            "workflow_instance_id": "child-reference-pending-timer",
+            "workflow_run_id": "01m4hys5dzf8wpe7f49236apxm",
+            "workflow_command_id": "01m4hys5e1vv7awqc0gfys4wry",
+            "execution_timeout_seconds": 3600,
+            "run_timeout_seconds": 600,
+            "execution_deadline_at": "2026-10-10T04:47:49+00:00",
+            "run_deadline_at": "2026-10-10T03:57:49+00:00",
+            "workflow_definition_fingerprint": "sha256:ac014d67d955e2bdfbf03e76af3efddf0babeb45c44d5d5f936743ee8bc29034",
+            "workflow_definition_fingerprint_source": "worker"
+          }
+        },
+        {
+          "sequence": 3,
+          "event_type": "ChildWorkflowScheduled",
+          "timestamp": "2026-10-10T03:47:50.577565Z",
+          "principal": null,
+          "payload": {
+            "sequence": 1,
+            "workflow_link_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_call_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "child_workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "child_workflow_class": "parity.v1.cancelled_child",
+            "child_workflow_type": "parity.v1.cancelled_child",
+            "parent_close_policy": "abandon",
+            "cancellation_policy": "abandon",
+            "retry_policy": null,
+            "timeout_policy": null
+          }
+        },
+        {
+          "sequence": 4,
+          "event_type": "ChildRunStarted",
+          "timestamp": "2026-10-10T03:47:50.580398Z",
+          "principal": null,
+          "payload": {
+            "sequence": 1,
+            "workflow_link_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_call_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "child_workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "child_workflow_class": "parity.v1.cancelled_child",
+            "child_workflow_type": "parity.v1.cancelled_child",
+            "child_run_number": 1,
+            "parent_close_policy": "abandon",
+            "cancellation_policy": "abandon",
+            "retry_policy": null,
+            "timeout_policy": null,
+            "execution_timeout_seconds": null,
+            "run_timeout_seconds": null,
+            "execution_deadline_at": null,
+            "run_deadline_at": null
+          }
+        },
+        {
+          "sequence": 5,
+          "event_type": "ChildRunCancelled",
+          "timestamp": "2026-10-10T03:47:52.432756Z",
+          "principal": null,
+          "payload": {
+            "sequence": 1,
+            "workflow_link_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_call_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "child_workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "child_workflow_class": "parity.v1.cancelled_child",
+            "child_workflow_type": "parity.v1.cancelled_child",
+            "child_run_number": 1,
+            "child_status": "cancelled",
+            "closed_reason": "cancelled",
+            "closed_at": "2026-10-10T03:47:52.424188Z",
+            "failure_id": "01m4hys7z9bwwvx3jjhn425mhq",
+            "failure_category": "cancelled",
+            "exception_class": "Workflow\\V2\\Exceptions\\WorkflowCancelledException",
+            "message": "Workflow cancelled: direct child cancellation λ"
+          }
+        }
+      ],
+      "child_history_before_terminal_duplicate": [
+        {
+          "sequence": 1,
+          "event_type": "WorkflowStarted",
+          "timestamp": "2026-10-10T03:47:50.584320Z",
+          "principal": null,
+          "payload": {
+            "workflow_class": "parity.v1.cancelled_child",
+            "workflow_type": "parity.v1.cancelled_child",
+            "workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "parent_workflow_instance_id": "child-reference-pending-timer",
+            "parent_workflow_run_id": "01m4hys5dzf8wpe7f49236apxm",
+            "parent_sequence": 1,
+            "workflow_link_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_call_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "retry_policy": null,
+            "timeout_policy": null,
+            "execution_timeout_seconds": null,
+            "run_timeout_seconds": null,
+            "execution_deadline_at": null,
+            "run_deadline_at": null
+          }
+        },
+        {
+          "sequence": 2,
+          "event_type": "TimerScheduled",
+          "timestamp": "2026-10-10T03:47:52.179467Z",
+          "principal": null,
+          "payload": {
+            "timer_id": "01m4hys7qjk53zqtwq9g0xp3c0",
+            "sequence": 1,
+            "delay_seconds": 60,
+            "fire_at": "2026-10-10T03:48:52.178508Z"
+          }
+        },
+        {
+          "sequence": 3,
+          "event_type": "CancelRequested",
+          "timestamp": "2026-10-10T03:47:52.415768Z",
+          "principal": {
+            "type": "auth:token",
+            "id": "legacy-token",
+            "label": "Admin"
+          },
+          "payload": {
+            "workflow_command_id": "01m4hys7yy3hbz63v98vz9v938",
+            "workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "command_type": "cancel",
+            "reason": "direct child cancellation λ"
+          }
+        },
+        {
+          "sequence": 4,
+          "event_type": "TimerCancelled",
+          "timestamp": "2026-10-10T03:47:52.421143Z",
+          "principal": {
+            "type": "auth:token",
+            "id": "legacy-token",
+            "label": "Admin"
+          },
+          "payload": {
+            "timer_id": "01m4hys7qjk53zqtwq9g0xp3c0",
+            "sequence": 1,
+            "delay_seconds": 60,
+            "fire_at": "2026-10-10T03:48:52.178508Z",
+            "cancelled_at": "2026-10-10T03:47:52.420733Z"
+          }
+        },
+        {
+          "sequence": 5,
+          "event_type": "WorkflowCancelled",
+          "timestamp": "2026-10-10T03:47:52.425667Z",
+          "principal": {
+            "type": "auth:token",
+            "id": "legacy-token",
+            "label": "Admin"
+          },
+          "payload": {
+            "workflow_command_id": "01m4hys7yy3hbz63v98vz9v938",
+            "workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "failure_id": "01m4hys7z9bwwvx3jjhn425mhq",
+            "failure_category": "cancelled",
+            "closed_reason": "cancelled",
+            "exception_class": "Workflow\\V2\\Exceptions\\WorkflowCancelledException",
+            "message": "Workflow cancelled: direct child cancellation λ",
+            "reason": "direct child cancellation λ"
+          }
+        }
+      ],
+      "parent_history_before_terminal_duplicate": [
+        {
+          "sequence": 1,
+          "event_type": "StartAccepted",
+          "timestamp": "2026-10-10T03:47:49.827371Z",
+          "principal": {
+            "type": "auth:token",
+            "id": "legacy-token",
+            "label": "Admin"
+          },
+          "payload": {
+            "workflow_command_id": "01m4hys5e1vv7awqc0gfys4wry",
+            "workflow_instance_id": "child-reference-pending-timer",
+            "workflow_run_id": "01m4hys5dzf8wpe7f49236apxm",
+            "workflow_class": "parity.v1.cancelled_child_parent",
+            "workflow_type": "parity.v1.cancelled_child_parent",
+            "business_key": null,
+            "visibility_labels": null,
+            "memo": null,
+            "search_attributes": null,
+            "outcome": "started_new"
+          }
+        },
+        {
+          "sequence": 2,
+          "event_type": "WorkflowStarted",
+          "timestamp": "2026-10-10T03:47:49.830785Z",
+          "principal": {
+            "type": "auth:token",
+            "id": "legacy-token",
+            "label": "Admin"
+          },
+          "payload": {
+            "workflow_class": "parity.v1.cancelled_child_parent",
+            "workflow_type": "parity.v1.cancelled_child_parent",
+            "workflow_instance_id": "child-reference-pending-timer",
+            "workflow_run_id": "01m4hys5dzf8wpe7f49236apxm",
+            "workflow_command_id": "01m4hys5e1vv7awqc0gfys4wry",
+            "execution_timeout_seconds": 3600,
+            "run_timeout_seconds": 600,
+            "execution_deadline_at": "2026-10-10T04:47:49+00:00",
+            "run_deadline_at": "2026-10-10T03:57:49+00:00",
+            "workflow_definition_fingerprint": "sha256:ac014d67d955e2bdfbf03e76af3efddf0babeb45c44d5d5f936743ee8bc29034",
+            "workflow_definition_fingerprint_source": "worker"
+          }
+        },
+        {
+          "sequence": 3,
+          "event_type": "ChildWorkflowScheduled",
+          "timestamp": "2026-10-10T03:47:50.577565Z",
+          "principal": null,
+          "payload": {
+            "sequence": 1,
+            "workflow_link_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_call_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "child_workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "child_workflow_class": "parity.v1.cancelled_child",
+            "child_workflow_type": "parity.v1.cancelled_child",
+            "parent_close_policy": "abandon",
+            "cancellation_policy": "abandon",
+            "retry_policy": null,
+            "timeout_policy": null
+          }
+        },
+        {
+          "sequence": 4,
+          "event_type": "ChildRunStarted",
+          "timestamp": "2026-10-10T03:47:50.580398Z",
+          "principal": null,
+          "payload": {
+            "sequence": 1,
+            "workflow_link_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_call_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "child_workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "child_workflow_class": "parity.v1.cancelled_child",
+            "child_workflow_type": "parity.v1.cancelled_child",
+            "child_run_number": 1,
+            "parent_close_policy": "abandon",
+            "cancellation_policy": "abandon",
+            "retry_policy": null,
+            "timeout_policy": null,
+            "execution_timeout_seconds": null,
+            "run_timeout_seconds": null,
+            "execution_deadline_at": null,
+            "run_deadline_at": null
+          }
+        },
+        {
+          "sequence": 5,
+          "event_type": "ChildRunCancelled",
+          "timestamp": "2026-10-10T03:47:52.432756Z",
+          "principal": null,
+          "payload": {
+            "sequence": 1,
+            "workflow_link_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_call_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "child_workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "child_workflow_class": "parity.v1.cancelled_child",
+            "child_workflow_type": "parity.v1.cancelled_child",
+            "child_run_number": 1,
+            "child_status": "cancelled",
+            "closed_reason": "cancelled",
+            "closed_at": "2026-10-10T03:47:52.424188Z",
+            "failure_id": "01m4hys7z9bwwvx3jjhn425mhq",
+            "failure_category": "cancelled",
+            "exception_class": "Workflow\\V2\\Exceptions\\WorkflowCancelledException",
+            "message": "Workflow cancelled: direct child cancellation λ"
+          }
+        },
+        {
+          "sequence": 6,
+          "event_type": "WorkflowCompleted",
+          "timestamp": "2026-10-10T03:47:53.652138Z",
+          "principal": {
+            "type": "auth:token",
+            "id": "legacy-token",
+            "label": "Admin"
+          },
+          "payload": {
+            "output": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNw4ECnZhbHVlDgYObWVzc2FnZQoqY2hpbGQgY2FuY2VsbGF0aW9uIM67CmNvdW50BIKAgICAgIAgEG9wdGlvbmFsAAAeY2hpbGRfY2FuY2VsbGVkAgEA"
+            },
+            "payload_codec": "avro"
+          }
+        }
+      ],
+      "terminal_duplicate": {
+        "status": 409,
+        "response": {
+          "outcome": "rejected_not_active",
+          "workflow_id": "01m4hys65cbr298p98g80ck6vw",
+          "run_id": "01m4hys65db5p3hqdejf1f7p57",
+          "requested_run_id": null,
+          "resolved_run_id": "01m4hys65db5p3hqdejf1f7p57",
+          "command_id": "01m4hys9ngdatyh7z8dg49jnpg",
+          "command_sequence": 3,
+          "target_scope": "instance",
+          "workflow_type": "parity.v1.cancelled_child",
+          "command_status": "rejected",
+          "command_source": "control_plane",
+          "reason": "run_not_active",
+          "rejection_reason": "run_not_active",
+          "validation_errors": [],
+          "accepted": false
+        }
+      },
+      "child_history_after_terminal_duplicate": [
+        {
+          "sequence": 1,
+          "event_type": "WorkflowStarted",
+          "timestamp": "2026-10-10T03:47:50.584320Z",
+          "principal": null,
+          "payload": {
+            "workflow_class": "parity.v1.cancelled_child",
+            "workflow_type": "parity.v1.cancelled_child",
+            "workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "parent_workflow_instance_id": "child-reference-pending-timer",
+            "parent_workflow_run_id": "01m4hys5dzf8wpe7f49236apxm",
+            "parent_sequence": 1,
+            "workflow_link_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_call_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "retry_policy": null,
+            "timeout_policy": null,
+            "execution_timeout_seconds": null,
+            "run_timeout_seconds": null,
+            "execution_deadline_at": null,
+            "run_deadline_at": null
+          }
+        },
+        {
+          "sequence": 2,
+          "event_type": "TimerScheduled",
+          "timestamp": "2026-10-10T03:47:52.179467Z",
+          "principal": null,
+          "payload": {
+            "timer_id": "01m4hys7qjk53zqtwq9g0xp3c0",
+            "sequence": 1,
+            "delay_seconds": 60,
+            "fire_at": "2026-10-10T03:48:52.178508Z"
+          }
+        },
+        {
+          "sequence": 3,
+          "event_type": "CancelRequested",
+          "timestamp": "2026-10-10T03:47:52.415768Z",
+          "principal": {
+            "type": "auth:token",
+            "id": "legacy-token",
+            "label": "Admin"
+          },
+          "payload": {
+            "workflow_command_id": "01m4hys7yy3hbz63v98vz9v938",
+            "workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "command_type": "cancel",
+            "reason": "direct child cancellation λ"
+          }
+        },
+        {
+          "sequence": 4,
+          "event_type": "TimerCancelled",
+          "timestamp": "2026-10-10T03:47:52.421143Z",
+          "principal": {
+            "type": "auth:token",
+            "id": "legacy-token",
+            "label": "Admin"
+          },
+          "payload": {
+            "timer_id": "01m4hys7qjk53zqtwq9g0xp3c0",
+            "sequence": 1,
+            "delay_seconds": 60,
+            "fire_at": "2026-10-10T03:48:52.178508Z",
+            "cancelled_at": "2026-10-10T03:47:52.420733Z"
+          }
+        },
+        {
+          "sequence": 5,
+          "event_type": "WorkflowCancelled",
+          "timestamp": "2026-10-10T03:47:52.425667Z",
+          "principal": {
+            "type": "auth:token",
+            "id": "legacy-token",
+            "label": "Admin"
+          },
+          "payload": {
+            "workflow_command_id": "01m4hys7yy3hbz63v98vz9v938",
+            "workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "failure_id": "01m4hys7z9bwwvx3jjhn425mhq",
+            "failure_category": "cancelled",
+            "closed_reason": "cancelled",
+            "exception_class": "Workflow\\V2\\Exceptions\\WorkflowCancelledException",
+            "message": "Workflow cancelled: direct child cancellation λ",
+            "reason": "direct child cancellation λ"
+          }
+        }
+      ],
+      "parent_history_after_terminal_duplicate": [
+        {
+          "sequence": 1,
+          "event_type": "StartAccepted",
+          "timestamp": "2026-10-10T03:47:49.827371Z",
+          "principal": {
+            "type": "auth:token",
+            "id": "legacy-token",
+            "label": "Admin"
+          },
+          "payload": {
+            "workflow_command_id": "01m4hys5e1vv7awqc0gfys4wry",
+            "workflow_instance_id": "child-reference-pending-timer",
+            "workflow_run_id": "01m4hys5dzf8wpe7f49236apxm",
+            "workflow_class": "parity.v1.cancelled_child_parent",
+            "workflow_type": "parity.v1.cancelled_child_parent",
+            "business_key": null,
+            "visibility_labels": null,
+            "memo": null,
+            "search_attributes": null,
+            "outcome": "started_new"
+          }
+        },
+        {
+          "sequence": 2,
+          "event_type": "WorkflowStarted",
+          "timestamp": "2026-10-10T03:47:49.830785Z",
+          "principal": {
+            "type": "auth:token",
+            "id": "legacy-token",
+            "label": "Admin"
+          },
+          "payload": {
+            "workflow_class": "parity.v1.cancelled_child_parent",
+            "workflow_type": "parity.v1.cancelled_child_parent",
+            "workflow_instance_id": "child-reference-pending-timer",
+            "workflow_run_id": "01m4hys5dzf8wpe7f49236apxm",
+            "workflow_command_id": "01m4hys5e1vv7awqc0gfys4wry",
+            "execution_timeout_seconds": 3600,
+            "run_timeout_seconds": 600,
+            "execution_deadline_at": "2026-10-10T04:47:49+00:00",
+            "run_deadline_at": "2026-10-10T03:57:49+00:00",
+            "workflow_definition_fingerprint": "sha256:ac014d67d955e2bdfbf03e76af3efddf0babeb45c44d5d5f936743ee8bc29034",
+            "workflow_definition_fingerprint_source": "worker"
+          }
+        },
+        {
+          "sequence": 3,
+          "event_type": "ChildWorkflowScheduled",
+          "timestamp": "2026-10-10T03:47:50.577565Z",
+          "principal": null,
+          "payload": {
+            "sequence": 1,
+            "workflow_link_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_call_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "child_workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "child_workflow_class": "parity.v1.cancelled_child",
+            "child_workflow_type": "parity.v1.cancelled_child",
+            "parent_close_policy": "abandon",
+            "cancellation_policy": "abandon",
+            "retry_policy": null,
+            "timeout_policy": null
+          }
+        },
+        {
+          "sequence": 4,
+          "event_type": "ChildRunStarted",
+          "timestamp": "2026-10-10T03:47:50.580398Z",
+          "principal": null,
+          "payload": {
+            "sequence": 1,
+            "workflow_link_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_call_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "child_workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "child_workflow_class": "parity.v1.cancelled_child",
+            "child_workflow_type": "parity.v1.cancelled_child",
+            "child_run_number": 1,
+            "parent_close_policy": "abandon",
+            "cancellation_policy": "abandon",
+            "retry_policy": null,
+            "timeout_policy": null,
+            "execution_timeout_seconds": null,
+            "run_timeout_seconds": null,
+            "execution_deadline_at": null,
+            "run_deadline_at": null
+          }
+        },
+        {
+          "sequence": 5,
+          "event_type": "ChildRunCancelled",
+          "timestamp": "2026-10-10T03:47:52.432756Z",
+          "principal": null,
+          "payload": {
+            "sequence": 1,
+            "workflow_link_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_call_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "child_workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "child_workflow_class": "parity.v1.cancelled_child",
+            "child_workflow_type": "parity.v1.cancelled_child",
+            "child_run_number": 1,
+            "child_status": "cancelled",
+            "closed_reason": "cancelled",
+            "closed_at": "2026-10-10T03:47:52.424188Z",
+            "failure_id": "01m4hys7z9bwwvx3jjhn425mhq",
+            "failure_category": "cancelled",
+            "exception_class": "Workflow\\V2\\Exceptions\\WorkflowCancelledException",
+            "message": "Workflow cancelled: direct child cancellation λ"
+          }
+        },
+        {
+          "sequence": 6,
+          "event_type": "WorkflowCompleted",
+          "timestamp": "2026-10-10T03:47:53.652138Z",
+          "principal": {
+            "type": "auth:token",
+            "id": "legacy-token",
+            "label": "Admin"
+          },
+          "payload": {
+            "output": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNw4ECnZhbHVlDgYObWVzc2FnZQoqY2hpbGQgY2FuY2VsbGF0aW9uIM67CmNvdW50BIKAgICAgIAgEG9wdGlvbmFsAAAeY2hpbGRfY2FuY2VsbGVkAgEA"
+            },
+            "payload_codec": "avro"
+          }
+        }
+      ],
+      "fresh_child": {
+        "workflow_id": "01m4hys65cbr298p98g80ck6vw",
+        "run_id": "01m4hys65db5p3hqdejf1f7p57",
+        "namespace": "default",
+        "workflow_type": "parity.v1.cancelled_child",
+        "business_key": null,
+        "status": "cancelled",
+        "status_bucket": "failed",
+        "is_terminal": true,
+        "closed_reason": "cancelled",
+        "task_queue": "server-parity-v1",
+        "run_number": 1,
+        "run_count": 1,
+        "is_current_run": true,
+        "continued_from_run_id": null,
+        "resume_step_sequence": null,
+        "recovery_kind": null,
+        "compatibility_status": "compatible",
+        "compatibility_supported_in_fleet": true,
+        "payload_codec": "avro",
+        "execution_timeout_seconds": null,
+        "run_timeout_seconds": null,
+        "execution_deadline_at": null,
+        "run_deadline_at": null,
+        "input": [
+          {
+            "message": "child cancellation λ",
+            "count": 9007199254740992,
+            "optional": null
+          }
+        ],
+        "output": null,
+        "input_envelope": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCDgYObWVzc2FnZQoqY2hpbGQgY2FuY2VsbGF0aW9uIM67CmNvdW50BIKAgICAgIAgEG9wdGlvbmFsAAAA"
+        },
+        "output_envelope": null,
+        "started_at": "2026-10-10T03:47:50.572699Z",
+        "closed_at": "2026-10-10T03:47:52.424188Z",
+        "last_progress_at": "2026-10-10T03:47:52+00:00",
+        "wait_kind": null,
+        "wait_reason": null,
+        "memo": [],
+        "search_attributes": [],
+        "actions": {
+          "can_signal": false,
+          "can_query": false,
+          "can_update": false,
+          "can_cancel": false,
+          "can_terminate": false,
+          "can_repair": false,
+          "can_archive": true
+        },
+        "commands_scope": "selected_run",
+        "updates_scope": "selected_run",
+        "updates": []
+      },
+      "fresh_child_history": [
+        {
+          "sequence": 1,
+          "event_type": "WorkflowStarted",
+          "timestamp": "2026-10-10T03:47:50.584320Z",
+          "principal": null,
+          "payload": {
+            "workflow_class": "parity.v1.cancelled_child",
+            "workflow_type": "parity.v1.cancelled_child",
+            "workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "parent_workflow_instance_id": "child-reference-pending-timer",
+            "parent_workflow_run_id": "01m4hys5dzf8wpe7f49236apxm",
+            "parent_sequence": 1,
+            "workflow_link_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_call_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "retry_policy": null,
+            "timeout_policy": null,
+            "execution_timeout_seconds": null,
+            "run_timeout_seconds": null,
+            "execution_deadline_at": null,
+            "run_deadline_at": null
+          }
+        },
+        {
+          "sequence": 2,
+          "event_type": "TimerScheduled",
+          "timestamp": "2026-10-10T03:47:52.179467Z",
+          "principal": null,
+          "payload": {
+            "timer_id": "01m4hys7qjk53zqtwq9g0xp3c0",
+            "sequence": 1,
+            "delay_seconds": 60,
+            "fire_at": "2026-10-10T03:48:52.178508Z"
+          }
+        },
+        {
+          "sequence": 3,
+          "event_type": "CancelRequested",
+          "timestamp": "2026-10-10T03:47:52.415768Z",
+          "principal": {
+            "type": "auth:token",
+            "id": "legacy-token",
+            "label": "Admin"
+          },
+          "payload": {
+            "workflow_command_id": "01m4hys7yy3hbz63v98vz9v938",
+            "workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "command_type": "cancel",
+            "reason": "direct child cancellation λ"
+          }
+        },
+        {
+          "sequence": 4,
+          "event_type": "TimerCancelled",
+          "timestamp": "2026-10-10T03:47:52.421143Z",
+          "principal": {
+            "type": "auth:token",
+            "id": "legacy-token",
+            "label": "Admin"
+          },
+          "payload": {
+            "timer_id": "01m4hys7qjk53zqtwq9g0xp3c0",
+            "sequence": 1,
+            "delay_seconds": 60,
+            "fire_at": "2026-10-10T03:48:52.178508Z",
+            "cancelled_at": "2026-10-10T03:47:52.420733Z"
+          }
+        },
+        {
+          "sequence": 5,
+          "event_type": "WorkflowCancelled",
+          "timestamp": "2026-10-10T03:47:52.425667Z",
+          "principal": {
+            "type": "auth:token",
+            "id": "legacy-token",
+            "label": "Admin"
+          },
+          "payload": {
+            "workflow_command_id": "01m4hys7yy3hbz63v98vz9v938",
+            "workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "failure_id": "01m4hys7z9bwwvx3jjhn425mhq",
+            "failure_category": "cancelled",
+            "closed_reason": "cancelled",
+            "exception_class": "Workflow\\V2\\Exceptions\\WorkflowCancelledException",
+            "message": "Workflow cancelled: direct child cancellation λ",
+            "reason": "direct child cancellation λ"
+          }
+        }
+      ],
+      "fresh_parent": {
+        "workflow_id": "child-reference-pending-timer",
+        "run_id": "01m4hys5dzf8wpe7f49236apxm",
+        "namespace": "default",
+        "workflow_type": "parity.v1.cancelled_child_parent",
+        "business_key": null,
+        "status": "completed",
+        "status_bucket": "completed",
+        "is_terminal": true,
+        "closed_reason": "completed",
+        "task_queue": "server-parity-v1",
+        "run_number": 1,
+        "run_count": 1,
+        "is_current_run": true,
+        "continued_from_run_id": null,
+        "resume_step_sequence": null,
+        "recovery_kind": null,
+        "compatibility_status": "compatible",
+        "compatibility_supported_in_fleet": true,
+        "payload_codec": "avro",
+        "execution_timeout_seconds": 3600,
+        "run_timeout_seconds": 600,
+        "execution_deadline_at": "2026-10-10T04:47:49+00:00",
+        "run_deadline_at": "2026-10-10T03:57:49+00:00",
+        "input": [
+          {
+            "message": "child cancellation λ",
+            "count": 9007199254740992,
+            "optional": null
+          }
+        ],
+        "output": {
+          "value": {
+            "message": "child cancellation λ",
+            "count": 9007199254740992,
+            "optional": null
+          },
+          "child_cancelled": true
+        },
+        "input_envelope": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCDgYObWVzc2FnZQoqY2hpbGQgY2FuY2VsbGF0aW9uIM67CmNvdW50BIKAgICAgIAgEG9wdGlvbmFsAAAA"
+        },
+        "output_envelope": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNw4ECnZhbHVlDgYObWVzc2FnZQoqY2hpbGQgY2FuY2VsbGF0aW9uIM67CmNvdW50BIKAgICAgIAgEG9wdGlvbmFsAAAeY2hpbGRfY2FuY2VsbGVkAgEA"
+        },
+        "started_at": "2026-10-10T03:47:49.823017Z",
+        "closed_at": "2026-10-10T03:47:53.650812Z",
+        "last_progress_at": "2026-10-10T03:47:53+00:00",
+        "wait_kind": null,
+        "wait_reason": null,
+        "memo": [],
+        "search_attributes": [],
+        "actions": {
+          "can_signal": false,
+          "can_query": false,
+          "can_update": false,
+          "can_cancel": false,
+          "can_terminate": false,
+          "can_repair": false,
+          "can_archive": true
+        },
+        "commands_scope": "selected_run",
+        "updates_scope": "selected_run",
+        "updates": []
+      },
+      "fresh_parent_history": [
+        {
+          "sequence": 1,
+          "event_type": "StartAccepted",
+          "timestamp": "2026-10-10T03:47:49.827371Z",
+          "principal": {
+            "type": "auth:token",
+            "id": "legacy-token",
+            "label": "Admin"
+          },
+          "payload": {
+            "workflow_command_id": "01m4hys5e1vv7awqc0gfys4wry",
+            "workflow_instance_id": "child-reference-pending-timer",
+            "workflow_run_id": "01m4hys5dzf8wpe7f49236apxm",
+            "workflow_class": "parity.v1.cancelled_child_parent",
+            "workflow_type": "parity.v1.cancelled_child_parent",
+            "business_key": null,
+            "visibility_labels": null,
+            "memo": null,
+            "search_attributes": null,
+            "outcome": "started_new"
+          }
+        },
+        {
+          "sequence": 2,
+          "event_type": "WorkflowStarted",
+          "timestamp": "2026-10-10T03:47:49.830785Z",
+          "principal": {
+            "type": "auth:token",
+            "id": "legacy-token",
+            "label": "Admin"
+          },
+          "payload": {
+            "workflow_class": "parity.v1.cancelled_child_parent",
+            "workflow_type": "parity.v1.cancelled_child_parent",
+            "workflow_instance_id": "child-reference-pending-timer",
+            "workflow_run_id": "01m4hys5dzf8wpe7f49236apxm",
+            "workflow_command_id": "01m4hys5e1vv7awqc0gfys4wry",
+            "execution_timeout_seconds": 3600,
+            "run_timeout_seconds": 600,
+            "execution_deadline_at": "2026-10-10T04:47:49+00:00",
+            "run_deadline_at": "2026-10-10T03:57:49+00:00",
+            "workflow_definition_fingerprint": "sha256:ac014d67d955e2bdfbf03e76af3efddf0babeb45c44d5d5f936743ee8bc29034",
+            "workflow_definition_fingerprint_source": "worker"
+          }
+        },
+        {
+          "sequence": 3,
+          "event_type": "ChildWorkflowScheduled",
+          "timestamp": "2026-10-10T03:47:50.577565Z",
+          "principal": null,
+          "payload": {
+            "sequence": 1,
+            "workflow_link_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_call_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "child_workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "child_workflow_class": "parity.v1.cancelled_child",
+            "child_workflow_type": "parity.v1.cancelled_child",
+            "parent_close_policy": "abandon",
+            "cancellation_policy": "abandon",
+            "retry_policy": null,
+            "timeout_policy": null
+          }
+        },
+        {
+          "sequence": 4,
+          "event_type": "ChildRunStarted",
+          "timestamp": "2026-10-10T03:47:50.580398Z",
+          "principal": null,
+          "payload": {
+            "sequence": 1,
+            "workflow_link_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_call_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "child_workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "child_workflow_class": "parity.v1.cancelled_child",
+            "child_workflow_type": "parity.v1.cancelled_child",
+            "child_run_number": 1,
+            "parent_close_policy": "abandon",
+            "cancellation_policy": "abandon",
+            "retry_policy": null,
+            "timeout_policy": null,
+            "execution_timeout_seconds": null,
+            "run_timeout_seconds": null,
+            "execution_deadline_at": null,
+            "run_deadline_at": null
+          }
+        },
+        {
+          "sequence": 5,
+          "event_type": "ChildRunCancelled",
+          "timestamp": "2026-10-10T03:47:52.432756Z",
+          "principal": null,
+          "payload": {
+            "sequence": 1,
+            "workflow_link_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_call_id": "01M4HYS65FF7XNMND8TMDYAC23",
+            "child_workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+            "child_workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+            "child_workflow_class": "parity.v1.cancelled_child",
+            "child_workflow_type": "parity.v1.cancelled_child",
+            "child_run_number": 1,
+            "child_status": "cancelled",
+            "closed_reason": "cancelled",
+            "closed_at": "2026-10-10T03:47:52.424188Z",
+            "failure_id": "01m4hys7z9bwwvx3jjhn425mhq",
+            "failure_category": "cancelled",
+            "exception_class": "Workflow\\V2\\Exceptions\\WorkflowCancelledException",
+            "message": "Workflow cancelled: direct child cancellation λ"
+          }
+        },
+        {
+          "sequence": 6,
+          "event_type": "WorkflowCompleted",
+          "timestamp": "2026-10-10T03:47:53.652138Z",
+          "principal": {
+            "type": "auth:token",
+            "id": "legacy-token",
+            "label": "Admin"
+          },
+          "payload": {
+            "output": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNw4ECnZhbHVlDgYObWVzc2FnZQoqY2hpbGQgY2FuY2VsbGF0aW9uIM67CmNvdW50BIKAgICAgIAgEG9wdGlvbmFsAAAeY2hpbGRfY2FuY2VsbGVkAgEA"
+            },
+            "payload_codec": "avro"
+          }
+        }
+      ],
+      "caught": {
+        "class": "DurableWorkflow\\Exception\\ChildWorkflowFailed",
+        "message": "Workflow cancelled: direct child cancellation λ",
+        "failure_type": "ChildRunCancelled",
+        "workflow_type": "parity.v1.cancelled_child",
+        "payload": {
+          "sequence": 1,
+          "workflow_link_id": "01M4HYS65FF7XNMND8TMDYAC23",
+          "child_call_id": "01M4HYS65FF7XNMND8TMDYAC23",
+          "child_workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+          "child_workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+          "child_workflow_class": "parity.v1.cancelled_child",
+          "child_workflow_type": "parity.v1.cancelled_child",
+          "child_run_number": 1,
+          "child_status": "cancelled",
+          "closed_reason": "cancelled",
+          "closed_at": "2026-10-10T03:47:52.424188Z",
+          "failure_id": "01m4hys7z9bwwvx3jjhn425mhq",
+          "failure_category": "cancelled",
+          "exception_class": "Workflow\\V2\\Exceptions\\WorkflowCancelledException",
+          "message": "Workflow cancelled: direct child cancellation λ"
+        }
+      }
+    },
+    "workflow_id": "child-reference-pending-timer",
+    "run_id": "01m4hys5dzf8wpe7f49236apxm",
+    "workflow_type": "parity.v1.cancelled_child_parent",
+    "namespace": "default",
+    "task_queue": "server-parity-v1",
+    "status": "completed",
+    "payload_codec": "avro",
+    "input": [
+      {
+        "message": "child cancellation λ",
+        "count": 9007199254740992,
+        "optional": null
+      }
+    ],
+    "output": {
+      "value": {
+        "message": "child cancellation λ",
+        "count": 9007199254740992,
+        "optional": null
+      },
+      "child_cancelled": true
+    },
+    "events": [
+      {
+        "sequence": 1,
+        "event_type": "StartAccepted",
+        "timestamp": "2026-10-10T03:47:49.827371Z",
+        "principal": {
+          "type": "auth:token",
+          "id": "legacy-token",
+          "label": "Admin"
+        },
+        "payload": {
+          "workflow_command_id": "01m4hys5e1vv7awqc0gfys4wry",
+          "workflow_instance_id": "child-reference-pending-timer",
+          "workflow_run_id": "01m4hys5dzf8wpe7f49236apxm",
+          "workflow_class": "parity.v1.cancelled_child_parent",
+          "workflow_type": "parity.v1.cancelled_child_parent",
+          "business_key": null,
+          "visibility_labels": null,
+          "memo": null,
+          "search_attributes": null,
+          "outcome": "started_new"
+        },
+        "decoded": [],
+        "typed_decoded": []
+      },
+      {
+        "sequence": 2,
+        "event_type": "WorkflowStarted",
+        "timestamp": "2026-10-10T03:47:49.830785Z",
+        "principal": {
+          "type": "auth:token",
+          "id": "legacy-token",
+          "label": "Admin"
+        },
+        "payload": {
+          "workflow_class": "parity.v1.cancelled_child_parent",
+          "workflow_type": "parity.v1.cancelled_child_parent",
+          "workflow_instance_id": "child-reference-pending-timer",
+          "workflow_run_id": "01m4hys5dzf8wpe7f49236apxm",
+          "workflow_command_id": "01m4hys5e1vv7awqc0gfys4wry",
+          "execution_timeout_seconds": 3600,
+          "run_timeout_seconds": 600,
+          "execution_deadline_at": "2026-10-10T04:47:49+00:00",
+          "run_deadline_at": "2026-10-10T03:57:49+00:00",
+          "workflow_definition_fingerprint": "sha256:ac014d67d955e2bdfbf03e76af3efddf0babeb45c44d5d5f936743ee8bc29034",
+          "workflow_definition_fingerprint_source": "worker"
+        },
+        "decoded": [],
+        "typed_decoded": []
+      },
+      {
+        "sequence": 3,
+        "event_type": "ChildWorkflowScheduled",
+        "timestamp": "2026-10-10T03:47:50.577565Z",
+        "principal": null,
+        "payload": {
+          "sequence": 1,
+          "workflow_link_id": "01M4HYS65FF7XNMND8TMDYAC23",
+          "child_call_id": "01M4HYS65FF7XNMND8TMDYAC23",
+          "child_workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+          "child_workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+          "child_workflow_class": "parity.v1.cancelled_child",
+          "child_workflow_type": "parity.v1.cancelled_child",
+          "parent_close_policy": "abandon",
+          "cancellation_policy": "abandon",
+          "retry_policy": null,
+          "timeout_policy": null
+        },
+        "decoded": [],
+        "typed_decoded": []
+      },
+      {
+        "sequence": 4,
+        "event_type": "ChildRunStarted",
+        "timestamp": "2026-10-10T03:47:50.580398Z",
+        "principal": null,
+        "payload": {
+          "sequence": 1,
+          "workflow_link_id": "01M4HYS65FF7XNMND8TMDYAC23",
+          "child_call_id": "01M4HYS65FF7XNMND8TMDYAC23",
+          "child_workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+          "child_workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+          "child_workflow_class": "parity.v1.cancelled_child",
+          "child_workflow_type": "parity.v1.cancelled_child",
+          "child_run_number": 1,
+          "parent_close_policy": "abandon",
+          "cancellation_policy": "abandon",
+          "retry_policy": null,
+          "timeout_policy": null,
+          "execution_timeout_seconds": null,
+          "run_timeout_seconds": null,
+          "execution_deadline_at": null,
+          "run_deadline_at": null
+        },
+        "decoded": [],
+        "typed_decoded": []
+      },
+      {
+        "sequence": 5,
+        "event_type": "ChildRunCancelled",
+        "timestamp": "2026-10-10T03:47:52.432756Z",
+        "principal": null,
+        "payload": {
+          "sequence": 1,
+          "workflow_link_id": "01M4HYS65FF7XNMND8TMDYAC23",
+          "child_call_id": "01M4HYS65FF7XNMND8TMDYAC23",
+          "child_workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+          "child_workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+          "child_workflow_class": "parity.v1.cancelled_child",
+          "child_workflow_type": "parity.v1.cancelled_child",
+          "child_run_number": 1,
+          "child_status": "cancelled",
+          "closed_reason": "cancelled",
+          "closed_at": "2026-10-10T03:47:52.424188Z",
+          "failure_id": "01m4hys7z9bwwvx3jjhn425mhq",
+          "failure_category": "cancelled",
+          "exception_class": "Workflow\\V2\\Exceptions\\WorkflowCancelledException",
+          "message": "Workflow cancelled: direct child cancellation λ"
+        },
+        "decoded": [],
+        "typed_decoded": []
+      },
+      {
+        "sequence": 6,
+        "event_type": "WorkflowCompleted",
+        "timestamp": "2026-10-10T03:47:53.652138Z",
+        "principal": {
+          "type": "auth:token",
+          "id": "legacy-token",
+          "label": "Admin"
+        },
+        "payload": {
+          "output": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNw4ECnZhbHVlDgYObWVzc2FnZQoqY2hpbGQgY2FuY2VsbGF0aW9uIM67CmNvdW50BIKAgICAgIAgEG9wdGlvbmFsAAAeY2hpbGRfY2FuY2VsbGVkAgEA"
+          },
+          "payload_codec": "avro"
+        },
+        "decoded": {
+          "output": {
+            "value": {
+              "message": "child cancellation λ",
+              "count": 9007199254740992,
+              "optional": null
+            },
+            "child_cancelled": true
+          }
+        },
+        "typed_decoded": {
+          "output": {
+            "type": "map",
+            "value": {
+              "value": {
+                "type": "map",
+                "value": {
+                  "message": {
+                    "type": "string",
+                    "value": "child cancellation λ"
+                  },
+                  "count": {
+                    "type": "int64",
+                    "value": "9007199254740993"
+                  },
+                  "optional": {
+                    "type": "null",
+                    "value": null
+                  }
+                }
+              },
+              "child_cancelled": {
+                "type": "boolean",
+                "value": true
+              }
+            }
+          }
+        }
+      }
+    ],
+    "signal_deliveries": [],
+    "queries": [],
+    "updates": [],
+    "children": [
+      {
+        "execution": {
+          "workflow_id": "01m4hys65cbr298p98g80ck6vw",
+          "run_id": "01m4hys65db5p3hqdejf1f7p57",
+          "namespace": "default",
+          "workflow_type": "parity.v1.cancelled_child",
+          "business_key": null,
+          "status": "cancelled",
+          "status_bucket": "failed",
+          "is_terminal": true,
+          "closed_reason": "cancelled",
+          "task_queue": "server-parity-v1",
+          "run_number": 1,
+          "run_count": 1,
+          "is_current_run": true,
+          "continued_from_run_id": null,
+          "resume_step_sequence": null,
+          "recovery_kind": null,
+          "compatibility_status": "compatible",
+          "compatibility_supported_in_fleet": true,
+          "payload_codec": "avro",
+          "execution_timeout_seconds": null,
+          "run_timeout_seconds": null,
+          "execution_deadline_at": null,
+          "run_deadline_at": null,
+          "input": [
+            {
+              "message": "child cancellation λ",
+              "count": 9007199254740992,
+              "optional": null
+            }
+          ],
+          "output": null,
+          "input_envelope": {
+            "codec": "avro",
+            "blob": "wwHioz3/VYAiNwwCDgYObWVzc2FnZQoqY2hpbGQgY2FuY2VsbGF0aW9uIM67CmNvdW50BIKAgICAgIAgEG9wdGlvbmFsAAAA"
+          },
+          "output_envelope": null,
+          "started_at": "2026-10-10T03:47:50.572699Z",
+          "closed_at": "2026-10-10T03:47:52.424188Z",
+          "last_progress_at": "2026-10-10T03:47:52+00:00",
+          "wait_kind": null,
+          "wait_reason": null,
+          "memo": [],
+          "search_attributes": [],
+          "actions": {
+            "can_signal": false,
+            "can_query": false,
+            "can_update": false,
+            "can_cancel": false,
+            "can_terminate": false,
+            "can_repair": false,
+            "can_archive": true
+          },
+          "commands_scope": "selected_run",
+          "updates_scope": "selected_run",
+          "updates": []
+        },
+        "workflow_id": "01m4hys65cbr298p98g80ck6vw",
+        "run_id": "01m4hys65db5p3hqdejf1f7p57",
+        "workflow_type": "parity.v1.cancelled_child",
+        "namespace": "default",
+        "task_queue": "server-parity-v1",
+        "status": "cancelled",
+        "payload_codec": "avro",
+        "input": [
+          {
+            "message": "child cancellation λ",
+            "count": 9007199254740992,
+            "optional": null
+          }
+        ],
+        "typed_input": {
+          "type": "list",
+          "value": [
+            {
+              "type": "map",
+              "value": {
+                "message": {
+                  "type": "string",
+                  "value": "child cancellation λ"
+                },
+                "count": {
+                  "type": "int64",
+                  "value": "9007199254740993"
+                },
+                "optional": {
+                  "type": "null",
+                  "value": null
+                }
+              }
+            }
+          ]
+        },
+        "output": null,
+        "typed_output": {
+          "type": "null",
+          "value": null
+        },
+        "events": [
+          {
+            "sequence": 1,
+            "event_type": "WorkflowStarted",
+            "timestamp": "2026-10-10T03:47:50.584320Z",
+            "principal": null,
+            "payload": {
+              "workflow_class": "parity.v1.cancelled_child",
+              "workflow_type": "parity.v1.cancelled_child",
+              "workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+              "workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+              "parent_workflow_instance_id": "child-reference-pending-timer",
+              "parent_workflow_run_id": "01m4hys5dzf8wpe7f49236apxm",
+              "parent_sequence": 1,
+              "workflow_link_id": "01M4HYS65FF7XNMND8TMDYAC23",
+              "child_call_id": "01M4HYS65FF7XNMND8TMDYAC23",
+              "retry_policy": null,
+              "timeout_policy": null,
+              "execution_timeout_seconds": null,
+              "run_timeout_seconds": null,
+              "execution_deadline_at": null,
+              "run_deadline_at": null
+            },
+            "decoded": [],
+            "typed_decoded": []
+          },
+          {
+            "sequence": 2,
+            "event_type": "TimerScheduled",
+            "timestamp": "2026-10-10T03:47:52.179467Z",
+            "principal": null,
+            "payload": {
+              "timer_id": "01m4hys7qjk53zqtwq9g0xp3c0",
+              "sequence": 1,
+              "delay_seconds": 60,
+              "fire_at": "2026-10-10T03:48:52.178508Z"
+            },
+            "decoded": [],
+            "typed_decoded": []
+          },
+          {
+            "sequence": 3,
+            "event_type": "CancelRequested",
+            "timestamp": "2026-10-10T03:47:52.415768Z",
+            "principal": {
+              "type": "auth:token",
+              "id": "legacy-token",
+              "label": "Admin"
+            },
+            "payload": {
+              "workflow_command_id": "01m4hys7yy3hbz63v98vz9v938",
+              "workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+              "workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+              "command_type": "cancel",
+              "reason": "direct child cancellation λ"
+            },
+            "decoded": [],
+            "typed_decoded": []
+          },
+          {
+            "sequence": 4,
+            "event_type": "TimerCancelled",
+            "timestamp": "2026-10-10T03:47:52.421143Z",
+            "principal": {
+              "type": "auth:token",
+              "id": "legacy-token",
+              "label": "Admin"
+            },
+            "payload": {
+              "timer_id": "01m4hys7qjk53zqtwq9g0xp3c0",
+              "sequence": 1,
+              "delay_seconds": 60,
+              "fire_at": "2026-10-10T03:48:52.178508Z",
+              "cancelled_at": "2026-10-10T03:47:52.420733Z"
+            },
+            "decoded": [],
+            "typed_decoded": []
+          },
+          {
+            "sequence": 5,
+            "event_type": "WorkflowCancelled",
+            "timestamp": "2026-10-10T03:47:52.425667Z",
+            "principal": {
+              "type": "auth:token",
+              "id": "legacy-token",
+              "label": "Admin"
+            },
+            "payload": {
+              "workflow_command_id": "01m4hys7yy3hbz63v98vz9v938",
+              "workflow_instance_id": "01m4hys65cbr298p98g80ck6vw",
+              "workflow_run_id": "01m4hys65db5p3hqdejf1f7p57",
+              "failure_id": "01m4hys7z9bwwvx3jjhn425mhq",
+              "failure_category": "cancelled",
+              "closed_reason": "cancelled",
+              "exception_class": "Workflow\\V2\\Exceptions\\WorkflowCancelledException",
+              "message": "Workflow cancelled: direct child cancellation λ",
+              "reason": "direct child cancellation λ"
+            },
+            "decoded": [],
+            "typed_decoded": []
+          }
+        ]
+      }
+    ],
+    "activity_duplicate_receipts": null,
+    "caught_activity_failure": null,
+    "typed_input": {
+      "type": "list",
+      "value": [
+        {
+          "type": "map",
+          "value": {
+            "message": {
+              "type": "string",
+              "value": "child cancellation λ"
+            },
+            "count": {
+              "type": "int64",
+              "value": "9007199254740993"
+            },
+            "optional": {
+              "type": "null",
+              "value": null
+            }
+          }
+        }
+      ]
+    },
+    "mode": "http",
+    "typed_output": {
+      "type": "map",
+      "value": {
+        "value": {
+          "type": "map",
+          "value": {
+            "message": {
+              "type": "string",
+              "value": "child cancellation λ"
+            },
+            "count": {
+              "type": "int64",
+              "value": "9007199254740993"
+            },
+            "optional": {
+              "type": "null",
+              "value": null
+            }
+          }
+        },
+        "child_cancelled": {
+          "type": "boolean",
+          "value": true
+        }
+      }
+    },
+    "sdk_php": "2.2.6",
+    "php_version": "8.3.35"
+  }
+}

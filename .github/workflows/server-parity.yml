@@ -10,6 +10,8 @@ on:
       - tests/Fixtures/ServerParityBaselines/**
       - tests/Unit/ServerParityRunnerTest.mjs
       - tests/Unit/ServerParityCooperativeContractTest.mjs
+      - tests/Unit/ServerParityChildCancellationContractTest.mjs
+      - tests/Fixtures/ServerParityObservations/**
       - rust/**
   push:
     branches: [main]
@@ -21,6 +23,8 @@ on:
       - tests/Fixtures/ServerParityBaselines/**
       - tests/Unit/ServerParityRunnerTest.mjs
       - tests/Unit/ServerParityCooperativeContractTest.mjs
+      - tests/Unit/ServerParityChildCancellationContractTest.mjs
+      - tests/Fixtures/ServerParityObservations/**
       - rust/**
   workflow_dispatch:
 
@@ -666,7 +670,7 @@ jobs:
             -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run --rm --user=1000:1000 --entrypoint node -v "$PWD:/source:ro" -w /source \
-            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs > parity-evidence/comparator-tests.txt
+            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs > parity-evidence/comparator-tests.txt
           docker network create "$RESOURCE_SCOPE"
           docker run -d --name "$RESOURCE_SCOPE-rust" --network "$RESOURCE_SCOPE" --network-alias=parity-rust \
             --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
