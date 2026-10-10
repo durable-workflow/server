@@ -41,7 +41,10 @@ function patchDeploymentObservation(array $fixture, array $options): array
             '--patch-phase', $phase, '--patch-deadline', (string) $deadline];
         foreach (['url', 'application-root'] as $key) {
             if (isset($options[$key])) {
-                array_push($arguments, '--'.$key, $options[$key]);
+                $value = $key === 'application-root' && $phase === 'original'
+                    && ($fixture['patch_deployment']['legacy_marker_history']['embedded_original'] ?? null) === '2.5.5'
+                    ? (getenv('DW_PARITY_ORIGINAL_EMBEDDED_APPLICATION_ROOT') ?: '/app') : $options[$key];
+                array_push($arguments, '--'.$key, $value);
             }
         }
         if ($phase === 'replacement') {
@@ -85,6 +88,9 @@ function patchDeploymentObservation(array $fixture, array $options): array
 
 function patchHttpPhase(array $fixture, array $options): array
 {
+    if ($options['patch-phase'] === 'original' && isset($fixture['patch_deployment']['legacy_marker_history'])) {
+        return patchPublishedSdkPhase($fixture, $options);
+    }
     if ($options['patch-phase'] === 'replacement' && isset($fixture['patch_deployment']['consumer'])) {
         return patchPublishedSdkPhase($fixture, $options);
     }
@@ -176,7 +182,8 @@ function patchHttpPhase(array $fixture, array $options): array
 /** Observe an unmodified published worker through a byte-preserving local proxy. */
 function patchPublishedSdkPhase(array $fixture, array $options): array
 {
-    $consumer = $fixture['patch_deployment']['consumer'];
+    $original = $options['patch-phase'] === 'original' && isset($fixture['patch_deployment']['legacy_marker_history']);
+    $consumer = $fixture['patch_deployment'][$original ? 'producer' : 'consumer'];
     $directory = __DIR__.'/published-sdk-patch';
     $journal = tempnam(sys_get_temp_dir(), 'parity-sdk-');
     $proxy = proc_open(['node', $directory.'/observe-http.mjs', $options['url'], $journal],
@@ -193,10 +200,19 @@ function patchPublishedSdkPhase(array $fixture, array $options): array
         }
         $arguments = match ($consumer['language']) {
             'rust' => [getenv('DW_PARITY_RUST_PATCH_WORKER') ?: '/target/debug/server-parity-published-rust-patch'],
-            'python' => ['python3', $directory.'/python.py'],
+            'python' => ['python3', $original ? __DIR__.'/legacy-marker-aliases/python.py' : $directory.'/python.py'],
             default => throw new RuntimeException('Unsupported published patch consumer.'),
         };
-        array_push($arguments, $url, $options['workflow-id'], $options['run-id'], $fixture['patch_deployment']['change_id']);
+        if ($original && $consumer['language'] === 'python') {
+            array_push($arguments, $url, $options['workflow-id'], $fixture['patch_deployment']['change_id'],
+                $fixture['patch_deployment']['checkpoint'], (string) $fixture['patch_deployment']['legacy_marker_history']['original_calls'],
+                json_encode($fixture['input'], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE));
+        } else {
+            array_push($arguments, $url, $options['workflow-id'], $options['run-id'] ?? '', $fixture['patch_deployment']['change_id']);
+            if ($original) {
+                array_push($arguments, 'original', json_encode($fixture['input'], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE));
+            }
+        }
         $process = proc_open($arguments, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
         if (! is_resource($process)) {
             throw new RuntimeException('Could not start the published SDK worker.');
@@ -210,7 +226,7 @@ function patchPublishedSdkPhase(array $fixture, array $options): array
         $evidence = getenv('DW_PARITY_FAILURE_EVIDENCE_DIR');
         if (is_string($evidence) && is_dir($evidence)) {
             $name = preg_replace('/[^A-Za-z0-9_.-]/', '_', $options['workflow-id']);
-            file_put_contents($evidence.'/consumer-'.$name.'-raw.json', json_encode([
+            file_put_contents($evidence.'/'.($original ? 'producer' : 'consumer').'-'.$name.'-raw.json', json_encode([
                 'consumer' => $consumer, 'stdout' => $stdout, 'stderr' => $stderr,
                 'exit_status' => $status, 'transport_jsonl' => file_get_contents($journal),
             ], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE)."\n");
@@ -249,11 +265,15 @@ function patchPublishedSdkPhase(array $fixture, array $options): array
             throw new RuntimeException('Actual published worker differs from the selected consumer.');
         }
         $client = new Client($options['url'], namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null);
-        $execution = $client->describeWorkflow($options['workflow-id'], $options['run-id']);
-        $events = decodeHistory(httpHistory($client, $options['workflow-id'], $options['run-id']), $client->payloadCodec()->decodeEnvelope(...));
+        $runId = $original ? ($result['run_id'] ?? null) : $options['run-id'];
+        if (! is_string($runId) || $runId === '') {
+            throw new RuntimeException('Actual published author returned no original run identity.');
+        }
+        $execution = $client->describeWorkflow($options['workflow-id'], $runId);
+        $events = decodeHistory(httpHistory($client, $options['workflow-id'], $runId), $client->payloadCodec()->decodeEnvelope(...));
 
-        return ['phase' => 'replacement', 'pid' => $result['pid'], 'decisions' => $result['decisions'],
-            'consumer' => $consumer, 'worker_finished' => $result['worker_finished'], 'requests' => $requests,
+        return ['phase' => $original ? 'original' : 'replacement', 'pid' => $result['pid'], 'decisions' => $result['decisions'],
+            ($original ? 'producer' : 'consumer') => $consumer, 'worker_finished' => $result['worker_finished'], 'requests' => $requests,
             'execution' => $execution->raw, 'workflow_id' => $options['workflow-id'], 'run_id' => $execution->runId,
             'workflow_type' => $execution->workflowType, 'namespace' => $execution->namespace,
             'task_queue' => $execution->taskQueue, 'status' => $execution->status,
@@ -312,6 +332,8 @@ function patchEmbeddedPhase(array $fixture, array $options): array
     } while (! $done);
 
     return ['phase' => $phase, 'pid' => getmypid(), 'decisions' => PatchDeploymentState::$decisions,
+        ...(isset($fixture['patch_deployment']['legacy_marker_history']) && $phase === 'original'
+            ? ['producer' => ['applicable' => false, 'reason' => 'embedded_executes_php_author_definitions']] : []),
         ...(PatchDeploymentState::$observeClock ? ['embedded_clock_probe' => ['clocks' => PatchDeploymentState::$clocks]] : []),
         ...(isset($fixture['patch_deployment']['consumer']) && $phase === 'replacement'
             ? ['consumer' => ['applicable' => false, 'reason' => 'embedded_executes_php_author_definitions']] : []),

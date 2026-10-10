@@ -1,0 +1,87 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "legacy-two-markers-pending",
+  "workflow_type": "parity.v1.one_activity",
+  "input": {
+    "message": "retained aliases λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "retained aliases λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": true,
+  "patch_deployment": {
+    "change_id": "parity.legacy-aliases",
+    "checkpoint": "activity_pending",
+    "repeated_calls": 2,
+    "original_patch": true,
+    "expected_decisions": [
+      true,
+      true
+    ],
+    "marker": {
+      "sequence": 1,
+      "change_id": "parity.legacy-aliases",
+      "version": 1,
+      "min_supported": -1,
+      "max_supported": 1
+    },
+    "embedded_clock_probe": {
+      "phase": "replacement",
+      "marker_sequences": [
+        1,
+        2
+      ]
+    },
+    "legacy_marker_history": {
+      "original_marker_count": 2,
+      "original_calls": 2,
+      "embedded_original": "2.5.5"
+    },
+    "producer": {
+      "language": "python",
+      "version": "2.5.0",
+      "archive_sha256": "0f69fdb6e6103ab57ce6bc0f802504463b1498745e874a32ed9de58dabeb40be"
+    },
+    "consumer": {
+      "language": "rust",
+      "version": "3.4.3",
+      "archive_sha256": "3f0fdd20cbeec744c1abc721b06b69a5f2ef802df9bd7635ac335717f7d8d689"
+    },
+    "start_before_worker_registration": true,
+    "original_sticky_ttl_seconds": 1,
+    "workflow_poll_retry": {
+      "status": 503,
+      "poll_status": "backend_lock_pressure",
+      "require_same_request": true,
+      "require_positive_retry_after": true
+    },
+    "cancel_query_poll_on_shutdown": true
+  },
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "VersionMarkerRecorded",
+    "VersionMarkerRecorded",
+    "ActivityScheduled",
+    "ActivityStarted",
+    "ActivityCompleted",
+    "WorkflowCompleted"
+  ],
+  "contract": "Normally installed published authors persist the declared marker count through real workflow execution. Their full original checkpoint, marker order, authored positions and timestamp bytes must survive a separate cold published Rust 3.4.3 reader, with one original activity and one exact int64 completion. Embedded uses genuine author execution in the selected original PHP engine and cold Workflow 2.5.7 replay; both recorded author clocks are checked against their original marker positions. Embedded does not claim to execute a Rust or Python SDK, and Rust does not claim an author-clock API. No history injection, fingerprint override, blocked repair, performance or migration qualification is implied."
+}

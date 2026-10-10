@@ -10,6 +10,7 @@ import {checkAdmission} from './admission-contract.mjs';
 import {checkNamespaces} from './namespace-contract.mjs';
 import {checkWorkerDeregistration} from './worker-deregistration-contract.mjs';
 import {checkPatchDeployment, checkPublishedPatchArtifacts, checkPatchPackageObservation} from './patch-deployment-contract.mjs';
+import {checkLegacyMarkerArtifacts, checkLegacyMarkerPackageObservation, checkLegacyMarkerDeployment} from './legacy-marker-contract.mjs';
 import {checkWaitingHistory} from './waiting-history-contract.mjs';
 import {checkTaskRetry} from './task-retry-contract.mjs';
 
@@ -91,7 +92,8 @@ export function checkObservation(fixture, observation, workflowId) {
   const admission = fixture.admission ? checkAdmission(fixture, observation, workflowId) : null;
   const namespaces = fixture.namespace_isolation ? checkNamespaces(fixture, observation, workflowId, checkObservation) : null;
   const workerDeregistration = fixture.worker_deregistration ? checkWorkerDeregistration(fixture, observation, workflowId) : null;
-  const patchDeployment = fixture.patch_deployment ? checkPatchDeployment(fixture, observation, workflowId) : null;
+  const patchDeployment = fixture.patch_deployment ? (fixture.patch_deployment.legacy_marker_history
+    ? checkLegacyMarkerDeployment(fixture, observation, workflowId) : checkPatchDeployment(fixture, observation, workflowId)) : null;
   const waitingHistory = fixture.waiting_for_history ? checkWaitingHistory(fixture, observation, workflowId) : null;
   const taskRetry = fixture.workflow_task_retry ? checkTaskRetry(fixture, observation, workflowId) : null;
   const cooperative = fixture.cooperative_cancellation
@@ -517,8 +519,9 @@ export function checkObservation(fixture, observation, workflowId) {
   if (fixture.terminal_activity_failure) checkTerminalActivityFailure(fixture, observation, identities, projectedEvents, instantNanoseconds);
   else if (fixture.retry_policy) checkActivityRetry(fixture, observation, identities, projectedEvents, instantNanoseconds);
   if (fixture.activity) {
-    const activityIndex = fixture.patch_deployment?.marker ? 3 : 2;
-    const activitySequence = fixture.patch_deployment?.marker ? 2 : 1;
+    const markerCount = fixture.patch_deployment?.legacy_marker_history?.original_marker_count ?? (fixture.patch_deployment?.marker ? 1 : 0);
+    const activityIndex = 2 + markerCount;
+    const activitySequence = 1 + markerCount;
     const [scheduled, running, completed] = events.slice(activityIndex, activityIndex + 3);
     const id = scheduled.payload.activity_execution_id;
     const attempt = running.payload.activity_attempt_id;
@@ -589,7 +592,10 @@ export function compareRecords(records, expectedFixtureHashes, expectedFixtures,
       if (item.fixture.signal_count || item.fixture.schedule || item.fixture.visibility || item.fixture.admission || item.fixture.patch_deployment) assert.equal(item.observation.mode, record.mode, 'observation uses its recording adapter');
       assert.equal(item.observation.sdk_php, record.artifacts.sdk_php, 'installed SDK matches tuple');
       checkPublishedPatchArtifacts(item.fixture, record.artifacts);
-      checkPatchPackageObservation(item.fixture, item.observation, record.artifacts);
+      if (item.fixture.patch_deployment?.legacy_marker_history) {
+        checkLegacyMarkerArtifacts(item.fixture, record.artifacts);
+        checkLegacyMarkerPackageObservation(item.fixture, item.observation, record.artifacts);
+      } else checkPatchPackageObservation(item.fixture, item.observation, record.artifacts);
       if (record.artifacts.sdk_php_source_commit) assert.equal(item.observation.sdk_php_source, record.artifacts.sdk_php_source_commit, 'installed exact source SDK matches tuple');
       if (record.mode === 'embedded') assert.equal(item.observation.workflow_package, record.artifacts.workflow, 'installed Workflow matches tuple');
       assert.deepStrictEqual(item.fixture, baseline.fixture, 'same fixture expectations');
