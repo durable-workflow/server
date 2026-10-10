@@ -26,6 +26,52 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+The separate reviewed `role-tokens/admission-role-tokens` profile completes an
+original authored echo using the unchanged published SDK and the worker token.
+Sixteen real HTTP requests check exact worker/operator/admin membership,
+disabled legacy full-access bypass and authentication → role → protocol →
+namespace precedence. Operator, admin and legacy-admin reads succeed; refusals
+preserve an original unclaimed peer's complete description and history; an
+operator then cancels that same peer. Embedded execution checks the authored
+lifecycle with HTTP authorization explicitly inapplicable. The default corpus
+remains 29 legacy-token fixtures; the role profile uses independent databases.
+
+Tests-first `8c3564e5` reproduces both native failures on all six configurations
+in [run 38045677626](https://github.com/durable-workflow/server/actions/runs/38045677626):
+role credentials return 401 instead of role 403, and the legacy credential still
+claims a worker task with 200 instead of 403. Each configuration retains 42
+existing passing HTTP tests. The guard now matches configured roles before the
+legacy credential, disables legacy bypass when any role is configured and
+checks endpoint membership before protocol and namespace lookup. Immutable
+configuration survives namespace selection. The already locked
+[subtle 2.6.1 primitive](https://docs.rs/subtle/2.6.1/subtle/trait.ConstantTimeEq.html)
+compares secret contents without a new transitive dependency.
+
+The [candidate matrix](https://github.com/durable-workflow/server/actions/runs/38046430334)
+on head `c2901404881ebbf7fd88e67d241cbf1ff7c7527b` and runner merge
+`8ac16e25e4ea0e48c00ac3bf12f886025d5f03f7` has identical tree
+`d48bf2aca0d695e396a51de97a4872425a851152`. All six configurations pass
+the default corpus and the separate role profile. All downloaded artifact
+digests match; 522 default and 18 role observations independently compare,
+including 192 role-profile HTTP requests. Each configuration passes 45 native
+HTTP tests; SQLite passes 21 library tests. All 840 modeled comparator checks
+and two original/19 deliberately corrupted reference rechecks pass; these are
+not additional workflow executions. PHP/source passes 2,621 tests and 58,473
+assertions, with six existing deprecations and one skip. Final qualification of
+the permanent profile path is recorded in [#362](https://github.com/durable-workflow/server/pull/362).
+The cohort reuses the existing CI binary; owned cleanup always runs.
+
+Unqualified principal, custom-provider, signature/no-auth, runtime-credential,
+alias-role and disabled-backward-compatibility settings refuse startup before
+opening storage. The development runtime still requires `DW_AUTH_TOKEN`.
+Auth environment values must parse as UTF-8. Invalid text cannot become an
+absent role credential and restore legacy bypass; empty driver and
+backward-compatibility settings refuse explicitly. Actual native process
+checks exercise raw environment bytes before storage selection.
+Principal/tenant/runtime credentials, role-only configuration, signatures,
+namespace administration and actor attribution require separate qualification.
+Full authorization, performance, takeover and cutover remain open.
+
 The twenty-ninth reviewed fixture, `namespace-isolation`, creates two named
 namespaces and completes two original authored activity workflows. HTTP uses the
 unchanged frozen PHP SDK, one queue and the same worker ID in both namespaces.
@@ -590,13 +636,13 @@ does not prove the remaining acceptance criteria.
 
 | Surface | Current authority and reusable checks | Port status |
 | --- | --- | --- |
-| Control plane, namespaces, authorization, errors, visibility | `resources/platform-protocol-specs/control-plane-api.openapi.yaml`, `docs/contracts/auth-composition.md`, `routes/api.php`, Feature control-plane/auth/namespace tests; namespace and principal-attribution published runners | Bounded default-namespace listing, CLI metadata and legacy-token admission/refusal precedence; broader visibility, named namespaces and role/principal authorization pending |
+| Control plane, namespaces, authorization, errors, visibility | `resources/platform-protocol-specs/control-plane-api.openapi.yaml`, `docs/contracts/auth-composition.md`, `routes/api.php`, Feature control-plane/auth/namespace tests; namespace and principal-attribution published runners | Bounded default listing/CLI metadata, two named echo/activity namespaces, legacy admission and a separate exact-role token profile; broader visibility/namespace families and principal authorization pending |
 | Worker registration, sessions, leases, fencing, retries, timeouts, heartbeats, routing, affinity, backpressure, versioning | Worker OpenAPI and stream AsyncAPI in `resources/platform-protocol-specs/`; Feature worker/activity/prepared-local/cancellation tests; activity, heartbeat and worker-versioning published runners | Bounded PHP registration, polling, completion/fencing, activity retries and cleanup heartbeat; broader fleet, routing, affinity and timeout policies pending |
 | Avro values, external task inputs/results, payload storage and reclamation | `docs/contracts/external-task-{input,result}.md`, `external-payload-storage.md`, external payload OpenAPI; `regression-corpus-policy.json`, `tests/Fixtures/CodecRegression/`, payload Feature tests | PHP/embedded echo slice; Rust codec foundation in #329, full ingress and external payloads pending |
 | Workflow lifecycle, duplicate commands, typed history, continuation, child workflows, cancellation, cleanup replay | Workflow lifecycle, migration, child-workflow and replay runners; Feature cooperative cancellation, history, migration and repeated-signal tests | Bounded authored completion, activity retry/failure, direct children/cancellation and root cooperative cleanup; broader propagation, replay and continuation semantics pending |
 | Timers, schedules, signals, queries, updates, search attributes, memo, sagas | Corresponding runners in `scripts/conformance/`, manifests in `static/platform-conformance/`; Sample App polyglot experiments | Bounded durable sleep, repeated signals, state queries/updates and two UTC schedule cases; broader policies, search attributes, memo and sagas pending |
 | Local activities, cancellation scopes, worker sessions, streams, service catalog/Nexus, bridge adapters, standalone activities, debugging and repair | `routes/api.php`, `docs/contracts/`, worker/control-plane specifications, corresponding Feature tests and Nexus runner | Pending; not omitted from parity |
-| Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | Published PHP SDK and embedded directions for 28 bounded fixtures; unchanged CLI 2.2.0 list/describe/history; other languages, CLI commands, Waterline and Sample App pending |
+| Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | Published PHP SDK and embedded directions for 29 default fixtures plus a separate role profile; unchanged CLI 2.2.0 list/describe/history; other languages, CLI commands, Waterline and Sample App pending |
 | SQL schema and stored representations | `database/migrations/`, Workflow package `src/migrations/`, model casts, `Workflow\\Serializers\\Serializer`, queue job payloads, exported history and credential digests | [Representation checkpoints](rust-server-storage-audit.md) recorded; complete mapping and executable migration tests pending |
 | Images, architecture, bootstrap, configuration, readiness, metrics and graceful shutdown | `Dockerfile`, `docker/`, `config/`, `docker-compose*.yml`, `k8s/helm/`, `docs/server-reference.md`, small-cluster/multi-region validation docs | Pending |
 | Backup and in-place upgrade | `docs/self-hosted-backup-and-restore.md`, external payload backup holds; last PHP image writes, all PHP roles stop, Rust takes over same DB sequentially | Pending on SQLite, MariaDB/MySQL, PostgreSQL |

@@ -9,6 +9,26 @@ use Workflow\V2\StartOptions;
 use Workflow\V2\WorkflowStub;
 use Workflow\WorkflowOptions;
 
+function parityAdmissionToken(string $auth): string
+{
+    if ($auth === 'invalid') {
+        return 'deliberately-invalid-parity-token';
+    }
+    $key = match ($auth) {
+        'valid' => 'DW_PARITY_TOKEN',
+        'worker' => 'DW_PARITY_WORKER_TOKEN',
+        'operator' => 'DW_PARITY_OPERATOR_TOKEN',
+        'admin' => 'DW_PARITY_ADMIN_TOKEN',
+        default => throw new InvalidArgumentException('Unknown parity credential mode.'),
+    };
+    $token = getenv($key);
+    if (! is_string($token) || $token === '') {
+        throw new RuntimeException('Missing required parity credential: '.$key);
+    }
+
+    return $token;
+}
+
 function admissionRequest(array $definition, array $case, string $url, string $peerId, string $peerRun, string $queue): array
 {
     $worker = $case['plane'] === 'worker';
@@ -21,7 +41,7 @@ function admissionRequest(array $definition, array $case, string $url, string $p
         : ['reason' => $definition['refused_reason']]);
     $headers = ['Accept' => 'application/json'];
     if ($case['auth'] !== 'missing') {
-        $headers['Authorization'] = 'Bearer '.($case['auth'] === 'valid' ? getenv('DW_PARITY_TOKEN') : 'deliberately-invalid-parity-token');
+        $headers['Authorization'] = 'Bearer '.parityAdmissionToken($case['auth']);
     }
     if ($case['version'] !== null) {
         $headers[$worker ? 'X-Durable-Workflow-Protocol-Version' : 'X-Durable-Workflow-Control-Plane-Version'] = $case['version'];
@@ -65,7 +85,13 @@ function finishHttpAdmission(Client $client, array $fixture, string $workflowId,
         parityHttpFailureEvidence($error, 'admission', $workflowId, $runId, $url, $namespace, [], ['admission' => $state]);
         throw $error;
     } finally {
-        $peer->cancelSelectedRun($definition['cleanup_reason']);
+        if (isset($definition['cleanup_auth'])) {
+            $cleanupClient = new Client($url, namespace: $namespace, token: parityAdmissionToken($definition['cleanup_auth']));
+            $state['cleanup_auth'] = $definition['cleanup_auth'];
+            $state['cleanup'] = $cleanupClient->cancelWorkflow($peerId, $definition['cleanup_reason'], $peer->selectedRunId);
+        } else {
+            $peer->cancelSelectedRun($definition['cleanup_reason']);
+        }
     }
     $state['peer_after_cleanup'] = $peer->describeSelectedRun()->raw;
     $state['history_after_cleanup'] = httpHistory($client, $peerId, $peer->selectedRunId);

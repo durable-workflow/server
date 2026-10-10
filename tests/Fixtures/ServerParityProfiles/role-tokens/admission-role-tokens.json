@@ -1,0 +1,42 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "admission-role-tokens",
+  "auth_profile": "role_tokens",
+  "workflow_type": "parity.v1.echo",
+  "input": {"message": "role-authorized execution λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {"type": "map", "value": {
+    "message": {"type": "string", "value": "role-authorized execution λ"},
+    "count": {"type": "int64", "value": "9007199254740993"},
+    "optional": {"type": "null", "value": null}
+  }},
+  "activity": false,
+  "expected_events": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"],
+  "admission": {
+    "scope": "default_namespace_configured_role_tokens",
+    "peer_suffix": "-pending",
+    "peer_workflow_type": "parity.v1.one_activity",
+    "unknown_namespace": "parity-roles-ghost",
+    "refused_reason": "role-refused mutation must not appear λ",
+    "cleanup_reason": "operator-authorized cleanup λ",
+    "cleanup_auth": "operator",
+    "requests": [
+      {"id":"worker_control_before_version_namespace","plane":"control","auth":"worker","version":"999","header_namespace":"parity-roles-ghost","query_namespace":null,"status":403,"reason":"forbidden","role":"worker","allowed_roles":["operator","admin"]},
+      {"id":"worker_read_forbidden","plane":"read","auth":"worker","version":"2","header_namespace":"default","query_namespace":null,"status":403,"reason":"forbidden","role":"worker","allowed_roles":["operator","admin"]},
+      {"id":"operator_worker_before_version_namespace","plane":"worker","auth":"operator","version":null,"header_namespace":"parity-roles-ghost","query_namespace":null,"status":403,"reason":"forbidden","role":"operator","allowed_roles":["worker"]},
+      {"id":"admin_worker_before_version_namespace","plane":"worker","auth":"admin","version":"999","header_namespace":"parity-roles-ghost","query_namespace":null,"status":403,"reason":"forbidden","role":"admin","allowed_roles":["worker"]},
+      {"id":"legacy_worker_bypass_disabled","plane":"worker","auth":"valid","version":"1.20","header_namespace":"default","query_namespace":null,"status":403,"reason":"forbidden","role":"admin","allowed_roles":["worker"]},
+      {"id":"invalid_worker_before_role_version_namespace","plane":"worker","auth":"invalid","version":"999","header_namespace":"parity-roles-ghost","query_namespace":null,"status":401,"reason":"unauthorized"},
+      {"id":"missing_control_before_role_version_namespace","plane":"control","auth":"missing","version":null,"header_namespace":"parity-roles-ghost","query_namespace":null,"status":401,"reason":"unauthorized"},
+      {"id":"worker_unknown_namespace","plane":"worker","auth":"worker","version":"1.20","header_namespace":"parity-roles-ghost","query_namespace":null,"status":404,"reason":"namespace_not_found"},
+      {"id":"worker_missing_protocol","plane":"worker","auth":"worker","version":null,"header_namespace":"parity-roles-ghost","query_namespace":null,"status":400,"reason":"missing_protocol_version"},
+      {"id":"operator_read_allowed","plane":"read","auth":"operator","version":"2","header_namespace":"default","query_namespace":null,"status":200,"reason":null},
+      {"id":"admin_read_allowed","plane":"read","auth":"admin","version":"2","header_namespace":"default","query_namespace":null,"status":200,"reason":null},
+      {"id":"legacy_admin_read_allowed","plane":"read","auth":"valid","version":"2","header_namespace":"default","query_namespace":null,"status":200,"reason":null},
+      {"id":"operator_missing_control_version","plane":"control","auth":"operator","version":null,"header_namespace":"parity-roles-ghost","query_namespace":null,"status":400,"reason":"missing_control_plane_version"},
+      {"id":"admin_unknown_namespace","plane":"control","auth":"admin","version":"2","header_namespace":"parity-roles-ghost","query_namespace":null,"status":404,"reason":"namespace_not_found"},
+      {"id":"legacy_admin_invalid_control_version","plane":"control","auth":"valid","version":"999","header_namespace":"parity-roles-ghost","query_namespace":null,"status":400,"reason":"unsupported_control_plane_version"},
+      {"id":"worker_invalid_protocol","plane":"worker","auth":"worker","version":"999","header_namespace":"parity-roles-ghost","query_namespace":null,"status":400,"reason":"unsupported_protocol_version"}
+    ]
+  },
+  "contract": "Separate configured role-token cohort; preserve the default legacy-token corpus. Enable distinct worker, operator, admin and legacy tokens on each HTTP target. The unchanged published SDK starts and reads one authored echo using the legacy credential and completes its original task using the worker credential, retaining Unicode, null and exact Avro int64. Start one original unclaimed activity peer. Execute every declared real HTTP request against that peer. Roles are exact membership, not hierarchical: worker cannot read/cancel; operator/admin/legacy-admin cannot poll. Enabling role tokens disables the legacy full-access bypass. Authentication precedes role rejection, which precedes protocol and namespace rejection. Operator, admin and legacy-admin reads succeed. All refusals preserve the original complete peer description and history; the operator credential then cancels that same original peer. Require the original immutable four-event cancellation history. Embedded mode completes the authored workflow and admits/cancels the original peer through the installed engine; HTTP roles and envelopes are inapplicable. This profile does not qualify namespace administration, principal/tenant/runtime credentials, signatures, no-auth, credential rotation, disabled backward compatibility or actor attribution."
+}

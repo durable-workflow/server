@@ -137,6 +137,8 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $transport = isset($fixture['child_count']) || isset($fixture['child_cancellation']) || isset($fixture['retry_policy']) || isset($fixture['schedule'])
         ? observedChildTransport($workflowPolls, $workflowCompletions, $activityPolls, $activityOutcomes, $afterCompletion, $scheduleReceipts) : null;
     $client = new Client($url, namespace: $namespace, transport: $transport, token: getenv('DW_PARITY_TOKEN') ?: null);
+    $workerClient = ($fixture['auth_profile'] ?? null) === 'role_tokens'
+        ? new Client($url, namespace: $namespace, token: parityAdmissionToken('worker')) : $client;
     $handle = null;
     $deliveries = [];
     $queries = [];
@@ -151,7 +153,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $caughtChildCancellation = null;
     $deadline = microtime(true) + 30;
     $worker = null;
-    $worker = (new Worker($client, $queue, clock: static function () use (&$worker, &$handle, &$deliveries, &$queries, &$queryTasks, &$pendingQuery, &$updates, &$updateTasks, &$pendingUpdate, &$diagnostics, &$failureCaptured, &$childCancellation, $namespace, $client, $fixture, $fixturePath, &$workflowId, $url, $deadline): float {
+    $worker = (new Worker($workerClient, $queue, clock: static function () use (&$worker, &$handle, &$deliveries, &$queries, &$queryTasks, &$pendingQuery, &$updates, &$updateTasks, &$pendingUpdate, &$diagnostics, &$failureCaptured, &$childCancellation, $namespace, $client, $fixture, $fixturePath, &$workflowId, $url, $deadline): float {
         if (microtime(true) > $deadline) {
             $error = new RuntimeException('Parity worker exceeded its 30-second completion budget.');
             parityHttpFailureEvidence($error, 'before-worker-shutdown', $workflowId, $handle?->selectedRunId, $url, $namespace, $diagnostics);

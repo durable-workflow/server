@@ -44,6 +44,12 @@ export function checkAdmission(fixture, observation, workflowId) {
     assert.equal(state.cleanup.command_sequence, 2, 'embedded cleanup original command order');
     assert.equal(state.cleanup.outcome, 'cancelled', 'embedded cleanup outcome');
   } else {
+    if (definition.cleanup_auth) {
+      assert.equal(state.cleanup_auth, definition.cleanup_auth, 'authorized cleanup credential mode');
+      assert.equal(state.cleanup?.workflow_id, peerId, 'HTTP cleanup original workflow');
+      assert.equal(state.cleanup.run_id, peerRun, 'HTTP cleanup original run');
+      assert.equal(state.cleanup.outcome, 'cancelled', 'HTTP cleanup actual outcome');
+    }
     assert.deepStrictEqual(state.requests.map(request => request.id), definition.requests.map(request => request.id), 'complete actual admission request inventory');
     const cluster = state.cluster?.worker_protocol;
     assert.equal(cluster?.version, '1.20', 'original advertised worker protocol');
@@ -97,6 +103,11 @@ export function checkAdmission(fixture, observation, workflowId) {
       if (expected.status === 401) {
         assert.equal(body.message, 'Invalid or missing authentication token.', 'canonical authentication failure');
         for (const field of ['namespace', 'supported_version', 'requested_version']) assert.equal(body[field], undefined, 'authentication failure does not reveal later admission state');
+      } else if (expected.status === 403) {
+        assert.equal(body.message, 'Authenticated role is not allowed to access this endpoint.', 'canonical role refusal');
+        assert.equal(body.role, expected.role, 'original authenticated exact role');
+        assert.deepStrictEqual(body.allowed_roles, expected.allowed_roles, 'original endpoint allowed roles');
+        for (const field of ['namespace', 'supported_version', 'requested_version']) assert.equal(body[field], undefined, 'role rejection precedes protocol and namespace disclosure');
       } else if (expected.status === 400) {
         assert.equal(body.supported_version, worker ? '1.20' : '2', 'original supported protocol');
         assert.equal(body.requested_version, expected.version, 'original refused protocol');

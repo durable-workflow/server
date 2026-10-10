@@ -1,7 +1,7 @@
 use axum::{
     Extension, Json, Router,
     extract::{DefaultBodyLimit, Path, Query, Request, State},
-    http::{HeaderMap, HeaderValue, StatusCode},
+    http::{HeaderMap, HeaderValue, Method, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{delete, get, post},
@@ -9,6 +9,7 @@ use axum::{
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use subtle::ConstantTimeEq;
 
 use super::{Result, Runtime, refuse, store::capabilities};
 
@@ -151,7 +152,24 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         .headers()
         .get("authorization")
         .and_then(|v| v.to_str().ok());
-    if authorization.and_then(|v| v.strip_prefix("Bearer ")) != Some(runtime.token.as_ref()) {
+    let provided = authorization.and_then(|v| v.strip_prefix("Bearer "));
+    let roles = ["worker", "operator", "admin"];
+    let authenticated = provided.and_then(|provided| {
+        // Match configured roles before the legacy credential, matching PHP's
+        // collision precedence. Equal-length secret contents use constant-time
+        // comparison; secrets never enter response or diagnostic values.
+        for (secret, role) in runtime.role_tokens.iter().zip(roles) {
+            if secret
+                .as_ref()
+                .is_some_and(|secret| bool::from(provided.as_bytes().ct_eq(secret.as_bytes())))
+            {
+                return Some((role, false));
+            }
+        }
+        bool::from(provided.as_bytes().ct_eq(runtime.token.as_bytes()))
+            .then(|| ("admin", runtime.role_tokens.iter().all(Option::is_none)))
+    });
+    let Some((role, legacy_full_access)) = authenticated else {
         return admission_error(
             request,
             worker,
@@ -159,6 +177,23 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
             json!({"reason":"unauthorized", "message":"Invalid or missing authentication token."}),
         )
         .await;
+    };
+    let allowed_roles: &[&str] = if path == "/api/worker/register" || path == "/api/cluster/info" {
+        &["worker", "operator", "admin"]
+    } else if worker {
+        &["worker"]
+    } else if path.starts_with("/api/workers/")
+        || path == "/api/namespaces" && request.method() == Method::POST
+    {
+        &["admin"]
+    } else {
+        &["operator", "admin"]
+    };
+    if !legacy_full_access && !allowed_roles.contains(&role) {
+        return admission_error(request, worker, StatusCode::FORBIDDEN, json!({
+            "reason":"forbidden", "message":"Authenticated role is not allowed to access this endpoint.",
+            "role":role, "allowed_roles":allowed_roles,
+        })).await;
     }
     let header = if worker {
         "x-durable-workflow-protocol-version"

@@ -25,6 +25,9 @@ mod visibility;
 #[path = "execution/admission.rs"]
 mod admission;
 
+#[path = "execution/role_tokens.rs"]
+mod role_tokens;
+
 #[path = "execution/namespaces.rs"]
 mod namespaces;
 
