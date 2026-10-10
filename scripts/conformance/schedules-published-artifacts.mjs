@@ -155,6 +155,7 @@ const requiredScenarios = Array.isArray(scenarioManifest.scenarios)
 const coverageGapFindings = scenarioManifest.host_runner_contract?.coverage_gap_findings ?? {};
 let publishedCliInstallPromise = null;
 let phpSdkVersionResolution = null;
+let artifactInstallEvidenceGeneratedAt = null;
 const executedArtifactInstalls = new Map();
 
 if (isMainModule()) {
@@ -1604,7 +1605,9 @@ function buildArtifactInstallEvidence(artifactVersions, artifactSources, evidenc
 
   return {
     schema: stringValue(supplied.schema) || ARTIFACT_INSTALL_SCHEMA,
-    generated_at: timestamp(),
+    // Copies describe one install observation. Preserve its source timestamp,
+    // or capture it once when this run first normalizes install evidence.
+    generated_at: stringValue(supplied.generated_at) || (artifactInstallEvidenceGeneratedAt ??= timestamp()),
     supplied_install_evidence: suppliedEvidencePresent,
     derived_install_evidence: derivedEvidencePresent,
     supplied_install_evidence_path: stringValue(supplied.source_path) || null,
@@ -1667,7 +1670,7 @@ function derivedArtifactInstallEvidence(
 
   return {
     schema: ARTIFACT_INSTALL_SCHEMA,
-    generated_at: timestamp(),
+    generated_at: artifactInstallEvidenceGeneratedAt ??= timestamp(),
     derived_from: 'published_artifact_source_manifest',
     local_product_source_checkouts_used: false,
     artifacts,
