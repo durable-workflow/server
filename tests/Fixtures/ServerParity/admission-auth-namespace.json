@@ -1,0 +1,40 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "admission-auth-namespace",
+  "workflow_type": "parity.v1.echo",
+  "input": {"message": "authorized execution λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {"type": "map", "value": {
+    "message": {"type": "string", "value": "authorized execution λ"},
+    "count": {"type": "int64", "value": "9007199254740993"},
+    "optional": {"type": "null", "value": null}
+  }},
+  "activity": false,
+  "expected_events": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"],
+  "admission": {
+    "scope": "default_namespace_legacy_shared_token",
+    "peer_suffix": "-pending",
+    "peer_workflow_type": "parity.v1.one_activity",
+    "unknown_namespace": "parity-admission-ghost",
+    "refused_reason": "refused mutation must not appear λ",
+    "cleanup_reason": "admission probe cleanup λ",
+    "requests": [
+      {"id":"control_missing_auth","plane":"control","auth":"missing","version":null,"header_namespace":"parity-admission-ghost","query_namespace":null,"status":401,"reason":"unauthorized"},
+      {"id":"control_invalid_auth","plane":"control","auth":"invalid","version":"999","header_namespace":"parity-admission-ghost","query_namespace":null,"status":401,"reason":"unauthorized"},
+      {"id":"worker_missing_auth","plane":"worker","auth":"missing","version":null,"header_namespace":"parity-admission-ghost","query_namespace":null,"status":401,"reason":"unauthorized"},
+      {"id":"worker_invalid_auth","plane":"worker","auth":"invalid","version":"999","header_namespace":"parity-admission-ghost","query_namespace":null,"status":401,"reason":"unauthorized"},
+      {"id":"control_missing_version","plane":"control","auth":"valid","version":null,"header_namespace":"parity-admission-ghost","query_namespace":null,"status":400,"reason":"missing_control_plane_version"},
+      {"id":"control_invalid_version","plane":"control","auth":"valid","version":"999","header_namespace":"parity-admission-ghost","query_namespace":null,"status":400,"reason":"unsupported_control_plane_version"},
+      {"id":"worker_missing_version","plane":"worker","auth":"valid","version":null,"header_namespace":"parity-admission-ghost","query_namespace":null,"status":400,"reason":"missing_protocol_version"},
+      {"id":"worker_invalid_version","plane":"worker","auth":"valid","version":"999","header_namespace":"parity-admission-ghost","query_namespace":null,"status":400,"reason":"unsupported_protocol_version"},
+      {"id":"control_unknown_header","plane":"control","auth":"valid","version":"2","header_namespace":"parity-admission-ghost","query_namespace":null,"status":404,"reason":"namespace_not_found"},
+      {"id":"worker_unknown_header","plane":"worker","auth":"valid","version":"1.20","header_namespace":"parity-admission-ghost","query_namespace":null,"status":404,"reason":"namespace_not_found"},
+      {"id":"control_unknown_query","plane":"control","auth":"valid","version":"2","header_namespace":null,"query_namespace":"parity-admission-ghost","status":404,"reason":"namespace_not_found"},
+      {"id":"worker_unknown_query","plane":"worker","auth":"valid","version":"1.20","header_namespace":null,"query_namespace":"parity-admission-ghost","status":404,"reason":"namespace_not_found"},
+      {"id":"read_uppercase_header","plane":"read","auth":"valid","version":"2","header_namespace":"DEFAULT","query_namespace":"parity-admission-ghost","status":200,"reason":null},
+      {"id":"read_uppercase_query","plane":"read","auth":"valid","version":"2","header_namespace":null,"query_namespace":"DEFAULT","status":200,"reason":null},
+      {"id":"read_header_precedence","plane":"read","auth":"valid","version":"2","header_namespace":"default","query_namespace":"parity-admission-ghost","status":200,"reason":null},
+      {"id":"read_configured_default","plane":"read","auth":"valid","version":"2","header_namespace":null,"query_namespace":null,"status":200,"reason":null}
+    ]
+  },
+  "contract": "Candidate legacy-token authentication, protocol and default-namespace admission. Complete one original authored echo with exact Avro int64, then start one original unclaimed peer of another registered type. On both HTTP targets execute the declared control mutations, worker polls and namespace-selected reads with actual transport I/O. Invalid credentials must return the correct plane's 401 envelope before protocol or namespace details; valid credentials must encounter protocol rejection before unknown-namespace rejection. Resolve namespace by header, then query, then configured default, normalizing names to lowercase. Unknown namespaces must never fall through to default. Refused requests preserve the original pending peer and its complete unchanged two-event history. Cancel that same original peer for cleanup and require the original four-event cancellation history. Embedded mode exercises the authored workflow and peer lifecycle through the installed engine; HTTP authentication envelopes are inapplicable there. Role/principal tokens, tenant restrictions, named-namespace execution, alternate default configuration, other auth drivers and full authorization remain separate gates."
+}

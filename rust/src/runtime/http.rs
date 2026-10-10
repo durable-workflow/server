@@ -140,21 +140,32 @@ async fn guard(State(runtime): State<Runtime>, request: Request, next: Next) -> 
     if path == "/api/health" || path == "/api/ready" {
         return next.run(request).await;
     }
+    let worker = path == "/api/worker" || path.starts_with("/api/worker/");
     let authorization = request
         .headers()
         .get("authorization")
         .and_then(|v| v.to_str().ok());
     if authorization.and_then(|v| v.strip_prefix("Bearer ")) != Some(runtime.token.as_ref()) {
-        return refuse(StatusCode::UNAUTHORIZED, "unauthenticated").into_response();
+        return admission_error(
+            request,
+            worker,
+            StatusCode::UNAUTHORIZED,
+            json!({"reason":"unauthorized", "message":"Invalid or missing authentication token."}),
+        )
+        .await;
     }
-    let worker = path.starts_with("/api/worker/");
     let header = if worker {
         "x-durable-workflow-protocol-version"
     } else {
         "x-durable-workflow-control-plane-version"
     };
     let version = if worker { "1.20" } else { "2" };
-    let requested = request.headers().get(header).and_then(|v| v.to_str().ok());
+    let requested = request
+        .headers()
+        .get(header)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
     let compatible = if worker {
         requested.is_some_and(|v| {
             v.split_once('.').is_some_and(|(major, minor)| {
@@ -168,17 +179,87 @@ async fn guard(State(runtime): State<Runtime>, request: Request, next: Next) -> 
         requested == Some(version) || path == "/api/cluster/info" && requested.is_none()
     };
     if !compatible {
-        return (StatusCode::BAD_REQUEST, Json(json!({"reason": if requested.is_none() { "missing_protocol_version" } else { "unsupported_protocol_version" },
-            "supported_version": version, "requested_version": requested}))).into_response();
+        let missing = requested.is_none();
+        let reason = match (worker, missing) {
+            (true, true) => "missing_protocol_version",
+            (true, false) => "unsupported_protocol_version",
+            (false, true) => "missing_control_plane_version",
+            (false, false) => "unsupported_control_plane_version",
+        };
+        let diagnostic = match (worker, missing) {
+            (true, true) => "Missing worker protocol version header.",
+            (true, false) => "Unsupported worker protocol version.",
+            (false, true) => "Missing control-plane version header.",
+            (false, false) => "Unsupported control-plane version.",
+        };
+        let remediation = if missing {
+            if worker {
+                "Send the X-Durable-Workflow-Protocol-Version: 1.20 header on worker protocol requests.".to_owned()
+            } else {
+                "Send the X-Durable-Workflow-Control-Plane-Version: 2 header on control-plane requests.".to_owned()
+            }
+        } else if worker {
+            format!(
+                "Worker requested protocol version {}; this server supports 1.20. Workers may target any 1.x version with x ≤ 20. Upgrade the worker to a release that targets a compatible version, or connect to a server that matches.",
+                requested.unwrap()
+            )
+        } else {
+            format!(
+                "Client requested control-plane version {}; this server only supports 2. Upgrade the client to a release that targets control-plane 2, or connect to a server that supports {}.",
+                requested.unwrap(),
+                requested.unwrap()
+            )
+        };
+        let mut body = json!({"reason":reason, "supported_version":version, "requested_version":requested, "remediation":remediation});
+        body[if worker { "error" } else { "message" }] = json!(diagnostic);
+        return admission_error(request, worker, StatusCode::BAD_REQUEST, body).await;
     }
-    if request
-        .headers()
-        .get("x-namespace")
-        .is_some_and(|v| v != "default")
-    {
-        return refuse(StatusCode::NOT_FOUND, "namespace_not_found").into_response();
+    // Namespace resolution must precede every runtime mutation. A header wins
+    // over the query selector; neither may silently select the default peer.
+    if path != "/api/cluster/info" {
+        let namespace = if let Some(header) = request.headers().get("x-namespace") {
+            header.to_str().unwrap_or("").to_ascii_lowercase()
+        } else {
+            let fields =
+                Query::<std::collections::HashMap<String, String>>::try_from_uri(request.uri());
+            match fields {
+                Ok(Query(fields)) if !fields.keys().any(|key| key.starts_with("namespace[")) =>
+                    fields.get("namespace").map(String::as_str).unwrap_or("default").to_ascii_lowercase(),
+                // Non-scalar or malformed selectors are outside this bounded
+                // contract; refuse them without reaching default-namespace state.
+                _ => return admission_error(request, worker, StatusCode::BAD_REQUEST,
+                    json!({"reason":"invalid_namespace", "message":"Namespace must be a scalar string."})).await,
+            }
+        };
+        if namespace != "default" {
+            let body = json!({"reason":"namespace_not_found", "namespace":namespace,
+                "message":format!("Namespace '{namespace}' does not exist."),
+                "remediation":"Register the namespace via POST /api/namespaces, or send an X-Namespace header naming an existing namespace."});
+            return admission_error(request, worker, StatusCode::NOT_FOUND, body).await;
+        }
     }
     let mut response = next.run(request).await;
+    response
+        .headers_mut()
+        .insert(header, HeaderValue::from_static(version));
+    response
+}
+
+async fn admission_error(
+    request: Request,
+    worker: bool,
+    status: StatusCode,
+    mut body: Value,
+) -> Response {
+    let (header, version) = if worker {
+        body["protocol_version"] = json!("1.20");
+        body["server_capabilities"] = capabilities();
+        ("x-durable-workflow-protocol-version", "1.20")
+    } else {
+        body = super::control_plane::admission_response(request, body).await;
+        ("x-durable-workflow-control-plane-version", "2")
+    };
+    let mut response = (status, Json(body)).into_response();
     response
         .headers_mut()
         .insert(header, HeaderValue::from_static(version));
@@ -242,7 +323,7 @@ async fn describe_current(
 ) -> Result<Json<Value>> {
     let body = runtime.describe(&workflow_id, None).await?;
     Ok(Json(
-        super::control_plane::ReadOperation::Describe.response(body),
+        super::control_plane::Operation::Describe.response(body),
     ))
 }
 
@@ -342,7 +423,7 @@ async fn describe_run(
 ) -> Result<Json<Value>> {
     let body = runtime.describe(&workflow_id, Some(&run_id)).await?;
     Ok(Json(
-        super::control_plane::ReadOperation::DescribeRun.response(body),
+        super::control_plane::Operation::DescribeRun.response(body),
     ))
 }
 
@@ -370,7 +451,7 @@ async fn history(
         .history(&workflow_id, &run_id, after, page_size)
         .await?;
     Ok(Json(
-        super::control_plane::ReadOperation::History.response(body),
+        super::control_plane::Operation::History.response(body),
     ))
 }
 
