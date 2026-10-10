@@ -1,6 +1,53 @@
 use super::*;
 
 impl TestDatabase {
+    async fn repair_commands(&self, run_id: &str) -> i64 {
+        const SQL: &str = "SELECT COUNT(*) FROM workflow_commands WHERE workflow_run_id=$1 AND requested_workflow_run_id=$2 AND resolved_workflow_run_id=$3 AND command_type='repair' AND target_scope='run' AND status='accepted' AND outcome='repair_dispatched' AND payload_codec='avro' AND payload IS NOT NULL AND accepted_at IS NOT NULL AND applied_at IS NOT NULL";
+        match self {
+            Self::Sqlite(dir) => {
+                let pool = sqlx::SqlitePool::connect(&format!(
+                    "sqlite://{}",
+                    dir.path().join("runtime.sqlite").display()
+                ))
+                .await
+                .unwrap();
+                let count = sqlx::query_scalar(SQL)
+                    .bind(run_id)
+                    .bind(run_id)
+                    .bind(run_id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+                count
+            }
+            Self::Postgres { options, .. } => {
+                let pool = sqlx::postgres::PgPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
+                let count = sqlx::query_scalar(SQL)
+                    .bind(run_id)
+                    .bind(run_id)
+                    .bind(run_id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+                count
+            }
+            Self::MySql { options, .. } => {
+                let pool = sqlx::mysql::MySqlPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
+                let count=sqlx::query_scalar("SELECT COUNT(*) FROM workflow_commands WHERE workflow_run_id=? AND requested_workflow_run_id=? AND resolved_workflow_run_id=? AND command_type='repair' AND target_scope='run' AND status='accepted' AND outcome='repair_dispatched' AND payload_codec='avro' AND payload IS NOT NULL AND accepted_at IS NOT NULL AND applied_at IS NOT NULL")
+                    .bind(run_id).bind(run_id).bind(run_id).fetch_one(&pool).await.unwrap();
+                pool.close().await;
+                count
+            }
+        }
+    }
     async fn receipt_fault(&self, enabled: bool) {
         match self {
             Self::Sqlite(dir) => {
@@ -236,6 +283,13 @@ async fn completed_receipt_survives_restart_and_preserves_replacement_original_l
     }
     assert_eq!(events[4]["payload"]["task"]["attempt_count"], 3);
     assert_eq!(events[4]["payload"]["task"]["repair_count"], 2);
+    assert_eq!(
+        database
+            .repair_commands(root["run_id"].as_str().unwrap())
+            .await,
+        2,
+        "both accepted repair commands are durably stored against the original run"
+    );
     assert!(poll(&app, "recovery-worker", "workflow").await.is_null());
     runtime.close().await;
     drop(app);
@@ -459,6 +513,13 @@ async fn receipt_write_failure_rolls_back_original_task_history_worker_and_autho
     assert_eq!(
         run_history(&app, &root["workflow_id"], &root["run_id"]).await,
         before
+    );
+    assert_eq!(
+        database
+            .repair_commands(root["run_id"].as_str().unwrap())
+            .await,
+        0,
+        "receipt failure rolls back command rows too"
     );
     assert_eq!(
         request(

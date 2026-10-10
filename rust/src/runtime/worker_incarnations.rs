@@ -287,8 +287,8 @@ where
             "lease_owner":DB::optional_string(task,"lease_owner")?,"workflow_task_attempt":DB::number(task,"attempt_count")?}});
         Self::query("UPDATE workflow_tasks SET status='ready',leased_at=NULL,lease_owner=NULL,lease_expires_at=NULL,repair_count=$1,repair_available_at=NULL,last_error=NULL WHERE id=$2")
             .bind(repair_count).bind(&task_id).execute(&mut **tx).await?;
-        Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,command_type,source,target_scope,status,outcome,workflow_type,payload_codec,payload,command_sequence,accepted_at,applied_at,context) VALUES ($1,$2,$3,$4,'repair','control_plane','run','accepted','repair_dispatched',$5,'avro',$6,$7,$8,$9,$10)")
-            .bind(&command_id).bind(&workflow_id).bind(&run_id).bind(&run_id).bind(DB::string(&run,"workflow_type")?)
+        Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,requested_workflow_run_id,resolved_workflow_run_id,command_type,source,target_scope,status,outcome,workflow_type,payload_codec,payload,command_sequence,accepted_at,applied_at,context) VALUES ($1,$2,$3,$4,$5,'repair','control_plane','run','accepted','repair_dispatched',$6,'avro',$7,$8,$9,$10,$11)")
+            .bind(&command_id).bind(&workflow_id).bind(&run_id).bind(&run_id).bind(&run_id).bind(DB::string(&run,"workflow_type")?)
             .bind(&payload).bind(command_sequence).bind(DB::bind_time(timestamp)).bind(DB::bind_time(timestamp)).bind(DB::document(&context))
             .execute(&mut **tx).await?;
         Self::query(
