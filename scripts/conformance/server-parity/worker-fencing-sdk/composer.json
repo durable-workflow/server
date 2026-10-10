@@ -1,0 +1,11 @@
+{
+  "name": "durable-workflow/worker-fencing-source-probe",
+  "description": "Exact unreleased PHP SDK source for fenced deregistration qualification",
+  "type": "project",
+  "license": "MIT",
+  "require": {"php": "^8.3", "durable-workflow/sdk": "dev-main#4dd3bdc49ddb18b216348e0da29f398e305586b3"},
+  "repositories": [{"type": "vcs", "url": "https://github.com/durable-workflow/sdk-php", "no-api": true}],
+  "config": {"allow-plugins": false, "sort-packages": true, "platform": {"php": "8.3.30"}},
+  "minimum-stability": "dev",
+  "prefer-stable": true
+}

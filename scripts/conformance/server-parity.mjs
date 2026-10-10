@@ -80,6 +80,9 @@ try {
         if (item.observation.sdk_php !== record.artifacts.sdk_php || values.mode === 'embedded' && item.observation.workflow_package !== record.artifacts.workflow) {
           throw new Error('Installed SDK/Workflow packages do not match the frozen tuple');
         }
+        if (record.artifacts.sdk_php_source_commit && item.observation.sdk_php_source !== record.artifacts.sdk_php_source_commit) {
+          throw new Error('Installed SDK source does not match the selected source-feature tuple');
+        }
         item.outcome = 'product-fail';
         item.projection = checkObservation(fixture, item.observation, workflowId);
         item.outcome = 'pass';

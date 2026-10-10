@@ -8,6 +8,7 @@ import {checkSchedule, scheduledWorkflowIdentity} from './schedule-contract.mjs'
 import {checkVisibility} from './visibility-contract.mjs';
 import {checkAdmission} from './admission-contract.mjs';
 import {checkNamespaces} from './namespace-contract.mjs';
+import {checkWorkerDeregistration} from './worker-deregistration-contract.mjs';
 
 function instantNanoseconds(value) {
   const shape = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.(\d{1,9}))?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
@@ -86,6 +87,7 @@ export function checkObservation(fixture, observation, workflowId) {
   const visibility = fixture.visibility ? checkVisibility(fixture, observation, workflowId, instantNanoseconds) : null;
   const admission = fixture.admission ? checkAdmission(fixture, observation, workflowId) : null;
   const namespaces = fixture.namespace_isolation ? checkNamespaces(fixture, observation, workflowId, checkObservation) : null;
+  const workerDeregistration = fixture.worker_deregistration ? checkWorkerDeregistration(fixture, observation, workflowId) : null;
   const cooperative = fixture.cooperative_cancellation
     ? checkCooperativeCancellation(fixture, observation, identities, projectedEvents, instantNanoseconds) : null;
   if (fixture.child_cancellation) {
@@ -548,6 +550,7 @@ export function checkObservation(fixture, observation, workflowId) {
     ...(visibility ? {visibility} : {}),
     ...(admission ? {admission} : {}),
     ...(namespaces ? {namespace_isolation: namespaces} : {}),
+    ...(workerDeregistration ? {worker_deregistration: workerDeregistration} : {}),
   };
 }
 
@@ -572,7 +575,8 @@ export function compareRecords(records, expectedFixtureHashes, expectedFixtures)
       assert.equal(item.fixture_id, item.fixture.id, 'case identity matches fixture');
       assert.deepStrictEqual(item.fixture, expectedFixtures[`${item.fixture_id}.json`], 'case expectations match the current reviewed source fixture');
       if (item.fixture.signal_count || item.fixture.schedule || item.fixture.visibility || item.fixture.admission) assert.equal(item.observation.mode, record.mode, 'observation uses its recording adapter');
-      assert.equal(item.observation.sdk_php, record.artifacts.sdk_php, 'installed published SDK matches tuple');
+      assert.equal(item.observation.sdk_php, record.artifacts.sdk_php, 'installed SDK matches tuple');
+      if (record.artifacts.sdk_php_source_commit) assert.equal(item.observation.sdk_php_source, record.artifacts.sdk_php_source_commit, 'installed exact source SDK matches tuple');
       if (record.mode === 'embedded') assert.equal(item.observation.workflow_package, record.artifacts.workflow, 'installed Workflow matches tuple');
       assert.deepStrictEqual(item.fixture, baseline.fixture, 'same fixture expectations');
       const checked = checkObservation(item.fixture, item.observation, item.projection.workflow_id);
