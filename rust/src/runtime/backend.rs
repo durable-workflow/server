@@ -162,16 +162,36 @@ DELETE FROM dw_poll_receipts WHERE (namespace,worker_id,kind,request_id) IN (
     }
 }
 
+// Published PHP document columns are json. SQLx's ordinary Json binding
+// advertises jsonb, which rejects escaped NUL before conversion to json.
+// Preserve the column contract while reusing SQLx's JSON wire encoder.
+pub(super) struct PostgresDocument(Json<Value>);
+
+impl Type<Postgres> for PostgresDocument {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        sqlx::postgres::PgTypeInfo::with_name("json")
+    }
+}
+
+impl Encode<'_, Postgres> for PostgresDocument {
+    fn encode_by_ref(
+        &self,
+        buffer: &mut sqlx::postgres::PgArgumentBuffer,
+    ) -> std::result::Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
+        self.0.encode_by_ref(buffer)
+    }
+}
+
 impl Backend for Postgres {
     type EncodedTime = NaiveDateTime;
-    type EncodedDocument = Json<Value>;
+    type EncodedDocument = PostgresDocument;
     const TIMER_TASK_SQL: &'static str = "SELECT id FROM workflow_tasks WHERE workflow_run_id=$1 AND namespace='default' AND task_type='timer' AND status='ready' AND payload->>'timer_id'=$2";
     const HISTORY_PAGE: &'static str = "SELECT * FROM (SELECT *,SUM(octet_length(payload::text)) OVER (ORDER BY sequence) AS page_bytes FROM workflow_history_events WHERE workflow_run_id=$1 AND sequence>$2 ORDER BY sequence LIMIT $3) AS page WHERE page_bytes<=8388608 ORDER BY sequence";
     fn bind_time(time: DateTime<Utc>) -> NaiveDateTime {
         time.naive_utc()
     }
-    fn document(value: &Value) -> Json<Value> {
-        Json(value.clone())
+    fn document(value: &Value) -> PostgresDocument {
+        PostgresDocument(Json(value.clone()))
     }
     fn string(row: &Self::Row, field: &str) -> Result<String> {
         Ok(row.try_get(field)?)

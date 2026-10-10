@@ -188,6 +188,54 @@ impl TestDatabase {
         }
     }
 
+    async fn cancellation_failure_message(&self, failure: &str) -> String {
+        let query = "SELECT message FROM workflow_failures WHERE id=$1";
+        match self {
+            Self::Sqlite(dir) => {
+                let pool = sqlx::SqlitePool::connect(&format!(
+                    "sqlite://{}",
+                    dir.path().join("runtime.sqlite").display()
+                ))
+                .await
+                .unwrap();
+                let message = sqlx::query_scalar(query)
+                    .bind(failure)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+                message
+            }
+            Self::Postgres { options, .. } => {
+                let pool = sqlx::postgres::PgPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
+                let message = sqlx::query_scalar(query)
+                    .bind(failure)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+                message
+            }
+            Self::MySql { options, .. } => {
+                let pool = sqlx::mysql::MySqlPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
+                let message =
+                    sqlx::query_scalar("SELECT message FROM workflow_failures WHERE id=?")
+                        .bind(failure)
+                        .fetch_one(&pool)
+                        .await
+                        .unwrap();
+                pool.close().await;
+                message
+            }
+        }
+    }
+
     async fn execute(&self, statement: &'static str) {
         match self {
             Self::Sqlite(dir) => {
@@ -3036,6 +3084,101 @@ async fn immediate_cancellation_closes_original_work_once_and_survives_fresh_poo
         );
         runtime_b.close().await;
         runtime_c.close().await;
+        database.remove().await;
+    }
+}
+
+#[tokio::test]
+async fn nul_cancellation_preserves_reason_and_complete_durable_diagnostic() {
+    for (reason, normalized) in [
+        ("parity\0cancellation λ", "parity\0cancellation λ"),
+        ("\0parity cancellation λ", "parity cancellation λ"),
+    ] {
+        let database = TestDatabase::new().await;
+        let runtime = database.open().await.unwrap();
+        let app = router(runtime.clone());
+        register(&app, "nul-worker", json!(["echo"]), json!([])).await;
+        let started = start(&app, "nul-cancellation").await;
+        let workflow = json!("nul-cancellation");
+        let run = started["run_id"].clone();
+        let path = format!(
+            "/api/workflows/nul-cancellation/runs/{}/cancel",
+            run.as_str().unwrap()
+        );
+        let receipt = request(&app, "POST", &path, json!({"reason":reason})).await;
+        assert_eq!(receipt.0, StatusCode::OK, "{}", receipt.1);
+        assert_eq!(receipt.1["outcome"], "cancelled");
+        let history = run_history(&app, &workflow, &run).await;
+        let events = history.as_array().unwrap();
+        assert_eq!(events.len(), 4);
+        assert_eq!(events[2]["event_type"], "CancelRequested");
+        assert_eq!(events[3]["event_type"], "WorkflowCancelled");
+        for event in &events[2..] {
+            assert_eq!(event["payload"]["reason"], normalized);
+            assert_eq!(
+                event["payload"]["workflow_command_id"],
+                receipt.1["command_id"]
+            );
+        }
+        let diagnostic = format!("Workflow cancelled: {normalized}");
+        let expected = if normalized.contains('\0') {
+            serde_json::to_string(&diagnostic).unwrap()
+        } else {
+            diagnostic.clone()
+        };
+        let terminal = &events[3]["payload"];
+        assert_eq!(terminal["message"], expected);
+        assert!(!expected.contains('\0'));
+        if normalized.contains('\0') {
+            assert_eq!(
+                serde_json::from_str::<String>(&expected).unwrap(),
+                diagnostic
+            );
+        }
+        let failure = terminal["failure_id"].as_str().unwrap();
+        assert_eq!(
+            database.cancellation_failure_message(failure).await,
+            expected
+        );
+        assert_eq!(
+            database
+                .cancellation_failure_count(run.as_str().unwrap(), failure)
+                .await,
+            1
+        );
+        runtime.close().await;
+        let recovered = database.open().await.unwrap();
+        let fresh = router(recovered.clone());
+        let duplicate = request(&fresh, "POST", &path, json!({"reason":"replacement"})).await;
+        assert_eq!(duplicate.0, StatusCode::CONFLICT);
+        assert_eq!(run_history(&fresh, &workflow, &run).await, history);
+        let described = request(
+            &fresh,
+            "GET",
+            "/api/workflows/nul-cancellation",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(described.1["status"], "cancelled");
+        assert_eq!(
+            ValueCodec::new()
+                .unwrap()
+                .decode(described.1["input_envelope"]["blob"].as_str().unwrap())
+                .unwrap(),
+            Payload::Array(vec![Payload::Long(9007199254740993)])
+        );
+        assert!(poll(&fresh, "nul-worker", "workflow").await.is_null());
+        assert_eq!(
+            database.cancellation_failure_message(failure).await,
+            expected
+        );
+        assert_eq!(
+            database
+                .cancellation_failure_count(run.as_str().unwrap(), failure)
+                .await,
+            1
+        );
+        recovered.close().await;
         database.remove().await;
     }
 }

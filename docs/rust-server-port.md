@@ -202,8 +202,20 @@ The 22-case candidate records published PHP and embedded references before
 native execution. Qualified totals remain 20 until the new matrix is reviewed.
 All 289 comparator tests pass, including four corrected diagnostic models and
 twelve synchronized semantic corruptions; these are harness checks, not actual
-completed workflows. Native diagnostic implementation and qualification remain
-pending.
+completed workflows. Native qualification remains pending in
+[PR #352](https://github.com/durable-workflow/server/pull/352).
+The [actual tests-first run](https://github.com/durable-workflow/server/actions/runs/38018390560)
+at `19fa7f0a` records 264 passing PHP/embedded observations across six database
+configurations, including 24 NUL observations. All existing 29 native HTTP tests
+pass per configuration, but the interior-NUL fixture rejects the native
+unencoded diagnostic on SQLite/MySQL/MariaDB. PostgreSQL 17/18 instead reject
+the history payload because SQLx advertises `jsonb` for the PHP `json` column;
+cancellation returns 503, rolls back, and the subsequent worker completes.
+The native candidate now serializes the whole NUL-containing diagnostic and
+binds PostgreSQL documents as `json`, reusing SQLx's encoder and preserving the
+existing schema. A new HTTP regression checks original reasons, physical
+failure/history equality, duplicate refusal, fresh pools and exact int64 input.
+This implementation is awaiting the complete matrix; qualified totals stay 20.
 The final cancellation head `741401bc80e2b13b86ae031f3fe88272855f1d03`
 passes all six configurations in [run 38005623457](https://github.com/durable-workflow/server/actions/runs/38005623457),
 including all 17 shared cases, 23 native HTTP tests/configuration and actual
