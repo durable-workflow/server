@@ -56,11 +56,11 @@ impl TimerScheduler {
                         // retried from durable state, without logging payloads.
                         // Timer transactions use the same cross-node lock as
                         // completion. CPU/deadline performance is unqualified.
-                        let result = match &*storage {
-                            Storage::Sqlite(store) => store.fire_due_timers().await,
-                            Storage::Postgres(store) => store.fire_due_timers().await,
-                            Storage::MySql(store) => store.fire_due_timers().await,
-                        };
+                        let result = async { match &*storage {
+                            Storage::Sqlite(store) => { store.fire_due_timers().await?; store.fire_due_schedules().await },
+                            Storage::Postgres(store) => { store.fire_due_timers().await?; store.fire_due_schedules().await },
+                            Storage::MySql(store) => { store.fire_due_timers().await?; store.fire_due_schedules().await },
+                        }}.await;
                         let success = result.is_ok();
                         if healthy.swap(success,Ordering::Relaxed) && !success {
                             eprintln!("timer_scheduler_storage_unavailable");
@@ -191,6 +191,26 @@ impl Runtime {
     }
     delegate!(database_live() -> bool);
     delegate!(start(body: Value) -> Result<Value>);
+    pub(crate) async fn create_schedule(&self, body: Value, context: Value) -> Result<Value> {
+        let definition = super::schedules::definition(&body, super::store::now())?;
+        let arguments = super::envelope(&definition.action, "input")?;
+        super::queries::decode(
+            self.signal_codec.clone(),
+            arguments,
+            true,
+            "invalid_schedule_arguments",
+        )
+        .await?;
+        match &*self.storage {
+            Storage::Sqlite(store) => store.create_schedule(definition, context).await,
+            Storage::Postgres(store) => store.create_schedule(definition, context).await,
+            Storage::MySql(store) => store.create_schedule(definition, context).await,
+        }
+    }
+    delegate!(describe_schedule(schedule: &str) -> Result<Value>);
+    delegate!(schedule_history(schedule: &str, after: i64, limit: i64) -> Result<Value>);
+    delegate!(edit_schedule(schedule: &str, operation: &str, context: Value) -> Result<Value>);
+    delegate!(trigger_schedule(schedule: &str, context: Value) -> Result<Value>);
     pub(crate) async fn signal(
         &self,
         workflow_id: &str,

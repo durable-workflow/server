@@ -262,3 +262,60 @@ async fn fixed_rate_original_occurrence_exhausts_quota_before_authored_completio
     runtime.close().await;
     database.remove().await;
 }
+
+#[tokio::test]
+async fn scheduled_occurrence_survives_restart_and_competing_nodes_admit_one_original_run() {
+    let database = TestDatabase::new().await;
+    let initial = database.open().await.unwrap();
+    let app = router(initial.clone());
+    register(&app, "schedule-recovery-worker", json!(["echo"]), json!([])).await;
+    create(&app, "schedule-recovery", "PT2S", Some(1)).await;
+    let original = audit(&app, "schedule-recovery").await;
+    initial.close().await;
+    let (a, b) = tokio::join!(database.open(), database.open());
+    let (a, b) = (a.unwrap(), b.unwrap());
+    let app_a = router(a.clone());
+    let app_b = router(b.clone());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+    let fired = loop {
+        let events = audit(&app_a, "schedule-recovery").await;
+        if events.len() == 3 {
+            break events;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "reopened schedulers did not fire: {events:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(fired[0], original[0]);
+    assert_eq!(fired[1]["event_type"], "ScheduleTriggered");
+    assert_eq!(
+        chrono::DateTime::parse_from_rfc3339(
+            fired[1]["payload"]["occurrence_time"].as_str().unwrap()
+        )
+        .unwrap(),
+        chrono::DateTime::parse_from_rfc3339(
+            original[0]["payload"]["next_fire_at"].as_str().unwrap()
+        )
+        .unwrap()
+    );
+    let trigger = json!({"workflow_id":fired[1]["workflow_instance_id"],"run_id":fired[1]["workflow_run_id"]});
+    complete_original(
+        &app_b,
+        "schedule-recovery-worker",
+        "schedule-recovery",
+        &trigger,
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(audit(&app_a, "schedule-recovery").await, fired);
+    assert!(
+        poll(&app_a, "schedule-recovery-worker", "workflow")
+            .await
+            .is_null()
+    );
+    a.close().await;
+    b.close().await;
+    database.remove().await;
+}

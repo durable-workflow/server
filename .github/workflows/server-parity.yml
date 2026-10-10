@@ -171,7 +171,7 @@ jobs:
             -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=php_ref \
             -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
             -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
-            "$image" -ec 'while :; do php artisan workflow:v2:repair-pass --json; sleep 1; done'
+            "$image" -c 'while :; do php artisan workflow:v2:repair-pass --json; php artisan schedule:evaluate --limit=100 --json; sleep 1; done'
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
             -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=embedded_ref \
             -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
@@ -221,6 +221,17 @@ jobs:
           docker run --rm --user=1000:1000 --entrypoint node --network=none \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
             scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json > parity-evidence/comparison.json
+          docker run --rm --user=1000:1000 --entrypoint sh --network "$RESOURCE_SCOPE" \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
+            -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=embedded_ref -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
+            -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_MODE=embedded \
+            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION "$image" -ec '
+              set -- --fixture tests/Fixtures/ServerParityPending/schedule-manual-lifecycle.json --fixture tests/Fixtures/ServerParityPending/schedule-fixed-rate-one-occurrence.json
+              node scripts/conformance/server-parity.mjs record --mode http --url http://parity-php:8080 --target php --output /evidence/schedules-php.json "$@"
+              node scripts/conformance/server-parity.mjs record --mode embedded --application-root /app --target embedded --output /evidence/schedules-embedded.json "$@"
+              node scripts/conformance/server-parity.mjs record --mode http --url http://parity-native-a:8080 --target rust --output /evidence/schedules-rust.json "$@"
+              node scripts/conformance/server-parity.mjs compare /evidence/schedules-php.json /evidence/schedules-rust.json /evidence/schedules-embedded.json "$@" > /evidence/schedules-comparison.json
+            '
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint sh \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" -ec '
@@ -441,7 +452,7 @@ jobs:
             -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=php_ref \
             -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
             -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
-            "$image" -ec 'while :; do php artisan workflow:v2:repair-pass --json; sleep 1; done'
+            "$image" -c 'while :; do php artisan workflow:v2:repair-pass --json; php artisan schedule:evaluate --limit=100 --json; sleep 1; done'
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \
             -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=embedded_ref \
             -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
@@ -491,6 +502,17 @@ jobs:
           docker run --rm --user=1000:1000 --entrypoint node --network=none \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
             scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json > parity-evidence/comparison.json
+          docker run --rm --user=1000:1000 --entrypoint sh --network "$RESOURCE_SCOPE" \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
+            -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=embedded_ref -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
+            -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_MODE=embedded \
+            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION "$image" -ec '
+              set -- --fixture tests/Fixtures/ServerParityPending/schedule-manual-lifecycle.json --fixture tests/Fixtures/ServerParityPending/schedule-fixed-rate-one-occurrence.json
+              node scripts/conformance/server-parity.mjs record --mode http --url http://parity-php:8080 --target php --output /evidence/schedules-php.json "$@"
+              node scripts/conformance/server-parity.mjs record --mode embedded --application-root /app --target embedded --output /evidence/schedules-embedded.json "$@"
+              node scripts/conformance/server-parity.mjs record --mode http --url http://parity-native-a:8080 --target rust --output /evidence/schedules-rust.json "$@"
+              node scripts/conformance/server-parity.mjs compare /evidence/schedules-php.json /evidence/schedules-rust.json /evidence/schedules-embedded.json "$@" > /evidence/schedules-comparison.json
+            '
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint sh \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" -ec '
@@ -712,7 +734,7 @@ jobs:
             --user=1000:1000 --cpus=0.25 --memory=256m --memory-swap=256m --entrypoint sh \
             -v "$PWD/parity-state:/state" -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/php.sqlite \
             -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
-            "$image" -ec 'while :; do php artisan workflow:v2:repair-pass --json; sleep 1; done'
+            "$image" -c 'while :; do php artisan workflow:v2:repair-pass --json; php artisan schedule:evaluate --limit=100 --json; sleep 1; done'
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
@@ -729,6 +751,17 @@ jobs:
           docker run --rm --user=1000:1000 --entrypoint node \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
             scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json > parity-evidence/comparison.json
+          docker run --rm --user=1000:1000 --entrypoint sh --network "$RESOURCE_SCOPE" \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -v "$PWD/parity-state:/state" -w /source \
+            -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/embedded.sqlite \
+            -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_MODE=embedded \
+            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION "$image" -ec '
+              set -- --fixture tests/Fixtures/ServerParityPending/schedule-manual-lifecycle.json --fixture tests/Fixtures/ServerParityPending/schedule-fixed-rate-one-occurrence.json
+              node scripts/conformance/server-parity.mjs record --mode http --url http://parity-server:8080 --target php --output /evidence/schedules-php.json "$@"
+              node scripts/conformance/server-parity.mjs record --mode embedded --application-root /app --target embedded --output /evidence/schedules-embedded.json "$@"
+              node scripts/conformance/server-parity.mjs record --mode http --url http://parity-rust:8080 --target rust --output /evidence/schedules-rust.json "$@"
+              node scripts/conformance/server-parity.mjs compare /evidence/schedules-php.json /evidence/schedules-rust.json /evidence/schedules-embedded.json "$@" > /evidence/schedules-comparison.json
+            '
           docker run --rm --user=1000:1000 --entrypoint php --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/restart.php \

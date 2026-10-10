@@ -139,21 +139,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
         "Rust development runtime listening on {}",
         listener.local_addr()?
     );
-    axum::serve(listener, router(runtime.clone()))
-        .with_graceful_shutdown(async {
-            let ctrl_c = tokio::signal::ctrl_c();
-            #[cfg(unix)]
-            let terminate = async {
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                    .expect("install SIGTERM handler")
-                    .recv()
-                    .await;
-            };
-            #[cfg(not(unix))]
-            let terminate = std::future::pending::<()>();
-            tokio::select! { _ = ctrl_c => {}, _ = terminate => {} }
-        })
-        .await?;
+    axum::serve(
+        listener,
+        router(runtime.clone()).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(async {
+        let ctrl_c = tokio::signal::ctrl_c();
+        #[cfg(unix)]
+        let terminate = async {
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("install SIGTERM handler")
+                .recv()
+                .await;
+        };
+        #[cfg(not(unix))]
+        let terminate = std::future::pending::<()>();
+        tokio::select! { _ = ctrl_c => {}, _ = terminate => {} }
+    })
+    .await?;
     runtime.close().await;
     Ok(())
 }

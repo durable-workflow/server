@@ -396,10 +396,17 @@ record the caller model's stale zero skip count; the manual definition explicitl
 pins that audit representation while requiring the fresh description and later
 trigger to retain the actual skip. HTTP legacy-admin audit context is checked
 before common projection; this is not broad authorization qualification.
-No complete schedule recording or native schedule pass is claimed; the qualified
-total remains 24. Next: complete the two published references, record the actual
-native gap, then implement and qualify this bounded slice on all six database
-configurations before moving its definitions into the passing corpus.
+Complete pending PHP/embedded records now match in a controlled reference
+footprint that sequences the installed repair and evaluator CLI commands in one
+maintenance loop. It deliberately excludes overlapping maintenance writes and
+does not close #355. All four raw observations compare at adapter source
+0212604f5a7a1c47b5664227b4483a6328ca520d. The first receipt with an incorrectly
+entered runner SHA is retained and excluded; the valid records use Git's revision.
+Two native regressions at f3823878f21293e869cc58a450df3cb5d54cb0f3 compile and
+fail at the expected 501 schedule creation on all six databases, while the
+32 existing HTTP regressions pass on each. No native schedule pass is claimed;
+the qualified total remains 24. Next: implement and qualify this bounded slice
+on all six configurations before moving its definitions into the passing corpus.
 
 The current execution slice shares the native workflow/activity/timer/signal state machine
 between SQLite, PostgreSQL and MariaDB/MySQL, with typed database adapters and explicit
