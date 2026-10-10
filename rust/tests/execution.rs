@@ -1402,14 +1402,38 @@ async fn updates_preserve_original_receipts_and_fence_recovered_tasks_across_poo
     assert_eq!(recovered["workflow_update_id"], old["workflow_update_id"]);
     assert_eq!(recovered["workflow_task_attempt"], 2);
     assert_eq!(recovered["history_events"], old["history_events"]);
-    let current = completion(&recovered, commands);
-    // A registration that drops the update handler cannot commit its old lease.
+    let released = completion(&recovered, commands.clone());
+    // Re-registration releases the old process's original update task too.
     register(&b, "update-b", json!(["echo"]), json!([])).await;
     assert_eq!(
-        request(&b, "POST", &complete_path, current.clone()).await.1["reason"],
-        "update_worker_unavailable"
+        request(&b, "POST", &complete_path, released.clone())
+            .await
+            .1["reason"],
+        "task_not_leased"
+    );
+    assert!(
+        poll(&b, "update-b", "workflow").await.is_null(),
+        "a replacement without the update handler cannot reclaim it"
+    );
+    assert_eq!(
+        request(&b, "GET", &history_path, Value::Null).await.1,
+        before
     );
     update_worker(&b, "update-b").await;
+    let replacement = poll(&b, "update-b", "workflow").await;
+    assert_eq!(replacement["task_id"], old["task_id"]);
+    assert_eq!(replacement["workflow_update_id"], old["workflow_update_id"]);
+    assert_eq!(replacement["workflow_task_attempt"], 3);
+    assert_eq!(replacement["history_events"], old["history_events"]);
+    assert_eq!(
+        request(&b, "POST", &complete_path, released).await.1["reason"],
+        "workflow_task_attempt_mismatch"
+    );
+    assert_eq!(
+        request(&b, "GET", &history_path, Value::Null).await.1,
+        before
+    );
+    let current = completion(&replacement, commands);
     duplicate["wait_for"] = json!("completed");
     duplicate["wait_timeout_seconds"] = json!(5);
     let waiting = {
@@ -2377,7 +2401,7 @@ async fn cooperative_root_request_preserves_original_context_across_duplicates_a
 }
 
 #[tokio::test]
-async fn cooperative_root_request_requires_original_capable_claim_not_later_registration() {
+async fn cooperative_root_request_requires_original_capable_claim_not_later_fleet_registration() {
     for (original_protocol, original_capable) in [("1.19", true), ("1.20", false), ("1.20", true)] {
         let database = TestDatabase::new().await;
         let runtime = database.open().await.unwrap();
@@ -2407,8 +2431,10 @@ async fn cooperative_root_request_requires_original_capable_claim_not_later_regi
         assert!(!task.is_null());
         let prefix = run_history(&app, &workflow, &started["run_id"]).await;
         let mut replacement = registration;
-        // Neither adding capabilities to an old claim nor removing them from
-        // a capable claim rewrites the persisted original proof.
+        // Another worker's capability announcement cannot rewrite the active
+        // original claim's persisted proof. Re-registering the owner itself
+        // releases that lease, which is a different lifecycle boundary.
+        replacement["worker_id"] = json!("cooperative-new-worker");
         replacement["capabilities"] = if original_protocol == "1.19" || !original_capable {
             json!(["cooperative_cancellation"])
         } else {
