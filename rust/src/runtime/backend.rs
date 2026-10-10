@@ -178,7 +178,7 @@ impl Encode<'_, Postgres> for PostgresDocument {
         &self,
         buffer: &mut sqlx::postgres::PgArgumentBuffer,
     ) -> std::result::Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
-        self.0.encode_by_ref(buffer)
+        <Json<Value> as Encode<'_, Postgres>>::encode_by_ref(&self.0, buffer)
     }
 }
 
