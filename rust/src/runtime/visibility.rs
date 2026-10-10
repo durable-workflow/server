@@ -86,15 +86,8 @@ pub(super) fn request_contract() -> Value {
             "rejected_aliases":{"cancelled":"failed","terminated":"failed","pending":"running","waiting":"running"}}}}}})
 }
 
-fn response(mut body: Value) -> Value {
-    body["control_plane"] = json!({"schema":"durable-workflow.v2.control-plane-response", "version":1,
-        "operation":"list", "workflow_id":null,
-        "contract":{"schema":"durable-workflow.v2.control-plane-response.contract", "version":1,
-            "legacy_field_policy":"reject_non_canonical", "legacy_fields":{"query":"query_name","signal":"signal_name","update":"update_name","wait_policy":"wait_for"},
-            "required_fields":[], "success_fields":[]},
-        "workflow_count":body.get("workflow_count"), "next_page_token":body.get("next_page_token"),
-        "reason":body.get("reason"), "validation_errors":body.get("validation_errors")});
-    body
+fn response(body: Value) -> Value {
+    super::control_plane::ReadOperation::List.response(body)
 }
 
 fn validation(field: &'static str, message: &'static str) -> RuntimeError {
@@ -167,5 +160,65 @@ where
         Ok(response(
             json!({"workflow_count":workflows.len(), "workflows":workflows, "next_page_token":next}),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::codec::{Value as Payload, ValueCodec};
+
+    #[tokio::test]
+    async fn sqlite_visibility_preserves_nanosecond_ordering_and_id_ties() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("visibility.sqlite");
+        let store = Store::<sqlx::Sqlite>::new(
+            super::super::sqlite::open(path.to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let input = json!({"codec":"avro", "blob":ValueCodec::new().unwrap().encode(&Payload::Array(vec![])).unwrap()});
+        let mut runs = Vec::new();
+        for id in ["ordering-a", "ordering-b"] {
+            let started = store.start(json!({"workflow_id":id,"workflow_type":"echo","task_queue":"test","input":input})).await.unwrap();
+            runs.push(started["run_id"].as_str().unwrap().to_owned());
+        }
+        // Storage representation regression only: these rows are not shared
+        // authored-workflow qualification observations or adjusted deadlines.
+        for (a, b, winner) in [
+            (
+                "2026-01-01T00:00:00.000001999Z",
+                "2026-01-01 00:00:00.000002",
+                "ordering-b",
+            ),
+            (
+                "2026-01-01T00:00:00.000001001Z",
+                "2026-01-01 00:00:00.000001",
+                "ordering-a",
+            ),
+            (
+                "2026-01-01T00:00:00.000002000+00:00",
+                "2026-01-01 00:00:00.000002",
+                if runs[0] > runs[1] {
+                    "ordering-a"
+                } else {
+                    "ordering-b"
+                },
+            ),
+        ] {
+            Store::<sqlx::Sqlite>::query("UPDATE workflow_runs SET started_at=CASE WHEN workflow_instance_id='ordering-a' THEN $1 ELSE $2 END")
+                .bind(a).bind(b).execute(&store.pool).await.unwrap();
+            let filter = VisibilityQuery {
+                query: Some("ordering-".into()),
+                page_size: Some("1".into()),
+                ..Default::default()
+            }
+            .validate()
+            .unwrap();
+            let page = store.list_workflows(&filter).await.unwrap();
+            assert_eq!(page["workflows"][0]["workflow_id"], winner);
+            assert_eq!(page["next_page_token"], "MQ==");
+        }
+        store.close().await;
     }
 }

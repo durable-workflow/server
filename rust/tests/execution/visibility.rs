@@ -119,6 +119,59 @@ async fn visibility_pages_filter_original_runs_and_preserve_cancelled_peer() {
     assert_eq!(described.1["status_bucket"], "completed");
     assert_eq!(described.1["is_current_run"], true);
     assert_eq!(described.1["run_count"], 1);
+    assert_eq!(described.1["control_plane"]["operation"], "describe");
+    let selected = request(
+        &app,
+        "GET",
+        &format!(
+            "/api/workflows/visibility-root/runs/{}",
+            root["run_id"].as_str().unwrap()
+        ),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(selected.0, StatusCode::OK);
+    assert_eq!(
+        selected.1["control_plane"]["schema"],
+        "durable-workflow.v2.control-plane-response"
+    );
+    assert_eq!(selected.1["control_plane"]["operation"], "describe_run");
+    assert_eq!(selected.1["control_plane"]["run_id"], root["run_id"]);
+    assert_eq!(
+        selected.1["control_plane"]["contract"]["required_fields"],
+        json!(["workflow_id"])
+    );
+    assert_eq!(
+        selected.1["control_plane"]["contract"]["success_fields"],
+        json!(["run_id"])
+    );
+    let history = request(
+        &app,
+        "GET",
+        &format!(
+            "/api/workflows/visibility-root/runs/{}/history?page_size=1",
+            root["run_id"].as_str().unwrap()
+        ),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(history.0, StatusCode::OK);
+    assert_eq!(history.1["control_plane"]["operation"], "history");
+    assert_eq!(history.1["control_plane"]["workflow_id"], "visibility-root");
+    assert_eq!(history.1["control_plane"]["run_id"], root["run_id"]);
+    assert_eq!(
+        history.1["control_plane"]["next_page_token"],
+        history.1["next_page_token"]
+    );
+    assert_eq!(
+        history.1["control_plane"]["contract"]["required_fields"],
+        json!(["workflow_id", "run_id"])
+    );
+    assert_eq!(
+        history.1["control_plane"]["contract"]["success_fields"],
+        json!(["next_page_token"])
+    );
+    assert_eq!(history.1["events"].as_array().unwrap().len(), 1);
     runtime.close().await;
     database.remove().await;
 }

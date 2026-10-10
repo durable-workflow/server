@@ -73,6 +73,17 @@ export function visibilityObservation(fixture, mode) {
     const documents = {list: namespacePage([pending, root]), running: namespacePage([pending]),
       completed: namespacePage([root]), describe: clone(execution),
       history: {workflow_id: workflowId, run_id: runId, namespace: 'default', events: clone(events)}};
+    for (const [name, operation, required, success] of [
+      ['describe', 'describe_run', ['workflow_id'], ['run_id']],
+      ['history', 'history', ['workflow_id', 'run_id'], ['next_page_token']],
+    ]) documents[name].control_plane = {
+      schema: 'durable-workflow.v2.control-plane-response', version: 1, operation,
+      workflow_id: workflowId, run_id: runId, ...(name === 'history' ? {next_page_token: null} : {}),
+      contract: {schema: 'durable-workflow.v2.control-plane-response.contract', version: 1,
+        legacy_field_policy: 'reject_non_canonical', legacy_fields: {query: 'query_name', signal: 'signal_name', update: 'update_name', wait_policy: 'wait_for'},
+        required_fields: required, success_fields: success,
+        rejection_fields: ['workflow_id', 'run_id', 'reason', 'message', 'retryable', 'error_id', 'exception'], rejection_reasons: ['control_plane_internal_error']},
+    };
     state.cli = {sha256: fixture.visibility.cli.phar_sha256, commands: {}};
     for (const [name, arguments_] of Object.entries(commands)) {
       state.cli.commands[name] = {arguments: arguments_, exit_code: name === 'alias' ? 2 : 0, timed_out: false,

@@ -252,7 +252,7 @@ impl Runtime {
         };
         super::previews::describe(self.signal_codec.clone(), description).await
     }
-    pub(crate) async fn list_workflows(
+    pub(super) async fn list_workflows(
         &self,
         filter: super::visibility::VisibilityFilter,
     ) -> Result<Value> {

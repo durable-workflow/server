@@ -163,6 +163,7 @@ export function checkVisibility(fixture, observation, workflowId, instant) {
         for (const row of receipt.document.workflows) assert.equal(row.namespace, 'default', 'CLI row namespace context');
       } else if (name === 'describe') {
         const document = receipt.document;
+        readContract(document, 'describe_run', ['workflow_id'], ['run_id']);
         for (const key of ['workflow_id', 'run_id', 'workflow_type', 'status', 'status_bucket', 'is_terminal'])
           assert.deepStrictEqual(document[key], expected[1][key], `CLI describe ${key}`);
         assert.equal(document.is_current_run, true, 'CLI describes original current run');
@@ -173,6 +174,8 @@ export function checkVisibility(fixture, observation, workflowId, instant) {
         assert.deepStrictEqual(receipt.typed_input_preview, observation.typed_input, 'CLI exact input preview types');
         assert.deepStrictEqual(receipt.typed_output_preview, observation.typed_output, 'CLI exact output preview types');
       } else {
+        readContract(receipt.document, 'history', ['workflow_id', 'run_id'], ['next_page_token']);
+        assert.equal(receipt.document.control_plane.next_page_token, null, 'CLI last original history page exhausted');
         assert.equal(receipt.document.workflow_id, workflowId, 'CLI history original workflow');
         assert.equal(receipt.document.run_id, observation.run_id, 'CLI history original run');
         assert.equal(receipt.document.next_page_token, undefined, 'CLI consumed all original history pages');
@@ -185,5 +188,23 @@ export function checkVisibility(fixture, observation, workflowId, instant) {
         }
       }
     }
+  }
+
+  function readContract(document, operation, required, success) {
+    const control = document.control_plane;
+    assert.equal(control?.schema, 'durable-workflow.v2.control-plane-response', 'CLI read response schema');
+    assert.equal(control.version, 1, 'CLI read response version');
+    assert.equal(control.operation, operation, 'CLI read response operation');
+    assert.equal(control.workflow_id, workflowId, 'CLI metadata original workflow');
+    assert.equal(control.run_id, observation.run_id, 'CLI metadata original run');
+    const contract = control.contract;
+    assert.equal(contract?.schema, 'durable-workflow.v2.control-plane-response.contract', 'CLI read contract schema');
+    assert.equal(contract.version, 1, 'CLI read contract version');
+    assert.deepStrictEqual(contract.required_fields, required, 'CLI read required field contract');
+    assert.deepStrictEqual(contract.success_fields, success, 'CLI read success field contract');
+    assert.equal(contract.legacy_field_policy, 'reject_non_canonical', 'CLI canonical response field policy');
+    assert.deepStrictEqual(contract.legacy_fields, {query: 'query_name', signal: 'signal_name', update: 'update_name', wait_policy: 'wait_for'}, 'CLI canonical response field names');
+    assert.deepStrictEqual(contract.rejection_fields, ['workflow_id', 'run_id', 'reason', 'message', 'retryable', 'error_id', 'exception'], 'CLI read rejection field contract');
+    assert.deepStrictEqual(contract.rejection_reasons, ['control_plane_internal_error'], 'CLI read rejection reason contract');
   }
 }
