@@ -144,7 +144,7 @@ and PHP/source gates (2,601 tests / 57,160 assertions). Merge
 `2288e80b8d7610394e38b814afaa62414333d200` retains the identical tested tree;
 its main shared and PHP/source checks also pass.
 
-The next tests-first slice defines three immediate selected-run cancellation
+The immediate selected-run cancellation slice defines three
 cases: before workflow claim, with a pending 60-second timer, and with a leased
 activity. Reviewed expectations preserve the original command/run/failure and
 timer/attempt identities, exact int64 input, typed cancellation, immutable
@@ -165,9 +165,9 @@ Final review then found that HTTP reasons need Laravel's Unicode/invisible
 boundary trim before nullable/1000-character validation. Embedded cancellation
 preserves its reason verbatim. The reviewed padded-reason fixture explicitly
 checks both representations, and a separate corpus pins the complete frozen
-HTTP trim set. The correction and its two native normalization checks are
-prepared; fresh six-configuration qualification is pending. Cooperative cleanup cancellation,
-child/update cancellation and scoped propagation are separate gates.
+HTTP trim set. The correction and its two native normalization checks pass
+the final six-configuration qualification described below. Cooperative cleanup
+cancellation, child/update cancellation and scoped propagation are separate gates.
 The first padded-reason matrix also exposed a published embedded PostgreSQL
 defect: a literal NUL truncates the physical failure message while terminal
 history retains it. PHP HTTP and Rust passed all seventeen cases, and SQLite,
@@ -179,6 +179,29 @@ the passing corpus. The portable padded-reason case excludes NUL while retaining
 Unicode/invisible whitespace; the full failure/history consistency check remains
 required. NUL is still covered by the separate HTTP normalization corpus. This
 does not qualify literal-NUL cancellation reasons across database families.
+The correction and published-artifact follow-through remain separately tracked
+in #741; the pending fixture is retained for qualification of that fix.
+The [reviewed correction](https://github.com/durable-workflow/workflow/issues/741#issuecomment-6091333824)
+renders the complete cancellation/termination diagnostic as a JSON string literal
+when it contains NUL, identically in failure storage and terminal history.
+Decoding recovers the original complete diagnostic; ordinary diagnostics remain
+unchanged. Original reasons remain byte-exact in Avro command/history payloads,
+with original failure type, source, run and identity. Source implementation and
+published-artifact qualification are pending; the frozen failing reference is
+retained and does not become a pass from this contract decision.
+The final cancellation head `741401bc80e2b13b86ae031f3fe88272855f1d03`
+passes all six configurations in [run 38005623457](https://github.com/durable-workflow/server/actions/runs/38005623457),
+including all 17 shared cases, 23 native HTTP tests/configuration and actual
+cancelled-activity/timer process-kill recovery. Independent artifact/source
+audits verify 306 reviewed fixture snapshots, twelve officially decoded cancelled
+recovery inputs and six fresh comparisons. The comparator passes 187 checks;
+native library tests include both normalization regressions. PHP/source
+[run 38005623473](https://github.com/durable-workflow/server/actions/runs/38005623473)
+passes 2,601 tests / 57,156 assertions. [PR #346](https://github.com/durable-workflow/server/pull/346)
+is merged at `eb863bd3c1548e7fb446cfca7e75b07bbdc250d8` with the exact tested
+tree. Its main [shared fixture](https://github.com/durable-workflow/server/actions/runs/38006383023)
+and [PHP/source](https://github.com/durable-workflow/server/actions/runs/38006383136)
+checks also pass.
 The frozen HTTP selected-run route validates the current run, then records an
 instance-scoped command; embedded `loadRun` records a run-scoped command.
 Fixtures declare and verify both receipt representations before comparing their
