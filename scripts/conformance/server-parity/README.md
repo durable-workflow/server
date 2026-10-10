@@ -347,10 +347,18 @@ the authored echo and records the HTTP lifecycle as explicitly inapplicable.
 
 `worker-fencing-profile.sh` runs PHP, Rust and embedded observations in separate
 databases alongside each normal hosted database cell. It adds no Cargo invocation.
+It also selects `worker-registration-live-lease`, which replaces the registration
+while its original workflow task is leased. The original token loses authority;
+the original task becomes ready and receives a new attempt when polled. PHP's
+registration boundary does not append a repair command or history event. Full
+original reads remain unchanged across replacement and stale-publication
+refusals, and the same task later completes through the existing fenced recovery
+sequence. Activity replacement and sticky-execution semantics remain separate
+qualification gates. Embedded mode records this HTTP lifecycle as inapplicable.
 Cleanup and logs belong to the owning workflow's always-run steps. Select the
-pending fixture and source manifest with `--fixture` and `--artifacts` when
-recording; compare all three records with that same `--fixture`. The native
-terminal transaction and original task recovery are being qualified in #367;
+pending fixtures with repeated `--fixture` arguments and the source manifest
+with `--artifacts` when recording; compare all three records with those same
+fixtures. The native terminal transaction and original task recovery passed #367;
 role/namespace boundaries, expiry/pruning and rollback have dedicated native
 tests. Real contention, transport
 reply loss and the SDK shutdown budget remain separate qualification gates.

@@ -10,7 +10,8 @@ mkdir -p parity-evidence
 chmod a+w parity-evidence
 backend="$1"
 tuple=tests/Fixtures/ServerParityProfiles/worker-fencing/source-tuple.json
-fixture=tests/Fixtures/ServerParityPending/worker-registration-fencing.json
+fixtures=(--fixture tests/Fixtures/ServerParityPending/worker-registration-fencing.json
+  --fixture tests/Fixtures/ServerParityPending/worker-registration-live-lease.json)
 php_ref=$(jq -r '.server.source_commit' "$tuple")
 git fetch origin "$php_ref"
 test "$(git rev-parse "$php_ref^{tree}")" = "$(jq -r '.server.source_tree' "$tuple")"
@@ -103,20 +104,20 @@ docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint node \
   -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
   "${recorder[@]}" -e DW_PARITY_TOKEN=parity-fence-legacy "$image" scripts/conformance/server-parity.mjs record \
   --mode http --url http://parity-fence-php:8080 --target php --prefix parity-fence \
-  --fixture "$fixture" --artifacts "$tuple" --output /evidence/fence-php.json
+  "${fixtures[@]}" --artifacts "$tuple" --output /evidence/fence-php.json
 docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint node \
   -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
   "${recorder[@]}" -e DW_PARITY_TOKEN=parity-fence-legacy "$image" scripts/conformance/server-parity.mjs record \
   --mode http --url http://parity-fence-native:8080 --target rust --prefix parity-fence \
-  --fixture "$fixture" --artifacts "$tuple" --output /evidence/fence-rust.json
+  "${fixtures[@]}" --artifacts "$tuple" --output /evidence/fence-rust.json
 docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint node \
   -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -v "$PWD/parity-fence-source:/app:ro" \
   -v "$PWD/parity-fence-state/embedded-storage:/app/storage" -v "$PWD/parity-fence-state/embedded-cache:/app/bootstrap/cache" \
   "${db_mount[@]}" "${db_env[@]}" -e DB_DATABASE="$(database fence_embedded_ref)" "${credentials[@]}" "${runtime[@]}" \
   "${recorder[@]}" -e DW_MODE=embedded -w /source "$image" scripts/conformance/server-parity.mjs record \
   --mode embedded --application-root /app --target embedded --prefix parity-fence \
-  --fixture "$fixture" --artifacts "$tuple" --output /evidence/fence-embedded.json
+  "${fixtures[@]}" --artifacts "$tuple" --output /evidence/fence-embedded.json
 docker run --rm --user=1000:1000 --network=none --entrypoint node \
   -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence:ro" -w /source "$image" \
-  scripts/conformance/server-parity.mjs compare /evidence/fence-php.json /evidence/fence-embedded.json /evidence/fence-rust.json --fixture "$fixture" \
+  scripts/conformance/server-parity.mjs compare /evidence/fence-php.json /evidence/fence-embedded.json /evidence/fence-rust.json "${fixtures[@]}" \
   > parity-evidence/fence-comparison.txt

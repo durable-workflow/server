@@ -56,7 +56,14 @@ result and cannot change arguments or append history. Validators, failed update
 tasks, concurrent queued routing and complete update compatibility remain
 unqualified; shared database qualification for the representative update slice
 is recorded in the port log.
-The existing development schema remains version 3.
+The development schema is version 4, with separate registration-incarnation
+authority and shutdown receipts. Fenced shutdown repairs original workflow tasks
+and commits their accepted repair history with the receipt. Re-registering the
+same worker ID instead releases its original workflow leases without adding
+repair history, matching PHP. Lease release and token rotation share one physical
+transaction. The separate source-reference profile checks these HTTP
+lifecycles; activity replacement, sticky execution, transport faults and complete
+shutdown budgets remain open.
 
 Kache remains an optional task-scoped experiment, with an explicit disk budget;
 no global Cargo wrapper or cleanup daemon is installed.
@@ -275,21 +282,21 @@ limits and external transport remain unqualified.
 The native development bootstrap creates the complete SQLite schema from the
 frozen published PHP image: 49 tables and 333 explicit indexes. Native completion
 and poll receipts use separate relations. SQLx records a checksummed migration;
-the ledger, schema and version-3 `dw_server_schema` marker commit atomically.
+the ledger, schema and version-4 `dw_server_schema` marker commit atomically.
 Concurrent fresh nodes serialize bootstrap. Startup checks the full catalog and
 migration history read-only before enabling WAL or opening writable connections.
 PHP/unknown databases, changed native catalogs/checksums and the old abbreviated
-version-1/version-2 development schemas are refused without conversion. Keep
+version-1/version-2/version-3 development schemas are refused without conversion. Keep
 needed old development data separately; this unpublished slice supplies no
-older-development converter. Use a new isolated file for version 3.
+older-development converter. Use a new isolated file for version 4.
 
 This refusal is not the upgrade mechanism. Backup-first conversion of PHP's
 stored representations and interrupted takeover remain required on all three
 database families. The PHP ownership fence is merged in source, while the frozen
 published PHP image still lacks it. **Never connect PHP to a Rust development database.**
-The only enabled namespace/auth setup is `default` with the compatibility token;
-scoped credentials, other namespaces and the full authorization contract remain
-open. Broader timer/signal semantics, failure/retry policy, cancellation and the rest of the API also
+Named namespace isolation and configured worker/operator/admin roles have
+representative shared qualification. Principal/custom-provider credentials and
+the full authorization contract remain open. Broader timer/signal semantics, failure/retry policy, cancellation and the rest of the API also
 remain open under #325. Existing databases and published PHP artifacts are
 unchanged by this opt-in crate.
 
