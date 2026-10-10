@@ -130,14 +130,13 @@ export function checkLegacyMarkerDeployment(fixture, observation, workflowId) {
     assert.equal(spec.start_before_worker_registration, true);
     assert.equal(original.events[1].payload.workflow_definition_fingerprint == null, true);
     assert.notEqual(original.events[1].payload.workflow_definition_fingerprint_source, 'worker');
-    assert.equal(spec.original_sticky_ttl_seconds, spec.producer.language === 'python' ? 1 : 0);
+    assert.equal(spec.original_sticky_ttl_seconds, 0, 'this profile requests no sticky affinity');
     const completions = phase => phase.requests.filter(request => request.method === 'POST'
       && request.path.startsWith('/api/worker/workflow-tasks/') && request.path.endsWith('/complete'));
     const authored = completions(original), resumed = completions(replacement);
     assert.equal(authored.length, 1);
     assert.equal(authored[0].status, 200);
-    if (spec.producer.language === 'python') assert.equal(authored[0].request.sticky_cache?.ttl_seconds, 1);
-    else assert.equal(authored[0].request.sticky_cache, undefined, 'published Rust makes no sticky affinity request');
+    assert.equal(authored[0].request.sticky_cache, undefined, 'actual published author requests no sticky affinity');
     assert.deepEqual(authored[0].request.commands.map(command => command.type), [...Array(count).fill('record_version_marker'), 'schedule_activity']);
     for (const [index, marker] of markers.entries()) {
       const command = authored[0].request.commands[index];

@@ -56,13 +56,13 @@ async def main():
             handle = await client.start_workflow(workflow_type="parity.v1.one_activity", task_queue="server-parity-v1",
                 workflow_id=workflow_id, input=[value])
             original = Worker(client, task_queue="server-parity-v1", workflows=[Original], activities=[],
-                worker_id=workflow_id+":original", poll_timeout=1, sticky_cache_ttl_seconds=1)
+                worker_id=workflow_id+":original", poll_timeout=1, sticky_cache_capacity=0, sticky_cache_ttl_seconds=1)
             await checkpoint_worker(original, handle, "ActivityScheduled")
             if checkpoint == "activity_completed":
                 # This distinct activity-only registration cannot replay the
                 # workflow to completion before the actual cold reader starts.
                 processor = Worker(client, task_queue="server-parity-v1", workflows=[], activities=[echo],
-                    worker_id=workflow_id+":original-activity", poll_timeout=1, sticky_cache_ttl_seconds=1)
+                    worker_id=workflow_id+":original-activity", poll_timeout=1, sticky_cache_capacity=0, sticky_cache_ttl_seconds=1)
                 await checkpoint_worker(processor, handle, "ActivityCompleted")
             elif checkpoint != "activity_pending":
                 raise ValueError("Unknown checkpoint")

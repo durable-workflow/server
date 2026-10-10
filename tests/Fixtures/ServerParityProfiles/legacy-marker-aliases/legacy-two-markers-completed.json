@@ -64,7 +64,7 @@
       "archive_sha256": "3f0fdd20cbeec744c1abc721b06b69a5f2ef802df9bd7635ac335717f7d8d689"
     },
     "start_before_worker_registration": true,
-    "original_sticky_ttl_seconds": 1,
+    "original_sticky_ttl_seconds": 0,
     "workflow_poll_retry": {
       "status": 503,
       "poll_status": "backend_lock_pressure",

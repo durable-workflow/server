@@ -33,7 +33,7 @@ for (const id of ['legacy-two-markers-pending', 'legacy-two-markers-completed', 
       decisions: [Array(spec.legacy_marker_history.original_calls).fill(true)],
       events: structuredClone(events.slice(0, (spec.checkpoint === 'activity_pending' ? 3 : 5) + count)),
       requests: [...registration('original'), io('POST', '/api/worker/workflow-tasks/original-task/complete', {
-        lease_owner: 'test:original', ...(spec.producer.language === 'python' ? {sticky_cache: {ttl_seconds: 1}} : {}),
+        lease_owner: 'test:original',
         commands: [...Array.from({length: count}, () => ({type: 'record_version_marker', ...fields})),
           {type: 'schedule_activity', activity_type: 'parity.v1.echo_activity'}]}),
       ...(spec.checkpoint === 'activity_completed' ? [...registration('original-activity'), outcome] : [])]};
@@ -83,6 +83,11 @@ for (const id of ['legacy-two-markers-pending', 'legacy-two-markers-completed', 
   });
   test(`${id}: rejects a fabricated HTTP author clock`, () => {
     const raw = model('http'); raw.embedded_clock_probe = {clocks: []};
+    assert.throws(() => checkLegacyMarkerDeployment(fixture, raw, 'test'));
+  });
+  test(`${id}: rejects an unexpected sticky affinity request`, () => {
+    const raw = model('http');
+    raw.patch_deployment.original.requests.find(request => request.path.endsWith('/complete')).request.sticky_cache = {ttl_seconds: 1};
     assert.throws(() => checkLegacyMarkerDeployment(fixture, raw, 'test'));
   });
 }
