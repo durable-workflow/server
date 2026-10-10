@@ -86,12 +86,50 @@ function observation(fixture, mode) {
     tasks: [{status: 'cancelled', lease_expires_at: null}],
     attempts: outcome === 'completed' ? [{id: 'cleanup-attempt', status: 'completed', lease_expires_at: null}] : [],
     watchdog: outcome === 'completed' ? [] : [{cancellation_deadlines_enforced: 1}]};
+  const receipts = [raw.cooperative.accepted, raw.cooperative.pending_duplicate, raw.cooperative.post_terminal_duplicate];
+  raw.cooperative.traffic.unshift(...receipts.map((response, index) => ({
+    path: `/api/workflows/${raw.workflow_id}/runs/${raw.run_id}/request-cancellation`,
+    status: fixture.cooperative_cancellation.http_request_statuses[index], response,
+    request: {reason: [reason, 'replacement reason', 'post-terminal replacement'][index], cleanup_timeout_seconds: [budget, 300, 3600][index]},
+  })));
   // JSON snapshots have independent copies. Avoid accidental object aliases
   // letting a corruption rewrite both sides of an immutability assertion.
   return JSON.parse(JSON.stringify(raw));
 }
 
 const event = (value, type) => value.events.find(item => item.event_type === type);
+const expectedErrors = {
+  'root identity': /delivery retains complete canonical context/,
+  'original reason': /original cooperative reason/,
+  'accepted open state': /acceptance leaves the original run open/,
+  'duplicate budget': /repeat cannot renew original budget|embedded pending duplicate retains original command/,
+  'terminal diagnostic': /published generated terminal diagnostic/,
+  'cleanup outcome': /reviewed cleanup outcome/,
+  'delivery author position': /delivery original authored timer boundary/,
+  'fresh history': /fresh reader preserves original history/,
+  'exact int64': /cleanup exact int64 result/,
+  'heartbeat root': /actual cleanup heartbeat retains original request/,
+  'timer fired early': /shielded cleanup timer never fires early/,
+  'expired original deadline': /cleanup timer cancelled only at original deadline/,
+  'original delivery owner': /actual original delivery owner/,
+  'renewal cannot extend budget': /remote delivery lease cannot extend root budget/,
+  'physical delivery identity': /physical canonical delivery history identity/,
+  'first request transport': /actual cooperative request transport status/,
+  'pending duplicate transport': /actual cooperative request transport status/,
+  'terminal duplicate transport': /actual cooperative request transport status/,
+};
+function synchronizeHistoryCopies(value) {
+  const history = value.events.map(({decoded, typed_decoded, ...item}) => item);
+  const sequence = event(value, 'CooperativeCancellationRequested').sequence;
+  Object.assign(value.cooperative, {before: history.slice(0, sequence - 1),
+    history_before_pending_duplicate: history.slice(0, sequence), history_after_pending_duplicate: history.slice(0, sequence),
+    history_before_terminal_duplicate: history, history_after_terminal_duplicate: history, fresh_history: history});
+  if (value.mode === 'http') {
+    const receipts = [value.cooperative.accepted, value.cooperative.pending_duplicate, value.cooperative.post_terminal_duplicate];
+    value.cooperative.traffic.filter(item => item.path.endsWith('/request-cancellation'))
+      .forEach((item, index) => { item.response = receipts[index]; });
+  }
+}
 for (const fixture of fixtures) {
   for (const mode of ['http', 'embedded']) {
     const raw = observation(fixture, mode);
@@ -115,12 +153,16 @@ for (const fixture of fixtures) {
       ['timer fired early', value => { event(value, 'TimerFired').payload.fired_at = at(0); }]);
     else mutations.push(['expired original deadline', value => { value.events.filter(item => item.event_type === 'TimerCancelled').at(-1).payload.cancelled_at = at(0); }]);
     if (mode === 'http') mutations.push(
-      ['original delivery owner', value => { value.cooperative.traffic[0].request.lease_owner = 'changed'; }],
-      ['renewal cannot extend budget', value => { event(value, 'CooperativeCancellationDelivered').payload.task.lease_expires_at = at(1000); }]);
+      ['original delivery owner', value => { value.cooperative.traffic.find(item => item.path.endsWith('/deliver-cancellation')).request.lease_owner = 'changed'; }],
+      ['renewal cannot extend budget', value => { event(value, 'CooperativeCancellationDelivered').payload.task.lease_expires_at = at(1000); }],
+      ['first request transport', value => { value.cooperative.traffic[0].status = 200; }],
+      ['pending duplicate transport', value => { value.cooperative.traffic[1].status = 202; }],
+      ['terminal duplicate transport', value => { value.cooperative.traffic[2].status = 202; }]);
     else mutations.push(['physical delivery identity', value => { value.cooperative.delivery_history_event_id = 'changed'; }]);
     for (const [label, mutate] of mutations) test(`${fixture.id}/${mode} rejects ${label}`, () => {
       const corrupted = structuredClone(raw); mutate(corrupted);
-      assert.throws(() => checkObservation(fixture, corrupted, corrupted.workflow_id));
+      if (label !== 'fresh history') synchronizeHistoryCopies(corrupted);
+      assert.throws(() => checkObservation(fixture, corrupted, corrupted.workflow_id), expectedErrors[label]);
     });
   }
 }

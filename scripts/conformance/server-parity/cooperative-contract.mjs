@@ -152,7 +152,14 @@ export function checkCooperativeCancellation(fixture, raw, identities, projectio
   equal(new Set(identities).size, identities.length, 'distinct original cooperative identities');
 
   if (raw.mode === 'http') {
+    const controlReports = state.traffic.filter(item => item.path.endsWith('/request-cancellation'));
+    equal(controlReports.length, 3, 'actual original/pending/terminal control request inventory');
     for (const [index, receipt] of [state.accepted, state.pending_duplicate, state.post_terminal_duplicate].entries()) {
+      equal(controlReports[index].path, `/api/workflows/${raw.workflow_id}/runs/${raw.run_id}/request-cancellation`, 'actual selected-run control endpoint');
+      equal(controlReports[index].status, fixture.cooperative_cancellation.http_request_statuses[index], 'actual cooperative request transport status');
+      equal(controlReports[index].response, receipt, 'actual original control response');
+      equal(controlReports[index].request, {reason: [reason, 'replacement reason', 'post-terminal replacement'][index],
+        cleanup_timeout_seconds: [budget, 300, 3600][index]}, 'actual control request preserves original and attempted replacement budgets');
       equal(receipt.accepted, true, 'original request remains accepted');
       equal(receipt.duplicate, index > 0, 'repeat retains original request');
       equal(receipt.workflow_id, raw.workflow_id, 'receipt original workflow');

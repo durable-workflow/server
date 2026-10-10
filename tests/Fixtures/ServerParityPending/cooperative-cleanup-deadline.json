@@ -22,6 +22,7 @@
     "reason": "cooperative cancellation λ",
     "cleanup_timeout_seconds": 5,
     "cleanup_outcome": "deadline_expired",
+    "http_request_statuses": [202, 200, 200],
     "original_delay_seconds": 60
   },
   "expected_events": ["StartAccepted", "WorkflowStarted", "TimerScheduled", "CooperativeCancellationRequested", "TimerCancelled", "CooperativeCancellationDelivered", "TimerScheduled", "TimerCancelled", "WorkflowCancelled"],

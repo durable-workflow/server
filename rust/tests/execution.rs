@@ -1987,7 +1987,7 @@ async fn cooperative_root_request_preserves_original_context_across_duplicates_a
     // This is the tests-first native gap: the published root request contract
     // has already executed in PHP and embedded mode. Admission alone does not
     // establish cleanup, worker protocol support or a completed workflow.
-    assert_eq!(accepted.0, StatusCode::OK, "{}", accepted.1);
+    assert_eq!(accepted.0, StatusCode::ACCEPTED, "{}", accepted.1);
     assert_eq!(accepted.1["accepted"], true);
     assert_eq!(accepted.1["duplicate"], false);
     assert_eq!(accepted.1["run_status"], "pending");
