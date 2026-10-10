@@ -3,6 +3,10 @@
 # and locked SDK adapter. No Cargo invocation or shared database takeover.
 set -euo pipefail
 test -n "$RESOURCE_SCOPE"
+# Reuse the owning workflow's network and matrix suffix, and require its full
+# execution identity before creating the additional cohort containers.
+scope_identity="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$GITHUB_JOB"
+case "$RESOURCE_SCOPE" in *"$scope_identity"*) ;; *) exit 2 ;; esac
 backend="$1"
 image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
 rust_image=mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
@@ -38,13 +42,6 @@ esac
 database() {
   if test "$backend" = sqlite; then printf '/state/%s.sqlite' "$1"; else printf '%s' "$1"; fi
 }
-cleanup() {
-  for target in php native; do
-    docker logs "$RESOURCE_SCOPE-role-$target" > "parity-evidence/roles-$target.log" 2>&1 || true
-    docker rm -f "$RESOURCE_SCOPE-role-$target" || true
-  done
-}
-trap cleanup EXIT
 for setting in DW_AUTH_DRIVER=none DW_PRINCIPAL_TOKENS=[] DW_AUTH_BACKWARD_COMPATIBLE=false DW_RUNTIME_CREDENTIALS_ENABLED=true; do
   key="${setting%%=*}"
   if docker run --rm --user=1000:1000 --network=none --entrypoint /target/debug/durable-workflow-server \
@@ -52,7 +49,7 @@ for setting in DW_AUTH_DRIVER=none DW_PRINCIPAL_TOKENS=[] DW_AUTH_BACKWARD_COMPA
     -e "$setting" "$rust_image" > "parity-evidence/roles-unqualified-$key.txt" 2>&1; then
     exit 1
   fi
-  rg -Fq 'unsupported development authentication configuration' "parity-evidence/roles-unqualified-$key.txt"
+  grep -Fq 'unsupported development authentication configuration' "parity-evidence/roles-unqualified-$key.txt"
 done
 for target in php embedded; do
   docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint php \

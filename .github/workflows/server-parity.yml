@@ -345,6 +345,10 @@ jobs:
           docker logs "$RESOURCE_SCOPE-native-b" > parity-evidence/native-b.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-recovered" > parity-evidence/native-recovered.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-db" > parity-evidence/database.log 2>&1 || true
+          for target in php native; do
+            docker logs "$RESOURCE_SCOPE-role-$target" > "parity-evidence/roles-$target.log" 2>&1 || true
+            docker rm -f "$RESOURCE_SCOPE-role-$target" || true
+          done
           docker rm -f "$RESOURCE_SCOPE-php" "$RESOURCE_SCOPE-php-maintenance" "$RESOURCE_SCOPE-native-a" "$RESOURCE_SCOPE-native-b" "$RESOURCE_SCOPE-recovered" "$RESOURCE_SCOPE-db" || true
           docker network rm "$RESOURCE_SCOPE" || true
       - name: Retain MySQL execution evidence
@@ -649,6 +653,10 @@ jobs:
           docker logs "$RESOURCE_SCOPE-native-b" > parity-evidence/native-b.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-recovered" > parity-evidence/native-recovered.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-db" > parity-evidence/postgres.log 2>&1 || true
+          for target in php native; do
+            docker logs "$RESOURCE_SCOPE-role-$target" > "parity-evidence/roles-$target.log" 2>&1 || true
+            docker rm -f "$RESOURCE_SCOPE-role-$target" || true
+          done
           docker rm -f "$RESOURCE_SCOPE-php" "$RESOURCE_SCOPE-php-maintenance" "$RESOURCE_SCOPE-native-a" "$RESOURCE_SCOPE-native-b" "$RESOURCE_SCOPE-recovered" "$RESOURCE_SCOPE-db" || true
           docker network rm "$RESOURCE_SCOPE" || true
       - name: Retain PostgreSQL storage evidence
@@ -834,6 +842,10 @@ jobs:
           docker logs "$RESOURCE_SCOPE-php-maintenance" > parity-evidence/php-maintenance.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-rust" > parity-evidence/rust.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-recovered" > parity-evidence/rust-recovered.log 2>&1 || true
+          for target in php native; do
+            docker logs "$RESOURCE_SCOPE-role-$target" > "parity-evidence/roles-$target.log" 2>&1 || true
+            docker rm -f "$RESOURCE_SCOPE-role-$target" || true
+          done
           docker rm -f "$RESOURCE_SCOPE-server" || true
           docker rm -f "$RESOURCE_SCOPE-php-maintenance" || true
           docker rm -f "$RESOURCE_SCOPE-rust" || true

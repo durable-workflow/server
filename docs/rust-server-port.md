@@ -50,7 +50,12 @@ there is no new transitive dependency. Unqualified principal, custom-provider,
 signature/no-auth, runtime-credential, alias-role and disabled-backward-compatibility
 settings refuse startup before opening storage. All 840 modeled comparator
 checks pass. The separate six-database PHP/Rust/embedded cohort reuses the
-existing CI binary and keeps independent databases; native execution
+existing CI binary and keeps independent databases. Candidate `ce2e835f`
+passes all 45 native HTTP tests per configuration and the SQLite default
+29-case PHP/Rust/embedded comparison. Its role cohort stopped before HTTP
+execution because the hosted runner lacked `rg`; the fixed-text check now
+uses `grep`. Helper cleanup is moved from its trap into workflow always-run
+steps, with explicit job-identity validation. Corrected role execution
 qualification is next. Principal,
 tenant, runtime-credential, signature and actor-attribution cases remain open.
 
