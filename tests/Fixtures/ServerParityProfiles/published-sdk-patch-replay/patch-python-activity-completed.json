@@ -31,6 +31,13 @@
     "repeated_calls": 2,
     "original_sticky_ttl_seconds": 1,
     "start_before_worker_registration": true,
+    "workflow_poll_retry": {
+      "status": 503,
+      "poll_status": "backend_lock_pressure",
+      "require_same_request": true,
+      "require_positive_retry_after": true
+    },
+    "cancel_query_poll_on_shutdown": true,
     "expected_decisions": [
       false,
       false

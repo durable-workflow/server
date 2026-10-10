@@ -22,6 +22,14 @@ capability manifests are summarized in the phase observation. Embedded runs the
 corresponding PHP author definitions and explicitly
 marks the language SDK direction inapplicable.
 
+The observer propagates client cancellation to the upstream connection and
+records a canceled background query poll as having no HTTP response. Only that
+same worker's shutdown query poll after accepted workflow completion is allowed.
+An incidental workflow poll 503 must identify backend lock pressure, include a
+positive Retry-After that fits the worker deadline, and recover by retrying the
+same poll ID and unchanged request. Other HTTP and network errors fail the case.
+These controls do not establish complete fault or retry-budget qualification.
+
 CI builds the Rust SDK adapter once with no debug information or incremental
 compilation. It shares only that binary, locked Python packages and identity
 receipts across existing database jobs, reusing their already compiled Server

@@ -47,6 +47,9 @@ export function checkPatchDeployment(fixture, observation, workflowId) {
     }
   }
   if (spec.consumer) {
+    assert.deepEqual(spec.workflow_poll_retry, {status: 503, poll_status: 'backend_lock_pressure',
+      require_same_request: true, require_positive_retry_after: true}, 'explicit bounded poll retry contract');
+    assert.equal(spec.cancel_query_poll_on_shutdown, true, 'explicit cancellation of background query polls');
     assert.equal(spec.start_before_worker_registration, true, 'explicit legacy start before a worker advertises identity');
     assert.notEqual(original.events[1].payload.workflow_definition_fingerprint_source, 'worker',
       'this legacy control must not bypass a recorded worker definition fingerprint');
@@ -132,7 +135,37 @@ export function checkPatchDeployment(fixture, observation, workflowId) {
         assert.ok(!phase.diagnostics.some(event => ['worker.failed', 'worker.handler_failed', 'worker.shutdown_failed'].includes(event)),
           'no hidden worker or shutdown failure');
       }
-      for (const item of phase.requests) assert.ok(item.status >= 200 && item.status < 300, 'all observed I/O succeeds');
+      for (const [index, item] of phase.requests.entries()) {
+        if (phase === replacement && spec.consumer && item.client_cancelled === true) {
+          assert.equal(item.status, 0, 'cancelled poll received no HTTP response');
+          assert.equal(item.method, 'POST');
+          assert.equal(item.path, '/api/worker/query-tasks/poll', 'only background query polling may be cancelled at shutdown');
+          assert.equal(item.transport_error, null, 'actual client cancellation, not hidden upstream failure');
+          assert.equal(item.request.worker_id, `${workflowId}:replacement`);
+          assert.equal(item.request.task_queue, observation.task_queue);
+          assert.ok(phase.requests.slice(0, index).some(request => newCompletions.includes(request) && request.status === 200),
+            'original workflow completion precedes query poll cancellation');
+          continue;
+        }
+        if (phase === replacement && spec.consumer && item.status === 503) {
+          assert.equal(item.method, 'POST');
+          assert.equal(item.path, '/api/worker/workflow-tasks/poll', 'only workflow poll pressure is tolerated');
+          assert.deepEqual(item.response, {task: null, poll_status: spec.workflow_poll_retry.poll_status});
+          assert.match(item.response_retry_after ?? '', /^[1-9][0-9]*$/, 'positive explicit Retry-After');
+          assert.ok(Number.isSafeInteger(Number(item.response_retry_after)) && Number(item.response_retry_after) <= 25,
+            'retry hint fits the actual published worker deadline');
+          assert.equal(item.client_cancelled, false);
+          assert.equal(item.transport_error, null);
+          assert.equal(item.request.worker_id, `${workflowId}:replacement`);
+          assert.ok(typeof item.request.poll_request_id === 'string' && item.request.poll_request_id.length > 0);
+          const retry = phase.requests.slice(index + 1).find(request => request.path === item.path
+            && request.request?.poll_request_id === item.request.poll_request_id && request.status >= 200 && request.status < 300);
+          assert.ok(retry, 'same original poll request succeeds after pressure');
+          assert.deepEqual(retry.request, item.request, 'retry changes no poll authority or request fields');
+          continue;
+        }
+        assert.ok(item.status >= 200 && item.status < 300, 'all other observed I/O succeeds');
+      }
     }
     const outcomes = phase => phase.requests.filter(item => item.method === 'POST'
       && item.path.startsWith('/api/worker/activity-tasks/') && item.path.endsWith('/complete'));

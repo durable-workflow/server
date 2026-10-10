@@ -60,6 +60,48 @@ for (const language of ['rust', 'python']) for (const checkpoint of ['pending', 
     const raw = model(); mutate(raw.patch_deployment.replacement);
     assert.throws(() => checkPatchDeployment(fixture, raw, 'test'));
   });
+  function pressureModel() {
+    const raw = model();
+    const request = {worker_id: 'test:replacement', task_queue: 'server-parity-v1', poll_request_id: 'original-poll', timeout_seconds: 1};
+    const pressure = {method: 'POST', path: '/api/worker/workflow-tasks/poll', status: 503, request,
+      response: {task: null, poll_status: 'backend_lock_pressure'}, response_retry_after: '1', client_cancelled: false, transport_error: null};
+    raw.patch_deployment.replacement.requests.splice(1, 0, pressure, {...structuredClone(pressure), status: 200, response: {task: {task_id: 'original-task'}}});
+    return raw;
+  }
+  test(`${language} ${checkpoint}: model accepts same-request pressure recovery`, () => checkPatchDeployment(fixture, pressureModel(), 'test'));
+  for (const [name, mutate] of [
+    ['missing Retry-After', requests => delete requests[1].response_retry_after],
+    ['zero Retry-After', requests => requests[1].response_retry_after = '0'],
+    ['oversized retry hint', requests => requests[1].response_retry_after = '26'],
+    ['missing poll identity', requests => delete requests[1].request.poll_request_id],
+    ['new retry identity', requests => requests[2].request.poll_request_id = 'new-poll'],
+    ['changed retry request', requests => requests[2].request.timeout_seconds = 2],
+    ['no successful retry', requests => requests.splice(2, 1)],
+    ['hidden leased task', requests => requests[1].response.task = {task_id: 'unknown-task'}],
+    ['other pressure', requests => requests[1].response.poll_status = 'other'],
+  ]) test(`${language} ${checkpoint}: model rejects ${name}`, () => {
+    const raw = pressureModel(); mutate(raw.patch_deployment.replacement.requests);
+    assert.throws(() => checkPatchDeployment(fixture, raw, 'test'));
+  });
+  function cancelledModel() {
+    const raw = model();
+    const requests = raw.patch_deployment.replacement.requests;
+    requests.splice(requests.length - 1, 0, {method: 'POST', path: '/api/worker/query-tasks/poll', status: 0,
+      request: {worker_id: 'test:replacement', task_queue: 'server-parity-v1'}, client_cancelled: true, transport_error: null});
+    return raw;
+  }
+  test(`${language} ${checkpoint}: model accepts query cancellation after completion`, () => checkPatchDeployment(fixture, cancelledModel(), 'test'));
+  for (const [name, mutate] of [
+    ['completed HTTP refusal', requests => requests.at(-2).status = 409],
+    ['cancelled workflow poll', requests => requests.at(-2).path = '/api/worker/workflow-tasks/poll'],
+    ['hidden network failure', requests => requests.at(-2).transport_error = 'ECONNRESET'],
+    ['other cancelled worker', requests => requests.at(-2).request.worker_id = 'other-worker'],
+    ['other cancelled queue', requests => requests.at(-2).request.task_queue = 'other-queue'],
+    ['cancellation before completion', requests => requests.unshift(requests.splice(-2, 1)[0])],
+  ]) test(`${language} ${checkpoint}: model rejects ${name}`, () => {
+    const raw = cancelledModel(); mutate(raw.patch_deployment.replacement.requests);
+    assert.throws(() => checkPatchDeployment(fixture, raw, 'test'));
+  });
   for (const [name, mutate] of [
     ['old frozen SDK version', x => x[`sdk_${language}`] = language === 'rust' ? '3.4.1' : '2.5.0'],
     ['archive retargeted', x => x.published_sdk_artifacts[language].archive_sha256 = '0'.repeat(64)],

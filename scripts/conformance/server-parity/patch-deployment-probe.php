@@ -224,7 +224,7 @@ function patchPublishedSdkPhase(array $fixture, array $options): array
                 // Full read/poll bytes remain in the raw sidecar. Avoid copying
                 // every repeated capability manifest into all three phases.
                 $request['response'] = array_intersect_key($request['response'] ?? [],
-                    array_flip(['task', 'poll_status', 'workflow_id', 'run_id', 'status']));
+                    array_flip(['task', 'poll_status', 'workflow_id', 'run_id', 'status', 'reason', 'message']));
                 $request['response_projection'] = 'read_or_poll_summary';
             }
 
