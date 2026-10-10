@@ -67,6 +67,18 @@ embedded authoring controls. Python/Rust SDK adapters, their corrected exact
 artifacts and retained Python duplicate-marker histories remain separate gates
 under SDK Python #103 and SDK Rust #80.
 
+The fresh marker controls add
+`--include-fixture tests/Fixtures/ServerParityPending/patch-marked-activity-pending.json`
+and `--include-fixture tests/Fixtures/ServerParityPending/patch-marked-activity-completed.json`
+on every recording and comparison. CI selects all four pending controls beside
+the unchanged 29 defaults. A fresh worker calls the same patch ID twice and
+commits exactly one frozen marker at sequence 1 plus an activity at sequence 2.
+A separate cold process repeats both calls, chooses true twice and completes the
+original activity/run without another marker. The full original checkpoint,
+five-field marker, actual SDK requests and exact typed outcome are retained.
+Real qualification of these fresh marker cases is recorded in their owning PR;
+it does not qualify deprecation or Python/Rust SDK directions.
+
 Its visibility fixture runs
 the unchanged published CLI 2.2.0 on both HTTP targets. Download its PHAR,
 verify the fixture's pinned checksum, and expose its absolute path to the PHP

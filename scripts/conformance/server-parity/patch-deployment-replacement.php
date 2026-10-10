@@ -15,8 +15,8 @@ final class DeploymentWorkflow extends Workflow
         $first = self::patched(\PatchDeploymentState::$changeId);
         $second = self::patched(\PatchDeploymentState::$changeId);
         \PatchDeploymentState::$decisions[] = [$first, $second];
-        if ($first || $second) {
-            throw new \LogicException('An unmarked old run selected the new patch branch.');
+        if ([$first, $second] !== \PatchDeploymentState::$expectedDecisions) {
+            throw new \LogicException('Patch decisions differ from the declared deployment contract.');
         }
 
         return \Workflow\V2\activity(\ServerParity\EchoActivity::class, $value);

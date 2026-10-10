@@ -1,0 +1,11 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "patch-marked-activity-completed",
+  "workflow_type": "parity.v1.one_activity",
+  "input": {"message": "fresh patch λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {"type": "map", "value": {"message": {"type": "string", "value": "fresh patch λ"}, "count": {"type": "int64", "value": "9007199254740993"}, "optional": {"type": "null", "value": null}}},
+  "activity": true,
+  "patch_deployment": {"change_id": "parity.add-new-step", "checkpoint": "activity_completed", "repeated_calls": 2, "original_patch": true, "expected_decisions": [true, true], "marker": {"sequence": 1, "change_id": "parity.add-new-step", "version": 1, "min_supported": -1, "max_supported": 1}},
+  "expected_events": ["StartAccepted", "WorkflowStarted", "VersionMarkerRecorded", "ActivityScheduled", "ActivityStarted", "ActivityCompleted", "WorkflowCompleted"],
+  "contract": "An original worker calls the same patched ID twice on a fresh run. Both calls choose true and commit exactly one frozen five-field version marker at authored sequence 1, followed by the original activity at sequence 2. Stop after actual activity completion before workflow completion. A separate cold process repeats the same calls and finishes the original run, preserving every checkpoint event, durable relationship and exact typed outcome; no second marker or activity is committed. Embedded uses real queue jobs in separate processes. PHP SDK 2.2.6 and embedded Workflow 2.5.5 are the authoring controls; Python/Rust SDK directions and legacy duplicate-marker compatibility remain separate gates."
+}
