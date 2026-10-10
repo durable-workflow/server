@@ -139,7 +139,7 @@ async fn named_namespaces_preserve_original_runs_and_global_workflow_id_reservat
             .any(|row| row["name"] == "alpha")
     );
     runtime.close().await;
-    database.cleanup().await;
+    database.remove().await;
 }
 
 #[tokio::test]
@@ -249,5 +249,5 @@ async fn same_worker_id_isolated_claims_completion_and_deregistration_by_namespa
     assert_eq!(scoped(&app, "beta", "POST", &second_path, completion(&second_task,
         json!([{"type":"complete_workflow","result":envelope(Payload::Long(9007199254740993))}]))).await.0, StatusCode::OK);
     runtime.close().await;
-    database.cleanup().await;
+    database.remove().await;
 }
