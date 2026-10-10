@@ -37,7 +37,7 @@ impl TestDatabase {
             }
         }
     }
-    async fn repair_commands(&self, run_id: &str) -> i64 {
+    pub(super) async fn repair_commands(&self, run_id: &str) -> i64 {
         const SQL: &str = "SELECT COUNT(*) FROM workflow_commands WHERE workflow_run_id=$1 AND requested_workflow_run_id=$2 AND resolved_workflow_run_id=$3 AND command_type='repair' AND target_scope='run' AND status='accepted' AND outcome='repair_dispatched' AND payload_codec='avro' AND payload IS NOT NULL AND accepted_at IS NOT NULL AND applied_at IS NOT NULL";
         match self {
             Self::Sqlite(dir) => {
@@ -154,14 +154,18 @@ impl TestDatabase {
     }
 }
 
-async fn registration(app: &Router, worker: &str) -> Value {
+pub(super) async fn registration(app: &Router, worker: &str) -> Value {
     let (status,body)=request(app,"POST","/api/worker/register",json!({"worker_id":worker,
         "task_queue":"test","runtime":"php","supported_workflow_types":["echo"],"supported_activity_types":[]})).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     body
 }
 
-async fn deregister(app: &Router, worker: &str, registration: &Value) -> (StatusCode, Value) {
+pub(super) async fn deregister(
+    app: &Router,
+    worker: &str,
+    registration: &Value,
+) -> (StatusCode, Value) {
     request(
         app,
         "POST",
