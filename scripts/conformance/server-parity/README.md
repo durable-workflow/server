@@ -328,3 +328,27 @@ rows and sequence/next-ID counters; TLS checks use real CA and hostname validati
 The Action retains records for 90 days and removes its containers/network after execution.
 This bounded correctness matrix does not qualify capacity, every multi-node
 failure boundary, database takeover or a published Rust artifact.
+
+The explicitly selected pending `worker-registration-fencing` fixture uses the
+separate `ServerParityProfiles/worker-fencing/source-tuple.json` manifest. Its
+PHP Server and SDK inputs are exact unreleased commits; the published image is
+only the PHP runtime platform for those checked-out Server files. The SDK adapter
+lock pins its source reference, and both recording and comparison verify the
+installed SDK reference. The frozen default tuple and 29 fixtures stay unchanged.
+
+The fixture first completes an authored echo. HTTP execution then follows a
+distinct original echo and leased task through heartbeat, an unknown-token
+refusal, original deregistration and repair, two replacement incarnations,
+superseded-token refusal, original receipt replay, stale result refusals, a second
+repair and completion by a real SDK worker. Full original reads and histories
+must stay unchanged across refusals and replay. Both repair commands and the
+final original task/attempt and Avro output are checked. Embedded mode executes
+the authored echo and records the HTTP lifecycle as explicitly inapplicable.
+
+`worker-fencing-profile.sh` runs that PHP/embedded source pair in separate
+databases alongside each normal hosted database cell. It adds no Cargo invocation.
+Cleanup and logs belong to the owning workflow's always-run steps. Select the
+pending fixture and source manifest with `--fixture` and `--artifacts` when
+recording; compare the two records with that same `--fixture`. Native fencing,
+role/namespace boundaries, expiry/pruning, rollback, real contention, transport
+reply loss and the SDK shutdown budget remain separate qualification gates.

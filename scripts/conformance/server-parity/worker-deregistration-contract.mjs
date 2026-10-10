@@ -50,7 +50,7 @@ export function checkWorkerDeregistration(fixture, observation, workflowId) {
     assert.equal(run.namespace, 'default');
     assert.deepStrictEqual(run.typed_input, {type: 'list', value: [fixture.typed_value]}, 'retain exact original input');
     assert.equal(run.status, key === 'final' ? 'completed' : state.before_unknown.status, 'refusals cannot complete original work');
-    for (const event of run.events) {
+    for (const event of run.events.filter(event => event.event_type !== 'WorkflowCompleted')) {
       assert.equal(event.payload.workflow_instance_id, peerId);
       assert.equal(event.payload.workflow_run_id, state.peer_run_id);
     }
@@ -100,7 +100,12 @@ export function checkWorkerDeregistration(fixture, observation, workflowId) {
     assert.equal(event.payload.task_type, 'workflow');
   }
   assert.deepStrictEqual(state.final.typed_output, fixture.typed_value, 'real SDK worker commits original typed result');
-  assert.deepStrictEqual(history.at(-1).typed_decoded.result, fixture.typed_value, 'original history commits the same typed result');
+  const completed = history.at(-1);
+  assert.deepStrictEqual(completed.typed_decoded.output, fixture.typed_value, 'original history commits the same typed result');
+  assert.deepStrictEqual(completed.payload.output, state.final.execution.output_envelope, 'history and read expose the same committed Avro frame');
+  assert.equal(completed.payload.task.id, task.task_id, 'real SDK completes the original recovered durable task');
+  assert.equal(completed.payload.task.attempt_count, latest.workflow_task_attempt+1, 'real SDK obtains its own recovery attempt');
+  assert.equal(completed.payload.task.repair_count, 2, 'both original repairs remain recorded');
   assert.equal(state.idle_poll, null, 'no duplicate remaining workflow task');
   assert.deepStrictEqual(receiptFields(state.idle_receipt), {worker_id: workflowId+'-idle-worker', registration_token: state.idle_registration.registration_token,
     outcome: 'deregistered', recovered_workflow_task_count: 0});

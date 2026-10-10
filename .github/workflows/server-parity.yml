@@ -19,6 +19,7 @@ on:
       - tests/Unit/ServerParityVisibilityContractTest.mjs
       - tests/Unit/ServerParityAdmissionContractTest.mjs
       - tests/Unit/ServerParityRoleTokenContractTest.mjs
+      - tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs
       - tests/Support/ServerParityAdmissionObservation.mjs
       - tests/Support/ServerParityVisibilityObservation.mjs
       - rust/**
@@ -41,6 +42,7 @@ on:
       - tests/Unit/ServerParityVisibilityContractTest.mjs
       - tests/Unit/ServerParityAdmissionContractTest.mjs
       - tests/Unit/ServerParityRoleTokenContractTest.mjs
+      - tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs
       - tests/Support/ServerParityAdmissionObservation.mjs
       - tests/Support/ServerParityVisibilityObservation.mjs
       - rust/**
@@ -304,6 +306,8 @@ jobs:
           cmp parity-evidence/catalog-before.json parity-evidence/catalog-after.json
       - name: Compare separate configured role-token cohort
         run: bash scripts/conformance/server-parity/role-profile.sh mysql
+      - name: Compare pinned PHP and embedded worker-fencing source cohort
+        run: bash scripts/conformance/server-parity/worker-fencing-profile.sh mysql
       - name: Verify TLS certificate trust and hostname checks
         run: |
           set -euo pipefail
@@ -347,6 +351,8 @@ jobs:
           docker logs "$RESOURCE_SCOPE-native-b" > parity-evidence/native-b.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-recovered" > parity-evidence/native-recovered.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-db" > parity-evidence/database.log 2>&1 || true
+          docker logs "$RESOURCE_SCOPE-fence-php" > parity-evidence/fence-php.log 2>&1 || true
+          docker rm -f "$RESOURCE_SCOPE-fence-php" || true
           for target in php native; do
             docker logs "$RESOURCE_SCOPE-role-$target" > "parity-evidence/roles-$target.log" 2>&1 || true
             docker rm -f "$RESOURCE_SCOPE-role-$target" || true
@@ -586,6 +592,10 @@ jobs:
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
         run: bash scripts/conformance/server-parity/role-profile.sh pgsql
+      - name: Compare pinned PHP and embedded worker-fencing source cohort
+        env:
+          POSTGRES_IMAGE: ${{ matrix.image }}
+        run: bash scripts/conformance/server-parity/worker-fencing-profile.sh pgsql
       - name: Verify TLS certificate trust and hostname checks
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
@@ -655,6 +665,8 @@ jobs:
           docker logs "$RESOURCE_SCOPE-native-b" > parity-evidence/native-b.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-recovered" > parity-evidence/native-recovered.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-db" > parity-evidence/postgres.log 2>&1 || true
+          docker logs "$RESOURCE_SCOPE-fence-php" > parity-evidence/fence-php.log 2>&1 || true
+          docker rm -f "$RESOURCE_SCOPE-fence-php" || true
           for target in php native; do
             docker logs "$RESOURCE_SCOPE-role-$target" > "parity-evidence/roles-$target.log" 2>&1 || true
             docker rm -f "$RESOURCE_SCOPE-role-$target" || true
@@ -710,7 +722,7 @@ jobs:
             -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run --rm --user=1000:1000 --entrypoint node -v "$PWD:/source:ro" -w /source \
-            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs > parity-evidence/comparator-tests.txt
+            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs > parity-evidence/comparator-tests.txt
           docker network create "$RESOURCE_SCOPE"
           docker run -d --name "$RESOURCE_SCOPE-rust" --network "$RESOURCE_SCOPE" --network-alias=parity-rust \
             --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
@@ -835,6 +847,10 @@ jobs:
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: bash scripts/conformance/server-parity/role-profile.sh sqlite
+      - name: Compare pinned PHP and embedded worker-fencing source cohort
+        env:
+          RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: bash scripts/conformance/server-parity/worker-fencing-profile.sh sqlite
       - name: Collect Server logs and clean resources
         if: always()
         env:
@@ -844,6 +860,8 @@ jobs:
           docker logs "$RESOURCE_SCOPE-php-maintenance" > parity-evidence/php-maintenance.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-rust" > parity-evidence/rust.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-recovered" > parity-evidence/rust-recovered.log 2>&1 || true
+          docker logs "$RESOURCE_SCOPE-fence-php" > parity-evidence/fence-php.log 2>&1 || true
+          docker rm -f "$RESOURCE_SCOPE-fence-php" || true
           for target in php native; do
             docker logs "$RESOURCE_SCOPE-role-$target" > "parity-evidence/roles-$target.log" 2>&1 || true
             docker rm -f "$RESOURCE_SCOPE-role-$target" || true

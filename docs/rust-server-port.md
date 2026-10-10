@@ -26,6 +26,18 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+The pending `worker-registration-fencing` fixture defines the first shared
+Server #358 lifecycle slice on a separate exact PHP/SDK source tuple. It retains
+an original leased echo across token rotation, heartbeat, terminal refusals,
+original receipt replay after replacement, two explicit repair commands and
+completion by a real SDK worker. Embedded execution runs the authored echo and
+marks HTTP registration inapplicable. This source-reference cohort does not
+qualify native fencing or published feature artifacts; the default 29 fixtures
+and frozen baseline remain unchanged. The hosted PHP/embedded database matrix
+is being added before native implementation. Next: implement the fenced native
+transaction and qualify the same original cases, then contention, lost reply,
+rollback, expiry, role/namespace isolation and bounded shutdown failures.
+
 The separate reviewed `role-tokens/admission-role-tokens` profile completes an
 original authored echo using the unchanged published SDK and the worker token.
 Sixteen real HTTP requests check exact worker/operator/admin membership,

@@ -12,5 +12,6 @@
   "sdk_php": "dev-main",
   "sdk_php_source_commit": "4dd3bdc49ddb18b216348e0da29f398e305586b3",
   "sdk_php_source_tree": "de5cd178de12249bf5147ff12dbaa98eed4cf139",
+  "sdk_php_composer_lock_sha256": "60b85f17d1b61ae19cf471664c87022da2529913069d050915b8518c2e30010e",
   "performance_status": "not_measured"
 }
