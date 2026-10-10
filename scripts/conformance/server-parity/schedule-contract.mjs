@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 
 const equal = (actual, expected, label) => assert.deepStrictEqual(actual, expected, label);
 const identity = (value, label) => assert.ok(typeof value === 'string' && value.length > 0, label);
@@ -111,6 +112,19 @@ function httpReceipts(fixture, state) {
     if (outcome !== null) equal(receipt.response, outcome === 'triggered' ? state.trigger
       : outcome === 'skipped' ? state.paused_trigger : {schedule_id: state.schedule_id, outcome}, 'schedule control response');
     else equal(receipt.response, state.after_delete_trigger.response, 'actual deleted trigger response retained');
+    if (outcome !== null) {
+      const event = state.fresh_history[index];
+      const request = event.payload.command_context.context.request;
+      const normalize = value => Array.isArray(value) ? value.map(normalize) : value && typeof value === 'object'
+        ? Object.keys(value).length ? Object.fromEntries(Object.keys(value).sort().map(key => [key, normalize(value[key])])) : [] : value;
+      const recordedHeaders = request.headers ?? [];
+      assert.ok(Array.isArray(recordedHeaders) ? recordedHeaders.length === 0
+        : Object.keys(recordedHeaders).every(key => ['x_request_id', 'x_correlation_id'].includes(key)), 'audit fingerprint records only attribution headers');
+      const headers = Array.isArray(recordedHeaders) ? []
+        : Object.fromEntries(['x_request_id', 'x_correlation_id'].filter(key => key in recordedHeaders).map(key => [key, recordedHeaders[key]]));
+      const payload = JSON.stringify({method, path: route, payload: normalize(receipt.request ?? []), headers});
+      equal(request.fingerprint, `sha256:${createHash('sha256').update(payload).digest('hex')}`, 'audit fingerprint matches actual submitted control request');
+    }
   }
   const created = state.control_receipts[0].request;
   equal(created.schedule_id, state.schedule_id, 'submitted schedule identity');

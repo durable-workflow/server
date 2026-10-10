@@ -16,7 +16,19 @@ struct Fingerprint<'a> {
     method: &'a str,
     path: &'a str,
     payload: &'a Value,
-    headers: Value,
+    headers: AttributionHeaders,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum AttributionHeaders {
+    Empty([String; 0]),
+    Present {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        x_request_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        x_correlation_id: Option<String>,
+    },
 }
 
 fn normalized(value: &Value) -> Value {
@@ -43,24 +55,22 @@ fn context(request: &Parts, payload: &Value, schedule: &str, operation: &str) ->
     };
     let method = request.method.as_str();
     let path = request.uri.path();
-    let mut fingerprint_headers = serde_json::Map::new();
-    for (header_name, key) in [
-        ("x-request-id", "x_request_id"),
-        ("x-correlation-id", "x_correlation_id"),
-    ] {
-        if let Some(value) = header(header_name) {
-            fingerprint_headers.insert(key.to_owned(), json!(value));
+    let request_id = header("x-request-id");
+    let correlation_id = header("x-correlation-id");
+    let headers = if request_id.is_none() && correlation_id.is_none() {
+        AttributionHeaders::Empty([])
+    } else {
+        AttributionHeaders::Present {
+            x_request_id: request_id.clone(),
+            x_correlation_id: correlation_id.clone(),
         }
-    }
+    };
+    let recorded_headers = serde_json::to_value(&headers).expect("JSON attribution headers");
     let encoded = serde_json::to_vec(&Fingerprint {
         method,
         path,
         payload: &normalized(payload),
-        headers: if fingerprint_headers.is_empty() {
-            json!([])
-        } else {
-            Value::Object(fingerprint_headers)
-        },
+        headers,
     })
     .expect("JSON request fingerprint");
     let digest = Sha256::digest(encoded);
@@ -75,6 +85,9 @@ fn context(request: &Parts, payload: &Value, schedule: &str, operation: &str) ->
         .unwrap_or_else(|| "unknown".to_owned());
     let mut metadata = json!({"method":method,"path":path,"route_name":format!("api.schedules.{operation}"),
         "ip":ip,"user_agent":header("user-agent"),"fingerprint":format!("sha256:{fingerprint}")});
+    if !recorded_headers.is_array() {
+        metadata["headers"] = recorded_headers;
+    }
     for (name, field) in [
         ("x-request-id", "request_id"),
         ("x-correlation-id", "correlation_id"),

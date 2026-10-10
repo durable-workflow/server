@@ -75,6 +75,16 @@ async fn complete_original(app: &Router, worker: &str, schedule: &str, trigger: 
     assert_eq!(completed.0, StatusCode::OK, "{}", completed.1);
     assert_eq!(completed.1["recorded"], true);
     assert_eq!(completed.1["run_status"], "completed");
+    let duplicate = finish_task(
+        app,
+        &task,
+        json!([{"type":"complete_workflow",
+        "result":envelope(Payload::Long(9007199254740993))}]),
+    )
+    .await;
+    assert_eq!(duplicate.0, StatusCode::OK, "{}", duplicate.1);
+    assert_eq!(duplicate.1["recorded"], false);
+    assert_eq!(duplicate.1["run_status"], "completed");
     let description = request(
         app,
         "GET",

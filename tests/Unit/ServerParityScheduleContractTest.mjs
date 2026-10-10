@@ -90,6 +90,8 @@ for (const phase of ['manual-lifecycle', 'fixed-rate-one-occurrence']) {
       'wrong audit principal': raw => audit(raw, 'ScheduleCreated', event => { event.payload.command_context.context.principal.id = 'replacement'; }),
       'wrong audit namespace': raw => audit(raw, 'ScheduleCreated', event => { event.payload.command_context.context.server.namespace = 'replacement'; }),
       'wrong audit request': raw => audit(raw, 'ScheduleCreated', event => { event.payload.command_context.context.request.path = '/wrong'; }),
+      'plausible but unrelated fingerprint': raw => audit(raw, 'ScheduleCreated', event => { event.payload.command_context.context.request.fingerprint = `sha256:${'f'.repeat(64)}`; }),
+      ...(phase === 'manual-lifecycle' ? {'unbound control request payload': raw => { raw.schedule.control_receipts[1].request = {forged: 'payload'}; }} : {}),
     });
     for (const [name, mutate] of Object.entries(mutations)) test(`${example.mode} ${phase}: rejects ${name}`, () => {
       const damaged = structuredClone(example);

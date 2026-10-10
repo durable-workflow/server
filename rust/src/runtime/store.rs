@@ -1003,8 +1003,13 @@ where
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
         }
         if Self::duplicate_receipt(&task, &body)? {
+            let run_id = DB::string(&task, "workflow_run_id")?;
+            let current = Self::query("SELECT status FROM workflow_runs WHERE id=$1")
+                .bind(&run_id)
+                .fetch_one(&mut *tx)
+                .await?;
             return Ok(
-                json!({"task_id": task_id, "run_id": DB::string(&task,"workflow_run_id")?, "workflow_task_attempt": body["workflow_task_attempt"],
+                json!({"task_id": task_id, "run_id": run_id, "run_status": DB::string(&current,"status")?, "workflow_task_attempt": body["workflow_task_attempt"],
                 "outcome": "completed", "recorded": false, "reason": "already_completed"}),
             );
         }
@@ -1196,10 +1201,15 @@ where
         Self::resume_undelivered_cancellation(&mut tx, &run_id, &DB::string(&run, "queue")?)
             .await?;
         Self::enqueue_pending_signal(&mut tx, &run_id, &DB::string(&run, "queue")?).await?;
+        let current = Self::query("SELECT status FROM workflow_runs WHERE id=$1")
+            .bind(&run_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let run_status = DB::string(&current, "status")?;
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok(
-            json!({"task_id": task_id, "run_id": run_id, "workflow_task_attempt": body["workflow_task_attempt"], "outcome": "completed", "recorded": true, "reason": null}),
+            json!({"task_id": task_id, "run_id": run_id, "run_status": run_status, "workflow_task_attempt": body["workflow_task_attempt"], "outcome": "completed", "recorded": true, "reason": null}),
         )
     }
 

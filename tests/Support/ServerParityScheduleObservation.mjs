@@ -1,5 +1,7 @@
 // Deterministic comparator examples model the published adapter differences.
 // Actual workflow observations are retained separately as bounded artifacts.
+import {createHash} from 'node:crypto';
+
 export function scheduleObservation(fixture, mode) {
   const clone = value => structuredClone(value);
   const embedded = mode === 'embedded';
@@ -15,6 +17,15 @@ export function scheduleObservation(fixture, mode) {
     ...(embedded ? {workflow_class: 'ServerParity\\EchoWorkflow', input: [clone(fixture.input)]}
       : {task_queue: 'server-parity-v1', input: {codec: 'avro', blob: 'modeled-envelope-bytes'}})};
   const operations = ['create', 'pause', 'trigger', 'resume', 'trigger', 'delete'];
+  const submitted = {schedule_id: scheduleId, spec: clone(fixture.schedule.spec), action: clone(action), overlap_policy: 'skip', jitter_seconds: 0,
+    ...(fixture.schedule.max_runs ? {max_runs: fixture.schedule.max_runs} : {})};
+  const normalize = value => Array.isArray(value) ? value.map(normalize) : value && typeof value === 'object'
+    ? Object.fromEntries(Object.keys(value).sort().map(key => [key, normalize(value[key])])) : value;
+  const fingerprint = operation => {
+    const method = operation === 'delete' ? 'DELETE' : 'POST';
+    const path = operation === 'create' ? '/api/schedules' : `/api/schedules/${scheduleId}${operation === 'delete' ? '' : `/${operation}`}`;
+    return `sha256:${createHash('sha256').update(JSON.stringify({method, path, payload: normalize(operation === 'create' ? submitted : []), headers: []})).digest('hex')}`;
+  };
   const context = (index, operation) => ({source: 'control_plane', context: {
     caller: {type: 'server', label: 'Standalone Server'},
     auth: {status: 'authorized', method: 'token', role: 'admin', roles: ['admin'],
@@ -22,7 +33,7 @@ export function scheduleObservation(fixture, mode) {
     principal: {type: 'auth:token', id: 'legacy-token', label: 'Admin'},
     request: {method: operation === 'delete' ? 'DELETE' : 'POST',
       path: operation === 'create' ? '/api/schedules' : `/api/schedules/${scheduleId}${operation === 'delete' ? '' : `/${operation}`}`,
-      route_name: `route-${operation}`, ip: '127.0.0.1', user_agent: 'modeled-sdk', fingerprint: `sha256:${'0'.repeat(64)}`},
+      route_name: `route-${operation}`, ip: '127.0.0.1', user_agent: 'modeled-sdk', fingerprint: fingerprint(operation)},
     server: {namespace: 'default', workflow_id: scheduleId, command: `schedule.${operation}`, operation_id: `${mode}-operation-${index}`},
   }});
   const audit = fixture.schedule.expected_events.map((event_type, index) => {

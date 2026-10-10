@@ -54,7 +54,7 @@ impl TimerScheduler {
                     _ = tokio::time::sleep(Duration::from_millis(250)) => {
                         // One bounded batch per tick. A failed database turn is
                         // retried from durable state, without logging payloads.
-                        // Timer transactions use the same cross-node lock as
+                        // Timer and schedule transactions share the cross-node lock with
                         // completion. CPU/deadline performance is unqualified.
                         let result = async { match &*storage {
                             Storage::Sqlite(store) => { store.fire_due_timers().await?; store.fire_due_schedules().await },
@@ -63,7 +63,7 @@ impl TimerScheduler {
                         }}.await;
                         let success = result.is_ok();
                         if healthy.swap(success,Ordering::Relaxed) && !success {
-                            eprintln!("timer_scheduler_storage_unavailable");
+                            eprintln!("runtime_scheduler_storage_unavailable");
                         }
                     }
                 }
