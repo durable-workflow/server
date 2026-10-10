@@ -2,8 +2,9 @@
 
 This crate is an unpublished development foundation for [Server #325](https://github.com/durable-workflow/server/issues/325).
 The published PHP image remains the default. The opt-in Rust HTTP runtime now
-executes 20 reviewed shared fixtures through an unchanged published PHP SDK,
-including bounded root cooperative cleanup at timer boundaries. The port log
+executes 22 reviewed shared fixtures through an unchanged published PHP SDK,
+including bounded root cooperative cleanup at timer boundaries and portable
+NUL cancellation diagnostics. The port log
 records the six-database matrix and real process-kill recovery evidence.
 It is an incomplete development slice, with no qualified database takeover,
 performance improvement or release. The codec module uses Apache's official
@@ -289,7 +290,7 @@ WAL visibility or manually delete a nonempty journal.
 connection-pool claims, stale fences, duplicate outcomes/polls, worker history
 pagination, atomic unsupported-command refusal and read-only PHP refusal.
 The shared Action builds once, cross-decodes the 15 codec cases, executes all
-eight reviewed fixtures against separate PHP/Rust/embedded databases, then
+22 reviewed fixtures against separate PHP/Rust/embedded databases, then
 kills the Rust process with a leased activity, a pending timer and an acknowledged
 pending signal. The restart probe lets the actual lease expire, rejects the old
 claim and completes through a new published PHP SDK worker. It checks original

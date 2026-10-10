@@ -17,6 +17,6 @@
     "diagnostic_encoding": "json_string_literal_if_nul"
   },
   "expected_events": ["StartAccepted", "WorkflowStarted", "CancelRequested", "WorkflowCancelled"],
-  "review_state": "corrected_reference_candidate",
-  "contract": "Reviewed Workflow #741 correction: if the complete cancellation diagnostic contains literal NUL, store the entire diagnostic as one JSON string literal, identically in failure storage and terminal history. Decoding must recover the complete prefix and original reason; diagnostics without NUL remain unchanged. HTTP applies its declared boundary normalization; embedded preserves the caller reason verbatim. Original reason/history identities, duplicate refusal, fresh cancelled outcome and exact Avro int64 input remain preserved. This candidate is outside qualified totals until the corrected PHP Server 2.5.14 / Workflow 2.5.5 tuple and native matrix are reviewed."
+  "review_state": "qualified_shared_matrix",
+  "contract": "Reviewed Workflow #741 correction: if the complete cancellation diagnostic contains literal NUL, store the entire diagnostic as one JSON string literal, identically in failure storage and terminal history. Decoding must recover the complete prefix and original reason; diagnostics without NUL remain unchanged. HTTP applies its declared boundary normalization; embedded preserves the caller reason verbatim. Original reason/history identities, duplicate refusal, fresh cancelled outcome and exact Avro int64 input remain preserved. Qualified against the corrected PHP Server 2.5.14 / Workflow 2.5.5 tuple and native runtime across the six-configuration shared matrix in Server #352. The original frozen 2.5.13 manifest and failing reproducer remain unchanged."
 }
