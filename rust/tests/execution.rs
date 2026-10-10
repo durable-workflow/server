@@ -2322,6 +2322,314 @@ async fn cooperative_root_validation_and_concurrent_requests_preserve_one_origin
     database.remove().await;
 }
 
+async fn cooperative_poll(app: &Router, kind: &str) -> Value {
+    let response = request_protocol(
+        app,
+        "POST",
+        &format!("/api/worker/{kind}-tasks/poll"),
+        json!({"worker_id":"cleanup-worker","task_queue":"test","timeout_seconds":0}),
+        "1.20",
+    )
+    .await;
+    assert_eq!(response.0, StatusCode::OK, "{}", response.1);
+    response.1["task"].clone()
+}
+
+#[tokio::test]
+async fn cooperative_delivery_cleanup_and_original_deadline_survive_fresh_runtime_pools() {
+    for (phase, expired) in [
+        ("before_claim", false),
+        ("pending_timer", false),
+        ("pending_timer", true),
+    ] {
+        let database = TestDatabase::new().await;
+        let a = database.open().await.unwrap();
+        let b = database.open().await.unwrap();
+        let app_a = router(a.clone());
+        let app_b = router(b.clone());
+        assert_eq!(request_protocol(&app_a,"POST","/api/worker/register",json!({"worker_id":"cleanup-worker",
+            "task_queue":"test","runtime":"php","supported_workflow_types":["echo"],
+            "supported_activity_types":["echo-activity"],"capabilities":["cooperative_cancellation"]}),"1.20").await.0,StatusCode::CREATED);
+        let started = start(&app_a, "cleanup-root").await;
+        let workflow = json!("cleanup-root");
+        let run = started["run_id"].clone();
+        if phase == "pending_timer" {
+            let original = cooperative_poll(&app_a, "workflow").await;
+            let completed = finish_task(
+                &app_b,
+                &original,
+                json!([{"type":"start_timer","delay_seconds":60}]),
+            )
+            .await;
+            assert_eq!(completed.0, StatusCode::OK, "{}", completed.1);
+        }
+        let prefix = run_history(&app_b, &workflow, &run).await;
+        let control = format!(
+            "/api/workflows/cleanup-root/runs/{}/request-cancellation",
+            run.as_str().unwrap()
+        );
+        let accepted = request(
+            &app_a,
+            "POST",
+            &control,
+            json!({"reason":"original λ","cleanup_timeout_seconds":if expired {5} else {30}}),
+        )
+        .await;
+        assert_eq!(accepted.0, StatusCode::ACCEPTED, "{}", accepted.1);
+        let pending = accepted.1["cancellation_request"].clone();
+        let request_id = pending["request_id"].clone();
+        let task = cooperative_poll(&app_b, "workflow").await;
+        assert!(!task.is_null());
+        let endpoint = format!(
+            "/api/worker/workflow-tasks/{}/deliver-cancellation",
+            task["task_id"].as_str().unwrap()
+        );
+        let delivery = json!({"lease_owner":task["lease_owner"],"workflow_task_attempt":task["workflow_task_attempt"],
+            "request_id":request_id,"sequence":1,"call_kind":"timer","sequence_span":1});
+        let before_delivery = run_history(&app_a, &workflow, &run).await;
+        let old_protocol = request(&app_a, "POST", &endpoint, delivery.clone()).await;
+        assert_eq!(old_protocol.0, StatusCode::CONFLICT);
+        assert_eq!(
+            old_protocol.1["reason"],
+            "cooperative_cancellation_not_supported"
+        );
+        let mut wrong_request = delivery.clone();
+        wrong_request["request_id"] = json!("replacement");
+        let wrong = request_protocol(&app_a, "POST", &endpoint, wrong_request, "1.20").await;
+        assert_eq!(wrong.0, StatusCode::CONFLICT);
+        assert_eq!(wrong.1["reason"], "cancellation_request_mismatch");
+        assert_eq!(run_history(&app_a, &workflow, &run).await, before_delivery);
+        let delivered = request_protocol(&app_a, "POST", &endpoint, delivery.clone(), "1.20").await;
+        assert_eq!(delivered.0, StatusCode::OK, "{}", delivered.1);
+        assert_eq!(delivered.1["delivered"], true);
+        let canonical_history = run_history(&app_a, &workflow, &run).await;
+        let repeated = request_protocol(&app_b, "POST", &endpoint, delivery.clone(), "1.20").await;
+        assert_eq!(repeated, delivered);
+        assert_eq!(
+            run_history(&app_b, &workflow, &run).await,
+            canonical_history
+        );
+        let mut wrong_boundary = delivery;
+        wrong_boundary["sequence"] = json!(2);
+        assert_eq!(
+            request_protocol(&app_a, "POST", &endpoint, wrong_boundary, "1.20")
+                .await
+                .0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            run_history(&app_b, &workflow, &run).await,
+            canonical_history
+        );
+        let requested = canonical_history
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|event| event["event_type"] == "CooperativeCancellationRequested")
+            .unwrap();
+        let Payload::Map(command) = ValueCodec::new()
+            .unwrap()
+            .decode(
+                requested["payload"]["command"]["payload"]["blob"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap()
+        else {
+            panic!("official cancellation command map");
+        };
+        let context = command["cancellation"].clone();
+        let renewal=request_protocol(&app_a,"POST",&format!("/api/worker/workflow-tasks/{}/heartbeat",task["task_id"].as_str().unwrap()),
+            json!({"lease_owner":task["lease_owner"],"workflow_task_attempt":task["workflow_task_attempt"]}),"1.20").await;
+        assert_eq!(renewal.0, StatusCode::OK, "{}", renewal.1);
+        assert_eq!(renewal.1["cancellation_request"]["request_id"], request_id);
+        assert_eq!(
+            renewal.1["cancellation_request"]["cleanup_deadline_at"],
+            pending["cleanup_deadline_at"]
+        );
+        assert_eq!(renewal.1["cancellation_request"]["delivery_sequence"], 1);
+        let cleanup_timer = finish_task(
+            &app_a,
+            &task,
+            json!([{"type":"start_timer","delay_seconds":if expired {60} else {1}}]),
+        )
+        .await;
+        assert_eq!(cleanup_timer.0, StatusCode::OK, "{}", cleanup_timer.1);
+        let after_cleanup_started = run_history(&app_b, &workflow, &run).await;
+        assert_eq!(
+            after_cleanup_started.as_array().unwrap().last().unwrap()["payload"]["sequence"],
+            2
+        );
+        a.close().await;
+        b.close().await;
+        let fresh = database.open().await.unwrap();
+        let app = router(fresh.clone());
+        let reopened_history = run_history(&app, &workflow, &run).await;
+        let before_reopen = after_cleanup_started.as_array().unwrap();
+        assert!(
+            reopened_history
+                .as_array()
+                .unwrap()
+                .starts_with(before_reopen)
+        );
+        let wait_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        if expired {
+            loop {
+                let described =
+                    request(&app, "GET", "/api/workflows/cleanup-root", json!({})).await;
+                assert_eq!(described.0, StatusCode::OK, "{}", described.1);
+                if described.1["status"] == "cancelled" {
+                    break;
+                }
+                assert!(
+                    tokio::time::Instant::now() < wait_deadline,
+                    "ordinary scheduler enforces original root deadline"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        } else {
+            let resumed = loop {
+                let resumed = cooperative_poll(&app, "workflow").await;
+                if !resumed.is_null() {
+                    break resumed;
+                }
+                assert!(
+                    tokio::time::Instant::now() < wait_deadline,
+                    "ordinary cleanup timer fires"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            };
+            let arguments = envelope(Payload::Array(vec![
+                Payload::Long(9007199254740993),
+                context,
+            ]));
+            let scheduled=finish_task(&app,&resumed,json!([{"type":"schedule_activity","activity_type":"echo-activity","arguments":arguments}])).await;
+            assert_eq!(scheduled.0, StatusCode::OK, "{}", scheduled.1);
+            let activity = cooperative_poll(&app, "activity").await;
+            assert!(!activity.is_null());
+            let heartbeat_endpoint = format!(
+                "/api/worker/activity-tasks/{}/heartbeat",
+                activity["task_id"].as_str().unwrap()
+            );
+            let heartbeat = json!({"activity_attempt_id":activity["activity_attempt_id"],"lease_owner":activity["lease_owner"],"details":{"request_id":request_id}});
+            let before_heartbeat = run_history(&app, &workflow, &run).await;
+            let mut stale = heartbeat.clone();
+            stale["activity_attempt_id"] = json!("stale-attempt");
+            let refused = request_protocol(&app, "POST", &heartbeat_endpoint, stale, "1.20").await;
+            assert_eq!(refused.0, StatusCode::CONFLICT);
+            assert_eq!(refused.1["reason"], "stale_attempt");
+            assert_eq!(run_history(&app, &workflow, &run).await, before_heartbeat);
+            let recorded =
+                request_protocol(&app, "POST", &heartbeat_endpoint, heartbeat, "1.20").await;
+            assert_eq!(recorded.0, StatusCode::OK, "{}", recorded.1);
+            assert_eq!(recorded.1["heartbeat_recorded"], true);
+            let result = envelope(Payload::Long(9007199254740993));
+            let completed=request_protocol(&app,"POST",&format!("/api/worker/activity-tasks/{}/complete",activity["task_id"].as_str().unwrap()),
+                json!({"activity_attempt_id":activity["activity_attempt_id"],"lease_owner":activity["lease_owner"],"result":result}),"1.20").await;
+            assert_eq!(completed.0, StatusCode::OK, "{}", completed.1);
+            let resumed = cooperative_poll(&app, "workflow").await;
+            let finished = finish_task(
+                &app,
+                &resumed,
+                json!([{"type":"complete_workflow","result":result}]),
+            )
+            .await;
+            assert_eq!(finished.0, StatusCode::OK, "{}", finished.1);
+        }
+        let history = run_history(&app, &workflow, &run).await;
+        let events = history.as_array().unwrap();
+        assert_eq!(
+            &events[..prefix.as_array().unwrap().len()],
+            prefix.as_array().unwrap()
+        );
+        let terminal = events.last().unwrap();
+        assert_eq!(terminal["event_type"], "WorkflowCancelled");
+        let cleanup = &terminal["payload"]["cancellation_cleanup"];
+        let delivered = events
+            .iter()
+            .find(|event| event["event_type"] == "CooperativeCancellationDelivered")
+            .unwrap();
+        assert_eq!(cleanup["request_id"], request_id);
+        assert_eq!(
+            cleanup["cleanup_deadline_at"],
+            pending["cleanup_deadline_at"]
+        );
+        assert_eq!(cleanup["delivery_history_event_id"], delivered["id"]);
+        assert_eq!(cleanup["delivery_sequence"], 1);
+        assert_eq!(
+            cleanup["outcome"],
+            if expired {
+                "deadline_expired"
+            } else {
+                "completed"
+            }
+        );
+        let deadline =
+            chrono::DateTime::parse_from_rfc3339(pending["cleanup_deadline_at"].as_str().unwrap())
+                .unwrap();
+        let finished =
+            chrono::DateTime::parse_from_rfc3339(cleanup["finished_at"].as_str().unwrap()).unwrap();
+        assert_eq!(finished >= deadline, expired);
+        assert!(
+            !events
+                .iter()
+                .any(|event| event["event_type"] == "WorkflowCompleted")
+        );
+        let types: Vec<_> = events
+            .iter()
+            .map(|event| event["event_type"].as_str().unwrap())
+            .collect();
+        let fixture: Value = serde_json::from_str(match (phase, expired) {
+            (_, true) => include_str!(
+                "../../tests/Fixtures/ServerParityPending/cooperative-cleanup-deadline.json"
+            ),
+            ("before_claim", _) => include_str!(
+                "../../tests/Fixtures/ServerParityPending/cooperative-before-claim-cleanup.json"
+            ),
+            _ => include_str!(
+                "../../tests/Fixtures/ServerParityPending/cooperative-pending-timer-cleanup.json"
+            ),
+        })
+        .unwrap();
+        assert_eq!(json!(types), fixture["expected_events"]);
+        let duplicate = request(
+            &app,
+            "POST",
+            &control,
+            json!({"reason":"replacement","cleanup_timeout_seconds":3600}),
+        )
+        .await;
+        assert_eq!(duplicate.0, StatusCode::OK, "{}", duplicate.1);
+        assert_eq!(duplicate.1["duplicate"], true);
+        assert_eq!(
+            duplicate.1["cancellation_request"]["cleanup_deadline_at"],
+            pending["cleanup_deadline_at"]
+        );
+        assert_eq!(run_history(&app, &workflow, &run).await, history);
+        assert_eq!(
+            database
+                .cancellation_failure_count(
+                    run.as_str().unwrap(),
+                    terminal["payload"]["failure_id"].as_str().unwrap()
+                )
+                .await,
+            1
+        );
+        let described = request(&app, "GET", "/api/workflows/cleanup-root", json!({})).await;
+        assert_eq!(described.1["status"], "cancelled");
+        assert_eq!(described.1["output_envelope"], Value::Null);
+        assert_eq!(cleanup["finished_at"], described.1["closed_at"]);
+        fresh.close().await;
+        let recovered = database.open().await.unwrap();
+        assert_eq!(
+            run_history(&router(recovered.clone()), &workflow, &run).await,
+            history
+        );
+        recovered.close().await;
+        database.remove().await;
+    }
+}
+
 #[tokio::test]
 async fn immediate_cancellation_closes_original_work_once_and_survives_fresh_pools() {
     for phase in ["before_claim", "pending_timer", "leased_activity"] {

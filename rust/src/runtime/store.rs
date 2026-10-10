@@ -8,7 +8,6 @@ use std::{sync::Arc, time::Duration};
 use tokio::sync::{Notify, Semaphore};
 use ulid::Ulid;
 
-const LEASE_SECONDS: i64 = 30;
 pub(super) struct PreparedControlArguments {
     pub(super) arguments: String,
     pub(super) values: Vec<crate::codec::Value>,
@@ -337,7 +336,10 @@ where
         )
     }
 
-    async fn authored_sequence(tx: &mut Transaction<'_, DB>, run_id: &str) -> Result<i64> {
+    pub(super) async fn authored_sequence(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+    ) -> Result<i64> {
         // Public control command order and deterministic authored call order
         // are different counters in PHP. Signals must never shift a replayed
         // activity/timer/wait's authored position.
@@ -368,7 +370,16 @@ where
             .unwrap_or(0);
         let children = Self::query("SELECT sequence FROM workflow_child_calls WHERE parent_workflow_run_id=$1 ORDER BY sequence DESC LIMIT 1")
             .bind(run_id).fetch_optional(&mut **tx).await?.map(|row| DB::number(&row,"sequence")).transpose()?.unwrap_or(0);
-        Ok(activities.max(timers).max(wait_sequence).max(children))
+        let run =
+            Self::query("SELECT cancellation_delivery_sequence FROM workflow_runs WHERE id=$1")
+                .bind(run_id)
+                .fetch_one(&mut **tx)
+                .await?;
+        Ok(activities
+            .max(timers)
+            .max(wait_sequence)
+            .max(children)
+            .max(DB::optional_number(&run, "cancellation_delivery_sequence")?.unwrap_or(0)))
     }
 
     pub(super) async fn open_wait(
@@ -394,6 +405,16 @@ where
         run_id: &str,
         queue: &str,
     ) -> Result<()> {
+        let status = Self::query("SELECT status FROM workflow_runs WHERE id=$1")
+            .bind(run_id)
+            .fetch_one(&mut **tx)
+            .await?;
+        if !matches!(
+            DB::string(&status, "status")?.as_str(),
+            "pending" | "running" | "waiting"
+        ) {
+            return Ok(());
+        }
         let open = Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status IN ('ready','leased')")
             .bind(run_id).fetch_one(&mut **tx).await?;
         if open != 0 {
@@ -859,20 +880,23 @@ where
         let mut tx = self.begin().await?;
         let task = Self::task_row(&mut tx, task_id).await?;
         Self::fence(&task, &body)?;
-        let expires = after(LEASE_SECONDS);
         if DB::string(&task, "task_type")? != "workflow" {
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
         }
+        let run = Self::active_run(&mut tx, &DB::string(&task, "workflow_run_id")?).await?;
+        let expires = Self::cancellation_lease_expiry(&run)?;
         Self::query("UPDATE workflow_tasks SET lease_expires_at=$1 WHERE id=$2")
             .bind(DB::bind_time(expires))
             .bind(task_id)
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
-        Ok(
-            json!({"task_id": task_id, "workflow_task_attempt": body["workflow_task_attempt"],
-            "lease_owner": body["lease_owner"], "lease_expires_at": expires, "renewed": true}),
-        )
+        let mut response = json!({"task_id": task_id, "workflow_task_attempt": body["workflow_task_attempt"],
+            "lease_owner": body["lease_owner"], "lease_expires_at": expires, "renewed": true});
+        if let Some(cancellation) = Self::cancellation_request(&run)? {
+            response["cancellation_request"] = cancellation;
+        }
+        Ok(response)
     }
 
     pub(crate) async fn task_history(&self, task_id: &str, body: Value) -> Result<Value> {
@@ -979,6 +1003,19 @@ where
         let run_id = DB::string(&task, "workflow_run_id")?;
         let run = Self::active_run(&mut tx, &run_id).await?;
         let task_payload = DB::document_row(&task, "payload")?;
+        if Self::cancellation_request(&run)?.is_some()
+            && commands.iter().any(|command| {
+                !matches!(
+                    command["type"].as_str(),
+                    Some("schedule_activity" | "start_timer" | "complete_workflow")
+                )
+            })
+        {
+            return Err(refuse(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "cancellation_cleanup_command_not_available",
+            ));
+        }
         let update_id = task_payload["workflow_update_id"].as_str();
         if commands
             .iter()
@@ -1044,7 +1081,9 @@ where
                 let fire_at = timer_deadline(command)?;
                 Self::query("INSERT INTO workflow_run_timers(id,workflow_run_id,sequence,status,delay_seconds,fire_at) VALUES ($1,$2,$3,'pending',$4,$5)")
                     .bind(&timer_id).bind(&run_id).bind(sequence).bind(delay).bind(DB::bind_time(fire_at)).execute(&mut *tx).await?;
-                Self::append(&mut tx, &run_id, "TimerScheduled", json!({"timer_id":timer_id,"sequence":sequence,"delay_seconds":delay,"fire_at":fire_at}), Some(task_id), None).await?;
+                Self::append(&mut tx, &run_id, "TimerScheduled", json!({"timer_id":timer_id,"sequence":sequence,"delay_seconds":delay,"fire_at":fire_at,
+                    "task":{"id":task_id,"type":"workflow","status":"leased","lease_owner":DB::optional_string(&task,"lease_owner")?,
+                        "lease_expires_at":DB::optional_instant(&task,"lease_expires_at")?,"attempt_count":DB::number(&task,"attempt_count")?}}), Some(task_id), None).await?;
                 let timer_task = Self::create_task(
                     &mut tx,
                     &run_id,
@@ -1122,18 +1161,22 @@ where
                 }
                 let output = envelope(command, "result")?;
                 let closed_at = now();
-                Self::append(
-                    &mut tx,
-                    &run_id,
-                    "WorkflowCompleted",
-                    json!({"output": wire(&output), "payload_codec": "avro"}),
-                    Some(task_id),
-                    None,
-                )
-                .await?;
-                Self::query("UPDATE workflow_runs SET status='completed',closed_reason='completed',output=$1,closed_at=$2 WHERE id=$3")
+                if Self::cancellation_request(&run)?.is_some() {
+                    Self::finish_root_cancellation(&mut tx, &run, Some(task_id)).await?;
+                } else {
+                    Self::append(
+                        &mut tx,
+                        &run_id,
+                        "WorkflowCompleted",
+                        json!({"output": wire(&output), "payload_codec": "avro"}),
+                        Some(task_id),
+                        None,
+                    )
+                    .await?;
+                    Self::query("UPDATE workflow_runs SET status='completed',closed_reason='completed',output=$1,closed_at=$2 WHERE id=$3")
                     .bind(&output).bind(DB::bind_time(closed_at)).bind(&run_id).execute(&mut *tx).await?;
-                Self::complete_child(&mut tx, &run, &output, closed_at).await?;
+                    Self::complete_child(&mut tx, &run, &output, closed_at).await?;
+                }
             }
         }
         Self::query("UPDATE workflow_tasks SET status='completed' WHERE id=$1")
@@ -1141,6 +1184,8 @@ where
             .execute(&mut *tx)
             .await?;
         Self::record_completion(&mut tx, task_id, &body).await?;
+        Self::resume_undelivered_cancellation(&mut tx, &run_id, &DB::string(&run, "queue")?)
+            .await?;
         Self::enqueue_pending_signal(&mut tx, &run_id, &DB::string(&run, "queue")?).await?;
         tx.commit().await?;
         self.wake.notify_waiters();
@@ -1238,6 +1283,8 @@ where
         )
     }
     pub(crate) async fn fire_due_timers(&self) -> Result<()> {
+        // Expired root authority wins before any ordinary due timer fires.
+        self.expire_cooperative_deadlines().await?;
         // New timers use the canonical PHP timestamp shape on SQLite and typed
         // UTC values elsewhere. Existing PHP data still cannot be adopted.
         // The read probe avoids acquiring the transition lock when idle.

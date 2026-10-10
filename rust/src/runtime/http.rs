@@ -69,6 +69,10 @@ pub fn router(runtime: Runtime) -> Router {
         .route("/api/worker/registrations/{worker_id}", delete(deregister))
         .route("/api/worker/workflow-tasks/poll", post(poll_workflow))
         .route(
+            "/api/worker/workflow-tasks/{task_id}/deliver-cancellation",
+            post(deliver_cancellation),
+        )
+        .route(
             "/api/worker/workflow-tasks/{task_id}/heartbeat",
             post(heartbeat_task),
         )
@@ -77,6 +81,10 @@ pub fn router(runtime: Runtime) -> Router {
             post(complete_workflow),
         )
         .route("/api/worker/activity-tasks/poll", post(poll_activity))
+        .route(
+            "/api/worker/activity-tasks/{task_id}/heartbeat",
+            post(heartbeat_activity),
+        )
         .route(
             "/api/worker/activity-tasks/{task_id}/fail",
             post(fail_activity),
@@ -397,6 +405,18 @@ async fn heartbeat_task(
 ) -> Result<Json<Value>> {
     runtime.heartbeat_task(&task_id, body).await.map(Json)
 }
+
+async fn deliver_cancellation(
+    State(runtime): State<Runtime>,
+    Path(task_id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>> {
+    runtime
+        .deliver_cancellation(&task_id, body, request_protocol(&headers)?)
+        .await
+        .map(Json)
+}
 async fn complete_workflow(
     State(runtime): State<Runtime>,
     Path(task_id): Path<String>,
@@ -410,6 +430,14 @@ async fn complete_activity(
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
     runtime.complete_activity(&task_id, body).await.map(Json)
+}
+
+async fn heartbeat_activity(
+    State(runtime): State<Runtime>,
+    Path(task_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>> {
+    runtime.heartbeat_activity(&task_id, body).await.map(Json)
 }
 async fn fail_activity(
     State(runtime): State<Runtime>,
