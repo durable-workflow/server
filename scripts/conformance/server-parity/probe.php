@@ -43,7 +43,7 @@ use Workflow\WorkflowOptions;
 
 // Both adapters return observations; contract assertions live in the shared
 // runner. This probe never bootstraps or migrates a target database.
-$options = getopt('', ['mode:', 'fixture:', 'workflow-id:', 'application-root:', 'url:', 'run-id:']);
+$options = getopt('', ['mode:', 'fixture:', 'workflow-id:', 'application-root:', 'url:', 'run-id:', 'patch-phase:', 'patch-deadline:']);
 $mode = $options['mode'] ?? '';
 $fixture = json_decode(file_get_contents($options['fixture']), true, flags: JSON_THROW_ON_ERROR);
 $workflowId = $options['workflow-id'];
@@ -771,7 +771,18 @@ try {
     require __DIR__.'/child-cancellation-probe.php';
     require __DIR__.'/cancellation-probe.php';
     require __DIR__.'/cooperative-probe.php';
-    $observation = match ($mode) {
+    if (isset($fixture['patch_deployment'])) {
+        require __DIR__.'/patch-deployment-probe.php';
+        PatchDeploymentState::$changeId = $fixture['patch_deployment']['change_id'];
+        $observation = isset($options['patch-phase'])
+            ? match ($mode) {
+                'http' => patchHttpPhase($fixture, $options),
+                'embedded' => patchEmbeddedPhase($fixture, $options),
+                default => throw new InvalidArgumentException('Mode must be http or embedded.'),
+            }
+            : patchDeploymentObservation($fixture, $options);
+    } else {
+        $observation = match ($mode) {
         'http' => isset($fixture['cooperative_cancellation'])
             ? httpCooperativeObservation($fixture, $workflowId, $namespace, $queue, $options['url'])
             : (isset($fixture['immediate_cancellation'])
@@ -783,7 +794,8 @@ try {
             ? embeddedCancellationObservation($fixture, $workflowId, $namespace, $queue, $options['application-root'])
             : embeddedObservation($fixture, $workflowId, $namespace, $queue, $options['application-root'])),
         default => throw new InvalidArgumentException('Mode must be http or embedded.'),
-    };
+        };
+    }
     $observation['typed_input'] = typedValue($observation['input']);
     if ($mode === 'embedded' && isset($fixture['worker_deregistration'])) {
         $observation['worker_deregistration'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_worker_registration_lifecycle'];
@@ -793,7 +805,7 @@ try {
     $observation['sdk_php'] = ltrim(InstalledVersions::getPrettyVersion('durable-workflow/sdk'), 'v');
     $observation['sdk_php_source'] = InstalledVersions::getReference('durable-workflow/sdk');
     $observation['php_version'] = PHP_VERSION;
-    if ($mode === 'embedded') {
+    if ($mode === 'embedded' && ! isset($observation['workflow_package'])) {
         $observation['workflow_package'] = ltrim(InstalledVersions::getPrettyVersion('durable-workflow/workflow'), 'v');
     }
     echo json_encode($observation, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)."\n";

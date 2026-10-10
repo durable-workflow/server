@@ -52,7 +52,22 @@ node --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCoopera
 ```
 
 Use **separate, already bootstrapped databases** for PHP, Rust and embedded.
-The default reviewed corpus now includes 29 cases. Its visibility fixture runs
+The default reviewed corpus includes 29 cases.
+The pending patch deployment controls are selected explicitly with
+`--include-fixture tests/Fixtures/ServerParityPending/patch-insertion-activity-pending.json`
+and `--include-fixture tests/Fixtures/ServerParityPending/patch-insertion-activity-completed.json`
+on recording and comparison. CI selects both in addition to the unchanged 29
+default definitions, reusing existing isolated targets and compiled binaries.
+An original worker stops after scheduling or completing the original activity;
+a separate cold process inserts two calls to the same patch ID. Both must choose
+the legacy branch, preserve command sequence 1 and complete the original run
+without a new activity or version marker. Complete checkpoint histories and
+typed int64 outcomes are compared. These are unchanged published PHP SDK and
+embedded authoring controls. Python/Rust SDK adapters, their corrected exact
+artifacts and retained Python duplicate-marker histories remain separate gates
+under SDK Python #103 and SDK Rust #80.
+
+Its visibility fixture runs
 the unchanged published CLI 2.2.0 on both HTTP targets. Download its PHAR,
 verify the fixture's pinned checksum, and expose its absolute path to the PHP
 probe with `DW_PARITY_CLI_PHAR`:
