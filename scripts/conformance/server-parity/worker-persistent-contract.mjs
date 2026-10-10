@@ -33,7 +33,10 @@ export function checkSdkPersistentPressure(fixture,state,workflowId,token) {
     assert.equal(poll.namespace,registration.namespace);
     assert.equal(poll.credential_sha256,createHash('sha256').update('Bearer parity-intentionally-invalid-fixture-credential').digest('hex'));
     assert.notEqual(poll.credential_sha256,registration.credential_sha256);
-    assert.ok(Number.isInteger(poll.timeout_seconds) && poll.timeout_seconds>=1 && poll.timeout_seconds<=65);
+    // This ordinary authentication-fault poll precedes shutdown. Its adapter
+    // timeout may be absent; only the fenced shutdown spends the new budget.
+    assert.ok(poll.timeout_seconds===null || (Number.isInteger(poll.timeout_seconds)
+      && poll.timeout_seconds>=1 && poll.timeout_seconds<=65));
   } else assert.equal(p.request_fault,null);
   assert.ok(rest.length>=2 && rest.length<=10,'SDK actually retries bounded shutdown before failing');
   assert.equal(p.failures.length,rest.length);

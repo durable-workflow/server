@@ -272,7 +272,7 @@ function persistentModel(fixture=persistentFixtures[0]) {
   const shutdownError={class:'DurableWorkflow\\Exception\\TransportException',status:null,reason:null,same_as_returned_error:!original};
   const returned=original?{class:'DurableWorkflow\\Exception\\ServerException',status:401,reason:'unauthorized',same_as_returned_error:true}:shutdownError;
   const requests=[source.requests[0],...[9,8,7,6,5,3].map(timeout=>({...source.requests[1],timeout_seconds:timeout,elapsed_seconds:0.05}))];
-  if(original) requests.splice(1,0,{method:'POST',path:'/api/worker/workflow-tasks/poll',status:401,namespace:'default',timeout_seconds:5,
+  if(original) requests.splice(1,0,{method:'POST',path:'/api/worker/workflow-tasks/poll',status:401,namespace:'default',timeout_seconds:null,
     credential_sha256:createHash('sha256').update('Bearer parity-intentionally-invalid-fixture-credential').digest('hex'),elapsed_seconds:0.05});
   s.sdk_persistent_pressure={kind:'real_independent_database_write_lock_held_until_sdk_returns',backend:'sqlite',bounded_transport:true,
     shutdown_elapsed_seconds:9.1,lock_release:'after_sdk_return_before_manual_reconciliation',original_worker_failure:original,
