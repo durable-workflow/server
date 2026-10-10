@@ -220,6 +220,7 @@ impl Runtime {
         Self {
             storage: Arc::new(storage),
             token: self.token.clone(),
+            role_tokens: self.role_tokens.clone(),
             scheduler: self.scheduler.clone(),
             signal_codec: self.signal_codec.clone(),
         }
