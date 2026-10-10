@@ -31,27 +31,40 @@ Server #358 lifecycle slice on a separate exact PHP/SDK source tuple. It retains
 an original leased echo across token rotation, heartbeat, terminal refusals,
 original receipt replay after replacement, two explicit repair commands and
 completion by a real SDK worker. Embedded execution runs the authored echo and
-marks HTTP registration inapplicable. This source-reference cohort does not
-qualify native fencing or published feature artifacts; the default 29 fixtures
-and frozen baseline remain unchanged. The
+marks HTTP registration inapplicable. The source cohort is separate from
+published feature qualification; the default 29 fixtures and frozen baseline
+remain unchanged. The
 [source-reference matrix](https://github.com/durable-workflow/server/actions/runs/38050246000)
 passes on all six configurations in [#363](https://github.com/durable-workflow/server/pull/363).
 All artifact digests match; independent comparisons pass 12 source-fencing,
-522 default and 18 role-profile observations. Native fencing remains open.
-[#366](https://github.com/durable-workflow/server/pull/366) persists registration incarnations in the registration
-transaction. Each registration removes at most 64 superseded incarnations in
-its own namespace after ten-minute retention; active identities stay intact.
-It does not advertise fencing or expose a token until the terminal
-transaction and shared native fixture are implemented. Development schema
+522 default and 18 role-profile observations. These #363 source results cover
+PHP and embedded execution only.
+[#366](https://github.com/durable-workflow/server/pull/366) persists registration
+incarnations in the registration transaction and passes all six main checks.
+Development schema
 version 4 adds native bookkeeping without changing frozen PHP relations or
 rewriting version 3. Older unpublished native databases remain refused without
-mutation; qualified in-place takeover remains a separate gate. The next draft
-implements fenced deregistration, terminal receipt replay, original-task repair
-commands and task snapshots. Its source profile will add Rust on an independent
-database using the existing compiled binary. This implementation is awaiting
-qualification; published feature artifacts remain held. Next: qualify the same original cases, then
-contention, lost reply, rollback, expiry, role/namespace isolation and bounded
-shutdown failures.
+mutation; qualified in-place takeover remains a separate gate.
+[#367](https://github.com/durable-workflow/server/pull/367) implements native
+fenced deregistration: original-task recovery, accepted repair command/history,
+registration deletion and terminal receipt share one physical transaction.
+Completed receipt replay precedes replacement authority lookup. The unpublished
+runtime exposes the registration token and fencing capability; it refuses
+unknown, superseded and expired tokens without acknowledging shutdown.
+Each registration removes at most 64 expired completed or superseded receipts
+in its namespace after ten minutes; active identities stay intact. Explicit
+native maintenance remains a separate gate.
+
+The source profile now includes Rust on an independent database using the
+already compiled binary. Five dedicated native tests check original-task
+completion after restart and replacement, concurrent independent pools,
+final-receipt-write rollback on each engine family, expired/pruned receipts,
+and two namespaces with live original leases and the same worker ID. Repair
+commands are checked in storage as well as history. Qualification results belong
+to #367; implementation alone does not establish a passing matrix. Next:
+shared real contention, reply loss after commit, SDK retry budgets and original
+failure precedence, then native receipt maintenance and exact published
+PHP/SDK artifacts. No feature publication or performance result is claimed.
 
 The separate reviewed `role-tokens/admission-role-tokens` profile completes an
 original authored echo using the unchanged published SDK and the worker token.
