@@ -12,6 +12,7 @@ mod execution;
 mod http;
 pub mod mysql;
 pub mod postgres;
+mod previews;
 mod queries;
 mod schedule_execution;
 mod schedule_http;

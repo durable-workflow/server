@@ -98,6 +98,8 @@ async fn complete_original(app: &Router, worker: &str, schedule: &str, trigger: 
     .await;
     assert_eq!(description.0, StatusCode::OK);
     assert_eq!(description.1["status"], "completed");
+    assert_eq!(description.1["input"], json!([9007199254740993i64]));
+    assert_eq!(description.1["output"], json!(9007199254740993i64));
     let codec = ValueCodec::new().unwrap();
     assert_eq!(
         codec

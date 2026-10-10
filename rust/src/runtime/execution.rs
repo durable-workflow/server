@@ -244,7 +244,14 @@ impl Runtime {
             }
         }
     }
-    delegate!(describe(workflow_id: &str, run_id: Option<&str>) -> Result<Value>);
+    pub(crate) async fn describe(&self, workflow_id: &str, run_id: Option<&str>) -> Result<Value> {
+        let description = match &*self.storage {
+            Storage::Sqlite(store) => store.describe(workflow_id, run_id).await?,
+            Storage::Postgres(store) => store.describe(workflow_id, run_id).await?,
+            Storage::MySql(store) => store.describe(workflow_id, run_id).await?,
+        };
+        super::previews::describe(self.signal_codec.clone(), description).await
+    }
     pub(crate) async fn update_workflow(
         &self,
         workflow_id: &str,
