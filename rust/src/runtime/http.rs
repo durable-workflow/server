@@ -286,6 +286,7 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
             ["register" | "heartbeat"]
                 | ["registrations", _]
                 | ["workflow-tasks" | "activity-tasks", "poll"]
+                | ["query-tasks", "poll"]
                 | ["workflow-tasks", _, "complete" | "history" | "heartbeat"]
                 | [
                     "activity-tasks",

@@ -1,5 +1,79 @@
 use super::*;
 
+#[tokio::test]
+async fn named_idle_query_poll_preserves_same_id_default_namespace_claim() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    create(&app, "alpha").await;
+    query_worker(&app, "shared-query-worker").await;
+    let started = start(&app, "default-query-peer").await;
+    let task = poll(&app, "shared-query-worker", "workflow").await;
+    let result = envelope(Payload::Long(9007199254740993));
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            &format!(
+                "/api/worker/workflow-tasks/{}/complete",
+                task["task_id"].as_str().unwrap()
+            ),
+            completion(&task, json!([{"type":"complete_workflow","result":result}]))
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let waiting = {
+        let app = app.clone();
+        tokio::spawn(async move {
+            request(
+                &app,
+                "POST",
+                &format!(
+                    "/api/workflows/default-query-peer/runs/{}/query/state",
+                    started["run_id"].as_str().unwrap()
+                ),
+                json!({"input":envelope(Payload::Array(vec![Payload::Long(9007199254740993)]))}),
+            )
+            .await
+        })
+    };
+    let original = await_query(&app, "shared-query-worker").await;
+    assert_eq!(original["namespace"], "default");
+    let registered = scoped(&app,"alpha","POST","/api/worker/register",json!({
+        "worker_id":"shared-query-worker","task_queue":"test","runtime":"php",
+        "supported_workflow_types":["echo"],"supported_activity_types":[],"capabilities":["query_tasks"],
+        "workflow_command_contracts":{"echo":{"queries":["state"]}}
+    })).await;
+    assert_eq!(registered.0, StatusCode::CREATED);
+    let idle = scoped(
+        &app,
+        "alpha",
+        "POST",
+        "/api/worker/query-tasks/poll",
+        json!({
+            "worker_id":"shared-query-worker","task_queue":"test","timeout_seconds":0
+        }),
+    )
+    .await;
+    assert_eq!(idle.0, StatusCode::OK, "{}", idle.1);
+    assert!(
+        idle.1["task"].is_null(),
+        "named poll must not replay another namespace's same-ID lease"
+    );
+    assert_eq!(poll(&app, "shared-query-worker", "query").await, original);
+    assert_eq!(request(&app,"POST",
+        &format!("/api/worker/query-tasks/{}/complete",original["query_task_id"].as_str().unwrap()),
+        json!({"lease_owner":"shared-query-worker","query_task_attempt":original["query_task_attempt"],"result_envelope":result})).await.0,
+        StatusCode::OK);
+    let outcome = waiting.await.unwrap();
+    assert_eq!(outcome.0, StatusCode::OK, "{}", outcome.1);
+    assert_eq!(outcome.1["result_envelope"], result);
+    runtime.close().await;
+    database.remove().await;
+}
+
 async fn scoped(
     app: &Router,
     namespace: &str,

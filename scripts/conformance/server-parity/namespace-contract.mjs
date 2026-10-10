@@ -77,6 +77,12 @@ export function checkNamespaces(fixture, observation, workflowId, checkRun) {
       const claimed = receipts.filter(receipt => receipt.path.endsWith('/poll') && receipt.response.task);
       assert.equal(claimed.filter(receipt => receipt.path.includes('/workflow-tasks/')).length, 2, 'original workflow is replayed after its activity');
       assert.equal(claimed.filter(receipt => receipt.path.includes('/activity-tasks/')).length, 1, 'original activity executed once');
+      const idleQueries = receipts.filter(receipt => receipt.path === '/api/worker/query-tasks/poll');
+      assert.ok(idleQueries.length > 0, 'unchanged SDK worker exercises idle query polling');
+      for (const receipt of idleQueries) {
+        assert.equal(receipt.status, 200, 'idle query poll succeeds in its original namespace');
+        assert.equal(receipt.response.task, null, 'no query work is invented for this authored activity');
+      }
       assert.equal(receipts.filter(receipt => receipt.status === 200 && receipt.path.endsWith('/complete')).length, 3, 'actual authored task outcomes committed');
       assert.ok(receipts.some(receipt => receipt.method === 'DELETE' && receipt.path === '/api/worker/registrations/' + state.worker_id && receipt.status === 200), 'SDK shutdown deregisters its own namespace');
     }

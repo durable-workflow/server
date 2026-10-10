@@ -296,8 +296,8 @@ where
         let owner = text(body, "worker_id")?;
         let queue = text(body, "task_queue")?;
         let mut tx = self.begin().await?;
-        let worker = Self::query("SELECT * FROM workflow_worker_registrations WHERE namespace='default' AND worker_id=$1 AND status='active' AND last_heartbeat_at>$2")
-            .bind(owner).bind(DB::bind_time(chrono::Utc::now() - chrono::Duration::seconds(60)))
+        let worker = Self::query("SELECT * FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2 AND status='active' AND last_heartbeat_at>$3")
+            .bind(self.namespace.as_ref()).bind(owner).bind(DB::bind_time(chrono::Utc::now() - chrono::Duration::seconds(60)))
             .fetch_optional(&mut *tx).await?.ok_or_else(|| refuse(StatusCode::CONFLICT, "worker_not_registered"))?;
         if DB::string(&worker, "task_queue")? != queue {
             return Err(refuse(StatusCode::CONFLICT, "task_queue_mismatch"));
@@ -313,6 +313,7 @@ where
         }
         for (key, mut task) in Self::query_entries(&mut tx).await? {
             if !matches!(task["status"].as_str(), Some("pending" | "leased"))
+                || task["namespace"] != self.namespace.as_ref()
                 || task["deadline"].as_i64().unwrap_or(0) <= now()
                 || task["task_queue"] != queue
                 || !types

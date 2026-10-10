@@ -47,6 +47,25 @@ failure on all six configurations, with 39 existing HTTP tests still passing.
 The earlier `9d496621` build failed on a misnamed test cleanup helper and is not
 counted as an execution regression.
 
+The actual PHP recordings also retain `pending` after the first task is leased,
+then `waiting` before each subsequent activity/replay commit. Native polling had
+changed the run to `running` without an authored command. Source `ac8ce178`
+corrects that transition; both new namespace tests pass, while an older native
+cancellation test exposes its own assumption about the same leased state.
+Source `f55f4c6b` corrects that expectation and supplies canonical foreign-target
+refusals with original workflow/run/task/attempt identities, complete control
+contracts, worker protocol and original capabilities. Both frozen reference
+recordings still pass the stronger comparator; 52 original/corrupted-observation
+rechecks pass. These rechecks are not additional workflow executions. The full
+six-database matrix remains pending. Its actual unchanged SDK worker also polls
+the query queue between activity and workflow work. The `f55f4c6b` SQLite
+recording passes all 42 native library/HTTP tests then exposes that idle poll's
+named-namespace refusal; both actual PHP/embedded 29-case recordings pass.
+The correction binds query registration lookup and cached-task selection to the
+requested namespace, with a native regression preserving another namespace's
+same-ID original query lease. This qualifies idle polling for these authored
+activity workflows, not named-namespace query authoring or completion.
+
 The native candidate adds namespace metadata creation/list/description, request
 binding, globally reserved workflow IDs, inherited task namespaces and scoped
 worker registration, polling, receipts, completion and cancellation. It keeps
