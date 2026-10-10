@@ -324,6 +324,7 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
             parts.as_slice(),
             ["register" | "heartbeat"]
                 | ["registrations", _]
+                | ["registrations", _, "deregister"]
                 | ["workflow-tasks" | "activity-tasks", "poll"]
                 | ["query-tasks", "poll"]
                 | ["workflow-tasks", _, "complete" | "history" | "heartbeat"]
@@ -611,7 +612,16 @@ async fn register(
     Extension(runtime): Extension<Runtime>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
-    Ok((StatusCode::CREATED, Json(runtime.register(body).await?)))
+    Ok((
+        StatusCode::CREATED,
+        Json(worker_response(runtime.register(body).await?)),
+    ))
+}
+
+fn worker_response(mut body: Value) -> Value {
+    body["protocol_version"] = json!("1.20");
+    body["server_capabilities"] = capabilities();
+    body
 }
 async fn worker_heartbeat(
     Extension(runtime): Extension<Runtime>,
@@ -631,18 +641,24 @@ async fn deregister_fenced(
     Json(body): Json<Value>,
 ) -> Result<Response> {
     match runtime.deregister_fenced(&worker_id, body.clone()).await {
-        Ok(receipt) => Ok(Json(receipt).into_response()),
+        Ok(receipt) => Ok(Json(worker_response(receipt)).into_response()),
         Err(error) => {
+            if let super::RuntimeError::Protocol { status, response } = error {
+                return Err(super::RuntimeError::Protocol {
+                    status,
+                    response: worker_response(response),
+                });
+            }
             let Some(reason) = super::worker_incarnations::transient_reason(&error) else {
                 return Err(error);
             };
             let mut response = (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({
+                Json(worker_response(json!({
                     "reason":reason,"operation":"deregister_worker","worker_id":worker_id,
                     "registration_token":body["registration_token"],"outcome":"unknown",
                     "retryable":true,"retry_after_seconds":1
-                })),
+                }))),
             )
                 .into_response();
             response

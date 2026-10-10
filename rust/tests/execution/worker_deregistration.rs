@@ -88,6 +88,28 @@ async fn deregister(app: &Router, worker: &str, registration: &Value) -> (Status
     .await
 }
 
+async fn named(
+    app: &Router,
+    namespace: &str,
+    method: &str,
+    path: &str,
+    body: Value,
+) -> (StatusCode, Value) {
+    let worker = path.starts_with("/api/worker/");
+    let (status, _, body) = admission::admission_http(
+        app,
+        method,
+        path,
+        worker,
+        Some("test-token"),
+        Some(if worker { "1.20" } else { "2" }),
+        Some(namespace),
+        body,
+    )
+    .await;
+    (status, body)
+}
+
 #[tokio::test]
 async fn completed_receipt_survives_restart_and_preserves_replacement_original_lease() {
     let database = TestDatabase::new().await;
@@ -241,6 +263,29 @@ async fn fenced_shutdown_is_namespace_scoped_and_requires_worker_role_before_pro
     let task = poll(&legacy, "scoped-worker", "workflow").await;
     let path = "/api/worker/registrations/scoped-worker/deregister";
     let body = json!({"registration_token":original["registration_token"]});
+    let alpha=named(&legacy,"alpha","POST","/api/worker/register",json!({"worker_id":"scoped-worker",
+        "task_queue":"test","runtime":"php","supported_workflow_types":["echo"],"supported_activity_types":[]})).await;
+    assert_eq!(alpha.0, StatusCode::CREATED);
+    let alpha_root=named(&legacy,"alpha","POST","/api/workflows",json!({"workflow_id":"alpha-original",
+        "workflow_type":"echo","task_queue":"test","input":envelope(Payload::Array(vec![Payload::Long(9007199254740993)]))})).await;
+    assert_eq!(alpha_root.0, StatusCode::CREATED);
+    let alpha_task = named(
+        &legacy,
+        "alpha",
+        "POST",
+        "/api/worker/workflow-tasks/poll",
+        json!({"worker_id":"scoped-worker","task_queue":"test","timeout_seconds":0}),
+    )
+    .await
+    .1["task"]
+        .clone();
+    let alpha_history = format!(
+        "/api/workflows/alpha-original/runs/{}/history",
+        alpha_root.1["run_id"].as_str().unwrap()
+    );
+    let alpha_before = named(&legacy, "alpha", "GET", &alpha_history, Value::Null)
+        .await
+        .1;
     let app = router(runtime.clone().with_role_tokens(
         Some("worker-token".into()),
         Some("operator-token".into()),
@@ -311,6 +356,51 @@ async fn fenced_shutdown_is_namespace_scoped_and_requires_worker_role_before_pro
     .await;
     assert_eq!(receipt.0, StatusCode::OK, "{}", receipt.2);
     assert_eq!(receipt.2["recovered_workflow_task_count"], 1);
+    assert_eq!(
+        named(&legacy, "alpha", "GET", &alpha_history, Value::Null)
+            .await
+            .1,
+        alpha_before
+    );
+    assert_eq!(
+        named(
+            &legacy,
+            "alpha",
+            "POST",
+            "/api/worker/heartbeat",
+            json!({"worker_id":"scoped-worker"})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let alpha_receipt = admission::admission_http(
+        &app,
+        "POST",
+        path,
+        true,
+        Some("worker-token"),
+        Some("1.20"),
+        Some("alpha"),
+        json!({"registration_token":alpha.1["registration_token"]}),
+    )
+    .await;
+    assert_eq!(alpha_receipt.0, StatusCode::OK, "{}", alpha_receipt.2);
+    assert_eq!(alpha_receipt.2["recovered_workflow_task_count"], 1);
+    named(&legacy,"alpha","POST","/api/worker/register",json!({"worker_id":"alpha-recovery",
+        "task_queue":"test","runtime":"php","supported_workflow_types":["echo"],"supported_activity_types":[]})).await;
+    let alpha_recovered = named(
+        &legacy,
+        "alpha",
+        "POST",
+        "/api/worker/workflow-tasks/poll",
+        json!({"worker_id":"alpha-recovery","task_queue":"test","timeout_seconds":0}),
+    )
+    .await
+    .1["task"]
+        .clone();
+    assert_eq!(alpha_recovered["task_id"], alpha_task["task_id"]);
+    assert_eq!(alpha_recovered["workflow_task_attempt"], 2);
     registration(&legacy, "scoped-recovery").await;
     let recovered = poll(&legacy, "scoped-recovery", "workflow").await;
     assert_eq!(recovered["task_id"], task["task_id"]);
