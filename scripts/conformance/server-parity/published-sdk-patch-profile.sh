@@ -8,10 +8,11 @@ test -n "$RESOURCE_SCOPE"
 profile=tests/Fixtures/ServerParityProfiles/published-sdk-patch-replay
 image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' "$profile/artifacts.json")
 mkdir -p parity-evidence/published-sdk-patch
+chmod 0777 parity-evidence/published-sdk-patch
 (cd published-sdk-adapters && sha256sum -c SHA256SUMS) > parity-evidence/published-sdk-patch/adapter-integrity.txt
 test "$(cat published-sdk-adapters/runner-revision.txt)" = "$(git rev-parse HEAD)"
 sha256sum -c published-sdk-adapters/source-hashes.sha256 >> parity-evidence/published-sdk-patch/adapter-integrity.txt
-chmod u+x published-sdk-adapters/rust-worker
+chmod 0755 published-sdk-adapters/rust-worker
 cp published-sdk-adapters/{rust-sdk-build.txt,python-install-report.json,python-install.txt,Cargo.lock,identity.json,runner-revision.txt,source-hashes.sha256} parity-evidence/published-sdk-patch/
 fixtures=()
 for language in rust python; do
