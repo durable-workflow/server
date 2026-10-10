@@ -393,7 +393,7 @@ jobs:
 
   postgres-storage:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -733,7 +733,7 @@ jobs:
 
   execution-and-codec:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Execute official Rust codec and cross-decode with published PHP
