@@ -59,7 +59,7 @@ recordings still pass the stronger comparator; 52 original/corrupted-observation
 rechecks pass. These rechecks are not additional workflow executions. The full
 six-database matrix remains pending. Its actual unchanged SDK worker also polls
 the query queue between activity and workflow work. The `f55f4c6b` SQLite
-recording passes all 42 native library/HTTP tests then exposes that idle poll's
+recording passes all 41 native HTTP tests and 21 SQLite library tests, then exposes that idle poll's
 named-namespace refusal; both actual PHP/embedded 29-case recordings pass.
 The correction binds query registration lookup and cached-task selection to the
 requested namespace, with a native regression preserving another namespace's
