@@ -48,11 +48,28 @@ published Server image contains these tools. Install the exact adapter:
 
 ```bash
 composer install --working-dir=scripts/conformance/server-parity --no-interaction
-node --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs
+node --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs
 ```
 
 Use **separate, already bootstrapped databases** for PHP, Rust and embedded.
-The default reviewed corpus now includes 26 cases. The two schedule cases can
+The default reviewed corpus now includes 28 cases. Its visibility fixture runs
+the unchanged published CLI 2.2.0 on both HTTP targets. Download its PHAR,
+verify the fixture's pinned checksum, and expose its absolute path to the PHP
+probe with `DW_PARITY_CLI_PHAR`:
+
+```bash
+mkdir -p parity-consumers
+curl --fail --location --output parity-consumers/dw.phar https://github.com/durable-workflow/cli/releases/download/2.2.0/dw.phar
+printf '%s  %s\n' "$(jq -r '.visibility.cli.phar_sha256' tests/Fixtures/ServerParity/visibility-current-runs.json)" parity-consumers/dw.phar | sha256sum -c
+export DW_PARITY_CLI_PHAR="$PWD/parity-consumers/dw.phar"
+```
+
+When running the probe in Docker, mount the PHAR into that container and set
+`DW_PARITY_CLI_PHAR` to its absolute container path. Embedded mode checks the
+installed engine's original persisted summaries and peer cleanup; its namespace
+and workflow identities must match the independent HTTP recordings.
+
+The two schedule cases can
 also be selected explicitly for a bounded inspection:
 
 ```bash
@@ -73,7 +90,11 @@ sequences installed repair and evaluator commands in one maintenance loop;
 concurrent SQLite contention remains separately tracked in Server #355.
 
 The recorder does not migrate a database. Do not run it against production or
-shared customer namespaces. Use a fresh prefix or database for each recording;
+shared customer namespaces. The admission fixture executes sixteen real HTTP
+requests, checks authentication/version/namespace precedence and preserves the
+original pending peer through refusals. Named namespaces and role/principal
+authorization require additional qualification. Use a fresh prefix or database
+for each recording;
 use the same prefix across the targets being compared.
 
 ```bash
