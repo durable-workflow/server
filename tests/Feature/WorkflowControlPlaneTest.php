@@ -9,13 +9,16 @@ use App\Models\WorkflowNamespace;
 use App\Support\ServerWorkflowControlPlane;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\AwaitApprovalWorkflow;
 use Tests\Fixtures\InteractiveCommandWorkflow;
 use Tests\Fixtures\InternalChildWorkflow;
 use Tests\Fixtures\InternalParentWorkflow;
 use Tests\TestCase;
+use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\HistoryEventType;
@@ -23,6 +26,7 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
@@ -36,6 +40,61 @@ use Workflow\V2\Support\WorkflowExecutor;
 class WorkflowControlPlaneTest extends TestCase
 {
     use RefreshDatabase;
+
+    #[DataProvider('terminalDiagnosticReasons')]
+    public function test_terminal_http_reason_and_failure_diagnostics_remain_lossless(
+        string $operation,
+        string $reason,
+        string $normalizedReason,
+        string $expectedMessage,
+    ): void {
+        Queue::fake();
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+        $workflowId = 'wf-terminal-diagnostic';
+        $start = $this->withHeaders($this->apiHeaders())->postJson('/api/workflows', [
+            'workflow_id' => $workflowId,
+            'workflow_type' => 'tests.await-approval-workflow',
+        ])->assertCreated();
+        $runId = $start->json('run_id');
+        $receipt = $this->withHeaders($this->apiHeaders())
+            ->postJson("/api/workflows/{$workflowId}/runs/{$runId}/{$operation}", [
+                'reason' => $reason,
+                'request_id' => 'terminal-diagnostic-request',
+            ])->assertOk()->assertJsonPath('reason', $normalizedReason);
+
+        $event = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+            ->where('event_type', $operation === 'cancel' ? 'WorkflowCancelled' : 'WorkflowTerminated')->sole();
+        $failure = WorkflowFailure::query()->where('workflow_run_id', $runId)->sole();
+        $physicalMessage = DB::table('workflow_failures')->where('id', $failure->id)->value('message');
+        $this->assertSame($expectedMessage, $physicalMessage);
+        $this->assertSame($physicalMessage, $event->fresh()->payload['message']);
+        $this->assertSame($normalizedReason, $event->fresh()->payload['reason']);
+        $this->assertSame($failure->id, $event->payload['failure_id']);
+        $command = WorkflowCommand::query()->findOrFail($receipt->json('command_id'));
+        $this->assertSame(
+            $normalizedReason,
+            Serializer::unserializeWithCodec($command->payload_codec, $command->payload)['reason'],
+        );
+        $this->assertSame(
+            $operation === 'cancel' ? RunStatus::Cancelled : RunStatus::Terminated,
+            WorkflowRun::query()->findOrFail($runId)->status,
+        );
+        $this->assertSame(0, WorkflowTask::query()->where('workflow_run_id', $runId)
+            ->where('status', '!=', TaskStatus::Cancelled->value)->count());
+    }
+
+    public static function terminalDiagnosticReasons(): iterable
+    {
+        yield 'internal cancellation NUL' => ['cancel', "left\0right", "left\0right", '"Workflow cancelled: left\u0000right"'];
+        yield 'internal termination NUL' => ['terminate', "left\0right", "left\0right", '"Workflow terminated: left\u0000right"'];
+        yield 'boundary normalization' => ['cancel', " \t\0original reason\r\n", 'original reason', 'Workflow cancelled: original reason'];
+        yield 'literal escape' => ['cancel', 'left\u0000right', 'left\u0000right', 'Workflow cancelled: left\u0000right'];
+        yield 'Unicode separators' => [
+            'cancel', "left\0\u{2028}middle\u{2029}right", "left\0\u{2028}middle\u{2029}right",
+            '"Workflow cancelled: left\u0000'."\u{2028}middle\u{2029}right".'"',
+        ];
+    }
 
     public function test_the_package_provider_resolves_the_workflow_control_plane_contract(): void
     {
