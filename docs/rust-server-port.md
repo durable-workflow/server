@@ -129,7 +129,8 @@ completed-activity case; the pending case was not executed after that failure.
 the engine repair. Deprecation, arbitrary version ranges, repeated fresh calls
 and cross-SDK duplicate-marker histories remain separate shared gates.
 
-The next slice ports the workflow-task `/fail` waiting acknowledgement used by
+[#377](https://github.com/durable-workflow/server/pull/377) ports the workflow-task
+`/fail` waiting acknowledgement used by
 published SDK pending replay. Two pending controls distinguish the structured
 `WorkflowTaskWaitingForHistory` type from PHP's retained message fallback.
 An actual timer resumes a leased replay while the original activity is still
@@ -139,8 +140,28 @@ with their exact typed value and immutable history prefix. HTTP lease fencing
 and replay refusal are part of this slice. Embedded mode executes its authored
 echo and explicitly marks this service-only endpoint inapplicable. General
 task-failure retry/blocking policies, pending signal/update draining and the
-actual Rust SDK worker direction require separate qualification. No executed
-result for these new controls is claimed yet.
+actual Rust SDK worker direction require separate qualification. All six configurations
+and main PHP verification pass. Independently checked official archives qualify
+756 observations, 61 native tests per configuration, 23 SQLite codec tests and
+1,331 comparator tests. The new controls comprise 24 actual HTTP exchanges and
+12 explicit embedded inapplicability records; main PHP reports 2,625 tests and
+58,522 assertions.
+
+The next separately pinned profile executes published Rust SDK 3.4.2 and Python
+SDK 2.5.1 as cold replacement workers after an original PHP-authored activity
+checkpoint. The run is accepted before a worker advertises a definition
+fingerprint, and the original start payload must prove that legacy condition.
+Migration between worker-fingerprinted definitions is a separate gate. The cold
+replacement follows the explicitly declared one-second affinity expiry.
+Immediate sticky-owner failover remains separate. Each must replay the two
+legacy patch calls without markers or a
+shifted activity and finish the same run with the immutable prefix and typed
+int64 outcome. Embedded runs its corresponding PHP author definitions. One
+locked SDK adapter build is shared across the six CI database configurations;
+no build trees or dependency caches are uploaded. Actual product qualification
+of this new profile remains pending. The frozen baseline and existing fault
+tuples are unchanged. Workflow #744's repeated/duplicate-marker and replay-clock
+repair requires its own exact implementation and publication evidence.
 
 The source profile now includes Rust on an independent database using the
 already compiled binary. Five dedicated native tests check original-task

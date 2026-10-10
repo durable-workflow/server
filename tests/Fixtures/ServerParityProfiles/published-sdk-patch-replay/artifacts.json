@@ -1,0 +1,32 @@
+{
+  "schema": "durable-workflow.server-port-artifacts/v1",
+  "server": {
+    "version": "2.5.14",
+    "source_commit": "152ee0f36df2e67e74c8997c573b3f9c68479eb2",
+    "images": {
+      "linux/amd64": "durableworkflow/server@sha256:28fa0f3968ea253c727aad7fe583bb61c788553f1e4b96ece6ea4570d20faf42",
+      "linux/arm64": "durableworkflow/server@sha256:480c14456ea5bf1e5460af877504a444239ab6c4b9f712156071096cebbfc56c"
+    }
+  },
+  "workflow": "2.5.5",
+  "sdk_php": "2.2.6",
+  "sdk_python": "2.5.1",
+  "sdk_rust": "3.4.2",
+  "published_sdk_artifacts": {
+    "python": {
+      "version": "2.5.1",
+      "source_commit": "c5508bce97effaac379ebc2e481f6543d436fbd1",
+      "archive_sha256": "5bf872c64b1490f6e6232ac35de727693e78ef516fc0c2fe07b903d51863ddf8"
+    },
+    "rust": {
+      "version": "3.4.2",
+      "source_commit": "a18523848d699d9f85f2a8c1c65a813f5c87714c",
+      "archive_sha256": "5b225d6d3b20e6539840efeff2e3b081062b6816e2184a21a60195c4c3745dbb"
+    }
+  },
+  "cli": "2.2.0",
+  "waterline": "2.3.1",
+  "sample_app_commit": "4427a537e092f9d92c96d2a4867b9186e0e75ccd",
+  "capacity_suite": "1.9.0",
+  "performance_status": "not_measured"
+}

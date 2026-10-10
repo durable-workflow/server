@@ -9,7 +9,7 @@ import {checkVisibility} from './visibility-contract.mjs';
 import {checkAdmission} from './admission-contract.mjs';
 import {checkNamespaces} from './namespace-contract.mjs';
 import {checkWorkerDeregistration} from './worker-deregistration-contract.mjs';
-import {checkPatchDeployment} from './patch-deployment-contract.mjs';
+import {checkPatchDeployment, checkPublishedPatchArtifacts} from './patch-deployment-contract.mjs';
 import {checkWaitingHistory} from './waiting-history-contract.mjs';
 
 function instantNanoseconds(value) {
@@ -584,6 +584,7 @@ export function compareRecords(records, expectedFixtureHashes, expectedFixtures)
       assert.deepStrictEqual(item.fixture, expectedFixtures[`${item.fixture_id}.json`], 'case expectations match the current reviewed source fixture');
       if (item.fixture.signal_count || item.fixture.schedule || item.fixture.visibility || item.fixture.admission) assert.equal(item.observation.mode, record.mode, 'observation uses its recording adapter');
       assert.equal(item.observation.sdk_php, record.artifacts.sdk_php, 'installed SDK matches tuple');
+      checkPublishedPatchArtifacts(item.fixture, record.artifacts);
       if (record.artifacts.sdk_php_source_commit) assert.equal(item.observation.sdk_php_source, record.artifacts.sdk_php_source_commit, 'installed exact source SDK matches tuple');
       if (record.mode === 'embedded') assert.equal(item.observation.workflow_package, record.artifacts.workflow, 'installed Workflow matches tuple');
       assert.deepStrictEqual(item.fixture, baseline.fixture, 'same fixture expectations');

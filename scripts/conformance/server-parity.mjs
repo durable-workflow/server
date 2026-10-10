@@ -6,6 +6,7 @@ import {fileURLToPath} from 'node:url';
 import {basename, dirname, resolve} from 'node:path';
 import {parseArgs} from 'node:util';
 import {checkObservation, compareRecords} from './server-parity/contract.mjs';
+import {checkPublishedPatchArtifacts} from './server-parity/patch-deployment-contract.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const {values, positionals} = parseArgs({allowPositionals: true, options: {
@@ -66,6 +67,7 @@ try {
     for (const name of fixtures) {
       const path = byName[name];
       const fixture = json(path);
+      checkPublishedPatchArtifacts(fixture, record.artifacts);
       const workflowId = `${values.prefix}-${fixture.id}`;
       const arguments_ = [resolve(root, 'scripts/conformance/server-parity/probe.php'), '--mode', values.mode, '--fixture', path, '--workflow-id', workflowId];
       for (const flag of ['url', 'application-root']) {
