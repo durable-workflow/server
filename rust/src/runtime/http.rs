@@ -747,6 +747,11 @@ fn completion_refusal(
     message: &str,
 ) -> super::RuntimeError {
     match error {
+        super::RuntimeError::Refused { status, reason } if status == StatusCode::CONFLICT => {
+            let mut response = json!({"reason":reason,"message":reason,"task_id":task_id});
+            response[attempt_field] = attempt;
+            super::RuntimeError::Protocol { status, response }
+        }
         super::RuntimeError::Refused {
             status,
             reason: "task_not_found",

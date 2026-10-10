@@ -21,18 +21,24 @@ pub(super) fn transient_reason(error: &RuntimeError) -> Option<&'static str> {
             | sqlx::Error::Tls(_),
         ) => Some("backend_unavailable"),
         RuntimeError::Database(sqlx::Error::Database(error)) => {
+            if let Some(mysql) = error.try_downcast_ref::<sqlx::mysql::MySqlDatabaseError>() {
+                return match mysql.number() {
+                    1205 | 1213 => Some("backend_lock_pressure"),
+                    2002 | 2003 | 2006 | 2013 => Some("backend_unavailable"),
+                    _ => None,
+                };
+            }
             let code = error.code()?;
-            if matches!(code.as_ref(), "1205" | "1213" | "55P03" | "40P01" | "40001")
-                || code
-                    .parse::<u32>()
-                    .is_ok_and(|code| matches!(code & 0xff, 5 | 6))
+            if matches!(code.as_ref(), "55P03" | "40P01" | "40001")
+                || (error
+                    .try_downcast_ref::<sqlx::sqlite::SqliteError>()
+                    .is_some()
+                    && code
+                        .parse::<u32>()
+                        .is_ok_and(|code| matches!(code & 0xff, 5 | 6)))
             {
                 Some("backend_lock_pressure")
-            } else if code.starts_with("08")
-                || matches!(
-                    code.as_ref(),
-                    "57P01" | "57P02" | "57P03" | "2002" | "2003" | "2006" | "2013"
-                )
+            } else if code.starts_with("08") || matches!(code.as_ref(), "57P01" | "57P02" | "57P03")
             {
                 Some("backend_unavailable")
             } else {

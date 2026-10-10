@@ -34,6 +34,9 @@ mod namespaces;
 #[path = "execution/worker_incarnations.rs"]
 mod worker_incarnations;
 
+#[path = "execution/worker_deregistration.rs"]
+mod worker_deregistration;
+
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
     Postgres {
