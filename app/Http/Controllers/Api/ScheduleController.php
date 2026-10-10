@@ -488,7 +488,7 @@ class ScheduleController
         } catch (NamespaceDurableStateException $exception) {
             throw $exception;
         } catch (\Throwable $e) {
-            if (BackendLockPressure::is($e)) {
+            if (BackendLockPressure::isSqliteBackend() && BackendLockPressure::is($e)) {
                 throw $e;
             }
 
