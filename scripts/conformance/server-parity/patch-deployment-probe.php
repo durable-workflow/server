@@ -24,6 +24,7 @@ use Workflow\WorkflowOptions;
 final class PatchDeploymentState
 {
     public static string $changeId;
+    public static array $expectedDecisions;
     public static array $decisions = [];
 }
 
@@ -133,13 +134,15 @@ function patchHttpPhase(array $fixture, array $options): array
                 $handle = $client->startWorkflow($fixture['workflow_type'], $workflowId, $queue, [$fixture['input']]);
             }
         });
-    $worker->registerWorkflow($fixture['workflow_type'], static function (WorkflowContext $context, array $value) use ($phase): array {
-        if ($phase === 'replacement') {
-            $first = $context->patched(PatchDeploymentState::$changeId);
-            $second = $context->patched(PatchDeploymentState::$changeId);
-            PatchDeploymentState::$decisions[] = [$first, $second];
-            if ($first || $second) {
-                throw new LogicException('An unmarked old run selected the new patch branch.');
+    $worker->registerWorkflow($fixture['workflow_type'], static function (WorkflowContext $context, array $value) use ($phase, $fixture): array {
+        if ($phase === 'replacement' || ($fixture['patch_deployment']['original_patch'] ?? false)) {
+            $decisions = [];
+            foreach (PatchDeploymentState::$expectedDecisions as $_) {
+                $decisions[] = $context->patched(PatchDeploymentState::$changeId);
+            }
+            PatchDeploymentState::$decisions[] = $decisions;
+            if ($decisions !== PatchDeploymentState::$expectedDecisions) {
+                throw new LogicException('Patch decisions differ from the declared deployment contract.');
             }
         }
 
@@ -167,7 +170,8 @@ function patchEmbeddedPhase(array $fixture, array $options): array
     $app = require $root.'/bootstrap/app.php';
     $app->make(Kernel::class)->bootstrap();
     require __DIR__.'/embedded-types.php';
-    require __DIR__.'/patch-deployment-'.$options['patch-phase'].'.php';
+    $definition = ($fixture['patch_deployment']['original_patch'] ?? false) ? 'replacement' : $options['patch-phase'];
+    require __DIR__.'/patch-deployment-'.$definition.'.php';
     config(['queue.default' => 'database', 'workflows.v2.task_dispatch_mode' => 'queue',
         'workflows.v2.types.workflows' => [$fixture['workflow_type'] => \ServerParityPatch\DeploymentWorkflow::class],
         'workflows.v2.types.activities' => ['parity.v1.echo_activity' => \ServerParity\EchoActivity::class]]);

@@ -12,11 +12,13 @@ final class DeploymentWorkflow extends Workflow
 {
     public function handle(array $value): array
     {
-        $first = self::patched(\PatchDeploymentState::$changeId);
-        $second = self::patched(\PatchDeploymentState::$changeId);
-        \PatchDeploymentState::$decisions[] = [$first, $second];
-        if ($first || $second) {
-            throw new \LogicException('An unmarked old run selected the new patch branch.');
+        $decisions = [];
+        foreach (\PatchDeploymentState::$expectedDecisions as $_) {
+            $decisions[] = self::patched(\PatchDeploymentState::$changeId);
+        }
+        \PatchDeploymentState::$decisions[] = $decisions;
+        if ($decisions !== \PatchDeploymentState::$expectedDecisions) {
+            throw new \LogicException('Patch decisions differ from the declared deployment contract.');
         }
 
         return \Workflow\V2\activity(\ServerParity\EchoActivity::class, $value);

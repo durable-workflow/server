@@ -513,7 +513,9 @@ export function checkObservation(fixture, observation, workflowId) {
   if (fixture.terminal_activity_failure) checkTerminalActivityFailure(fixture, observation, identities, projectedEvents, instantNanoseconds);
   else if (fixture.retry_policy) checkActivityRetry(fixture, observation, identities, projectedEvents, instantNanoseconds);
   if (fixture.activity) {
-    const [scheduled, running, completed] = events.slice(2, 5);
+    const activityIndex = fixture.patch_deployment?.marker ? 3 : 2;
+    const activitySequence = fixture.patch_deployment?.marker ? 2 : 1;
+    const [scheduled, running, completed] = events.slice(activityIndex, activityIndex + 3);
     const id = scheduled.payload.activity_execution_id;
     const attempt = running.payload.activity_attempt_id;
     nonempty(id, 'activity identity');
@@ -524,8 +526,8 @@ export function checkObservation(fixture, observation, workflowId) {
     for (const [index, event] of [scheduled, running, completed].entries()) {
       equal(event.payload.activity_execution_id, id, 'same activity throughout history');
       equal(event.payload.activity_type, 'parity.v1.echo_activity', 'registered activity type');
-      equal(event.payload.sequence, 1, 'deterministic activity command sequence');
-      Object.assign(projectedEvents[index + 2], {activity_execution_id: '@activity:1', command_sequence: 1, activity_type: event.payload.activity_type});
+      equal(event.payload.sequence, activitySequence, 'deterministic activity command sequence');
+      Object.assign(projectedEvents[index + activityIndex], {activity_execution_id: '@activity:1', command_sequence: activitySequence, activity_type: event.payload.activity_type});
     }
     equal(scheduled.decoded.activity_arguments, [fixture.input], 'scheduled activity arguments');
     equal(running.decoded.activity_arguments, [fixture.input], 'started activity arguments');
@@ -534,7 +536,7 @@ export function checkObservation(fixture, observation, workflowId) {
     for (const [index, event] of [running, completed].entries()) {
       equal(event.payload.activity_attempt_id, attempt, 'same committed attempt');
       equal(event.payload.attempt_number, 1, 'one attempt');
-      Object.assign(projectedEvents[index + 3], {activity_attempt_id: '@attempt:1', attempt_number: 1});
+      Object.assign(projectedEvents[index + activityIndex + 1], {activity_attempt_id: '@attempt:1', attempt_number: 1});
     }
     equal(completed.decoded.result, fixture.input, 'committed activity result');
     equal(completed.typed_decoded.result, fixture.typed_value, 'committed activity result types');

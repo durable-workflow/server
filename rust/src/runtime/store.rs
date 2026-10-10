@@ -391,7 +391,7 @@ where
         .map(|row| DB::number(&row, "sequence"))
         .transpose()?
         .unwrap_or(0);
-        let wait = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('SignalWaitOpened','ConditionWaitOpened') ORDER BY sequence DESC LIMIT 1")
+        let wait = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('SignalWaitOpened','ConditionWaitOpened','VersionMarkerRecorded') ORDER BY sequence DESC LIMIT 1")
             .bind(run_id).fetch_optional(&mut **tx).await?;
         let wait_sequence = wait
             .map(|row| DB::document_row(&row, "payload"))
@@ -1017,6 +1017,9 @@ where
                     reject_fields(command, &["type", "delay_seconds"])?;
                     timer_deadline(command)?;
                 }
+                "record_version_marker" => {
+                    version_marker_payload(command)?;
+                }
                 "open_condition_wait" => {
                     reject_fields(
                         command,
@@ -1102,6 +1105,20 @@ where
             } else if command["type"] == "start_child_workflow" {
                 sequence += 1;
                 Self::start_child(&mut tx, &run, task_id, command, sequence).await?;
+            } else if command["type"] == "record_version_marker" {
+                sequence += 1;
+                let mut payload = version_marker_payload(command)?;
+                payload["sequence"] = json!(sequence);
+                payload["task"] = Self::task_snapshot(&task)?;
+                Self::append(
+                    &mut tx,
+                    &run_id,
+                    "VersionMarkerRecorded",
+                    payload,
+                    Some(task_id),
+                    None,
+                )
+                .await?;
             } else if command["type"] == "schedule_activity" {
                 sequence += 1;
                 let activity_id = id();
@@ -1757,6 +1774,60 @@ fn timer_deadline(command: &Value) -> Result<DateTime<Utc>> {
         .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_timer_delay"))
 }
 
+fn version_marker_payload(command: &Value) -> Result<Value> {
+    // Workflow 2.5.5 freezes the marker projection and discards unknown newer
+    // fields, including payload_codec. Its command-scoped options still refuse
+    // use on a marker. Validate the entire batch before any durable mutation.
+    for field in [
+        "retry_policy",
+        "start_to_close_timeout",
+        "schedule_to_start_timeout",
+        "schedule_to_close_timeout",
+        "heartbeat_timeout",
+        "worker_session",
+        "execution_timeout_seconds",
+        "run_timeout_seconds",
+        "non_retryable",
+        "timeout_kind",
+        "exception",
+        "failed_step_sequence",
+        "failed_activity_execution_id",
+        "parent_close_policy",
+        "cancellation_policy",
+        "cancellation_scope_id",
+        "cancellation_cleanup",
+        "delay_seconds",
+        "timeout_seconds",
+        "entries",
+    ] {
+        if command.get(field).is_some_and(|value| !value.is_null()) {
+            return Err(refuse(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "unsupported_version_marker_field",
+            ));
+        }
+    }
+    let change_id = command["change_id"]
+        .as_str()
+        .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_version_marker"))?
+        .trim_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '\0' | '\x0b'));
+    let integer = |field: &str| {
+        command[field]
+            .as_i64()
+            .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_version_marker"))
+    };
+    let version = integer("version")?;
+    let min = integer("min_supported")?;
+    let max = integer("max_supported")?;
+    if change_id.is_empty() || min > max || version < min || version > max {
+        return Err(refuse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_version_marker",
+        ));
+    }
+    Ok(json!({"change_id":change_id,"version":version,"min_supported":min,"max_supported":max}))
+}
+
 pub(super) fn reject_fields(body: &Value, allowed: &[&str]) -> Result<()> {
     if body
         .as_object()
@@ -1771,7 +1842,7 @@ pub(super) fn reject_fields(body: &Value, allowed: &[&str]) -> Result<()> {
 }
 
 pub(crate) fn capabilities() -> Value {
-    json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "start_child_workflow", "open_condition_wait", "open_signal_wait", "complete_workflow"],
+    json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "start_child_workflow", "open_condition_wait", "open_signal_wait", "record_version_marker", "complete_workflow"],
         "worker_deregistration_fencing":{"schema":"durable-workflow.v2.worker-deregistration.v1","supported":true,"receipt_retention_seconds":600,"endpoint":"/worker/registrations/{workerId}/deregister"},
         "workflow_memo_updates": false, "cooperative_cancellation": true, "prepared_local_activities": false,
         "worker_sessions": false, "sticky_execution": false, "local_activities": false, "message_streams": false,

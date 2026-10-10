@@ -40,6 +40,9 @@ mod worker_deregistration;
 #[path = "execution/worker_pressure.rs"]
 mod worker_pressure;
 
+#[path = "execution/version_markers.rs"]
+mod version_markers;
+
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
     Postgres {

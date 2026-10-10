@@ -100,16 +100,35 @@ raw comparisons independently verify 648 observations. Main verification is
 recorded in #374. Complete authority/error families, explicit native receipt
 maintenance and exact published-artifact qualification remain open under #358.
 
-Two explicitly selected pending patch-deployment fixtures now define insertion
-before an original pending or completed activity. Separate worker processes must
-choose the legacy branch twice without shifting sequence 1, adding a marker or
-repeating the original activity. PHP SDK and embedded controls are next; Python
-and Rust SDK adapters and corrected published artifacts remain unqualified.
+[#375](https://github.com/durable-workflow/server/pull/375) qualifies insertion
+before an original pending or completed activity. Separate actual worker
+processes choose the legacy branch twice without shifting sequence 1, adding a
+marker or repeating the activity. All six exact-head configurations pass;
+independent official artifact comparisons verify 684 observations, including
+36 new published PHP SDK 2.2.6 / embedded Workflow 2.5.5 deployment controls.
+The frozen 29 and old source/fault tuples remain unchanged; main verification
+is recorded in #375. Python/Rust SDK directions and corrected published
+artifacts remain separate qualification gates.
 SDK production repairs belong to
 [Python #103](https://github.com/durable-workflow/sdk-python/issues/103) and
 [Rust #80](https://github.com/durable-workflow/sdk-rust/issues/80). Existing
 Python duplicate-marker histories require a separate explicit compatibility
 case; they must not silently be treated as malformed disposable histories.
+
+The next slice implements native `record_version_marker` with the frozen
+five-field history payload with its original task annotation and includes marker
+positions in subsequent authored sequence calculation. Two explicitly selected
+fresh-run controls call the patch once, commit one marker at sequence 1, then
+cold-replay the original pending/completed activity at sequence 2. They reuse the current published PHP
+SDK and embedded authoring controls, targets and existing builds. Native tests
+exercise complete-batch refusal without lease/history mutation, frozen field
+projection, receipt replay, restart and later authored turns. Real matrix
+qualification remains pending. Separate fresh repeated-call fixtures stay
+pending after actual embedded Workflow 2.5.5 recorded duplicate markers in the
+completed-activity case; the pending case was not executed after that failure.
+[Workflow #744](https://github.com/durable-workflow/workflow/issues/744) owns
+the engine repair. Deprecation, arbitrary version ranges, repeated fresh calls
+and cross-SDK duplicate-marker histories remain separate shared gates.
 
 The source profile now includes Rust on an independent database using the
 already compiled binary. Five dedicated native tests check original-task

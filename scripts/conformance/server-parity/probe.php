@@ -774,6 +774,7 @@ try {
     if (isset($fixture['patch_deployment'])) {
         require __DIR__.'/patch-deployment-probe.php';
         PatchDeploymentState::$changeId = $fixture['patch_deployment']['change_id'];
+        PatchDeploymentState::$expectedDecisions = $fixture['patch_deployment']['expected_decisions'];
         $observation = isset($options['patch-phase'])
             ? match ($mode) {
                 'http' => patchHttpPhase($fixture, $options),
