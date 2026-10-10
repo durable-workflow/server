@@ -164,8 +164,8 @@ per workflow and shares thin artifacts without target trees or dependency caches
 Worker-fingerprinted migration, immediate sticky failover, complete fault budgets
 and performance remain separate gates.
 
-The `repeated-patch-clock` profile in
-[#379](https://github.com/durable-workflow/server/pull/379) declares two fresh repeated-call
+The `repeated-patch-clock` profile in merged
+[#379](https://github.com/durable-workflow/server/pull/379) qualifies two fresh repeated-call
 checkpoints against the published PHP HTTP reference and installed embedded
 Workflow 2.5.7. The old Server image still packages Workflow 2.5.5; its component
 version is explicit in this new tuple. The embedded cold replacement must observe
@@ -173,19 +173,25 @@ the first marker's recorded clock after both calls. Normal Composer installation
 actual installed references and hashes of four autoloaded replay classes bind
 both embedded processes to the selected published source. The profile also
 freezes the complete embedded dependency lock to prevent registry drift.
-Two local SQLite
-PHP/embedded pairs pass at `0f95493d4d0d8f99c5221cca64b8af7c3bfd984d`, including
-the real cold replacement clocks and unchanged full checkpoint history.
-The earlier locked candidate's two-case subset independently passes on all
-six configurations (36 observations), but its complete run failed later in
-MySQL 8.4 pressure qualification after the database disappeared; the cause is
-unconfirmed. A subsequent SQLite run exposed a comparator error: the published
-PHP lock-pressure response also carries diagnostic reason/message fields.
-The checker now validates those optional fields while still requiring a null
-task, the exact pressure status, positive bounded Retry-After and a successful
-byte-identical poll retry. The original failed recording stays unchanged; its
-real published Rust worker completed the original run and independently passes
-the corrected check. The current complete matrix remains unqualified. CI
+The [exact candidate matrix](https://github.com/durable-workflow/server/actions/runs/38086396368)
+passes all six configurations. Independent official archive, source and raw
+recording checks verify 864 observations, including 24 new actual HTTP
+executions and 12 embedded clock observations. These represent 48 selected
+fixture cases across three targets and six configurations, rather than 864
+distinct semantic families. Both repeated calls keep one original marker at
+authored sequence 1, activity sequence 2 and the original run/history prefix;
+every captured embedded replay clock retains the marker's full microseconds.
+Each configuration passes 61 native tests. SQLite adds 23 codec and 1,542+77
+modeled comparator checks; PHP reports 2,625 tests and 58,522 assertions.
+The merged tree matches that candidate; main verification is tracked in #379.
+
+Historical failures remain explicit in #379: an earlier MySQL database loss
+has an unconfirmed cause, and a later comparator incorrectly rejected PHP's
+published optional pressure diagnostics. The corrected guard validates those
+fields while retaining a null task, exact status, positive bounded Retry-After
+and successful recovery with the original request bytes. Raw source/transport
+evidence remains unchanged. All five final database states and their original
+512/768 MiB limits were checked independently. CI
 reuses its existing native binary and HTTP targets, installs only the separately
 selected embedded engine and gives it a new isolated database. The frozen baseline and other profiles
 stay unchanged. Retained duplicate-marker cross-SDK histories need a separate
