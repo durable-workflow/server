@@ -14,7 +14,7 @@ const audit = (raw, type, mutate) => {
     for (const event of raw.schedule[key] ?? []) if (event.event_type === type) mutate(event);
 };
 for (const phase of ['manual-lifecycle', 'fixed-rate-one-occurrence']) {
-  const fixture = JSON.parse(readFileSync(new URL(`../Fixtures/ServerParityPending/schedule-${phase}.json`, import.meta.url)));
+  const fixture = JSON.parse(readFileSync(new URL(`../Fixtures/ServerParity/schedule-${phase}.json`, import.meta.url)));
   const examples = ['http', 'embedded'].map(mode => scheduleObservation(fixture, mode));
   const check = raw => checkObservation(fixture, raw, `schedule-reference-${phase === 'manual-lifecycle' ? 'manual' : 'rate'}`);
   test(`${phase}: modeled schedule adapters project equally`, () => assert.deepStrictEqual(check(examples[0]), check(examples[1])));
@@ -113,11 +113,11 @@ for (const phase of ['manual-lifecycle', 'fixed-rate-one-occurrence']) {
   }
 }
 
-test('candidate CLI compares selected current fixture bytes without enlarging the default corpus', () => {
+test('CLI compares selected current fixture bytes without impersonating the complete corpus', () => {
   const root = fileURLToPath(new URL('../..', import.meta.url));
   const directory = mkdtempSync(resolve(tmpdir(), 'server-parity-schedule-'));
   const names = ['schedule-fixed-rate-one-occurrence', 'schedule-manual-lifecycle'];
-  const files = names.map(name => `tests/Fixtures/ServerParityPending/${name}.json`);
+  const files = names.map(name => `tests/Fixtures/ServerParity/${name}.json`);
   const fixtures = files.map(file => JSON.parse(readFileSync(resolve(root, file))));
   const hashes = Object.fromEntries(files.map((file, index) => [`${names[index]}.json`, createHash('sha256').update(readFileSync(resolve(root, file))).digest('hex')]));
   try {
@@ -142,7 +142,7 @@ test('candidate CLI compares selected current fixture bytes without enlarging th
     const wrongAdapter = spawnSync(process.execPath, ['scripts/conformance/server-parity.mjs', 'compare', ...selected, ...records], {cwd: root, encoding: 'utf8'});
     assert.notEqual(wrongAdapter.status, 0, 'embedded raw observations cannot impersonate HTTP qualification');
     const mismatch = spawnSync(process.execPath, ['scripts/conformance/server-parity.mjs', 'compare', ...records], {cwd: root, encoding: 'utf8'});
-    assert.notEqual(mismatch.status, 0, 'selected candidates cannot impersonate the default corpus');
+    assert.notEqual(mismatch.status, 0, 'a selected subset cannot impersonate the complete default corpus');
     const duplicate = spawnSync(process.execPath, ['scripts/conformance/server-parity.mjs', 'compare', ...selected, '--fixture', files[0], ...records], {cwd: root, encoding: 'utf8'});
     assert.notEqual(duplicate.status, 0, 'duplicate selected expectations cannot overwrite hashes');
   } finally {
