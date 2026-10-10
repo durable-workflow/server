@@ -43,7 +43,7 @@
   "embedded_original": {
     "version": "2.5.5",
     "source_commit": "26a840f25f487676d4e7eb6d75ba1391931566a5",
-    "composer_lock_sha256": "43fdb73baa70076d055bddbabdbd941919c3e80bc30782e7ed9d4096f24e4f59",
+    "composer_lock_sha256": "fcbb1ada05e12086be69fa0d0cae3155381edc4b27531769fe53f146bc4aa75e",
     "loaded_sources": {
       "src/V2/Support/VersionResolver.php": "e760da9abea6ca74057c84c7e30b841bb4a039fa185ec376b2b3332de16e756c",
       "src/V2/Support/WorkflowExecutor.php": "7616287fcb0fb7445c179939fee1dc91df435c3cff6b4b4b2a614d804f288031",
