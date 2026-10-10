@@ -59,16 +59,21 @@ require $sdkAutoload;
 require __DIR__.'/observation-values.php';
 require __DIR__.'/probe-failure.php';
 
-function observedChildTransport(array &$polls, array &$completions, array &$activityPolls, array &$activityOutcomes, ?Closure $afterCompletion = null): Psr18Transport
+function observedChildTransport(array &$polls, array &$completions, array &$activityPolls, array &$activityOutcomes, ?Closure $afterCompletion = null, ?array &$scheduleReceipts = null): Psr18Transport
 {
     // Observe real published transport I/O. No response or request is changed,
     // and authentication headers are never retained.
     $stack = HandlerStack::create();
-    $stack->push(static function (callable $handler) use (&$polls, &$completions, &$activityPolls, &$activityOutcomes, $afterCompletion): callable {
-        return static function (RequestInterface $request, array $options) use ($handler, &$polls, &$completions, &$activityPolls, &$activityOutcomes, $afterCompletion) {
-            return $handler($request, $options)->then(static function (ResponseInterface $response) use ($request, &$polls, &$completions, &$activityPolls, &$activityOutcomes, $afterCompletion): ResponseInterface {
+    $stack->push(static function (callable $handler) use (&$polls, &$completions, &$activityPolls, &$activityOutcomes, $afterCompletion, &$scheduleReceipts): callable {
+        return static function (RequestInterface $request, array $options) use ($handler, &$polls, &$completions, &$activityPolls, &$activityOutcomes, $afterCompletion, &$scheduleReceipts) {
+            return $handler($request, $options)->then(static function (ResponseInterface $response) use ($request, &$polls, &$completions, &$activityPolls, &$activityOutcomes, $afterCompletion, &$scheduleReceipts): ResponseInterface {
                 $path = $request->getUri()->getPath();
-                if ($path === '/api/worker/workflow-tasks/poll') {
+                if ($scheduleReceipts !== null && str_starts_with($path, '/api/schedules') && $request->getMethod() !== 'GET') {
+                    $body = (string) $request->getBody();
+                    $scheduleReceipts[] = ['method' => $request->getMethod(), 'path' => $path,
+                        'request' => $body === '' ? null : json_decode($body, true, flags: JSON_THROW_ON_ERROR),
+                        'status' => $response->getStatusCode(), 'response' => json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR)];
+                } elseif ($path === '/api/worker/workflow-tasks/poll') {
                     $body = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
                     if (is_array($body['task'] ?? null)) {
                         $polls[] = $body['task'];
@@ -119,6 +124,8 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $workflowCompletions = [];
     $activityPolls = [];
     $activityOutcomes = [];
+    $scheduleReceipts = [];
+    $scheduleState = null;
     $client = $handle = null;
     $childCancellation = null;
     // Observe the committed response before this single real SDK worker can
@@ -127,8 +134,8 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $afterCompletion = isset($fixture['child_cancellation']) ? static function () use (&$client, &$handle, &$childCancellation, $workflowId, $fixture): void {
         driveHttpChildCancellation($client, $workflowId, $handle->selectedRunId, $fixture, $childCancellation);
     } : null;
-    $transport = isset($fixture['child_count']) || isset($fixture['child_cancellation']) || isset($fixture['retry_policy'])
-        ? observedChildTransport($workflowPolls, $workflowCompletions, $activityPolls, $activityOutcomes, $afterCompletion) : null;
+    $transport = isset($fixture['child_count']) || isset($fixture['child_cancellation']) || isset($fixture['retry_policy']) || isset($fixture['schedule'])
+        ? observedChildTransport($workflowPolls, $workflowCompletions, $activityPolls, $activityOutcomes, $afterCompletion, $scheduleReceipts) : null;
     $client = new Client($url, namespace: $namespace, transport: $transport, token: getenv('DW_PARITY_TOKEN') ?: null);
     $handle = null;
     $deliveries = [];
@@ -144,7 +151,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $caughtChildCancellation = null;
     $deadline = microtime(true) + 30;
     $worker = null;
-    $worker = (new Worker($client, $queue, clock: static function () use (&$worker, &$handle, &$deliveries, &$queries, &$queryTasks, &$pendingQuery, &$updates, &$updateTasks, &$pendingUpdate, &$diagnostics, &$failureCaptured, &$childCancellation, $namespace, $client, $fixture, $fixturePath, $workflowId, $url, $deadline): float {
+    $worker = (new Worker($client, $queue, clock: static function () use (&$worker, &$handle, &$deliveries, &$queries, &$queryTasks, &$pendingQuery, &$updates, &$updateTasks, &$pendingUpdate, &$diagnostics, &$failureCaptured, &$childCancellation, $namespace, $client, $fixture, $fixturePath, &$workflowId, $url, $deadline): float {
         if (microtime(true) > $deadline) {
             $error = new RuntimeException('Parity worker exceeded its 30-second completion budget.');
             parityHttpFailureEvidence($error, 'before-worker-shutdown', $workflowId, $handle?->selectedRunId, $url, $namespace, $diagnostics);
@@ -250,12 +257,20 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         }
 
         return microtime(true);
-    }, diagnosticListener: static function (string $event, array $details) use (&$handle, &$diagnostics, $client, $fixture, $workflowId, $queue): void {
+    }, diagnosticListener: static function (string $event, array $details) use (&$handle, &$diagnostics, &$scheduleState, $client, $fixture, &$workflowId, $queue): void {
         $diagnostics[] = parityWorkerDiagnostic($event, $details);
         if (count($diagnostics) > 200) {
             array_shift($diagnostics);
         }
         if ($event === 'worker.registered') {
+            if (isset($fixture['schedule'])) {
+                $scheduleState = [];
+                $trigger = prepareHttpSchedule($client, $fixture, $workflowId, $queue, $scheduleState);
+                $workflowId = $trigger['workflow_id'];
+                $handle = $client->workflowHandle($workflowId, $trigger['run_id']);
+
+                return;
+            }
             $arguments = [$fixture['input']];
             if (isset($fixture['signal_count'])) {
                 $arguments[] = $fixture['signal_count'];
@@ -383,7 +398,8 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         if (! $failureCaptured) {
             parityHttpFailureEvidence($error, 'after-worker-shutdown', $workflowId, $handle?->selectedRunId, $url, $namespace, $diagnostics,
                 ['workflow_polls' => $workflowPolls, 'workflow_completions' => $workflowCompletions,
-                    'activity_polls' => $activityPolls, 'activity_outcomes' => $activityOutcomes]);
+                    'activity_polls' => $activityPolls, 'activity_outcomes' => $activityOutcomes,
+                    'schedule' => $scheduleState, 'schedule_receipts' => $scheduleReceipts]);
         }
         throw $error;
     } finally {
@@ -395,6 +411,10 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         }
     }
     $execution = $handle->describeSelectedRun();
+    if ($scheduleState !== null) {
+        $scheduleState = finishHttpSchedule($client, $fixture, $scheduleState, $workflowId, $handle->selectedRunId);
+        $scheduleState['control_receipts'] = $scheduleReceipts;
+    }
     // Small pages prove pagination for parent and original child histories.
     $events = httpHistory($client, $workflowId, $handle->selectedRunId);
     foreach ($workflowCompletions as &$completion) {
@@ -469,6 +489,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     return [
         'execution' => $execution->raw,
         'child_cancellation' => $childCancellation,
+        'schedule' => $scheduleState,
         'workflow_id' => $execution->workflowId,
         'run_id' => $execution->runId,
         'workflow_type' => $execution->workflowType,
@@ -540,16 +561,24 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
         'parity.v1.cancelled_child_parent' => CancelledChildParentWorkflow::class,
         default => $class,
     };
-    $stub = WorkflowStub::make($class, $workflowId);
-    $arguments = [$fixture['input']];
-    if (isset($fixture['signal_count'])) {
-        $arguments[] = $fixture['signal_count'];
+    $scheduleState = null;
+    if (isset($fixture['schedule'])) {
+        $scheduleState = [];
+        $trigger = prepareEmbeddedSchedule($fixture, $workflowId, $queue, $class, $scheduleState);
+        $workflowId = $trigger['workflow_id'];
+        $stub = WorkflowStub::loadSelection($workflowId, $trigger['run_id'], $namespace);
+    } else {
+        $stub = WorkflowStub::make($class, $workflowId);
+        $arguments = [$fixture['input']];
+        if (isset($fixture['signal_count'])) {
+            $arguments[] = $fixture['signal_count'];
+        }
+        $stub->start(
+            ...[...$arguments,
+            new WorkflowOptions(connection: 'database', queue: $queue),
+            new StartOptions(executionTimeoutSeconds: 3600, runTimeoutSeconds: 600)],
+        );
     }
-    $stub->start(
-        ...[...$arguments,
-        new WorkflowOptions(connection: 'database', queue: $queue),
-        new StartOptions(executionTimeoutSeconds: 3600, runTimeoutSeconds: 600)],
-    );
     $deliveries = [];
     $queries = [];
     $updates = [];
@@ -635,6 +664,9 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
         usleep(50000);
     } while (true);
     $run = WorkflowRun::query()->findOrFail($stub->runId());
+    if ($scheduleState !== null) {
+        $scheduleState = finishEmbeddedSchedule($fixture, $scheduleState, $workflowId, $stub->runId());
+    }
     if (isset($fixture['child_cancellation'])) {
         $childCancellation = finishEmbeddedChildCancellation($stub->runId(), $childCancellation);
         $childCancellation['caught'] = ChildCancellationProbeState::$caught;
@@ -701,6 +733,7 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
         'status' => $run->status->value,
         'payload_codec' => $run->payload_codec,
         'input' => $run->workflowArguments(),
+        'schedule' => $scheduleState,
         'output' => $run->workflowOutput(),
         'events' => decodeHistory($events, static fn ($value) => Serializer::unserializeWithCodec('avro', is_array($value) ? $value['blob'] : $value)),
         'signal_deliveries' => $deliveries,
@@ -712,6 +745,7 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
 }
 
 try {
+    require __DIR__.'/schedule-probe.php';
     require __DIR__.'/child-cancellation-probe.php';
     require __DIR__.'/cancellation-probe.php';
     require __DIR__.'/cooperative-probe.php';

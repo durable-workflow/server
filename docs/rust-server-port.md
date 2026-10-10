@@ -321,7 +321,7 @@ and records `FailureHandled`. Shared assertions check those representations
 before projecting common behavior. Deterministic unit examples model the observed
 published representations and test
 rejection of corrupted identities, history, diagnostics and duplicate effects.
-The corpus now contains 24 representative cases. This adds direct child
+The direct-child slice brings the corpus to 24 representative cases. This adds direct child
 cancellation only; propagation trees, parent-close policies, child retries and
 hard-kill child-cancellation recovery remain unqualified.
 
@@ -375,6 +375,68 @@ streams and existing consumers. Each slice must run on the required database
 matrix. Read-only upgrade inspection and backup-first takeover remain required,
 but follow wider capability coverage. PHP and unknown databases stay refused.
 
+Two schedule cases extend the reviewed corpus to 26: a manual lifecycle and
+one fixed-rate occurrence with a one-action budget. Published source refuses manual triggers
+while paused with `status_not_triggerable`; exhausting `max_runs` deletes the
+schedule with `max_runs_exhausted`. Actual manual observations now agree across
+HTTP/embedded adapters, and embedded execution completed the original fixed-rate
+occurrence. The HTTP original fixed-rate observation hit SQLite write contention
+under concurrent ordinary repair; Server #355 owns current-stable reproduction
+and the intended failed-occurrence contract. The initial evaluator's `sh -ec`
+wrapper also stopped on that failure; the published harness uses `sh -c`.
+This explains the stopped role, not the original occurrence's failure.
+The comparator checks retain original
+schedule/fire/workflow/run/history relationships, exact int64 action input,
+non-early occurrence timing, completed authored work and no later extra fire.
+The 161 deterministic schedule checks reject damaged identity, quota, history,
+typed payload, admission timing, deletion and post-close observations. They are
+comparator examples, not additional executions. Frozen embedded resume can
+record the caller model's stale zero skip count; the manual definition explicitly
+pins that audit representation while requiring the fresh description and later
+trigger to retain the actual skip. HTTP legacy-admin audit context is checked
+before common projection; this is not broad authorization qualification.
+Complete pending PHP/embedded records now match in a controlled reference
+footprint that sequences the installed repair and evaluator CLI commands in one
+maintenance loop. It deliberately excludes overlapping maintenance writes and
+does not close #355. All four raw observations compare at adapter source
+0212604f5a7a1c47b5664227b4483a6328ca520d. The first receipt with an incorrectly
+entered runner SHA is retained and excluded; the valid records use Git's revision.
+The tests-first native regressions compile and fail at the expected 501 schedule
+creation on all six databases, with the preceding 32 HTTP tests passing.
+Native now implements this bounded UTC interval slice, including manual
+pause/resume/skips, retained audit history, original due occurrence admission
+and one-action exhaustion. Start, workflow marker, schedule audit, accounting
+and exhaustion share one transaction; an injected audit failure verifies rollback
+without consuming the original occurrence or quota. Unsupported calendar,
+timezone and overlap policies remain refused.
+Three native HTTP regressions additionally cover close/reopen recovery and two
+competing nodes admitting one original occurrence. This is graceful schedule
+restart evidence, not schedule process-kill qualification. All 35 native SQLite
+HTTP tests pass at `3213ce16`, together with the projection and atomic rollback
+units. Its shared run stops earlier at frozen PHP worker shutdown contention;
+that failure is retained separately. Repair head `169c2d7a` / test merge
+`f1d62c41` passes [all six configurations](https://github.com/durable-workflow/server/actions/runs/38030503934).
+Six downloaded ZIPs match official artifact digests and all 468 actual
+PHP/Rust/embedded observations independently compare, including 36 schedule
+observations. All 35 native HTTP tests/configuration and the twelve existing root
+cleanup process-kill variants pass, together with TLS and PHP takeover refusal.
+[Source gates](https://github.com/durable-workflow/server/actions/runs/38030504008)
+pass with 2607 PHP tests / 57,222 assertions, six known deprecations and one skip.
+The earlier frozen-PHP worker shutdown failure remains unexplained; a passing
+later revision is not its diagnosis.
+
+Qualification has already exposed missing completion status, the SDK
+control-plane worker deletion route, MariaDB DECIMAL promotion when selecting
+an aggregate unsigned sequence, and null decoded fields in fresh native workflow
+descriptions. Native repairs retain the original stored envelopes and use a
+bounded blocking codec worker to project display values after the database read.
+The comparator also permits the first HTTP fixed-rate history read to see an
+already committed original occurrence, requiring an exact original audit prefix
+and the same final identity, deadline, history and quota checks. All 608 comparator
+tests pass; they are not extra execution observations. The two definitions now
+join the default corpus; their changed fixture identities and integrated runner
+require the final source to pass the full matrix again before merge.
+
 The current execution slice shares the native workflow/activity/timer/signal state machine
 between SQLite, PostgreSQL and MariaDB/MySQL, with typed database adapters and explicit
 transaction locking. Qualification runs the unchanged execution fixtures
@@ -419,12 +481,12 @@ does not prove the remaining acceptance criteria.
 | Surface | Current authority and reusable checks | Port status |
 | --- | --- | --- |
 | Control plane, namespaces, authorization, errors, visibility | `resources/platform-protocol-specs/control-plane-api.openapi.yaml`, `docs/contracts/auth-composition.md`, `routes/api.php`, Feature control-plane/auth/namespace tests; namespace and principal-attribution published runners | Pending |
-| Worker registration, sessions, leases, fencing, retries, timeouts, heartbeats, routing, affinity, backpressure, versioning | Worker OpenAPI and stream AsyncAPI in `resources/platform-protocol-specs/`; Feature worker/activity/prepared-local/cancellation tests; activity, heartbeat and worker-versioning published runners | Pending |
+| Worker registration, sessions, leases, fencing, retries, timeouts, heartbeats, routing, affinity, backpressure, versioning | Worker OpenAPI and stream AsyncAPI in `resources/platform-protocol-specs/`; Feature worker/activity/prepared-local/cancellation tests; activity, heartbeat and worker-versioning published runners | Bounded PHP registration, polling, completion/fencing, activity retries and cleanup heartbeat; broader fleet, routing, affinity and timeout policies pending |
 | Avro values, external task inputs/results, payload storage and reclamation | `docs/contracts/external-task-{input,result}.md`, `external-payload-storage.md`, external payload OpenAPI; `regression-corpus-policy.json`, `tests/Fixtures/CodecRegression/`, payload Feature tests | PHP/embedded echo slice; Rust codec foundation in #329, full ingress and external payloads pending |
-| Workflow lifecycle, duplicate commands, typed history, continuation, child workflows, cancellation, cleanup replay | Workflow lifecycle, migration, child-workflow and replay runners; Feature cooperative cancellation, history, migration and repeated-signal tests | Bounded echo/activity/timer/signal slice; other lifecycle semantics pending |
-| Timers, schedules, signals, queries, updates, search attributes, memo, sagas | Corresponding runners in `scripts/conformance/`, manifests in `static/platform-conformance/`; Sample App polyglot experiments | Durable sleep slice in #339 and signal waits/delivery in #340; broader semantics and other families pending |
+| Workflow lifecycle, duplicate commands, typed history, continuation, child workflows, cancellation, cleanup replay | Workflow lifecycle, migration, child-workflow and replay runners; Feature cooperative cancellation, history, migration and repeated-signal tests | Bounded authored completion, activity retry/failure, direct children/cancellation and root cooperative cleanup; broader propagation, replay and continuation semantics pending |
+| Timers, schedules, signals, queries, updates, search attributes, memo, sagas | Corresponding runners in `scripts/conformance/`, manifests in `static/platform-conformance/`; Sample App polyglot experiments | Bounded durable sleep, repeated signals, state queries/updates and two UTC schedule cases; broader policies, search attributes, memo and sagas pending |
 | Local activities, cancellation scopes, worker sessions, streams, service catalog/Nexus, bridge adapters, standalone activities, debugging and repair | `routes/api.php`, `docs/contracts/`, worker/control-plane specifications, corresponding Feature tests and Nexus runner | Pending; not omitted from parity |
-| Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | Published PHP SDK echo/activity/timer/signal fixtures; other clients and consumers pending |
+| Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | Published PHP SDK and embedded directions for the 26 bounded fixtures; other languages and CLI/Waterline/Sample App consumers pending |
 | SQL schema and stored representations | `database/migrations/`, Workflow package `src/migrations/`, model casts, `Workflow\\Serializers\\Serializer`, queue job payloads, exported history and credential digests | [Representation checkpoints](rust-server-storage-audit.md) recorded; complete mapping and executable migration tests pending |
 | Images, architecture, bootstrap, configuration, readiness, metrics and graceful shutdown | `Dockerfile`, `docker/`, `config/`, `docker-compose*.yml`, `k8s/helm/`, `docs/server-reference.md`, small-cluster/multi-region validation docs | Pending |
 | Backup and in-place upgrade | `docs/self-hosted-backup-and-restore.md`, external payload backup holds; last PHP image writes, all PHP roles stop, Rust takes over same DB sequentially | Pending on SQLite, MariaDB/MySQL, PostgreSQL |

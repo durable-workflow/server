@@ -84,6 +84,8 @@ where
             "SELECT id,workflow_command_id,workflow_run_id,update_name,status,arguments,result FROM workflow_updates LIMIT 0",
             "SELECT id,parent_workflow_run_id,sequence,status,resolved_child_run_id,metadata FROM workflow_child_calls LIMIT 0",
             "SELECT id,parent_workflow_run_id,child_workflow_run_id,sequence FROM workflow_links LIMIT 0",
+            "SELECT id,schedule_id,namespace,status,spec,action,next_fire_at,remaining_actions,fires_count FROM workflow_schedules LIMIT 0",
+            "SELECT workflow_schedule_id,sequence,event_type,payload,occurrence_at_utc FROM workflow_schedule_history_events LIMIT 0",
         ] {
             if Self::query(query).execute(&self.pool).await.is_err() {
                 return false;
@@ -99,6 +101,16 @@ where
         DB::begin(&self.pool).await
     }
     pub(crate) async fn start(&self, body: Value) -> Result<Value> {
+        let mut tx = self.begin().await?;
+        let started = Self::start_in(&mut tx, &body).await?;
+        tx.commit().await?;
+        self.wake.notify_waiters();
+        Ok(started)
+    }
+
+    // Schedule admission and its original run/history must share one commit.
+    // Existing explicit starts use the same transition and wake after commit.
+    pub(super) async fn start_in(tx: &mut Transaction<'_, DB>, body: &Value) -> Result<Value> {
         let workflow_id = text(&body, "workflow_id")?;
         if workflow_id.len() > 128
             || !workflow_id
@@ -136,9 +148,8 @@ where
                 "invalid_duplicate_policy",
             ));
         }
-        let mut tx = self.begin().await?;
         if let Some(existing) = Self::query("SELECT r.* FROM workflow_instances i JOIN workflow_runs r ON r.id=i.current_run_id WHERE i.id=$1")
-            .bind(workflow_id).fetch_optional(&mut *tx).await? {
+            .bind(workflow_id).fetch_optional(&mut **tx).await? {
             if body["duplicate_policy"] == "use-existing" && matches!(DB::string(&existing,"status")?.as_str(), "pending" | "running" | "waiting") {
                 return Ok(json!({"workflow_id": workflow_id, "run_id": DB::string(&existing,"id")?,
                     "workflow_type": DB::string(&existing,"workflow_type")?, "namespace": "default",
@@ -153,23 +164,23 @@ where
         let run_deadline = after(run_timeout.min(execution_timeout));
         Self::query("INSERT INTO workflow_instances(id,namespace,workflow_type,workflow_class,current_run_id,run_count,execution_timeout_seconds,created_at,updated_at,started_at) VALUES ($1,'default',$2,$3,$4,1,$5,$6,$7,$8)")
             .bind(workflow_id).bind(workflow_type).bind(workflow_type).bind(&run_id).bind(execution_timeout)
-            .bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut *tx).await?;
+            .bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut **tx).await?;
         Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,namespace,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,run_timeout_seconds,execution_deadline_at,run_deadline_at,started_at,created_at,updated_at) VALUES ($1,$2,'default',$3,$4,1,'pending','avro',$5,$6,$7,$8,$9,$10,$11,$12)")
             .bind(&run_id).bind(workflow_id).bind(workflow_type).bind(workflow_type).bind(&arguments)
             .bind(queue).bind(run_timeout).bind(DB::bind_time(execution_deadline)).bind(DB::bind_time(run_deadline))
-            .bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut *tx).await?;
+            .bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut **tx).await?;
         Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,command_type,source,status,outcome,workflow_type,payload_codec,payload,command_sequence,accepted_at,applied_at) VALUES ($1,$2,$3,$4,'start','control_plane','accepted','started_new',$5,'avro',$6,1,$7,$8)")
-            .bind(&command_id).bind(workflow_id).bind(&run_id).bind(&run_id).bind(workflow_type).bind(&arguments).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut *tx).await?;
+            .bind(&command_id).bind(workflow_id).bind(&run_id).bind(&run_id).bind(workflow_type).bind(&arguments).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut **tx).await?;
         Self::query("UPDATE workflow_runs SET last_command_sequence=1 WHERE id=$1")
             .bind(&run_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
         let identity = json!({"workflow_instance_id": workflow_id, "workflow_run_id": run_id,
             "workflow_type": workflow_type, "workflow_class": workflow_type, "workflow_command_id": command_id});
         let mut accepted = identity.clone();
         accepted["outcome"] = json!("started_new");
         Self::append(
-            &mut tx,
+            tx,
             &run_id,
             "StartAccepted",
             accepted,
@@ -178,13 +189,13 @@ where
         )
         .await?;
         let mut started = identity;
-        Self::attach_workflow_contract(&mut tx, queue, workflow_type, &mut started).await?;
+        Self::attach_workflow_contract(tx, queue, workflow_type, &mut started).await?;
         started["execution_timeout_seconds"] = json!(execution_timeout);
         started["run_timeout_seconds"] = json!(run_timeout);
         started["execution_deadline_at"] = json!(execution_deadline);
         started["run_deadline_at"] = json!(run_deadline);
         Self::append(
-            &mut tx,
+            tx,
             &run_id,
             "WorkflowStarted",
             started,
@@ -192,9 +203,7 @@ where
             Some(&command_id),
         )
         .await?;
-        Self::create_task(&mut tx, &run_id, queue, "workflow", json!({})).await?;
-        tx.commit().await?;
-        self.wake.notify_waiters();
+        Self::create_task(tx, &run_id, queue, "workflow", json!({})).await?;
         Ok(
             json!({"workflow_id": workflow_id, "run_id": run_id, "workflow_type": workflow_type,
             "namespace": "default", "status": "pending", "payload_codec": "avro", "outcome": "started_new",
@@ -598,15 +607,18 @@ where
 
     pub(crate) async fn deregister(&self, worker_id: &str) -> Result<Value> {
         let mut tx = self.begin().await?;
-        Self::query(
+        let deleted = Self::query(
             "DELETE FROM workflow_worker_registrations WHERE namespace='default' AND worker_id=$1",
         )
         .bind(worker_id)
         .execute(&mut *tx)
         .await?;
+        if DB::affected(deleted) == 0 {
+            return Err(refuse(StatusCode::NOT_FOUND, "worker_not_found"));
+        }
         // Revocation expires the existing fence; later polling creates a new
         // attempt before work can be accepted from another worker.
-        let recovered = DB::affected(Self::query("UPDATE workflow_tasks SET lease_expires_at=$1 WHERE namespace='default' AND lease_owner=$2 AND status='leased'")
+        let recovered = DB::affected(Self::query("UPDATE workflow_tasks SET lease_expires_at=$1 WHERE namespace='default' AND lease_owner=$2 AND status='leased' AND task_type='workflow'")
             .bind(DB::bind_time(now())).bind(worker_id).execute(&mut *tx).await?);
         tx.commit().await?;
         self.wake.notify_waiters();
@@ -994,8 +1006,13 @@ where
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
         }
         if Self::duplicate_receipt(&task, &body)? {
+            let run_id = DB::string(&task, "workflow_run_id")?;
+            let current = Self::query("SELECT status FROM workflow_runs WHERE id=$1")
+                .bind(&run_id)
+                .fetch_one(&mut *tx)
+                .await?;
             return Ok(
-                json!({"task_id": task_id, "run_id": DB::string(&task,"workflow_run_id")?, "workflow_task_attempt": body["workflow_task_attempt"],
+                json!({"task_id": task_id, "run_id": run_id, "run_status": DB::string(&current,"status")?, "workflow_task_attempt": body["workflow_task_attempt"],
                 "outcome": "completed", "recorded": false, "reason": "already_completed"}),
             );
         }
@@ -1187,10 +1204,15 @@ where
         Self::resume_undelivered_cancellation(&mut tx, &run_id, &DB::string(&run, "queue")?)
             .await?;
         Self::enqueue_pending_signal(&mut tx, &run_id, &DB::string(&run, "queue")?).await?;
+        let current = Self::query("SELECT status FROM workflow_runs WHERE id=$1")
+            .bind(&run_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let run_status = DB::string(&current, "status")?;
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok(
-            json!({"task_id": task_id, "run_id": run_id, "workflow_task_attempt": body["workflow_task_attempt"], "outcome": "completed", "recorded": true, "reason": null}),
+            json!({"task_id": task_id, "run_id": run_id, "run_status": run_status, "workflow_task_attempt": body["workflow_task_attempt"], "outcome": "completed", "recorded": true, "reason": null}),
         )
     }
 

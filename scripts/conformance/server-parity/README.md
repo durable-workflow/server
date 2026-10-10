@@ -48,10 +48,30 @@ published Server image contains these tools. Install the exact adapter:
 
 ```bash
 composer install --working-dir=scripts/conformance/server-parity --no-interaction
-node --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs
+node --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs
 ```
 
 Use **separate, already bootstrapped databases** for PHP, Rust and embedded.
+The default reviewed corpus now includes 26 cases. The two schedule cases can
+also be selected explicitly for a bounded inspection:
+
+```bash
+node scripts/conformance/server-parity.mjs record --mode http --url "$URL" --target php --runner-revision "$SHA" --output php-schedules.json --fixture tests/Fixtures/ServerParity/schedule-manual-lifecycle.json --fixture tests/Fixtures/ServerParity/schedule-fixed-rate-one-occurrence.json
+node scripts/conformance/server-parity.mjs compare php-schedules.json embedded-schedules.json --fixture tests/Fixtures/ServerParity/schedule-manual-lifecycle.json --fixture tests/Fixtures/ServerParity/schedule-fixed-rate-one-occurrence.json
+```
+
+The HTTP reference additionally needs the installed `schedule:evaluate` role.
+Use the published harness's `sh -c` loop and retain failed evaluation reports;
+do not stop or erase the failed original occurrence by changing its deadline.
+The embedded adapter restores the installed normal PHP-class starter in its
+Server fixture host and uses the real `ScheduleManager` against wall time.
+The bounded manual lifecycle and original fixed-rate occurrence pass the six
+database configurations with PHP/Rust/embedded authored completion. Their
+comparator checks paused-trigger refusal, original occurrence, quota deletion,
+HTTP audit context and embedded deletion visibility. The PHP qualification
+sequences installed repair and evaluator commands in one maintenance loop;
+concurrent SQLite contention remains separately tracked in Server #355.
+
 The recorder does not migrate a database. Do not run it against production or
 shared customer namespaces. Use a fresh prefix or database for each recording;
 use the same prefix across the targets being compared.

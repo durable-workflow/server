@@ -16,6 +16,9 @@ use sqlx::{
 };
 use std::str::FromStr;
 
+#[path = "execution/schedules.rs"]
+mod schedules;
+
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
     Postgres {

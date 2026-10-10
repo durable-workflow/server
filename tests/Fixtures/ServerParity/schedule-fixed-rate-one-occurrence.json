@@ -1,0 +1,30 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "schedule-fixed-rate-one-occurrence",
+  "workflow_type": "parity.v1.echo",
+  "input": {"message": "scheduled execution λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {"type": "string", "value": "scheduled execution λ"},
+      "count": {"type": "int64", "value": "9007199254740993"},
+      "optional": {"type": "null", "value": null}
+    }
+  },
+  "activity": false,
+  "expected_events": ["StartAccepted", "WorkflowStarted", "ScheduleTriggered", "WorkflowCompleted"],
+  "schedule": {
+    "phase": "fixed_rate_one_occurrence",
+    "spec": {"intervals": [{"every": "PT2S"}], "timezone": "UTC"},
+    "overlap_policy": "skip",
+    "jitter_seconds": 0,
+    "max_runs": 1,
+    "action_timeouts": {"execution_timeout_seconds": 3600, "run_timeout_seconds": 600},
+    "steps": ["create", "observe_committed_occurrence", "normal_scheduler_fire", "complete_original_workflow", "observe_two_later_intervals", "fresh_history"],
+    "expected_events": ["ScheduleCreated", "ScheduleTriggered", "ScheduleDeleted"],
+    "exhaustion": {"status": "deleted", "reason": "max_runs_exhausted", "remaining_actions": 0, "next_fire_at": null},
+    "completed_workflows": 1,
+    "later_interval_checks": 2
+  },
+  "contract": "Reviewed against frozen PHP Server 2.5.14, Workflow 2.5.5 and PHP SDK 2.2.6 on the six-configuration PHP/Rust/embedded matrix. The installed normal scheduler fires the original committed two-second UTC occurrence without moving clocks, editing rows or constructing history. One original authored echo workflow completes with exact Avro int64 input. Retain original schedule, occurrence deadline, generated workflow/run and schedule/root audit links; prohibit early firing. max_runs=1 deletes with max_runs_exhausted and clears next_fire_at while the original workflow can finish. Two later real intervals admit no extra fire or workflow; fresh original audit survives deletion. Controlled PHP maintenance sequences repair and evaluation; concurrent contention remains separately tracked in Server #355. Broader cadence, cron/timezones, overlap/backfill/missed-fire policies, namespace/auth, other client directions and schedule hard-kill recovery remain separate gates."
+}

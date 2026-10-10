@@ -18,6 +18,27 @@ pub fn router(runtime: Runtime) -> Router {
         .route("/api/ready", get(ready))
         .route("/api/cluster/info", get(cluster))
         .route("/api/workflows", post(start))
+        .route("/api/schedules", post(super::schedule_http::create))
+        .route(
+            "/api/schedules/{schedule_id}",
+            get(super::schedule_http::describe).delete(super::schedule_http::remove),
+        )
+        .route(
+            "/api/schedules/{schedule_id}/history",
+            get(super::schedule_http::history),
+        )
+        .route(
+            "/api/schedules/{schedule_id}/pause",
+            post(super::schedule_http::pause),
+        )
+        .route(
+            "/api/schedules/{schedule_id}/resume",
+            post(super::schedule_http::resume),
+        )
+        .route(
+            "/api/schedules/{schedule_id}/trigger",
+            post(super::schedule_http::trigger),
+        )
         .route("/api/workflows/{workflow_id}", get(describe_current))
         .route("/api/workflows/{workflow_id}/cancel", post(cancel_current))
         .route(
@@ -67,6 +88,7 @@ pub fn router(runtime: Runtime) -> Router {
         .route("/api/worker/register", post(register))
         .route("/api/worker/heartbeat", post(worker_heartbeat))
         .route("/api/worker/registrations/{worker_id}", delete(deregister))
+        .route("/api/workers/{worker_id}", delete(deregister))
         .route("/api/worker/workflow-tasks/poll", post(poll_workflow))
         .route(
             "/api/worker/workflow-tasks/{task_id}/deliver-cancellation",
