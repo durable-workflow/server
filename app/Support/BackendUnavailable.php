@@ -77,6 +77,7 @@ final class BackendUnavailable
             $request->is('api/worker/query-tasks/poll') => 'poll_query_task',
             $request->is('api/worker/update-validation-tasks/poll') => 'poll_update_validation_task',
             $request->is('api/worker/register') => 'register_worker',
+            $request->isMethod('POST') && $request->is('api/worker/registrations/*/deregister') => 'deregister_worker',
             $request->is('api/worker/heartbeat') => 'heartbeat_worker',
             $request->is('api/worker/workflow-tasks/*/heartbeat') => 'heartbeat_workflow_task',
             $request->is('api/worker/workflow-tasks/*/complete') => 'complete_workflow_task',
@@ -95,11 +96,17 @@ final class BackendUnavailable
         $taskAttempt = $request->input('workflow_task_attempt');
         $taskAttempt = $fencedWorkflowTask && is_int($taskAttempt) && $taskAttempt > 0 ? $taskAttempt : null;
         $activityAttemptId = $fencedActivityTask ? self::identity($request->input('activity_attempt_id')) : null;
-        $workerId = $fencedTask ? $leaseOwner : self::identity($request->input('worker_id'));
+        $fencedRegistration = $operation === 'deregister_worker';
+        $registrationToken = $fencedRegistration ? $request->input('registration_token') : null;
+        $registrationToken = is_string($registrationToken) && preg_match('/^[a-f0-9]{32}$/D', $registrationToken) === 1
+            ? $registrationToken : null;
+        $workerId = $fencedRegistration ? self::identity($request->route('workerId'))
+            : ($fencedTask ? $leaseOwner : self::identity($request->input('worker_id')));
         $taskQueue = self::identity($request->input('task_queue'));
         $pollId = self::identity($request->input('poll_request_id'));
         $isPoll = str_starts_with($operation, 'poll_');
         $retryable = match (true) {
+            $fencedRegistration => $workerId !== null && $registrationToken !== null,
             $fencedWorkflowTask => $taskId !== null && $leaseOwner !== null && $taskAttempt !== null,
             $fencedActivityTask => $taskId !== null && $leaseOwner !== null && $activityAttemptId !== null,
             default => $workerId !== null
@@ -116,6 +123,9 @@ final class BackendUnavailable
             'retryable' => $retryable,
             'retry_after_seconds' => 1,
         ];
+        if ($fencedRegistration) {
+            $payload['registration_token'] = $registrationToken;
+        }
         if ($isPoll) {
             // A lost connection can follow COMMIT. Reusing this ID lets native
             // lease bindings reconcile it; task=null is not proof of no lease.

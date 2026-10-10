@@ -102,6 +102,7 @@ class NamespaceLifecycleCleanup
             $deleted['workflow_worker_compatibility_heartbeats'] = $this->deleteByNamespace('workflow_worker_compatibility_heartbeats', $namespace);
             $deleted['workflow_worker_sessions'] = $this->deleteByNamespace('workflow_worker_sessions', $namespace);
             $deleted['workflow_worker_build_id_rollouts'] = $this->deleteByNamespace('workflow_worker_build_id_rollouts', $namespace);
+            $deleted['workflow_worker_registration_incarnations'] = $this->deleteByNamespace('workflow_worker_registration_incarnations', $namespace);
             $deleted['workflow_worker_registrations'] = $this->deleteByNamespace('workflow_worker_registrations', $namespace);
             $deleted['search_attribute_definitions'] = $this->deleteByNamespace('search_attribute_definitions', $namespace);
             $deleted['workflow_durable_stream_items'] = $this->deleteByNamespace('workflow_durable_stream_items', $namespace);

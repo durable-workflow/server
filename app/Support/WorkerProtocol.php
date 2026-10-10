@@ -449,6 +449,12 @@ class WorkerProtocol
                 'server.polling.timeout',
                 WorkerProtocolVersion::DEFAULT_LONG_POLL_TIMEOUT,
             ),
+            'worker_deregistration_fencing' => [
+                'schema' => 'durable-workflow.v2.worker-deregistration.v1',
+                'supported' => FencedWorkerDeregistration::available(),
+                'receipt_retention_seconds' => 600,
+                'endpoint' => '/worker/registrations/{workerId}/deregister',
+            ],
             'supported_workflow_task_commands' => self::supportedWorkflowTaskCommands(),
             'workflow_memo_updates' => [
                 ...self::workflowMemoUpdateSemantics(),
