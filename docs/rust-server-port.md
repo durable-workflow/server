@@ -164,13 +164,19 @@ per workflow and shares thin artifacts without target trees or dependency caches
 Worker-fingerprinted migration, immediate sticky failover, complete fault budgets
 and performance remain separate gates.
 
-The next `repeated-patch-clock` profile declares two fresh repeated-call
+The `repeated-patch-clock` profile in
+[#379](https://github.com/durable-workflow/server/pull/379) declares two fresh repeated-call
 checkpoints against the published PHP HTTP reference and installed embedded
 Workflow 2.5.7. The old Server image still packages Workflow 2.5.5; its component
 version is explicit in this new tuple. The embedded cold replacement must observe
-the first marker's recorded clock after both calls. These fixtures are planned,
-not qualified: package installation/provenance, real clock observation and all
-six differential executions remain ahead. The frozen baseline and other profiles
+the first marker's recorded clock after both calls. Normal Composer installation,
+actual installed references and hashes of four autoloaded replay classes bind
+both embedded processes to the selected published source. Two local SQLite
+PHP/embedded pairs pass at `0f95493d4d0d8f99c5221cca64b8af7c3bfd984d`, including
+the real cold replacement clocks and unchanged full checkpoint history.
+All six PHP/native/embedded differential executions remain unqualified. CI
+reuses its existing native binary and HTTP targets, installs only the separately
+selected embedded engine and gives it a new isolated database. The frozen baseline and other profiles
 stay unchanged. Retained duplicate-marker cross-SDK histories need a separate
 real published-worker fixture; source inspection alone does not prove that
 execution. Workflow #744 owns the published engine repair and its downstream
