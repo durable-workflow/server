@@ -6,7 +6,7 @@ import {fileURLToPath} from 'node:url';
 import {checkObservation} from '../../scripts/conformance/server-parity/contract.mjs';
 import {visibilityObservation} from '../Support/ServerParityVisibilityObservation.mjs';
 
-const fixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParityPending/visibility-current-runs.json', import.meta.url)));
+const fixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/visibility-current-runs.json', import.meta.url)));
 const examples = ['http', 'embedded'].map(mode => visibilityObservation(fixture, mode));
 const check = raw => checkObservation(fixture, raw, 'visibility-reference-current-runs');
 const firstRow = raw => raw.mode === 'embedded' ? raw.visibility.summaries[0] : raw.visibility.pages[0].response.workflows[0];
@@ -24,7 +24,7 @@ test('combined candidate selection refuses duplicate reviewed fixture identities
   assert.match(outcome.stderr, /distinct JSON filenames/);
 });
 test('candidate selection refuses mixing replacement and additive inventories', () => {
-  const path = 'tests/Fixtures/ServerParityPending/visibility-current-runs.json';
+  const path = 'tests/Fixtures/ServerParity/visibility-current-runs.json';
   const outcome = spawnSync(process.execPath, [runner, 'compare', '--fixture', path, '--include-fixture', path], {encoding: 'utf8'});
   assert.equal(outcome.status, 1);
   assert.match(outcome.stderr, /Choose either --fixture or --include-fixture/);
