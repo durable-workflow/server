@@ -89,17 +89,19 @@ HTTP audit context and embedded deletion visibility. The PHP qualification
 sequences installed repair and evaluator commands in one maintenance loop;
 concurrent SQLite contention remains separately tracked in Server #355.
 
-The pending `tests/Fixtures/ServerParityPending/namespace-isolation.json` can be
-selected with `--fixture` for reference qualification. It uses the existing
+The reviewed `tests/Fixtures/ServerParity/namespace-isolation.json` uses the existing
 legacy shared-token configuration and two real authored activity workflows in
-named namespaces. The default reviewed corpus remains 28. Role-token profiles,
+named namespaces. It checks original histories and payloads, foreign control and
+completion refusals, global workflow-ID reservation and same-ID worker isolation,
+including SDK idle query polling. It is included in the 29-case default corpus
+and can be selected with `--fixture`. Role-token profiles,
 namespace lifecycle/retention and cross-namespace orchestration require separate
 qualification.
 
 The recorder does not migrate a database. Do not run it against production or
 shared customer namespaces. The admission fixture executes sixteen real HTTP
 requests, checks authentication/version/namespace precedence and preserves the
-original pending peer through refusals. Named namespaces and role/principal
+original pending peer through refusals. Wider namespace families and role/principal
 authorization require additional qualification. Use a fresh prefix or database
 for each recording;
 use the same prefix across the targets being compared.
