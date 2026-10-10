@@ -11,16 +11,21 @@ use tokio::sync::OnceCell;
 
 use super::{Result, refuse};
 
-pub(super) const VERSION: i64 = 3;
+pub(super) const VERSION: i64 = 4;
 
 fn migrator() -> &'static Migrator {
     static MIGRATOR: OnceLock<Migrator> = OnceLock::new();
     MIGRATOR.get_or_init(|| {
         Migrator::with_migrations(vec![Migration::new(
             VERSION,
-            "full frozen PHP schema and native receipts".into(),
+            "full frozen PHP schema and native worker incarnations".into(),
             MigrationType::Simple,
-            include_str!("../../migrations/sqlite/0003_full_schema.sql").into_sql_str(),
+            concat!(
+                include_str!("../../migrations/sqlite/0003_full_schema.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0004_worker_incarnations.sql")
+            )
+            .into_sql_str(),
             false,
         )])
     })
@@ -126,8 +131,9 @@ mod tests {
         } else {
             bootstrap(&mut tx).await.unwrap();
             let rows: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM _sqlx_migrations WHERE version=3 AND success=1",
+                "SELECT COUNT(*) FROM _sqlx_migrations WHERE version=$1 AND success=1",
             )
+            .bind(VERSION)
             .fetch_one(&mut *tx)
             .await
             .unwrap();
@@ -275,7 +281,7 @@ mod tests {
 
     #[tokio::test]
     async fn old_development_schema_is_refused_without_conversion() {
-        for version in [1, 2] {
+        for version in [1, 2, 3] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("runtime.sqlite");
             let mut connection = SqliteConnection::connect_with(
@@ -295,6 +301,31 @@ mod tests {
             connection.close().await.unwrap();
             assert_read_only_refusal(&path).await;
         }
+    }
+
+    #[tokio::test]
+    async fn complete_version_three_database_and_acknowledged_queue_are_refused_unchanged() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("runtime.sqlite");
+        let mut connection = SqliteConnection::connect_with(
+            &SqliteConnectOptions::new()
+                .filename(&path)
+                .create_if_missing(true),
+        )
+        .await
+        .unwrap();
+        let old = Migrator::with_migrations(vec![Migration::new(
+            3,
+            "full frozen PHP schema and native receipts".into(),
+            MigrationType::Simple,
+            include_str!("../../migrations/sqlite/0003_full_schema.sql").into_sql_str(),
+            false,
+        )]);
+        old.run(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO jobs(queue,payload,attempts,available_at,created_at) VALUES ('acknowledged','preserve original durable input',0,1,1)")
+            .execute(&mut connection).await.unwrap();
+        connection.close().await.unwrap();
+        assert_read_only_refusal(&path).await;
     }
 
     #[tokio::test]

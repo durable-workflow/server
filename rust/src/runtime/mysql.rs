@@ -9,7 +9,7 @@ use sqlx::{
 };
 use std::{collections::BTreeMap, sync::OnceLock, time::Duration};
 
-pub const VERSION: i64 = 3;
+pub const VERSION: i64 = 4;
 type Catalog = Vec<(String, String)>;
 
 pub const MARKER_SQL: &str = "CREATE TABLE dw_server_schema (engine VARCHAR(64) NOT NULL PRIMARY KEY,version BIGINT NOT NULL,bootstrap_checksum VARBINARY(48) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin";
@@ -37,17 +37,25 @@ impl Flavor {
         let (slot, sql) = match self {
             Self::MySql => (
                 &MYSQL,
-                include_str!("../../migrations/mysql/0003_full_schema.sql"),
+                concat!(
+                    include_str!("../../migrations/mysql/0003_full_schema.sql"),
+                    "\n",
+                    include_str!("../../migrations/mysql/0004_worker_incarnations.sql")
+                ),
             ),
             Self::MariaDb => (
                 &MARIA,
-                include_str!("../../migrations/mariadb/0003_full_schema.sql"),
+                concat!(
+                    include_str!("../../migrations/mariadb/0003_full_schema.sql"),
+                    "\n",
+                    include_str!("../../migrations/mariadb/0004_worker_incarnations.sql")
+                ),
             ),
         };
         slot.get_or_init(|| {
             let mut migrations = Migrator::with_migrations(vec![Migration::new(
                 VERSION,
-                "full frozen PHP schema and native receipts".into(),
+                "full frozen PHP schema and native worker incarnations".into(),
                 MigrationType::Simple,
                 sql.into_sql_str(),
                 false,
@@ -60,8 +68,8 @@ impl Flavor {
     }
     fn expected(self) -> Result<Catalog> {
         Ok(serde_json::from_str(match self {
-            Self::MySql => include_str!("../../migrations/mysql/catalog.json"),
-            Self::MariaDb => include_str!("../../migrations/mariadb/catalog.json"),
+            Self::MySql => include_str!("../../migrations/mysql/0004_catalog.json"),
+            Self::MariaDb => include_str!("../../migrations/mariadb/0004_catalog.json"),
         })?)
     }
     fn checksum(self) -> &'static [u8] {

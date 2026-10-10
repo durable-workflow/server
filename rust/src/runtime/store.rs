@@ -588,6 +588,7 @@ where
                 "invalid_worker_definition",
             ));
         }
+        let token = super::worker_incarnations::token().await?;
         let mut tx = self.begin().await?;
         Self::query(DB::WORKER_REGISTRATION_SQL)
             .bind(self.namespace.as_ref())
@@ -607,6 +608,7 @@ where
             .await?;
         Self::query("UPDATE workflow_worker_registrations SET workflow_command_contracts=$1 WHERE worker_id=$2 AND namespace=$3")
             .bind(DB::document(body.get("workflow_command_contracts").unwrap_or(&json!({})))).bind(worker_id).bind(self.namespace.as_ref()).execute(&mut *tx).await?;
+        self.rotate_incarnation(&mut tx, worker_id, &token).await?;
         tx.commit().await?;
         Ok(
             json!({"worker_id": worker_id, "registered": true, "namespace": self.namespace.as_ref(), "task_queue": queue,
@@ -639,6 +641,7 @@ where
         if DB::affected(deleted) == 0 {
             return Err(refuse(StatusCode::NOT_FOUND, "worker_not_found"));
         }
+        self.retire_incarnation(&mut tx, worker_id).await?;
         // Revocation expires the existing fence; later polling creates a new
         // attempt before work can be accepted from another worker.
         let recovered = DB::affected(Self::query("UPDATE workflow_tasks SET lease_expires_at=$1 WHERE lease_owner=$2 AND namespace=$3 AND status='leased' AND task_type='workflow'")

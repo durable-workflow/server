@@ -25,6 +25,7 @@ mod sqlite;
 mod store;
 mod updates;
 mod visibility;
+mod worker_incarnations;
 
 pub use execution::Runtime;
 pub use http::router;
