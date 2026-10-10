@@ -431,6 +431,54 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires disposable MySQL/MariaDB; run qualification_ explicitly"]
+    async fn qualification_schedule_creation_keeps_original_audit_and_unsigned_counters() {
+        use super::super::{schedules, store::Store};
+        use crate::codec::{Value as Payload, ValueCodec};
+        let db = Database::new().await;
+        let store = Store::new(
+            MySqlStorage::open(db.options.clone())
+                .await
+                .unwrap()
+                .into_pool(),
+        );
+        let input = ValueCodec::new()
+            .unwrap()
+            .encode(&Payload::Array(vec![Payload::Long(9007199254740993)]))
+            .unwrap();
+        let definition = schedules::definition(&json!({"schedule_id":"schedule-storage-audit",
+            "spec":{"intervals":[{"every":"P1D"}],"timezone":"UTC"},
+            "action":{"workflow_type":"echo","task_queue":"test","input":{"codec":"avro","blob":input},
+                "execution_timeout_seconds":3600,"run_timeout_seconds":600},
+            "overlap_policy":"skip","jitter_seconds":0}),super::super::store::now()).unwrap();
+        // This isolated synthetic test surfaces typed-driver failures which
+        // the public HTTP boundary correctly redacts as storage_unavailable.
+        store
+            .create_schedule(definition, json!({"test":"schedule admission"}))
+            .await
+            .unwrap();
+        let history = store
+            .schedule_history("schedule-storage-audit", 0, 2)
+            .await
+            .unwrap();
+        assert_eq!(history["events"].as_array().unwrap().len(), 1);
+        assert_eq!(history["events"][0]["sequence"], 1);
+        assert_eq!(
+            history["events"][0]["payload"]["schedule"]["fires_count"],
+            0
+        );
+        assert_eq!(
+            store
+                .describe_schedule("schedule-storage-audit")
+                .await
+                .unwrap()["fires_count"],
+            0
+        );
+        store.close().await;
+        db.remove().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires disposable MySQL/MariaDB; run qualification_ explicitly"]
     async fn qualification_concurrent_bootstrap_and_reopen() {
         let db = Database::new().await;
         let (a, b, c) = tokio::join!(
