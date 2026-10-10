@@ -2,6 +2,9 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Support\BackendLockPressure;
+use App\Support\BackendUnavailable;
+use App\Support\FencedWorkerDeregistration;
 use App\Support\WorkerProtocol;
 use App\Support\WorkerRegistrationDeregistrar;
 use Illuminate\Http\JsonResponse;
@@ -38,5 +41,37 @@ final class WorkerDeregistrationController
             'outcome' => 'deregistered',
             'recovered_workflow_task_count' => $recoveredWorkflowTaskCount,
         ]);
+    }
+
+    public function destroyFenced(Request $request, string $workerId, FencedWorkerDeregistration $deregistration): JsonResponse
+    {
+        if ($response = WorkerProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+        $validated = $request->validate([
+            'registration_token' => ['required', 'string', 'size:32', 'regex:/^[a-f0-9]{32}$/D'],
+        ]);
+        $token = $validated['registration_token'];
+        try {
+            $result = $deregistration->complete(
+                $request, (string) $request->attributes->get('namespace'), $workerId, $token,
+            );
+        } catch (\Throwable $exception) {
+            if (! BackendLockPressure::is($exception) && ! BackendUnavailable::is($exception)) {
+                throw $exception;
+            }
+
+            return WorkerProtocol::json([
+                'reason' => BackendLockPressure::is($exception) ? 'backend_lock_pressure' : 'backend_unavailable',
+                'operation' => 'deregister_worker',
+                'worker_id' => $workerId,
+                'registration_token' => $token,
+                'outcome' => 'unknown',
+                'retryable' => true,
+                'retry_after_seconds' => 1,
+            ], 503)->header('Retry-After', '1');
+        }
+
+        return WorkerProtocol::json($result['body'], $result['status']);
     }
 }

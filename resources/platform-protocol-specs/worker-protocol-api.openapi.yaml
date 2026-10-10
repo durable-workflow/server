@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "49"
+  version: "50"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -362,6 +362,57 @@ paths:
         "200": { $ref: "#/components/responses/WorkerEnvelope" }
         "404": { $ref: "#/components/responses/WorkerError" }
         "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
+  /worker/registrations/{workerId}/deregister:
+    post:
+      operationId: deregisterWorkerIncarnation
+      summary: Deregister one worker incarnation and replay its original receipt
+      description: >
+        Requires worker_deregistration_fencing capability discovery and the token
+        returned by this registration. Checks an original completed receipt before
+        current registration authority. Never falls back to the legacy DELETE.
+        A matching active registration, workflow-task recovery, compatibility
+        cleanup, deletion and receipt commit atomically. Terminal receipts are
+        retained for 600 seconds. See docs/worker-deregistration-contract.md.
+      tags: [worker-lifecycle]
+      x-durable-workflow-required-role: worker
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/WorkerIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [registration_token]
+              properties:
+                registration_token: { type: string, pattern: "^[a-f0-9]{32}$", minLength: 32, maxLength: 32 }
+      responses:
+        "200":
+          description: Original durable deregistration receipt
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/WorkerEnvelope"
+                  - $ref: "#/components/schemas/FencedWorkerDeregistrationResult"
+        "400": { $ref: "#/components/responses/WorkerError" }
+        "401": { $ref: "#/components/responses/WorkerError" }
+        "403": { $ref: "#/components/responses/WorkerError" }
+        "404": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+        "410": { $ref: "#/components/responses/WorkerError" }
+        "412": { $ref: "#/components/responses/WorkerError" }
+        "422": { $ref: "#/components/responses/WorkerError" }
+        "503":
+          description: Temporary failure with the same registration identity and unknown outcome
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: "#/components/schemas/FencedWorkerDeregistrationUnavailable"
+                  - $ref: "#/components/schemas/WorkerStorageAdmissionRefusal"
+                  - $ref: "#/components/schemas/WorkerError"
   /worker/sessions:
     post:
       operationId: createWorkerSession
@@ -1400,7 +1451,7 @@ components:
             reason: { type: string, const: backend_unavailable }
             operation:
               type: string
-              enum: [register_worker, heartbeat_worker, heartbeat_workflow_task, complete_workflow_task, complete_activity_task, poll_workflow_task, poll_activity_task, poll_query_task, poll_update_validation_task]
+              enum: [register_worker, deregister_worker, heartbeat_worker, heartbeat_workflow_task, complete_workflow_task, complete_activity_task, poll_workflow_task, poll_activity_task, poll_query_task, poll_update_validation_task]
             outcome: { type: string, const: unknown }
             worker_id: { type: [string, "null"], minLength: 1, maxLength: 255 }
             task_queue: { type: [string, "null"], minLength: 1, maxLength: 255 }
@@ -1454,6 +1505,12 @@ components:
           required: [worker_id, registered, namespace, task_queue, runtime, capabilities, capability_manifest, status, heartbeat_interval_seconds]
           properties:
             worker_id: { type: string, minLength: 1 }
+            registration_token:
+              type: string
+              pattern: "^[a-f0-9]{32}$"
+              minLength: 32
+              maxLength: 32
+              description: Incarnation fence returned when worker_deregistration_fencing is advertised. Rotates on registration, never on heartbeat.
             registered: { type: boolean, const: true }
             namespace: { type: string, minLength: 1 }
             task_queue: { type: string, minLength: 1 }
@@ -1541,6 +1598,14 @@ components:
       additionalProperties: true
       required: [supported_workflow_task_commands, workflow_task_poll_request_idempotency, workflow_memo_updates, message_streams, typed_search_attributes, condition_wait_occurrence_identity, update_validation_tasks, synchronous_update_validation, local_activities, sticky_execution]
       properties:
+        worker_deregistration_fencing:
+          type: object
+          required: [schema, supported, endpoint, receipt_retention_seconds]
+          properties:
+            schema: { type: string, const: durable-workflow.v2.worker-deregistration.v1 }
+            supported: { type: boolean }
+            endpoint: { type: string, const: "/worker/registrations/{workerId}/deregister" }
+            receipt_retention_seconds: { type: integer, const: 600 }
         cooperative_cancellation:
           type: boolean
           description: Explicit support for claim-bound cooperative request delivery, requiring worker protocol 1.20 or newer in the same major version. Workers must opt in on an immutable claim.
@@ -1754,6 +1819,26 @@ components:
         worker_id: { type: string, minLength: 1 }
         outcome: { type: string, const: deregistered }
         recovered_workflow_task_count: { type: integer, minimum: 0 }
+    FencedWorkerDeregistrationResult:
+      allOf:
+        - $ref: "#/components/schemas/WorkerDeregistrationResult"
+        - type: object
+          required: [registration_token]
+          properties:
+            registration_token: { type: string, pattern: "^[a-f0-9]{32}$", minLength: 32, maxLength: 32 }
+    FencedWorkerDeregistrationUnavailable:
+      allOf:
+        - $ref: "#/components/schemas/WorkerError"
+        - type: object
+          required: [reason, operation, worker_id, registration_token, outcome, retryable, retry_after_seconds]
+          properties:
+            reason: { type: string, enum: [backend_lock_pressure, backend_unavailable] }
+            operation: { type: string, const: deregister_worker }
+            worker_id: { type: [string, "null"] }
+            registration_token: { type: [string, "null"] }
+            outcome: { type: string, const: unknown }
+            retryable: { type: boolean }
+            retry_after_seconds: { type: integer, minimum: 1 }
     PollRequest:
       type: object
       additionalProperties: true

@@ -213,6 +213,15 @@ return Application::configure(basePath: dirname(__DIR__))
             };
 
             if ($taskKind === null) {
+                if ($request->isMethod('POST') && $request->is('api/worker/registrations/*/deregister')) {
+                    $response = BackendUnavailable::workerResponse($request);
+                    if ($response !== null) {
+                        $payload = $response->getData(true);
+                        $payload['reason'] = 'backend_lock_pressure';
+
+                        return WorkerProtocol::json($payload, 503)->header('Retry-After', '1');
+                    }
+                }
                 if (! BackendLockPressure::isSqliteBackend()) {
                     return null;
                 }

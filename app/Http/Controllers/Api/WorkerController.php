@@ -6,6 +6,7 @@ use App\Contracts\AuthProvider;
 use App\Http\Middleware\Authenticate;
 use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
+use App\Models\WorkerRegistrationIncarnation;
 use App\Support\AvroPayloadEnvelopeResolver;
 use App\Support\BackendLockPressure;
 use App\Support\CachedPollTaskKindConflict;
@@ -417,6 +418,21 @@ class WorkerController
                     $workerCapabilities,
                     $capabilityManifest,
                 ): WorkerRegistration {
+                    $previous = WorkerRegistration::query()
+                        ->where('namespace', $namespace)
+                        ->where('worker_id', $workerId)
+                        ->lockForUpdate()
+                        ->first();
+                    if (is_string($previous?->registration_token)) {
+                        WorkerRegistrationIncarnation::query()
+                            ->whereKey($previous->registration_token)
+                            ->where('status', WorkerRegistrationIncarnation::ACTIVE)
+                            ->update([
+                                'status' => WorkerRegistrationIncarnation::SUPERSEDED,
+                                'finished_at' => now(),
+                            ]);
+                    }
+                    $registrationToken = bin2hex(random_bytes(16));
                     $registration = WorkerRegistration::updateOrCreate(
                         [
                             'worker_id' => $workerId,
@@ -424,6 +440,7 @@ class WorkerController
                         ],
                         [
                             'task_queue' => $validated['task_queue'],
+                            'registration_token' => $registrationToken,
                             'runtime' => $validated['runtime'],
                             'sdk_version' => $validated['sdk_version'] ?? null,
                             'build_id' => $validated['build_id'] ?? null,
@@ -454,6 +471,13 @@ class WorkerController
                             'status' => $registrationStatus,
                         ]
                     );
+
+                    WorkerRegistrationIncarnation::query()->create([
+                        'token' => $registrationToken,
+                        'namespace' => $namespace,
+                        'worker_id' => $workerId,
+                        'status' => WorkerRegistrationIncarnation::ACTIVE,
+                    ]);
 
                     if ($releaseLeasesForRegistration) {
                         $this->releaseLeasedWorkflowTasksForReplacedWorker($namespace, $workerId);
@@ -486,6 +510,8 @@ class WorkerController
         return WorkerProtocol::json([
             'worker_id' => $workerId,
             'registered' => true,
+            ...(\App\Support\FencedWorkerDeregistration::available()
+                ? ['registration_token' => $registration->registration_token] : []),
             'namespace' => $registration->namespace,
             'task_queue' => $registration->task_queue,
             'runtime' => $registration->runtime,

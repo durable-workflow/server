@@ -1,5 +1,6 @@
 <?php
 
+use App\Models\WorkerRegistrationIncarnation;
 use App\Models\WorkflowNamespace;
 use App\Support\ActivityTimeoutGuard;
 use App\Support\ActivityTimeoutScanner;
@@ -325,6 +326,8 @@ Artisan::command('history:prune {--limit=100 : Maximum expired runs to prune per
 
         return 1;
     }
+
+    WorkerRegistrationIncarnation::pruneExpired(max(1, (int) $this->option('limit')), $this->option('namespace'));
 
     $limit = max(1, (int) $this->option('limit'));
     $namespaceFilter = $this->option('namespace');
