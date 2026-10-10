@@ -1,0 +1,26 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "worker-sdk-original-failure",
+  "workflow_type": "parity.v1.echo",
+  "input": {"message": "SDK original failure λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {"type": "map", "value": {
+    "message": {"type": "string", "value": "SDK original failure λ"},
+    "count": {"type": "int64", "value": "9007199254740993"},
+    "optional": {"type": "null", "value": null}
+  }},
+  "activity": false,
+  "expected_events": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"],
+  "worker_deregistration": {
+    "scope": "same_connection_default_namespace_registration_receipt",
+    "schema": "durable-workflow.v2.worker-deregistration.v1",
+    "receipt_retention_seconds": 600,
+    "sdk_persistent_pressure": true,
+    "original_worker_failure": true,
+    "peer_suffix": "-leased",
+    "peer_workflow_type": "parity.v1.echo",
+    "expected_peer_events": ["StartAccepted", "WorkflowStarted", "RepairRequested", "RepairRequested", "WorkflowCompleted"],
+    "first_stale_reason": "task_not_leased",
+    "replacement_stale_reason": "workflow_task_attempt_mismatch",
+    "recovered_workflow_task_count": 1
+  }
+}
