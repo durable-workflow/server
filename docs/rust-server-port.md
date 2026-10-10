@@ -181,6 +181,14 @@ required. NUL is still covered by the separate HTTP normalization corpus. This
 does not qualify literal-NUL cancellation reasons across database families.
 The correction and published-artifact follow-through remain separately tracked
 in #741; the pending fixture is retained for qualification of that fix.
+The [reviewed correction](https://github.com/durable-workflow/workflow/issues/741#issuecomment-6091333824)
+renders the complete cancellation/termination diagnostic as a JSON string literal
+when it contains NUL, identically in failure storage and terminal history.
+Decoding recovers the original complete diagnostic; ordinary diagnostics remain
+unchanged. Original reasons remain byte-exact in Avro command/history payloads,
+with original failure type, source, run and identity. Source implementation and
+published-artifact qualification are pending; the frozen failing reference is
+retained and does not become a pass from this contract decision.
 The final cancellation head `741401bc80e2b13b86ae031f3fe88272855f1d03`
 passes all six configurations in [run 38005623457](https://github.com/durable-workflow/server/actions/runs/38005623457),
 including all 17 shared cases, 23 native HTTP tests/configuration and actual
@@ -191,8 +199,9 @@ native library tests include both normalization regressions. PHP/source
 [run 38005623473](https://github.com/durable-workflow/server/actions/runs/38005623473)
 passes 2,601 tests / 57,156 assertions. [PR #346](https://github.com/durable-workflow/server/pull/346)
 is merged at `eb863bd3c1548e7fb446cfca7e75b07bbdc250d8` with the exact tested
-tree. Its main shared fixture check also passes; the main PHP/source check is
-still running at this log update.
+tree. Its main [shared fixture](https://github.com/durable-workflow/server/actions/runs/38006383023)
+and [PHP/source](https://github.com/durable-workflow/server/actions/runs/38006383136)
+checks also pass.
 The frozen HTTP selected-run route validates the current run, then records an
 instance-scoped command; embedded `loadRun` records a run-scoped command.
 Fixtures declare and verify both receipt representations before comparing their
