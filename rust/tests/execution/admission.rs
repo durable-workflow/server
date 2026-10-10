@@ -1,7 +1,7 @@
 use super::*;
 use axum::http::HeaderMap;
 
-async fn admission_http(
+pub(super) async fn admission_http(
     app: &Router,
     method: &str,
     uri: &str,

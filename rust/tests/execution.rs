@@ -25,6 +25,9 @@ mod visibility;
 #[path = "execution/admission.rs"]
 mod admission;
 
+#[path = "execution/namespaces.rs"]
+mod namespaces;
+
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
     Postgres {
