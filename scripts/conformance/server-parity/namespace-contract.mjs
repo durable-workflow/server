@@ -99,10 +99,12 @@ export function checkNamespaces(fixture, observation, workflowId, checkRun) {
       }
     }
     assert.deepStrictEqual(state.worker_refusals.map(item => item.kind), ['workflow', 'activity', 'workflow'], 'foreign completion attempts occur before each real commit');
-    for (const refusal of state.worker_refusals) {
+    for (const [index, refusal] of state.worker_refusals.entries()) {
       assert.deepStrictEqual(refusal.after, refusal.before, 'foreign known task completion preserves complete original description and history');
       assert.equal(refusal.before.workflow_id, ids[0], 'foreign task probe preserves original workflow target');
       assert.equal(refusal.before.run_id, state.runs[0].run_id, 'foreign task probe preserves original run target');
+      assert.equal(refusal.before.status, ['pending','waiting','waiting'][index], 'task leasing preserves authored lifecycle state');
+      assert.equal(refusal.before.execution.status, refusal.before.status, 'original description and selected state agree');
       assert.equal(refusal.receipt.status, 404, 'foreign known task transport refusal');
       assert.equal(refusal.receipt.response.reason, 'task_not_found', 'namespace fence precedes same-ID lease authority');
       assert.equal(refusal.request.lease_owner, state.worker_id, 'foreign completion supplied actual same-ID lease owner');

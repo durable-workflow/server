@@ -275,6 +275,14 @@ async fn same_worker_id_isolated_claims_completion_and_deregistration_by_namespa
         .0,
         StatusCode::OK
     );
+    let heartbeat = scoped(&app,"beta","POST",
+        &format!("/api/worker/workflow-tasks/{}/heartbeat",second_task["task_id"].as_str().unwrap()),
+        json!({"lease_owner":second_task["lease_owner"],"workflow_task_attempt":second_task["workflow_task_attempt"]})).await;
+    assert_eq!(heartbeat.0, StatusCode::OK, "{}", heartbeat.1);
+    assert_eq!(
+        heartbeat.1["renewed"], true,
+        "other namespace deregistration preserves the actual original task lease"
+    );
     let second_path = format!(
         "/api/worker/workflow-tasks/{}/complete",
         second_task["task_id"].as_str().unwrap()

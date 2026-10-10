@@ -825,12 +825,9 @@ where
             Self::query("UPDATE workflow_tasks SET status='leased',lease_owner=$1,lease_expires_at=$2,attempt_count=$3,leased_at=$4,payload=$5 WHERE id=$6")
                 .bind(worker_id).bind(DB::bind_time(expires)).bind(attempt).bind(DB::bind_time(leased_at))
                 .bind(DB::document(&task_payload)).bind(&task_id).execute(&mut *tx).await?;
-            if kind == "workflow" && DB::string(&run, "status")? == "pending" {
-                Self::query("UPDATE workflow_runs SET status='running' WHERE id=$1")
-                    .bind(&run_id)
-                    .execute(&mut *tx)
-                    .await?;
-            }
+            // A lease is worker authority, not an authored lifecycle commit.
+            // Published PHP keeps the admitted run pending until commands
+            // change its state; the poll and description must agree.
             let mut claim = json!({"task_id": task_id, "workflow_id": DB::string(&run,"workflow_instance_id")?,
                 "run_id": run_id, "workflow_instance_id": DB::string(&run,"workflow_instance_id")?, "workflow_run_id": run_id,
                 "workflow_type": DB::string(&run,"workflow_type")?, "namespace": self.namespace.as_ref(), "payload_codec": "avro",
