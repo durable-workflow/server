@@ -22,7 +22,7 @@
     "steps": ["create", "pause", "trigger_while_paused", "resume", "trigger", "complete_original_workflow", "delete", "trigger_after_delete", "fresh_history"],
     "paused_trigger": {"outcome": "skipped", "reason": "status_not_triggerable", "starts_workflow": false},
     "deleted_http_trigger": {"status": 404, "reason": "schedule_not_found"},
-    "expected_events": ["ScheduleCreated", "SchedulePaused", "ScheduleSkipped", "ScheduleResumed", "ScheduleTriggered", "ScheduleDeleted"],
+    "expected_events": ["ScheduleCreated", "SchedulePaused", "ScheduleTriggerSkipped", "ScheduleResumed", "ScheduleTriggered", "ScheduleDeleted"],
     "completed_workflows": 1
   },
   "review_state": "pending_reference_and_native_qualification",
