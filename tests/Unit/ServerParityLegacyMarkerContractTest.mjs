@@ -90,4 +90,35 @@ for (const id of ['legacy-two-markers-pending', 'legacy-two-markers-completed', 
     raw.patch_deployment.original.requests.find(request => request.path.endsWith('/complete')).request.sticky_cache = {ttl_seconds: 1};
     assert.throws(() => checkLegacyMarkerDeployment(fixture, raw, 'test'));
   });
+  for (const phase of ['original', 'replacement']) for (const kind of ['workflow', 'activity', 'query']) {
+    function cancelledModel() {
+      const raw = model('http');
+      raw.patch_deployment[phase].requests.push({method: 'POST', path: '/api/worker/'+kind+'-tasks/poll',
+        request: {worker_id: 'test:'+phase, task_queue: 'server-parity-v1'}, status: 0,
+        transport_error: null, client_cancelled: true, response_encoding: 'identity', response_retry_after: null, response: []});
+      return raw;
+    }
+    test(`${id} ${phase}: accepts clean ${kind} poll cancellation after commit`, () => {
+      checkLegacyMarkerDeployment(fixture, cancelledModel(), 'test');
+    });
+    for (const [name, mutate] of [
+      ['cancelled completion', x => x.path = '/api/worker/'+kind+'-tasks/task/complete'],
+      ['cancelled fail', x => x.path = '/api/worker/'+kind+'-tasks/task/fail'],
+      ['transport failure', x => x.transport_error = 'connection reset'],
+      ['HTTP failure', x => x.status = 500],
+      ['foreign worker', x => x.request.worker_id = 'other-worker'],
+      ['foreign queue', x => x.request.task_queue = 'other-queue'],
+      ['response body', x => x.response = {task: 'lost-task'}],
+      ['response compression', x => x.response_encoding = 'gzip'],
+      ['retry hint', x => x.response_retry_after = '1'],
+    ]) test(`${id} ${phase} ${kind}: rejects ${name}`, () => {
+      const raw = cancelledModel(); mutate(raw.patch_deployment[phase].requests.at(-1));
+      assert.throws(() => checkLegacyMarkerDeployment(fixture, raw, 'test'));
+    });
+    test(`${id} ${phase} ${kind}: rejects cancellation before accepted commit`, () => {
+      const raw = cancelledModel(), requests = raw.patch_deployment[phase].requests;
+      requests.unshift(requests.pop());
+      assert.throws(() => checkLegacyMarkerDeployment(fixture, raw, 'test'));
+    });
+  }
 }

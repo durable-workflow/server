@@ -7,6 +7,7 @@ import {basename, dirname, resolve} from 'node:path';
 import {parseArgs} from 'node:util';
 import {checkObservation, compareRecords} from './server-parity/contract.mjs';
 import {checkPublishedPatchArtifacts, checkPatchPackageObservation} from './server-parity/patch-deployment-contract.mjs';
+import {checkLegacyMarkerArtifacts, checkLegacyMarkerPackageObservation} from './server-parity/legacy-marker-contract.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const {values, positionals} = parseArgs({allowPositionals: true, options: {
@@ -68,6 +69,7 @@ try {
       const path = byName[name];
       const fixture = json(path);
       checkPublishedPatchArtifacts(fixture, record.artifacts);
+      if (fixture.patch_deployment?.legacy_marker_history) checkLegacyMarkerArtifacts(fixture, record.artifacts);
       const workflowId = `${values.prefix}-${fixture.id}`;
       const arguments_ = [resolve(root, 'scripts/conformance/server-parity/probe.php'), '--mode', values.mode, '--fixture', path, '--workflow-id', workflowId];
       for (const flag of ['url', 'application-root']) {
@@ -86,7 +88,8 @@ try {
         if (record.artifacts.sdk_php_source_commit && item.observation.sdk_php_source !== record.artifacts.sdk_php_source_commit) {
           throw new Error('Installed SDK source does not match the selected source-feature tuple');
         }
-        checkPatchPackageObservation(fixture, item.observation, record.artifacts);
+        if (fixture.patch_deployment?.legacy_marker_history) checkLegacyMarkerPackageObservation(fixture, item.observation, record.artifacts);
+        else checkPatchPackageObservation(fixture, item.observation, record.artifacts);
         item.outcome = 'product-fail';
         item.projection = checkObservation(fixture, item.observation, workflowId);
         item.outcome = 'pass';

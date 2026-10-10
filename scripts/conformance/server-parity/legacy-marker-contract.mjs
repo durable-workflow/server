@@ -13,6 +13,8 @@ export function checkLegacyMarkerArtifacts(fixture, artifacts) {
   assert.equal(spec.original_patch, true);
   assert.equal(spec.repeated_calls, 2);
   assert.deepEqual(spec.expected_decisions, [true, true]);
+  assert.deepEqual(spec.cancel_poll_on_shutdown, ['workflow', 'activity', 'query'],
+    'explicit clean published-worker shutdown poll policy');
   for (const selected of [spec.producer, spec.consumer]) {
     assert(['python', 'rust'].includes(selected.language));
     const installed = artifacts.published_sdk_artifacts?.[selected.language];
@@ -166,9 +168,13 @@ export function checkLegacyMarkerDeployment(fixture, observation, workflowId) {
         if (request.client_cancelled) {
           assert.equal(request.status, 0);
           assert.equal(request.method, 'POST');
-          assert.equal(request.path, '/api/worker/query-tasks/poll');
-          assert(workers.includes(request.request.worker_id));
+          assert(spec.cancel_poll_on_shutdown.map(kind => '/api/worker/'+kind+'-tasks/poll').includes(request.path));
+          assert(workers.slice(0, registrations).includes(request.request.worker_id));
           assert.equal(request.request.task_queue, 'server-parity-v1');
+          assert.equal(request.response_encoding, 'identity');
+          assert.equal(request.response_retry_after, null);
+          assert(request.response && typeof request.response === 'object' && Object.keys(request.response).length === 0,
+            'cancelled poll has an empty response');
           assert(phase.requests.slice(0, index).some(item => completions(phase).includes(item) && item.status === 200), 'authored commit precedes shutdown cancellation');
         } else if (request.status === 503) {
           assert.equal(request.method, 'POST');

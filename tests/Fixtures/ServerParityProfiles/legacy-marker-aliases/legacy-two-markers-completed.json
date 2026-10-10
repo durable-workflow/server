@@ -71,7 +71,7 @@
       "require_same_request": true,
       "require_positive_retry_after": true
     },
-    "cancel_query_poll_on_shutdown": true
+    "cancel_poll_on_shutdown": ["workflow", "activity", "query"]
   },
   "expected_events": [
     "StartAccepted",
