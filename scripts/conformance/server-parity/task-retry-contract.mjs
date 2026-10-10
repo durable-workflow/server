@@ -81,7 +81,7 @@ export function checkTaskRetry(fixture, observation, workflowId) {
   assert.equal(state.late_failure.status, 409);
   assert.equal(state.late_failure.response.task_id, state.last_task.task_id);
   assert.equal(state.late_failure.response.workflow_task_attempt, definition.failures.length + 1);
-  assert.equal(state.late_failure.response.reason, 'task_not_leased');
+  assert.equal(state.late_failure.response.reason, 'run_closed');
   assert.deepStrictEqual(state.after_terminal_refusal, state.final);
   const late = fails.at(-1);
   assert.equal(late.status, 409);

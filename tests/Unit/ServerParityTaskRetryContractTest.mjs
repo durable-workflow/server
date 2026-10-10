@@ -33,7 +33,7 @@ function model() {
   const final={...structuredClone(before),status:'completed',typed_output:structuredClone(fixture.typed_value),events:structuredClone(events)};
   return structuredClone({mode:'http',run_id:'main-run',workflow_task_retry:{applicable:true,worker_id:'test-retry-worker',
     peer_workflow_id:'test-retry',peer_run_id:'peer-run',before,steps,last_task:task(3),completion,final,idle_poll:null,
-    late_failure:refusal(3),after_terminal_refusal:structuredClone(final),requests}});
+    late_failure:{...refusal(3),response:{...refusal(3).response,reason:'run_closed'}},after_terminal_refusal:structuredClone(final),requests}});
 }
 test('ordinary task retry model preserves two failures then one original-run completion',()=>
   assert.deepStrictEqual(checkTaskRetry(fixture,model(),'test').attempts,[1,2,3]));
