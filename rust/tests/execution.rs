@@ -1963,6 +1963,113 @@ async fn null_task_availability_is_ready_but_future_work_remains_waiting() {
 }
 
 #[tokio::test]
+async fn cooperative_root_request_preserves_original_context_across_duplicates_and_fresh_pools() {
+    let database = TestDatabase::new().await;
+    let runtime_a = database.open().await.unwrap();
+    let runtime_b = database.open().await.unwrap();
+    let app_a = router(runtime_a.clone());
+    let app_b = router(runtime_b.clone());
+    let started = start(&app_a, "cooperative-root").await;
+    let workflow = json!("cooperative-root");
+    let run = started["run_id"].clone();
+    let path = format!(
+        "/api/workflows/cooperative-root/runs/{}/request-cancellation",
+        run.as_str().unwrap()
+    );
+    let prefix = run_history(&app_b, &workflow, &run).await;
+    let accepted = request(
+        &app_a,
+        "POST",
+        &path,
+        json!({"reason":"cooperative cancellation λ","cleanup_timeout_seconds":30}),
+    )
+    .await;
+    // This is the tests-first native gap: the published root request contract
+    // has already executed in PHP and embedded mode. Admission alone does not
+    // establish cleanup, worker protocol support or a completed workflow.
+    assert_eq!(accepted.0, StatusCode::OK, "{}", accepted.1);
+    assert_eq!(accepted.1["accepted"], true);
+    assert_eq!(accepted.1["duplicate"], false);
+    assert_eq!(accepted.1["run_status"], "pending");
+    let pending = &accepted.1["cancellation_request"];
+    assert!(
+        pending["request_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty())
+    );
+    assert_eq!(pending["delivery_sequence"], Value::Null);
+    assert_eq!(pending["delivered_at"], Value::Null);
+    let requested_at =
+        chrono::DateTime::parse_from_rfc3339(pending["requested_at"].as_str().unwrap()).unwrap();
+    let deadline =
+        chrono::DateTime::parse_from_rfc3339(pending["cleanup_deadline_at"].as_str().unwrap())
+            .unwrap();
+    assert_eq!(
+        (deadline - requested_at).num_microseconds(),
+        Some(30_000_000)
+    );
+    let history = run_history(&app_b, &workflow, &run).await;
+    let events = history.as_array().unwrap();
+    assert_eq!(&events[..2], prefix.as_array().unwrap());
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[2]["event_type"], "CooperativeCancellationRequested");
+    let context = &events[2]["payload"]["cancellation"];
+    assert_eq!(
+        context["schema"],
+        "durable-workflow.cancellation-context/v1"
+    );
+    assert_eq!(context["request_id"], pending["request_id"]);
+    assert_eq!(context["root_request_id"], pending["request_id"]);
+    assert_eq!(context["root_workflow_instance_id"], workflow);
+    assert_eq!(context["root_workflow_run_id"], run);
+    assert_eq!(context["parent_request_id"], Value::Null);
+    assert_eq!(context["reason"], "cooperative cancellation λ");
+    assert_eq!(context["requested_at"], pending["requested_at"]);
+    assert_eq!(
+        context["cleanup_deadline_at"],
+        pending["cleanup_deadline_at"]
+    );
+    assert_eq!(
+        context["requester"],
+        json!({"type":"auth:token","id":"legacy-token","label":"Admin"})
+    );
+    assert_eq!(context["source"], "control_plane");
+    assert_eq!(
+        context["lineage"],
+        json!([{"request_id":pending["request_id"],"workflow_instance_id":workflow,"workflow_run_id":run}])
+    );
+    for app in [&app_a, &app_b] {
+        let duplicate = request(
+            app,
+            "POST",
+            &path,
+            json!({"reason":"replacement","cleanup_timeout_seconds":300}),
+        )
+        .await;
+        assert_eq!(duplicate.0, StatusCode::OK, "{}", duplicate.1);
+        assert_eq!(duplicate.1["duplicate"], true);
+        assert_eq!(duplicate.1["cancellation_request"], *pending);
+        assert_eq!(run_history(app, &workflow, &run).await, history);
+    }
+    runtime_a.close().await;
+    runtime_b.close().await;
+    let fresh = database.open().await.unwrap();
+    let app = router(fresh.clone());
+    let duplicate = request(
+        &app,
+        "POST",
+        &path,
+        json!({"reason":"fresh replacement","cleanup_timeout_seconds":3600}),
+    )
+    .await;
+    assert_eq!(duplicate.0, StatusCode::OK, "{}", duplicate.1);
+    assert_eq!(duplicate.1["cancellation_request"], *pending);
+    assert_eq!(run_history(&app, &workflow, &run).await, history);
+    fresh.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
 async fn immediate_cancellation_closes_original_work_once_and_survives_fresh_pools() {
     for phase in ["before_claim", "pending_timer", "leased_activity"] {
         let database = TestDatabase::new().await;

@@ -18,6 +18,38 @@ use function Workflow\V2\timer;
 use function Workflow\V2\signal;
 use function Workflow\V2\child;
 
+#[Type('parity.v1.cooperative_cleanup')]
+final class CooperativeCleanupWorkflow extends Workflow
+{
+    public function handle(array $value): array
+    {
+        try {
+            timer(60);
+        } catch (\Workflow\V2\Exceptions\WorkflowCancellationRequestedException $cancel) {
+            $snapshot = $cancel->cancellation?->toArray() ?? throw new \RuntimeException('Canonical embedded root context is missing.');
+
+            return self::cancellationShield(static function () use ($value, $snapshot): array {
+                timer($value['cleanup_delay_seconds']);
+
+                return activity(CooperativeCleanupActivity::class, $value, $snapshot);
+            });
+        }
+
+        throw new \RuntimeException('The original timer unexpectedly completed without cancellation.');
+    }
+}
+
+#[Type('parity.v1.cooperative_cleanup_activity')]
+final class CooperativeCleanupActivity extends Activity
+{
+    public function handle(array $value, array $snapshot): array
+    {
+        $this->heartbeat(['details' => ['request_id' => $snapshot['request_id']]]);
+
+        return ['value' => $value, 'cancellation' => $snapshot];
+    }
+}
+
 #[Type('parity.v1.cancel_before_claim')]
 final class CancelBeforeClaimWorkflow extends Workflow
 {

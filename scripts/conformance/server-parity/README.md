@@ -22,12 +22,23 @@ reproducer blocks full reason parity under Workflow #741: frozen embedded
 PostgreSQL silently truncates the physical failure message. The portable
 Unicode-padded case retains the complete failure/history consistency check.
 
+The reviewed root cooperative-cancellation definitions also remain pending
+native qualification. Their adapter uses explicit worker protocol 1.20 and
+the normal published cooperative worker. Cleanup completion is still a
+cancelled workflow; its original context is carried through a real timer,
+activity and heartbeat. A separate expiry case closes the original budget
+before the cleanup activity runs. The HTTP reference needs its ordinary
+`workflow:v2:repair-pass` role running against its isolated database so expired
+cleanup is enforced. Embedded execution invokes the installed watchdog and
+uses `DW_MODE=embedded` before application bootstrap. Neither adapter edits
+time or writes its own history/terminal rows.
+
 Requirements: Node 20+, PHP 8.3+ with PDO SQLite/pcntl, and Composer. The pinned
 published Server image contains these tools. Install the exact adapter:
 
 ```bash
 composer install --working-dir=scripts/conformance/server-parity --no-interaction
-node --test tests/Unit/ServerParityRunnerTest.mjs
+node --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs
 ```
 
 Use **separate, already bootstrapped databases** for PHP, Rust and embedded.

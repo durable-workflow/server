@@ -85,6 +85,9 @@ function decodeHistory(array $events, callable $decode): array
         if (isset($payload['activity']['arguments'])) {
             $decoded['activity_arguments'] = $decode($payload['activity']['arguments']);
         }
+        if ($event['event_type'] === 'CooperativeCancellationRequested') {
+            $decoded['cancellation_command'] = $decode($payload['command']['payload']);
+        }
         $event['decoded'] = $decoded;
         $event['typed_decoded'] = array_map(typedValue(...), $decoded);
 
@@ -700,13 +703,18 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
 
 try {
     require __DIR__.'/cancellation-probe.php';
+    require __DIR__.'/cooperative-probe.php';
     $observation = match ($mode) {
-        'http' => isset($fixture['immediate_cancellation'])
+        'http' => isset($fixture['cooperative_cancellation'])
+            ? httpCooperativeObservation($fixture, $workflowId, $namespace, $queue, $options['url'])
+            : (isset($fixture['immediate_cancellation'])
             ? httpCancellationObservation($fixture, $workflowId, $namespace, $queue, $options['url'])
-            : httpObservation($fixture, $workflowId, $namespace, $queue, $options['url'], $options['fixture']),
-        'embedded' => isset($fixture['immediate_cancellation'])
+            : httpObservation($fixture, $workflowId, $namespace, $queue, $options['url'], $options['fixture'])),
+        'embedded' => isset($fixture['cooperative_cancellation'])
+            ? embeddedCooperativeObservation($fixture, $workflowId, $namespace, $queue, $options['application-root'])
+            : (isset($fixture['immediate_cancellation'])
             ? embeddedCancellationObservation($fixture, $workflowId, $namespace, $queue, $options['application-root'])
-            : embeddedObservation($fixture, $workflowId, $namespace, $queue, $options['application-root']),
+            : embeddedObservation($fixture, $workflowId, $namespace, $queue, $options['application-root'])),
         default => throw new InvalidArgumentException('Mode must be http or embedded.'),
     };
     $observation['typed_input'] = typedValue($observation['input']);

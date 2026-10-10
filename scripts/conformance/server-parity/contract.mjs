@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {checkActivityRetry} from './retry-contract.mjs';
 import {checkTerminalActivityFailure} from './failure-contract.mjs';
 import {checkImmediateCancellation} from './cancellation-contract.mjs';
+import {checkCooperativeCancellation} from './cooperative-contract.mjs';
 
 function instantNanoseconds(value) {
   const shape = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.(\d{1,9}))?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
@@ -23,10 +24,11 @@ export function checkObservation(fixture, observation, workflowId) {
   equal(observation.workflow_type, fixture.workflow_type, 'registered workflow type');
   equal(observation.namespace, 'default', 'namespace');
   equal(observation.task_queue, 'server-parity-v1', 'task queue');
-  equal(observation.status, fixture.immediate_cancellation ? 'cancelled' : 'completed', 'actual durable terminal state');
+  const cancelled = Boolean(fixture.immediate_cancellation || fixture.cooperative_cancellation);
+  equal(observation.status, cancelled ? 'cancelled' : 'completed', 'actual durable terminal state');
   equal(observation.payload_codec, 'avro', 'payload codec');
-  const output = fixture.immediate_cancellation ? null : fixture.output ?? fixture.signal_value ?? fixture.input;
-  const typedOutput = fixture.immediate_cancellation ? {type: 'null', value: null} : fixture.typed_output ?? fixture.typed_signal_value ?? fixture.typed_value;
+  const output = cancelled ? null : fixture.output ?? fixture.signal_value ?? fixture.input;
+  const typedOutput = cancelled ? {type: 'null', value: null} : fixture.typed_output ?? fixture.typed_signal_value ?? fixture.typed_value;
   equal(observation.input, fixture.signal_count ? [fixture.input, fixture.signal_count] : [fixture.input], 'decoded workflow input');
   equal(observation.output, output, 'decoded workflow result');
   const typedArguments = {type: 'list', value: [fixture.typed_value, ...(fixture.signal_count ? [{type: 'int64', value: String(fixture.signal_count)}] : [])]};
@@ -61,7 +63,9 @@ export function checkObservation(fixture, observation, workflowId) {
     assert.ok(Number.isFinite(time) && time >= previousTime, 'ordered recorded timestamps');
     previousTime = time;
   }
-  if (fixture.immediate_cancellation) {
+  if (fixture.cooperative_cancellation) {
+    // Its shielded cleanup result is an activity outcome, never workflow success.
+  } else if (fixture.immediate_cancellation) {
     checkImmediateCancellation(fixture, observation);
   } else {
     equal(events.at(-1).decoded.output, output, 'committed workflow result');
@@ -71,6 +75,8 @@ export function checkObservation(fixture, observation, workflowId) {
   const projectedQueries = [];
   const projectedUpdates = [];
   const projectedChildren = [];
+  const cooperative = fixture.cooperative_cancellation
+    ? checkCooperativeCancellation(fixture, observation, identities, projectedEvents, instantNanoseconds) : null;
   if (fixture.update_values) {
     equal(observation.updates.length, fixture.update_values.length, 'complete update observation inventory');
     equal(started.declared_updates, [fixture.update_name], 'original durable update declaration');
@@ -521,6 +527,7 @@ export function checkObservation(fixture, observation, workflowId) {
     run_timeout_seconds: 600, events: projectedEvents, ...(fixture.queries ? {queries: projectedQueries} : {}),
     ...(fixture.update_values ? {updates: projectedUpdates} : {}),
     ...(fixture.child_count ? {children: projectedChildren} : {}),
+    ...(cooperative ? {cooperative} : {}),
   };
 }
 

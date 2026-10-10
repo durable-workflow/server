@@ -216,6 +216,27 @@ attempt's `stale_attempt` refusal. The normal published SDK worker discards this
 closed-run result safely; the fixture checks both its actual report and an
 explicit repeated report without changing either response.
 
+The next root cooperative-cancellation slice is in draft
+[#348](https://github.com/durable-workflow/server/pull/348). Its three reviewed
+pending definitions execute before claim, after an original timer is scheduled,
+and through expiry of a longer shielded cleanup timer. All three execute and
+compare on the frozen published PHP Server and embedded Workflow references
+with the unchanged PHP SDK 2.2.6. The reference review rejects 71 corrupted
+observations; all 264 comparator tests pass, including 77 root cancellation
+model/corruption cases and the existing 187 tests. These local reference
+executions do not increase the 17-case passing native corpus. Native request,
+delivery, immutable claim proof, cleanup replay, deadline enforcement and the
+six-configuration qualification are pending.
+
+Deadline qualification runs the installed ordinary Server repair pass against
+actual wall-clock deadlines. It does not construct terminal history, alter time
+or patch the SDK. Embedded mode must be selected before Laravel bootstrap;
+each original timer is observed in the selected run before cancellation.
+Terminal diagnostics use the generated completion/expiry reason, while the
+original caller reason remains in canonical context and cleanup arguments.
+The separate PHP service-mode queue override inconsistency found during setup
+is tracked in [#349](https://github.com/durable-workflow/server/issues/349).
+
 Timeout/lease retries, uncaught failures and broader retry policies remain
 separate gates. This work is followed by cooperative cancellation, schedules, visibility, authorization/namespaces,
 streams and existing consumers. Each slice must run on the required database
