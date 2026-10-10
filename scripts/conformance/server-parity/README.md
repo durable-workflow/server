@@ -345,10 +345,12 @@ must stay unchanged across refusals and replay. Both repair commands and the
 final original task/attempt and Avro output are checked. Embedded mode executes
 the authored echo and records the HTTP lifecycle as explicitly inapplicable.
 
-`worker-fencing-profile.sh` runs that PHP/embedded source pair in separate
+`worker-fencing-profile.sh` runs PHP, Rust and embedded observations in separate
 databases alongside each normal hosted database cell. It adds no Cargo invocation.
 Cleanup and logs belong to the owning workflow's always-run steps. Select the
 pending fixture and source manifest with `--fixture` and `--artifacts` when
-recording; compare the two records with that same `--fixture`. Native fencing,
-role/namespace boundaries, expiry/pruning, rollback, real contention, transport
+recording; compare all three records with that same `--fixture`. The native
+terminal transaction and original task recovery are being qualified in #367;
+role/namespace boundaries, expiry/pruning and rollback have dedicated native
+tests. Real contention, transport
 reply loss and the SDK shutdown budget remain separate qualification gates.

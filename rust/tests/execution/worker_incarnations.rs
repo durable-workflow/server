@@ -261,11 +261,8 @@ fn definition() -> Value {
 async fn registered(app: &Router, namespace: &str) {
     let result = scoped(app, namespace, "POST", "/api/worker/register", definition()).await;
     assert_eq!(result.0, StatusCode::CREATED, "{}", result.1);
-    assert!(
-        result.1.get("registration_token").is_none(),
-        "identity is internal until fencing is qualified"
-    );
-    assert_ne!(
+    assert_eq!(result.1["registration_token"].as_str().unwrap().len(), 32);
+    assert_eq!(
         result.1["server_capabilities"]["worker_deregistration_fencing"]["supported"],
         json!(true)
     );

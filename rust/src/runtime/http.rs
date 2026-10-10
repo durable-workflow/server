@@ -94,6 +94,10 @@ pub fn router(runtime: Runtime) -> Router {
         .route("/api/worker/register", post(register))
         .route("/api/worker/heartbeat", post(worker_heartbeat))
         .route("/api/worker/registrations/{worker_id}", delete(deregister))
+        .route(
+            "/api/worker/registrations/{worker_id}/deregister",
+            post(deregister_fenced),
+        )
         .route("/api/workers/{worker_id}", delete(deregister))
         .route("/api/worker/workflow-tasks/poll", post(poll_workflow))
         .route(
@@ -320,6 +324,7 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
             parts.as_slice(),
             ["register" | "heartbeat"]
                 | ["registrations", _]
+                | ["registrations", _, "deregister"]
                 | ["workflow-tasks" | "activity-tasks", "poll"]
                 | ["query-tasks", "poll"]
                 | ["workflow-tasks", _, "complete" | "history" | "heartbeat"]
@@ -607,7 +612,16 @@ async fn register(
     Extension(runtime): Extension<Runtime>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
-    Ok((StatusCode::CREATED, Json(runtime.register(body).await?)))
+    Ok((
+        StatusCode::CREATED,
+        Json(worker_response(runtime.register(body).await?)),
+    ))
+}
+
+fn worker_response(mut body: Value) -> Value {
+    body["protocol_version"] = json!("1.20");
+    body["server_capabilities"] = capabilities();
+    body
 }
 async fn worker_heartbeat(
     Extension(runtime): Extension<Runtime>,
@@ -620,6 +634,39 @@ async fn deregister(
     Path(worker_id): Path<String>,
 ) -> Result<Json<Value>> {
     runtime.deregister(&worker_id).await.map(Json)
+}
+async fn deregister_fenced(
+    Extension(runtime): Extension<Runtime>,
+    Path(worker_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Response> {
+    match runtime.deregister_fenced(&worker_id, body.clone()).await {
+        Ok(receipt) => Ok(Json(worker_response(receipt)).into_response()),
+        Err(error) => {
+            if let super::RuntimeError::Protocol { status, response } = error {
+                return Err(super::RuntimeError::Protocol {
+                    status,
+                    response: worker_response(response),
+                });
+            }
+            let Some(reason) = super::worker_incarnations::transient_reason(&error) else {
+                return Err(error);
+            };
+            let mut response = (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(worker_response(json!({
+                    "reason":reason,"operation":"deregister_worker","worker_id":worker_id,
+                    "registration_token":body["registration_token"],"outcome":"unknown",
+                    "retryable":true,"retry_after_seconds":1
+                }))),
+            )
+                .into_response();
+            response
+                .headers_mut()
+                .insert("retry-after", HeaderValue::from_static("1"));
+            Ok(response)
+        }
+    }
 }
 async fn poll_workflow(
     Extension(runtime): Extension<Runtime>,
@@ -716,6 +763,11 @@ fn completion_refusal(
     message: &str,
 ) -> super::RuntimeError {
     match error {
+        super::RuntimeError::Refused { status, reason } if status == StatusCode::CONFLICT => {
+            let mut response = json!({"reason":reason,"message":reason,"task_id":task_id});
+            response[attempt_field] = attempt;
+            super::RuntimeError::Protocol { status, response }
+        }
         super::RuntimeError::Refused {
             status,
             reason: "task_not_found",

@@ -611,7 +611,7 @@ where
         self.rotate_incarnation(&mut tx, worker_id, &token).await?;
         tx.commit().await?;
         Ok(
-            json!({"worker_id": worker_id, "registered": true, "namespace": self.namespace.as_ref(), "task_queue": queue,
+            json!({"worker_id": worker_id, "registration_token":token, "registered": true, "namespace": self.namespace.as_ref(), "task_queue": queue,
             "runtime": body["runtime"], "build_id": body["build_id"], "heartbeat_interval_seconds": 10,
             "status": "active", "capabilities": body["capabilities"], "capability_manifest": body["capability_manifest"]}),
         )
@@ -1225,7 +1225,7 @@ where
                         &mut tx,
                         &run_id,
                         "WorkflowCompleted",
-                        json!({"output": wire(&output), "payload_codec": "avro"}),
+                        json!({"output": wire(&output), "payload_codec": "avro", "task":Self::task_snapshot(&task)?}),
                         Some(task_id),
                         None,
                     )
@@ -1762,6 +1762,7 @@ pub(super) fn reject_fields(body: &Value, allowed: &[&str]) -> Result<()> {
 
 pub(crate) fn capabilities() -> Value {
     json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "start_child_workflow", "open_condition_wait", "open_signal_wait", "complete_workflow"],
+        "worker_deregistration_fencing":{"schema":"durable-workflow.v2.worker-deregistration.v1","supported":true,"receipt_retention_seconds":600,"endpoint":"/worker/registrations/{workerId}/deregister"},
         "workflow_memo_updates": false, "cooperative_cancellation": true, "prepared_local_activities": false,
         "worker_sessions": false, "sticky_execution": false, "local_activities": false, "message_streams": false,
         "workflow_updates": true, "query_tasks": true, "query_task_poll_request_idempotency": false})

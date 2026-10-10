@@ -417,6 +417,14 @@ impl Runtime {
     delegate!(register(body: Value) -> Result<Value>);
     delegate!(worker_heartbeat(body: Value) -> Result<Value>);
     delegate!(deregister(worker_id: &str) -> Result<Value>);
+    pub(crate) async fn deregister_fenced(&self, worker_id: &str, body: Value) -> Result<Value> {
+        let codec = self.signal_codec.clone();
+        match &*self.storage {
+            Storage::Sqlite(store) => store.deregister_fenced(worker_id, body, codec).await,
+            Storage::Postgres(store) => store.deregister_fenced(worker_id, body, codec).await,
+            Storage::MySql(store) => store.deregister_fenced(worker_id, body, codec).await,
+        }
+    }
     delegate!(poll(body: Value, kind: &'static str, protocol_version: &str) -> Result<Value>);
     delegate!(heartbeat_task(task_id: &str, body: Value) -> Result<Value>);
     delegate!(deliver_cancellation(task_id: &str, body: Value, protocol: &str) -> Result<Value>);
