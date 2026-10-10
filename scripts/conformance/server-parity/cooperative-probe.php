@@ -46,51 +46,9 @@ function cooperativeObservedTransport(array &$traffic): Psr18Transport
     return new Psr18Transport(client: new GuzzleClient(['http_errors' => false, 'handler' => $stack]));
 }
 
-function httpCooperativeObservation(array $fixture, string $workflowId, string $namespace, string $queue, string $url): array
+function cooperativeCleanupWorker(Client $client, string $queue, callable $clock, callable $diagnostic): Worker
 {
-    $traffic = [];
-    $client = new Client($url, namespace: $namespace, token: getenv('DW_PARITY_TOKEN') ?: null,
-        transport: cooperativeObservedTransport($traffic), workerProtocolVersion: '1.20');
-    $phase = $fixture['cooperative_cancellation']['phase'];
-    $reason = $fixture['cooperative_cancellation']['reason'];
-    $budget = $fixture['cooperative_cancellation']['cleanup_timeout_seconds'];
-    $worker = $handle = null;
-    $before = $accepted = $afterRequest = $pendingDuplicate = $historyBeforePendingDuplicate = $historyAfterPendingDuplicate = null;
-    $deadline = microtime(true) + 30;
-    $request = static function () use ($client, $workflowId, $reason, $budget, &$handle, &$before, &$accepted,
-        &$afterRequest, &$pendingDuplicate, &$historyBeforePendingDuplicate, &$historyAfterPendingDuplicate): void {
-        $before = httpHistory($client, $workflowId, $handle->selectedRunId);
-        $accepted = $client->requestWorkflowCancellation($workflowId, $reason, $budget, $handle->selectedRunId);
-        $afterRequest = $handle->describeSelectedRun()->raw;
-        $historyBeforePendingDuplicate = httpHistory($client, $workflowId, $handle->selectedRunId);
-        $pendingDuplicate = $client->requestWorkflowCancellation($workflowId, 'replacement reason', 300, $handle->selectedRunId);
-        $historyAfterPendingDuplicate = httpHistory($client, $workflowId, $handle->selectedRunId);
-    };
-    $worker = (new Worker($client, $queue, enableCooperativeCancellation: true,
-        clock: static function () use (&$worker, &$handle, &$accepted, $client, $workflowId, $phase, $request, $deadline): float {
-            if (microtime(true) > $deadline) {
-                throw new RuntimeException('Cooperative worker exceeded its 30-second budget.');
-            }
-            if ($handle !== null && $accepted === null && $phase === 'pending_timer') {
-                $events = httpHistory($client, $workflowId, $handle->selectedRunId);
-                if (array_filter($events, static fn (array $event): bool => $event['event_type'] === 'TimerScheduled') !== []) {
-                    $request();
-                }
-            }
-            if ($handle !== null && $handle->describeSelectedRun()->isTerminal) {
-                $worker->requestShutdown();
-            }
-
-            return microtime(true);
-        },
-        diagnosticListener: static function (string $event) use (&$handle, $client, $fixture, $workflowId, $queue, $phase, $request): void {
-            if ($event === 'worker.registered') {
-                $handle = $client->startWorkflow($fixture['workflow_type'], $workflowId, $queue, [$fixture['input']]);
-                if ($phase === 'before_claim') {
-                    $request();
-                }
-            }
-        }))
+    return (new Worker($client, $queue, enableCooperativeCancellation: true, clock: $clock, diagnosticListener: $diagnostic))
         ->registerWorkflow('parity.v1.cooperative_cleanup', static function (WorkflowContext $context, array $value): array {
             try {
                 $context->sleep(60);
@@ -111,7 +69,78 @@ function httpCooperativeObservation(array $fixture, string $workflowId, string $
 
             return ['value' => $value, 'cancellation' => $snapshot];
         });
-    $worker->run(0);
+}
+
+function httpCooperativeObservation(array $fixture, string $workflowId, string $namespace, string $queue, string $url): array
+{
+    $traffic = [];
+    $diagnostics = [];
+    $client = new Client($url, namespace: $namespace, token: getenv('DW_PARITY_TOKEN') ?: null,
+        transport: cooperativeObservedTransport($traffic), workerProtocolVersion: '1.20');
+    $phase = $fixture['cooperative_cancellation']['phase'];
+    $reason = $fixture['cooperative_cancellation']['reason'];
+    $budget = $fixture['cooperative_cancellation']['cleanup_timeout_seconds'];
+    $worker = $handle = null;
+    $before = $accepted = $afterRequest = $pendingDuplicate = $historyBeforePendingDuplicate = $historyAfterPendingDuplicate = null;
+    $deadline = microtime(true) + 30;
+    $request = static function () use ($client, $workflowId, $reason, $budget, &$handle, &$before, &$accepted,
+        &$afterRequest, &$pendingDuplicate, &$historyBeforePendingDuplicate, &$historyAfterPendingDuplicate): void {
+        $before = httpHistory($client, $workflowId, $handle->selectedRunId);
+        $accepted = $client->requestWorkflowCancellation($workflowId, $reason, $budget, $handle->selectedRunId);
+        $afterRequest = $handle->describeSelectedRun()->raw;
+        $historyBeforePendingDuplicate = httpHistory($client, $workflowId, $handle->selectedRunId);
+        $pendingDuplicate = $client->requestWorkflowCancellation($workflowId, 'replacement reason', 300, $handle->selectedRunId);
+        $historyAfterPendingDuplicate = httpHistory($client, $workflowId, $handle->selectedRunId);
+    };
+    $worker = cooperativeCleanupWorker($client, $queue,
+        static function () use (&$worker, &$handle, &$accepted, $client, $workflowId, $phase, $request, $deadline): float {
+            if (microtime(true) > $deadline) {
+                throw new RuntimeException('Cooperative worker exceeded its 30-second budget.');
+            }
+            if ($handle !== null && $accepted === null && $phase === 'pending_timer') {
+                $events = httpHistory($client, $workflowId, $handle->selectedRunId);
+                if (array_filter($events, static fn (array $event): bool => $event['event_type'] === 'TimerScheduled') !== []) {
+                    $request();
+                }
+            }
+            if ($handle !== null && $handle->describeSelectedRun()->isTerminal) {
+                $worker->requestShutdown();
+            }
+
+            return microtime(true);
+        },
+        static function (string $event, array $details) use (&$handle, &$diagnostics, $client, $fixture, $workflowId, $queue, $phase, $request): void {
+            $diagnostics[] = ['event' => $event, 'details' => $details];
+            if (count($diagnostics) > 200) {
+                array_shift($diagnostics);
+            }
+            if ($event === 'worker.registered') {
+                $handle = $client->startWorkflow($fixture['workflow_type'], $workflowId, $queue, [$fixture['input']]);
+                if ($phase === 'before_claim') {
+                    $request();
+                }
+            }
+        });
+    try {
+        $worker->run(0);
+    } catch (Throwable $error) {
+        $directory = getenv('DW_PARITY_FAILURE_EVIDENCE_DIR');
+        if (is_string($directory) && is_dir($directory)) {
+            $evidence = ['error' => ['type' => $error::class, 'message' => $error->getMessage()],
+                'workflow_id' => $workflowId, 'traffic' => $traffic, 'diagnostics' => $diagnostics];
+            if ($handle !== null) {
+                try {
+                    $evidence['execution'] = $handle->describeSelectedRun()->raw;
+                    $evidence['events'] = httpHistory($client, $workflowId, $handle->selectedRunId);
+                } catch (Throwable $inspectionError) {
+                    $evidence['inspection_error'] = $inspectionError->getMessage();
+                }
+            }
+            $name = preg_replace('/[^A-Za-z0-9_.-]/', '_', $workflowId);
+            file_put_contents($directory.'/failure-'.$name.'.json', json_encode($evidence, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)."\n");
+        }
+        throw $error;
+    }
     $execution = $handle->describeSelectedRun();
     $events = httpHistory($client, $workflowId, $handle->selectedRunId);
     $postTerminalDuplicate = $client->requestWorkflowCancellation($workflowId, 'post-terminal replacement', 3600, $handle->selectedRunId);

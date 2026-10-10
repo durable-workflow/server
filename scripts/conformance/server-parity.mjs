@@ -56,7 +56,8 @@ try {
       for (const flag of ['url', 'application-root']) {
         if (values[flag]) arguments_.push(`--${flag}`, values[flag]);
       }
-      const probe = spawnSync('php', arguments_, {encoding: 'utf8', timeout: 45000, maxBuffer: 4 * 1024 * 1024});
+      const probe = spawnSync('php', arguments_, {encoding: 'utf8', timeout: 45000, maxBuffer: 4 * 1024 * 1024,
+        env: {...process.env, DW_PARITY_FAILURE_EVIDENCE_DIR: dirname(resolve(values.output))}});
       const item = {fixture_id: fixture.id, fixture, outcome: 'runner-blocked'};
       try {
         if (probe.error || probe.status !== 0) throw new Error(probe.error?.message ?? probe.stderr.trim());
