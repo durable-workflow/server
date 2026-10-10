@@ -418,6 +418,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $admission = isset($fixture['admission']) ? finishHttpAdmission($client, $fixture, $workflowId,
         $handle->selectedRunId, $queue, $url, $namespace) : null;
     $namespaces = isset($fixture['namespace_isolation']) ? finishHttpNamespaces($client, $fixture, $workflowId, $queue, $url) : null;
+    $workerDeregistration = isset($fixture['worker_deregistration']) ? finishHttpWorkerDeregistration($client, $fixture, $workflowId, $queue) : null;
     if ($scheduleState !== null) {
         $scheduleState = finishHttpSchedule($client, $fixture, $scheduleState, $workflowId, $handle->selectedRunId);
         $scheduleState['control_receipts'] = $scheduleReceipts;
@@ -501,6 +502,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'visibility' => $visibility,
         'admission' => $admission,
         'namespace_isolation' => $namespaces,
+        'worker_deregistration' => $workerDeregistration,
         'run_id' => $execution->runId,
         'workflow_type' => $execution->workflowType,
         'namespace' => $execution->namespace,
@@ -765,6 +767,7 @@ try {
     require __DIR__.'/visibility-probe.php';
     require __DIR__.'/admission-probe.php';
     require __DIR__.'/namespace-probe.php';
+    require __DIR__.'/worker-deregistration-probe.php';
     require __DIR__.'/child-cancellation-probe.php';
     require __DIR__.'/cancellation-probe.php';
     require __DIR__.'/cooperative-probe.php';
@@ -782,9 +785,13 @@ try {
         default => throw new InvalidArgumentException('Mode must be http or embedded.'),
     };
     $observation['typed_input'] = typedValue($observation['input']);
+    if ($mode === 'embedded' && isset($fixture['worker_deregistration'])) {
+        $observation['worker_deregistration'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_worker_registration_lifecycle'];
+    }
     $observation['mode'] = $mode;
     $observation['typed_output'] = typedValue($observation['output']);
     $observation['sdk_php'] = ltrim(InstalledVersions::getPrettyVersion('durable-workflow/sdk'), 'v');
+    $observation['sdk_php_source'] = InstalledVersions::getReference('durable-workflow/sdk');
     $observation['php_version'] = PHP_VERSION;
     if ($mode === 'embedded') {
         $observation['workflow_package'] = ltrim(InstalledVersions::getPrettyVersion('durable-workflow/workflow'), 'v');

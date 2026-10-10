@@ -1,0 +1,108 @@
+import assert from 'node:assert/strict';
+
+export function checkWorkerDeregistration(fixture, observation, workflowId) {
+  const definition = fixture.worker_deregistration;
+  const state = observation.worker_deregistration;
+  const projection = {scope: definition.scope, receipt_retention_seconds: definition.receipt_retention_seconds};
+  assert.ok(state && typeof state === 'object', 'actual worker deregistration observation');
+  if (observation.mode === 'embedded') {
+    assert.deepStrictEqual(state, {applicable: false, reason: 'embedded_has_no_http_worker_registration_lifecycle'}, 'embedded lifecycle explicitly inapplicable');
+    return projection;
+  }
+  assert.equal(state.applicable, true, 'HTTP lifecycle actually executed');
+  assert.deepStrictEqual(state.capability, {schema: definition.schema, supported: true,
+    receipt_retention_seconds: definition.receipt_retention_seconds, endpoint: '/worker/registrations/{workerId}/deregister'}, 'negotiated exact fence contract');
+  const workerId = workflowId+'-fenced-worker';
+  const peerId = workflowId+definition.peer_suffix;
+  assert.equal(state.worker_id, workerId);
+  assert.equal(state.peer_workflow_id, peerId);
+  assert.ok(state.peer_run_id && state.peer_run_id !== observation.run_id, 'distinct original peer run');
+  const tokens = ['original', 'replacement', 'latest'].map(kind => {
+    const registration = state[kind+'_registration'];
+    assert.equal(registration.worker_id, workerId, 'same worker lifecycle identity');
+    assert.equal(registration.namespace, 'default');
+    assert.equal(registration.registered, true);
+    assert.match(registration.registration_token, /^[a-f0-9]{32}$/);
+    return registration.registration_token;
+  });
+  assert.equal(new Set(tokens).size, 3, 'every successful registration rotates the incarnation');
+  for (const key of ['heartbeat', 'replacement_heartbeat', 'latest_heartbeat']) {
+    assert.equal(state[key].worker_id, workerId);
+    assert.equal(state[key].heartbeat_recorded, true, 'heartbeat succeeds without retiring original authority');
+  }
+  const task = state.original_task;
+  const latest = state.latest_task;
+  for (const leased of [task, latest]) {
+    assert.equal(leased.workflow_id, peerId);
+    assert.equal(leased.run_id, state.peer_run_id);
+    assert.equal(leased.lease_owner, workerId);
+    assert.ok(leased.task_id && Number.isInteger(leased.workflow_task_attempt));
+  }
+  assert.equal(latest.task_id, task.task_id, 'recover the original durable task');
+  assert.equal(latest.workflow_task_attempt, task.workflow_task_attempt+1, 'new attempt after original recovery');
+  const runKeys = ['before_unknown', 'after_unknown', 'after_original', 'after_stale_original', 'before_superseded',
+    'after_superseded', 'before_replay', 'after_replay', 'after_stale_replay', 'after_latest', 'final'];
+  for (const key of runKeys) {
+    const run = state[key];
+    assert.equal(run.workflow_id, peerId, 'retain original workflow identity');
+    assert.equal(run.run_id, state.peer_run_id, 'retain original run identity');
+    assert.equal(run.workflow_type, definition.peer_workflow_type);
+    assert.equal(run.namespace, 'default');
+    assert.deepStrictEqual(run.typed_input, {type: 'list', value: [fixture.typed_value]}, 'retain exact original input');
+    assert.equal(run.status, key === 'final' ? 'completed' : state.before_unknown.status, 'refusals cannot complete original work');
+    for (const event of run.events) {
+      assert.equal(event.payload.workflow_instance_id, peerId);
+      assert.equal(event.payload.workflow_run_id, state.peer_run_id);
+    }
+  }
+  for (const [before, after] of [['before_unknown','after_unknown'], ['after_original','after_stale_original'],
+    ['before_superseded','after_superseded'], ['before_replay','after_replay'], ['after_replay','after_stale_replay']]) {
+    assert.deepStrictEqual(state[after], state[before], 'refusal or receipt replay preserves complete original run and history');
+  }
+  const failure = (key, status, reason, token) => {
+    assert.equal(state[key].status, status);
+    assert.equal(state[key].response.reason, reason);
+    assert.equal(state[key].response.worker_id, workerId);
+    assert.equal(state[key].response.registration_token, token);
+    assert.equal(state[key].response.retryable, false, 'terminal fence refusal cannot become a retry');
+  };
+  assert.ok(state.unknown_token !== tokens[0]);
+  failure('unknown', 404, 'worker_registration_token_not_found', state.unknown_token);
+  failure('superseded', 409, 'worker_registration_lost_authority', tokens[1]);
+  for (const [key, reason] of [['stale_original',definition.first_stale_reason], ['stale_after_replay',definition.replacement_stale_reason]]) {
+    assert.equal(state[key].status, 409);
+    assert.equal(state[key].response.reason, reason);
+    assert.equal(state[key].response.task_id, task.task_id);
+    assert.equal(state[key].response.workflow_task_attempt, task.workflow_task_attempt);
+  }
+  const receiptFields = value => Object.fromEntries(['worker_id','registration_token','outcome','recovered_workflow_task_count'].map(key => [key,value[key]]));
+  const receipt = (key, token) => {
+    assert.equal(state[key].protocol_version, '1.20');
+    assert.deepStrictEqual(state[key].server_capabilities.worker_deregistration_fencing, state.capability);
+    assert.deepStrictEqual(receiptFields(state[key]), {worker_id: workerId,
+      registration_token: token, outcome: 'deregistered', recovered_workflow_task_count: definition.recovered_workflow_task_count});
+  };
+  receipt('original_receipt', tokens[0]);
+  receipt('latest_receipt', tokens[2]);
+  assert.deepStrictEqual(state.replayed_receipt, state.original_receipt, 'immutable original receipt before inspecting replacement');
+  const history = state.final.events;
+  assert.deepStrictEqual(history.map(event => event.event_type), definition.expected_peer_events, 'actual recovery and completion history');
+  assert.deepStrictEqual(history.map(event => event.sequence), [1,2,3,4,5], 'one original sequence');
+  assert.deepStrictEqual(history.slice(0,2), state.before_unknown.events, 'original start is immutable');
+  assert.deepStrictEqual(state.after_original.events.map(event => event.event_type), definition.expected_peer_events.slice(0,3));
+  assert.deepStrictEqual(state.after_latest.events, history.slice(0,4), 'completion appends after both original repairs');
+  const repairs = history.filter(event => event.event_type === 'RepairRequested');
+  assert.equal(new Set(repairs.map(event => event.payload.workflow_command_id)).size, 2, 'distinct original repair commands');
+  for (const event of repairs) {
+    assert.equal(event.payload.command_type, 'repair');
+    assert.equal(event.payload.outcome, 'repair_dispatched');
+    assert.equal(event.payload.task_id, task.task_id);
+    assert.equal(event.payload.task_type, 'workflow');
+  }
+  assert.deepStrictEqual(state.final.typed_output, fixture.typed_value, 'real SDK worker commits original typed result');
+  assert.deepStrictEqual(history.at(-1).typed_decoded.result, fixture.typed_value, 'original history commits the same typed result');
+  assert.equal(state.idle_poll, null, 'no duplicate remaining workflow task');
+  assert.deepStrictEqual(receiptFields(state.idle_receipt), {worker_id: workflowId+'-idle-worker', registration_token: state.idle_registration.registration_token,
+    outcome: 'deregistered', recovered_workflow_task_count: 0});
+  return projection;
+}

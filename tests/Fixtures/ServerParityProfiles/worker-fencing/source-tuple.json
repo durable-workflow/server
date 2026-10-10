@@ -1,0 +1,16 @@
+{
+  "schema": "durable-workflow.server-port-artifacts/v1",
+  "qualification": "unreleased-source-feature",
+  "server": {
+    "version": "source-worker-fencing",
+    "source_commit": "b377397e9c6ab69db27950da39f94579c0f2b3d4",
+    "source_tree": "f16c949a8dabda868ab6634865a47bc23a14e209",
+    "composer_lock_sha256": "9e9c19de657932af5bf9cf8251f49ebb7fe2eb0e1d033e9955d3045631710d9e",
+    "build_platform_image": "durableworkflow/server@sha256:28fa0f3968ea253c727aad7fe583bb61c788553f1e4b96ece6ea4570d20faf42"
+  },
+  "workflow": "2.5.6",
+  "sdk_php": "dev-main",
+  "sdk_php_source_commit": "4dd3bdc49ddb18b216348e0da29f398e305586b3",
+  "sdk_php_source_tree": "de5cd178de12249bf5147ff12dbaa98eed4cf139",
+  "performance_status": "not_measured"
+}
