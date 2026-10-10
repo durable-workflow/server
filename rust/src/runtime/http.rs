@@ -406,9 +406,12 @@ async fn ready(Extension(runtime): Extension<Runtime>) -> Response {
 }
 
 async fn cluster() -> Json<Value> {
+    let auth_composition: Value = serde_json::from_str(include_str!("auth-composition.v1.json"))
+        .expect("valid bundled carrier auth composition contract");
     Json(
         json!({"version": env!("CARGO_PKG_VERSION"), "implementation": "rust", "development": true,
         "control_plane": {"version": "2", "request_contract": super::visibility::request_contract()}, "worker_protocol": {"version": "1.20", "server_capabilities": capabilities()},
+        "auth_composition_contract": auth_composition,
         "payload_codec": "avro", "qualified_for_php_takeover": false}),
     )
 }

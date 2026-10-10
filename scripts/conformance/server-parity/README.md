@@ -1,5 +1,10 @@
 # Shared Server fixtures
 
+Native cluster discovery publishes the same carrier auth-composition v1
+contract as the frozen PHP reference. Published workers validate this manifest
+before registration; it declares client setting precedence and secret redaction,
+with mTLS and signed headers reserved.
+
 The separate `published-sdk-patch-replay` profile adds four cold replacement
 directions: Rust SDK 3.4.2 and Python SDK 2.5.1 after an original PHP SDK 2.2.6
 worker. The run starts before any worker advertises a definition fingerprint;
@@ -21,8 +26,9 @@ CI builds the Rust SDK adapter once with no debug information or incremental
 compilation. It shares only that binary, locked Python packages and identity
 receipts across existing database jobs, reusing their already compiled Server
 and isolated targets. The original 29-case baseline and older source/fault
-tuples remain unchanged. New product qualification is pending; this profile
-does not qualify a live pending-history failure exchange, fresh repeated calls,
+tuples remain unchanged. Qualify this profile through matching PHP, native and
+embedded recordings on all six database configurations. This profile does not
+qualify a live pending-history failure exchange, fresh repeated calls,
 retained duplicate markers or performance. Workflow #744's separately repaired
 engine requires its own exact source/publication and workflow-clock evidence.
 

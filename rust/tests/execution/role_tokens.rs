@@ -43,6 +43,24 @@ async fn configured_roles_precede_protocol_namespace_and_preserve_original_peer(
     let history_path = format!("{path}/history");
     let before = request(&legacy, "GET", &history_path, Value::Null).await.1;
     let app = router(configured(runtime.clone()));
+    for token in ["worker-token", "operator-token", "admin-token", "test-token"] {
+        let (status, cluster) = call(&app, token, "GET", "/api/cluster/info", Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{cluster}");
+        let manifest = &cluster["auth_composition_contract"];
+        assert_eq!(
+            manifest["schema"],
+            "durable-workflow.v2.auth-composition.contract"
+        );
+        assert_eq!(manifest["version"], 1);
+        assert_eq!(manifest["scope"], "external_execution_carriers");
+        assert_eq!(manifest["auth_material"]["token"]["status"], "supported");
+        assert_eq!(
+            manifest["auth_material"]["token"]["effective_config_value"],
+            "redacted"
+        );
+        assert!(!cluster.to_string().contains(token));
+        assert_eq!(cluster["qualified_for_php_takeover"], false);
+    }
     for (token, role, worker) in [
         ("worker-token", "worker", false),
         ("operator-token", "operator", true),
