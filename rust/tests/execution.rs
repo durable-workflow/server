@@ -978,6 +978,234 @@ async fn mismatched_child_call_rolls_back_child_terminal_history_and_parent_resu
     }
 }
 
+#[tokio::test]
+async fn direct_child_cancellation_preserves_original_failure_and_one_parent_resumption() {
+    for pending_timer in [false, true] {
+        let database = TestDatabase::new().await;
+        let runtime = database.open().await.unwrap();
+        let app = router(runtime.clone());
+        register(&app, "parent-worker", json!(["echo"]), json!([])).await;
+        register(&app, "child-worker", json!(["child"]), json!([])).await;
+        let parent = start(&app, "cancel-child-parent").await;
+        let task = poll(&app, "parent-worker", "workflow").await;
+        assert_eq!(
+            finish_task(&app, &task, json!([child_command(9007199254740993_i64)]))
+                .await
+                .0,
+            StatusCode::OK
+        );
+        let parent_before = run_history(&app, &parent["workflow_id"], &parent["run_id"]).await;
+        let original = parent_before[3]["payload"].clone();
+        let child_id = original["child_workflow_instance_id"].clone();
+        let child_run = original["child_workflow_run_id"].clone();
+        let described = request(
+            &app,
+            "GET",
+            &format!(
+                "/api/workflows/{}/runs/{}",
+                child_id.as_str().unwrap(),
+                child_run.as_str().unwrap()
+            ),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(described.0, StatusCode::OK);
+        assert_eq!(
+            described.1["status"], "pending",
+            "unclaimed child retains published pending state"
+        );
+        let child_task = if pending_timer {
+            let task = poll(&app, "child-worker", "workflow").await;
+            assert_eq!(task["run_id"], child_run);
+            assert_eq!(
+                finish_task(
+                    &app,
+                    &task,
+                    json!([{"type":"start_timer","delay_seconds":60}])
+                )
+                .await
+                .0,
+                StatusCode::OK
+            );
+            Some(task)
+        } else {
+            None
+        };
+        let path = format!(
+            "/api/workflows/{}/runs/{}/cancel",
+            child_id.as_str().unwrap(),
+            child_run.as_str().unwrap()
+        );
+        let accepted = request(
+            &app,
+            "POST",
+            &path,
+            json!({"reason":"direct child cancellation λ"}),
+        )
+        .await;
+        assert_eq!(accepted.0, StatusCode::OK, "{}", accepted.1);
+        let child_history = run_history(&app, &child_id, &child_run).await;
+        assert_eq!(
+            child_history
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|event| event["event_type"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            if pending_timer {
+                vec![
+                    "WorkflowStarted",
+                    "TimerScheduled",
+                    "CancelRequested",
+                    "TimerCancelled",
+                    "WorkflowCancelled",
+                ]
+            } else {
+                vec!["WorkflowStarted", "CancelRequested", "WorkflowCancelled"]
+            }
+        );
+        let terminal = child_history.as_array().unwrap().last().unwrap();
+        let failure = terminal["payload"]["failure_id"].as_str().unwrap();
+        assert_eq!(
+            database
+                .cancellation_failure_count(child_run.as_str().unwrap(), failure)
+                .await,
+            1
+        );
+        assert_eq!(
+            database.cancellation_failure_message(failure).await,
+            "Workflow cancelled: direct child cancellation λ"
+        );
+        let parent_after = run_history(&app, &parent["workflow_id"], &parent["run_id"]).await;
+        assert_eq!(parent_after.as_array().unwrap().len(), 5);
+        let resolution = &parent_after[4];
+        assert_eq!(resolution["event_type"], "ChildRunCancelled");
+        for field in [
+            "child_call_id",
+            "workflow_link_id",
+            "child_workflow_instance_id",
+            "child_workflow_run_id",
+            "child_workflow_type",
+            "child_run_number",
+        ] {
+            assert_eq!(resolution["payload"][field], original[field]);
+        }
+        assert_eq!(resolution["payload"]["failure_id"], failure);
+        assert_eq!(
+            resolution["payload"]["message"],
+            terminal["payload"]["message"]
+        );
+        runtime.close().await;
+        let fresh = database.open().await.unwrap();
+        let fresh_app = router(fresh.clone());
+        let duplicate = request(
+            &fresh_app,
+            "POST",
+            &path,
+            json!({"reason":"replacement reason"}),
+        )
+        .await;
+        assert_eq!(duplicate.0, StatusCode::CONFLICT);
+        assert_eq!(duplicate.1["rejection_reason"], "run_not_active");
+        assert_eq!(duplicate.1["outcome"], "rejected_not_active");
+        assert_eq!(
+            run_history(&fresh_app, &child_id, &child_run).await,
+            child_history
+        );
+        assert_eq!(
+            run_history(&fresh_app, &parent["workflow_id"], &parent["run_id"]).await,
+            parent_after
+        );
+        if let Some(task) = child_task {
+            assert_eq!(
+                finish_task(
+                    &fresh_app,
+                    &task,
+                    json!([{"type":"complete_workflow","result":envelope(Payload::Long(7))}])
+                )
+                .await
+                .0,
+                StatusCode::CONFLICT
+            );
+        }
+        assert!(poll(&fresh_app, "child-worker", "workflow").await.is_null());
+        let resumed = poll(&fresh_app, "parent-worker", "workflow").await;
+        assert_eq!(resumed["run_id"], parent["run_id"]);
+        assert_eq!(resumed["child_workflow_run_id"], child_run);
+        assert_eq!(resumed["workflow_event_type"], "ChildRunCancelled");
+        let complete = json!([{"type":"complete_workflow","result":envelope(Payload::Long(9007199254740993_i64))}]);
+        assert_eq!(
+            finish_task(&fresh_app, &resumed, complete.clone()).await.0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            finish_task(&fresh_app, &resumed, complete).await.1["recorded"],
+            false
+        );
+        let final_history =
+            run_history(&fresh_app, &parent["workflow_id"], &parent["run_id"]).await;
+        assert_eq!(final_history.as_array().unwrap().len(), 6);
+        assert_eq!(final_history[5]["event_type"], "WorkflowCompleted");
+        assert!(
+            poll(&fresh_app, "parent-worker", "workflow")
+                .await
+                .is_null()
+        );
+        assert_eq!(
+            database
+                .cancellation_failure_count(child_run.as_str().unwrap(), failure)
+                .await,
+            1
+        );
+        assert_eq!(
+            database.cancellation_failure_message(failure).await,
+            "Workflow cancelled: direct child cancellation λ"
+        );
+        fresh.close().await;
+        database.remove().await;
+    }
+}
+
+#[tokio::test]
+async fn mismatched_child_cancellation_rolls_back_original_child_and_parent() {
+    for corruption in [
+        "UPDATE workflow_child_calls SET resolved_child_run_id='stale-child-run'",
+        "DELETE FROM workflow_links",
+    ] {
+        let database = TestDatabase::new().await;
+        let runtime = database.open().await.unwrap();
+        let app = router(runtime.clone());
+        register(&app, "worker", json!(["echo", "child"]), json!([])).await;
+        let parent = start(&app, "cancel-child-mismatch").await;
+        let task = poll(&app, "worker", "workflow").await;
+        assert_eq!(
+            finish_task(&app, &task, json!([child_command(7)])).await.0,
+            StatusCode::OK
+        );
+        let parent_before = run_history(&app, &parent["workflow_id"], &parent["run_id"]).await;
+        let child = parent_before[3]["payload"].clone();
+        let id = &child["child_workflow_instance_id"];
+        let run = &child["child_workflow_run_id"];
+        let child_before = run_history(&app, id, run).await;
+        database.execute(corruption).await;
+        let path = format!(
+            "/api/workflows/{}/runs/{}/cancel",
+            id.as_str().unwrap(),
+            run.as_str().unwrap()
+        );
+        let result = request(&app, "POST", &path, json!({"reason":"must roll back"})).await;
+        assert_eq!(result.0, StatusCode::CONFLICT, "{}", result.1);
+        assert_eq!(result.1["reason"], "child_call_mismatch");
+        assert_eq!(run_history(&app, id, run).await, child_before);
+        assert_eq!(
+            run_history(&app, &parent["workflow_id"], &parent["run_id"]).await,
+            parent_before
+        );
+        runtime.close().await;
+        database.remove().await;
+    }
+}
+
 async fn update_worker(app: &Router, worker: &str) {
     let (status, body) = request(app, "POST", "/api/worker/register", json!({
         "worker_id":worker,"task_queue":"test","runtime":"php","supported_workflow_types":["echo"],

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {checkChildCancellation} from './child-cancellation-contract.mjs';
 import {checkActivityRetry} from './retry-contract.mjs';
 import {checkTerminalActivityFailure} from './failure-contract.mjs';
 import {checkImmediateCancellation} from './cancellation-contract.mjs';
@@ -71,12 +72,17 @@ export function checkObservation(fixture, observation, workflowId) {
     equal(events.at(-1).decoded.output, output, 'committed workflow result');
     equal(events.at(-1).typed_decoded.output, typedOutput, 'committed workflow result types');
   }
-  const projectedEvents = events.map(({sequence, event_type}) => ({sequence, event_type}));
+  let projectedEvents = events.map(({sequence, event_type}) => ({sequence, event_type}));
   const projectedQueries = [];
   const projectedUpdates = [];
   const projectedChildren = [];
   const cooperative = fixture.cooperative_cancellation
     ? checkCooperativeCancellation(fixture, observation, identities, projectedEvents, instantNanoseconds) : null;
+  if (fixture.child_cancellation) {
+    const cancellation = checkChildCancellation(fixture, observation, identities, projectedEvents);
+    projectedEvents = cancellation.events;
+    projectedChildren.push(cancellation.child);
+  }
   if (fixture.update_values) {
     equal(observation.updates.length, fixture.update_values.length, 'complete update observation inventory');
     equal(started.declared_updates, [fixture.update_name], 'original durable update declaration');
@@ -526,7 +532,7 @@ export function checkObservation(fixture, observation, workflowId) {
     input: observation.typed_input, output: observation.typed_output, execution_timeout_seconds: 3600,
     run_timeout_seconds: 600, events: projectedEvents, ...(fixture.queries ? {queries: projectedQueries} : {}),
     ...(fixture.update_values ? {updates: projectedUpdates} : {}),
-    ...(fixture.child_count ? {children: projectedChildren} : {}),
+    ...(fixture.child_count || fixture.child_cancellation ? {children: projectedChildren} : {}),
     ...(cooperative ? {cooperative} : {}),
   };
 }

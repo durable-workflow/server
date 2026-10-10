@@ -85,6 +85,34 @@ final class CancelActivity extends Activity
     }
 }
 
+#[Type('parity.v1.cancelled_child_parent')]
+final class CancelledChildParentWorkflow extends Workflow
+{
+    public function handle(array $value): array
+    {
+        try {
+            child(CancelledChildWorkflow::class, $value, new WorkflowOptions(connection: 'database', queue: 'server-parity-v1'));
+        } catch (\Workflow\V2\Exceptions\WorkflowCancelledException $error) {
+            \ChildCancellationProbeState::$caught = ['class' => $error::class, 'message' => $error->getMessage()];
+
+            return ['value' => $value, 'child_cancelled' => true];
+        }
+
+        throw new \LogicException('The original child unexpectedly completed.');
+    }
+}
+
+#[Type('parity.v1.cancelled_child')]
+final class CancelledChildWorkflow extends Workflow
+{
+    public function handle(array $value): array
+    {
+        timer(60);
+
+        return $value;
+    }
+}
+
 #[Type('parity.v1.two_children')]
 final class TwoChildrenWorkflow extends Workflow
 {

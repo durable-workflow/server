@@ -18,12 +18,13 @@ normalization corpus pins the full frozen character set and nullable/length
 rules; meaningful history fields are checked before comparing common behavior.
 `tests/Fixtures/ServerParityPending` retains known failing cases separately;
 they are not counted in the passing corpus. Its literal-NUL cancellation
-reproducer blocks full reason parity under Workflow #741: frozen embedded
-PostgreSQL silently truncates the physical failure message. The portable
+reproducer preserves the original PHP 2.5.13 / Workflow 2.5.4 finding under
+Workflow #741: frozen embedded PostgreSQL silently truncates the physical failure
+message. The separate corrected PHP 2.5.14 / Workflow 2.5.5 tuple qualifies new
+leading/interior NUL definitions with complete diagnostics. The portable
 Unicode-padded case retains the complete failure/history consistency check.
 
-The reviewed root cooperative-cancellation definitions also remain pending
-native qualification. Their adapter uses explicit worker protocol 1.20 and
+The reviewed root cooperative-cancellation cases use explicit worker protocol 1.20 and
 the normal published cooperative worker. Cleanup completion is still a
 cancelled workflow; its original context is carried through a real timer,
 activity and heartbeat. A separate expiry case closes the original budget
@@ -32,6 +33,15 @@ before the cleanup activity runs. The HTTP reference needs its ordinary
 cleanup is enforced. Embedded execution invokes the installed watchdog and
 uses `DW_MODE=embedded` before application bootstrap. Neither adapter edits
 time or writes its own history/terminal rows.
+
+Direct child-cancellation cases additionally exercise cancellation before
+claim and during a committed child timer. Published PHP, native and embedded
+execution pass the six-configuration matrix. The embedded-only
+`FailureHandled` event and parent-facing diagnostic are asserted before common
+projection. Deterministic unit examples model these representations, not extra
+qualified workflow cases. HTTP failure capture uses bounded real SDK reads of
+the original run and first original child before timeout shutdown, preserving
+the 30-second execution budget and recording diagnostic read refusals honestly.
 
 Requirements: Node 20+, PHP 8.3+ with PDO SQLite/pcntl, and Composer. The pinned
 published Server image contains these tools. Install the exact adapter:
