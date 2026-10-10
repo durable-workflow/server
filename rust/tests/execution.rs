@@ -22,6 +22,9 @@ mod schedules;
 #[path = "execution/visibility.rs"]
 mod visibility;
 
+#[path = "execution/admission.rs"]
+mod admission;
+
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
     Postgres {
