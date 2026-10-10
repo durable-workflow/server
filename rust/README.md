@@ -7,8 +7,9 @@ including bounded root cooperative cleanup at timer boundaries. The port log
 records the six-database matrix and real process-kill recovery evidence.
 It is an incomplete development slice, with no qualified database takeover,
 performance improvement or release. The codec module uses Apache's official
-Avro library. Signals decode their arguments with the official codec on bounded
-blocking workers; other execution paths forward opaque envelopes. Complete
+Avro library. Signals decode arguments and cooperative requests encode their
+canonical context on bounded blocking workers; ordinary author payloads retain
+their opaque envelopes. Complete
 ingress validation and resource limits remain unqualified.
 
 The toolchain is pinned in `rust-toolchain.toml`; dependency resolution is in
