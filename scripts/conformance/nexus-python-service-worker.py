@@ -8,7 +8,7 @@ import os
 import sys
 from importlib.metadata import version
 
-from durable_workflow import Client, Worker, workflow
+from durable_workflow import Client, Worker, WorkflowCancelled, workflow
 
 
 class NexusFixtureFailure(RuntimeError):
@@ -20,6 +20,14 @@ class PythonGreeter:
     def run(self, context, name):
         if name == "fail":
             raise NexusFixtureFailure("fixture service failure")
+        if name == "cancel":
+            try:
+                yield context.sleep(300)
+            except WorkflowCancelled as cancelled:
+                print(json.dumps({"scenario": "service_cancellation_observed",
+                                  "request_id": cancelled.request_id,
+                                  "type": type(cancelled).__name__}), flush=True)
+                raise
         return {"language": "python", "name": name, "greeting": f"hello, {name}"}
 
 

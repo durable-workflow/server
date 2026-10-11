@@ -2685,22 +2685,31 @@ async function probePublishedPhpCallerWorkflows(baseUrl, token, compose, phpServ
   fs.writeFileSync(path.join(resultDir, 'nexus-python-python-workflow-probe.json'), JSON.stringify(pythonSelf, null, 2) + '\n');
 }
 
-async function probePublishedTypedFailures(baseUrl, token, compose, phpService, pythonService) {
+async function probePublishedTypedOutcomes(baseUrl, token, compose, phpService, pythonService, scenario) {
   const reports = [];
+  const label = scenario === 'cancelled' ? 'cancellation' : 'failure';
   for (const [caller, service] of [['php', 'python'], ['python', 'php'], ['php', 'php'], ['python', 'python']]) {
     const input = {
       token, endpoint: `published-${service}-workflow-service`,
       service: service === 'php' ? 'PublishedWorkflowGreeter' : 'PublishedPythonWorkflowGreeter',
-      operation: 'greet', service_language: service, scenario: 'failed', name: 'fail',
+      operation: 'greet', service_language: service, scenario, name: scenario === 'cancelled' ? 'cancel' : 'fail',
     };
-    const inputName = `nexus-${caller}-${service}-failure-input.json`;
+    const inputName = `nexus-${caller}-${service}-${label}-input.json`;
     fs.writeFileSync(path.join(compose.runRoot, inputName), JSON.stringify(input));
     const container = caller === 'php' ? phpService.containerName : pythonService.containerName;
     const command = caller === 'php'
       ? `php /work/nexus-php-workflow-probe.php /work/${inputName}`
       : `. /tmp/dw-python/bin/activate && python /work/nexus-python-workflow-probe.py /work/${inputName}`;
     const observation = dockerExecJson(container, command,
-      path.join(resultDir, `nexus-${caller}-${service}-failure-probe.log`));
+      path.join(resultDir, `nexus-${caller}-${service}-${label}-probe.log`));
+    if (scenario === 'cancelled') {
+      const serviceContainer = service === 'php' ? phpService.containerName : pythonService.containerName;
+      const serviceLog = spawnSync('docker', ['exec', serviceContainer, 'cat', `/tmp/nexus-${service}-service-worker.log`],
+        {encoding: 'utf8', maxBuffer: 8 * 1024 * 1024});
+      observation.service_worker_log = (serviceLog.stdout || '') + (serviceLog.stderr || '');
+      fs.writeFileSync(path.join(resultDir, `nexus-${caller}-${service}-cancellation-service-worker.log`),
+        observation.service_worker_log);
+    }
     for (const row of observation.body?.observations || []) {
       const callId = row.result?.service_call_id;
       if (!callId) continue;
@@ -2708,8 +2717,8 @@ async function probePublishedTypedFailures(baseUrl, token, compose, phpService, 
         `/service-endpoints/${input.endpoint}/services/${input.service}/operations/greet/service-calls/${encodeURIComponent(callId)}`));
     }
     reports.push({caller, service, observation});
-    fs.writeFileSync(path.join(resultDir, 'nexus-typed-failure-probes.json'), JSON.stringify({
-      scope: 'actual_workflow_typed_failure', reports,
+    fs.writeFileSync(path.join(resultDir, `nexus-${scenario === 'cancelled' ? 'cancellation' : 'typed-failure'}-probes.json`), JSON.stringify({
+      scope: scenario === 'cancelled' ? 'linked_workflow_cooperative_cancellation' : 'actual_workflow_typed_failure', reports,
     }, null, 2) + '\n');
   }
 }
@@ -3280,9 +3289,17 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
     }
 
     try {
-      await probePublishedTypedFailures(baseUrl, token, compose, phpService, pythonService);
+      await probePublishedTypedOutcomes(baseUrl, token, compose, phpService, pythonService, 'failed');
     } catch (error) {
       fs.writeFileSync(path.join(resultDir, 'nexus-typed-failure-probes-error.json'), JSON.stringify({
+        runner_blocked: true, failure_reason: String(error),
+      }, null, 2) + '\n');
+    }
+
+    try {
+      await probePublishedTypedOutcomes(baseUrl, token, compose, phpService, pythonService, 'cancelled');
+    } catch (error) {
+      fs.writeFileSync(path.join(resultDir, 'nexus-cancellation-probes-error.json'), JSON.stringify({
         runner_blocked: true, failure_reason: String(error),
       }, null, 2) + '\n');
     }

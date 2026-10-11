@@ -60,7 +60,7 @@ function assertOriginalServiceDelivery(row, sdkLanguage, status = 'completed') {
     assert.equal(call.linked_workflow_run_id, row.linked_service_run_id);
     const events = row.history.events;
     const starts = events.filter(event => (event.event_type || event.type) === 'ServiceCallStarted');
-    const terminalType = status === 'failed' ? 'ServiceCallFailed' : 'ServiceCallCompleted';
+    const terminalType = {failed: 'ServiceCallFailed', cancelled: 'ServiceCallCancelled', completed: 'ServiceCallCompleted'}[status];
     const completions = events.filter(event => ['ServiceCallCompleted', 'ServiceCallFailed', 'ServiceCallCancelled']
         .includes(event.event_type || event.type));
     assert.equal(starts.length, 1);
@@ -116,6 +116,54 @@ test('an admission or independent failure cannot qualify original typed delivery
     assert.throws(() => assertOriginalServiceDelivery(row, 'sdk-python', 'failed'));
     assert.throws(() => assertTypedServiceFailure({scenario: 'failed', typed_failure_qualified: false}, 'python'));
 });
+
+if (process.env.NEXUS_CANCELLATION_PROBES) {
+    test('cooperatively cancelled services close original PHP/Python caller operations once', () => {
+        const proof = JSON.parse(fs.readFileSync(process.env.NEXUS_CANCELLATION_PROBES, 'utf8'));
+        assert.equal(proof.scope, 'linked_workflow_cooperative_cancellation');
+        assert.deepEqual(proof.reports.map(row => [row.caller, row.service]), [
+            ['php', 'python'], ['python', 'php'], ['php', 'php'], ['python', 'python'],
+        ]);
+        for (const {caller, service, observation} of proof.reports) {
+            assert.equal(observation.ok, true);
+            assert.deepEqual(observation.body.observations.map(row => row.caller_namespace),
+                ['shared', caller === 'php' ? 'tenant-a' : 'tenant-b']);
+            const logs = observation.service_worker_log.split('\n').flatMap(line => {
+                try { return [JSON.parse(line.slice(line.indexOf('{')))]; } catch { return []; }
+            });
+            for (const row of observation.body.observations) {
+                assert.equal(row.cancellation_qualified, true, JSON.stringify(row.failure || row.result));
+                assert.equal(row.scenario, 'cancelled');
+                assert.equal(row.request_qualified, true);
+                assertOriginalServiceDelivery(row, `sdk-${caller}`, 'cancelled');
+                assert.equal(row.result.failure_class, caller === 'php'
+                    ? 'DurableWorkflow\\Exception\\ServiceOperationFailed' : 'NexusOperationFailed');
+                const [first, duplicate] = row.linked_cancellation_requests;
+                assert.equal(first.accepted, true);
+                assert.equal(first.duplicate, false);
+                assert.equal(duplicate.duplicate, true);
+                const request = first.cancellation_request;
+                assert.ok(request.request_id && request.cleanup_deadline_at);
+                for (const field of ['request_id', 'requested_at', 'cleanup_deadline_at']) {
+                    assert.equal(duplicate.cancellation_request[field], request[field]);
+                }
+                const events = row.linked_service_history.events;
+                for (const kind of ['CooperativeCancellationRequested', 'CooperativeCancellationDelivered', 'WorkflowCancelled']) {
+                    assert.equal(events.filter(event => event.event_type === kind).length, 1);
+                }
+                const requested = events.find(event => event.event_type === 'CooperativeCancellationRequested');
+                assert.equal(requested.payload.workflow_command_id, request.request_id);
+                assert.equal(requested.payload.reason, 'fixture service cancellation');
+                const terminal = events.find(event => event.event_type === 'WorkflowCancelled');
+                assert.ok(Date.parse(terminal.timestamp) <= Date.parse(request.cleanup_deadline_at));
+                assert.ok(logs.some(log => log.scenario === 'service_cancellation_observed'
+                    && log.request_id === request.request_id && log.type === (service === 'php'
+                        ? 'DurableWorkflow\\Exception\\WorkflowCancelled' : 'WorkflowCancelled')),
+                    'The actual service application must receive typed cooperative cancellation');
+            }
+        }
+    });
+}
 
 for (const [input, service] of [
     [process.env.NEXUS_PHP_WORKFLOW_PROBE, 'python'],

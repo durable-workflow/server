@@ -5,6 +5,7 @@ declare(strict_types=1);
 require '/tmp/dw-php/vendor/autoload.php';
 
 use DurableWorkflow\Client;
+use DurableWorkflow\Exception\WorkflowCancelled;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\WorkflowContext;
 
@@ -25,6 +26,15 @@ Worker::create($client, 'nexus-php-workflow')
     ->registerWorkflow('nexus.fixture.php.greeter', static function (WorkflowContext $context, string $name): array {
         if ($name === 'fail') {
             throw new NexusFixtureFailure('fixture service failure');
+        }
+        if ($name === 'cancel') {
+            try {
+                $context->sleep(300);
+            } catch (WorkflowCancelled $cancelled) {
+                error_log(json_encode(['scenario' => 'service_cancellation_observed',
+                    'request_id' => $cancelled->requestId, 'type' => $cancelled::class], JSON_THROW_ON_ERROR));
+                throw $cancelled;
+            }
         }
         return ['language' => 'php', 'name' => $name, 'greeting' => "hello, {$name}"];
     })
