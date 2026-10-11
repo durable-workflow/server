@@ -50,6 +50,12 @@ async fn markers_survive_restart_and_advance_later_authored_turns_once() {
         json!({"sequence":1,"change_id":"first λ","version":1,"min_supported":-1,"max_supported":1})
     );
     assert_eq!(prefix[3]["payload"]["sequence"], 2);
+    assert_eq!(prefix[3]["event_type"], "ActivityScheduled");
+    assert_eq!(
+        prefix[3]["payload"]["task"], original_task,
+        "scheduled activity retains its original workflow task and lease owner"
+    );
+    assert_eq!(prefix[3]["payload"]["task"]["status"], "leased");
     assert_eq!(prefix[4]["payload"]["sequence"], 3);
     assert_eq!(prefix[4]["event_type"], "VersionMarkerRecorded");
     assert_eq!(
@@ -96,6 +102,17 @@ async fn markers_survive_restart_and_advance_later_authored_turns_once() {
     );
     let activity = poll(&app, "marker-worker", "activity").await;
     let scheduled = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    let later_task = &scheduled
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|event| event["event_type"] == "ActivityScheduled")
+        .unwrap()["payload"]["task"];
+    assert_eq!(later_task["id"], resumed["task_id"]);
+    assert_eq!(later_task["lease_owner"], resumed["lease_owner"]);
+    assert_eq!(later_task["status"], "leased");
+    assert_ne!(later_task["id"], original_task["id"]);
     assert_eq!(
         scheduled.as_array().unwrap().last().unwrap()["payload"]["sequence"],
         5,

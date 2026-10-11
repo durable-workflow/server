@@ -255,6 +255,26 @@ receive its accepted completion before authenticated withdrawal. Missing, late,
 foreign or changed checkpoints and lost-task responses are rejected. The failed
 run stays unqualified; runtime, observer and published inputs are unchanged.
 
+The #386 correction passed a fresh six-configuration candidate run with an
+independent 954-observation audit. Its separate merged-source MySQL 8.0 run
+exposed a native history gap: `ActivityScheduled` omitted the completing
+workflow task's snapshot. The original checkpoint preceded idle cancellation,
+but its accepted response arrived afterward. Frozen PHP task-owned events
+retain that snapshot, as native markers and completion events already do.
+Native scheduling now writes the leased task snapshot in the same transaction
+as the activity event. The execution regression checks the original task and
+lease owner, later-turn task identity, and immutable history after restart,
+duplicate/stale completion and final completion. The checkpoint checker stays
+strict. Fresh qualification is tracked on the follow-up PR; the original failed
+main run remains unqualified.
+
+The next range/repair investigation reproduced a terminal application failure
+on normally installed embedded Workflow 2.5.7 when cold code excludes recorded
+version 1. Restoring the original definition and requesting same-run repair
+returns `rejected_not_active`. [Workflow #744](https://github.com/durable-workflow/workflow/issues/744#issuecomment-6104611717)
+records that reference observation. Published SDK directions and the contract
+decision remain pending before any corresponding native repair implementation.
+
 [#381](https://github.com/durable-workflow/server/pull/381) implements ordinary
 workflow-task failure retries on the original run. A failed lease and its new
 ready task commit together, carrying attempt count and routing without adding
