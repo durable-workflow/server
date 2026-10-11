@@ -102,7 +102,13 @@ async fn markers_survive_restart_and_advance_later_authored_turns_once() {
     );
     let activity = poll(&app, "marker-worker", "activity").await;
     let scheduled = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
-    let later_task = &scheduled.as_array().unwrap().last().unwrap()["payload"]["task"];
+    let later_task = &scheduled
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|event| event["event_type"] == "ActivityScheduled")
+        .unwrap()["payload"]["task"];
     assert_eq!(later_task["id"], resumed["task_id"]);
     assert_eq!(later_task["lease_owner"], resumed["lease_owner"]);
     assert_eq!(later_task["status"], "leased");
