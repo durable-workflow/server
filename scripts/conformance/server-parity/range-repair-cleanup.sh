@@ -8,13 +8,13 @@ image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "
 evidence="$PWD/parity-evidence/version-range-repair"
 mkdir -p "$evidence"
 docker stop --time 30 "$RESOURCE_SCOPE-range-server" || true
-for stage in sdk tests bootstrap-php bootstrap-embedded server record-php record-embedded compare; do
+for stage in sdk tests bootstrap-php bootstrap-embedded server record-php record-embedded record-native compare; do
   docker logs "$RESOURCE_SCOPE-range-$stage" > "$evidence/$stage.log" 2>&1 || true
   docker inspect "$RESOURCE_SCOPE-range-$stage" > "$evidence/$stage-container.json" 2>&1 || true
 done
 docker rm -f "$RESOURCE_SCOPE-range-sdk" "$RESOURCE_SCOPE-range-tests" \
   "$RESOURCE_SCOPE-range-bootstrap-php" "$RESOURCE_SCOPE-range-bootstrap-embedded" "$RESOURCE_SCOPE-range-server" \
-  "$RESOURCE_SCOPE-range-record-php" "$RESOURCE_SCOPE-range-record-embedded" "$RESOURCE_SCOPE-range-compare" || true
+  "$RESOURCE_SCOPE-range-record-php" "$RESOURCE_SCOPE-range-record-embedded" "$RESOURCE_SCOPE-range-record-native" "$RESOURCE_SCOPE-range-compare" || true
 case "$backend" in
   mysql)
     docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint mysql "$MYSQL_IMAGE" \

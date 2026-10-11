@@ -13,6 +13,13 @@ use subtle::ConstantTimeEq;
 
 use super::{Result, Runtime, refuse, store::capabilities};
 
+#[derive(Clone)]
+pub(super) struct AuthenticatedPrincipal {
+    pub(super) role: &'static str,
+    pub(super) legacy_credential: bool,
+    pub(super) legacy_full_access: bool,
+}
+
 pub fn router(runtime: Runtime) -> Router {
     Router::new()
         .route("/api/health", get(health))
@@ -47,6 +54,16 @@ pub fn router(runtime: Runtime) -> Router {
         )
         .route("/api/workflows/{workflow_id}", get(describe_current))
         .route("/api/workflows/{workflow_id}/cancel", post(cancel_current))
+        .route("/api/workflows/{workflow_id}/repair", post(repair_current))
+        .route(
+            "/api/workflows/{workflow_id}/runs/{run_id}/repair",
+            post(repair_run),
+        )
+        .route("/api/workflows/{workflow_id}/debug", get(debug_current))
+        .route(
+            "/api/workflows/{workflow_id}/runs/{run_id}/debug",
+            get(debug_run),
+        )
         .route(
             "/api/workflows/{workflow_id}/request-cancellation",
             post(request_cancellation_current),
@@ -171,13 +188,18 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
                 .as_ref()
                 .is_some_and(|secret| bool::from(provided.as_bytes().ct_eq(secret.as_bytes())))
             {
-                return Some((role, false));
+                return Some((role, false, false));
             }
         }
-        bool::from(provided.as_bytes().ct_eq(runtime.token.as_bytes()))
-            .then(|| ("admin", runtime.role_tokens.iter().all(Option::is_none)))
+        bool::from(provided.as_bytes().ct_eq(runtime.token.as_bytes())).then(|| {
+            (
+                "admin",
+                runtime.role_tokens.iter().all(Option::is_none),
+                true,
+            )
+        })
     });
-    let Some((role, legacy_full_access)) = authenticated else {
+    let Some((role, legacy_full_access, legacy_credential)) = authenticated else {
         return admission_error(
             request,
             worker,
@@ -302,6 +324,11 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
             .extensions_mut()
             .insert(runtime.in_namespace(&namespace));
     }
+    request.extensions_mut().insert(AuthenticatedPrincipal {
+        role,
+        legacy_credential,
+        legacy_full_access,
+    });
     let mut response = next.run(request).await;
     response
         .headers_mut()
@@ -466,6 +493,87 @@ async fn cancel_current(
             super::control_plane::Operation::Cancel.refusal(error, &workflow_id, None)
         })?;
     Ok((status, Json(response)))
+}
+
+async fn repair_current(
+    Extension(runtime): Extension<Runtime>,
+    Path(workflow_id): Path<String>,
+    request: Request,
+) -> Result<Json<Value>> {
+    let (body, context) = super::task_repair_http::request(request, &workflow_id).await?;
+    let response = runtime
+        .repair_range_blocked(&workflow_id, None, body, context)
+        .await
+        .map_err(|error| {
+            super::control_plane::Operation::Repair.refusal(error, &workflow_id, None)
+        })?;
+    Ok(Json(
+        super::control_plane::Operation::Repair.response(response),
+    ))
+}
+
+fn debug_selection(query: &std::collections::HashMap<String, String>) -> Result<()> {
+    if query
+        .get("include_last_event_payload")
+        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "on" | "yes"))
+    {
+        return Err(refuse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "development_range_diagnostics_payload_unqualified",
+        ));
+    }
+    Ok(())
+}
+
+async fn debug_current(
+    Extension(runtime): Extension<Runtime>,
+    Path(workflow_id): Path<String>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<Value>> {
+    debug_selection(&query)?;
+    let response = runtime
+        .range_debug(&workflow_id, None)
+        .await
+        .map_err(|error| {
+            super::control_plane::Operation::Debug.refusal(error, &workflow_id, None)
+        })?;
+    Ok(Json(
+        super::control_plane::Operation::Debug.response(response),
+    ))
+}
+
+async fn debug_run(
+    Extension(runtime): Extension<Runtime>,
+    Path((workflow_id, run_id)): Path<(String, String)>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<Value>> {
+    debug_selection(&query)?;
+    let response = runtime
+        .range_debug(&workflow_id, Some(&run_id))
+        .await
+        .map_err(|error| {
+            super::control_plane::Operation::Debug.refusal(error, &workflow_id, Some(&run_id))
+        })?;
+    Ok(Json(
+        super::control_plane::Operation::Debug.response(response),
+    ))
+}
+
+async fn repair_run(
+    Extension(runtime): Extension<Runtime>,
+    Path((workflow_id, run_id)): Path<(String, String)>,
+    request: Request,
+) -> Result<Json<Value>> {
+    let (body, context) = super::task_repair_http::request(request, &workflow_id).await?;
+    let response = runtime
+        .repair_range_blocked(&workflow_id, Some(&run_id), body, context)
+        .await
+        .map_err(|error| {
+            super::control_plane::Operation::Repair.refusal(error, &workflow_id, Some(&run_id))
+        })?;
+    Ok(Json(
+        super::control_plane::Operation::Repair.response(response),
+    ))
 }
 
 async fn cancel_run(

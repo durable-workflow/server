@@ -24,6 +24,8 @@ mod schema;
 mod sqlite;
 mod store;
 mod task_failures;
+mod task_repair;
+mod task_repair_http;
 mod updates;
 mod visibility;
 mod worker_incarnations;
