@@ -1,0 +1,9 @@
+{
+    "require": {
+        "durable-workflow/sdk": "2.2.7",
+        "guzzlehttp/guzzle": "^8.2"
+    },
+    "config": {
+        "allow-plugins": {"php-http/discovery": true}
+    }
+}

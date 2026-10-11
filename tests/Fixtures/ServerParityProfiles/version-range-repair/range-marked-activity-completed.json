@@ -1,0 +1,22 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "range-marked-activity-completed",
+  "workflow_type": "parity.v1.range_repair",
+  "input": {"message": "range retained λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {"type": "map", "value": {"message": {"type": "string", "value": "range retained λ"}, "count": {"type": "int64", "value": "9007199254740993"}, "optional": {"type": "null", "value": null}}},
+  "activity": true,
+  "range_repair": {
+    "change_id": "parity.range-repair",
+    "checkpoint": "activity_completed_before_range_failure",
+    "original_range": [1, 1],
+    "incompatible_range": [2, 2],
+    "recorded_version": 1,
+    "marker": {"sequence": 1, "change_id": "parity.range-repair", "version": 1, "min_supported": 1, "max_supported": 1},
+    "original_event_count": 4,
+    "blocked_event_count": 6,
+    "final_task_attempt": 2,
+    "final_task_repair_count": 1
+  },
+  "expected_events": ["StartAccepted", "WorkflowStarted", "VersionMarkerRecorded", "ActivityScheduled", "ActivityStarted", "ActivityCompleted", "RepairRequested", "WorkflowCompleted"],
+  "contract": "A real original PHP author records version 1 and schedules its original activity, then stops. A separate cold author using range 2..2 completes that activity once before replay reaches the incompatible recorded version. Its actual SDK failure or embedded executor blocks replay without closing the original run, changing history, committing another marker, or making an automatic retry ready. A third cold process restores the byte-identical compatible definition and explicitly repairs the same logical workflow task; its new lease completes the original run with attempt 2 and repair count 1, preserving all checkpoint bytes, relationships and exact Avro values. HTTP and embedded retain their distinct actual diagnostic representations. This case does not claim that the activity remains pending at the range failure, or qualify another SDK language."
+}
