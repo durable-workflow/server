@@ -142,6 +142,13 @@ export function checkSdkSignalDirection(fixture, observation, workflowId) {
       const opened = observation.events[turn === 0 ? 2 : 7].payload;
       assert.equal(command.condition_key, 'payload:' + turn);
       assert.equal(command.condition_definition_fingerprint, opened.condition_definition_fingerprint);
+      if (spec.workflow === 'rust') {
+        const occurrence = 'rust:condition-wait:' + turn;
+        assert.equal(command.condition_wait_occurrence_id, occurrence, 'actual authored Rust condition occurrence');
+        assert.equal(opened.condition_wait_occurrence_id, occurrence, 'opening retains authored occurrence');
+        assert.equal(observation.events[turn === 0 ? 6 : 11].payload.condition_wait_occurrence_id,
+          occurrence, 'matching satisfaction retains the original authored occurrence');
+      }
     }
     assert(!phase.requests.some(item => item.path === '/api/worker/activity-tasks/poll' && item.response?.task));
     completions.push(outcome); turn++;

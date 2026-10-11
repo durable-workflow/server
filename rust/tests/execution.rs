@@ -52,6 +52,9 @@ mod task_retry;
 #[path = "execution/selections.rs"]
 mod selections;
 
+#[path = "execution/condition_occurrences.rs"]
+mod condition_occurrences;
+
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
     Postgres {

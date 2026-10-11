@@ -88,7 +88,7 @@ client receipt object, and retains actual server receipts. Canonical embedded
 direct-signal histories stay intact. The separate manifest preserves prior
 tuples and envelopes. Normal published client/worker adapters, the canonical
 embedded author, recorder/reader guards and all six database profiles are
-implemented. Local 57 signal reader models and all 4,479 reader models pass,
+implemented. Local 60 signal reader models and all 4,482 reader models pass,
 alongside PHP recorder 5 tests/24 assertions, syntax/AST/format/shell checks and
 the Docker isolation policy with 72 regressions. SDK compilation and exact
 package/source hashes pass. The [first runtime discrepancy](https://github.com/durable-workflow/server/pull/415#issuecomment-6114095382)
@@ -96,7 +96,17 @@ exposed the new reader's incorrect HTTP 201 signal expectation: published PHP
 and native require HTTP 202. The corrected reader passes the unchanged first
 failed PHP observation, with its original failed label retained. All-direction
 six-database durable signal qualification remains pending; models are not
-runtime evidence. Independent inspection must bind five actual phase processes
+runtime evidence. The corrected PostgreSQL 17 profile records all nine PHP and
+embedded directions passing, while native records six PHP/Python-author cases
+before rejecting the Rust SDK's optional authored condition occurrence field.
+The [native contract correction](https://github.com/durable-workflow/server/pull/415#issuecomment-6114363122)
+accepts nullable string occurrence metadata, preserves nonempty values through
+opening, restart and satisfaction, and omits null/empty legacy values as PHP
+does. Native validator/payload support, two database/HTTP restart/fencing/type
+regressions and stricter Rust occurrence reader guards are implemented; fresh
+native compilation and all-six execution remain pending. Earlier failed
+records and the separate frozen SQLite patch-pressure failure remain intact.
+Independent inspection must bind five actual phase processes
 and the separate observer to original full histories and accepted receipts.
 
 [#401](https://github.com/durable-workflow/server/pull/401) qualifies all nine

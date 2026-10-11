@@ -1238,8 +1238,19 @@ where
                 "open_condition_wait" => {
                     reject_fields(
                         command,
-                        &["type", "condition_key", "condition_definition_fingerprint"],
+                        &[
+                            "type",
+                            "condition_key",
+                            "condition_definition_fingerprint",
+                            "condition_wait_occurrence_id",
+                        ],
                     )?;
+                    if command
+                        .get("condition_wait_occurrence_id")
+                        .is_some_and(|value| !value.is_null() && !value.is_string())
+                    {
+                        return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_request"));
+                    }
                     text(command, "condition_key")?;
                     let fingerprint = text(command, "condition_definition_fingerprint")?;
                     if !fingerprint.strip_prefix("sha256:").is_some_and(|hash| {
@@ -1442,6 +1453,18 @@ where
                 let direct = command["type"] == "open_signal_wait";
                 let mut payload = command.clone();
                 payload.as_object_mut().unwrap().remove("type");
+                // Match PHP's optional occurrence payload: retain authored
+                // nonempty strings and omit null/empty legacy values.
+                if !direct
+                    && payload
+                        .get("condition_wait_occurrence_id")
+                        .is_some_and(|value| value.is_null() || value.as_str() == Some(""))
+                {
+                    payload
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("condition_wait_occurrence_id");
+                }
                 let wait_id = if direct {
                     let pending = Self::query("SELECT signal_wait_id FROM workflow_signal_records WHERE workflow_run_id=$1 AND signal_name=$2 AND status='received' ORDER BY command_sequence,id LIMIT 1")
                         .bind(&run_id).bind(text(command, "signal_name")?).fetch_optional(&mut *tx).await?;

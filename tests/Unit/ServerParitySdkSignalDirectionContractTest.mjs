@@ -36,6 +36,7 @@ function observed(fixture, mode = 'http') {
   for (let index = 0; index < 2; index++) {
     const opened = mode === 'embedded' ? {signal_wait_id: 'wait-' + index, signal_name: 'payload', sequence: index + 1}
       : {condition_wait_id: 'wait-' + index, condition_key: 'payload:' + index,
+        ...(spec.workflow === 'rust' ? {condition_wait_occurrence_id: 'rust:condition-wait:' + index} : {}),
         condition_definition_fingerprint: 'sha256:' + 'a'.repeat(64), sequence: index + 1};
     const received = {workflow_instance_id: workflowId, workflow_run_id: raw.run_id,
       workflow_command_id: 'signal-command-' + index, signal_id: 'signal-' + index,
@@ -96,6 +97,7 @@ function observed(fixture, mode = 'http') {
       history_events: copy(raw.events.slice(0, [2, 4, 9][turn]))};
     const command = turn === 2 ? {type: 'complete_workflow', result: raw.execution.output_envelope}
       : {type: 'open_condition_wait', condition_key: 'payload:' + turn,
+        ...(spec.workflow === 'rust' ? {condition_wait_occurrence_id: 'rust:condition-wait:' + turn} : {}),
         condition_definition_fingerprint: raw.events[turn === 0 ? 2 : 7].payload.condition_definition_fingerprint};
     const requests = [request('/api/worker/register', {worker_id: workerId, task_queue: raw.task_queue,
       supported_workflow_types: [raw.workflow_type], supported_activity_types: []}, {registered: true}, 201)];
@@ -182,4 +184,14 @@ test('signal package guard refuses source and tuple substitutions', () => {
   assert.throws(() => checkSdkSignalDirectionPackages(fixture, value, artifacts));
   const altered = copy(artifacts); altered.server.source_commit = 'b'.repeat(40);
   assert.throws(() => checkSdkSignalDirectionArtifacts(fixture, altered));
+});
+
+for (const [name, mutate] of Object.entries({
+  'missing authored occurrence': value => {delete value.sdk_signal_direction.phases[0].requests.at(-1).request.commands[0].condition_wait_occurrence_id;},
+  'reused authored occurrence': value => {value.sdk_signal_direction.phases[2].requests.at(-1).request.commands[0].condition_wait_occurrence_id = 'rust:condition-wait:0';},
+  'changed satisfied occurrence': value => {value.events[11].payload.condition_wait_occurrence_id = 'rust:condition-wait:0';},
+})) test('refuse Rust signal ' + name, () => {
+  const rustFixture = fixtureFor('rust', 'php'), value = observed(rustFixture);
+  mutate(value);
+  assert.throws(() => checkObservation(rustFixture, value, workflowId));
 });
