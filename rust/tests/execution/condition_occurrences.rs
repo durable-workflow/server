@@ -11,7 +11,7 @@ async fn register_signal_worker(app: &Router, worker: &str) {
         app,
         "POST",
         "/api/worker/register",
-        json!({"worker_id":worker,"task_queue":"test","supported_workflow_types":["echo"],
+        json!({"worker_id":worker,"task_queue":"test","runtime":"rust","supported_workflow_types":["echo"],
             "supported_activity_types":[],
             "workflow_command_contracts":{"echo":{"signals":["payload"]}}}),
     )
