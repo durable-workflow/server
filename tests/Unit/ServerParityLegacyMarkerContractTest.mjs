@@ -22,7 +22,8 @@ for (const id of ['legacy-two-markers-pending', 'legacy-two-markers-completed', 
       namespace: 'default', task_queue: 'server-parity-v1', payload_codec: 'avro',
       typed_input: {type: 'list', value: [fixture.typed_value]}, ...current,
       instance: {id: 'test', current_run_id: 'original-run', namespace: 'default', workflow_type: fixture.workflow_type}};
-    const io = (method, path, request = {}) => ({method, path, request, status: 200, transport_error: null, client_cancelled: false});
+    const io = (method, path, request = {}) => ({method, path, request, status: 200, transport_error: null, client_cancelled: false,
+      request_body_complete: true, upstream_request_started: true});
     const registration = role => [io('POST', '/api/worker/register', {worker_id: 'test:'+role, task_queue: 'server-parity-v1'}),
       {...io('DELETE', '/api/worker/registrations/'+encodeURIComponent('test:'+role)), response: {worker_id: 'test:'+role}}];
     const outcome = io('POST', '/api/worker/activity-tasks/original-activity/complete', {
@@ -99,6 +100,8 @@ for (const id of ['legacy-two-markers-pending', 'legacy-two-markers-completed', 
       request: {worker_id: worker, task_queue: 'server-parity-v1', poll_request_id: 'original-query-poll', timeout_seconds: 1},
       response: {task: null, poll_status: 'long_poll_capacity_exhausted', reason: 'long_poll_capacity_exhausted', message: 'Retry after the delay'},
       response_retry_after: '1', response_encoding: 'identity', transport_error: null, client_cancelled: false};
+    refusal.request_body_complete = true;
+    refusal.upstream_request_started = true;
     requests.push(refusal, withdrawal);
     return {raw, requests, refusal, withdrawal};
   }
@@ -157,6 +160,7 @@ for (const id of ['legacy-two-markers-pending', 'legacy-two-markers-completed', 
       const raw = model('http');
       raw.patch_deployment[phase].requests.push({method: 'POST', path: '/api/worker/'+kind+'-tasks/poll',
         request: {worker_id: 'test:'+phase, task_queue: 'server-parity-v1'}, status: 0,
+        request_body_complete: true, upstream_request_started: true,
         transport_error: null, client_cancelled: true, response_encoding: 'identity', response_retry_after: null, response: []});
       return raw;
     }
@@ -181,6 +185,41 @@ for (const id of ['legacy-two-markers-pending', 'legacy-two-markers-completed', 
       const raw = cancelledModel(), requests = raw.patch_deployment[phase].requests;
       requests.unshift(requests.pop());
       assert.throws(() => checkLegacyMarkerDeployment(fixture, raw, 'test'));
+    });
+    function unsentModel() {
+      const raw = model('http'), requests = raw.patch_deployment[phase].requests;
+      const withdrawals = requests.filter(request => request.method === 'DELETE');
+      for (const withdrawal of withdrawals) requests.splice(requests.indexOf(withdrawal), 1);
+      const cancellation = {method: 'POST', path: '/api/worker/'+kind+'-tasks/poll', request: null,
+        status: 0, request_body_complete: false, upstream_request_started: false, transport_error: null,
+        client_cancelled: true, response_encoding: 'identity', response_retry_after: null, response: []};
+      requests.push(cancellation, ...withdrawals);
+      return {raw, requests, cancellation, withdrawals};
+    }
+    test(`${id} ${phase} ${kind}: accepts explicitly unforwarded cancellation after real commit`, () => {
+      checkLegacyMarkerDeployment(fixture, unsentModel().raw, 'test');
+    });
+    for (const [name, mutate] of [
+      ['missing upstream state', x => delete x.cancellation.upstream_request_started],
+      ['missing body state', x => delete x.cancellation.request_body_complete],
+      ['forwarded incomplete body', x => x.cancellation.upstream_request_started = true],
+      ['complete unforwarded body', x => x.cancellation.request_body_complete = true],
+      ['invented worker authority', x => x.cancellation.request = {worker_id: 'test:'+phase}],
+      ['noncancelled request', x => x.cancellation.client_cancelled = false],
+      ['HTTP failure', x => x.cancellation.status = 500],
+      ['transport failure', x => x.cancellation.transport_error = 'ECONNRESET'],
+      ['completion path', x => x.cancellation.path = '/api/worker/'+kind+'-tasks/task/complete'],
+      ['failure path', x => x.cancellation.path = '/api/worker/'+kind+'-tasks/task/fail'],
+      ['foreign path', x => x.cancellation.path = '/api/unknown/poll'],
+      ['wrong method', x => x.cancellation.method = 'GET'],
+      ['response body', x => x.cancellation.response = {task: 'lost-task'}],
+      ['compressed response', x => x.cancellation.response_encoding = 'gzip'],
+      ['retry hint', x => x.cancellation.response_retry_after = '1'],
+      ['cancellation before commit', x => {x.requests.splice(x.requests.indexOf(x.cancellation), 1); x.requests.unshift(x.cancellation);}],
+      ['withdrawal before own commit', x => {x.requests.splice(x.requests.indexOf(x.withdrawals[0]), 1); x.requests.unshift(x.withdrawals[0]);}],
+    ]) test(`${id} ${phase} ${kind}: rejects unsent ${name}`, () => {
+      const state = unsentModel(); mutate(state);
+      assert.throws(() => checkLegacyMarkerDeployment(fixture, state.raw, 'test'));
     });
   }
 }

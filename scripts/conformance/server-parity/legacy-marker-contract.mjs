@@ -15,6 +15,7 @@ export function checkLegacyMarkerArtifacts(fixture, artifacts) {
   assert.deepEqual(spec.expected_decisions, [true, true]);
   assert.deepEqual(spec.cancel_poll_on_shutdown, ['workflow', 'activity', 'query'],
     'explicit clean published-worker shutdown poll policy');
+  assert.equal(spec.cancel_unsent_poll_on_shutdown, true, 'explicit locally cancelled, unforwarded poll policy');
   assert.deepEqual(spec.query_poll_capacity, {status: 429, poll_status: 'long_poll_capacity_exhausted',
     retry_after_seconds: 1, allow_clean_shutdown_after_commit: true}, 'explicit published idle-query capacity policy');
   for (const selected of [spec.producer, spec.consumer]) {
@@ -173,12 +174,32 @@ export function checkLegacyMarkerDeployment(fixture, observation, workflowId) {
       for (const request of completions(phase)) assert.equal(request.request.lease_owner, workflowId+':'+role);
       for (const [index, request] of phase.requests.entries()) {
         assert.equal(request.transport_error, null);
+        assert.equal(typeof request.request_body_complete, 'boolean');
+        assert.equal(typeof request.upstream_request_started, 'boolean');
+        if (request.upstream_request_started) assert.equal(request.request_body_complete, true);
+        else {
+          assert.equal(request.request_body_complete, false);
+          assert.equal(request.client_cancelled, true, 'only explicit unsent cancellations lack an upstream attempt');
+        }
         if (request.client_cancelled) {
           assert.equal(request.status, 0);
           assert.equal(request.method, 'POST');
           assert(spec.cancel_poll_on_shutdown.map(kind => '/api/worker/'+kind+'-tasks/poll').includes(request.path));
-          assert(workers.slice(0, registrations).includes(request.request.worker_id));
-          assert.equal(request.request.task_queue, 'server-parity-v1');
+          if (request.upstream_request_started) {
+            assert(workers.slice(0, registrations).includes(request.request.worker_id));
+            assert.equal(request.request.task_queue, 'server-parity-v1');
+          } else {
+            assert.equal(spec.cancel_unsent_poll_on_shutdown, true);
+            assert.equal(request.request, null, 'incomplete bytes do not establish a worker or task authority');
+            assert(registered.some(item => phase.requests.indexOf(item) < index), 'actual registration precedes unsent shutdown cancellation');
+            for (const worker of workers.slice(0, registrations)) {
+              const withdrawal = phase.requests.findIndex(item => item.method === 'DELETE'
+                && item.path === '/api/worker/registrations/'+encodeURIComponent(worker) && item.status === 200);
+              assert(phase.requests.slice(0, withdrawal).some(item => item.status === 200
+                && [...completions(phase), ...activities(phase)].includes(item) && item.request.lease_owner === worker),
+              'each actual worker withdraws after its own accepted commit');
+            }
+          }
           assert.equal(request.response_encoding, 'identity');
           assert.equal(request.response_retry_after, null);
           assert(request.response && typeof request.response === 'object' && Object.keys(request.response).length === 0,

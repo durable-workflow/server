@@ -186,7 +186,11 @@ function patchPublishedSdkPhase(array $fixture, array $options): array
     $consumer = $fixture['patch_deployment'][$original ? 'producer' : 'consumer'];
     $directory = __DIR__.'/published-sdk-patch';
     $journal = tempnam(sys_get_temp_dir(), 'parity-sdk-');
-    $proxy = proc_open(['node', $directory.'/observe-http.mjs', $options['url'], $journal],
+    $proxyArguments = ['node', $directory.'/observe-http.mjs', $options['url'], $journal];
+    if (isset($fixture['patch_deployment']['legacy_marker_history'])) {
+        $proxyArguments[] = '--forwarding-state';
+    }
+    $proxy = proc_open($proxyArguments,
         [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $proxyPipes);
     if (! is_resource($proxy)) {
         unlink($journal);
@@ -235,7 +239,11 @@ function patchPublishedSdkPhase(array $fixture, array $options): array
             $request = json_decode($line, true, flags: JSON_THROW_ON_ERROR);
             foreach (['request', 'response'] as $key) {
                 $body = $request[$key.'_body'];
-                $request[$key] = $body === '' ? null : json_decode($body, true, flags: JSON_THROW_ON_ERROR);
+                $unsentCancellation = $key === 'request' && $request['status'] === 0
+                    && $request['client_cancelled'] === true && $request['transport_error'] === null
+                    && ($request['upstream_request_started'] ?? null) === false
+                    && ($request['request_body_complete'] ?? null) === false;
+                $request[$key] = $unsentCancellation || $body === '' ? null : json_decode($body, true, flags: JSON_THROW_ON_ERROR);
             }
             unset($request['request_body'], $request['response_body'], $request['response_bytes_base64']);
             if ($request['method'] === 'GET' || str_ends_with($request['path'], '/poll')) {

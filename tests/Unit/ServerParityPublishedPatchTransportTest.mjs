@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import net from 'node:net';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
-import {mkdtempSync, readFileSync, rmSync} from 'node:fs';
+import {mkdtempSync, readFileSync, rmSync, watch} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {gzipSync} from 'node:zlib';
@@ -55,6 +56,8 @@ test('HTTP observer preserves compressed bytes and refuses to retain authenticat
     assert.ok(!raw.includes('disposable-fixture-only'));
     assert.ok(!raw.includes('disposable-response-only'));
     const receipt = JSON.parse(raw);
+    assert.deepEqual(Object.keys(receipt).sort(), ['method', 'path', 'request_body', 'status', 'response_encoding',
+      'response_retry_after', 'response_bytes_base64', 'response_body', 'client_cancelled', 'transport_error'].sort());
     assert.equal(receipt.request_body, requestBody.toString());
     assert.equal(receipt.response_body, responseBody);
     assert.equal(receipt.response_encoding, 'gzip');
@@ -66,6 +69,55 @@ test('HTTP observer preserves compressed bytes and refuses to retain authenticat
     const closed = once(proxy, 'close');
     proxy.kill();
     await closed;
+    await new Promise(resolve => upstream.close(resolve));
+    rmSync(directory, {recursive: true});
+  }
+});
+
+test('opt-in HTTP observer proves a partial cancelled poll never starts an upstream request', {timeout: 10000}, async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'server-parity-unsent-'));
+  const journal = join(directory, 'wire.jsonl');
+  let upstreamRequests = 0;
+  const upstream = http.createServer((request, response) => {upstreamRequests++; response.end('{}');});
+  upstream.listen(0, '127.0.0.1');
+  await once(upstream, 'listening');
+  const proxy = spawn(process.execPath, [new URL('../../scripts/conformance/server-parity/published-sdk-patch/observe-http.mjs', import.meta.url).pathname,
+    `http://127.0.0.1:${upstream.address().port}`, journal, '--forwarding-state'], {stdio: ['ignore', 'pipe', 'pipe']});
+  let client, watcher;
+  try {
+    const [ready] = await once(proxy.stdout, 'data');
+    const address = new URL(ready.toString().trim());
+    client = net.createConnection({host: '127.0.0.1', port: Number(address.port)});
+    await once(client, 'connect');
+    const continueResponse = once(client, 'data');
+    client.write('POST /api/worker/activity-tasks/poll HTTP/1.1\r\nHost: localhost\r\nExpect: 100-continue\r\nContent-Length: 100\r\n\r\n');
+    const [interim] = await continueResponse;
+    assert.match(interim.toString(), /^HTTP\/1\.1 100 Continue/);
+    const recorded = new Promise(resolve => watcher = watch(directory, (event, filename) => {
+      if (filename === 'wire.jsonl') resolve();
+    }));
+    client.end('{"worker_id":');
+    await recorded;
+    const receipt = JSON.parse(readFileSync(journal, 'utf8'));
+    assert.equal(receipt.request_body, '{"worker_id":');
+    assert.equal(receipt.request_body_complete, false);
+    assert.equal(receipt.upstream_request_started, false);
+    assert.equal(receipt.client_cancelled, true);
+    assert.equal(receipt.status, 0);
+    assert.equal(receipt.transport_error, null);
+    assert.equal(receipt.response_body, '');
+    assert.equal(receipt.response_bytes_base64, '');
+    assert.equal(receipt.response_retry_after, null);
+    assert.equal(receipt.response_encoding, 'identity');
+    assert.equal(upstreamRequests, 0);
+    assert.equal(proxy.exitCode, null);
+  } finally {
+    watcher?.close();
+    client?.destroy();
+    const closed = once(proxy, 'close');
+    proxy.kill();
+    await closed;
+    upstream.closeAllConnections();
     await new Promise(resolve => upstream.close(resolve));
     rmSync(directory, {recursive: true});
   }
@@ -86,7 +138,7 @@ test('HTTP observer forwards client cancellation to the upstream long poll', {ti
   upstream.listen(0, '127.0.0.1');
   await once(upstream, 'listening');
   const proxy = spawn(process.execPath, [new URL('../../scripts/conformance/server-parity/published-sdk-patch/observe-http.mjs', import.meta.url).pathname,
-    `http://127.0.0.1:${upstream.address().port}`, journal], {stdio: ['ignore', 'pipe', 'pipe']});
+    `http://127.0.0.1:${upstream.address().port}`, journal, '--forwarding-state'], {stdio: ['ignore', 'pipe', 'pipe']});
   let timer;
   try {
     const [ready] = await once(proxy.stdout, 'data');
@@ -103,6 +155,8 @@ test('HTTP observer forwards client cancellation to the upstream long poll', {ti
     assert.equal(receipt.response_body, '');
     assert.equal(receipt.response_bytes_base64, '');
     assert.equal(receipt.request_body, '{"worker_id":"cancelled-worker","timeout_seconds":1}');
+    assert.equal(receipt.request_body_complete, true);
+    assert.equal(receipt.upstream_request_started, true);
   } finally {
     clearTimeout(timer);
     const closed = once(proxy, 'close');

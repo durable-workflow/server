@@ -222,6 +222,13 @@ The profile explicitly checks published query-capacity refusal: a null task,
 one-second retry hint and identical-request recovery or clean authenticated
 withdrawal after that worker's own accepted commit. Immediate sticky failover, blocked
 repair, migration, full fault budgets and performance remain separate gates.
+Its opt-in HTTP observer records whether the complete request body arrived and
+whether an upstream request started. A locally cancelled, incomplete poll has
+no inferred worker identity and is accepted only after a real phase commit and
+each registered worker's authenticated withdrawal after its own commit. A
+forwarded cancellation still requires its actual worker and queue. Completion
+and failure requests cannot use this shutdown exception. Frozen profiles retain
+their original wire-record schema.
 
 [#381](https://github.com/durable-workflow/server/pull/381) implements ordinary
 workflow-task failure retries on the original run. A failed lease and its new
