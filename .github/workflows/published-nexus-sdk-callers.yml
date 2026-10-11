@@ -29,8 +29,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      DW_NEXUS_RESULT_DIR: ${{ runner.temp }}/nexus-proof
-      DW_NEXUS_RUN_ROOT: ${{ runner.temp }}/nexus-run
       DW_SERVER_IMAGE: durableworkflow/server@sha256:1b8621cb43340f979f4dc144aa51c32d0747aaad73f2b600130e0ee973aea352
       DW_SERVER_VERSION: 2.5.19
       DW_WORKFLOW_PHP_VERSION: 2.5.9
@@ -47,6 +45,9 @@ jobs:
         run: node --test tests/Unit/NexusSdkCallerEvidenceTest.mjs
       - name: Execute the frozen published client and service pairs
         shell: bash
+        env:
+          DW_NEXUS_RESULT_DIR: ${{ runner.temp }}/nexus-proof
+          DW_NEXUS_RUN_ROOT: ${{ runner.temp }}/nexus-run
         run: |
           set -euo pipefail
           mkdir -p "$DW_NEXUS_RESULT_DIR"
@@ -57,17 +58,9 @@ jobs:
           result=$?
           set -e
           printf '%s\n' "$result" > "$DW_NEXUS_RESULT_DIR/complete-suite-exit-code.txt"
-          jq -e '
-            .scope == "sdk_client_admission" and .outcome == "pass" and
-            .caller_workflow_execution_verified == false and
-            .durable_completion_qualified == false and
-            .typed_failure_qualified == false and .cancellation_qualified == false and
-            (.pairs | length) == 4 and all(.pairs[]; .admission_verified == true) and
-            ([.pairs[] | [.caller, .service]] | sort) ==
-              [["sdk-php", "sdk-python"], ["sdk-php", "workflow-php"],
-               ["sdk-python", "sdk-python"], ["sdk-python", "workflow-php"]]
-          ' "$DW_NEXUS_RESULT_DIR/nexus-sdk-client-matrix.json"
-          jq -e '.outcome != "pass"' "$DW_NEXUS_RESULT_DIR/nexus-conformance-result.json"
+          NEXUS_SDK_CLIENT_MATRIX="$DW_NEXUS_RESULT_DIR/nexus-sdk-client-matrix.json" \
+            NEXUS_CONFORMANCE_RESULT="$DW_NEXUS_RESULT_DIR/nexus-conformance-result.json" \
+            node --test tests/Unit/NexusSdkCallerEvidenceTest.mjs
       - name: Retain actual requests and durable observations
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

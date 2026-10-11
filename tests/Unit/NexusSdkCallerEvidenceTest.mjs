@@ -74,3 +74,21 @@ test('a caller language label without SDK process execution cannot qualify a cel
     const result = crossLanguageScenarioResult(fixture('completed', 0));
     assert.notEqual(result.status, 'pass');
 });
+
+if (process.env.NEXUS_SDK_CLIENT_MATRIX) {
+    test('published client admissions preserve their limited qualification scope', () => {
+        const matrix = JSON.parse(fs.readFileSync(process.env.NEXUS_SDK_CLIENT_MATRIX, 'utf8'));
+        const complete = JSON.parse(fs.readFileSync(process.env.NEXUS_CONFORMANCE_RESULT, 'utf8'));
+        assert.equal(matrix.scope, 'sdk_client_admission');
+        assert.equal(matrix.outcome, 'pass');
+        assert.deepEqual(matrix.pairs.map(({ caller, service }) => [caller, service]).sort(), [
+            ['sdk-php', 'sdk-python'], ['sdk-php', 'workflow-php'],
+            ['sdk-python', 'sdk-python'], ['sdk-python', 'workflow-php'],
+        ]);
+        for (const pair of matrix.pairs) assert.equal(pair.admission_verified, true);
+        for (const field of ['caller_workflow_execution_verified', 'durable_completion_qualified',
+            'typed_failure_qualified', 'cancellation_qualified']) assert.equal(matrix[field], false);
+        assert.notEqual(complete.outcome, 'pass');
+        assert.equal(complete.runner_blocked, false);
+    });
+}
