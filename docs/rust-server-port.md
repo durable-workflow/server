@@ -26,16 +26,39 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
-Draft [#401](https://github.com/durable-workflow/server/pull/401) adds the next
-qualification: all nine fresh PHP/Python/Rust workflow-author and separately
+[#401](https://github.com/durable-workflow/server/pull/401) qualifies all nine
+fresh PHP/Python/Rust workflow-author and separately
 routed activity-worker directions. An original author schedules one activity,
 an activity-only process commits it, and a cold workflow process completes the
 same run with unchanged history prefixes and exact typed Avro values. Installed
 package identities and real HTTP phase receipts are required. Embedded executes
 the canonical PHP definition and labels language transport inapplicable. Its
-separate tuple preserves every earlier cohort. The adapters are implemented;
-final runtime qualification and separate raw HTTP retention for both targets
-remain pending. Source reader checks do not establish SDK execution.
+separate tuple preserves every earlier cohort. All six candidate configurations
+pass [Shared qualification](https://github.com/durable-workflow/server/actions/runs/38151936175),
+[PHP/source checks](https://github.com/durable-workflow/server/actions/runs/38151936179)
+and boundaries. Independent inspection of the official SQLite artifact rechecks
+all 27 logical records and binds all 54 separate PHP/native wire sidecars to
+their actual process, phase, original run and recorded request/receipt fields.
+The complete retained profile compares exactly to the official ZIP members and
+passes a compressed archive byte round-trip. Its raw objects remain intact
+despite PHP's associative empty-contract-map observation projection.
+Merge `b5a6e8d1e478d43af5219c560ec392e6d17258aa` retains the qualified tree;
+post-merge checks and their outcome are tracked in #401. Its first main run
+passed five runtime configurations; PostgreSQL 16 completed every comparison,
+cleanup and artifact upload, but exceeded its 15-minute job limit. Its retry
+retains that exact merge; the outcome is tracked in #401. PostgreSQL receives
+the same bounded
+20-minute allowance as MySQL, including cleanup and evidence retention.
+The MySQL 8.0 fixture database receives the existing MySQL 8.4 allowance of
+1 GiB, with swap disabled: its 768 MiB container was killed for exceeding that
+limit after all comparisons passed, preventing the final trusted TLS probe.
+These are CI resource allowances, not performance qualification limits.
+This is one authored
+workflow/activity scenario in the default namespace, with nine language
+directions; it does not establish nine capability families or performance.
+The next fixture slice is separately routed parent/child SDK directions.
+The observed activity-only Python polling defect is handed to
+[SDK Python #119](https://github.com/durable-workflow/sdk-python/issues/119).
 
 [#399](https://github.com/durable-workflow/server/pull/399) implements and
 qualifies native pending mixed-selection repair. Its timer winner resumes a
@@ -1090,7 +1113,7 @@ does not prove the remaining acceptance criteria.
 | Workflow lifecycle, duplicate commands, typed history, continuation, child workflows, cancellation, cleanup replay | Workflow lifecycle, migration, child-workflow and replay runners; Feature cooperative cancellation, history, migration and repeated-signal tests | Bounded authored completion, activity retry/failure, direct children/cancellation and root cooperative cleanup; broader propagation, replay and continuation semantics pending |
 | Timers, schedules, signals, queries, updates, search attributes, memo, sagas | Corresponding runners in `scripts/conformance/`, manifests in `static/platform-conformance/`; Sample App polyglot experiments | Bounded durable sleep, repeated signals, state queries/updates and two UTC schedule cases; broader policies, search attributes, memo and sagas pending |
 | Local activities, cancellation scopes, worker sessions, streams, service catalog/Nexus, bridge adapters, standalone activities, debugging and repair | `routes/api.php`, `docs/contracts/`, worker/control-plane specifications, corresponding Feature tests and Nexus runner | Pending; not omitted from parity |
-| Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | Published PHP SDK and embedded directions for 29 default fixtures plus a separate role profile; unchanged CLI 2.2.0 list/describe/history; other languages, CLI commands, Waterline and Sample App pending |
+| Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | Published PHP SDK and embedded directions for 29 default fixtures plus a separate role profile; #401 qualifies nine PHP/Python/Rust workflow/activity directions with cold replay and canonical embedded counterparts; unchanged CLI 2.2.0 list/describe/history; child directions, broader SDK families, CLI commands, Waterline and Sample App pending |
 | SQL schema and stored representations | `database/migrations/`, Workflow package `src/migrations/`, model casts, `Workflow\\Serializers\\Serializer`, queue job payloads, exported history and credential digests | [Representation checkpoints](rust-server-storage-audit.md) recorded; complete mapping and executable migration tests pending |
 | Images, architecture, bootstrap, configuration, readiness, metrics and graceful shutdown | `Dockerfile`, `docker/`, `config/`, `docker-compose*.yml`, `k8s/helm/`, `docs/server-reference.md`, small-cluster/multi-region validation docs | Pending |
 | Backup and in-place upgrade | `docs/self-hosted-backup-and-restore.md`, external payload backup holds; last PHP image writes, all PHP roles stop, Rust takes over same DB sequentially | Pending on SQLite, MariaDB/MySQL, PostgreSQL |
