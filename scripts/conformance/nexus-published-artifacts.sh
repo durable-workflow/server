@@ -1558,8 +1558,9 @@ function callerWorkflowInvocationEvidence(language, runtimeEvidence) {
   const available = publicSurfaceAvailable(surface);
 
   return {
-    executed: available,
-    execution_mode: 'published_service_call_surface_probe',
+    executed: false,
+    execution_mode: 'public_api_reflection',
+    public_surface_available: available,
     sdk_language: language,
     public_method: matchedMethods[0] || null,
     matched_methods: matchedMethods,
@@ -2402,6 +2403,11 @@ echo json_encode($handle->started->raw + [
     'service_call_id' => $handle->serviceCallId,
     'sdk_version' => Composer\\InstalledVersions::getPrettyVersion('durable-workflow/sdk'),
     'client_process_id' => getmypid(),
+    'caller_sdk_invocation' => [
+        'executed' => true,
+        'public_method' => 'DurableWorkflow\\\\Client::startServiceOperation',
+        'workflow_worker_executed' => false,
+    ],
 ], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR), PHP_EOL;
 PHP`, path.join(resultDir, 'nexus-php-sdk-client-execute.log'));
   response.status = response.ok ? 202 : 0;
@@ -2449,6 +2455,85 @@ async function setupCrossLanguageService(baseUrl, token, target, serviceUrl) {
   });
 
   return {targetNamespace, endpointName, serviceName, operationName, endpoint, service, operation};
+}
+
+function executePublishedPythonSdkServiceOperation(
+  containerName,
+  token,
+  operation,
+  argumentsValue,
+  callerNamespace,
+  callerWorkflowId,
+  callerRunId,
+) {
+  const request = {
+    server_url: 'http://server:8080',
+    token,
+    namespace: operation.targetNamespace,
+    caller_namespace: callerNamespace,
+    endpoint_name: operation.endpointName,
+    service_name: operation.serviceName,
+    operation_name: operation.operationName,
+    arguments: [argumentsValue],
+    caller_workflow_id: callerWorkflowId,
+    caller_run_id: callerRunId,
+    idempotency_key: `${callerWorkflowId}-nexus-${crypto.randomBytes(5).toString('hex')}`,
+  };
+  const encoded = Buffer.from(JSON.stringify(request), 'utf8').toString('base64');
+  const response = dockerExecJson(containerName, `. /tmp/dw-python/bin/activate && python <<'PY'
+import asyncio
+import base64
+import json
+import os
+from importlib.metadata import version
+
+from durable_workflow.client import Client
+
+input_data = json.loads(base64.b64decode('${encoded}'))
+
+async def main():
+    receipts = []
+    async def observe(response):
+        await response.aread()
+        receipts.append({
+            "method": response.request.method,
+            "path": response.request.url.path,
+            "request_body": json.loads(response.request.content) if response.request.content else None,
+            "status": response.status_code,
+            "body": response.json(),
+        })
+
+    async with Client(input_data["server_url"], token=input_data["token"],
+                      namespace=input_data["namespace"]) as client:
+        client._http.event_hooks["response"] = [observe]
+        result = await client.execute_nexus_operation(
+            input_data["endpoint_name"], input_data["service_name"],
+            input_data["operation_name"], input_data["arguments"],
+            mode="async", wait_for="accepted",
+            idempotency_key=input_data["idempotency_key"],
+            caller_namespace=input_data["caller_namespace"],
+            caller_workflow_instance_id=input_data["caller_workflow_id"],
+            caller_workflow_run_id=input_data["caller_run_id"],
+            raise_on_failure=False,
+        )
+        assert receipts, "No actual SDK HTTP invocation recorded"
+        print(json.dumps(result.response_or_failure_surface | {
+            "service_call_id": result.service_call_id,
+            "sdk_version": version("durable-workflow"),
+            "client_process_id": os.getpid(),
+            "caller_sdk_invocation": {
+                "executed": True,
+                "public_method": "durable_workflow.client.Client.execute_nexus_operation",
+                "workflow_worker_executed": False,
+                "receipts": receipts,
+            },
+        }))
+
+asyncio.run(main())
+PY`, path.join(resultDir, `${callerWorkflowId}-sdk-client-execute.log`));
+  response.status = response.body?.caller_sdk_invocation?.receipts?.at(-1)?.status ?? 0;
+  response.request = request;
+  return response;
 }
 
 function publicSurfaceAvailable(surface) {
@@ -2898,22 +2983,14 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
 
     const pythonCallerWorkflowInstanceId = `python-caller-php-service-${crypto.randomBytes(5).toString('hex')}`;
     const pythonCallerWorkflowRunId = ulidLike();
-    const pythonToPhpExecute = await apiRequest(
-      baseUrl,
+    const pythonToPhpExecute = executePublishedPythonSdkServiceOperation(
+      pythonService.containerName,
       token,
-      'shared',
-      'POST',
-      `/service-endpoints/${phpOperation.endpointName}/services/${phpOperation.serviceName}/operations/${phpOperation.operationName}/execute`,
-      {
-        arguments: pythonToPhpRequest,
-        mode_override: 'async',
-        wait_for: 'accepted',
-        caller_namespace: 'tenant-b',
-        caller_workflow_instance_id: pythonCallerWorkflowInstanceId,
-        caller_workflow_run_id: pythonCallerWorkflowRunId,
-        idempotency_key: `${pythonCallerWorkflowInstanceId}-nexus-${crypto.randomBytes(5).toString('hex')}`,
-        metadata: {conformance: 'python_caller_php_service'},
-      },
+      phpOperation,
+      pythonToPhpRequest,
+      'tenant-b',
+      pythonCallerWorkflowInstanceId,
+      pythonCallerWorkflowRunId,
     );
     const pythonToPhpServiceCallId = serviceCallIdFrom(pythonToPhpExecute);
     const pythonToPhpDescribe = pythonToPhpServiceCallId === ''
