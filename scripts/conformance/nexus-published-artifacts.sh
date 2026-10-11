@@ -872,7 +872,19 @@ async function apiRequest(baseUrl, token, namespace, method, apiPath, body = nul
     init.body = JSON.stringify(body);
   }
 
-  const response = await fetch(`${baseUrl}/api${apiPath}`, init);
+  const url = `${baseUrl}/api${apiPath}`;
+  let response;
+  let transportRetry = null;
+  try {
+    response = await fetch(url, init);
+  } catch (error) {
+    // SDK probes block this process while their Docker command runs. Retry an
+    // idempotent inspection once with a fresh connection after transport loss.
+    // Never retry admissions or other writes, or turn an HTTP error into a pass.
+    if (method !== 'GET') throw error;
+    transportRetry = {message: String(error), cause: String(error.cause || '')};
+    response = await fetch(url, {...init, headers: {...headers, Connection: 'close'}});
+  }
   const rawBody = await response.text();
   let parsed = null;
   try {
@@ -882,7 +894,8 @@ async function apiRequest(baseUrl, token, namespace, method, apiPath, body = nul
   }
 
   return {
-    request: {method, path: `/api${apiPath}`, namespace, body},
+    request: {method, path: `/api${apiPath}`, namespace, body,
+      transport_attempts: transportRetry === null ? 1 : 2, transport_retry: transportRetry},
     status: response.status,
     ok: response.ok,
     body: parsed,

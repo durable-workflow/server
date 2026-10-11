@@ -86,7 +86,7 @@ for (const [input, service] of [
             assert.equal(row.service_input_qualified, true, `${row.caller_namespace}: inspect linked Python history`);
             assert.equal(row.completed, true, `${row.caller_namespace}: ${JSON.stringify(row.failure || row.result)}`);
             assert.ok(row.linked_service_run_id && row.linked_service_history);
-            assert.equal(row.worker_exit_code, row.worker_signal_handlers_available ? 0 : 143,
+            assert.equal(row.worker_exit_code, row.worker_signal_handlers_available ? 0 : 15,
                 'PHP worker must exit through its available signal handling');
             assertOriginalServiceDelivery(row, 'sdk-php');
         }
