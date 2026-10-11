@@ -1,0 +1,39 @@
+{
+  "schema": "durable-workflow.server-port-artifacts/v1",
+  "server": {
+    "version": "2.5.18",
+    "source_commit": "c71576fca203173c30fea34e73557928ee9e2235",
+    "workflow": "2.5.8",
+    "workflow_source_commit": "58f387d3840d61420122ec93f6cb2a54b990fae3",
+    "image_index": "sha256:625f0aec42dcfc7ac9a9e6ad641faad06ba079fb68fdf67287bccd25ea9e7591",
+    "images": {
+      "linux/amd64": "durableworkflow/server@sha256:cb5ecda09abe06c3ed4d29f4ce5bcba5595cea6bb281066f5c309a6fa8d019f4",
+      "linux/arm64": "durableworkflow/server@sha256:de5ff8cb640112447cd3d7ca733ab7907efbc06814b039e6c94acefd82e1ed16"
+    }
+  },
+  "workflow": "2.5.8",
+  "workflow_source_commit": "58f387d3840d61420122ec93f6cb2a54b990fae3",
+  "workflow_loaded_sources": {
+    "src/V2/Support/TaskRepair.php": "bd80fd34e4c427e329cd0ff1e10544b44715bb1fd9c315f37b3d57c6de78c295",
+    "src/V2/Support/VersionResolver.php": "473b2ecd645d688622735508dd4460cff95e32ad17d25a6e3206e781cee0adf7",
+    "src/V2/Support/WorkflowExecutor.php": "9b85a1daf80fbe63d4f0ec3e23513c213e4971379f9a280495c0df6dc9655062"
+  },
+  "embedded_image_composer_lock_sha256": "50c3c7122935de49d3230bf40889444fb9f43cbdc95da62d619c8a6503dfd122",
+  "embedded_image_path_reference": "a6b43684133a7f678db2784181e30db6f68403a8",
+  "sdk_php": "2.2.7",
+  "sdk_php_source_commit": "7c40c7755789790ce4c0ce706a8e3a6462742956",
+  "sdk_php_composer_lock_sha256": "af600c49741d714aea69e2830309db8065461c9fd6b0e499c68699f74641faab",
+  "sdk_python": "2.5.4",
+  "sdk_rust": "3.4.4",
+  "cli": "2.2.3",
+  "waterline": "2.9.1",
+  "capacity_suite": "1.9.0",
+  "performance_status": "not_measured",
+  "qualification_scope": "version range replay blockage and explicit repair after one completed activity; this profile initially executes PHP author definitions only",
+  "resource_limits": {
+    "cpus": 1,
+    "memory_bytes": 536870912,
+    "memory_swap_bytes": 536870912
+  },
+  "prior_cohorts_unchanged": true
+}
