@@ -103,9 +103,22 @@ The [native contract correction](https://github.com/durable-workflow/server/pull
 accepts nullable string occurrence metadata, preserves nonempty values through
 opening, restart and satisfaction, and omits null/empty legacy values as PHP
 does. Native validator/payload support, two database/HTTP restart/fencing/type
-regressions and stricter Rust occurrence reader guards are implemented; fresh
-native compilation and all-six execution remain pending. Earlier failed
-records and the separate frozen SQLite patch-pressure failure remain intact.
+regressions and stricter Rust occurrence reader guards are implemented. The
+[next exact-source run](https://github.com/durable-workflow/server/actions/runs/38180747843)
+passes native bootstrap/tests on all six configurations; the inspected SQLite
+artifact passes all 74 execution tests, including those two regressions. Normal
+Rust authoring preserves the original occurrence but its first signal returns
+`unsupported_signal_contract`: the published Rust registration declares an
+untyped, nullable variadic tail. The [reviewed correction](https://github.com/durable-workflow/server/pull/415#issuecomment-6114821113)
+accepts zero or more tail values after required positional arguments, validates
+each value without coercion, and preserves int64/float/null distinctions.
+Defaults, optional fixed prefixes and non-final variadics remain explicitly
+unsupported. Native validation, the actual published variadic registration in
+the restart test, and a third database/HTTP regression are implemented; fresh
+compilation of this correction and all-six signal execution remain pending.
+Earlier failed records and the separate frozen SQLite patch-pressure failure
+remain intact. Occurrence metadata with older worker protocols and capability
+routing are separate unqualified policies.
 Independent inspection must bind five actual phase processes
 and the separate observer to original full histories and accepted receipts.
 
@@ -1266,8 +1279,10 @@ signals must not move replayed activity/timer/wait positions. Official Avro
 signal decode/encode runs in `spawn_blocking` with one permit per runtime, held
 until that job finishes even when its HTTP request is cancelled. Transaction
 serialization, full codec resource limits and CPU/deadline qualification remain
-open. Initial signal argument support is positional, without default/variadic
-or class-type conversion; unsupported contracts fail before durable writes.
+open. Initial signal argument support was positional, without default/variadic
+or class-type conversion. The current normal SDK signal slice implements
+variadic tails with required positional prefixes; defaults and class-type
+conversion remain unsupported and fail before durable writes.
 Timed/grouped waits, cancellation, full rejection audit parity, authorization
 and namespace coverage still require their own slices.
 

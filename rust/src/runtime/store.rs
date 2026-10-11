@@ -2047,22 +2047,37 @@ pub(super) fn validate_arguments(
         .and_then(|contracts| contracts.iter().find(|contract| contract["name"] == name))
         .and_then(|contract| contract["parameters"].as_array())
         .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, unsupported))?;
-    if parameters.len() != values.len() {
+    let variadic = parameters
+        .last()
+        .is_some_and(|parameter| parameter["variadic"] == true);
+    let fixed_count = parameters.len() - usize::from(variadic);
+    if parameters.iter().enumerate().any(|(index, parameter)| {
+        parameter["default_available"] == true
+            || (parameter["variadic"] == true && index + 1 != parameters.len())
+            || (variadic && index < fixed_count && parameter["required"] != true)
+    }) {
+        return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, unsupported));
+    }
+    if values.len() < fixed_count || (!variadic && parameters.len() != values.len()) {
         return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, invalid));
     }
-    for (parameter, value) in parameters.iter().zip(values) {
-        if parameter["variadic"] == true || parameter["default_available"] == true {
-            return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, unsupported));
-        }
-        if matches!(value, crate::codec::Value::Null) && parameter["allows_null"] == true {
-            continue;
+    for (index, value) in values.iter().enumerate() {
+        let parameter = &parameters[index.min(fixed_count)];
+        if matches!(value, crate::codec::Value::Null) {
+            if parameter["allows_null"]
+                .as_bool()
+                .unwrap_or(parameter["type"].is_null() || parameter["type"] == "")
+            {
+                continue;
+            }
+            return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, invalid));
         }
         use crate::codec::Value as Payload;
         let valid = match parameter["type"].as_str() {
             None | Some("mixed") => true,
             Some("array") => matches!(value, Payload::Array(_) | Payload::Map(_)),
             Some("int") => matches!(value, Payload::Long(_)),
-            Some("float") => matches!(value, Payload::Double(_)),
+            Some("float") => matches!(value, Payload::Double(_) | Payload::Long(_)),
             Some("bool") => matches!(value, Payload::Boolean(_)),
             Some("string") => matches!(value, Payload::String(_)),
             _ => {
