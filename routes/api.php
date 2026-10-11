@@ -18,6 +18,7 @@ use App\Http\Controllers\Api\RuntimeExternalPayloadController;
 use App\Http\Controllers\Api\ScheduleController;
 use App\Http\Controllers\Api\SearchAttributeController;
 use App\Http\Controllers\Api\ServiceCatalogController;
+use App\Http\Controllers\Api\ServiceCatalogReadController;
 use App\Http\Controllers\Api\StorageController;
 use App\Http\Controllers\Api\SystemController;
 use App\Http\Controllers\Api\TaskQueueController;
@@ -375,6 +376,17 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
         Route::get('/{endpointName}/services/{serviceName}/operations/{operationName}', [ServiceCatalogController::class, 'operationShow']);
         Route::put('/{endpointName}/services/{serviceName}/operations/{operationName}', [ServiceCatalogController::class, 'operationUpdate']);
         Route::delete('/{endpointName}/services/{serviceName}/operations/{operationName}', [ServiceCatalogController::class, 'operationDestroy']);
+    });
+
+    Route::prefix('service-catalog')->middleware([$operator, $cpv, $httpControl, $ns, $namespaceAdmission])->group(function () {
+        Route::get('/endpoints', [ServiceCatalogReadController::class, 'endpointsIndex']);
+        Route::get('/endpoints/{endpointId}', [ServiceCatalogReadController::class, 'endpointShow']);
+        Route::get('/services', [ServiceCatalogReadController::class, 'servicesIndex']);
+        Route::get('/services/{serviceId}', [ServiceCatalogReadController::class, 'serviceShow']);
+        Route::get('/operations', [ServiceCatalogReadController::class, 'operationsIndex']);
+        Route::get('/operations/{operationId}', [ServiceCatalogReadController::class, 'operationShow']);
+        Route::get('/calls', [ServiceCatalogReadController::class, 'callsIndex']);
+        Route::get('/calls/{callId}', [ServiceCatalogReadController::class, 'callShow']);
     });
 
     // Service-call read surface stays available during rollout/schema drift

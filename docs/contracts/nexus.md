@@ -1,5 +1,8 @@
 # Nexus Contract
 
+Namespace operators can browse the catalog and original durable calls through
+the [service catalog read contract](service-catalog-reads.md).
+
 Nexus is the durable cross-namespace call surface: a workflow in namespace
 A invokes a service or workflow registered in namespace B and gets the
 same durability, retry, and observability semantics as a normal activity
