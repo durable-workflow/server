@@ -17,8 +17,8 @@ php_database="$(printf '%s' "$tag" | tr '-' '_')_php_ref"
 embedded_database="$(printf '%s' "$tag" | tr '-' '_')_embedded_ref"
 evidence="$PWD/parity-evidence/$cohort"
 state="$PWD/parity-$tag-state"
-mkdir -p "$evidence" "$state/sdk"
-chmod 0777 "$evidence" "$state" "$state/sdk"
+mkdir -p "$evidence"/{php,embedded,rust} "$state/sdk"
+chmod 0777 "$evidence" "$evidence"/{php,embedded,rust} "$state" "$state/sdk"
 cp tests/Fixtures/ServerParityProfiles/version-range-repair/sdk/{composer.json,composer.lock} "$state/sdk/"
 (cd sdk-direction-adapters && sha256sum -c SHA256SUMS) > "$evidence/adapter-integrity.txt"
 test "$(cat sdk-direction-adapters/runner-revision.txt)" = "$(git rev-parse HEAD)"
@@ -94,14 +94,14 @@ selection=(--prefix "$prefix" --artifacts "/source/$manifest")
 for fixture in "$profile"/sdk-*.json; do selection+=(--fixture "$fixture"); done
 docker run --name "$resource-record-php" "${limits[@]}" --network "$RESOURCE_SCOPE" --entrypoint node "${shared[@]}" -e DW_PARITY_TOKEN=parity-test-token \
   "$image" scripts/conformance/server-parity.mjs record --mode http --url "http://$php_alias:8080" \
-  --target php "${selection[@]}" --output /evidence/php.json > "$evidence/php-record.txt" 2>&1
+  --target php "${selection[@]}" --output /evidence/php/record.json > "$evidence/php-record.txt" 2>&1
 docker run --name "$resource-record-embedded" "${limits[@]}" --network "$RESOURCE_SCOPE" "${shared[@]}" "${database[@]}" -e DB_DATABASE="$embedded_db" \
   -e DW_MODE=embedded -e CACHE_STORE=file -e QUEUE_CONNECTION=database -w /app "$image" \
   node /source/scripts/conformance/server-parity.mjs record --mode embedded --application-root /app \
-  --target embedded "${selection[@]}" --output /evidence/embedded.json > "$evidence/embedded-record.txt" 2>&1
+  --target embedded "${selection[@]}" --output /evidence/embedded/record.json > "$evidence/embedded-record.txt" 2>&1
   docker run --name "$resource-record-native" "${limits[@]}" --network "$RESOURCE_SCOPE" --entrypoint node "${shared[@]}" -e DW_PARITY_TOKEN=parity-test-token \
   "$image" scripts/conformance/server-parity.mjs record --mode http --url "$native_url" \
-  --target rust "${selection[@]}" --output /evidence/rust.json > "$evidence/rust-record.txt" 2>&1
-  recordings=(/evidence/php.json /evidence/embedded.json /evidence/rust.json)
+  --target rust "${selection[@]}" --output /evidence/rust/record.json > "$evidence/rust-record.txt" 2>&1
+  recordings=(/evidence/php/record.json /evidence/embedded/record.json /evidence/rust/record.json)
 docker run --name "$resource-compare" "${limits[@]}" --network none --entrypoint node "${shared[@]}" "$image" scripts/conformance/server-parity.mjs compare \
   "${recordings[@]}" "${selection[@]}" > "$evidence/comparison.json" 2>&1

@@ -33,8 +33,9 @@ an activity-only process commits it, and a cold workflow process completes the
 same run with unchanged history prefixes and exact typed Avro values. Installed
 package identities and real HTTP phase receipts are required. Embedded executes
 the canonical PHP definition and labels language transport inapplicable. Its
-separate tuple preserves every earlier cohort. Implementation and actual runtime
-qualification are pending; source reader checks do not establish SDK execution.
+separate tuple preserves every earlier cohort. The adapters are implemented;
+final runtime qualification and separate raw HTTP retention for both targets
+remain pending. Source reader checks do not establish SDK execution.
 
 [#399](https://github.com/durable-workflow/server/pull/399) implements and
 qualifies native pending mixed-selection repair. Its timer winner resumes a
