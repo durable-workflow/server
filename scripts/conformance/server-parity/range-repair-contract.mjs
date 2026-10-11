@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {checkPendingRangeRepair} from './range-pending-contract.mjs';
 
 export function checkRangeArtifacts(fixture, artifacts) {
   if (!fixture.range_repair) return;
@@ -50,7 +51,8 @@ function oneRequest(phase, suffix, prefix) {
   return selected[0];
 }
 
-export function checkRangeRepair(fixture, observation, workflowId) {
+export function checkRangeRepair(fixture, observation, workflowId, instant) {
+  if (fixture.range_repair.pending_activity) return checkPendingRangeRepair(fixture, observation, workflowId, instant);
   const spec = fixture.range_repair, state = observation.range_repair;
   assert.ok(state, 'range repair phases');
   assert.equal(state.checkpoint, 'activity_completed_before_range_failure');
