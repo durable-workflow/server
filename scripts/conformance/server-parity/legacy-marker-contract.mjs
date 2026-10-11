@@ -174,6 +174,41 @@ export function checkLegacyMarkerDeployment(fixture, observation, workflowId) {
         assert.equal(withdrawal[0].response.worker_id, worker, 'withdrawal acknowledges the same worker');
       }
       for (const request of completions(phase)) assert.equal(request.request.lease_owner, workflowId+':'+role);
+      const accepted = [...completions(phase), ...activities(phase)].filter(item => item.status === 200
+        && item.response?.recorded === true && item.client_cancelled === false && item.transport_error === null);
+      const retained = phase.events.map(({decoded, typed_decoded, ...event}) => event);
+      const withdrawalIndex = worker => phase.requests.findIndex(item => item.method === 'DELETE'
+        && item.path === '/api/worker/registrations/'+encodeURIComponent(worker) && item.status === 200
+        && item.response?.worker_id === worker);
+      const ownAccepted = worker => accepted.filter(item => (worker === workflowId+':original-activity'
+        ? activities(phase) : completions(phase)).includes(item) && item.request.lease_owner === worker);
+      for (const item of registered) {
+        const worker = item.request.worker_id, withdrawal = withdrawalIndex(worker);
+        assert(ownAccepted(worker).some(commit => phase.requests.indexOf(commit) > phase.requests.indexOf(item)
+          && phase.requests.indexOf(commit) < withdrawal), 'each registered worker withdraws after its own accepted commit');
+      }
+      const checkShutdownCommit = (worker, index) => {
+        assert(registered.some(item => item.request.worker_id === worker && phase.requests.indexOf(item) < index),
+          'actual worker registration precedes shutdown cancellation');
+        const withdrawal = withdrawalIndex(worker);
+        assert(withdrawal > index, 'authenticated withdrawal follows shutdown cancellation');
+        const own = ownAccepted(worker).filter(item => phase.requests.indexOf(item) < withdrawal);
+        assert(own.length > 0, 'each worker withdraws after its own accepted commit');
+        // The observer appends responses when they finish. A checkpoint reader
+        // can see a committed transaction before its completion ACK arrives.
+        const checkpoint = commit => commit.path.startsWith('/api/worker/activity-tasks/') ? 'ActivityCompleted'
+          : role === 'original' ? 'ActivityScheduled' : 'WorkflowCompleted';
+        const persisted = commit => phase.requests.slice(0, index).some(item => item.method === 'GET' && item.status === 200
+          && item.client_cancelled === false && item.transport_error === null
+          && item.path === '/api/workflows/'+encodeURIComponent(workflowId)+'/runs/'+encodeURIComponent(observation.run_id)+'/history'
+          && item.response?.workflow_id === workflowId && item.response.run_id === observation.run_id
+          && Array.isArray(item.response.events) && item.response.events.length <= phase.events.length
+          && isDeepStrictEqual(item.response.events, retained.slice(0, item.response.events.length))
+          && item.response.events.some(event => event.event_type === checkpoint(commit)
+            && event.payload?.task?.id === commit.path.split('/').at(-2) && event.payload.task.lease_owner === worker));
+        assert(own.some(item => phase.requests.indexOf(item) < index || persisted(item)),
+          'own accepted response or exact persisted checkpoint precedes shutdown cancellation');
+      };
       for (const [index, request] of phase.requests.entries()) {
         assert.equal(request.transport_error, null);
         assert.equal(typeof request.request_body_complete, 'boolean');
@@ -190,23 +225,19 @@ export function checkLegacyMarkerDeployment(fixture, observation, workflowId) {
           if (request.upstream_request_started) {
             assert(workers.slice(0, registrations).includes(request.request.worker_id));
             assert.equal(request.request.task_queue, 'server-parity-v1');
+            checkShutdownCommit(request.request.worker_id, index);
           } else {
             assert.equal(spec.cancel_unsent_poll_on_shutdown, true);
             assert.equal(request.request, null, 'incomplete bytes do not establish a worker or task authority');
-            assert(registered.some(item => phase.requests.indexOf(item) < index), 'actual registration precedes unsent shutdown cancellation');
-            for (const worker of workers.slice(0, registrations)) {
-              const withdrawal = phase.requests.findIndex(item => item.method === 'DELETE'
-                && item.path === '/api/worker/registrations/'+encodeURIComponent(worker) && item.status === 200);
-              assert(phase.requests.slice(0, withdrawal).some(item => item.status === 200
-                && [...completions(phase), ...activities(phase)].includes(item) && item.request.lease_owner === worker),
-              'each actual worker withdraws after its own accepted commit');
-            }
+            const active = registered.filter(item => phase.requests.indexOf(item) < index
+              && withdrawalIndex(item.request.worker_id) > index);
+            assert(active.length > 0, 'actual active registration precedes unsent shutdown cancellation');
+            for (const item of active) checkShutdownCommit(item.request.worker_id, index);
           }
           assert.equal(request.response_encoding, 'identity');
           assert.equal(request.response_retry_after, null);
           assert(request.response && typeof request.response === 'object' && Object.keys(request.response).length === 0,
             'cancelled poll has an empty response');
-          assert(phase.requests.slice(0, index).some(item => completions(phase).includes(item) && item.status === 200), 'authored commit precedes shutdown cancellation');
         } else if (request.status === spec.poll_capacity.status) {
           assert.equal(request.client_cancelled, false);
           assert.equal(request.method, 'POST');

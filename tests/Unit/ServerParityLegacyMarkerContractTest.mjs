@@ -9,10 +9,13 @@ for (const id of ['legacy-two-markers-pending', 'legacy-two-markers-completed', 
   const fixture = JSON.parse(readFileSync(new URL(id+'.json', profile)));
   const spec = fixture.patch_deployment, count = spec.legacy_marker_history.original_marker_count;
   function model(mode = 'embedded') {
-    const events = fixture.expected_events.map((event_type, index) => ({sequence: index + 1, event_type,
+    const events = fixture.expected_events.map((event_type, index) => ({sequence: index + 1, event_type, decoded: [], typed_decoded: [],
       timestamp: `2026-01-01T00:00:0${index}.123456Z`, payload: event_type === 'VersionMarkerRecorded'
         ? {...spec.marker, sequence: index - 1, task: {id: 'original-task', type: 'workflow', status: 'leased', lease_owner: 'test:original'}}
-        : {sequence: count + 1}}));
+        : {sequence: count + 1, ...(['ActivityScheduled', 'ActivityCompleted', 'WorkflowCompleted'].includes(event_type)
+          ? {task: {id: event_type === 'ActivityScheduled' ? 'original-task' : event_type === 'ActivityCompleted' ? 'original-activity' : 'replacement-task',
+            lease_owner: event_type === 'ActivityScheduled' ? 'test:original' : event_type === 'WorkflowCompleted' || spec.checkpoint === 'activity_pending'
+              ? 'test:replacement' : 'test:original-activity'}} : {})}}));
     const current = {workflow_package: artifacts.workflow, workflow_source: artifacts.workflow_source_commit,
       embedded_composer_lock_sha256: artifacts.embedded_composer_lock_sha256, workflow_loaded_sources: artifacts.workflow_loaded_sources};
     const old = {workflow_package: artifacts.embedded_original.version, workflow_source: artifacts.embedded_original.source_commit,
@@ -23,6 +26,7 @@ for (const id of ['legacy-two-markers-pending', 'legacy-two-markers-completed', 
       typed_input: {type: 'list', value: [fixture.typed_value]}, ...current,
       instance: {id: 'test', current_run_id: 'original-run', namespace: 'default', workflow_type: fixture.workflow_type}};
     const io = (method, path, request = {}) => ({method, path, request, status: 200, transport_error: null, client_cancelled: false,
+      ...(path.endsWith('/complete') ? {response: {recorded: true}} : {}),
       request_body_complete: true, upstream_request_started: true});
     const registration = role => [io('POST', '/api/worker/register', {worker_id: 'test:'+role, task_queue: 'server-parity-v1'}),
       {...io('DELETE', '/api/worker/registrations/'+encodeURIComponent('test:'+role)), response: {worker_id: 'test:'+role}}];
@@ -45,6 +49,11 @@ for (const id of ['legacy-two-markers-pending', 'legacy-two-markers-completed', 
       ...(mode === 'embedded' ? {embedded_clock_probe: {clocks: [spec.embedded_clock_probe.marker_sequences.map(sequence => events[sequence + 1].timestamp)]}} : {}),
       requests: [...registration('replacement'), ...(spec.checkpoint === 'activity_pending' ? [outcome] : []),
         io('POST', '/api/worker/workflow-tasks/replacement-task/complete', {lease_owner: 'test:replacement', commands: [{type: 'complete_workflow'}]})]};
+    for (const selected of [original, replacement]) {
+      selected.requests = [...selected.requests.filter(item => item.path === '/api/worker/register'),
+        ...selected.requests.filter(item => item.path.endsWith('/complete')),
+        ...selected.requests.filter(item => item.method === 'DELETE')];
+    }
     return {...structuredClone(replacement), patch_deployment: {checkpoint: spec.checkpoint, change_id: spec.change_id, original, replacement}};
   }
   for (const mode of ['http', 'embedded']) test(`${id} ${mode}: preserve actual retained positions and cold original-run completion`, () => {
@@ -200,10 +209,13 @@ for (const id of ['legacy-two-markers-pending', 'legacy-two-markers-completed', 
   for (const phase of ['original', 'replacement']) for (const kind of ['workflow', 'activity', 'query']) {
     function cancelledModel() {
       const raw = model('http');
-      raw.patch_deployment[phase].requests.push({method: 'POST', path: '/api/worker/'+kind+'-tasks/poll',
+      const requests = raw.patch_deployment[phase].requests;
+      const withdrawal = requests.find(item => item.method === 'DELETE' && item.response.worker_id === 'test:'+phase);
+      requests.splice(requests.indexOf(withdrawal), 1);
+      requests.push({method: 'POST', path: '/api/worker/'+kind+'-tasks/poll',
         request: {worker_id: 'test:'+phase, task_queue: 'server-parity-v1'}, status: 0,
         request_body_complete: true, upstream_request_started: true,
-        transport_error: null, client_cancelled: true, response_encoding: 'identity', response_retry_after: null, response: []});
+        transport_error: null, client_cancelled: true, response_encoding: 'identity', response_retry_after: null, response: []}, withdrawal);
       return raw;
     }
     test(`${id} ${phase}: accepts clean ${kind} poll cancellation after commit`, () => {
@@ -220,12 +232,12 @@ for (const id of ['legacy-two-markers-pending', 'legacy-two-markers-completed', 
       ['response compression', x => x.response_encoding = 'gzip'],
       ['retry hint', x => x.response_retry_after = '1'],
     ]) test(`${id} ${phase} ${kind}: rejects ${name}`, () => {
-      const raw = cancelledModel(); mutate(raw.patch_deployment[phase].requests.at(-1));
+      const raw = cancelledModel(); mutate(raw.patch_deployment[phase].requests.at(-2));
       assert.throws(() => checkLegacyMarkerDeployment(fixture, raw, 'test'));
     });
     test(`${id} ${phase} ${kind}: rejects cancellation before accepted commit`, () => {
       const raw = cancelledModel(), requests = raw.patch_deployment[phase].requests;
-      requests.unshift(requests.pop());
+      requests.unshift(...requests.splice(requests.length - 2, 1));
       assert.throws(() => checkLegacyMarkerDeployment(fixture, raw, 'test'));
     });
     function unsentModel() {
@@ -258,10 +270,80 @@ for (const id of ['legacy-two-markers-pending', 'legacy-two-markers-completed', 
       ['compressed response', x => x.cancellation.response_encoding = 'gzip'],
       ['retry hint', x => x.cancellation.response_retry_after = '1'],
       ['cancellation before commit', x => {x.requests.splice(x.requests.indexOf(x.cancellation), 1); x.requests.unshift(x.cancellation);}],
-      ['withdrawal before own commit', x => {x.requests.splice(x.requests.indexOf(x.withdrawals[0]), 1); x.requests.unshift(x.withdrawals[0]);}],
+      ['withdrawal before own commit', x => {for (const withdrawal of x.withdrawals) x.requests.splice(x.requests.indexOf(withdrawal), 1); x.requests.unshift(...x.withdrawals);}],
     ]) test(`${id} ${phase} ${kind}: rejects unsent ${name}`, () => {
       const state = unsentModel(); mutate(state);
       assert.throws(() => checkLegacyMarkerDeployment(fixture, state.raw, 'test'));
     });
+  }
+  for (const workerRole of ['original', ...(spec.checkpoint === 'activity_completed' ? ['original-activity'] : []), 'replacement']) {
+    const phase = workerRole === 'replacement' ? 'replacement' : 'original';
+    for (const kind of ['workflow', 'activity', 'query']) for (const forwarded of [true, false]) {
+      function checkpointModel() {
+        const raw = model('http'), selected = raw.patch_deployment[phase], worker = 'test:'+workerRole;
+        const previous = selected.requests;
+        const registration = previous.find(item => item.method === 'POST' && item.path === '/api/worker/register' && item.request.worker_id === worker);
+        const commit = previous.find(item => item.path.startsWith('/api/worker/'+(workerRole === 'original-activity' ? 'activity' : 'workflow')+'-tasks/')
+          && item.path.endsWith('/complete') && item.request.lease_owner === worker);
+        const withdrawal = previous.find(item => item.method === 'DELETE' && item.response.worker_id === worker);
+        const eventType = workerRole === 'original' ? 'ActivityScheduled' : workerRole === 'original-activity' ? 'ActivityCompleted' : 'WorkflowCompleted';
+        const checkpoint = {method: 'GET', path: '/api/workflows/test/runs/original-run/history', request: {}, status: 200,
+          client_cancelled: false, transport_error: null, request_body_complete: true, upstream_request_started: true,
+          response: {workflow_id: 'test', run_id: 'original-run', events: structuredClone(selected.events.slice(0,
+            selected.events.findIndex(event => event.event_type === eventType) + 1).map(({decoded, typed_decoded, ...event}) => event))}};
+        const cancellation = {method: 'POST', path: '/api/worker/'+kind+'-tasks/poll',
+          request: forwarded ? {worker_id: worker, task_queue: 'server-parity-v1'} : null,
+          status: 0, request_body_complete: forwarded, upstream_request_started: forwarded, transport_error: null,
+          client_cancelled: true, response_encoding: 'identity', response_retry_after: null, response: []};
+        // Other workers finish independently; this worker's ACK arrives after
+        // its persisted checkpoint triggers idle-poll shutdown.
+        const others = previous.filter(item => ![registration, commit, withdrawal].includes(item));
+        const otherRegistrations = others.filter(item => item.path === '/api/worker/register');
+        const otherCommits = others.filter(item => item.path.endsWith('/complete'));
+        const otherWithdrawals = others.filter(item => item.method === 'DELETE');
+        selected.requests = [...otherRegistrations, ...otherCommits, ...otherWithdrawals,
+          registration, checkpoint, cancellation, commit, withdrawal];
+        return {raw, requests: selected.requests, checkpoint, cancellation, commit, withdrawal, registration};
+      }
+      const label = `${id} ${workerRole} ${kind} ${forwarded ? 'forwarded' : 'unsent'}`;
+      test(`${label}: accepts exact persisted checkpoint before cancellation and delayed own ACK`, () => {
+        checkLegacyMarkerDeployment(fixture, checkpointModel().raw, 'test');
+      });
+      for (const [name, mutate] of [
+        ['missing checkpoint', x => x.requests.splice(x.requests.indexOf(x.checkpoint), 1)],
+        ['late checkpoint', x => {x.requests.splice(x.requests.indexOf(x.checkpoint), 1); x.requests.splice(x.requests.indexOf(x.cancellation) + 1, 0, x.checkpoint);}],
+        ['foreign path run', x => x.checkpoint.path = '/api/workflows/test/runs/foreign-run/history'],
+        ['foreign body run', x => x.checkpoint.response.run_id = 'foreign-run'],
+        ['foreign body workflow', x => x.checkpoint.response.workflow_id = 'foreign-workflow'],
+        ['missing events', x => delete x.checkpoint.response.events],
+        ['empty events', x => x.checkpoint.response.events = []],
+        ['changed checkpoint type', x => x.checkpoint.response.events.at(-1).event_type = 'ActivityStarted'],
+        ['foreign checkpoint task', x => x.checkpoint.response.events.at(-1).payload.task.id = 'foreign-task'],
+        ['foreign checkpoint owner', x => x.checkpoint.response.events.at(-1).payload.task.lease_owner = 'foreign-worker'],
+        ['changed retained clock', x => x.checkpoint.response.events.at(-1).timestamp = '2026-01-02T00:00:00.123456Z'],
+        ['changed earlier prefix', x => x.checkpoint.response.events[0].payload.extra = 'changed'],
+        ['failed checkpoint response', x => x.checkpoint.status = 503],
+        ['cancelled checkpoint', x => x.checkpoint.client_cancelled = true],
+        ['checkpoint transport error', x => x.checkpoint.transport_error = 'ECONNRESET'],
+        ['rejected own commit', x => x.commit.response.recorded = false],
+        ['missing own acceptance', x => delete x.commit.response.recorded],
+        ['foreign own commit', x => x.commit.request.lease_owner = 'foreign-worker'],
+        ['withdrawal before own ACK', x => {x.requests.splice(x.requests.indexOf(x.withdrawal), 1); x.requests.splice(x.requests.indexOf(x.commit), 0, x.withdrawal);}],
+        ['withdrawal before cancellation', x => {x.requests.splice(x.requests.indexOf(x.withdrawal), 1); x.requests.splice(x.requests.indexOf(x.cancellation), 0, x.withdrawal);}],
+        ['late registration', x => {x.requests.splice(x.requests.indexOf(x.registration), 1); x.requests.push(x.registration);}],
+      ]) test(`${label}: rejects ${name}`, () => {
+        const state = checkpointModel(); mutate(state);
+        assert.throws(() => checkLegacyMarkerDeployment(fixture, state.raw, 'test'));
+      });
+      if (!forwarded && workerRole === 'original' && spec.checkpoint === 'activity_completed') test(`${label}: rejects another active worker lacking prior own commit proof`, () => {
+        const state = checkpointModel();
+        const otherCommit = state.requests.find(item => item.path.startsWith('/api/worker/activity-tasks/') && item.path.endsWith('/complete'));
+        const otherWithdrawal = state.requests.find(item => item.method === 'DELETE' && item.response.worker_id === 'test:original-activity');
+        state.requests.splice(state.requests.indexOf(otherCommit), 1);
+        state.requests.splice(state.requests.indexOf(otherWithdrawal), 1);
+        state.requests.push(otherCommit, otherWithdrawal);
+        assert.throws(() => checkLegacyMarkerDeployment(fixture, state.raw, 'test'));
+      });
+    }
   }
 }
