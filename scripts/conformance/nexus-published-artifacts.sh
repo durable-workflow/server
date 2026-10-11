@@ -3416,6 +3416,11 @@ $fakeWorkflow = new class($serviceWorkflowInstanceId, $serviceWorkflowRunId) imp
         ];
     }
 
+    public function redrive(string $instanceId, string $failedRunId, array $options = []): array
+    {
+        throw new LogicException('redrive is outside the Nexus query retry probe');
+    }
+
     public function archive(string $instanceId, array $options = []): array
     {
         return [
@@ -3637,6 +3642,11 @@ $fakeWorkflow = new class($serviceWorkflowInstanceId, $serviceWorkflowRunId) imp
             'workflow_command_id' => null,
             'reason' => 'not_used_by_nexus_permanent_failure_probe',
         ];
+    }
+
+    public function redrive(string $instanceId, string $failedRunId, array $options = []): array
+    {
+        throw new LogicException('redrive is outside the Nexus query failure probe');
     }
 
     public function archive(string $instanceId, array $options = []): array

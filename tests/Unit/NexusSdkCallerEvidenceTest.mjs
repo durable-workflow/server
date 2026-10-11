@@ -90,5 +90,11 @@ if (process.env.NEXUS_SDK_CLIENT_MATRIX) {
             'typed_failure_qualified', 'cancellation_qualified']) assert.equal(matrix[field], false);
         assert.notEqual(complete.outcome, 'pass');
         assert.equal(complete.runner_blocked, false);
+        assert.deepEqual(complete.non_pass_scenarios.slice().sort(), [
+            'php_caller_python_service', 'python_caller_php_service',
+        ]);
+        for (const scenario of complete.non_pass_scenarios) {
+            assert.equal(complete.scenario_statuses[scenario], 'not_covered');
+        }
     });
 }
