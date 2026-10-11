@@ -10,6 +10,7 @@ use App\Support\ServiceCallBoundary;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Str;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
 use Workflow\V2\Contracts\ServiceControlPlane;
@@ -526,8 +527,104 @@ class ServiceCatalogControllerTest extends TestCase
             ->assertJsonPath('service_call_attempts.0.failure_type', 'TransientGreetingFailure')
             ->assertJsonPath('service_call_attempts.0.scheduled_backoff_seconds', 1)
             ->assertJsonPath('service_call_attempts.1.outcome', 'completed')
-            ->assertJsonPath('accepted_at', $serviceCall->accepted_at?->toIso8601String())
-            ->assertJsonPath('started_at', $serviceCall->started_at?->toIso8601String());
+            ->assertJsonPath('accepted_at', $serviceCall->accepted_at?->toJSON())
+            ->assertJsonPath('started_at', $serviceCall->started_at?->toJSON());
+    }
+
+    #[DataProvider('invalidDeadlinePolicies')]
+    public function test_it_rejects_unsupported_deadline_policies_before_catalog_or_call_admission(array $policy): void
+    {
+        $operation = $this->deadlineOperation();
+        $path = '/api/service-endpoints/billing/services/invoicing/operations';
+        $this->withHeaders($this->apiHeaders())->postJson($path, [
+            'operation_name' => 'invalid-create',
+            'operation_mode' => 'sync',
+            'handler_binding_kind' => 'start_workflow',
+            'handler_target_reference' => 'invoice',
+            'deadline_policy' => $policy,
+        ])->assertUnprocessable()->assertJsonValidationErrors('deadline_policy');
+        $this->assertSame(1, WorkflowServiceOperation::query()->count());
+
+        $this->withHeaders($this->apiHeaders())->putJson($path.'/greet', [
+            'deadline_policy' => $policy,
+        ])->assertUnprocessable()->assertJsonValidationErrors('deadline_policy');
+        $this->assertSame(['timeout_seconds' => 1], $operation->refresh()->deadline_policy);
+
+        // Old catalogs may contain a policy the old Server did not validate.
+        $operation->forceFill(['deadline_policy' => $policy])->save();
+        $this->withHeaders($this->apiHeaders())->postJson($path.'/greet/execute', [])
+            ->assertUnprocessable()->assertJsonValidationErrors('deadline_policy');
+        $this->assertSame(0, WorkflowServiceCall::query()->count());
+    }
+
+    public static function invalidDeadlinePolicies(): array
+    {
+        return [
+            [[]],
+            [['timeout_seconds' => 0]],
+            [['timeout_seconds' => -1]],
+            [['timeout_seconds' => true]],
+            [['timeout_seconds' => 1.25]],
+            [['timeout_seconds' => '1']],
+            [['timeout_seconds' => 2_147_483_648]],
+            [['timeout_seconds' => 1, 'deadline_at' => '2026-10-11T00:00:00Z']],
+            [['budget_seconds' => 1]],
+            [['deadline_at' => '2026-10-11T00:00:00']],
+            [['deadline_at' => '2026-02-30T00:00:00Z']],
+            [['deadline_at' => '2026-10-11T00:00:00.1234567Z']],
+            [['deadline_at' => '1969-12-31T23:59:59Z']],
+        ];
+    }
+
+    #[DataProvider('validDeadlinePolicies')]
+    public function test_it_accepts_supported_deadline_policies_and_explicit_null_inheritance(?array $policy): void
+    {
+        $this->deadlineOperation();
+        $path = '/api/service-endpoints/billing/services/invoicing/operations';
+        $this->withHeaders($this->apiHeaders())->postJson($path, [
+            'operation_name' => 'valid-create',
+            'operation_mode' => 'sync',
+            'handler_binding_kind' => 'start_workflow',
+            'handler_target_reference' => 'invoice',
+            'deadline_policy' => $policy,
+        ])->assertCreated()->assertJsonPath('deadline_policy', $policy);
+        $this->withHeaders($this->apiHeaders())->putJson($path.'/greet', [
+            'deadline_policy' => $policy,
+        ])->assertOk()->assertJsonPath('deadline_policy', $policy);
+    }
+
+    public static function validDeadlinePolicies(): array
+    {
+        return [
+            [null],
+            [['timeout_seconds' => 1]],
+            [['timeout_seconds' => 2_147_483_647]],
+            [['deadline_at' => '2026-10-11T02:00:01.123456+02:00']],
+        ];
+    }
+
+    private function deadlineOperation(): WorkflowServiceOperation
+    {
+        $endpoint = WorkflowServiceEndpoint::query()->create([
+            'namespace' => 'default',
+            'endpoint_name' => 'billing',
+        ]);
+        $service = WorkflowService::query()->create([
+            'namespace' => 'default',
+            'workflow_service_endpoint_id' => $endpoint->id,
+            'service_name' => 'invoicing',
+        ]);
+
+        return WorkflowServiceOperation::query()->create([
+            'namespace' => 'default',
+            'workflow_service_endpoint_id' => $endpoint->id,
+            'workflow_service_id' => $service->id,
+            'operation_name' => 'greet',
+            'operation_mode' => 'sync',
+            'handler_binding_kind' => 'start_workflow',
+            'handler_target_reference' => 'invoice',
+            'deadline_policy' => ['timeout_seconds' => 1],
+        ]);
     }
 
     public function test_it_requires_a_handler_target_reference_or_non_empty_handler_binding_for_operations(): void
