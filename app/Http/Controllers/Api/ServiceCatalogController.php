@@ -19,6 +19,7 @@ use Workflow\V2\Models\WorkflowService;
 use Workflow\V2\Models\WorkflowServiceCall;
 use Workflow\V2\Models\WorkflowServiceEndpoint;
 use Workflow\V2\Models\WorkflowServiceOperation;
+use Workflow\V2\Support\ServiceCallDeadlinePolicy;
 
 class ServiceCatalogController
 {
@@ -782,6 +783,8 @@ class ServiceCatalogController
             return ControlPlaneProtocol::json($result, ($result['accepted'] ?? false) === true ? 200 : 409);
         }
 
+        $this->assertDeadlinePolicy($this->arrayValueOrNull($operation->deadline_policy));
+
         $admission = $this->serviceCallBoundary()->admitFor(
             principal: $this->principal($request),
             callerNamespace: $callerNamespace,
@@ -1304,6 +1307,10 @@ class ServiceCatalogController
 
         $validated = $request->validate($rules);
 
+        if (array_key_exists('deadline_policy', $validated)) {
+            $this->assertDeadlinePolicy($validated['deadline_policy']);
+        }
+
         if (! $partial || array_key_exists('handler_target_reference', $validated) || array_key_exists('handler_binding', $validated)) {
             $this->assertOperationBindingTargetOrPayload(
                 $validated['handler_target_reference'] ?? null,
@@ -1312,6 +1319,17 @@ class ServiceCatalogController
         }
 
         return $validated;
+    }
+
+    private function assertDeadlinePolicy(?array $policy): void
+    {
+        try {
+            ServiceCallDeadlinePolicy::resolve($policy, now());
+        } catch (\InvalidArgumentException $exception) {
+            throw ValidationException::withMessages([
+                'deadline_policy' => [$exception->getMessage()],
+            ]);
+        }
     }
 
     private function assertOperationBindingTargetOrPayload(mixed $targetReference, mixed $binding): void
@@ -1636,11 +1654,12 @@ class ServiceCatalogController
             'metadata' => $serviceCall->metadata,
             'service_call_attempts' => $this->serviceCallAttempts($serviceCall),
             'retry_attempt_count' => count($this->serviceCallAttempts($serviceCall)),
-            'accepted_at' => $serviceCall->accepted_at?->toIso8601String(),
-            'started_at' => $serviceCall->started_at?->toIso8601String(),
-            'completed_at' => $serviceCall->completed_at?->toIso8601String(),
-            'failed_at' => $serviceCall->failed_at?->toIso8601String(),
-            'cancelled_at' => $serviceCall->cancelled_at?->toIso8601String(),
+            'accepted_at' => $serviceCall->accepted_at?->toJSON(),
+            'call_deadline_at' => $serviceCall->call_deadline_at?->toJSON(),
+            'started_at' => $serviceCall->started_at?->toJSON(),
+            'completed_at' => $serviceCall->completed_at?->toJSON(),
+            'failed_at' => $serviceCall->failed_at?->toJSON(),
+            'cancelled_at' => $serviceCall->cancelled_at?->toJSON(),
             'created_at' => $serviceCall->created_at?->toIso8601String(),
             'updated_at' => $serviceCall->updated_at?->toIso8601String(),
         ];
