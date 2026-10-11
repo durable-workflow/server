@@ -29,7 +29,8 @@ parent-close policies, parallel groups, activity combinations and performance
 remain separate gates.
 
 The shared workflow builds the same installed SDK adapters once for both
-activity and child profiles. Invoke the child cohort with
+activity and child profiles and stops the completed activity reference before
+starting the child reference. Invoke the child cohort with
 `bash scripts/conformance/server-parity/sdk-direction-profile.sh BACKEND NATIVE_URL child`;
 it gives PHP, embedded and native recordings separate evidence directories and
 uses independent PHP/embedded databases. Its owning workflow must call

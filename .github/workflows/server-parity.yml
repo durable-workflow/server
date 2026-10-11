@@ -370,7 +370,7 @@ jobs:
           bash scripts/conformance/server-parity/range-repair-profile.sh mysql http://parity-native-a:8080
           bash scripts/conformance/server-parity/range-repair-profile.sh mysql http://parity-native-a:8080 pending-native
           bash scripts/conformance/server-parity/sdk-direction-profile.sh mysql http://parity-native-a:8080
-          bash scripts/conformance/server-parity/sdk-direction-cleanup.sh mysql
+          docker stop --time 30 "$RESOURCE_SCOPE-sdk-directions-server"
           bash scripts/conformance/server-parity/sdk-direction-profile.sh mysql http://parity-native-a:8080 child
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint sh \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
@@ -724,7 +724,7 @@ jobs:
           bash scripts/conformance/server-parity/range-repair-profile.sh pgsql http://parity-native-a:8080
           bash scripts/conformance/server-parity/range-repair-profile.sh pgsql http://parity-native-a:8080 pending-native
           bash scripts/conformance/server-parity/sdk-direction-profile.sh pgsql http://parity-native-a:8080
-          bash scripts/conformance/server-parity/sdk-direction-cleanup.sh pgsql
+          docker stop --time 30 "$RESOURCE_SCOPE-sdk-directions-server"
           bash scripts/conformance/server-parity/sdk-direction-profile.sh pgsql http://parity-native-a:8080 child
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint sh \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
@@ -1051,7 +1051,7 @@ jobs:
           bash scripts/conformance/server-parity/range-repair-profile.sh sqlite http://parity-rust:8080
           bash scripts/conformance/server-parity/range-repair-profile.sh sqlite http://parity-rust:8080 pending-native
           bash scripts/conformance/server-parity/sdk-direction-profile.sh sqlite http://parity-rust:8080
-          bash scripts/conformance/server-parity/sdk-direction-cleanup.sh sqlite
+          docker stop --time 30 "$RESOURCE_SCOPE-sdk-directions-server"
           bash scripts/conformance/server-parity/sdk-direction-profile.sh sqlite http://parity-rust:8080 child
           docker run --rm --user=1000:1000 --entrypoint php --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
