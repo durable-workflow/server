@@ -26,6 +26,26 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+The additive published parent/child profile now defines nine language
+directions using the qualified one-activity component tuple. Its original
+parent schedules one child on a separate queue, a child-only process commits
+the exact typed result, and a cold parent-only replacement completes the same
+run. Original call/link/child identities and full parent/child histories are
+required. Normal SDK adapters, reader guards and isolated profile invocation
+are implemented; actual runtime qualification is pending. These definitions
+and modeled checks establish no new execution pass. New recordings capture
+effective database memory/swap limits separately from frozen historical
+manifest envelopes. Namespaced children, retries, failures, cancellation
+propagation, other policies and parallel groups remain separate gates.
+
+The child reader exposed a native claim-field gap in retained published
+observations: PHP uses `task_queue`, while native exposed only `queue`.
+Native now adds the published field while retaining its existing alias.
+The reader checks the actual poll selector and claimed durable queue, and
+a database/HTTP regression covers separate parent/child queues and original
+parent resumption. The [contract decision and confirming qualification](https://github.com/durable-workflow/server/pull/408#issuecomment-6111939851)
+are tracked in #408; the correction is implemented and verification is pending.
+
 [#401](https://github.com/durable-workflow/server/pull/401) qualifies all nine
 fresh PHP/Python/Rust workflow-author and separately
 routed activity-worker directions. An original author schedules one activity,

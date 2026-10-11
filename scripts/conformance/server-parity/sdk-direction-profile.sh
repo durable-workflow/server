@@ -7,8 +7,21 @@ tag=sdk-directions
 prefix=sdk-directions-v1
 native_url="${2:?Set the independently isolated native URL}"
 test -n "${RESOURCE_SCOPE:?Set the owning isolated network/resource scope}"
-profile=tests/Fixtures/ServerParityProfiles/published-sdk-directions
 cohort=published-sdk-directions
+fixture_pattern=sdk-*.json
+reader_tests=(tests/Unit/ServerParitySdkDirectionContractTest.mjs)
+case "${3:-activity}" in
+  activity) ;;
+  child)
+    tag=sdk-child-directions
+    prefix=sdk-child-directions-v1
+    cohort=published-sdk-child-directions
+    fixture_pattern=child-sdk-*.json
+    reader_tests=(tests/Unit/ServerParitySdkChildDirectionContractTest.mjs)
+    ;;
+  *) echo 'Choose activity or child SDK directions' >&2; exit 2 ;;
+esac
+profile="tests/Fixtures/ServerParityProfiles/$cohort"
 manifest="tests/Fixtures/ServerParityProfiles/$cohort/artifacts.json"
 image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' "$manifest")
 php_alias="parity-$tag-php"
@@ -57,7 +70,6 @@ docker run --name "$resource-sdk" "${limits[@]}" --entrypoint composer -e COMPOS
   install --no-interaction --no-progress --no-cache > "$evidence/sdk-install.txt" 2>&1
 printf '%s  %s\n' "$(jq -r '.sdk_php_composer_lock_sha256' "$manifest")" "$state/sdk/composer.lock" \
   | sha256sum -c > "$evidence/sdk-lock.txt"
-reader_tests=(tests/Unit/ServerParitySdkDirectionContractTest.mjs)
 docker run --name "$resource-tests" "${limits[@]}" --network none --entrypoint node "${shared[@]}" "$image" \
   --test "${reader_tests[@]}" > "$evidence/comparator-tests.txt" 2>&1
 for target in php embedded; do
@@ -91,7 +103,11 @@ for attempt in $(seq 1 30); do
 done
 test "$ready" = 1
 selection=(--prefix "$prefix" --artifacts "/source/$manifest")
-for fixture in "$profile"/sdk-*.json; do selection+=(--fixture "$fixture"); done
+if test "$backend" != sqlite; then
+  database_resource_limits=$(docker inspect --format '{"memory_bytes":{{.HostConfig.Memory}},"memory_swap_bytes":{{.HostConfig.MemorySwap}}}' "$RESOURCE_SCOPE-db")
+  selection+=(--database-resource-limits "$database_resource_limits")
+fi
+for fixture in "$profile"/$fixture_pattern; do selection+=(--fixture "$fixture"); done
 docker run --name "$resource-record-php" "${limits[@]}" --network "$RESOURCE_SCOPE" --entrypoint node "${shared[@]}" -e DW_PARITY_TOKEN=parity-test-token \
   "$image" scripts/conformance/server-parity.mjs record --mode http --url "http://$php_alias:8080" \
   --target php "${selection[@]}" --output /evidence/php/record.json > "$evidence/php-record.txt" 2>&1

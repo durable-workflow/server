@@ -113,6 +113,29 @@ final class CancelledChildWorkflow extends Workflow
     }
 }
 
+#[Type('parity.v1.one_child')]
+final class OneChildWorkflow extends Workflow
+{
+    public function handle(array $value): array
+    {
+        $results = [];
+        foreach ($value['payloads'] as $payload) {
+            $results[] = child(ChildEchoWorkflow::class, $payload, new WorkflowOptions(connection: 'database', queue: 'server-parity-sdk-child'));
+        }
+
+        return ['child_results' => $results];
+    }
+}
+
+#[Type('parity.v1.echo_child')]
+final class ChildEchoWorkflow extends Workflow
+{
+    public function handle(array $value): array
+    {
+        return $value;
+    }
+}
+
 #[Type('parity.v1.two_children')]
 final class TwoChildrenWorkflow extends Workflow
 {
