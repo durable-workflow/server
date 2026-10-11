@@ -13,7 +13,9 @@ async fn register_signal_worker(app: &Router, worker: &str) {
         "/api/worker/register",
         json!({"worker_id":worker,"task_queue":"test","runtime":"rust","supported_workflow_types":["echo"],
             "supported_activity_types":[],
-            "workflow_command_contracts":{"echo":{"signals":["payload"]}}}),
+            "workflow_command_contracts":{"echo":{"signals":["payload"],"signal_contracts":[{
+                "name":"payload","parameters":[{"name":"value","position":0,"type":"int",
+                    "required":true,"variadic":false,"default_available":false,"allows_null":false}]}]}}}),
     )
     .await;
     assert_eq!(response.0, StatusCode::CREATED, "{}", response.1);
@@ -57,10 +59,8 @@ async fn authored_occurrences_survive_restart_and_completion_fences() {
         started["workflow_id"].as_str().unwrap()
     );
     let input = json!({"input":envelope(Payload::Array(vec![Payload::Long(9007199254740993)]))});
-    assert_eq!(
-        request(&app, "POST", &path, input.clone()).await.0,
-        StatusCode::ACCEPTED
-    );
+    let first_signal = request(&app, "POST", &path, input.clone()).await;
+    assert_eq!(first_signal.0, StatusCode::ACCEPTED, "{}", first_signal.1);
     let resumed = poll(&app, "occurrence-resumed", "workflow").await;
     assert_eq!(
         resumed["history_events"][2]["payload"],
@@ -110,10 +110,8 @@ async fn authored_occurrences_survive_restart_and_completion_fences() {
     let third = database.open().await.unwrap();
     let app = router(third.clone());
     register_signal_worker(&app, "occurrence-replacement").await;
-    assert_eq!(
-        request(&app, "POST", &path, input).await.0,
-        StatusCode::ACCEPTED
-    );
+    let second_signal = request(&app, "POST", &path, input).await;
+    assert_eq!(second_signal.0, StatusCode::ACCEPTED, "{}", second_signal.1);
     let replacement = poll(&app, "occurrence-replacement", "workflow").await;
     assert_eq!(
         replacement["history_events"][2]["payload"],
