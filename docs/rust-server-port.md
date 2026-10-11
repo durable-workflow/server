@@ -49,6 +49,10 @@ cleanup and artifact upload, but exceeded its 15-minute job limit. Its retry
 retains that exact merge; the outcome is tracked in #401. PostgreSQL receives
 the same bounded
 20-minute allowance as MySQL, including cleanup and evidence retention.
+The MySQL 8.0 fixture database receives the existing MySQL 8.4 allowance of
+1 GiB, with swap disabled: its 768 MiB container was killed for exceeding that
+limit after all comparisons passed, preventing the final trusted TLS probe.
+These are CI resource allowances, not performance qualification limits.
 This is one authored
 workflow/activity scenario in the default namespace, with nine language
 directions; it does not establish nine capability families or performance.
