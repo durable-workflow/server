@@ -8,6 +8,8 @@ on:
       - scripts/conformance/nexus-replay-transport.cjs
       - scripts/conformance/nexus-python-workflow-probe.py
       - scripts/conformance/nexus-php-service-worker.php
+      - scripts/conformance/nexus-php-workflow-probe.php
+      - scripts/conformance/nexus-python-service-worker.py
       - tests/Unit/NexusSdkCallerEvidenceTest.mjs
   push:
     branches: [main]
@@ -17,6 +19,8 @@ on:
       - scripts/conformance/nexus-replay-transport.cjs
       - scripts/conformance/nexus-python-workflow-probe.py
       - scripts/conformance/nexus-php-service-worker.php
+      - scripts/conformance/nexus-php-workflow-probe.php
+      - scripts/conformance/nexus-python-service-worker.py
       - tests/Unit/NexusSdkCallerEvidenceTest.mjs
   workflow_dispatch:
 
@@ -29,7 +33,7 @@ concurrency:
 
 jobs:
   callers:
-    name: SDK client admissions and Python caller workflows
+    name: SDK client admissions and PHP/Python caller workflows
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -65,6 +69,7 @@ jobs:
           NEXUS_SDK_CLIENT_MATRIX="$DW_NEXUS_RESULT_DIR/nexus-sdk-client-matrix.json" \
             NEXUS_CONFORMANCE_RESULT="$DW_NEXUS_RESULT_DIR/nexus-conformance-result.json" \
             NEXUS_PYTHON_WORKFLOW_PROBE="$DW_NEXUS_RESULT_DIR/nexus-python-workflow-probe.json" \
+            NEXUS_PHP_WORKFLOW_PROBE="$DW_NEXUS_RESULT_DIR/nexus-php-workflow-probe.json" \
             node --test tests/Unit/NexusSdkCallerEvidenceTest.mjs
       - name: Retain actual requests and durable observations
         if: always()

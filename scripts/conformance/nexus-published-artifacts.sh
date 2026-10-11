@@ -2604,6 +2604,48 @@ async function probePublishedPythonCallerWorkflows(baseUrl, token, compose, phpS
   fs.writeFileSync(path.join(resultDir, 'nexus-php-service-worker.log'), (serviceLog.stdout || '') + (serviceLog.stderr || ''));
 }
 
+async function probePublishedPhpCallerWorkflows(baseUrl, token, compose, phpService, pythonService) {
+  const endpoint = 'published-python-workflow-service';
+  const service = 'PublishedPythonWorkflowGreeter';
+  const operation = 'greet';
+  const setup = [
+    await apiRequest(baseUrl, token, 'shared', 'POST', '/service-endpoints', {endpoint_name: endpoint}),
+    await apiRequest(baseUrl, token, 'shared', 'POST', `/service-endpoints/${endpoint}/services`, {service_name: service}),
+    await apiRequest(baseUrl, token, 'shared', 'POST', `/service-endpoints/${endpoint}/services/${service}/operations`, {
+      operation_name: operation, operation_mode: 'sync', handler_binding_kind: 'start_workflow',
+      handler_target_reference: 'nexus.fixture.python.greeter',
+      handler_binding: {workflow_type: 'nexus.fixture.python.greeter', queue: 'nexus-python-service'},
+      boundary_policy: {authorization: {caller_namespaces: {allow: ['shared', 'tenant-a']}}},
+    }),
+  ];
+  fs.writeFileSync(path.join(resultDir, 'nexus-php-workflow-service-setup.json'), JSON.stringify(setup, null, 2) + '\n');
+  if (setup.some((response) => !response.ok)) throw new Error('Could not register the actual Python workflow service');
+  const fixtureDir = path.dirname(process.argv[5]);
+  for (const name of ['nexus-python-service-worker.py', 'nexus-php-workflow-probe.php']) {
+    fs.copyFileSync(path.join(fixtureDir, name), path.join(compose.runRoot, name));
+  }
+  fs.writeFileSync(path.join(compose.runRoot, 'nexus-php-workflow-input.json'), JSON.stringify({
+    token, endpoint, service, operation,
+  }));
+  const start = spawnSync('docker', ['exec', '-d', pythonService.containerName, 'sh', '-lc',
+    '. /tmp/dw-python/bin/activate && python /work/nexus-python-service-worker.py /work/nexus-php-workflow-input.json > /tmp/nexus-python-service-worker.log 2>&1'],
+  {encoding: 'utf8'});
+  if (start.status !== 0) throw new Error(`Could not start the actual Python service worker: ${start.stderr}`);
+  const observation = dockerExecJson(phpService.containerName,
+    'php /work/nexus-php-workflow-probe.php /work/nexus-php-workflow-input.json',
+    path.join(resultDir, 'nexus-php-workflow-probe.log'));
+  for (const row of observation.body?.observations || []) {
+    const callId = row.result?.service_call_id;
+    if (!callId) continue;
+    row.durable_service_call = responseSummary(await apiRequest(baseUrl, token, 'shared', 'GET',
+      `/service-endpoints/${endpoint}/services/${service}/operations/${operation}/service-calls/${encodeURIComponent(callId)}`));
+  }
+  fs.writeFileSync(path.join(resultDir, 'nexus-php-workflow-probe.json'), JSON.stringify(observation, null, 2) + '\n');
+  const serviceLog = spawnSync('docker', ['exec', pythonService.containerName, 'cat', '/tmp/nexus-python-service-worker.log'],
+    {encoding: 'utf8', maxBuffer: 8 * 1024 * 1024});
+  fs.writeFileSync(path.join(resultDir, 'nexus-python-service-worker.log'), (serviceLog.stdout || '') + (serviceLog.stderr || ''));
+}
+
 function reflectedPublicServiceCallSurface(runtimeEvidence) {
   const surface = runtimeEvidence?.public_service_call_surface || null;
   if (publicSurfaceAvailable(surface)) {
@@ -3157,6 +3199,14 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
       await probePublishedPythonCallerWorkflows(baseUrl, token, compose, phpService, pythonService);
     } catch (error) {
       fs.writeFileSync(path.join(resultDir, 'nexus-python-workflow-probe.json'), JSON.stringify({
+        ok: false, body: {runner_blocked: true, failure_reason: String(error)},
+      }, null, 2) + '\n');
+    }
+
+    try {
+      await probePublishedPhpCallerWorkflows(baseUrl, token, compose, phpService, pythonService);
+    } catch (error) {
+      fs.writeFileSync(path.join(resultDir, 'nexus-php-workflow-probe.json'), JSON.stringify({
         ok: false, body: {runner_blocked: true, failure_reason: String(error)},
       }, null, 2) + '\n');
     }

@@ -27,7 +27,10 @@ async def execute(input_data, namespace):
     rejected = asyncio.Event()
 
     async def observe(response):
-        if "/service-endpoints/" not in response.request.url.path:
+        path = response.request.url.path
+        if "/service-endpoints/" not in path and not (
+            "/workflow-tasks/" in path and path.endswith("/complete")
+        ):
             return
         await response.aread()
         receipts.append({
@@ -38,7 +41,7 @@ async def execute(input_data, namespace):
             "status": response.status_code,
             "response": response.json(),
         })
-        if response.status_code >= 400:
+        if response.status_code >= 400 and "/service-endpoints/" in path:
             rejected.set()
 
     async with Client("http://server:8080", namespace=namespace,
@@ -81,20 +84,33 @@ async def execute(input_data, namespace):
                 await asyncio.gather(finishing, refusal, return_exceptions=True)
             observation["history"] = await handle.get_history()
             observation["receipts"] = receipts
-            execute_receipts = [row for row in receipts if row["method"] == "POST"
-                                and row["path"].endswith("/execute") and row["status"] == 200]
+            commands = [command for row in receipts
+                        if row["method"] == "POST" and row["path"].endswith("/complete")
+                        and 200 <= row["status"] < 300 and row["request_namespace"] == namespace
+                        for command in row["request"].get("commands", [])
+                        if command.get("type") == "start_service_operation"]
+            events = observation["history"].get("events", [])
+            admissions = [event["payload"] for event in events
+                          if event.get("event_type", event.get("type")) == "ServiceCallStarted"]
             observation["request_qualified"] = any(
-                row["request_namespace"] == "shared"
-                and row["request"].get("caller_namespace") == namespace
-                and row["request"].get("caller_workflow_instance_id") == handle.workflow_id
-                and row["request"].get("caller_workflow_run_id") == handle.run_id
-                and row["request"].get("payload_codec") == "avro"
-                and isinstance(row["request"].get("arguments"), str)
-                and serializer.decode(row["request"]["arguments"], codec="avro") == ["world"]
-                for row in execute_receipts
+                command.get("endpoint_name") == input_data["endpoint"]
+                and command.get("service_name") == input_data["service"]
+                and command.get("operation_name") == input_data["operation"]
+                and command.get("metadata", {}).get("caller_sdk_language") == "sdk-python"
+                and command.get("namespace", namespace) == "shared"
+                and command.get("payload_codec") == "avro"
+                and isinstance(command.get("request_payload"), str)
+                and serializer.decode(command["request_payload"], codec="avro") == ["world"]
+                for command in commands
+            ) and any(
+                event.get("caller_workflow_instance_id") == handle.workflow_id
+                and event.get("caller_workflow_run_id") == handle.run_id
+                and event.get("caller_sdk_language") == "sdk-python"
+                for event in admissions
             )
             recorded = observation.get("result", {})
             surface = recorded.get("response_or_failure_surface", {})
+            surface = surface.get("service_call", surface)
             linked_id = surface.get("linked_workflow_instance_id")
             linked_run_id = surface.get("linked_workflow_run_id")
             if linked_id and linked_run_id:

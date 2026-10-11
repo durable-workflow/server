@@ -50,6 +50,36 @@ function fixture(status = 'accepted', processId = 123) {
     };
 }
 
+if (process.env.NEXUS_PHP_WORKFLOW_PROBE) {
+    test('actual PHP caller workflows complete through the Python service in both namespaces', () => {
+        const response = JSON.parse(fs.readFileSync(process.env.NEXUS_PHP_WORKFLOW_PROBE, 'utf8'));
+        assert.equal(response.ok, true, 'PHP application probe must execute before outcomes can qualify');
+        const observation = response.body;
+        assert.equal(observation.scope, 'php_caller_python_workflow_service');
+        assert.deepEqual(observation.observations.map(row => row.caller_namespace), ['shared', 'tenant-a']);
+        for (const row of observation.observations) {
+            assert.ok(row.workflow_id && row.run_id && row.process_id > 0 && row.worker_process_id > 0);
+            assert.ok(row.installed_sdk_version && row.worker_log);
+            assert.equal(row.request_qualified, true, `${row.caller_namespace}: inspect original caller history`);
+            assert.equal(row.service_input_qualified, true, `${row.caller_namespace}: inspect linked Python history`);
+            assert.equal(row.completed, true, `${row.caller_namespace}: ${JSON.stringify(row.failure || row.result)}`);
+            assert.ok(row.linked_service_run_id && row.linked_service_history);
+            assert.equal(row.worker_exit_code, row.worker_signal_handlers_available ? 0 : 143,
+                'PHP worker must exit through its available signal handling');
+            const call = row.durable_service_call?.body?.service_call || row.durable_service_call?.body;
+            assert.equal(call?.status, 'completed');
+            const events = row.history.events;
+            const starts = events.filter(event => (event.event_type || event.type) === 'ServiceCallStarted');
+            const completions = events.filter(event => (event.event_type || event.type) === 'ServiceCallCompleted');
+            assert.equal(starts.length, 1);
+            assert.equal(completions.length, 1);
+            assert.equal(starts[0].payload.service_call_id, row.result.service_call_id);
+            assert.equal(completions[0].payload.service_call_id, row.result.service_call_id);
+            assert.equal(completions[0].payload.sequence, starts[0].payload.sequence);
+        }
+    });
+}
+
 test('API reflection does not execute a caller workflow', () => {
     const observation = callerWorkflowInvocationEvidence('sdk-python', {
         public_service_call_surface: { available: true, matched_methods: ['execute_nexus_operation'] },
