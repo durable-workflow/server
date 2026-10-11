@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {checkObservation, compareRecords as compareCorpusRecords} from '../../scripts/conformance/server-parity/contract.mjs';
+import {parseDatabaseResourceLimits} from '../../scripts/conformance/server-parity/database-resource-contract.mjs';
 
 const fixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/one-activity.json', import.meta.url)));
 const reviewed = {'one-activity.json': fixture};
@@ -40,6 +41,29 @@ test('comparison binds identical recordings to the selected source artifact mani
   compareCorpusRecords(records, {'one-activity.json': 'fixture-sha'}, reviewed, {sdk_php: '2.2.6'});
   assert.throws(() => compareCorpusRecords(records, {'one-activity.json': 'fixture-sha'}, reviewed,
     {sdk_php: '2.2.6', workflow: 'required-published-engine'}), /selected source manifest/);
+});
+
+test('effective database limits preserve frozen artifacts and reject unmatched recording resources', () => {
+  const records = [record(), record('-other-database')];
+  const limits = {memory_bytes: 1073741824, memory_swap_bytes: 1073741824};
+  for (const item of records) item.database_resource_limits = {...limits};
+  compareCorpusRecords(records, {'one-activity.json': 'fixture-sha'}, reviewed, {sdk_php: '2.2.6'});
+  records[1].database_resource_limits = {memory_bytes: 805306368, memory_swap_bytes: 805306368};
+  assert.throws(() => compareCorpusRecords(records, {'one-activity.json': 'fixture-sha'}, reviewed), /effective database resource limits/);
+  delete records[1].database_resource_limits;
+  assert.throws(() => compareCorpusRecords(records, {'one-activity.json': 'fixture-sha'}, reviewed), /effective database resource limits/);
+});
+
+test('database memory receipt rejects missing, inexact, unknown or swap-enabled declarations', () => {
+  assert.equal(parseDatabaseResourceLimits(undefined), undefined);
+  const limits = {memory_bytes: 1073741824, memory_swap_bytes: 1073741824};
+  assert.deepEqual(parseDatabaseResourceLimits(JSON.stringify(limits)), limits);
+  for (const invalid of [null, [], {}, {memory_bytes: 1}, {...limits, invented: true},
+    {...limits, memory_bytes: '1073741824'}, {...limits, memory_bytes: 0},
+    {...limits, memory_bytes: Number.MAX_SAFE_INTEGER + 1},
+    {...limits, memory_swap_bytes: 2147483648}, {...limits, memory_swap_bytes: -1}]) {
+    assert.throws(() => parseDatabaseResourceLimits(JSON.stringify(invalid)));
+  }
 });
 
 function cancellationObservation(fixture, mode = 'http') {

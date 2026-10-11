@@ -15,6 +15,8 @@ import {checkWaitingHistory} from './waiting-history-contract.mjs';
 import {checkTaskRetry} from './task-retry-contract.mjs';
 import {checkRangeRepair, checkRangeArtifacts, checkRangePackages} from './range-repair-contract.mjs';
 import {checkSdkDirection, checkSdkDirectionPackages} from './sdk-direction-contract.mjs';
+import {checkDatabaseResourceLimits} from './database-resource-contract.mjs';
+import {checkSdkChildDirection, checkSdkChildDirectionPackages} from './sdk-child-direction-contract.mjs';
 
 export function instantNanoseconds(value) {
   const shape = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.(\d{1,9}))?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
@@ -37,7 +39,7 @@ export function checkObservation(fixture, observation, workflowId) {
   nonempty(observation.run_id, 'run identity');
   equal(observation.workflow_type, fixture.workflow_type, 'registered workflow type');
   equal(observation.namespace, fixture.namespace ?? 'default', 'namespace');
-  equal(observation.task_queue, fixture.sdk_direction?.workflow_queue ?? 'server-parity-v1', 'task queue');
+  equal(observation.task_queue, fixture.sdk_child_direction?.parent_queue ?? fixture.sdk_direction?.workflow_queue ?? 'server-parity-v1', 'task queue');
   const cancelled = Boolean(fixture.immediate_cancellation || fixture.cooperative_cancellation);
   equal(observation.status, cancelled ? 'cancelled' : 'completed', 'actual durable terminal state');
   equal(observation.payload_codec, 'avro', 'payload codec');
@@ -100,6 +102,7 @@ export function checkObservation(fixture, observation, workflowId) {
   const taskRetry = fixture.workflow_task_retry ? checkTaskRetry(fixture, observation, workflowId) : null;
   const rangeRepair = fixture.range_repair ? checkRangeRepair(fixture, observation, workflowId, instantNanoseconds) : null;
   const sdkDirection = checkSdkDirection(fixture, observation, workflowId);
+  const sdkChildDirection = checkSdkChildDirection(fixture, observation, workflowId);
   const cooperative = fixture.cooperative_cancellation
     ? checkCooperativeCancellation(fixture, observation, identities, projectedEvents, instantNanoseconds) : null;
   if (fixture.child_cancellation) {
@@ -382,7 +385,7 @@ export function checkObservation(fixture, observation, workflowId) {
       equal(resolved.typed_decoded.output, typedOutput, 'parent resolution exact output types');
       equal(child.workflow_type, fixture.child_workflow_type, 'observed registered child type');
       equal(child.namespace, observation.namespace, 'child inherits parent namespace');
-      equal(child.task_queue, observation.task_queue, 'child uses original requested queue');
+      equal(child.task_queue, fixture.sdk_child_direction?.child_queue ?? observation.task_queue, 'child uses original requested queue');
       equal(child.status, 'completed', 'real child completion');
       equal(child.payload_codec, 'avro', 'child Avro codec');
       equal(child.input, [input], 'original child arguments');
@@ -415,28 +418,30 @@ export function checkObservation(fixture, observation, workflowId) {
         equal(accepted.workflow_instance_id, child.workflow_id, 'embedded child accepted instance');
         equal(accepted.workflow_run_id, child.run_id, 'embedded child accepted run');
       }
-      const activityEvents = childEvents.slice(observation.mode === 'embedded' ? 2 : 1, observation.mode === 'embedded' ? 5 : 4);
-      const activityId = activityEvents[0].payload.activity_execution_id;
-      const attemptId = activityEvents[1].payload.activity_attempt_id;
-      nonempty(activityId, 'child activity identity');
-      nonempty(attemptId, 'child activity attempt identity');
-      identities.push(activityId, attemptId);
-      equal(new Set(identities).size, identities.length, 'distinct nested activity and attempt identities');
-      for (const event of activityEvents) {
-        equal(event.payload.activity_execution_id, activityId, 'child activity original execution');
-        equal(event.payload.activity_type, 'parity.v1.echo_activity', 'child registered activity type');
-        equal(event.payload.sequence, 1, 'child activity authored sequence');
+      if (!fixture.sdk_child_direction) {
+        const activityEvents = childEvents.slice(observation.mode === 'embedded' ? 2 : 1, observation.mode === 'embedded' ? 5 : 4);
+        const activityId = activityEvents[0].payload.activity_execution_id;
+        const attemptId = activityEvents[1].payload.activity_attempt_id;
+        nonempty(activityId, 'child activity identity');
+        nonempty(attemptId, 'child activity attempt identity');
+        identities.push(activityId, attemptId);
+        equal(new Set(identities).size, identities.length, 'distinct nested activity and attempt identities');
+        for (const event of activityEvents) {
+          equal(event.payload.activity_execution_id, activityId, 'child activity original execution');
+          equal(event.payload.activity_type, 'parity.v1.echo_activity', 'child registered activity type');
+          equal(event.payload.sequence, 1, 'child activity authored sequence');
+        }
+        for (const event of activityEvents.slice(0, 2)) {
+          equal(event.decoded.activity_arguments, [input], 'child activity original arguments');
+          equal(event.typed_decoded.activity_arguments, typedInput, 'child activity exact argument types');
+        }
+        for (const event of activityEvents.slice(1)) {
+          equal(event.payload.activity_attempt_id, attemptId, 'child activity original committed attempt');
+          equal(event.payload.attempt_number, 1, 'one nested activity attempt');
+        }
+        equal(activityEvents[2].decoded.result, input, 'nested activity committed result');
+        equal(activityEvents[2].typed_decoded.result, typedInput.value[0], 'nested activity exact committed result types');
       }
-      for (const event of activityEvents.slice(0, 2)) {
-        equal(event.decoded.activity_arguments, [input], 'child activity original arguments');
-        equal(event.typed_decoded.activity_arguments, typedInput, 'child activity exact argument types');
-      }
-      for (const event of activityEvents.slice(1)) {
-        equal(event.payload.activity_attempt_id, attemptId, 'child activity original committed attempt');
-        equal(event.payload.attempt_number, 1, 'one nested activity attempt');
-      }
-      equal(activityEvents[2].decoded.result, input, 'nested activity committed result');
-      equal(activityEvents[2].typed_decoded.result, typedInput.value[0], 'nested activity exact committed result types');
       equal(childEvents.at(-1).decoded.output, output, 'committed original child output');
       equal(childEvents.at(-1).typed_decoded.output, typedOutput, 'committed exact child output types');
       for (const event of [scheduled, childStarted, resolved]) {
@@ -445,11 +450,12 @@ export function checkObservation(fixture, observation, workflowId) {
       }
       projectedChildren.push({workflow_type: child.workflow_type, namespace: child.namespace, task_queue: child.task_queue,
         status: child.status, input: typedInput, output: typedOutput, parent_sequence: index + 1,
-        parent_close_policy: 'abandon', cancellation_policy: 'abandon', activity_type: 'parity.v1.echo_activity', attempt_number: 1});
+        parent_close_policy: 'abandon', cancellation_policy: 'abandon',
+        ...(!fixture.sdk_child_direction ? {activity_type: 'parity.v1.echo_activity', attempt_number: 1} : {})});
     }
     if (observation.mode === 'http') {
-      equal(observation.workflow_polls.length, 7, 'actual parent/child workflow turns');
-      equal(observation.workflow_completions.length, 7, 'actual committed parent/child workflow turns');
+      equal(observation.workflow_polls.length, fixture.sdk_child_direction ? 3 : 7, 'actual parent/child workflow turns');
+      equal(observation.workflow_completions.length, fixture.sdk_child_direction ? 3 : 7, 'actual committed parent/child workflow turns');
       for (const task of observation.workflow_polls) {
         nonempty(task.task_id, 'actual child-family task identity');
         nonempty(task.lease_owner, 'actual child-family lease owner');
@@ -471,7 +477,7 @@ export function checkObservation(fixture, observation, workflowId) {
         equal(completion.request.commands.length, 1, 'one child-family command per committed turn');
       }
       const parentTasks = observation.workflow_polls.filter(task => task.workflow_id === workflowId);
-      equal(parentTasks.length, 3, 'parent initial turn and two real resumptions');
+      equal(parentTasks.length, fixture.sdk_child_direction ? 2 : 3, 'parent initial turn and real child resumptions');
       for (const [index, task] of parentTasks.slice(1).entries()) {
         const child = observation.children[index];
         const callId = events[2 + index * 3].payload.child_call_id;
@@ -493,7 +499,7 @@ export function checkObservation(fixture, observation, workflowId) {
           nonempty(value?.blob, 'original SDK Avro frame bytes');
           return value.blob;
         };
-        equal(tasks.length, parent ? 3 : 2, 'complete original workflow turn inventory');
+        equal(tasks.length, fixture.sdk_child_direction ? (parent ? 2 : 1) : (parent ? 3 : 2), 'complete original workflow turn inventory');
         for (const [turn, task] of tasks.entries()) {
           const prefix = parent ? 2 + turn * 3 : 1 + turn * 3;
           const history = events => events.map(({sequence, event_type, payload}) => ({sequence, event_type, payload}));
@@ -574,6 +580,7 @@ export function checkObservation(fixture, observation, workflowId) {
     ...(taskRetry ? {workflow_task_retry: taskRetry} : {}),
     ...(rangeRepair ? {range_repair: rangeRepair} : {}),
     ...(sdkDirection ? {sdk_direction: sdkDirection} : {}),
+    ...(sdkChildDirection ? {sdk_child_direction: sdkChildDirection} : {}),
   };
 }
 
@@ -589,6 +596,8 @@ export function compareRecords(records, expectedFixtureHashes, expectedFixtures,
     assert.deepStrictEqual(record.cases.map(c => `${c.fixture_id}.json`).sort(), Object.keys(record.fixture_hashes).sort(), 'every hashed fixture has a recorded case');
     assert.deepStrictEqual(record.fixture_hashes, reference.fixture_hashes, 'same reviewed fixture bytes');
     assert.deepStrictEqual(record.artifacts, reference.artifacts, 'same consumer tuple');
+    checkDatabaseResourceLimits(record.database_resource_limits);
+    assert.deepStrictEqual(record.database_resource_limits, reference.database_resource_limits, 'same effective database resource limits');
     if (expectedArtifacts) assert.deepStrictEqual(record.artifacts, expectedArtifacts, 'recorded tuple matches the selected source manifest');
     assert.equal(record.runner_revision, reference.runner_revision, 'same runner revision');
     assert.deepStrictEqual(record.cases.map(c => c.fixture_id), reference.cases.map(c => c.fixture_id), 'complete same fixture inventory');
@@ -598,12 +607,13 @@ export function compareRecords(records, expectedFixtureHashes, expectedFixtures,
       const baseline = reference.cases[index];
       assert.equal(item.fixture_id, item.fixture.id, 'case identity matches fixture');
       assert.deepStrictEqual(item.fixture, expectedFixtures[`${item.fixture_id}.json`], 'case expectations match the current reviewed source fixture');
-      if (item.fixture.signal_count || item.fixture.schedule || item.fixture.visibility || item.fixture.admission || item.fixture.patch_deployment || item.fixture.range_repair || item.fixture.sdk_direction) assert.equal(item.observation.mode, record.mode, 'observation uses its recording adapter');
+      if (item.fixture.signal_count || item.fixture.schedule || item.fixture.visibility || item.fixture.admission || item.fixture.patch_deployment || item.fixture.range_repair || item.fixture.sdk_direction || item.fixture.sdk_child_direction) assert.equal(item.observation.mode, record.mode, 'observation uses its recording adapter');
       assert.equal(item.observation.sdk_php, record.artifacts.sdk_php, 'installed SDK matches tuple');
       checkPublishedPatchArtifacts(item.fixture, record.artifacts);
       checkRangeArtifacts(item.fixture, record.artifacts);
       checkRangePackages(item.fixture, item.observation, record.artifacts);
       checkSdkDirectionPackages(item.fixture, item.observation, record.artifacts);
+      checkSdkChildDirectionPackages(item.fixture, item.observation, record.artifacts);
       if (item.fixture.patch_deployment?.legacy_marker_history) {
         checkLegacyMarkerArtifacts(item.fixture, record.artifacts);
         checkLegacyMarkerPackageObservation(item.fixture, item.observation, record.artifacts);

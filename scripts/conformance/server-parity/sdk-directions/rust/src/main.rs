@@ -4,7 +4,9 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use durable_workflow::{ActivityOptions, Client, Error, Result, Worker, SDK_VERSION};
+use durable_workflow::{
+    ActivityOptions, ChildWorkflowOptions, Client, Error, Result, Worker, SDK_VERSION,
+};
 use serde_json::{json, Value};
 
 #[tokio::main]
@@ -19,14 +21,31 @@ async fn main() -> Result<()> {
     else {
         unreachable!()
     };
-    if !["original", "activity", "replacement"].contains(&phase.as_str()) {
-        return Err(Error::WorkerLoop("Unknown SDK direction phase".into()));
-    }
     let fixture: Value = serde_json::from_str(
         &std::fs::read_to_string(fixture_path)
             .map_err(|error| Error::WorkerLoop(error.to_string()))?,
     )
     .map_err(|error| Error::WorkerLoop(error.to_string()))?;
+    let child_direction = fixture.get("sdk_child_direction").is_some();
+    let phases = if child_direction {
+        ["original", "child", "replacement"]
+    } else {
+        ["original", "activity", "replacement"]
+    };
+    if !phases.contains(&phase.as_str()) {
+        return Err(Error::WorkerLoop("Unknown SDK direction phase".into()));
+    }
+    let queue = if child_direction {
+        if phase == "child" {
+            "server-parity-sdk-child"
+        } else {
+            "server-parity-sdk-parent"
+        }
+    } else if phase == "activity" {
+        "server-parity-sdk-activity"
+    } else {
+        "server-parity-sdk-workflow"
+    };
     let seconds: f64 = remaining
         .parse()
         .map_err(|_| Error::WorkerLoop("Invalid phase budget".into()))?;
@@ -41,8 +60,10 @@ async fn main() -> Result<()> {
     let run_id = if phase == "original" {
         client
             .start_workflow(
-                "parity.v1.one_activity",
-                "server-parity-sdk-workflow",
+                fixture["workflow_type"]
+                    .as_str()
+                    .ok_or_else(|| Error::WorkerLoop("Missing workflow type".into()))?,
+                queue,
                 workflow_id,
                 json!([fixture["input"]]),
             )
@@ -55,15 +76,38 @@ async fn main() -> Result<()> {
     let worker_id = format!("{workflow_id}:{phase}");
     let workflow_invocations = Arc::new(AtomicUsize::new(0));
     let activity_invocations = Arc::new(AtomicUsize::new(0));
-    let queue = if phase == "activity" {
-        "server-parity-sdk-activity"
-    } else {
-        "server-parity-sdk-workflow"
-    };
     let mut worker = Worker::new(client.clone(), queue)
         .worker_id(&worker_id)
         .poll_timeout(Duration::from_secs(1));
-    if phase == "activity" {
+    if child_direction && phase == "child" {
+        let invocations = Arc::clone(&workflow_invocations);
+        worker.register_typed_workflow("parity.v1.echo_child", move |_ctx, value: Value| {
+            invocations.fetch_add(1, Ordering::SeqCst);
+            async move { Ok(value) }
+        });
+    } else if child_direction {
+        let invocations = Arc::clone(&workflow_invocations);
+        worker.register_typed_workflow("parity.v1.one_child", move |ctx, value: Value| {
+            invocations.fetch_add(1, Ordering::SeqCst);
+            async move {
+                let payloads = value["payloads"]
+                    .as_array()
+                    .ok_or_else(|| Error::WorkerLoop("Missing child payloads".into()))?;
+                let mut results = Vec::new();
+                for payload in payloads {
+                    let child = ctx
+                        .start_child_workflow(
+                            "parity.v1.echo_child",
+                            ChildWorkflowOptions::new("server-parity-sdk-child"),
+                            json!([payload]),
+                        )
+                        .await?;
+                    results.push(child.result);
+                }
+                Ok(json!({"child_results": results}))
+            }
+        });
+    } else if phase == "activity" {
         let invocations = Arc::clone(&activity_invocations);
         worker.register_typed_activity("parity.v1.echo_activity", move |_ctx, value: Value| {
             invocations.fetch_add(1, Ordering::SeqCst);

@@ -20,6 +20,10 @@ export function checkSdkDirectionArtifacts(fixture, selected) {
 export function checkSdkDirectionPackages(fixture, observation, selected) {
   if (!fixture.sdk_direction) return;
   checkSdkDirectionArtifacts(fixture, selected);
+  checkPublishedSdkPackages(observation, selected, observation.sdk_direction);
+}
+
+export function checkPublishedSdkPackages(observation, selected, direction) {
   assert.equal(observation.sdk_php_source, selected.sdk_php_source_commit, 'installed PHP SDK source');
   assert.equal(observation.sdk_composer_lock_sha256, selected.sdk_php_composer_lock_sha256, 'complete PHP dependency lock');
   assert.deepEqual(observation.sdk_loaded_sources, selected.sdk_php_loaded_sources, 'actual autoloaded PHP worker and replayer');
@@ -29,7 +33,7 @@ export function checkSdkDirectionPackages(fixture, observation, selected) {
     assert.equal(observation.embedded_composer_lock_sha256, selected.embedded_image_composer_lock_sha256);
     assert.deepEqual(observation.workflow_loaded_sources, selected.workflow_loaded_sources);
   } else {
-    assert.deepEqual(observation.sdk_direction.packages,
+    assert.deepEqual(direction.packages,
       {outcome: 'pass', rust: selected.published_sdk_artifacts.rust, python: selected.published_sdk_artifacts.python},
       'compiled registry dependency and actual hash-required wheel installation');
   }
