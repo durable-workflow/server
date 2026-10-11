@@ -1558,8 +1558,9 @@ function callerWorkflowInvocationEvidence(language, runtimeEvidence) {
   const available = publicSurfaceAvailable(surface);
 
   return {
-    executed: available,
-    execution_mode: 'published_service_call_surface_probe',
+    executed: false,
+    execution_mode: 'public_api_reflection',
+    public_surface_available: available,
     sdk_language: language,
     public_method: matchedMethods[0] || null,
     matched_methods: matchedMethods,
@@ -2377,11 +2378,30 @@ require 'vendor/autoload.php';
 
 use DurableWorkflow\\Client;
 use DurableWorkflow\\Model\\ServiceOperationOptions;
+use DurableWorkflow\\Transport\\Psr18Transport;
+use GuzzleHttp\\Client as HttpClient;
+use GuzzleHttp\\TransferStats;
 
 $input = json_decode(base64_decode('${encoded}'), true, 512, JSON_THROW_ON_ERROR);
+$receipts = [];
+$http = new HttpClient([
+    'http_errors' => false,
+    'on_stats' => function (TransferStats $stats) use (&$receipts): void {
+        $response = $stats->getResponse();
+        $request = $stats->getRequest();
+        $receipts[] = [
+            'method' => $request->getMethod(),
+            'path' => $request->getUri()->getPath(),
+            'request_body' => json_decode((string) $request->getBody(), true),
+            'status' => $response?->getStatusCode(),
+            'body' => $response === null ? null : json_decode((string) $response->getBody(), true),
+        ];
+    },
+]);
 $client = new Client(
     (string) $input['server_url'],
     namespace: (string) $input['namespace'],
+    transport: new Psr18Transport($http),
     token: (string) $input['token'],
 );
 $handle = $client->startServiceOperation(
@@ -2398,13 +2418,20 @@ $handle = $client->startServiceOperation(
         callerRunId: (string) $input['caller_run_id'],
     ),
 );
-echo json_encode($handle->started->raw + [
+echo json_encode(array_merge($handle->started->raw, [
     'service_call_id' => $handle->serviceCallId,
     'sdk_version' => Composer\\InstalledVersions::getPrettyVersion('durable-workflow/sdk'),
     'client_process_id' => getmypid(),
-], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR), PHP_EOL;
-PHP`, path.join(resultDir, 'nexus-php-sdk-client-execute.log'));
-  response.status = response.ok ? 202 : 0;
+    'caller_sdk_invocation' => [
+        'executed' => true,
+        'public_method' => 'DurableWorkflow\\\\Client::startServiceOperation',
+        'workflow_worker_executed' => false,
+        'receipts' => $receipts,
+    ],
+]), JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR), PHP_EOL;
+PHP`, path.join(resultDir, `${callerWorkflowId}-sdk-client-execute.log`));
+  response.status = response.body?.caller_sdk_invocation?.receipts?.at(-1)?.status ?? 0;
+  response.ok = response.ok && response.status >= 200 && response.status < 300;
   response.request = request;
 
   return response;
@@ -2449,6 +2476,86 @@ async function setupCrossLanguageService(baseUrl, token, target, serviceUrl) {
   });
 
   return {targetNamespace, endpointName, serviceName, operationName, endpoint, service, operation};
+}
+
+function executePublishedPythonSdkServiceOperation(
+  containerName,
+  token,
+  operation,
+  argumentsValue,
+  callerNamespace,
+  callerWorkflowId,
+  callerRunId,
+) {
+  const request = {
+    server_url: 'http://server:8080',
+    token,
+    namespace: operation.targetNamespace,
+    caller_namespace: callerNamespace,
+    endpoint_name: operation.endpointName,
+    service_name: operation.serviceName,
+    operation_name: operation.operationName,
+    arguments: [argumentsValue],
+    caller_workflow_id: callerWorkflowId,
+    caller_run_id: callerRunId,
+    idempotency_key: `${callerWorkflowId}-nexus-${crypto.randomBytes(5).toString('hex')}`,
+  };
+  const encoded = Buffer.from(JSON.stringify(request), 'utf8').toString('base64');
+  const response = dockerExecJson(containerName, `. /tmp/dw-python/bin/activate && python <<'PY'
+import asyncio
+import base64
+import json
+import os
+from importlib.metadata import version
+
+from durable_workflow.client import Client
+
+input_data = json.loads(base64.b64decode('${encoded}'))
+
+async def main():
+    receipts = []
+    async def observe(response):
+        await response.aread()
+        receipts.append({
+            "method": response.request.method,
+            "path": response.request.url.path,
+            "request_body": json.loads(response.request.content) if response.request.content else None,
+            "status": response.status_code,
+            "body": response.json(),
+        })
+
+    async with Client(input_data["server_url"], token=input_data["token"],
+                      namespace=input_data["namespace"]) as client:
+        client._http.event_hooks["response"] = [observe]
+        result = await client.execute_nexus_operation(
+            input_data["endpoint_name"], input_data["service_name"],
+            input_data["operation_name"], input_data["arguments"],
+            mode="async", wait_for="accepted",
+            idempotency_key=input_data["idempotency_key"],
+            caller_namespace=input_data["caller_namespace"],
+            caller_workflow_instance_id=input_data["caller_workflow_id"],
+            caller_workflow_run_id=input_data["caller_run_id"],
+            raise_on_failure=False,
+        )
+        assert receipts, "No actual SDK HTTP invocation recorded"
+        print(json.dumps(result.response_or_failure_surface | {
+            "service_call_id": result.service_call_id,
+            "sdk_version": version("durable-workflow"),
+            "client_process_id": os.getpid(),
+            "caller_sdk_invocation": {
+                "executed": True,
+                "public_method": "durable_workflow.client.Client.execute_nexus_operation",
+                "workflow_worker_executed": False,
+                "receipts": receipts,
+            },
+        }))
+
+asyncio.run(main())
+PY`, path.join(resultDir, `${callerWorkflowId}-sdk-client-execute.log`));
+  response.status = response.body?.caller_sdk_invocation?.receipts?.at(-1)?.status ?? 0;
+  response.ok = response.ok && response.status >= 200 && response.status < 300;
+  response.request = request;
+  return response;
 }
 
 function publicSurfaceAvailable(surface) {
@@ -2598,9 +2705,16 @@ function crossLanguageScenarioResult({
     );
   const serviceRuntimeAvailable = serviceHealthSucceeded
     && publicSurfaceAvailable(serviceWorker?.service_runtime_surface);
+  const durableCall = describe?.body?.service_call || describe?.body || {};
   const durableServiceResponseObserved = serviceRuntimeAvailable
-    && serviceProbeSucceeded
-    && responsePayload !== null;
+    && describe?.ok === true
+    && durableCall.status === 'completed'
+    && durableCall.completed_at != null;
+  const callerSdkInvocation = execute?.body?.caller_sdk_invocation || null;
+  const callerSdkExecuted = callerSdkInvocation?.executed === true
+    && Number(execute?.body?.client_process_id || 0) > 0;
+  const callerWorkflowExecuted = callerWorkerInvocation?.executed === true
+    && callerWorkerInvocation?.execution_mode !== 'public_api_reflection';
   let missing = missingSurface;
   if (missing === null && !callerPublicSurfaceAvailable) {
     missing = `published ${callerLanguage} caller workflow did not expose a public SDK service-call API during the reflected package probe`;
@@ -2616,6 +2730,12 @@ function crossLanguageScenarioResult({
     missing = `published ${serviceLanguage} service invocation did not preserve the observed typed error`;
   } else if (missing === null && !execute.ok) {
     missing = 'service endpoint execute did not accept the published cross-language call';
+  } else if (missing === null && !callerSdkExecuted) {
+    missing = 'the service call has no actual installed SDK caller-process execution';
+  } else if (missing === null && !durableServiceResponseObserved) {
+    missing = `durable service call is ${stringValue(durableCall.status) || 'unobserved'} rather than completed; the separate HTTP carrier probe is not durable completion`;
+  } else if (missing === null && !callerWorkflowExecuted) {
+    missing = 'caller workflow identifiers were assigned without executing a caller workflow worker';
   }
   const pass = missing === null
     && serviceHealthSucceeded
@@ -2625,6 +2745,8 @@ function crossLanguageScenarioResult({
     && callerHistoryRecorded
     && callerPublicSurfaceAvailable
     && durableServiceResponseObserved
+    && callerSdkExecuted
+    && callerWorkflowExecuted
     && payloadRoundTrip
     && typedErrorRoundTrip
     && publicSurfaceAvailable(callerWorker?.public_service_call_surface);
@@ -2637,8 +2759,11 @@ function crossLanguageScenarioResult({
     && serviceRuntimeAvailable
     && serviceProbeSucceeded
     && (!payloadRoundTrip || !typedErrorRoundTrip);
+  const unprovenDurableExecution = callerSdkExecuted && execute.ok
+    && serviceRuntimeAvailable && (!durableServiceResponseObserved || !callerWorkflowExecuted);
   const responseSurface = {
-    status: pass ? 'completed' : (serviceInvocationFailed || serviceResponseMismatch ? 'failed' : 'unsupported'),
+    status: pass ? 'completed' : (serviceInvocationFailed || serviceResponseMismatch ? 'failed'
+      : (unprovenDurableExecution ? 'not_covered' : 'unsupported')),
     execute_response: responseSummary(execute),
     describe_response: responseSummary(describe),
     caller_history_response: responseSummary(history),
@@ -2646,6 +2771,8 @@ function crossLanguageScenarioResult({
     typed_error_probe_response: typedErrorProbe,
     service_response_payload: responsePayload,
     missing_public_surface: missingSurface,
+    caller_sdk_invocation: callerSdkInvocation,
+    caller_workflow_execution_verified: callerWorkflowExecuted,
   };
 
   if (pass) {
@@ -2688,25 +2815,30 @@ function crossLanguageScenarioResult({
     caller_history_recorded: callerHistoryRecorded,
     caller_worker_invocation: callerWorkerInvocation,
     missing_public_surface: missing,
+    caller_sdk_invocation: callerSdkInvocation,
+    durable_service_response_observed: durableServiceResponseObserved,
   };
   const healthFailureObserved = callerPublicSurfaceAvailable && serviceHealthSucceeded !== true;
   const findingType = healthFailureObserved
     ? 'nexus_published_service_health_failed'
     : (serviceInvocationFailed
       ? 'nexus_published_service_invocation_failed'
-      : (serviceResponseMismatch ? 'nexus_published_service_response_mismatch' : 'nexus_unsupported_surface'));
+      : (serviceResponseMismatch ? 'nexus_published_service_response_mismatch'
+        : (unprovenDurableExecution ? 'nexus_unproven_durable_execution' : 'nexus_unsupported_surface')));
   const expectedBehavior = healthFailureObserved
     ? `The published ${serviceLanguage} service shard serves /health with runtime, package import, and package version evidence before the Nexus run can pass.`
     : (serviceInvocationFailed || serviceResponseMismatch
       ? `The published ${serviceLanguage} service returns a successful external-task response with the request payload and preserves a concrete typed failure response.`
-      : `The published ${callerLanguage} caller SDK exposes a workflow-safe Nexus service-call API and the published ${serviceLanguage} service runtime executes the call through the durable service-call path.`);
+      : `The published ${callerLanguage} caller and ${serviceLanguage} service execute through the durable service-call path, with actual caller workflow execution and durable terminal outcomes independently of direct HTTP handler probes.`);
   const nextAcceptanceCriterion = healthFailureObserved
     ? `fix published ${serviceLanguage} service startup, serve valid /health evidence, and rerun the published PHP/Python Nexus shard`
     : (serviceInvocationFailed || serviceResponseMismatch
       ? `fix the published ${serviceLanguage} invocation response and rerun the published PHP/Python Nexus shard`
-      : `publish the missing ${callerLanguage} Nexus service-call surface, wire it to the ${serviceLanguage} runtime service, and rerun the published PHP/Python Nexus shard`);
-
-  return scenarioResult(serviceInvocationFailed || serviceResponseMismatch ? 'fail' : 'unsupported', scenarioId, {
+      : (unprovenDurableExecution
+        ? `execute actual caller workflows and durable service completion, typed failure and cancellation before qualifying this ${callerLanguage} to ${serviceLanguage} case`
+        : `publish the missing ${callerLanguage} Nexus service-call surface, wire it to the ${serviceLanguage} runtime service, and rerun the published PHP/Python Nexus shard`));
+  return scenarioResult(serviceInvocationFailed || serviceResponseMismatch ? 'fail'
+    : (unprovenDurableExecution ? 'not_covered' : 'unsupported'), scenarioId, {
     caller_workflow_instance_id: callerWorkflowInstanceId,
     caller_workflow_run_id: callerWorkflowRunId,
     caller_sdk_language: callerLanguage,
@@ -2729,7 +2861,7 @@ function crossLanguageScenarioResult({
     crossLanguageFinding(
       scenarioId,
       versions,
-      missingSurfaceOwner,
+      unprovenDurableExecution ? 'server' : missingSurfaceOwner,
       `${scenarioId} attempted the published ${callerLanguage} to ${serviceLanguage} Nexus call, but ${missing}. Evidence: ${JSON.stringify(attemptedCallEvidence).slice(0, 1000)}`,
       expectedBehavior,
       nextAcceptanceCriterion,
@@ -2898,22 +3030,14 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
 
     const pythonCallerWorkflowInstanceId = `python-caller-php-service-${crypto.randomBytes(5).toString('hex')}`;
     const pythonCallerWorkflowRunId = ulidLike();
-    const pythonToPhpExecute = await apiRequest(
-      baseUrl,
+    const pythonToPhpExecute = executePublishedPythonSdkServiceOperation(
+      pythonService.containerName,
       token,
-      'shared',
-      'POST',
-      `/service-endpoints/${phpOperation.endpointName}/services/${phpOperation.serviceName}/operations/${phpOperation.operationName}/execute`,
-      {
-        arguments: pythonToPhpRequest,
-        mode_override: 'async',
-        wait_for: 'accepted',
-        caller_namespace: 'tenant-b',
-        caller_workflow_instance_id: pythonCallerWorkflowInstanceId,
-        caller_workflow_run_id: pythonCallerWorkflowRunId,
-        idempotency_key: `${pythonCallerWorkflowInstanceId}-nexus-${crypto.randomBytes(5).toString('hex')}`,
-        metadata: {conformance: 'python_caller_php_service'},
-      },
+      phpOperation,
+      pythonToPhpRequest,
+      'tenant-b',
+      pythonCallerWorkflowInstanceId,
+      pythonCallerWorkflowRunId,
     );
     const pythonToPhpServiceCallId = serviceCallIdFrom(pythonToPhpExecute);
     const pythonToPhpDescribe = pythonToPhpServiceCallId === ''
@@ -2932,6 +3056,60 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
       pythonCallerWorkflowInstanceId,
       pythonCallerWorkflowRunId,
     );
+
+    const clientMatrix = [];
+    const pairs = [
+      {caller: 'sdk-php', service: 'sdk-python', operation: pythonOperation,
+        execute: phpToPythonExecute, describe: phpToPythonDescribe, history: phpToPythonHistory},
+      {caller: 'sdk-python', service: 'workflow-php', operation: phpOperation,
+        execute: pythonToPhpExecute, describe: pythonToPhpDescribe, history: pythonToPhpHistory},
+      {caller: 'sdk-php', service: 'workflow-php', operation: phpOperation},
+      {caller: 'sdk-python', service: 'sdk-python', operation: pythonOperation},
+    ];
+    for (const pair of pairs) {
+      const callerId = `nexus-client-${pair.caller}-${pair.service}-${crypto.randomBytes(5).toString('hex')}`;
+      const callerRunId = ulidLike();
+      const namespace = pair.caller === 'sdk-php' ? 'tenant-a' : 'tenant-b';
+      if (!pair.execute) {
+        const executeClient = pair.caller === 'sdk-php'
+          ? executePublishedPhpSdkServiceOperation : executePublishedPythonSdkServiceOperation;
+        pair.execute = executeClient(pair.caller === 'sdk-php' ? phpService.containerName : pythonService.containerName,
+          token, pair.operation, {name: 'world', scenario: `${pair.caller}-to-${pair.service}`},
+          namespace, callerId, callerRunId);
+        const callId = serviceCallIdFrom(pair.execute);
+        pair.describe = callId === '' ? {ok: false, body: null} : await apiRequest(
+          baseUrl, token, 'shared', 'GET',
+          `/service-endpoints/${pair.operation.endpointName}/services/${pair.operation.serviceName}/operations/${pair.operation.operationName}/service-calls/${encodeURIComponent(callId)}`);
+        pair.history = await callerHistory(baseUrl, token, namespace, callerId, callerRunId);
+      }
+      const callId = serviceCallIdFrom(pair.execute);
+      const actual = pair.execute.body?.caller_sdk_invocation;
+      const receipts = actual?.receipts || [];
+      const executeReceipts = receipts.filter((receipt) => receipt.method === 'POST'
+        && receipt.path === `/api/service-endpoints/${pair.operation.endpointName}/services/${pair.operation.serviceName}/operations/${pair.operation.operationName}/execute`);
+      const installedVersion = String(pair.execute.body?.sdk_version || '').replace(/^v/, '');
+      const expectedVersion = String(versions[pair.caller] || '').replace(/^v/, '');
+      const described = pair.describe.body?.service_call || pair.describe.body || {};
+      const admitted = pair.execute.ok === true && actual?.executed === true
+        && Number(pair.execute.body?.client_process_id || 0) > 0
+        && installedVersion === expectedVersion && executeReceipts.length === 1
+        && executeReceipts[0].status >= 200 && executeReceipts[0].status < 300
+        && callId !== '' && serviceCallIdFrom(pair.describe) === callId
+        && historyRowsFrom(pair.history).some((row) => row.service_call_id === callId);
+      clientMatrix.push({caller: pair.caller, service: pair.service, admission_verified: admitted,
+        installed_sdk_version: installedVersion, expected_sdk_version: expectedVersion,
+        client_process_id: pair.execute.body?.client_process_id || null,
+        caller_sdk_invocation: actual || null, service_call_id: callId,
+        execute_response: responseSummary(pair.execute), describe_response: responseSummary(pair.describe),
+        caller_history_response: responseSummary(pair.history), durable_status: described.status || null,
+        caller_workflow_execution_verified: false});
+    }
+    fs.writeFileSync(path.join(resultDir, 'nexus-sdk-client-matrix.json'), JSON.stringify({
+      scope: 'sdk_client_admission', outcome: clientMatrix.every((pair) => pair.admission_verified) ? 'pass' : 'fail',
+      artifact_tuple: tuple, completed_at: timestamp(), caller_workflow_execution_verified: false,
+      durable_completion_qualified: false, typed_failure_qualified: false, cancellation_qualified: false,
+      pairs: clientMatrix,
+    }, null, 2) + '\n');
 
     const phpPublicSurface = reflectedPublicServiceCallSurface(runtimeEvidence.php);
     const pythonPublicSurface = reflectedPublicServiceCallSurface(runtimeEvidence.python);
@@ -3238,6 +3416,11 @@ $fakeWorkflow = new class($serviceWorkflowInstanceId, $serviceWorkflowRunId) imp
         ];
     }
 
+    public function redrive(string $instanceId, string $failedRunId, array $options = []): array
+    {
+        throw new LogicException('redrive is outside the Nexus query retry probe');
+    }
+
     public function archive(string $instanceId, array $options = []): array
     {
         return [
@@ -3459,6 +3642,11 @@ $fakeWorkflow = new class($serviceWorkflowInstanceId, $serviceWorkflowRunId) imp
             'workflow_command_id' => null,
             'reason' => 'not_used_by_nexus_permanent_failure_probe',
         ];
+    }
+
+    public function redrive(string $instanceId, string $failedRunId, array $options = []): array
+    {
+        throw new LogicException('redrive is outside the Nexus query failure probe');
     }
 
     public function archive(string $instanceId, array $options = []): array
