@@ -193,6 +193,10 @@ async fn timer_winner_and_pending_activity_survive_original_task_repair_and_rest
     );
     assert_eq!(debug(&app, &started).await["pending_activities"], pending);
     let activity = poll(&app, "restored", "activity").await;
+    assert!(
+        activity["activity_execution_id"].is_string(),
+        "activity lease: {activity}"
+    );
     assert_eq!(
         activity["activity_execution_id"],
         prefix[3]["payload"]["activity_execution_id"]
@@ -246,6 +250,10 @@ async fn activity_winner_survives_restart_and_losing_timer_without_another_wakeu
         StatusCode::OK
     );
     let activity = poll(&app, "activity-first", "activity").await;
+    assert!(
+        activity["activity_execution_id"].is_string(),
+        "activity lease: {activity}"
+    );
     let before_failure = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
     let task_id = activity["task_id"].as_str().unwrap();
     let failure = request(&app, "POST", &format!("/api/worker/activity-tasks/{task_id}/fail"),
@@ -356,6 +364,10 @@ async fn losing_activity_preserves_a_later_wakeup_while_winner_workflow_is_lease
     let winner_task = poll(&app, "leased-selection", "workflow").await;
     assert_eq!(winner_task["history_events"].as_array().unwrap().len(), 7);
     let activity = poll(&app, "leased-selection", "activity").await;
+    assert!(
+        activity["activity_execution_id"].is_string(),
+        "activity lease: {activity}"
+    );
     let completed = request(&app, "POST", &format!("/api/worker/activity-tasks/{}/complete", activity["task_id"].as_str().unwrap()),
         json!({"lease_owner":activity["lease_owner"],"activity_attempt_id":activity["activity_attempt_id"],
             "result":envelope(Payload::Long(9007199254740993))})).await;

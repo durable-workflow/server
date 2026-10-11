@@ -1349,7 +1349,10 @@ where
                 let activity_type = text(command, "activity_type")?;
                 let arguments = envelope(command, "arguments")?;
                 let policy = super::activity_failures::retry_policy(command)?;
-                Self::query("INSERT INTO activity_executions(id,workflow_run_id,sequence,activity_type,activity_class,status,payload_codec,arguments,queue,retry_policy,parallel_group_path) VALUES ($1,$2,$3,$4,$5,'pending','avro',$6,$7,$8,$9)")
+                // The preserved SQL schema defaults this counter to one.
+                // Published authored scheduling explicitly starts at zero;
+                // only the original worker claim consumes its first attempt.
+                Self::query("INSERT INTO activity_executions(id,workflow_run_id,sequence,activity_type,activity_class,status,attempt_count,payload_codec,arguments,queue,retry_policy,parallel_group_path) VALUES ($1,$2,$3,$4,$5,'pending',0,'avro',$6,$7,$8,$9)")
                     .bind(&activity_id).bind(&run_id).bind(sequence).bind(activity_type).bind(activity_type)
                     .bind(&arguments).bind(&queue).bind(policy.as_ref().map(DB::document))
                     .bind(DB::optional_document(&metadata["parallel_group_path"])).execute(&mut *tx).await?;

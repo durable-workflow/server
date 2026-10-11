@@ -409,6 +409,14 @@ shared fixture qualifies that behavior.
 Wakeups coalesce only a ready task. A leased worker can hold an older history
 snapshot, so a later member keeps a new ready task even if that worker then
 acknowledges waiting; a dedicated HTTP regression covers this interleaving.
+The first hosted candidate compiled but failed two new SQLite assertions; no
+actual pending native recording ran. Its pending diagnostic exposed an activity
+counter inherited as one from the preserved SQL schema. Native scheduling now
+explicitly initializes it at zero, as both the frozen ordinary PHP reference
+and the newer pending reference do; only an actual worker claim consumes an
+attempt. The physical schema and earlier durable data/history remain unchanged.
+The failed candidate and raw test/artifact receipts remain distinct from the
+required corrected exact-source qualification.
 
 The separate `pending-native` profile binds the same published artifact bytes
 and unchanged fixture under a new qualification scope, including the SHA-256
