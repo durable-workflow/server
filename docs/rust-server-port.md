@@ -53,7 +53,7 @@ and [completed main qualification](https://github.com/durable-workflow/server/pu
 are tracked in #408. This qualifies one bounded child scenario in nine language
 directions; it does not establish nine capability families or performance.
 
-The next additive profile defines normal published SDK timer authoring in PHP,
+The additive timer profile qualifies normal published SDK authoring in PHP,
 Python and Rust. Each requests 5.25 seconds of durable sleep, rounded to six
 whole seconds, then cold-replays the original timer and run with a distinct
 author process. The [reviewed next contract](https://github.com/durable-workflow/server/issues/325#issuecomment-6112280492)
@@ -64,9 +64,27 @@ dedicated reader guards and isolated profiles are integrated into all six
 database configurations. The existing SDK adapter build is reused. Local
 reader guards pass, including corrupt original deadlines, stale receipts,
 rescheduling, substituted Avro frames and one nanosecond early firing.
-Qualification requires all six database configurations and inspection of the
-retained runtime records and phase wire evidence; [#411](https://github.com/durable-workflow/server/pull/411)
-tracks the execution results.
+[#411](https://github.com/durable-workflow/server/pull/411) is merged with all six
+candidate database configurations, normal PHP/source and boundaries passing.
+The independently inspected current SQLite artifact passes nine timer
+observations, all twelve full phase wire sidecars and all 55 original ZIP
+member/archive roundtrip hashes. The MariaDB artifact separately passes nine
+observations, 72 native execution tests and TLS checks with inspected 512 MiB
+memory/swap caps. Candidate, actual PR runner and merged main have the same
+qualified tree; the [merged receipt](https://github.com/durable-workflow/server/pull/411#issuecomment-6113286222)
+tracks automatic main follow-through without claiming it complete early.
+
+The next additive definitions cover all nine published PHP/Python/Rust signal
+client and workflow-author combinations. Register the original worker's signal
+declaration before the observer starts the original run. Two separate normal
+client processes send identical exact Avro payloads; three distinct author
+processes preserve both accepted signal identities and cold-replay the original
+waits/history into completion. The [reviewed scope](https://github.com/durable-workflow/server/issues/325#issuecomment-6113352490)
+uses the common instance-current-run API, explicitly preserves Python's absent
+client receipt object, and retains actual server receipts. Canonical embedded
+direct-signal histories stay intact. The separate manifest preserves prior
+tuples and envelopes. Definitions are prepared; adapters, reader guards and
+actual six-database qualification remain to implement.
 
 [#401](https://github.com/durable-workflow/server/pull/401) qualifies all nine
 fresh PHP/Python/Rust workflow-author and separately
@@ -99,7 +117,8 @@ This is one authored
 workflow/activity scenario in the default namespace, with nine language
 directions; it does not establish nine capability families or performance.
 Separately routed parent/child SDK directions are qualified in #408.
-Normal SDK timer authoring and cold replay are the next fixture slice.
+Normal SDK timer authoring and cold replay are qualified in #411; broader
+signal/query/update clients and authors remain ahead.
 The observed activity-only Python polling defect is handed to
 [SDK Python #119](https://github.com/durable-workflow/sdk-python/issues/119).
 
