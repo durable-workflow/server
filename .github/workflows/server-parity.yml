@@ -457,6 +457,8 @@ jobs:
           grep -Fq storage_unavailable parity-evidence/tls-wrong-hostname.txt
       - name: Collect logs and clean owned resources
         if: always()
+        env:
+          POSTGRES_IMAGE: ${{ matrix.image }}
         run: |
           mkdir -p parity-evidence
           docker logs "$RESOURCE_SCOPE-php" > parity-evidence/php.log 2>&1 || true
