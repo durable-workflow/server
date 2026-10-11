@@ -12,6 +12,7 @@ use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use Workflow\V2\Enums\ServiceCallOutcome;
 use Workflow\V2\Enums\ServiceCallStatus;
+use Workflow\V2\Support\ServiceCallResultEnvelope;
 use Workflow\V2\Support\ServiceCallView;
 use Workflow\V2\Support\ServiceCatalog;
 use Workflow\V2\Support\ServiceEndpointView;
@@ -144,15 +145,37 @@ class ServiceCatalogReadController
 
         $payload = ServiceCallView::detail($call, $namespace);
         $payload['payloads_in_observer_namespace'] = $call->namespace === $namespace;
+        $payload['result_envelope'] = $payload['payloads_in_observer_namespace']
+            ? ServiceCallResultEnvelope::fromCall($call)
+            : null;
         if (! $payload['payloads_in_observer_namespace']) {
             foreach (['input_payload_reference', 'output_payload_reference', 'failure_payload_reference'] as $field) {
                 $payload[$field] = null;
             }
+            unset($payload['metadata']['nexus_result']);
         }
         $outcome = is_array($call->outcome_metadata) ? $call->outcome_metadata : [];
-        $payload['failure_type'] = is_string($outcome['failure_type'] ?? null) ? $outcome['failure_type'] : null;
+        $payload['failure_type'] = $this->failureType($outcome);
 
         return ControlPlaneProtocol::json($payload);
+    }
+
+    private function failureType(array $metadata): ?string
+    {
+        foreach (['service_error_type', 'serviceErrorType', 'caller_observed_error_type', 'callerObservedErrorType',
+            'failure_type', 'failureType', 'error_type', 'errorType', 'typed_error', 'typedError',
+            'exception_type', 'exceptionType'] as $key) {
+            if (is_string($metadata[$key] ?? null) && trim($metadata[$key]) !== '') {
+                return trim($metadata[$key]);
+            }
+        }
+        foreach (['control_plane', 'handler', 'error', 'failure'] as $key) {
+            if (is_array($metadata[$key] ?? null) && ($type = $this->failureType($metadata[$key])) !== null) {
+                return $type;
+            }
+        }
+
+        return null;
     }
 
     private function namespace(Request $request): string

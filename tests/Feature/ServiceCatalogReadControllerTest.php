@@ -11,6 +11,7 @@ use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
+use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Models\WorkflowService;
 use Workflow\V2\Models\WorkflowServiceCall;
@@ -239,6 +240,14 @@ class ServiceCatalogReadControllerTest extends TestCase
             $call->{$kind.'_payload_reference'} = $uri;
             $references[$kind] = $registry->referenceForUri('target', $uri);
         }
+        $call->metadata = ['nexus_result' => [
+            'codec' => 'avro',
+            'external_reference' => [
+                'schema' => 'durable-workflow.v2.external-payload-reference.v1',
+                'codec' => 'avro', 'size_bytes' => $references['output']['size_bytes'],
+                'sha256' => $references['output']['sha256'],
+            ],
+        ]];
         $call->save();
         $owned = $this->withHeaders($this->apiHeaders('target'))->getJson('/api/service-catalog/calls/'.$call->id)
             ->assertOk()->assertJsonPath('payloads_in_observer_namespace', true);
@@ -250,6 +259,9 @@ class ServiceCatalogReadControllerTest extends TestCase
                 ->assertJsonMissingPath($kind.'_payload_reference.uri');
             $foreign->assertJsonPath($kind.'_payload_reference', null);
         }
+        $owned->assertJsonPath('result_envelope.external_payload.reference_id', $references['output']['reference_id'])
+            ->assertJsonMissingPath('result_envelope.external_storage');
+        $foreign->assertJsonPath('result_envelope', null)->assertJsonMissingPath('metadata.nexus_result');
         $this->assertStringNotContainsString('file://', $owned->getContent());
         $this->assertStringNotContainsString('file://', $foreign->getContent());
     }
@@ -263,6 +275,40 @@ class ServiceCatalogReadControllerTest extends TestCase
             'namespace' => $namespace, 'workflow_service_endpoint_id' => $endpoint->id, 'workflow_service_id' => $service->id,
             'operation_name' => 'greet', 'operation_mode' => 'sync', 'handler_binding_kind' => 'start_workflow', 'handler_target_reference' => 'test.greet',
         ]);
+    }
+
+    public function test_committed_inline_service_results_are_inspectable_only_by_the_payload_owner(): void
+    {
+        $operation = $this->catalog('target');
+        foreach ([false, null, 0, '', ['actual-result' => ['nested' => true]]] as $value) {
+            $envelope = ['codec' => 'avro', 'blob' => Serializer::serialize($value)];
+            $call = $this->fixtureCall($operation, [
+                'caller_namespace' => 'caller', 'status' => 'completed', 'outcome' => 'completed',
+                'metadata' => ['nexus_result' => $envelope, 'retained_diagnostic' => 'original'],
+            ]);
+            $this->withHeaders($this->apiHeaders('target'))->getJson('/api/service-catalog/calls/'.$call->id)
+                ->assertOk()->assertJsonPath('result_envelope', $envelope)
+                ->assertJsonPath('payloads_in_observer_namespace', true);
+            $foreign = $this->withHeaders($this->apiHeaders('caller'))->getJson('/api/service-catalog/calls/'.$call->id)
+                ->assertOk()->assertJsonPath('result_envelope', null)
+                ->assertJsonMissingPath('metadata.nexus_result')
+                ->assertJsonPath('metadata.retained_diagnostic', 'original');
+            $this->assertStringNotContainsString($envelope['blob'], $foreign->getContent());
+        }
+    }
+
+    public function test_original_failure_type_uses_the_committed_control_plane_metadata(): void
+    {
+        $operation = $this->catalog('default');
+        foreach ([['service_error_type' => 'OriginalHandlerFailure'], ['caller_observed_error_type' => 'CallerFailure'],
+            ['failure_type' => 'ServiceCallTimedOut'], ['handler' => ['exception_type' => 'NestedFailure']],
+            ['service_error_type' => 'OriginalHandlerFailure', 'failure_type' => 'GenericFailure']] as $metadata) {
+            $call = $this->fixtureCall($operation, ['status' => 'failed', 'outcome' => 'handler_failed', 'outcome_metadata' => $metadata]);
+            $expected = $metadata['service_error_type'] ?? $metadata['caller_observed_error_type']
+                ?? $metadata['failure_type'] ?? $metadata['handler']['exception_type'];
+            $this->withHeaders($this->apiHeaders())->getJson('/api/service-catalog/calls/'.$call->id)
+                ->assertOk()->assertJsonPath('failure_type', $expected);
+        }
     }
 
     private function fixtureCall(WorkflowServiceOperation $operation, array $overrides = []): WorkflowServiceCall
