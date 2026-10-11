@@ -544,9 +544,11 @@ for those backends). It creates independent PHP and embedded databases, starts
 the exact published reference image, records both adapters and compares them.
 All processes use one CPU, 512 MiB RAM and no swap. The command retains logs,
 terminal container state and observations under
-`parity-evidence/version-range-repair`, then removes its containers, databases
-and installed dependency tree on exit. The owning job retains that evidence
-and removes its database service and network.
+`parity-evidence/version-range-repair`. The owning job's always-run step calls
+`range-repair-cleanup.sh <backend>` to collect that state and remove the
+profile's containers, databases and installed dependency tree before removing
+its database service and network. A local runner must also call cleanup after
+success or failure; the profile never cleans another job's resources.
 
 The selected `range-marked-activity-completed` fixture runs three cold author
 processes. The original records a 1..1 marker and schedules one activity. The
