@@ -95,6 +95,95 @@ function assertTypedServiceFailure(row, caller) {
     assert.equal(call.service_error_type, failureType);
 }
 
+function assertPhpCallerRecovery(row, service) {
+    assert.equal(row.scenario, 'caller_recovery');
+    assert.equal(row.recovery_qualified, true, JSON.stringify(row.failure));
+    assert.ok(row.worker_process_id > 0 && row.replacement_worker_process_id > 0);
+    assert.notEqual(row.worker_process_id, row.replacement_worker_process_id);
+    assert.equal(row.killed_worker.pid, row.worker_process_id);
+    assert.equal(row.killed_worker.running, false);
+    assert.equal(row.killed_worker.signaled, true);
+    assert.equal(row.killed_worker.termsig, 9);
+    assert.equal(row.replacement_worker_exit_code, 0);
+    assert.ok(row.elapsed_seconds > 0 && row.elapsed_seconds < row.budget_seconds);
+    assert.ok(row.installed_sdk_version && row.worker_log);
+    const expected = {language: service, name: 'recover', greeting: 'hello, recover'};
+    assert.deepEqual(row.result.result, expected);
+    assert.deepEqual(row.linked_service_result, expected);
+    assert.equal(row.result.status, 'completed');
+    assert.equal(row.result.service_call_id, row.original_service_call_id);
+    assertOriginalServiceDelivery(row, 'sdk-php');
+    const call = row.durable_service_call.body.service_call || row.durable_service_call.body;
+    const original = row.original_service_call;
+    assert.equal(original.service_call_id || original.id, row.original_service_call_id);
+    for (const field of ['accepted_at', 'call_deadline_at', 'linked_workflow_run_id', 'linked_workflow_instance_id']) {
+        assert.ok(Object.hasOwn(original, field), `Original call omitted ${field}`);
+        assert.equal(call[field], original[field]);
+    }
+    const events = (history, type) => history.events.filter(event => (event.event_type || event.type) === type);
+    assert.equal(events(row.before_kill_history, 'ServiceCallStarted').length, 1);
+    assert.equal(events(row.before_kill_history, 'ServiceCallCompleted').length, 0);
+    assert.equal(events(row.before_kill_service_history, 'TimerScheduled').length, 1);
+    assert.equal(events(row.before_kill_service_history, 'WorkflowCompleted').length, 0);
+    assert.equal(events(row.linked_service_history, 'WorkflowStarted').length, 1);
+    assert.equal(events(row.linked_service_history, 'WorkflowCompleted').length, 1);
+    assert.equal(events(row.before_replacement_history, 'WorkflowCompleted').length, 0);
+    assert.equal(events(row.history, 'WorkflowCompleted').length, 1);
+    assert.equal(row.caller_operations.ok, true);
+    assert.equal(row.caller_operations.body.workflow_run_id, row.run_id);
+    assert.deepEqual(row.caller_operations.body.nexus_operations.map(call => call.service_call_id), [row.original_service_call_id]);
+}
+
+function callerRecoveryFixture() {
+    const start = {event_type: 'ServiceCallStarted', sequence: 1,
+        payload: {service_call_id: 'call', sequence: 0, caller_sdk_language: 'sdk-php'}};
+    const completion = {event_type: 'ServiceCallCompleted', sequence: 2, payload: {service_call_id: 'call', sequence: 0}};
+    const call = {service_call_id: 'call', status: 'completed', caller_workflow_instance_id: 'caller',
+        caller_workflow_run_id: 'run', linked_workflow_run_id: 'target-run', linked_workflow_instance_id: 'target',
+        accepted_at: '2026-10-11T00:00:00.000000Z', call_deadline_at: null};
+    const result = {language: 'php', name: 'recover', greeting: 'hello, recover'};
+    return {scenario: 'caller_recovery', recovery_qualified: true, worker_process_id: 1, replacement_worker_process_id: 2,
+        killed_worker: {pid: 1, running: false, signaled: true, termsig: 9}, replacement_worker_exit_code: 0,
+        installed_sdk_version: '2.3.0-rc.1', worker_log: 'original and replacement', budget_seconds: 60, elapsed_seconds: 9,
+        workflow_id: 'caller', run_id: 'run', original_service_call_id: 'call', linked_service_run_id: 'target-run',
+        original_service_call: {...call}, durable_service_call: {ok: true, body: call},
+        result: {service_call_id: 'call', status: 'completed', result}, linked_service_result: result,
+        before_kill_history: {events: [start]}, before_kill_service_history: {events: [{event_type: 'TimerScheduled'}]},
+        before_replacement_history: {events: [start]}, history: {events: [start, completion, {event_type: 'WorkflowCompleted'}]},
+        linked_service_history: {events: [{event_type: 'WorkflowStarted'}, {event_type: 'WorkflowCompleted'}]},
+        caller_operations: {ok: true, body: {workflow_run_id: 'run', nexus_operations: [{service_call_id: 'call'}]}}};
+}
+
+test('caller recovery rejects a surviving worker, duplicate call, changed deadline or independently completed run', () => {
+    assertPhpCallerRecovery(callerRecoveryFixture(), 'php');
+    for (const mutate of [
+        row => { row.killed_worker.running = true; },
+        row => { row.replacement_worker_process_id = row.worker_process_id; },
+        row => { row.caller_operations.body.nexus_operations.push({service_call_id: 'duplicate'}); },
+        row => { row.durable_service_call.body.call_deadline_at = '2026-10-11T00:01:00.000000Z'; },
+        row => { row.before_replacement_history.events.push({event_type: 'WorkflowCompleted'}); },
+        row => { row.result.result.greeting = 'wrong result'; },
+    ]) {
+        const row = callerRecoveryFixture();
+        mutate(row);
+        assert.throws(() => assertPhpCallerRecovery(row, 'php'));
+    }
+});
+
+if (process.env.NEXUS_CALLER_RECOVERY_PROBES) {
+    test('an actual replacement PHP caller resumes the original call after SIGKILL in both namespaces', () => {
+        const proof = JSON.parse(fs.readFileSync(process.env.NEXUS_CALLER_RECOVERY_PROBES, 'utf8'));
+        assert.equal(proof.scope, 'actual_php_caller_sigkill_recovery');
+        assert.deepEqual(proof.reports.map(({caller, service}) => [caller, service]), [['php', 'php'], ['php', 'python']]);
+        for (const {service, observation} of proof.reports) {
+            assert.equal(observation.ok, true);
+            assert.equal(observation.body.outcome, 'pass');
+            assert.deepEqual(observation.body.observations.map(row => row.caller_namespace), ['shared', 'tenant-a']);
+            for (const row of observation.body.observations) assertPhpCallerRecovery(row, service);
+        }
+    });
+}
+
 if (process.env.NEXUS_TYPED_FAILURE_PROBES) {
     test('actual PHP/Python callers catch original typed service failures in all four directions', () => {
         const proof = JSON.parse(fs.readFileSync(process.env.NEXUS_TYPED_FAILURE_PROBES, 'utf8'));
