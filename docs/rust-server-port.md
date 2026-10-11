@@ -26,6 +26,17 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+The additive published parent/child profile now defines nine language
+directions using the qualified one-activity component tuple. Its original
+parent schedules one child on a separate queue, a child-only process commits
+the exact typed result, and a cold parent-only replacement completes the same
+run. Original call/link/child identities and full parent/child histories are
+required. Adapters, reader and isolated runtime qualification are pending;
+these definitions establish no new execution pass. New recordings capture
+effective database memory/swap limits separately from frozen historical
+manifest envelopes. Namespaced children, retries, failures, cancellation
+propagation, other policies and parallel groups remain separate gates.
+
 [#401](https://github.com/durable-workflow/server/pull/401) qualifies all nine
 fresh PHP/Python/Rust workflow-author and separately
 routed activity-worker directions. An original author schedules one activity,

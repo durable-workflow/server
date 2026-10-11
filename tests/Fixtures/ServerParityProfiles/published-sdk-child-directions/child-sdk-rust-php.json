@@ -1,0 +1,23 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "child-sdk-rust-php",
+  "workflow_type": "parity.v1.one_child",
+  "child_workflow_type": "parity.v1.echo_child",
+  "child_count": 1,
+  "input": {"payloads": [{"message": "cross-language child λ", "count": 9007199254740993, "optional": null}]},
+  "typed_value": {"type": "map", "value": {"payloads": {"type": "list", "value": [{"type": "map", "value": {"message": {"type": "string", "value": "cross-language child λ"}, "count": {"type": "int64", "value": "9007199254740993"}, "optional": {"type": "null", "value": null}}}]}}},
+  "output": {"child_results": [{"message": "cross-language child λ", "count": 9007199254740993, "optional": null}]},
+  "typed_output": {"type": "map", "value": {"child_results": {"type": "list", "value": [{"type": "map", "value": {"message": {"type": "string", "value": "cross-language child λ"}, "count": {"type": "int64", "value": "9007199254740993"}, "optional": {"type": "null", "value": null}}}]}}},
+  "activity": false,
+  "sdk_child_direction": {
+    "parent": "rust", "child": "php",
+    "parent_queue": "server-parity-sdk-parent",
+    "child_queue": "server-parity-sdk-child",
+    "phase_order": ["original", "child", "replacement"],
+    "start_before_worker_registration": true
+  },
+  "expected_events": ["StartAccepted", "WorkflowStarted", "ChildWorkflowScheduled", "ChildRunStarted", "ChildRunCompleted", "WorkflowCompleted"],
+  "child_expected_events": ["WorkflowStarted", "WorkflowCompleted"],
+  "embedded_child_expected_events": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"],
+  "contract": "An installed published SDK client starts an original parent before worker registration. A parent-only worker schedules one original child on a separately served queue and exits at the waiting checkpoint. A distinct child-only SDK process completes that child once with its exact int64, Unicode and null Avro arguments. A cold parent-only replacement replays the committed result and completes the original parent. Preserve full parent and child history prefixes, original call/link/child instance/run relationships, exact typed arguments/results, selected queues and registered types, actual claims and recorded completion receipts. Embedded executes canonical PHP definitions and explicitly labels language SDK transport inapplicable; its extra child StartAccepted event is retained and checked. Default abandon policies apply. Namespaced children, retries, failures, cancellation propagation, other parent-close policies, parallel groups, activities and performance remain separate gates."
+}

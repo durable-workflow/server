@@ -10,6 +10,7 @@ import {checkPublishedPatchArtifacts, checkPatchPackageObservation} from './serv
 import {checkLegacyMarkerArtifacts, checkLegacyMarkerPackageObservation} from './server-parity/legacy-marker-contract.mjs';
 import {checkRangeArtifacts, checkRangePackages} from './server-parity/range-repair-contract.mjs';
 import {checkSdkDirectionArtifacts, checkSdkDirectionPackages} from './server-parity/sdk-direction-contract.mjs';
+import {parseDatabaseResourceLimits} from './server-parity/database-resource-contract.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const {values, positionals} = parseArgs({allowPositionals: true, options: {
@@ -17,6 +18,7 @@ const {values, positionals} = parseArgs({allowPositionals: true, options: {
   target: {type: 'string'}, output: {type: 'string'}, 'runner-revision': {type: 'string', default: process.env.DW_PARITY_RUNNER_REVISION ?? ''},
   artifacts: {type: 'string'}, prefix: {type: 'string', default: 'parity-v1'}, help: {type: 'boolean'},
   fixture: {type: 'string', multiple: true},
+  'database-resource-limits': {type: 'string'},
   'include-fixture': {type: 'string', multiple: true},
 }});
 const [command, ...files] = positionals;
@@ -32,7 +34,10 @@ for the HTTP target; it is never recorded. Use the same --prefix on all targets
 and a fresh database or prefix for a new run. --artifacts selects the exact
 consumer tuple; the default is tests/Fixtures/ServerParityBaselines/php-2.5.14.json.
 Repeat --fixture PATH to record or compare an explicitly selected candidate
-set. Default commands still use only the reviewed ServerParity corpus. Compare
+set. --database-resource-limits accepts inspected memory_bytes and
+memory_swap_bytes as a JSON object; comparisons require equal effective
+limits. Frozen manifests keep their original qualification envelopes.
+Default commands still use only the reviewed ServerParity corpus. Compare
 selected records with the same --fixture paths so current source bytes remain
 authoritative; selected candidates do not enlarge the default passing corpus.
 --include-fixture PATH adds an explicit candidate to the reviewed default set;
@@ -66,6 +71,7 @@ try {
       schema: 'durable-workflow.server-parity-record/v1', target: values.target, mode: values.mode,
       runner_revision: values['runner-revision'], artifacts: json(values.artifacts ?? resolve(root, 'tests/Fixtures/ServerParityBaselines/php-2.5.14.json')),
       started_at: new Date().toISOString(), outcome: 'runner-blocked', fixture_hashes: hashes, cases: [],
+      database_resource_limits: parseDatabaseResourceLimits(values['database-resource-limits']),
     };
     for (const name of fixtures) {
       const path = byName[name];

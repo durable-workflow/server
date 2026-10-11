@@ -15,6 +15,7 @@ import {checkWaitingHistory} from './waiting-history-contract.mjs';
 import {checkTaskRetry} from './task-retry-contract.mjs';
 import {checkRangeRepair, checkRangeArtifacts, checkRangePackages} from './range-repair-contract.mjs';
 import {checkSdkDirection, checkSdkDirectionPackages} from './sdk-direction-contract.mjs';
+import {checkDatabaseResourceLimits} from './database-resource-contract.mjs';
 
 export function instantNanoseconds(value) {
   const shape = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.(\d{1,9}))?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
@@ -589,6 +590,8 @@ export function compareRecords(records, expectedFixtureHashes, expectedFixtures,
     assert.deepStrictEqual(record.cases.map(c => `${c.fixture_id}.json`).sort(), Object.keys(record.fixture_hashes).sort(), 'every hashed fixture has a recorded case');
     assert.deepStrictEqual(record.fixture_hashes, reference.fixture_hashes, 'same reviewed fixture bytes');
     assert.deepStrictEqual(record.artifacts, reference.artifacts, 'same consumer tuple');
+    checkDatabaseResourceLimits(record.database_resource_limits);
+    assert.deepStrictEqual(record.database_resource_limits, reference.database_resource_limits, 'same effective database resource limits');
     if (expectedArtifacts) assert.deepStrictEqual(record.artifacts, expectedArtifacts, 'recorded tuple matches the selected source manifest');
     assert.equal(record.runner_revision, reference.runner_revision, 'same runner revision');
     assert.deepStrictEqual(record.cases.map(c => c.fixture_id), reference.cases.map(c => c.fixture_id), 'complete same fixture inventory');
