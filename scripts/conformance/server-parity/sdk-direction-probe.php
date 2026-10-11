@@ -88,7 +88,7 @@ function sdkDirectionHttpObservation(array $fixture, array $options): array
             if ($runId === '') {
                 foreach ($requests as $request) {
                     if ($request['method'] === 'POST' && $request['path'] === '/api/workflows'
-                        && $request['status'] === 200 && is_string($request['response']['run_id'] ?? null)) {
+                        && $request['status'] === 201 && is_string($request['response']['run_id'] ?? null)) {
                         $runId = $request['response']['run_id'];
                     }
                 }

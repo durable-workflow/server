@@ -29,7 +29,7 @@ function observed(fixture) {
     const workerId = workflowId + ':' + phase;
     const request = (path, body, response) => ({method: 'POST', path, status: 200, request: body, response});
     const requests = [];
-    if (index === 0) requests.push(request('/api/workflows', {workflow_id: workflowId}, {run_id: runId}));
+    if (index === 0) requests.push({...request('/api/workflows', {workflow_id: workflowId}, {run_id: runId}), status: 201});
     requests.push(request('/api/worker/register', {worker_id: workerId, task_queue: taskQueue,
       supported_workflow_types: index === 1 ? [] : [fixture.workflow_type],
       supported_activity_types: index === 1 ? ['parity.v1.echo_activity'] : []}, {}));
@@ -78,6 +78,7 @@ const mutations = {
   'activity registration contains workflow': value => {value.sdk_direction.phases[1].requests[0].request.supported_workflow_types.push(fixture.workflow_type);},
   'completion missing': value => {value.sdk_direction.phases[2].requests.pop();},
   'completion was refused': value => {value.sdk_direction.phases[2].requests.at(-1).response.recorded = false;},
+  'start did not create a new run': value => {value.sdk_direction.phases[0].requests[0].status = 200;},
   'authored activity queue changed': value => {value.sdk_direction.phases[0].requests.at(-1).request.commands[0].queue = 'server-parity-v1';},
   'same workflow task replayed': value => {value.sdk_direction.phases[2].requests[1].response.task.task_id = 'task-original';},
   'worker fingerprint before start': value => {

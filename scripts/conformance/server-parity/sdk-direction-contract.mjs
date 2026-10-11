@@ -99,7 +99,7 @@ export function checkSdkDirection(fixture, observation, workflowId) {
   }
   const starts = original.requests.filter(item => item.method === 'POST' && item.path === '/api/workflows');
   assert.equal(starts.length, 1, 'original published language client starts the run');
-  assert.equal(starts[0].status, 200);
+  assert.equal(starts[0].status, 201, 'original run was newly created');
   assert.equal(starts[0].request.workflow_id, workflowId);
   assert.equal(starts[0].response.run_id, observation.run_id);
   assert(original.requests.indexOf(starts[0]) < original.requests.findIndex(item => item.path === '/api/worker/register'));

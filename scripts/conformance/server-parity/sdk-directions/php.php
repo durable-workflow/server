@@ -40,11 +40,11 @@ $stack->push(static function (callable $handler) use (&$worker, $phase): callabl
 $client = new Client($url, namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null,
     transport: new Psr18Transport(client: new GuzzleClient(['http_errors' => false, 'handler' => $stack])));
 if ($phase === 'original') {
-    $runId = $client->startWorkflow('parity.v1.one_activity', $workflowId, 'server-parity-sdk-workflow', [$fixture['input']])->runId;
+    $runId = $client->startWorkflow('parity.v1.one_activity', $workflowId, 'server-parity-sdk-workflow', [$fixture['input']])->selectedRunId;
 }
 $queue = $phase === 'activity' ? 'server-parity-sdk-activity' : 'server-parity-sdk-workflow';
 $workerId = $workflowId.':'.$phase;
-$worker = new Worker($client, $queue, workerId: $workerId, stickyCacheCapacity: 0,
+$worker = new Worker($client, $queue, workerId: $workerId,
     clock: static function () use ($deadline): float {
         if (microtime(true) >= $deadline) {
             throw new RuntimeException('SDK direction fixture deadline expired');
