@@ -335,9 +335,12 @@ native follow-up implements the worker-reported range blockage as a failed,
 released original task with no automatic retry or terminal failure history.
 Empty-body selected-run repair restores that task to ready, clears replay-block
 metadata and records the published instance-targeted command with official
-Avro values and server-derived audit identity. Native source qualification and
-the actual three-runtime recordings are pending; modeled readers and source
-inspection are not runtime proof.
+Avro values and server-derived audit identity. [#392](https://github.com/durable-workflow/server/pull/392)
+owns source qualification and the actual three-runtime recordings; its normal
+six-configuration differential gates must pass before merge. Modeled readers
+and source inspection are not runtime proof. Repair checks the physical
+32-bit PostgreSQL/unsigned MySQL or 64-bit SQLite counter bounds before changing
+the task, command or history.
 The physical debug read covers only this default-namespace checkpoint, with
 pending or completed activities, no ready/leased workflow task, no messages,
 no cancellation and no application failures. It exposes actual blockage and
@@ -347,7 +350,8 @@ named namespaces and historical/closed-run outcome parity remain separate gates.
 The pending-activity case also needs a legitimate cold wake, because repair of
 ordinary waiting work does not create a ready workflow task. Frozen fixture
 inputs and earlier observations retain their original versions and digests.
-No native range/repair, performance or takeover qualification is claimed yet.
+This slice does not establish performance, takeover, another SDK author language
+or repair while an activity is still pending.
 
 [#381](https://github.com/durable-workflow/server/pull/381) implements ordinary
 workflow-task failure retries on the original run. A failed lease and its new

@@ -15,6 +15,8 @@ pub(super) trait Backend: Database {
     const TASK_CANDIDATES_SQL: &'static str = super::store::TASK_CANDIDATES_SQL;
     const POLL_RECEIPT_CLEANUP_SQL: &'static str = super::store::POLL_RECEIPT_CLEANUP_SQL;
     const TIMER_TASK_SQL: &'static str;
+    // Frozen run command/task repair counters use each backend's actual width.
+    const REPAIR_COUNTER_MAX: i64 = i32::MAX as i64;
     const RANGE_REPAIR_TASK_SQL: &'static str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND namespace=$2 AND task_type='workflow' AND status='failed' AND payload->>'replay_blocked'='true' AND payload->>'failure_reason'='version_marker_incompatible_range' ORDER BY CASE WHEN available_at IS NULL THEN 1 ELSE 0 END,available_at,created_at,id LIMIT 1";
     const QUERY_CACHE_SCAN: &'static str = "SELECT \"key\",value,expiration FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' ORDER BY \"key\" LIMIT 65";
     const QUERY_CACHE_GET: &'static str =
@@ -70,6 +72,7 @@ fn sqlite_instant(value: String) -> Result<DateTime<Utc>> {
 }
 
 impl Backend for Sqlite {
+    const REPAIR_COUNTER_MAX: i64 = i64::MAX;
     const RANGE_REPAIR_TASK_SQL: &'static str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND namespace=$2 AND task_type='workflow' AND status='failed' AND json_extract(payload,'$.replay_blocked')=1 AND json_extract(payload,'$.failure_reason')='version_marker_incompatible_range' ORDER BY CASE WHEN available_at IS NULL THEN 1 ELSE 0 END,available_at,created_at,id LIMIT 1";
     const VISIBILITY_PAGE: &'static str = super::visibility::SQLITE_VISIBILITY_PAGE;
     type EncodedTime = String;
@@ -261,6 +264,7 @@ impl Backend for Postgres {
 }
 
 impl Backend for MySql {
+    const REPAIR_COUNTER_MAX: i64 = u32::MAX as i64;
     const RANGE_REPAIR_TASK_SQL: &'static str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND namespace=$2 AND task_type='workflow' AND status='failed' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.replay_blocked'))='true' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.failure_reason'))='version_marker_incompatible_range' ORDER BY CASE WHEN available_at IS NULL THEN 1 ELSE 0 END,available_at,created_at,id LIMIT 1";
     type EncodedTime = DateTime<Utc>;
     type EncodedDocument = Json<Value>;

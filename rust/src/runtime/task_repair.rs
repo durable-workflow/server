@@ -97,9 +97,11 @@ where
         let task_id = DB::string(&task, "id")?;
         let repair_count = DB::number(&task, "repair_count")?
             .checked_add(1)
+            .filter(|count| *count <= DB::REPAIR_COUNTER_MAX)
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "repair_count_exhausted"))?;
         let sequence = DB::number(&run, "last_command_sequence")?
             .checked_add(1)
+            .filter(|count| *count <= DB::REPAIR_COUNTER_MAX)
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "command_sequence_exhausted"))?;
         let command_payload = super::worker_incarnations::repair_payload(
             codec,

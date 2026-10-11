@@ -350,9 +350,21 @@ async fn worker_reported_range_failure_requires_explicit_original_task_repair_ac
             .0,
         StatusCode::UNPROCESSABLE_ENTITY
     );
-    database
-        .execute("UPDATE workflow_runs SET last_command_sequence=9223372036854775807")
-        .await;
+    let (exhausted_sequence, exhausted_repairs) = match &database {
+        TestDatabase::Sqlite(_) => (
+            "UPDATE workflow_runs SET last_command_sequence=9223372036854775807",
+            "UPDATE workflow_tasks SET repair_count=9223372036854775807",
+        ),
+        TestDatabase::Postgres { .. } => (
+            "UPDATE workflow_runs SET last_command_sequence=2147483647",
+            "UPDATE workflow_tasks SET repair_count=2147483647",
+        ),
+        TestDatabase::MySql { .. } => (
+            "UPDATE workflow_runs SET last_command_sequence=4294967295",
+            "UPDATE workflow_tasks SET repair_count=4294967295",
+        ),
+    };
+    database.execute(exhausted_sequence).await;
     assert_eq!(
         request(&app, "POST", &repair_path, json!({})).await.1["reason"],
         "command_sequence_exhausted"
@@ -372,6 +384,11 @@ async fn worker_reported_range_failure_requires_explicit_original_task_repair_ac
     database
         .execute("UPDATE workflow_runs SET last_command_sequence=1")
         .await;
+    database.execute(exhausted_repairs).await;
+    assert_eq!(request(&app, "POST", &repair_path, json!({})).await.1["reason"], "repair_count_exhausted");
+    assert_eq!(rows(&database, "SELECT COUNT(*) FROM workflow_tasks WHERE status='failed' AND lease_expires_at IS NULL").await, 1);
+    assert_eq!(run_history(&app, &started["workflow_id"], &started["run_id"]).await, prefix);
+    database.execute("UPDATE workflow_tasks SET repair_count=0").await;
     // Match the published SDK: JSON content type, but zero body bytes.
     let req = Request::builder()
         .method("POST")
