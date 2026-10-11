@@ -3,7 +3,9 @@
 Server #325's additive profile runs three authored timer cases, one each in
 published PHP, Python and Rust, using the qualified parent/child component
 tuple. The normal SDK worker adapters, dedicated reader guards and isolated
-profile are implemented. Runtime qualification on the candidate remains pending.
+profile are implemented. Qualification requires all six database configurations;
+[the owning PR](https://github.com/durable-workflow/server/pull/411) tracks the
+actual execution results and retained wire evidence.
 
 Start the original run before worker registration. The normal SDK requests
 5.25 seconds of durable sleep, rounded to six whole seconds. Stop the original
@@ -29,6 +31,11 @@ Run the shared job's existing SDK adapter preparation once, then use
 after the activity and child profiles. The owning job's always-run cleanup
 invokes `sdk-direction-cleanup.sh BACKEND timer` before removing its database
 and network. All six existing database configurations run this profile.
+SQLite and PostgreSQL use bounded twenty-minute job budgets; the MySQL/MariaDB
+matrix uses twenty-five minutes. These budgets allow timer waits, the existing
+pressure cohort, TLS checks, cleanup and evidence upload to finish. Cancelled
+or incomplete jobs do not count as qualification. The owning PR records the
+observed timeout failures that prompted these changes.
 
 Reader guard models check the distinct processes, original task/run/queue,
 unchanged scheduling/firing prefixes, real registration and fenced completion
