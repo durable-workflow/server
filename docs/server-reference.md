@@ -773,7 +773,8 @@ unexecuted cell.
 
 ### Worker Protocol
 - `POST /api/worker/register` — Register a worker
-- `DELETE /api/worker/registrations/{workerId}` — Orderly worker self-deregistration
+- `DELETE /api/worker/registrations/{workerId}` — Legacy worker self-deregistration
+- `POST /api/worker/registrations/{workerId}/deregister` — Fenced worker self-deregistration when advertised by the server. See [the retry and authority contract](worker-deregistration-contract.md).
 - `POST /api/worker/heartbeat` — Worker fleet heartbeat (free task slots, basic process metrics)
 - `POST /api/worker/workflow-tasks/poll` — Long-poll for workflow tasks
 - `POST /api/worker/workflow-tasks/{id}/heartbeat` — Workflow task heartbeat

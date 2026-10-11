@@ -1,8 +1,8 @@
 # Fenced worker deregistration
 
-This is the agreed, unreleased contract for Server #358. The published legacy
-DELETE remains available. Feature qualification uses a new PHP/SDK tuple and
-keeps the Rust comparison's frozen baseline unchanged.
+Fenced deregistration lets a worker safely retry shutdown without deleting a
+replacement registration. Clients discover support through the capability
+below. The legacy DELETE remains available for clients without negotiated fencing.
 
 ## Discovery and identity
 
@@ -76,12 +76,14 @@ errors are terminal. A generic 404 is never success.
 
 ## Qualification
 
-Shared PHP/Rust fixtures cover transient recovery, persistent pressure, lost
+Qualification cases include transient recovery, persistent pressure, lost
 reply after commit, original-receipt replay after replacement, token rotation
 and stable heartbeat identity, namespace and role boundaries, retention,
 atomic rollback, stale task publication and original-error preservation.
 Embedded mode has no standalone HTTP worker-registration lifecycle. Its
 existing package fixtures continue to run alongside the service-mode suite.
 
-Feature completion requires both implementations passing the shared cases.
-Published PHP/SDK artifact verification remains separate from source results.
+PHP delivery requires the exact published PHP SDK and Server artifacts to pass
+the affected shutdown and authority cases. Source checks alone do not establish
+that result. Rust parity and native receipt maintenance are qualified separately
+through the shared cases before Rust publication.
