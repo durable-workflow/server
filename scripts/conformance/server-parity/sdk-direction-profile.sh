@@ -19,7 +19,14 @@ case "${3:-activity}" in
     fixture_pattern=child-sdk-*.json
     reader_tests=(tests/Unit/ServerParitySdkChildDirectionContractTest.mjs)
     ;;
-  *) echo 'Choose activity or child SDK directions' >&2; exit 2 ;;
+  timer)
+    tag=sdk-timers
+    prefix=sdk-timers-v1
+    cohort=published-sdk-timers
+    fixture_pattern=timer-sdk-*.json
+    reader_tests=(tests/Unit/ServerParitySdkTimerAuthorContractTest.mjs)
+    ;;
+  *) echo 'Choose activity, child or timer SDK authors' >&2; exit 2 ;;
 esac
 profile="tests/Fixtures/ServerParityProfiles/$cohort"
 manifest="tests/Fixtures/ServerParityProfiles/$cohort/artifacts.json"

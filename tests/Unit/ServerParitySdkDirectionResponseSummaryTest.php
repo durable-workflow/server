@@ -50,6 +50,25 @@ final class ServerParitySdkDirectionResponseSummaryTest extends TestCase
             \sdkDirectionResponseSummary(['run_id' => 'original-run', 'control_plane' => ['details' => 'raw-only']]));
     }
 
+    public function test_timer_claim_keeps_original_deadline_and_full_history_without_discovery_metadata(): void
+    {
+        $task = ['task_id' => 'original-timer-resume', 'workflow_id' => 'original-workflow',
+            'run_id' => 'original-run', 'workflow_type' => 'parity.v1.sdk_timer',
+            'lease_owner' => 'cold-timer-worker', 'workflow_task_attempt' => 1,
+            'task_queue' => 'server-parity-sdk-timer',
+            'history_events' => [['sequence' => 3, 'event_type' => 'TimerScheduled',
+                'payload' => ['timer_id' => 'original-timer', 'sequence' => 1, 'delay_seconds' => 6,
+                    'fire_at' => '2026-01-01T00:00:06.123456Z']]]];
+        $wire = ['task' => $task, 'server_capabilities' => ['repeated' => str_repeat('metadata', 750000)]];
+        $before = serialize($wire);
+        $summary = \sdkDirectionResponseSummary($wire, true);
+
+        self::assertSame($task, $summary['task']);
+        self::assertArrayNotHasKey('server_capabilities', $summary);
+        self::assertSame($before, serialize($wire));
+        self::assertLessThan(2048, strlen(json_encode($summary, JSON_THROW_ON_ERROR)));
+    }
+
     public function test_child_claim_keeps_durable_prefix_and_resume_identity_without_discovery_metadata(): void
     {
         $task = ['task_id' => 'original-parent-task', 'workflow_id' => 'original-parent',

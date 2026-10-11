@@ -17,6 +17,7 @@ import {checkRangeRepair, checkRangeArtifacts, checkRangePackages} from './range
 import {checkSdkDirection, checkSdkDirectionPackages} from './sdk-direction-contract.mjs';
 import {checkDatabaseResourceLimits} from './database-resource-contract.mjs';
 import {checkSdkChildDirection, checkSdkChildDirectionPackages} from './sdk-child-direction-contract.mjs';
+import {checkSdkTimerAuthor, checkSdkTimerAuthorPackages} from './sdk-timer-author-contract.mjs';
 
 export function instantNanoseconds(value) {
   const shape = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.(\d{1,9}))?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
@@ -39,7 +40,7 @@ export function checkObservation(fixture, observation, workflowId) {
   nonempty(observation.run_id, 'run identity');
   equal(observation.workflow_type, fixture.workflow_type, 'registered workflow type');
   equal(observation.namespace, fixture.namespace ?? 'default', 'namespace');
-  equal(observation.task_queue, fixture.sdk_child_direction?.parent_queue ?? fixture.sdk_direction?.workflow_queue ?? 'server-parity-v1', 'task queue');
+  equal(observation.task_queue, fixture.sdk_timer_author?.task_queue ?? fixture.sdk_child_direction?.parent_queue ?? fixture.sdk_direction?.workflow_queue ?? 'server-parity-v1', 'task queue');
   const cancelled = Boolean(fixture.immediate_cancellation || fixture.cooperative_cancellation);
   equal(observation.status, cancelled ? 'cancelled' : 'completed', 'actual durable terminal state');
   equal(observation.payload_codec, 'avro', 'payload codec');
@@ -103,6 +104,7 @@ export function checkObservation(fixture, observation, workflowId) {
   const rangeRepair = fixture.range_repair ? checkRangeRepair(fixture, observation, workflowId, instantNanoseconds) : null;
   const sdkDirection = checkSdkDirection(fixture, observation, workflowId);
   const sdkChildDirection = checkSdkChildDirection(fixture, observation, workflowId);
+  const sdkTimerAuthor = checkSdkTimerAuthor(fixture, observation, workflowId);
   const cooperative = fixture.cooperative_cancellation
     ? checkCooperativeCancellation(fixture, observation, identities, projectedEvents, instantNanoseconds) : null;
   if (fixture.child_cancellation) {
@@ -581,6 +583,7 @@ export function checkObservation(fixture, observation, workflowId) {
     ...(rangeRepair ? {range_repair: rangeRepair} : {}),
     ...(sdkDirection ? {sdk_direction: sdkDirection} : {}),
     ...(sdkChildDirection ? {sdk_child_direction: sdkChildDirection} : {}),
+    ...(sdkTimerAuthor ? {sdk_timer_author: sdkTimerAuthor} : {}),
   };
 }
 
@@ -607,13 +610,14 @@ export function compareRecords(records, expectedFixtureHashes, expectedFixtures,
       const baseline = reference.cases[index];
       assert.equal(item.fixture_id, item.fixture.id, 'case identity matches fixture');
       assert.deepStrictEqual(item.fixture, expectedFixtures[`${item.fixture_id}.json`], 'case expectations match the current reviewed source fixture');
-      if (item.fixture.signal_count || item.fixture.schedule || item.fixture.visibility || item.fixture.admission || item.fixture.patch_deployment || item.fixture.range_repair || item.fixture.sdk_direction || item.fixture.sdk_child_direction) assert.equal(item.observation.mode, record.mode, 'observation uses its recording adapter');
+      if (item.fixture.signal_count || item.fixture.schedule || item.fixture.visibility || item.fixture.admission || item.fixture.patch_deployment || item.fixture.range_repair || item.fixture.sdk_direction || item.fixture.sdk_child_direction || item.fixture.sdk_timer_author) assert.equal(item.observation.mode, record.mode, 'observation uses its recording adapter');
       assert.equal(item.observation.sdk_php, record.artifacts.sdk_php, 'installed SDK matches tuple');
       checkPublishedPatchArtifacts(item.fixture, record.artifacts);
       checkRangeArtifacts(item.fixture, record.artifacts);
       checkRangePackages(item.fixture, item.observation, record.artifacts);
       checkSdkDirectionPackages(item.fixture, item.observation, record.artifacts);
       checkSdkChildDirectionPackages(item.fixture, item.observation, record.artifacts);
+      checkSdkTimerAuthorPackages(item.fixture, item.observation, record.artifacts);
       if (item.fixture.patch_deployment?.legacy_marker_history) {
         checkLegacyMarkerArtifacts(item.fixture, record.artifacts);
         checkLegacyMarkerPackageObservation(item.fixture, item.observation, record.artifacts);

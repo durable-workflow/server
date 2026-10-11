@@ -26,14 +26,18 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
-The additive published parent/child profile now defines nine language
-directions using the qualified one-activity component tuple. Its original
+[#408](https://github.com/durable-workflow/server/pull/408) qualifies nine
+published parent/child language directions using the one-activity component
+tuple. Its original
 parent schedules one child on a separate queue, a child-only process commits
 the exact typed result, and a cold parent-only replacement completes the same
 run. Original call/link/child identities and full parent/child histories are
-required. Normal SDK adapters, reader guards and isolated profile invocation
-are implemented; actual runtime qualification is pending. These definitions
-and modeled checks establish no new execution pass. New recordings capture
+required. All six [candidate configurations](https://github.com/durable-workflow/server/actions/runs/38161889708)
+and [main configurations](https://github.com/durable-workflow/server/actions/runs/38163439081)
+pass, along with PHP/source and boundary checks. Independent official SQLite
+and MySQL 8.0 artifact rechecks each pass 27 child records; SQLite binds all 54
+actual PHP/native phase sidecars. The complete retained SQLite profile matches
+all 97 official ZIP members and passes compressed byte round-trip. New recordings capture
 effective database memory/swap limits separately from frozen historical
 manifest envelopes. Namespaced children, retries, failures, cancellation
 propagation, other policies and parallel groups remain separate gates.
@@ -43,8 +47,26 @@ observations: PHP uses `task_queue`, while native exposed only `queue`.
 Native now adds the published field while retaining its existing alias.
 The reader checks the actual poll selector and claimed durable queue, and
 a database/HTTP regression covers separate parent/child queues and original
-parent resumption. The [contract decision and confirming qualification](https://github.com/durable-workflow/server/pull/408#issuecomment-6111939851)
-are tracked in #408; the correction is implemented and verification is pending.
+parent resumption. Both inspected configurations pass this regression and all
+72 native execution tests. The [contract decision](https://github.com/durable-workflow/server/pull/408#issuecomment-6111939851)
+and [completed main qualification](https://github.com/durable-workflow/server/pull/408#issuecomment-6112398187)
+are tracked in #408. This qualifies one bounded child scenario in nine language
+directions; it does not establish nine capability families or performance.
+
+The next additive profile defines normal published SDK timer authoring in PHP,
+Python and Rust. Each requests 5.25 seconds of durable sleep, rounded to six
+whole seconds, then cold-replays the original timer and run with a distinct
+author process. The [reviewed next contract](https://github.com/durable-workflow/server/issues/325#issuecomment-6112280492)
+requires original timer identity/deadline, full unchanged history, no early
+firing or rescheduling, actual fenced receipts and exact int64/Unicode/null
+Avro values. Worker adapters now call each published SDK's normal sleep API;
+dedicated reader guards and isolated profiles are integrated into all six
+database configurations. The existing SDK adapter build is reused. Local
+reader guards pass, including corrupt original deadlines, stale receipts,
+rescheduling, substituted Avro frames and one nanosecond early firing.
+Qualification requires all six database configurations and inspection of the
+retained runtime records and phase wire evidence; [#411](https://github.com/durable-workflow/server/pull/411)
+tracks the execution results.
 
 [#401](https://github.com/durable-workflow/server/pull/401) qualifies all nine
 fresh PHP/Python/Rust workflow-author and separately
@@ -76,7 +98,8 @@ These are CI resource allowances, not performance qualification limits.
 This is one authored
 workflow/activity scenario in the default namespace, with nine language
 directions; it does not establish nine capability families or performance.
-The next fixture slice is separately routed parent/child SDK directions.
+Separately routed parent/child SDK directions are qualified in #408.
+Normal SDK timer authoring and cold replay are the next fixture slice.
 The observed activity-only Python polling defect is handed to
 [SDK Python #119](https://github.com/durable-workflow/sdk-python/issues/119).
 
@@ -1133,7 +1156,7 @@ does not prove the remaining acceptance criteria.
 | Workflow lifecycle, duplicate commands, typed history, continuation, child workflows, cancellation, cleanup replay | Workflow lifecycle, migration, child-workflow and replay runners; Feature cooperative cancellation, history, migration and repeated-signal tests | Bounded authored completion, activity retry/failure, direct children/cancellation and root cooperative cleanup; broader propagation, replay and continuation semantics pending |
 | Timers, schedules, signals, queries, updates, search attributes, memo, sagas | Corresponding runners in `scripts/conformance/`, manifests in `static/platform-conformance/`; Sample App polyglot experiments | Bounded durable sleep, repeated signals, state queries/updates and two UTC schedule cases; broader policies, search attributes, memo and sagas pending |
 | Local activities, cancellation scopes, worker sessions, streams, service catalog/Nexus, bridge adapters, standalone activities, debugging and repair | `routes/api.php`, `docs/contracts/`, worker/control-plane specifications, corresponding Feature tests and Nexus runner | Pending; not omitted from parity |
-| Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | Published PHP SDK and embedded directions for 29 default fixtures plus a separate role profile; #401 qualifies nine PHP/Python/Rust workflow/activity directions with cold replay and canonical embedded counterparts; unchanged CLI 2.2.0 list/describe/history; child directions, broader SDK families, CLI commands, Waterline and Sample App pending |
+| Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | Published PHP SDK and embedded directions for 29 default fixtures plus a separate role profile; #401 qualifies nine PHP/Python/Rust workflow/activity directions and #408 nine parent/child directions, with cold replay and canonical embedded counterparts; unchanged CLI 2.2.0 list/describe/history; normal SDK timer workers and cold replay implemented with qualification tracked in #411; broader SDK families, CLI commands, Waterline and Sample App pending |
 | SQL schema and stored representations | `database/migrations/`, Workflow package `src/migrations/`, model casts, `Workflow\\Serializers\\Serializer`, queue job payloads, exported history and credential digests | [Representation checkpoints](rust-server-storage-audit.md) recorded; complete mapping and executable migration tests pending |
 | Images, architecture, bootstrap, configuration, readiness, metrics and graceful shutdown | `Dockerfile`, `docker/`, `config/`, `docker-compose*.yml`, `k8s/helm/`, `docs/server-reference.md`, small-cluster/multi-region validation docs | Pending |
 | Backup and in-place upgrade | `docs/self-hosted-backup-and-restore.md`, external payload backup holds; last PHP image writes, all PHP roles stop, Rust takes over same DB sequentially | Pending on SQLite, MariaDB/MySQL, PostgreSQL |

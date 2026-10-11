@@ -2,9 +2,12 @@
 
 This additive Server #325 profile defines nine PHP/Python/Rust parent and child
 workflow directions with the same pinned published component tuple as the
-qualified one-activity profile. Definitions, normal SDK adapters, reader guards
-and isolated profile invocation are implemented. Actual runtime recordings and
-hosted qualification are pending.
+qualified one-activity profile. [#408](https://github.com/durable-workflow/server/pull/408)
+passes all six candidate and main configurations, PHP/source and boundaries.
+Independent official SQLite and MySQL 8.0 rechecks each pass all 27 logical
+child records. SQLite binds all 54 actual PHP/native wire sidecars; all 97 full
+profile members match the official ZIP and pass compressed byte round-trip.
+Main follow-through is recorded in [#408's completed receipt](https://github.com/durable-workflow/server/pull/408#issuecomment-6112398187).
 
 Start the original parent before worker registration. A parent-only process
 schedules one child on a separate queue and exits. A distinct child-only
