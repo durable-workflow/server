@@ -330,13 +330,24 @@ adapters observe actual SDK requests, durable history and task diagnostics.
 The expanded correctness run gives its MySQL 8.4 database 1 GiB after a retained
 768 MiB OOM during the later pressure profile; application and author processes
 keep one CPU, 512 MiB and no swap. Database caps are declared in the profile.
-Reference execution and native qualification remain tracked separately. Native
-replay-blocking failures still refuse an unqualified transition; range blockage,
-manual repair and diagnostics need implementation against this shared fixture.
+Reference execution and native qualification remain tracked separately. The
+native follow-up implements the worker-reported range blockage as a failed,
+released original task with no automatic retry or terminal failure history.
+Empty-body selected-run repair restores that task to ready, clears replay-block
+metadata and records the published instance-targeted command with official
+Avro values and server-derived audit identity. Native source qualification and
+the actual three-runtime recordings are pending; modeled readers and source
+inspection are not runtime proof.
+The physical debug read covers only this default-namespace checkpoint, with
+pending or completed activities, no ready/leased workflow task, no messages,
+no cancellation and no application failures. It exposes actual blockage and
+failure identity; broader task-queue, compatibility, payload-preview and
+cancellation diagnostics remain unqualified. Manual repair of other shapes,
+named namespaces and historical/closed-run outcome parity remain separate gates.
 The pending-activity case also needs a legitimate cold wake, because repair of
 ordinary waiting work does not create a ready workflow task. Frozen fixture
 inputs and earlier observations retain their original versions and digests.
-No native range/repair, performance or takeover qualification is claimed.
+No native range/repair, performance or takeover qualification is claimed yet.
 
 [#381](https://github.com/durable-workflow/server/pull/381) implements ordinary
 workflow-task failure retries on the original run. A failed lease and its new
