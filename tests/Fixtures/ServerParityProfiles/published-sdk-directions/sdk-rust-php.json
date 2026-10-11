@@ -1,0 +1,22 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "sdk-rust-php",
+  "workflow_type": "parity.v1.one_activity",
+  "input": {"message": "cross-language routing λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {"type": "map", "value": {
+    "message": {"type": "string", "value": "cross-language routing λ"},
+    "count": {"type": "int64", "value": "9007199254740993"},
+    "optional": {"type": "null", "value": null}
+  }},
+  "activity": true,
+  "sdk_direction": {
+    "workflow": "rust",
+    "activity": "php",
+    "workflow_queue": "server-parity-sdk-workflow",
+    "activity_queue": "server-parity-sdk-activity",
+    "phase_order": ["original", "activity", "replacement"],
+    "start_before_worker_registration": true
+  },
+  "expected_events": ["StartAccepted", "WorkflowStarted", "ActivityScheduled", "ActivityStarted", "ActivityCompleted", "WorkflowCompleted"],
+  "contract": "An installed published SDK client starts before worker registration. A workflow-only author schedules one original activity on a separately served queue and exits at the waiting checkpoint. An activity-only worker commits that original activity once. A separate cold workflow worker replays its exact result and completes the original run, preserving both history prefixes and exact int64, Unicode and null Avro values. Embedded executes the corresponding PHP workflow and marks language SDK transport inapplicable. No SDK patch, injected durable history, migration, broader language capabilities or performance qualification is implied."
+}
