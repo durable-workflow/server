@@ -675,6 +675,11 @@ class ServiceCatalogController
                 app(NamespaceExternalPayloadStorage::class)->driverFor($this->namespace($request)),
                 retainExternal: true,
             );
+            if (! is_string($resolved['payload']) || $resolved['codec'] === null) {
+                throw ValidationException::withMessages([
+                    'arguments' => ['The arguments envelope must contain only codec and blob, or codec and external storage.'],
+                ]);
+            }
             $validated['arguments'] = $resolved['payload'];
             $validated['payload_codec'] = $resolved['codec'];
         }

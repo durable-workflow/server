@@ -115,6 +115,15 @@ class NexusPayloadTransportTest extends TestCase
         ])->assertUnprocessable()->assertJsonValidationErrors('arguments');
     }
 
+    public function test_malformed_envelope_is_refused_before_dispatch(): void
+    {
+        $this->mock(ServiceControlPlane::class)->shouldNotReceive('execute');
+        $this->withHeaders($this->apiHeaders())->postJson(self::EXECUTE_PATH, [
+            'arguments' => ['codec' => 'avro', 'blob' => Serializer::serializeWithCodec('avro', ['Ada']), 'extra' => true],
+            'payload_codec' => 'avro',
+        ])->assertUnprocessable()->assertJsonValidationErrors('arguments');
+    }
+
     private function expectDispatch(string $blob): void
     {
         $this->mock(ServiceControlPlane::class)->shouldReceive('execute')->once()
