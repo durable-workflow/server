@@ -59,9 +59,12 @@ whole seconds, then cold-replays the original timer and run with a distinct
 author process. The [reviewed next contract](https://github.com/durable-workflow/server/issues/325#issuecomment-6112280492)
 requires original timer identity/deadline, full unchanged history, no early
 firing or rescheduling, actual fenced receipts and exact int64/Unicode/null
-Avro values. Fixture definitions are prepared; adapters, dedicated reader
-guards, isolated profile integration and runtime qualification remain pending.
-The installed SDK adapter build will be reused.
+Avro values. Worker adapters now call each published SDK's normal sleep API;
+dedicated reader guards and isolated profiles are integrated into all six
+database configurations. The existing SDK adapter build is reused. Local
+reader guards pass, including corrupt original deadlines, stale receipts,
+rescheduling, substituted Avro frames and one nanosecond early firing.
+Actual candidate runtime qualification remains pending.
 
 [#401](https://github.com/durable-workflow/server/pull/401) qualifies all nine
 fresh PHP/Python/Rust workflow-author and separately

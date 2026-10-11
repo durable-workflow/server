@@ -7,7 +7,8 @@ cohort=published-sdk-directions
 case "${2:-activity}" in
   activity) ;;
   child) tag=sdk-child-directions; cohort=published-sdk-child-directions ;;
-  *) echo 'Choose activity or child SDK directions' >&2; exit 2 ;;
+  timer) tag=sdk-timers; cohort=published-sdk-timers ;;
+  *) echo 'Choose activity, child or timer SDK authors' >&2; exit 2 ;;
 esac
 test -n "${RESOURCE_SCOPE:?Set the owning isolated network/resource scope}"
 profile="tests/Fixtures/ServerParityProfiles/$cohort"

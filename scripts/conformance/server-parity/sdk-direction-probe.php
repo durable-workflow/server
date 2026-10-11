@@ -6,7 +6,7 @@ use DurableWorkflow\Client;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\WorkflowContext;
 
-function sdkDirectionResponseSummary(mixed $response, bool $childDirection = false): mixed
+function sdkDirectionResponseSummary(mixed $response, bool $workflowHistory = false): mixed
 {
     if (! is_array($response)) {
         return $response;
@@ -22,7 +22,7 @@ function sdkDirectionResponseSummary(mixed $response, bool $childDirection = fal
         $summary['task'] = array_intersect_key($summary['task'], array_flip([
             'task_id', 'workflow_id', 'run_id', 'workflow_run_id', 'task_type',
             'workflow_task_attempt', 'activity_attempt_id', 'lease_owner', 'task_queue',
-            ...($childDirection ? ['queue', 'workflow_type', 'history_events', 'child_call_id',
+            ...($workflowHistory ? ['queue', 'workflow_type', 'history_events', 'child_call_id',
                 'child_workflow_run_id', 'resume_source_kind', 'resume_source_id',
                 'workflow_event_type', 'workflow_sequence', 'open_wait_id'] : []),
         ]));
@@ -62,7 +62,9 @@ function sdkDirectionHttpObservation(array $fixture, array $options): array
     $phases = [];
     $runId = '';
     $childDirection = isset($fixture['sdk_child_direction']);
-    $spec = $fixture[$childDirection ? 'sdk_child_direction' : 'sdk_direction'];
+    $timerAuthor = isset($fixture['sdk_timer_author']);
+    $directionKey = $timerAuthor ? 'sdk_timer_author' : ($childDirection ? 'sdk_child_direction' : 'sdk_direction');
+    $spec = $fixture[$directionKey];
     $childWorkflowId = $childRunId = '';
     $client = new Client($options['url'], namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null);
     $deadline = microtime(true) + 35;
@@ -72,8 +74,8 @@ function sdkDirectionHttpObservation(array $fixture, array $options): array
             throw new RuntimeException('SDK observer did not bind its local port.');
         }
         foreach ($spec['phase_order'] as $phase) {
-            $language = $childDirection ? $spec[$phase === 'child' ? 'child' : 'parent']
-                : $spec[$phase === 'activity' ? 'activity' : 'workflow'];
+            $language = $timerAuthor ? $spec['language'] : ($childDirection ? $spec[$phase === 'child' ? 'child' : 'parent']
+                : $spec[$phase === 'activity' ? 'activity' : 'workflow']);
             $actorWorkflowId = $phase === 'child' ? $childWorkflowId : $options['workflow-id'];
             $actorRunId = $phase === 'child' ? $childRunId : $runId;
             $arguments = match ($language) {
@@ -99,11 +101,11 @@ function sdkDirectionHttpObservation(array $fixture, array $options): array
             }
             $status = proc_close($process);
             $lines = array_slice(file($journal, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES), $offset);
-            file_put_contents($evidence.'/'.($childDirection ? 'sdk-child-direction-' : 'sdk-direction-').$name.'-'.$phase.'.json', json_encode([
+            file_put_contents($evidence.'/'.($timerAuthor ? 'sdk-timer-author-' : ($childDirection ? 'sdk-child-direction-' : 'sdk-direction-')).$name.'-'.$phase.'.json', json_encode([
                 'language' => $language, 'phase' => $phase, 'stdout' => $stdout, 'stderr' => $stderr,
                 'exit_status' => $status, 'transport_jsonl' => implode("\n", $lines)."\n",
             ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)."\n");
-            $requests = array_map(static function (string $line) use ($childDirection): array {
+            $requests = array_map(static function (string $line) use ($childDirection, $timerAuthor): array {
                 $item = json_decode($line, true, flags: JSON_THROW_ON_ERROR);
                 foreach (['request', 'response'] as $side) {
                     $body = $item[$side.'_body'];
@@ -114,13 +116,13 @@ function sdkDirectionHttpObservation(array $fixture, array $options): array
                 }
                 // Exact request/response bytes remain in the retained sidecar.
                 unset($item['request_body'], $item['response_body'], $item['response_bytes_base64']);
-                $item['response'] = sdkDirectionResponseSummary($item['response'], $childDirection);
+                $item['response'] = sdkDirectionResponseSummary($item['response'], $childDirection || $timerAuthor);
 
                 return $item;
             }, $lines);
             $result = $status === 0 ? json_decode($stdout, true, flags: JSON_THROW_ON_ERROR)
                 : ['phase' => $phase, 'language' => $language, 'worker_finished' => false, 'worker_error' => trim($stderr)];
-            if (! $childDirection || $phase === 'original') {
+            if ((! $childDirection && ! $timerAuthor) || $phase === 'original') {
                 $runId = $result['run_id'] ?? $runId;
             }
             if ($runId === '') {
@@ -155,10 +157,12 @@ function sdkDirectionHttpObservation(array $fixture, array $options): array
         }
         $observation = $phases[array_key_last($phases)]['snapshot'];
         $identityPath = getenv('DW_PARITY_DIRECTION_IDENTITY') ?: '/sdk-directions/identity.json';
-        $observation[$childDirection ? 'sdk_child_direction' : 'sdk_direction'] = ['applicable' => true, 'phases' => $phases,
+        $observation[$directionKey] = ['applicable' => true, 'phases' => $phases,
             'packages' => json_decode(file_get_contents($identityPath), true, flags: JSON_THROW_ON_ERROR)];
         if ($childDirection) {
             $observation['children'] = [$phases[array_key_last($phases)]['child_snapshot']];
+        }
+        if ($childDirection || $timerAuthor) {
             $observation['workflow_polls'] = $observation['workflow_completions'] = [];
             foreach ($phases as $phase) {
                 foreach ($phase['requests'] as $request) {
@@ -173,7 +177,9 @@ function sdkDirectionHttpObservation(array $fixture, array $options): array
                                     $decoded[$field] = $client->payloadCodec()->decodeEnvelope($command[$field]);
                                 }
                             }
-                            $request['decoded_commands'][] = ['decoded' => $decoded, 'typed_decoded' => array_map(typedValue(...), $decoded)];
+                            // These are field-name maps, including a timer command's
+                            // empty map; preserve that JSON shape without changing values.
+                            $request['decoded_commands'][] = ['decoded' => (object) $decoded, 'typed_decoded' => (object) array_map(typedValue(...), $decoded)];
                         }
                         $observation['workflow_completions'][] = $request;
                     }

@@ -17,7 +17,8 @@ require getenv('DW_PARITY_SDK_AUTOLOAD') ?: dirname(__DIR__).'/vendor/autoload.p
 [$script, $phase, $url, $workflowId, $runId, $fixturePath, $remaining] = $argv;
 $fixture = json_decode(file_get_contents($fixturePath), true, flags: JSON_THROW_ON_ERROR);
 $childDirection = isset($fixture['sdk_child_direction']);
-if (! in_array($phase, $childDirection ? ['original', 'child', 'replacement'] : ['original', 'activity', 'replacement'], true)) {
+$timerAuthor = isset($fixture['sdk_timer_author']);
+if (! in_array($phase, $timerAuthor ? ['original', 'replacement'] : ($childDirection ? ['original', 'child', 'replacement'] : ['original', 'activity', 'replacement']), true)) {
     throw new InvalidArgumentException('Unknown SDK direction phase');
 }
 $deadline = microtime(true) + (float) $remaining;
@@ -42,11 +43,11 @@ $client = new Client($url, namespace: 'default', token: getenv('DW_PARITY_TOKEN'
     transport: new Psr18Transport(client: new GuzzleClient(['http_errors' => false, 'handler' => $stack])));
 if ($phase === 'original') {
     $runId = $client->startWorkflow($fixture['workflow_type'], $workflowId,
-        $childDirection ? 'server-parity-sdk-parent' : 'server-parity-sdk-workflow', [$fixture['input']])->selectedRunId;
+        $timerAuthor ? 'server-parity-sdk-timer' : ($childDirection ? 'server-parity-sdk-parent' : 'server-parity-sdk-workflow'), [$fixture['input']])->selectedRunId;
 }
-$queue = $childDirection
+$queue = $timerAuthor ? 'server-parity-sdk-timer' : ($childDirection
     ? ($phase === 'child' ? 'server-parity-sdk-child' : 'server-parity-sdk-parent')
-    : ($phase === 'activity' ? 'server-parity-sdk-activity' : 'server-parity-sdk-workflow');
+    : ($phase === 'activity' ? 'server-parity-sdk-activity' : 'server-parity-sdk-workflow'));
 $workerId = $workflowId.':'.$phase;
 $worker = new Worker($client, $queue, workerId: $workerId,
     clock: static function () use ($deadline): float {
@@ -57,7 +58,14 @@ $worker = new Worker($client, $queue, workerId: $workerId,
         return microtime(true);
     });
 $workflowInvocations = $activityInvocations = 0;
-if ($childDirection && $phase === 'child') {
+if ($timerAuthor) {
+    $worker->registerWorkflow('parity.v1.sdk_timer', static function (WorkflowContext $ctx, mixed $value) use (&$workflowInvocations): mixed {
+        ++$workflowInvocations;
+        $ctx->sleep($value['sleep_ms'] / 1000);
+
+        return $value;
+    });
+} elseif ($childDirection && $phase === 'child') {
     $worker->registerWorkflow('parity.v1.echo_child', static function (WorkflowContext $ctx, mixed $value) use (&$workflowInvocations): mixed {
         ++$workflowInvocations;
 
