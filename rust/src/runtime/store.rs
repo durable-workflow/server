@@ -579,10 +579,18 @@ where
             }
         }
         let runtime = text(&body, "runtime")?;
-        if body
+        let contracts = body
             .get("workflow_command_contracts")
-            .is_some_and(|value| !value.is_object())
-        {
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        // PHP encodes an empty associative map as []; activity-only published
+        // workers send this shape. Preserve a map internally for lookups.
+        let contracts = if contracts.as_array().is_some_and(|values| values.is_empty()) {
+            json!({})
+        } else {
+            contracts
+        };
+        if !contracts.is_object() {
             return Err(refuse(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "invalid_worker_definition",
@@ -616,7 +624,7 @@ where
             .execute(&mut *tx)
             .await?;
         Self::query("UPDATE workflow_worker_registrations SET status='active',workflow_command_contracts=$1 WHERE worker_id=$2 AND namespace=$3")
-            .bind(DB::document(body.get("workflow_command_contracts").unwrap_or(&json!({})))).bind(worker_id).bind(self.namespace.as_ref()).execute(&mut *tx).await?;
+            .bind(DB::document(&contracts)).bind(worker_id).bind(self.namespace.as_ref()).execute(&mut *tx).await?;
         self.rotate_incarnation(&mut tx, worker_id, &token).await?;
         tx.commit().await?;
         self.wake.notify_waiters();

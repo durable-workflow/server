@@ -255,7 +255,36 @@ async fn timer_winner_and_pending_activity_survive_original_task_repair_and_rest
         repaired_history
     );
     assert_eq!(debug(&app, &started).await["pending_activities"], pending);
-    let activity = poll(&app, "restored", "activity").await;
+    let mut activity_worker = json!({"worker_id":"activity-only","task_queue":"test","runtime":"php",
+        "supported_workflow_types":[],"supported_activity_types":["echo_activity"],
+        "workflow_command_contracts":[],"workflow_definition_fingerprints":[]});
+    for invalid in [json!([{"echo":{}}]), json!(false), json!("empty")] {
+        activity_worker["workflow_command_contracts"] = invalid;
+        assert_eq!(
+            request(
+                &app,
+                "POST",
+                "/api/worker/register",
+                activity_worker.clone()
+            )
+            .await
+            .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+    activity_worker["workflow_command_contracts"] = json!([]);
+    assert_eq!(
+        request(&app, "POST", "/api/worker/register", activity_worker)
+            .await
+            .0,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        run_history(&app, &started["workflow_id"], &started["run_id"]).await,
+        repaired_history
+    );
+    assert_eq!(debug(&app, &started).await["pending_activities"], pending);
+    let activity = poll(&app, "activity-only", "activity").await;
     assert!(
         activity["activity_execution_id"].is_string(),
         "activity lease: {activity}"
@@ -287,7 +316,7 @@ async fn timer_winner_and_pending_activity_survive_original_task_repair_and_rest
     );
     assert_eq!(events[10]["event_type"], "WorkflowCompleted");
     assert!(poll(&app, "restored", "workflow").await.is_null());
-    assert!(poll(&app, "restored", "activity").await.is_null());
+    assert!(poll(&app, "activity-only", "activity").await.is_null());
     restored.close().await;
     database.remove().await;
 }

@@ -422,6 +422,15 @@ that expected internal event IDs in public HTTP history. Lease identity checks
 pass; public history intentionally omits those IDs. Winner regressions now
 query the actual persisted event at the public sequence and verify its physical
 relationship directly, preserving the public response and fixture contract.
+That candidate passes all 71 native execution tests, but the real published
+PHP author then exposes another native registration gap: an activity-only
+worker encodes its empty workflow contract map as `[]`. Native registration
+now accepts that empty representation and stores an empty map; nonempty arrays
+and scalars remain refused. The pending regression uses an activity-only
+registration for the original activity and checks rejected representations do
+not change its history or pending work. The failed recording preserves the
+timer winner, blocked-task repair and waiting replay, but does not execute the
+activity or complete the run; corrected three-runtime qualification is required.
 
 The separate `pending-native` profile binds the same published artifact bytes
 and unchanged fixture under a new qualification scope, including the SHA-256
