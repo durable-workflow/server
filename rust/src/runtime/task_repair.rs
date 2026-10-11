@@ -75,8 +75,6 @@ where
                     "development_workflow_task_repair_unqualified",
                 )
             })?;
-        let open = Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$1 AND status IN ('ready','leased')")
-            .bind(&run_id).fetch_one(&mut *tx).await?;
         let signals = Self::scalar("SELECT COUNT(*) FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received'")
             .bind(&run_id).fetch_one(&mut *tx).await?;
         let updates = Self::scalar(
@@ -85,15 +83,14 @@ where
         .bind(&run_id)
         .fetch_one(&mut *tx)
         .await?;
-        if open != 0 || signals != 0 || updates != 0 || Self::cancellation_request(&run)?.is_some()
-        {
-            // Pending activity/message/cancellation repair needs its own shared
-            // contract. Do not create another ready task beside active work.
+        if signals != 0 || updates != 0 || Self::cancellation_request(&run)?.is_some() {
+            // Message/cancellation repair needs its own shared contract.
             return Err(refuse(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "development_workflow_task_repair_active_work_unqualified",
             ));
         }
+        let wait_kind = Self::range_repair_wait(&mut tx, &run_id).await?;
         let task_id = DB::string(&task, "id")?;
         let repair_count = DB::number(&task, "repair_count")?
             .checked_add(1)
@@ -107,7 +104,7 @@ where
             codec,
             task_id.clone(),
             "workflow_replay_blocked",
-            None,
+            wait_kind,
         )
         .await?;
         let mut task_payload = DB::document_row(&task, "payload")?;
@@ -140,7 +137,7 @@ where
         Self::append(&mut tx, &run_id, "RepairRequested", json!({
             "workflow_command_id":command_id,"workflow_instance_id":workflow_id,"workflow_run_id":run_id,
             "command_type":"repair","outcome":"repair_dispatched","liveness_state":"workflow_replay_blocked",
-            "wait_kind":null,"task_id":task_id,"task_type":"workflow","task":Self::task_snapshot(&repaired)?,
+            "wait_kind":wait_kind,"task_id":task_id,"task_type":"workflow","task":Self::task_snapshot(&repaired)?,
             "command":{"id":command_id,"sequence":sequence,"type":"repair","target_scope":"instance",
                 "resolved_run_id":run_id,"status":"accepted","outcome":"repair_dispatched",
                 "source":"control_plane","payload_codec":"avro","payload":wire(&command_payload),
@@ -179,7 +176,7 @@ where
             .bind(workflow_id).bind(selected_run).bind(self.namespace.as_ref()).fetch_optional(&mut *tx).await?
             .ok_or_else(|| refuse(StatusCode::NOT_FOUND, if selected_run.is_some() { "run_not_found" } else { "instance_not_found" }))?;
         let run_id = DB::string(&run, "id")?;
-        let unsupported = Self::scalar("SELECT COUNT(*) FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type NOT IN ('StartAccepted','WorkflowStarted','VersionMarkerRecorded','ActivityScheduled','ActivityStarted','ActivityCompleted','RepairRequested','WorkflowCompleted')")
+        let unsupported = Self::scalar("SELECT COUNT(*) FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type NOT IN ('StartAccepted','WorkflowStarted','VersionMarkerRecorded','ActivityScheduled','ActivityStarted','ActivityCompleted','TimerScheduled','TimerFired','SelectionResolved','RepairRequested','WorkflowCompleted')")
             .bind(&run_id).fetch_one(&mut *tx).await?;
         let failures =
             Self::scalar("SELECT COUNT(*) FROM workflow_failures WHERE workflow_run_id=$1")
@@ -196,13 +193,18 @@ where
                 .bind(&run_id)
                 .fetch_one(&mut *tx)
                 .await?;
-        let open = Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status IN ('ready','leased')")
-            .bind(&run_id).fetch_one(&mut *tx).await?;
+        let open = Self::query("SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status IN ('ready','leased') ORDER BY id LIMIT 2")
+            .bind(&run_id).fetch_all(&mut *tx).await?;
+        let selection_checkpoint = Self::range_selection_history(&mut tx, &run_id).await?;
         if unsupported != 0
             || failures != 0
             || signals != 0
             || updates != 0
-            || open != 0
+            || open.len() > 1
+            || (!open.is_empty() && !selection_checkpoint)
+            || open
+                .iter()
+                .any(|task| DB::number(task, "repair_count").is_ok_and(|count| count == 0))
             || Self::cancellation_request(&run)?.is_some()
         {
             return Err(refuse(
@@ -303,7 +305,7 @@ where
             .as_object_mut()
             .unwrap()
             .retain(|_, value| !value.is_null());
-        if !terminal && !blocked && !activities.is_empty() {
+        if !terminal && !activities.is_empty() {
             execution["wait_kind"] = json!("activity");
             execution["wait_reason"] = json!(format!(
                 "Waiting for activity {}",
@@ -317,11 +319,19 @@ where
                 json!({"code":"history","label":"Task History","description":"The selected run previously needed workflow-task repair or replay recovery.","tone":"secondary","badge_visible":true})
             };
         }
+        let mut pending_workflow_tasks = Vec::new();
+        for task in &open {
+            pending_workflow_tasks.push(json!({"task_id":DB::string(task,"id")?,"task_type":"workflow",
+                "status":DB::string(task,"status")?,"queue":DB::optional_string(task,"queue")?,
+                "attempt_count":DB::number(task,"attempt_count")?,"repair_count":DB::number(task,"repair_count")?,
+                "available_at":DB::optional_instant(task,"available_at")?,"lease_owner":DB::optional_string(task,"lease_owner")?,
+                "lease_expires_at":DB::optional_instant(task,"lease_expires_at")?}));
+        }
         tx.commit().await?;
         Ok(
             json!({"generated_at":now(),"workflow_id":workflow_id,"run_id":run_id,"namespace":self.namespace.as_ref(),
             "diagnostic_status":if terminal {"terminal"} else if blocked {"needs_attention"} else {"pending_work"},
-            "execution":execution,"pending_workflow_tasks":[],"pending_activities":pending,
+            "execution":execution,"pending_workflow_tasks":pending_workflow_tasks,"pending_activities":pending,
             "recent_failures":[],"recent_failures_truncated":false,"latest_workflow_task_failure":latest_failure}),
         )
     }

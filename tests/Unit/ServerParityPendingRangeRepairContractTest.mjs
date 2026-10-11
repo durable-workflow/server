@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
 import {checkRangeRepair, checkRangeArtifacts} from '../../scripts/conformance/server-parity/range-repair-contract.mjs';
 import {instantNanoseconds} from '../../scripts/conformance/server-parity/contract.mjs';
 
@@ -9,6 +10,20 @@ const fixture = JSON.parse(readFileSync(new URL('range-selected-timer-activity-p
 const frozen = JSON.parse(readFileSync(new URL('artifacts.json', directory)));
 const artifacts = JSON.parse(readFileSync(new URL('../version-range-repair-pending/artifacts.json', directory)));
 const priorFailed = JSON.parse(readFileSync(new URL('../version-range-repair-pending/prior-failed-artifacts.json', directory)));
+const nativeArtifacts = JSON.parse(readFileSync(new URL('../version-range-repair-pending-native/artifacts.json', directory)));
+
+test('native qualification retains the exact qualified reference artifact bytes', () => {
+  checkRangeArtifacts(fixture, nativeArtifacts);
+  const {qualification_scope: nativeScope, runtime_targets: nativeTargets, reference_artifacts_sha256: referenceHash, ...nativeTuple} = nativeArtifacts;
+  const {qualification_scope: referenceScope, runtime_targets: referenceTargets, ...referenceTuple} = artifacts;
+  assert.deepEqual(nativeTuple, referenceTuple);
+  assert.deepEqual(nativeTargets, ['php', 'embedded', 'rust']);
+  assert.deepEqual(referenceTargets, ['php', 'embedded']);
+  assert.equal(referenceHash, createHash('sha256').update(readFileSync(new URL('../version-range-repair-pending/artifacts.json', directory))).digest('hex'));
+  const substituted = structuredClone(nativeArtifacts);
+  substituted.server.source_commit = 'f'.repeat(40);
+  assert.throws(() => checkRangeArtifacts(fixture, substituted));
+});
 
 test('pending reference binds its exact published tuple and preserves the prior failed cohort', () => {
   checkRangeArtifacts(fixture, artifacts);

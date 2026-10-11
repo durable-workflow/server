@@ -6,10 +6,11 @@ checkpoint="${2:-completed}"
 case "$checkpoint" in
   completed) tag=range; cohort=version-range-repair ;;
   pending-reference) tag=range-pending; cohort=version-range-repair-pending ;;
-  *) echo 'Choose completed or pending-reference' >&2; exit 2 ;;
+  pending-native) tag=range-pending-native; cohort=version-range-repair-pending-native ;;
+  *) echo 'Choose completed, pending-reference or pending-native' >&2; exit 2 ;;
 esac
 test -n "${RESOURCE_SCOPE:?Set the owning isolated network/resource scope}"
-profile=tests/Fixtures/ServerParityProfiles/version-range-repair
+profile="tests/Fixtures/ServerParityProfiles/$cohort"
 image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' "$profile/artifacts.json")
 resource="$RESOURCE_SCOPE-$tag"
 php_database="$(printf '%s' "$tag" | tr '-' '_')_php_ref"
@@ -18,7 +19,7 @@ evidence="$PWD/parity-evidence/$cohort"
 mkdir -p "$evidence"
 docker stop --time 30 "$resource-server" || true
 stages=(sdk tests bootstrap-php bootstrap-embedded server record-php record-embedded compare)
-if test "$checkpoint" = completed; then stages+=(record-native); fi
+if test "$checkpoint" != pending-reference; then stages+=(record-native); fi
 for stage in "${stages[@]}"; do
   docker logs "$resource-$stage" > "$evidence/$stage.log" 2>&1 || true
   docker inspect "$resource-$stage" > "$evidence/$stage-container.json" 2>&1 || true
@@ -26,7 +27,7 @@ done
 docker rm -f "$resource-sdk" "$resource-tests" \
   "$resource-bootstrap-php" "$resource-bootstrap-embedded" "$resource-server" \
   "$resource-record-php" "$resource-record-embedded" "$resource-compare" || true
-if test "$checkpoint" = completed; then docker rm -f "$resource-record-native" || true; fi
+if test "$checkpoint" != pending-reference; then docker rm -f "$resource-record-native" || true; fi
 case "$backend" in
   mysql)
     docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint mysql "$MYSQL_IMAGE" \

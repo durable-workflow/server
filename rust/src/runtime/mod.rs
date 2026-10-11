@@ -21,6 +21,7 @@ mod schedule_http;
 mod schedule_storage;
 mod schedules;
 mod schema;
+mod selections;
 mod sqlite;
 mod store;
 mod task_failures;

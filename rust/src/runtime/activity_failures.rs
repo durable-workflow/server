@@ -241,6 +241,15 @@ where
         {
             return Err(refuse(StatusCode::CONFLICT, "stale_attempt"));
         }
+        if DB::optional_document_row(&activity, "parallel_group_path")?.is_some() {
+            // The bounded selection contract covers successful member
+            // resolution. Failed/retrying members need a separate fixture;
+            // preserve this attempt rather than recording a false winner.
+            return Err(refuse(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "development_selection_activity_failure_unqualified",
+            ));
+        }
         let policy = DB::optional_document_row(&activity, "retry_policy")?.unwrap_or(Value::Null);
         if !policy.is_null() {
             let normalized = retry_policy(

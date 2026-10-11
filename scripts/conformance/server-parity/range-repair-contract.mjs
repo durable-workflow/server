@@ -4,7 +4,9 @@ import {checkPendingRangeRepair} from './range-pending-contract.mjs';
 
 export function checkRangeArtifacts(fixture, artifacts) {
   if (!fixture.range_repair) return;
-  const profile = fixture.range_repair.pending_activity ? 'version-range-repair-pending' : 'version-range-repair';
+  const profile = fixture.range_repair.pending_activity
+    ? artifacts.runtime_targets?.includes('rust') ? 'version-range-repair-pending-native' : 'version-range-repair-pending'
+    : 'version-range-repair';
   const frozen = JSON.parse(readFileSync(new URL(
     '../../../tests/Fixtures/ServerParityProfiles/' + profile + '/artifacts.json', import.meta.url,
   ), 'utf8'));
