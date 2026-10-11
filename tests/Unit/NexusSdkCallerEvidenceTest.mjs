@@ -98,3 +98,18 @@ if (process.env.NEXUS_SDK_CLIENT_MATRIX) {
         }
     });
 }
+
+if (process.env.NEXUS_PYTHON_WORKFLOW_PROBE) {
+    test('actual Python caller workflows complete through the PHP service in both namespaces', () => {
+        const response = JSON.parse(fs.readFileSync(process.env.NEXUS_PYTHON_WORKFLOW_PROBE, 'utf8'));
+        assert.equal(response.ok, true, 'Python application probe must execute before outcomes can qualify');
+        const observation = response.body;
+        assert.equal(observation.scope, 'python_caller_php_workflow_service');
+        assert.deepEqual(observation.observations.map(row => row.caller_namespace), ['shared', 'tenant-b']);
+        for (const row of observation.observations) {
+            assert.ok(row.workflow_id && row.run_id && row.process_id > 0 && row.installed_sdk_version);
+            assert.equal(row.completed, true, `${row.caller_namespace}: ${JSON.stringify(row.failure || row.result)}`);
+            assert.ok(row.receipts.some(receipt => receipt.method === 'POST' && receipt.status === 200));
+        }
+    });
+}

@@ -6,6 +6,8 @@ on:
       - .github/workflows/published-nexus-sdk-callers.yml
       - scripts/conformance/nexus-published-artifacts.sh
       - scripts/conformance/nexus-replay-transport.cjs
+      - scripts/conformance/nexus-python-workflow-probe.py
+      - scripts/conformance/nexus-php-service-worker.php
       - tests/Unit/NexusSdkCallerEvidenceTest.mjs
   push:
     branches: [main]
@@ -13,6 +15,8 @@ on:
       - .github/workflows/published-nexus-sdk-callers.yml
       - scripts/conformance/nexus-published-artifacts.sh
       - scripts/conformance/nexus-replay-transport.cjs
+      - scripts/conformance/nexus-python-workflow-probe.py
+      - scripts/conformance/nexus-php-service-worker.php
       - tests/Unit/NexusSdkCallerEvidenceTest.mjs
   workflow_dispatch:
 
@@ -60,6 +64,7 @@ jobs:
           printf '%s\n' "$result" > "$DW_NEXUS_RESULT_DIR/complete-suite-exit-code.txt"
           NEXUS_SDK_CLIENT_MATRIX="$DW_NEXUS_RESULT_DIR/nexus-sdk-client-matrix.json" \
             NEXUS_CONFORMANCE_RESULT="$DW_NEXUS_RESULT_DIR/nexus-conformance-result.json" \
+            NEXUS_PYTHON_WORKFLOW_PROBE="$DW_NEXUS_RESULT_DIR/nexus-python-workflow-probe.json" \
             node --test tests/Unit/NexusSdkCallerEvidenceTest.mjs
       - name: Retain actual requests and durable observations
         if: always()
