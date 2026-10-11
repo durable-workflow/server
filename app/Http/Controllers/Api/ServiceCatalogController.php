@@ -4,7 +4,9 @@ namespace App\Http\Controllers\Api;
 
 use App\Auth\Principal;
 use App\Http\Middleware\Authenticate;
+use App\Support\AvroPayloadEnvelopeResolver;
 use App\Support\ControlPlaneProtocol;
+use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\PayloadCodecContract;
 use App\Support\SearchAttributeValueValidator;
 use App\Support\ServiceCallAdmission;
@@ -663,6 +665,20 @@ class ServiceCatalogController
             ]);
         }
 
+        $arguments = $validated['arguments'] ?? null;
+        if (is_string($arguments)) {
+            AvroPayloadEnvelopeResolver::assertSerializedPayload($arguments, 'arguments');
+        } elseif (is_array($arguments) && array_key_exists('codec', $arguments)) {
+            $resolved = AvroPayloadEnvelopeResolver::resolveCommandPayloadWithCodec(
+                $arguments,
+                'arguments',
+                app(NamespaceExternalPayloadStorage::class)->driverFor($this->namespace($request)),
+                retainExternal: true,
+            );
+            $validated['arguments'] = $resolved['payload'];
+            $validated['payload_codec'] = $resolved['codec'];
+        }
+
         if (isset($validated['search_attributes'])) {
             $validated['search_attribute_types'] = $this->searchAttributeValues()->validateForNamespace(
                 $this->namespace($request),
@@ -676,6 +692,7 @@ class ServiceCatalogController
             [
                 'namespace' => $this->namespace($request),
                 'arguments' => $validated['arguments'] ?? null,
+                'payload_blob' => is_string($validated['arguments'] ?? null) ? $validated['arguments'] : null,
                 'payload_codec' => $validated['payload_codec'] ?? null,
                 'mode_override' => $validated['mode_override'] ?? null,
                 'wait_for' => $validated['wait_for'] ?? null,
