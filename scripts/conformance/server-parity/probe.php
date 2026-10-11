@@ -21,6 +21,7 @@ use ServerParity\OneActivityWorkflow;
 use ServerParity\TimerWorkflow;
 use ServerParity\SdkTimerWorkflow;
 use ServerParity\SignalsWorkflow;
+use ServerParity\SdkSignalsWorkflow;
 use ServerParity\QueriesWorkflow;
 use ServerParity\UpdatesWorkflow;
 use ServerParity\TwoChildrenWorkflow;
