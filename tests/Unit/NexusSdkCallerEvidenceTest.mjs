@@ -100,6 +100,17 @@ if (process.env.NEXUS_SDK_CLIENT_MATRIX) {
 }
 
 if (process.env.NEXUS_PYTHON_WORKFLOW_PROBE) {
+    test('installed Python SDK routes original caller identity and Avro input to the actual PHP worker', () => {
+        const response = JSON.parse(fs.readFileSync(process.env.NEXUS_PYTHON_WORKFLOW_PROBE, 'utf8'));
+        assert.equal(response.ok, true, 'The application probe must actually execute');
+        assert.deepEqual(response.body.observations.map(row => row.caller_namespace), ['shared', 'tenant-b']);
+        for (const row of response.body.observations) {
+            assert.equal(row.request_qualified, true, `${row.caller_namespace}: inspect actual request receipt`);
+            assert.equal(row.service_input_qualified, true, `${row.caller_namespace}: inspect linked PHP history`);
+            assert.ok(row.linked_service_run_id && row.linked_service_history);
+        }
+    });
+
     test('actual Python caller workflows complete through the PHP service in both namespaces', () => {
         const response = JSON.parse(fs.readFileSync(process.env.NEXUS_PYTHON_WORKFLOW_PROBE, 'utf8'));
         assert.equal(response.ok, true, 'Python application probe must execute before outcomes can qualify');

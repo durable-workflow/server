@@ -14,9 +14,10 @@ from durable_workflow import Client, Worker, serializer, workflow
 
 @workflow.defn(name="nexus.fixture.python.caller")
 class PythonNexusCaller:
-    def run(self, context, endpoint, service, operation, name):
+    def run(self, context, endpoint, service, operation, name, target_namespace):
         result = yield context.call_nexus_service(
             endpoint, service, operation, [name], wait_timeout_seconds=5,
+            target_namespace=target_namespace,
         )
         return result.to_recorded_payload()
 
@@ -53,7 +54,7 @@ async def execute(input_data, namespace):
                 task_queue="nexus-python-workflow",
                 workflow_id=f"nexus-python-caller-{namespace}-{os.getpid()}",
                 input=[input_data["endpoint"], input_data["service"],
-                       input_data["operation"], "world"],
+                       input_data["operation"], "world", "shared" if namespace != "shared" else None],
             )
             observation = {
                 "caller_namespace": namespace, "target_namespace": "shared",
@@ -80,25 +81,38 @@ async def execute(input_data, namespace):
                 await asyncio.gather(finishing, refusal, return_exceptions=True)
             observation["history"] = await handle.get_history()
             observation["receipts"] = receipts
+            execute_receipts = [row for row in receipts if row["method"] == "POST"
+                                and row["path"].endswith("/execute") and row["status"] == 200]
+            observation["request_qualified"] = any(
+                row["request_namespace"] == "shared"
+                and row["request"].get("caller_namespace") == namespace
+                and row["request"].get("caller_workflow_instance_id") == handle.workflow_id
+                and row["request"].get("caller_workflow_run_id") == handle.run_id
+                and row["request"].get("payload_codec") == "avro"
+                and isinstance(row["request"].get("arguments"), str)
+                and serializer.decode(row["request"]["arguments"], codec="avro") == ["world"]
+                for row in execute_receipts
+            )
             recorded = observation.get("result", {})
             surface = recorded.get("response_or_failure_surface", {})
             linked_id = surface.get("linked_workflow_instance_id")
             linked_run_id = surface.get("linked_workflow_run_id")
             if linked_id and linked_run_id:
-                service_handle = client.get_workflow_handle(linked_id, run_id=linked_run_id)
-                try:
-                    observation["linked_service_result"] = await service_handle.result(timeout=10)
-                except Exception as error:
-                    observation["linked_service_failure"] = {"type": type(error).__name__, "message": str(error)}
-                observation["linked_service_history"] = await service_handle.get_history()
+                async with Client("http://server:8080", namespace="shared", token=input_data["token"]) as service_client:
+                    service_handle = service_client.get_workflow_handle(linked_id, run_id=linked_run_id)
+                    try:
+                        observation["linked_service_result"] = await service_handle.result(timeout=10)
+                    except Exception as error:
+                        observation["linked_service_failure"] = {"type": type(error).__name__, "message": str(error)}
+                    observation["linked_service_history"] = await service_handle.get_history()
                 observation["linked_service_run_id"] = linked_run_id
+            expected_result = {"language": "php", "name": "world", "greeting": "hello, world"}
+            observation["service_input_qualified"] = observation.get("linked_service_result") == expected_result
             service_result = recorded.get("result")
             if isinstance(service_result, str):
                 service_result = serializer.decode(service_result, codec="avro")
             observation["decoded_service_result"] = service_result
-            observation["completed"] = recorded.get("status") == "completed" and service_result == {
-                "language": "php", "name": "world", "greeting": "hello, world",
-            }
+            observation["completed"] = recorded.get("status") == "completed" and service_result == expected_result
             return observation
         finally:
             await asyncio.wait_for(worker.stop(), timeout=10)
