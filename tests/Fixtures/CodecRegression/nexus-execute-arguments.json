@@ -11,11 +11,17 @@
   "bindings": ["php", "python", "rust"],
   "value": {
     "type": "array",
-    "items": [{"type": "string", "value": "invoice-42"}]
+    "items": [
+      {"type": "string", "value": "Ada"},
+      {
+        "type": "map",
+        "entries": [{"key": "nested", "value": {"type": "bool", "value": true}}]
+      }
+    ]
   },
   "framing": {
     "encoding": "avro-single-object",
-    "wire_base64": "wwHioz3/VYAiNwwCChRpbnZvaWNlLTQyAA=="
+    "wire_base64": "wwHioz3/VYAiNwwECgZBZGEOAgxuZXN0ZWQCAQAA"
   },
   "failure_policy": {"operation": "round_trip", "error": null}
 }
