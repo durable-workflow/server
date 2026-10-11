@@ -48,7 +48,7 @@ $mode = $options['mode'] ?? '';
 $fixture = json_decode(file_get_contents($options['fixture']), true, flags: JSON_THROW_ON_ERROR);
 $workflowId = $options['workflow-id'];
 $namespace = 'default';
-$queue = 'server-parity-v1';
+$queue = $fixture['sdk_direction']['workflow_queue'] ?? 'server-parity-v1';
 $sdkAutoload = getenv('DW_PARITY_SDK_AUTOLOAD') ?: __DIR__.'/vendor/autoload.php';
 if (! is_file($sdkAutoload)) {
     fwrite(STDERR, "Install the locked parity SDK adapter first.\n");
@@ -777,7 +777,17 @@ try {
     require __DIR__.'/child-cancellation-probe.php';
     require __DIR__.'/cancellation-probe.php';
     require __DIR__.'/cooperative-probe.php';
-    if (isset($fixture['range_repair'])) {
+    if (isset($fixture['sdk_direction'])) {
+        require __DIR__.'/sdk-direction-probe.php';
+        if ($mode === 'http') {
+            $observation = sdkDirectionHttpObservation($fixture, $options);
+        } elseif ($mode === 'embedded') {
+            $observation = embeddedObservation($fixture, $workflowId, $namespace, $queue, $options['application-root']);
+            $observation['sdk_direction'] = ['applicable' => false, 'reason' => 'embedded_executes_php_author_definitions'];
+        } else {
+            throw new InvalidArgumentException('Mode must be http or embedded.');
+        }
+    } elseif (isset($fixture['range_repair'])) {
         require __DIR__.'/range-repair-probe.php';
         RangeRepairState::$changeId = $fixture['range_repair']['change_id'];
         $observation = isset($options['range-phase'])
@@ -836,6 +846,9 @@ try {
     $observation['php_version'] = PHP_VERSION;
     if ($mode === 'embedded' && ! isset($observation['workflow_package'])) {
         $observation['workflow_package'] = ltrim(InstalledVersions::getPrettyVersion('durable-workflow/workflow'), 'v');
+    }
+    if (isset($fixture['sdk_direction'])) {
+        sdkDirectionPackageObservation($observation, $sdkAutoload, $mode === 'embedded' ? $options['application-root'] : null);
     }
     if ($mode === 'embedded' && isset($fixture['patch_deployment']['embedded_clock_probe']) && ! isset($observation['workflow_source'])) {
         $observation['workflow_source'] = InstalledVersions::getReference('durable-workflow/workflow');

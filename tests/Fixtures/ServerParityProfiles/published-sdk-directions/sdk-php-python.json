@@ -12,7 +12,7 @@
   "sdk_direction": {
     "workflow": "php",
     "activity": "python",
-    "workflow_queue": "server-parity-v1",
+    "workflow_queue": "server-parity-sdk-workflow",
     "activity_queue": "server-parity-sdk-activity",
     "phase_order": ["original", "activity", "replacement"],
     "start_before_worker_registration": true

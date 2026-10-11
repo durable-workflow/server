@@ -26,6 +26,16 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+Draft [#401](https://github.com/durable-workflow/server/pull/401) adds the next
+qualification: all nine fresh PHP/Python/Rust workflow-author and separately
+routed activity-worker directions. An original author schedules one activity,
+an activity-only process commits it, and a cold workflow process completes the
+same run with unchanged history prefixes and exact typed Avro values. Installed
+package identities and real HTTP phase receipts are required. Embedded executes
+the canonical PHP definition and labels language transport inapplicable. Its
+separate tuple preserves every earlier cohort. Implementation and actual runtime
+qualification are pending; source reader checks do not establish SDK execution.
+
 [#399](https://github.com/durable-workflow/server/pull/399) implements and
 qualifies native pending mixed-selection repair. Its timer winner resumes a
 cold incompatible author while the separately routed activity remains pending.
@@ -39,7 +49,7 @@ one scenario, including unchanged waiting history and exact typed Avro output.
 Merge `2dbf05dcb4cfab8fc89973e24245438a167e3d37` retains the qualified tree;
 [post-merge Shared verification](https://github.com/durable-workflow/server/actions/runs/38142464272)
 and [PHP verification](https://github.com/durable-workflow/server/actions/runs/38142464238)
-are tracked separately until they complete.
+pass, with all six main configurations and actual retained pending records.
 
 [Workflow #755](https://github.com/durable-workflow/workflow/issues/755) is
 closed as delivered: published Workflow 2.5.10 and Server 2.5.20 repair the
