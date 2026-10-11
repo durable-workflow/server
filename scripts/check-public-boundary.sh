@@ -63,7 +63,8 @@ else
   rev_args=(-1 HEAD)
 fi
 
-if mapfile -t commits < <(git rev-list "${rev_args[@]}" 2>/dev/null); then
+if commit_list="$(git rev-list "${rev_args[@]}" 2>/dev/null)" && [[ -n "$commit_list" ]]; then
+  mapfile -t commits <<< "$commit_list"
   for commit in "${commits[@]}"; do
     metadata="$(git show -s --format='%an <%ae>%n%s%n%b' "$commit")"
 
