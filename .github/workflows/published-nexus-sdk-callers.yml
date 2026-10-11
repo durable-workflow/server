@@ -1,0 +1,78 @@
+name: Published Nexus SDK callers
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/published-nexus-sdk-callers.yml
+      - scripts/conformance/nexus-published-artifacts.sh
+      - scripts/conformance/nexus-replay-transport.cjs
+      - tests/Unit/NexusSdkCallerEvidenceTest.mjs
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/published-nexus-sdk-callers.yml
+      - scripts/conformance/nexus-published-artifacts.sh
+      - scripts/conformance/nexus-replay-transport.cjs
+      - tests/Unit/NexusSdkCallerEvidenceTest.mjs
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nexus-callers-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  callers:
+    name: PHP/Python SDK callers (admission only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      DW_NEXUS_RESULT_DIR: ${{ runner.temp }}/nexus-proof
+      DW_NEXUS_RUN_ROOT: ${{ runner.temp }}/nexus-run
+      DW_SERVER_IMAGE: durableworkflow/server@sha256:1b8621cb43340f979f4dc144aa51c32d0747aaad73f2b600130e0ee973aea352
+      DW_SERVER_VERSION: 2.5.19
+      DW_WORKFLOW_PHP_VERSION: 2.5.9
+      DW_PHP_SDK_VERSION: 2.2.7
+      DW_PYTHON_SDK_VERSION: 2.5.4
+      DW_CLI_VERSION: 2.2.3
+      DW_WATERLINE_VERSION: 2.9.1
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+      - name: Reject false execution evidence
+        run: node --test tests/Unit/NexusSdkCallerEvidenceTest.mjs
+      - name: Execute the frozen published client and service pairs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$DW_NEXUS_RESULT_DIR"
+          # The complete Nexus suite remains non-passing until caller workflows
+          # and durable terminal service outcomes have actually been executed.
+          set +e
+          scripts/conformance/nexus-published-artifacts.sh
+          result=$?
+          set -e
+          printf '%s\n' "$result" > "$DW_NEXUS_RESULT_DIR/complete-suite-exit-code.txt"
+          jq -e '
+            .scope == "sdk_client_admission" and .outcome == "pass" and
+            .caller_workflow_execution_verified == false and
+            .durable_completion_qualified == false and
+            .typed_failure_qualified == false and .cancellation_qualified == false and
+            (.pairs | length) == 4 and all(.pairs[]; .admission_verified == true) and
+            ([.pairs[] | [.caller, .service]] | sort) ==
+              [["sdk-php", "sdk-python"], ["sdk-php", "workflow-php"],
+               ["sdk-python", "sdk-python"], ["sdk-python", "workflow-php"]]
+          ' "$DW_NEXUS_RESULT_DIR/nexus-sdk-client-matrix.json"
+          jq -e '.outcome != "pass"' "$DW_NEXUS_RESULT_DIR/nexus-conformance-result.json"
+      - name: Retain actual requests and durable observations
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: nexus-sdk-callers-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/nexus-proof
+          if-no-files-found: error
+          retention-days: 30
