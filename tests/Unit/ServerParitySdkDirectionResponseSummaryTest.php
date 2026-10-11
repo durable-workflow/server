@@ -49,4 +49,24 @@ final class ServerParitySdkDirectionResponseSummaryTest extends TestCase
         self::assertSame(['run_id' => 'original-run'],
             \sdkDirectionResponseSummary(['run_id' => 'original-run', 'control_plane' => ['details' => 'raw-only']]));
     }
+
+    public function test_child_claim_keeps_durable_prefix_and_resume_identity_without_discovery_metadata(): void
+    {
+        $task = ['task_id' => 'original-parent-task', 'workflow_id' => 'original-parent',
+            'run_id' => 'original-parent-run', 'workflow_type' => 'parity.v1.one_child',
+            'lease_owner' => 'cold-parent-worker', 'workflow_task_attempt' => 1,
+            'task_queue' => 'server-parity-sdk-parent',
+            'history_events' => [['sequence' => 5, 'event_type' => 'ChildRunCompleted', 'payload' => ['child_call_id' => 'original-call']]],
+            'child_call_id' => 'original-call', 'child_workflow_run_id' => 'original-child-run',
+            'resume_source_kind' => 'child_workflow_run', 'resume_source_id' => 'original-child-run',
+            'workflow_event_type' => 'ChildRunCompleted', 'workflow_sequence' => 1, 'open_wait_id' => 'child:original-call'];
+        $wire = ['task' => $task, 'server_capabilities' => ['repeated' => str_repeat('metadata', 750000)]];
+        $before = serialize($wire);
+        $summary = \sdkDirectionResponseSummary($wire, true);
+
+        self::assertSame($task, $summary['task']);
+        self::assertArrayNotHasKey('server_capabilities', $summary);
+        self::assertSame($before, serialize($wire));
+        self::assertLessThan(2048, strlen(json_encode($summary, JSON_THROW_ON_ERROR)));
+    }
 }

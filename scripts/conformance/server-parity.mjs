@@ -11,6 +11,7 @@ import {checkLegacyMarkerArtifacts, checkLegacyMarkerPackageObservation} from '.
 import {checkRangeArtifacts, checkRangePackages} from './server-parity/range-repair-contract.mjs';
 import {checkSdkDirectionArtifacts, checkSdkDirectionPackages} from './server-parity/sdk-direction-contract.mjs';
 import {parseDatabaseResourceLimits} from './server-parity/database-resource-contract.mjs';
+import {checkSdkChildDirectionArtifacts, checkSdkChildDirectionPackages} from './server-parity/sdk-child-direction-contract.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const {values, positionals} = parseArgs({allowPositionals: true, options: {
@@ -79,6 +80,7 @@ try {
       checkPublishedPatchArtifacts(fixture, record.artifacts);
       checkRangeArtifacts(fixture, record.artifacts);
       checkSdkDirectionArtifacts(fixture, record.artifacts);
+      checkSdkChildDirectionArtifacts(fixture, record.artifacts);
       if (fixture.patch_deployment?.legacy_marker_history) checkLegacyMarkerArtifacts(fixture, record.artifacts);
       const workflowId = `${values.prefix}-${fixture.id}`;
       const arguments_ = [resolve(root, 'scripts/conformance/server-parity/probe.php'), '--mode', values.mode, '--fixture', path, '--workflow-id', workflowId];
@@ -102,6 +104,7 @@ try {
         else checkPatchPackageObservation(fixture, item.observation, record.artifacts);
         checkRangePackages(fixture, item.observation, record.artifacts);
         checkSdkDirectionPackages(fixture, item.observation, record.artifacts);
+        checkSdkChildDirectionPackages(fixture, item.observation, record.artifacts);
         item.outcome = 'product-fail';
         item.projection = checkObservation(fixture, item.observation, workflowId);
         item.outcome = 'pass';

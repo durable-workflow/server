@@ -31,8 +31,9 @@ directions using the qualified one-activity component tuple. Its original
 parent schedules one child on a separate queue, a child-only process commits
 the exact typed result, and a cold parent-only replacement completes the same
 run. Original call/link/child identities and full parent/child histories are
-required. Adapters, reader and isolated runtime qualification are pending;
-these definitions establish no new execution pass. New recordings capture
+required. Normal SDK adapters, reader guards and isolated profile invocation
+are implemented; actual runtime qualification is pending. These definitions
+and modeled checks establish no new execution pass. New recordings capture
 effective database memory/swap limits separately from frozen historical
 manifest envelopes. Namespaced children, retries, failures, cancellation
 propagation, other policies and parallel groups remain separate gates.

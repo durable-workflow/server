@@ -4,6 +4,11 @@ set -u
 backend="$1"
 tag=sdk-directions
 cohort=published-sdk-directions
+case "${2:-activity}" in
+  activity) ;;
+  child) tag=sdk-child-directions; cohort=published-sdk-child-directions ;;
+  *) echo 'Choose activity or child SDK directions' >&2; exit 2 ;;
+esac
 test -n "${RESOURCE_SCOPE:?Set the owning isolated network/resource scope}"
 profile="tests/Fixtures/ServerParityProfiles/$cohort"
 image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' "$profile/artifacts.json")
@@ -15,8 +20,10 @@ mkdir -p "$evidence"
 docker stop --time 30 "$resource-server" || true
 stages=(sdk tests bootstrap-php bootstrap-embedded server record-php record-embedded record-native compare)
 for stage in "${stages[@]}"; do
-  docker logs "$resource-$stage" > "$evidence/$stage.log" 2>&1 || true
-  docker inspect "$resource-$stage" > "$evidence/$stage-container.json" 2>&1 || true
+  if docker inspect "$resource-$stage" >/dev/null 2>&1; then
+    docker logs "$resource-$stage" > "$evidence/$stage.log" 2>&1 || true
+    docker inspect "$resource-$stage" > "$evidence/$stage-container.json" 2>&1 || true
+  fi
 done
 docker rm -f "$resource-sdk" "$resource-tests" \
   "$resource-bootstrap-php" "$resource-bootstrap-embedded" "$resource-server" \

@@ -6,7 +6,7 @@ use DurableWorkflow\Client;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\WorkflowContext;
 
-function sdkDirectionResponseSummary(mixed $response): mixed
+function sdkDirectionResponseSummary(mixed $response, bool $childDirection = false): mixed
 {
     if (! is_array($response)) {
         return $response;
@@ -22,6 +22,9 @@ function sdkDirectionResponseSummary(mixed $response): mixed
         $summary['task'] = array_intersect_key($summary['task'], array_flip([
             'task_id', 'workflow_id', 'run_id', 'workflow_run_id', 'task_type',
             'workflow_task_attempt', 'activity_attempt_id', 'lease_owner', 'task_queue',
+            ...($childDirection ? ['workflow_type', 'history_events', 'child_call_id',
+                'child_workflow_run_id', 'resume_source_kind', 'resume_source_id',
+                'workflow_event_type', 'workflow_sequence', 'open_wait_id'] : []),
         ]));
     }
 
@@ -58,6 +61,9 @@ function sdkDirectionHttpObservation(array $fixture, array $options): array
     fclose($proxyPipes[0]);
     $phases = [];
     $runId = '';
+    $childDirection = isset($fixture['sdk_child_direction']);
+    $spec = $fixture[$childDirection ? 'sdk_child_direction' : 'sdk_direction'];
+    $childWorkflowId = $childRunId = '';
     $client = new Client($options['url'], namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null);
     $deadline = microtime(true) + 35;
     try {
@@ -65,15 +71,18 @@ function sdkDirectionHttpObservation(array $fixture, array $options): array
         if (! preg_match('#^http://127\\.0\\.0\\.1:[0-9]+$#', $url)) {
             throw new RuntimeException('SDK observer did not bind its local port.');
         }
-        foreach ($fixture['sdk_direction']['phase_order'] as $phase) {
-            $language = $fixture['sdk_direction'][$phase === 'activity' ? 'activity' : 'workflow'];
+        foreach ($spec['phase_order'] as $phase) {
+            $language = $childDirection ? $spec[$phase === 'child' ? 'child' : 'parent']
+                : $spec[$phase === 'activity' ? 'activity' : 'workflow'];
+            $actorWorkflowId = $phase === 'child' ? $childWorkflowId : $options['workflow-id'];
+            $actorRunId = $phase === 'child' ? $childRunId : $runId;
             $arguments = match ($language) {
                 'php' => [PHP_BINARY, __DIR__.'/sdk-directions/php.php'],
                 'python' => ['python3', __DIR__.'/sdk-directions/python.py'],
                 'rust' => [getenv('DW_PARITY_RUST_DIRECTION_WORKER') ?: '/sdk-directions/rust-worker'],
                 default => throw new RuntimeException('Unknown published SDK direction language.'),
             };
-            array_push($arguments, $phase, $url, $options['workflow-id'], $runId, $options['fixture'],
+            array_push($arguments, $phase, $url, $actorWorkflowId, $actorRunId, $options['fixture'],
                 (string) max(0.001, $deadline - microtime(true)));
             $offset = count(file($journal, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES));
             $process = proc_open($arguments, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
@@ -90,11 +99,11 @@ function sdkDirectionHttpObservation(array $fixture, array $options): array
             }
             $status = proc_close($process);
             $lines = array_slice(file($journal, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES), $offset);
-            file_put_contents($evidence.'/sdk-direction-'.$name.'-'.$phase.'.json', json_encode([
+            file_put_contents($evidence.'/'.($childDirection ? 'sdk-child-direction-' : 'sdk-direction-').$name.'-'.$phase.'.json', json_encode([
                 'language' => $language, 'phase' => $phase, 'stdout' => $stdout, 'stderr' => $stderr,
                 'exit_status' => $status, 'transport_jsonl' => implode("\n", $lines)."\n",
             ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)."\n");
-            $requests = array_map(static function (string $line): array {
+            $requests = array_map(static function (string $line) use ($childDirection): array {
                 $item = json_decode($line, true, flags: JSON_THROW_ON_ERROR);
                 foreach (['request', 'response'] as $side) {
                     $body = $item[$side.'_body'];
@@ -105,13 +114,15 @@ function sdkDirectionHttpObservation(array $fixture, array $options): array
                 }
                 // Exact request/response bytes remain in the retained sidecar.
                 unset($item['request_body'], $item['response_body'], $item['response_bytes_base64']);
-                $item['response'] = sdkDirectionResponseSummary($item['response']);
+                $item['response'] = sdkDirectionResponseSummary($item['response'], $childDirection);
 
                 return $item;
             }, $lines);
             $result = $status === 0 ? json_decode($stdout, true, flags: JSON_THROW_ON_ERROR)
                 : ['phase' => $phase, 'language' => $language, 'worker_finished' => false, 'worker_error' => trim($stderr)];
-            $runId = $result['run_id'] ?? $runId;
+            if (! $childDirection || $phase === 'original') {
+                $runId = $result['run_id'] ?? $runId;
+            }
             if ($runId === '') {
                 foreach ($requests as $request) {
                     if ($request['method'] === 'POST' && $request['path'] === '/api/workflows'
@@ -124,15 +135,51 @@ function sdkDirectionHttpObservation(array $fixture, array $options): array
                 throw new RuntimeException('Published client did not return an original run; exact transport failure is retained.');
             }
             $snapshot = sdkDirectionSnapshot($client, $options['workflow-id'], $runId);
-            $phases[] = $result + ['requests' => $requests, 'snapshot' => $snapshot];
+            $childSnapshot = null;
+            if ($childDirection) {
+                foreach ($snapshot['events'] as $event) {
+                    if ($event['event_type'] === 'ChildRunStarted') {
+                        $childWorkflowId = $event['payload']['child_workflow_instance_id'];
+                        $childRunId = $event['payload']['child_workflow_run_id'];
+                    }
+                }
+                if ($childWorkflowId !== '' && $childRunId !== '') {
+                    $childSnapshot = sdkDirectionSnapshot($client, $childWorkflowId, $childRunId);
+                }
+            }
+            $phases[] = $result + ['requests' => $requests, 'snapshot' => $snapshot,
+                ...($childDirection ? ['child_snapshot' => $childSnapshot] : [])];
             if ($status !== 0) {
                 break; // Preserve the actual open run and let the reader classify the product failure.
             }
         }
         $observation = $phases[array_key_last($phases)]['snapshot'];
         $identityPath = getenv('DW_PARITY_DIRECTION_IDENTITY') ?: '/sdk-directions/identity.json';
-        $observation['sdk_direction'] = ['applicable' => true, 'phases' => $phases,
+        $observation[$childDirection ? 'sdk_child_direction' : 'sdk_direction'] = ['applicable' => true, 'phases' => $phases,
             'packages' => json_decode(file_get_contents($identityPath), true, flags: JSON_THROW_ON_ERROR)];
+        if ($childDirection) {
+            $observation['children'] = [$phases[array_key_last($phases)]['child_snapshot']];
+            $observation['workflow_polls'] = $observation['workflow_completions'] = [];
+            foreach ($phases as $phase) {
+                foreach ($phase['requests'] as $request) {
+                    if ($request['path'] === '/api/worker/workflow-tasks/poll' && is_array($request['response']['task'] ?? null)) {
+                        $observation['workflow_polls'][] = $request['response']['task'];
+                    } elseif ($request['method'] === 'POST' && preg_match('#^/api/worker/workflow-tasks/[^/]+/complete$#', $request['path'])) {
+                        $request['decoded_commands'] = [];
+                        foreach ($request['request']['commands'] as $command) {
+                            $decoded = [];
+                            foreach (['arguments', 'result'] as $field) {
+                                if (array_key_exists($field, $command)) {
+                                    $decoded[$field] = $client->payloadCodec()->decodeEnvelope($command[$field]);
+                                }
+                            }
+                            $request['decoded_commands'][] = ['decoded' => $decoded, 'typed_decoded' => array_map(typedValue(...), $decoded)];
+                        }
+                        $observation['workflow_completions'][] = $request;
+                    }
+                }
+            }
+        }
 
         return $observation;
     } finally {

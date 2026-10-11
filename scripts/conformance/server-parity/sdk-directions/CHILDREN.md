@@ -2,8 +2,9 @@
 
 This additive Server #325 profile defines nine PHP/Python/Rust parent and child
 workflow directions with the same pinned published component tuple as the
-qualified one-activity profile. Definitions are implemented; adapters, reader,
-isolated runtime recordings and qualification are pending.
+qualified one-activity profile. Definitions, normal SDK adapters, reader guards
+and isolated profile invocation are implemented. Actual runtime recordings and
+hosted qualification are pending.
 
 Start the original parent before worker registration. A parent-only process
 schedules one child on a separate queue and exits. A distinct child-only
@@ -26,3 +27,11 @@ allowances do not establish performance qualification.
 Namespaced children, retries, failures, cancellation propagation, other
 parent-close policies, parallel groups, activity combinations and performance
 remain separate gates.
+
+The shared workflow builds the same installed SDK adapters once for both
+activity and child profiles. Invoke the child cohort with
+`bash scripts/conformance/server-parity/sdk-direction-profile.sh BACKEND NATIVE_URL child`;
+it gives PHP, embedded and native recordings separate evidence directories and
+uses independent PHP/embedded databases. Its owning workflow must call
+`sdk-direction-cleanup.sh BACKEND child` before removing the shared database
+and network. Cleanup preserves captured container logs when invoked again.
