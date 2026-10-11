@@ -2752,7 +2752,8 @@ async function probePublishedTypedOutcomes(baseUrl, token, compose, phpService, 
 }
 
 async function probePublishedPhpCallerRecovery(baseUrl, token, compose, phpService) {
-  fs.copyFileSync(path.join(scriptDir, 'nexus-php-caller-recovery.php'), path.join(compose.runRoot, 'nexus-php-caller-recovery.php'));
+  const fixtureDir = path.dirname(process.argv[5]);
+  fs.copyFileSync(path.join(fixtureDir, 'nexus-php-caller-recovery.php'), path.join(compose.runRoot, 'nexus-php-caller-recovery.php'));
   const reports = [];
   for (const service of ['php', 'python']) {
     const input = {token, endpoint: `published-${service}-workflow-service`,
