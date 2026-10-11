@@ -84,6 +84,27 @@ The authoritative machine-readable contract is published from
   Nexus calls and Nexus services into workflow code.
 - `out_of_scope` — the surfaces explicitly outside the Nexus contract.
 
+## Built-in SDK client coverage
+
+The published-artifact runner executes all four PHP/Python client and service
+pairs. PHP clients call `Client::startServiceOperation()` from the installed
+PHP SDK. Python clients call `Client.execute_nexus_operation()` from the
+installed Python SDK. Each invocation retains the actual process ID, installed
+version, HTTP request/response, durable service-call ID and caller-indexed row.
+The PHP service uses the published Workflow invocable adapter and the Python
+service uses its published SDK invocable handler.
+
+`nexus-sdk-client-matrix.json` reports `sdk_client_admission` scope. Caller
+reference IDs in these client cells are fixture labels. API reflection reports
+the methods available in the installed package. Workflow qualification uses
+actual caller workers, run identities, histories and recovery.
+
+The complete suite requires durable terminal service outcomes. It keeps a cell
+`not_covered` while the call remains admitted or caller workflow execution is
+unproven. Separate direct handler probes exercise payloads and typed errors.
+The connected client admission workflow retains both the four-pair matrix and
+the complete suite's result, with their respective scopes.
+
 ## Why Nexus
 
 The cross-namespace service-call layer
