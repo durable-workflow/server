@@ -4,10 +4,11 @@ import http from 'node:http';
 import net from 'node:net';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
-import {mkdtempSync, readFileSync, rmSync, watch} from 'node:fs';
+import {mkdtempSync, readFileSync, rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {gzipSync} from 'node:zlib';
+import {setTimeout as delay} from 'node:timers/promises';
 
 test('HTTP observer preserves compressed bytes and refuses to retain authentication headers', {timeout: 10000}, async () => {
   const directory = mkdtempSync(join(tmpdir(), 'server-parity-wire-'));
@@ -83,7 +84,7 @@ test('opt-in HTTP observer proves a partial cancelled poll never starts an upstr
   await once(upstream, 'listening');
   const proxy = spawn(process.execPath, [new URL('../../scripts/conformance/server-parity/published-sdk-patch/observe-http.mjs', import.meta.url).pathname,
     `http://127.0.0.1:${upstream.address().port}`, journal, '--forwarding-state'], {stdio: ['ignore', 'pipe', 'pipe']});
-  let client, watcher;
+  let client;
   try {
     const [ready] = await once(proxy.stdout, 'data');
     const address = new URL(ready.toString().trim());
@@ -93,12 +94,19 @@ test('opt-in HTTP observer proves a partial cancelled poll never starts an upstr
     client.write('POST /api/worker/activity-tasks/poll HTTP/1.1\r\nHost: localhost\r\nExpect: 100-continue\r\nContent-Length: 100\r\n\r\n');
     const [interim] = await continueResponse;
     assert.match(interim.toString(), /^HTTP\/1\.1 100 Continue/);
-    const recorded = new Promise(resolve => watcher = watch(directory, (event, filename) => {
-      if (filename === 'wire.jsonl') resolve();
-    }));
     client.end('{"worker_id":');
-    await recorded;
-    const receipt = JSON.parse(readFileSync(journal, 'utf8'));
+    // Creating the journal can notify another process before appendFileSync
+    // finishes writing its first line. Require the complete receipt itself.
+    const deadline = Date.now() + 2000;
+    let raw = '';
+    while (!raw.endsWith('\n')) {
+      try { raw = readFileSync(journal, 'utf8'); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+      if (raw.endsWith('\n')) break;
+      assert.ok(Date.now() < deadline, 'observer did not finish the cancelled-poll receipt');
+      await delay(10);
+    }
+    const receipt = JSON.parse(raw);
     assert.equal(receipt.request_body, '{"worker_id":');
     assert.equal(receipt.request_body_complete, false);
     assert.equal(receipt.upstream_request_started, false);
@@ -112,7 +120,6 @@ test('opt-in HTTP observer proves a partial cancelled poll never starts an upstr
     assert.equal(upstreamRequests, 0);
     assert.equal(proxy.exitCode, null);
   } finally {
-    watcher?.close();
     client?.destroy();
     const closed = once(proxy, 'close');
     proxy.kill();
