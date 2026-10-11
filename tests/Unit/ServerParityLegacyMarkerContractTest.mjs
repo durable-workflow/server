@@ -24,8 +24,9 @@ for (const id of ['legacy-two-markers-pending', 'legacy-two-markers-completed', 
       instance: {id: 'test', current_run_id: 'original-run', namespace: 'default', workflow_type: fixture.workflow_type}};
     const io = (method, path, request = {}) => ({method, path, request, status: 200, transport_error: null, client_cancelled: false});
     const registration = role => [io('POST', '/api/worker/register', {worker_id: 'test:'+role, task_queue: 'server-parity-v1'}),
-      io('DELETE', '/api/worker/registrations/'+role)];
-    const outcome = io('POST', '/api/worker/activity-tasks/original-activity/complete');
+      {...io('DELETE', '/api/worker/registrations/'+encodeURIComponent('test:'+role)), response: {worker_id: 'test:'+role}}];
+    const outcome = io('POST', '/api/worker/activity-tasks/original-activity/complete', {
+      lease_owner: spec.checkpoint === 'activity_completed' ? 'test:original-activity' : 'test:replacement'});
     const {sequence, ...fields} = spec.marker;
     const original = {...structuredClone(base), ...(spec.legacy_marker_history.embedded_original === '2.5.5' ? old : {}),
       phase: 'original', pid: 101, status: 'pending', output: null, worker_finished: true,
@@ -90,6 +91,67 @@ for (const id of ['legacy-two-markers-pending', 'legacy-two-markers-completed', 
     raw.patch_deployment.original.requests.find(request => request.path.endsWith('/complete')).request.sticky_cache = {ttl_seconds: 1};
     assert.throws(() => checkLegacyMarkerDeployment(fixture, raw, 'test'));
   });
+  function queryCapacityModel(phase, worker = 'test:'+phase) {
+    const raw = model('http'), requests = raw.patch_deployment[phase].requests;
+    const position = requests.findIndex(request => request.method === 'DELETE' && request.response.worker_id === worker);
+    const [withdrawal] = requests.splice(position, 1);
+    const refusal = {method: 'POST', path: '/api/worker/query-tasks/poll', status: 429,
+      request: {worker_id: worker, task_queue: 'server-parity-v1', poll_request_id: 'original-query-poll', timeout_seconds: 1},
+      response: {task: null, poll_status: 'long_poll_capacity_exhausted', reason: 'long_poll_capacity_exhausted', message: 'Retry after the delay'},
+      response_retry_after: '1', response_encoding: 'identity', transport_error: null, client_cancelled: false};
+    requests.push(refusal, withdrawal);
+    return {raw, requests, refusal, withdrawal};
+  }
+  for (const phase of ['original', 'replacement']) {
+    test(`${id} ${phase}: accepts declared query capacity then own commit and withdrawal`, () => {
+      const {raw, requests, refusal} = queryCapacityModel(phase);
+      const position = requests.findIndex(request => request.path.endsWith('/complete') && request.request.lease_owner === 'test:'+phase);
+      const [commit] = requests.splice(position, 1);
+      requests.splice(requests.indexOf(refusal) + 1, 0, commit);
+      checkLegacyMarkerDeployment(fixture, raw, 'test');
+    });
+    test(`${id} ${phase}: accepts identical query capacity recovery`, () => {
+      const {raw, requests, refusal} = queryCapacityModel(phase);
+      requests.splice(requests.indexOf(refusal) + 1, 0, {...structuredClone(refusal), status: 200, response_retry_after: null, response: {task: null}});
+      checkLegacyMarkerDeployment(fixture, raw, 'test');
+    });
+    for (const [name, mutate] of [
+      ['cancelled HTTP response', x => x.refusal.client_cancelled = true],
+      ['transport failure', x => x.refusal.transport_error = 'connection reset'],
+      ['activity capacity', x => x.refusal.path = '/api/worker/activity-tasks/poll'],
+      ['workflow capacity', x => x.refusal.path = '/api/worker/workflow-tasks/poll'],
+      ['completion capacity', x => x.refusal.path = '/api/worker/query-tasks/task/complete'],
+      ['HTTP authentication refusal', x => x.refusal.status = 401],
+      ['leased task', x => x.refusal.response.task = {task_id: 'lost-task'}],
+      ['missing null task', x => delete x.refusal.response.task],
+      ['wrong poll status', x => x.refusal.response.poll_status = 'backend_lock_pressure'],
+      ['wrong reason', x => x.refusal.response.reason = 'unauthorized'],
+      ['missing message', x => delete x.refusal.response.message],
+      ['unknown summary field', x => x.refusal.response.accepted = true],
+      ['zero retry hint', x => x.refusal.response_retry_after = '0'],
+      ['long retry hint', x => x.refusal.response_retry_after = '2'],
+      ['missing retry hint', x => x.refusal.response_retry_after = null],
+      ['foreign queue', x => x.refusal.request.task_queue = 'other-queue'],
+      ['foreign worker', x => x.refusal.request.worker_id = 'unregistered-worker'],
+      ['empty poll identity', x => x.refusal.request.poll_request_id = ''],
+      ['foreign withdrawal acknowledgement', x => x.withdrawal.response.worker_id = 'other-worker'],
+      ['withdrawal before own commit', x => {x.requests.splice(x.requests.indexOf(x.withdrawal), 1); x.requests.unshift(x.withdrawal);}],
+    ]) test(`${id} ${phase}: rejects query ${name}`, () => {
+      const state = queryCapacityModel(phase); mutate(state);
+      assert.throws(() => checkLegacyMarkerDeployment(fixture, state.raw, 'test'));
+    });
+  }
+  if (spec.checkpoint === 'activity_completed') {
+    test(`${id}: accepts actual activity-only worker query capacity after its activity commit`, () => {
+      const state = queryCapacityModel('original', 'test:original-activity');
+      checkLegacyMarkerDeployment(fixture, state.raw, 'test');
+    });
+    test(`${id}: rejects activity-only withdrawal backed by another worker's commit`, () => {
+      const state = queryCapacityModel('original', 'test:original-activity');
+      state.requests.find(request => request.path.startsWith('/api/worker/activity-tasks/') && request.path.endsWith('/complete')).request.lease_owner = 'test:original';
+      assert.throws(() => checkLegacyMarkerDeployment(fixture, state.raw, 'test'));
+    });
+  }
   for (const phase of ['original', 'replacement']) for (const kind of ['workflow', 'activity', 'query']) {
     function cancelledModel() {
       const raw = model('http');

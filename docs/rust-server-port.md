@@ -217,7 +217,10 @@ neither SDK: a preparation job builds the locked published adapters once using
 its existing registry/target cache, then shares only binaries, dependencies and
 installation receipts. All four local fixtures and their raw observations pass
 on PHP, native and embedded targets. Qualification across the six hosted
-database configurations remains pending. Immediate sticky failover, blocked
+database configurations is tracked in [#382](https://github.com/durable-workflow/server/pull/382).
+The profile explicitly checks published query-capacity refusal: a null task,
+one-second retry hint and identical-request recovery or clean authenticated
+withdrawal after that worker's own accepted commit. Immediate sticky failover, blocked
 repair, migration, full fault budgets and performance remain separate gates.
 
 [#381](https://github.com/durable-workflow/server/pull/381) implements ordinary

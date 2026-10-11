@@ -15,6 +15,8 @@ export function checkLegacyMarkerArtifacts(fixture, artifacts) {
   assert.deepEqual(spec.expected_decisions, [true, true]);
   assert.deepEqual(spec.cancel_poll_on_shutdown, ['workflow', 'activity', 'query'],
     'explicit clean published-worker shutdown poll policy');
+  assert.deepEqual(spec.query_poll_capacity, {status: 429, poll_status: 'long_poll_capacity_exhausted',
+    retry_after_seconds: 1, allow_clean_shutdown_after_commit: true}, 'explicit published idle-query capacity policy');
   for (const selected of [spec.producer, spec.consumer]) {
     assert(['python', 'rust'].includes(selected.language));
     const installed = artifacts.published_sdk_artifacts?.[selected.language];
@@ -162,6 +164,12 @@ export function checkLegacyMarkerDeployment(fixture, observation, workflowId) {
       const registered = phase.requests.filter(request => request.method === 'POST' && request.path === '/api/worker/register');
       assert.deepEqual(registered.map(request => request.request.worker_id).sort(), workers.slice(0, registrations).sort());
       for (const request of registered) assert.equal(request.request.task_queue, 'server-parity-v1');
+      for (const worker of workers.slice(0, registrations)) {
+        const withdrawal = phase.requests.filter(request => request.method === 'DELETE'
+          && request.path === '/api/worker/registrations/'+encodeURIComponent(worker));
+        assert.equal(withdrawal.length, 1, 'each actual registered worker withdraws once');
+        assert.equal(withdrawal[0].response.worker_id, worker, 'withdrawal acknowledges the same worker');
+      }
       for (const request of completions(phase)) assert.equal(request.request.lease_owner, workflowId+':'+role);
       for (const [index, request] of phase.requests.entries()) {
         assert.equal(request.transport_error, null);
@@ -176,6 +184,32 @@ export function checkLegacyMarkerDeployment(fixture, observation, workflowId) {
           assert(request.response && typeof request.response === 'object' && Object.keys(request.response).length === 0,
             'cancelled poll has an empty response');
           assert(phase.requests.slice(0, index).some(item => completions(phase).includes(item) && item.status === 200), 'authored commit precedes shutdown cancellation');
+        } else if (request.status === spec.query_poll_capacity.status) {
+          assert.equal(request.client_cancelled, false);
+          assert.equal(request.method, 'POST');
+          assert.equal(request.path, '/api/worker/query-tasks/poll');
+          assert.equal(request.response.task, null);
+          assert.equal(request.response.poll_status, spec.query_poll_capacity.poll_status);
+          assert.equal(request.response.reason, spec.query_poll_capacity.poll_status);
+          assert.equal(typeof request.response.message, 'string');
+          assert(Object.keys(request.response).every(key => ['task', 'poll_status', 'reason', 'message'].includes(key)));
+          assert.equal(request.response_retry_after, String(spec.query_poll_capacity.retry_after_seconds));
+          assert.equal(request.request.task_queue, 'server-parity-v1');
+          assert.equal(typeof request.request.poll_request_id, 'string');
+          assert(request.request.poll_request_id.length > 0);
+          const worker = request.request.worker_id;
+          assert(registered.some(item => item.request.worker_id === worker && phase.requests.indexOf(item) < index),
+            'capacity refusal belongs to an already registered worker');
+          const recovered = phase.requests.slice(index + 1).some(next => next.method === request.method && next.path === request.path
+            && next.status === 200 && !next.client_cancelled && next.transport_error === null
+            && JSON.stringify(next.request) === JSON.stringify(request.request));
+          const withdrawal = phase.requests.findIndex(item => item.method === 'DELETE'
+            && item.path === '/api/worker/registrations/'+encodeURIComponent(worker) && item.status === 200
+            && item.response.worker_id === worker);
+          const committed = phase.requests.slice(0, withdrawal).some(item => item.status === 200
+            && [...completions(phase), ...activities(phase)].includes(item) && item.request.lease_owner === worker);
+          assert(recovered || spec.query_poll_capacity.allow_clean_shutdown_after_commit && withdrawal > index && committed,
+            'query capacity refusal recovers identically or the worker withdraws after its own accepted commit');
         } else if (request.status === 503) {
           assert.equal(request.method, 'POST');
           assert(['/api/worker/workflow-tasks/poll', '/api/worker/activity-tasks/poll'].includes(request.path));
@@ -191,7 +225,7 @@ export function checkLegacyMarkerDeployment(fixture, observation, workflowId) {
             && JSON.stringify(next.request) === JSON.stringify(request.request)), 'same original poll recovers');
         } else {
           assert.equal(request.client_cancelled, false);
-          assert(request.status >= 200 && request.status < 300);
+          assert(request.status >= 200 && request.status < 300, `${role}: ${request.method} ${request.path} returned ${request.status}`);
         }
       }
     }
