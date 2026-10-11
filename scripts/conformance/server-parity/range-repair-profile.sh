@@ -91,6 +91,10 @@ done
 test "$ready" = 1
 selection=(--prefix "$prefix" --artifacts "/source/$manifest"
   --fixture "$profile/$fixture.json")
+if test "$backend" != sqlite; then
+  database_resource_limits=$(docker inspect --format '{"memory_bytes":{{.HostConfig.Memory}},"memory_swap_bytes":{{.HostConfig.MemorySwap}}}' "$RESOURCE_SCOPE-db")
+  selection+=(--database-resource-limits "$database_resource_limits")
+fi
 docker run --name "$resource-record-php" "${limits[@]}" --network "$RESOURCE_SCOPE" --entrypoint node "${shared[@]}" -e DW_PARITY_TOKEN=parity-test-token \
   "$image" scripts/conformance/server-parity.mjs record --mode http --url "http://$php_alias:8080" \
   --target php "${selection[@]}" --output /evidence/php.json > "$evidence/php-record.txt" 2>&1

@@ -852,7 +852,7 @@ where
             let mut claim = json!({"task_id": task_id, "workflow_id": DB::string(&run,"workflow_instance_id")?,
                 "run_id": run_id, "workflow_instance_id": DB::string(&run,"workflow_instance_id")?, "workflow_run_id": run_id,
                 "workflow_type": DB::string(&run,"workflow_type")?, "namespace": self.namespace.as_ref(), "payload_codec": "avro",
-                "queue": queue, "lease_owner": worker_id, "lease_expires_at": expires});
+                "queue": queue, "task_queue": queue, "lease_owner": worker_id, "lease_expires_at": expires});
             if let Some(activity) = activity {
                 let activity_id = DB::string(&activity, "id")?;
                 let attempt_id = id();
