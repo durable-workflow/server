@@ -289,6 +289,35 @@ The contract is symmetric across modes: a sync caller has the same
 durable record as an async caller. Sync mode is a delivery preference
 on top of the durable record, not an alternative to it.
 
+## Original call deadlines
+
+An operation's `deadline_policy` is either null, a positive integer
+`timeout_seconds` from 1 through 2147483647, or an RFC3339 `deadline_at`
+timestamp with an explicit offset and at most six fractional digits. Absolute
+deadlines must fall within UTC years 1970 through 9999. These alternatives
+cannot be combined. Unsupported fields, types and invalid calendar dates return
+HTTP 422 before a catalog update or new call admission.
+
+At admission, the Server stores the original `accepted_at` and resolved
+`call_deadline_at` together. Relative budgets begin at that original acceptance,
+and duplicate requests, retries and catalog changes retain it. Both timestamps
+are exposed as UTC with six fractional digits, such as
+`2026-10-11T12:00:01.123456Z`. Null policy retains the linked target's existing
+timeout behavior.
+
+The normal repair pass can expire an accepted call without a caller API poll.
+At the deadline, expiry wins over a competing terminal transition. The call
+becomes `failed` with outcome `timed_out` and error type `ServiceCallTimedOut`,
+and the waiting caller receives one failure at its original call boundary. A
+linked target may still complete its own work, but that late result cannot
+replace the timed-out call or deliver a second caller result. Call expiry does
+not implicitly cancel the target.
+
+For an existing deployment, back up the database and replace old application
+and worker processes before applying the migration. Stored call deadlines are
+derived from their original acceptance and policy, never from upgrade time.
+An unsupported stored policy stops the migration with the affected call ID.
+
 ## SDK implementation notes
 
 SDKs implementing Nexus calls and Nexus services MUST:
