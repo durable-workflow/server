@@ -10,6 +10,7 @@ on:
       - scripts/conformance/nexus-php-service-worker.php
       - scripts/conformance/nexus-php-workflow-probe.php
       - scripts/conformance/nexus-php-caller-recovery.php
+      - scripts/conformance/nexus-python-caller-recovery.py
       - scripts/conformance/nexus-python-service-worker.py
       - tests/Unit/NexusSdkCallerEvidenceTest.mjs
   push:
@@ -22,6 +23,7 @@ on:
       - scripts/conformance/nexus-php-service-worker.php
       - scripts/conformance/nexus-php-workflow-probe.php
       - scripts/conformance/nexus-php-caller-recovery.php
+      - scripts/conformance/nexus-python-caller-recovery.py
       - scripts/conformance/nexus-python-service-worker.py
       - tests/Unit/NexusSdkCallerEvidenceTest.mjs
   workflow_dispatch:
