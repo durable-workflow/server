@@ -16,6 +16,8 @@ use Workflow\V2\Models\WorkflowServiceCall;
 use Workflow\V2\Models\WorkflowServiceEndpoint;
 use Workflow\V2\Models\WorkflowServiceOperation;
 use Workflow\V2\Support\DefaultServiceBoundaryPolicy;
+use Workflow\V2\Support\ServiceBoundaryDecision;
+use Workflow\V2\Support\ServiceBoundaryRequest;
 
 class ServiceExecutionRoutesTest extends TestCase
 {
@@ -75,7 +77,8 @@ class ServiceExecutionRoutesTest extends TestCase
 
     public function test_execute_dispatches_through_service_control_plane(): void
     {
-        $this->seedCatalog();
+        [, , $operation] = $this->seedCatalog();
+        $operation->forceFill(['deadline_policy' => ['timeout_seconds' => 30]])->save();
 
         $stub = new class implements ServiceControlPlane
         {
@@ -165,7 +168,14 @@ class ServiceExecutionRoutesTest extends TestCase
             ->assertJsonPath('caller_namespace', 'default')
             ->assertJsonPath('outcome', 'accepted')
             ->assertJsonPath('linked_workflow_instance_id', 'invoice-1')
-            ->assertJsonPath('resolved_binding_kind', 'workflow_run');
+            ->assertJsonPath('resolved_binding_kind', 'workflow_run')
+            ->assertJsonPath('accepted_at', $recordedCall->accepted_at->toJSON())
+            ->assertJsonPath('call_deadline_at', $recordedCall->accepted_at->copy()->addSeconds(30)->toJSON());
+
+        $this->assertSame(
+            $recordedCall->accepted_at->copy()->addSeconds(30)->toJSON(),
+            $recordedCall->call_deadline_at->toJSON(),
+        );
 
         $this->assertNotNull($stub->captured);
         $this->assertSame('billing', $stub->captured['endpoint']);
@@ -183,6 +193,8 @@ class ServiceExecutionRoutesTest extends TestCase
     public function test_execute_replay_with_matching_idempotency_key_returns_existing_call_without_new_admission(): void
     {
         [, , $operation] = $this->seedCatalog();
+
+        $acceptedAt = now();
 
         $serviceCall = WorkflowServiceCall::query()->create([
             'workflow_service_endpoint_id' => $operation->workflow_service_endpoint_id,
@@ -202,17 +214,23 @@ class ServiceExecutionRoutesTest extends TestCase
             'resolved_binding_kind' => 'workflow_run',
             'resolved_target_reference' => 'workflows.invoice.create',
             'idempotency_key' => 'caller-1-nexus-op-1',
-            'accepted_at' => now(),
+            'deadline_policy' => ['timeout_seconds' => 30],
+            'accepted_at' => $acceptedAt,
+            'call_deadline_at' => $acceptedAt->copy()->addSeconds(30),
             'started_at' => now(),
         ]);
 
-        $stub = new class($serviceCall) implements ServiceControlPlane
+        // A catalog edit, including unsupported legacy data, cannot restart
+        // the original accepted call's budget or prevent authorized replay.
+        $operation->forceFill(['deadline_policy' => ['timeout_seconds' => 0]])->save();
+
+        $stub = new class($this->app->make(ServiceControlPlane::class)) implements ServiceControlPlane
         {
             public bool $executeCalled = false;
 
             public ?array $describeCaptured = null;
 
-            public function __construct(private readonly WorkflowServiceCall $serviceCall) {}
+            public function __construct(private readonly ServiceControlPlane $delegate) {}
 
             public function execute(string $endpointName, string $serviceName, string $operationName, array $options = []): array
             {
@@ -228,22 +246,7 @@ class ServiceExecutionRoutesTest extends TestCase
                     'options' => $options,
                 ];
 
-                return [
-                    'found' => true,
-                    'service_call_id' => $this->serviceCall->id,
-                    'namespace' => $this->serviceCall->namespace,
-                    'caller_namespace' => $this->serviceCall->caller_namespace,
-                    'target_namespace' => $this->serviceCall->target_namespace,
-                    'endpoint_name' => $this->serviceCall->endpoint_name,
-                    'service_name' => $this->serviceCall->service_name,
-                    'operation_name' => $this->serviceCall->operation_name,
-                    'operation_mode' => 'async',
-                    'status' => 'started',
-                    'outcome' => 'accepted',
-                    'resolved_binding_kind' => 'workflow_run',
-                    'resolved_target_reference' => 'workflows.invoice.create',
-                    'reason' => null,
-                ];
+                return $this->delegate->describeCall($serviceCallId, $options);
             }
 
             public function cancelCall(string $serviceCallId, array $options = []): array
@@ -265,8 +268,11 @@ class ServiceExecutionRoutesTest extends TestCase
         $response->assertOk()
             ->assertJsonPath('accepted', true)
             ->assertJsonPath('idempotent_replay', true)
-            ->assertJsonPath('service_call_id', $serviceCall->id);
+            ->assertJsonPath('service_call_id', $serviceCall->id)
+            ->assertJsonPath('accepted_at', $acceptedAt->toJSON())
+            ->assertJsonPath('call_deadline_at', $acceptedAt->copy()->addSeconds(30)->toJSON());
 
+        $this->assertSame(['timeout_seconds' => 30], $serviceCall->refresh()->deadline_policy);
         $this->assertSame(1, WorkflowServiceCall::query()->count());
         $this->assertFalse($stub->executeCalled);
         $this->assertNotNull($stub->describeCaptured);
@@ -831,9 +837,9 @@ class ServiceExecutionRoutesTest extends TestCase
         $this->app->instance(ServiceBoundaryPolicy::class, new class implements ServiceBoundaryPolicy
         {
             public function evaluate(
-                \Workflow\V2\Support\ServiceBoundaryRequest $request,
-            ): \Workflow\V2\Support\ServiceBoundaryDecision {
-                return \Workflow\V2\Support\ServiceBoundaryDecision::denyAuthorization(
+                ServiceBoundaryRequest $request,
+            ): ServiceBoundaryDecision {
+                return ServiceBoundaryDecision::denyAuthorization(
                     reason: 'custom_policy_forbidden',
                     message: sprintf(
                         'Denied [%s/%s/%s].',
@@ -1372,7 +1378,7 @@ class ServiceExecutionRoutesTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $body
+     * @param  array<string, mixed>  $body
      */
     private function assertForbiddenResponseDoesNotDiscloseTarget(array $body): void
     {
@@ -1395,7 +1401,7 @@ class ServiceExecutionRoutesTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $rules
+     * @param  array<string, mixed>  $rules
      */
     private function bindDefaultServiceBoundaryPolicy(array $rules): void
     {
