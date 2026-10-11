@@ -43,7 +43,7 @@ use Workflow\WorkflowOptions;
 
 // Both adapters return observations; contract assertions live in the shared
 // runner. This probe never bootstraps or migrates a target database.
-$options = getopt('', ['mode:', 'fixture:', 'workflow-id:', 'application-root:', 'url:', 'run-id:', 'patch-phase:', 'patch-deadline:']);
+$options = getopt('', ['mode:', 'fixture:', 'workflow-id:', 'application-root:', 'url:', 'run-id:', 'patch-phase:', 'patch-deadline:', 'range-phase:', 'range-deadline:']);
 $mode = $options['mode'] ?? '';
 $fixture = json_decode(file_get_contents($options['fixture']), true, flags: JSON_THROW_ON_ERROR);
 $workflowId = $options['workflow-id'];
@@ -777,7 +777,17 @@ try {
     require __DIR__.'/child-cancellation-probe.php';
     require __DIR__.'/cancellation-probe.php';
     require __DIR__.'/cooperative-probe.php';
-    if (isset($fixture['patch_deployment'])) {
+    if (isset($fixture['range_repair'])) {
+        require __DIR__.'/range-repair-probe.php';
+        RangeRepairState::$changeId = $fixture['range_repair']['change_id'];
+        $observation = isset($options['range-phase'])
+            ? match ($mode) {
+                'http' => rangeHttpPhase($fixture, $options),
+                'embedded' => rangeEmbeddedPhase($fixture, $options),
+                default => throw new InvalidArgumentException('Mode must be http or embedded.'),
+            }
+            : rangeRepairObservation($fixture, $options);
+    } elseif (isset($fixture['patch_deployment'])) {
         require __DIR__.'/patch-deployment-probe.php';
         PatchDeploymentState::$changeId = $fixture['patch_deployment']['change_id'];
         PatchDeploymentState::$expectedDecisions = $fixture['patch_deployment']['expected_decisions'];
@@ -820,6 +830,9 @@ try {
     }
     $observation['sdk_php'] = ltrim(InstalledVersions::getPrettyVersion('durable-workflow/sdk'), 'v');
     $observation['sdk_php_source'] = InstalledVersions::getReference('durable-workflow/sdk');
+    if (isset($fixture['range_repair'])) {
+        $observation['sdk_composer_lock_sha256'] = hash_file('sha256', dirname($sdkAutoload, 2).'/composer.lock');
+    }
     $observation['php_version'] = PHP_VERSION;
     if ($mode === 'embedded' && ! isset($observation['workflow_package'])) {
         $observation['workflow_package'] = ltrim(InstalledVersions::getPrettyVersion('durable-workflow/workflow'), 'v');

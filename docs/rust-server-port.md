@@ -309,15 +309,34 @@ explicit repair of the same blocked task after byte-identical source restoration
 Independent loaded-source and PHP output audits preserve the published identity
 and exact int64/null/Unicode values. The
 [published qualification record](https://github.com/durable-workflow/workflow/issues/744#issuecomment-6105840885)
-distinguishes this embedded proof from the pending Server image and consumer
-directions. This Server change advances its committed Workflow pin and normal
-lock to that published source, preserving every other package identity, and
-prepares the existing Server/Helm source-release metadata for a rebuilt image.
-Frozen fixture inputs and earlier
-observations retain their original versions and digests. Native persisted
-replay blockage and explicit repair still require the next reviewed shared
-fixtures and implementation. No native range/repair, performance or takeover
-qualification is claimed by this package repair.
+distinguishes that embedded proof from the later Server image and consumer
+directions. [Server #389](https://github.com/durable-workflow/server/pull/389)
+delivered the normal 2.5.18 image and Helm 0.1.155 at c71576fc, using the
+published Workflow source and preserving every other locked package identity.
+The [published lifecycle run](https://github.com/durable-workflow/server/actions/runs/38118836424)
+passes all 12 declared cells, and the
+[published Compose run](https://github.com/durable-workflow/server/actions/runs/38118837959)
+passes both architectures in local and production modes. A separate unchanged
+published PHP SDK probe verifies range blockage after one completed activity
+and explicit repair of the original task at attempt 2, repair count 1, preserving
+the history prefix and exact int64/null/Unicode output. The
+[delivery receipt](https://github.com/durable-workflow/server/issues/325#issuecomment-6106407301)
+records the exact artifacts and the limits of those checks.
+
+The separate `version-range-repair` profile freezes that published cohort for
+three cold author phases: original compatible code, incompatible range, and
+byte-identical restored code with explicit repair. The HTTP and embedded
+adapters observe actual SDK requests, durable history and task diagnostics.
+The expanded correctness run gives its MySQL 8.4 database 1 GiB after a retained
+768 MiB OOM during the later pressure profile; application and author processes
+keep one CPU, 512 MiB and no swap. Database caps are declared in the profile.
+Reference execution and native qualification remain tracked separately. Native
+replay-blocking failures still refuse an unqualified transition; range blockage,
+manual repair and diagnostics need implementation against this shared fixture.
+The pending-activity case also needs a legitimate cold wake, because repair of
+ordinary waiting work does not create a ready workflow task. Frozen fixture
+inputs and earlier observations retain their original versions and digests.
+No native range/repair, performance or takeover qualification is claimed.
 
 [#381](https://github.com/durable-workflow/server/pull/381) implements ordinary
 workflow-task failure retries on the original run. A failed lease and its new

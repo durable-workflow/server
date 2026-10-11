@@ -8,6 +8,7 @@ import {parseArgs} from 'node:util';
 import {checkObservation, compareRecords} from './server-parity/contract.mjs';
 import {checkPublishedPatchArtifacts, checkPatchPackageObservation} from './server-parity/patch-deployment-contract.mjs';
 import {checkLegacyMarkerArtifacts, checkLegacyMarkerPackageObservation} from './server-parity/legacy-marker-contract.mjs';
+import {checkRangeArtifacts, checkRangePackages} from './server-parity/range-repair-contract.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const {values, positionals} = parseArgs({allowPositionals: true, options: {
@@ -69,6 +70,7 @@ try {
       const path = byName[name];
       const fixture = json(path);
       checkPublishedPatchArtifacts(fixture, record.artifacts);
+      checkRangeArtifacts(fixture, record.artifacts);
       if (fixture.patch_deployment?.legacy_marker_history) checkLegacyMarkerArtifacts(fixture, record.artifacts);
       const workflowId = `${values.prefix}-${fixture.id}`;
       const arguments_ = [resolve(root, 'scripts/conformance/server-parity/probe.php'), '--mode', values.mode, '--fixture', path, '--workflow-id', workflowId];
@@ -90,6 +92,7 @@ try {
         }
         if (fixture.patch_deployment?.legacy_marker_history) checkLegacyMarkerPackageObservation(fixture, item.observation, record.artifacts);
         else checkPatchPackageObservation(fixture, item.observation, record.artifacts);
+        checkRangePackages(fixture, item.observation, record.artifacts);
         item.outcome = 'product-fail';
         item.projection = checkObservation(fixture, item.observation, workflowId);
         item.outcome = 'pass';
