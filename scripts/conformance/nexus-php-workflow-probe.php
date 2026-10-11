@@ -5,6 +5,7 @@ declare(strict_types=1);
 require '/tmp/dw-php/vendor/autoload.php';
 
 use DurableWorkflow\Client;
+use DurableWorkflow\Exception\ServiceOperationFailed;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\WorkflowContext;
 
@@ -31,7 +32,19 @@ if (($argv[2] ?? null) === 'worker') {
             if ($targetNamespace !== null) {
                 $options['namespace'] = $targetNamespace;
             }
-            $result = $context->serviceOperation($endpoint, $service, $operation, [$name], $options);
+            try {
+                $result = $context->serviceOperation($endpoint, $service, $operation, [$name], $options);
+            } catch (ServiceOperationFailed $failure) {
+                return [
+                    'service_call_id' => $failure->serviceCallId,
+                    'status' => $failure->cancelled ? 'cancelled' : 'failed',
+                    'failure_type' => $failure->failureType,
+                    'failure_message' => $failure->getMessage(),
+                    'failure_class' => $failure::class,
+                    'cancelled' => $failure->cancelled,
+                    'service_call' => $failure->failure,
+                ];
+            }
 
             return [
                 'service_call_id' => $result->serviceCallId,
@@ -60,12 +73,13 @@ foreach (['shared', 'tenant-a'] as $namespace) {
     try {
         $client = new Client('http://server:8080', namespace: $namespace, controlToken: $input['token']);
         $handle = $client->startWorkflow('nexus.fixture.php.caller',
-            'nexus-php-caller-'.$namespace.'-'.getmypid(), 'nexus-php-caller', [
-                $input['endpoint'], $input['service'], $input['operation'], 'world',
+            'nexus-php-caller-'.$namespace.'-'.($input['scenario'] ?? 'completed').'-'.getmypid(), 'nexus-php-caller', [
+                $input['endpoint'], $input['service'], $input['operation'], $input['name'] ?? 'world',
                 $namespace === 'shared' ? null : 'shared',
             ]);
         $row = [
             'caller_namespace' => $namespace, 'target_namespace' => 'shared',
+            'scenario' => $input['scenario'] ?? 'completed',
             'workflow_id' => $handle->workflowId, 'run_id' => $handle->selectedRunId,
             'process_id' => getmypid(), 'worker_process_id' => proc_get_status($worker)['pid'],
             'worker_signal_handlers_available' => function_exists('pcntl_async_signals') && function_exists('pcntl_signal'),
@@ -111,6 +125,10 @@ foreach (['shared', 'tenant-a'] as $namespace) {
         $row['service_input_qualified'] = $matches($row['linked_service_result'] ?? null);
         $row['completed'] = ($row['result']['status'] ?? null) === 'completed'
             && $matches($row['result']['result'] ?? null);
+        $row['typed_failure_qualified'] = ($row['result']['status'] ?? null) === 'failed'
+            && ($row['result']['failure_class'] ?? null) === ServiceOperationFailed::class
+            && ($row['result']['failure_message'] ?? null) === 'fixture service failure'
+            && ($row['result']['cancelled'] ?? null) === false;
     } finally {
         proc_terminate($worker, 15);
         $exitCode = proc_close($worker);
@@ -123,7 +141,8 @@ foreach (['shared', 'tenant-a'] as $namespace) {
 }
 echo json_encode([
     'scope' => 'php_caller_'.$input['service_language'].'_workflow_service',
-    'outcome' => count(array_filter($observations, static fn (array $row): bool => $row['completed'])) === 2 ? 'pass' : 'fail',
+    'outcome' => count(array_filter($observations, static fn (array $row): bool =>
+        $row[($input['scenario'] ?? 'completed') === 'failed' ? 'typed_failure_qualified' : 'completed'])) === 2 ? 'pass' : 'fail',
     'observations' => $observations,
-    'recovery_qualified' => false, 'typed_failure_qualified' => false, 'cancellation_qualified' => false,
+    'recovery_qualified' => false, 'cancellation_qualified' => false,
 ], JSON_THROW_ON_ERROR).PHP_EOL;
