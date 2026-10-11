@@ -20,6 +20,8 @@ class PythonGreeter:
     def run(self, context, name):
         if name == "fail":
             raise NexusFixtureFailure("fixture service failure")
+        if name == "recover":
+            yield context.sleep(8)
         if name == "cancel":
             try:
                 yield context.sleep(300)

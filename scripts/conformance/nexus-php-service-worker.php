@@ -34,6 +34,9 @@ $client = new Client('http://server:8080', namespace: 'shared', token: $input['t
         if ($name === 'deadline') {
             $context->sleep(3);
         }
+        if ($name === 'recover') {
+            $context->sleep(8);
+        }
         if ($name === 'cancel') {
             try {
                 $context->sleep(300);
