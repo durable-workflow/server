@@ -3349,6 +3349,8 @@ function responseSummary(response) {
     status: response.status,
     ok: response.ok === true,
     body: response.body,
+    transport_attempts: response.request?.transport_attempts || 1,
+    transport_retry: response.request?.transport_retry || null,
   };
 }
 
