@@ -1314,11 +1314,13 @@ where
                     .bind(&activity_id)
                     .fetch_one(&mut *tx)
                     .await?;
+                let mut payload = Self::activity_payload(&activity)?;
+                payload["task"] = Self::task_snapshot(&task)?;
                 Self::append(
                     &mut tx,
                     &run_id,
                     "ActivityScheduled",
-                    Self::activity_payload(&activity)?,
+                    payload,
                     Some(task_id),
                     None,
                 )
