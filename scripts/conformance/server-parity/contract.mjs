@@ -14,6 +14,7 @@ import {checkLegacyMarkerArtifacts, checkLegacyMarkerPackageObservation, checkLe
 import {checkWaitingHistory} from './waiting-history-contract.mjs';
 import {checkTaskRetry} from './task-retry-contract.mjs';
 import {checkRangeRepair, checkRangeArtifacts, checkRangePackages} from './range-repair-contract.mjs';
+import {checkSdkDirection, checkSdkDirectionPackages} from './sdk-direction-contract.mjs';
 
 export function instantNanoseconds(value) {
   const shape = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.(\d{1,9}))?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
@@ -36,7 +37,7 @@ export function checkObservation(fixture, observation, workflowId) {
   nonempty(observation.run_id, 'run identity');
   equal(observation.workflow_type, fixture.workflow_type, 'registered workflow type');
   equal(observation.namespace, fixture.namespace ?? 'default', 'namespace');
-  equal(observation.task_queue, 'server-parity-v1', 'task queue');
+  equal(observation.task_queue, fixture.sdk_direction?.workflow_queue ?? 'server-parity-v1', 'task queue');
   const cancelled = Boolean(fixture.immediate_cancellation || fixture.cooperative_cancellation);
   equal(observation.status, cancelled ? 'cancelled' : 'completed', 'actual durable terminal state');
   equal(observation.payload_codec, 'avro', 'payload codec');
@@ -98,6 +99,7 @@ export function checkObservation(fixture, observation, workflowId) {
   const waitingHistory = fixture.waiting_for_history ? checkWaitingHistory(fixture, observation, workflowId) : null;
   const taskRetry = fixture.workflow_task_retry ? checkTaskRetry(fixture, observation, workflowId) : null;
   const rangeRepair = fixture.range_repair ? checkRangeRepair(fixture, observation, workflowId, instantNanoseconds) : null;
+  const sdkDirection = checkSdkDirection(fixture, observation, workflowId);
   const cooperative = fixture.cooperative_cancellation
     ? checkCooperativeCancellation(fixture, observation, identities, projectedEvents, instantNanoseconds) : null;
   if (fixture.child_cancellation) {
@@ -571,6 +573,7 @@ export function checkObservation(fixture, observation, workflowId) {
     ...(waitingHistory ? {waiting_for_history: waitingHistory} : {}),
     ...(taskRetry ? {workflow_task_retry: taskRetry} : {}),
     ...(rangeRepair ? {range_repair: rangeRepair} : {}),
+    ...(sdkDirection ? {sdk_direction: sdkDirection} : {}),
   };
 }
 
@@ -595,11 +598,12 @@ export function compareRecords(records, expectedFixtureHashes, expectedFixtures,
       const baseline = reference.cases[index];
       assert.equal(item.fixture_id, item.fixture.id, 'case identity matches fixture');
       assert.deepStrictEqual(item.fixture, expectedFixtures[`${item.fixture_id}.json`], 'case expectations match the current reviewed source fixture');
-      if (item.fixture.signal_count || item.fixture.schedule || item.fixture.visibility || item.fixture.admission || item.fixture.patch_deployment || item.fixture.range_repair) assert.equal(item.observation.mode, record.mode, 'observation uses its recording adapter');
+      if (item.fixture.signal_count || item.fixture.schedule || item.fixture.visibility || item.fixture.admission || item.fixture.patch_deployment || item.fixture.range_repair || item.fixture.sdk_direction) assert.equal(item.observation.mode, record.mode, 'observation uses its recording adapter');
       assert.equal(item.observation.sdk_php, record.artifacts.sdk_php, 'installed SDK matches tuple');
       checkPublishedPatchArtifacts(item.fixture, record.artifacts);
       checkRangeArtifacts(item.fixture, record.artifacts);
       checkRangePackages(item.fixture, item.observation, record.artifacts);
+      checkSdkDirectionPackages(item.fixture, item.observation, record.artifacts);
       if (item.fixture.patch_deployment?.legacy_marker_history) {
         checkLegacyMarkerArtifacts(item.fixture, record.artifacts);
         checkLegacyMarkerPackageObservation(item.fixture, item.observation, record.artifacts);
