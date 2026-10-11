@@ -18,7 +18,8 @@ require getenv('DW_PARITY_SDK_AUTOLOAD') ?: dirname(__DIR__).'/vendor/autoload.p
 $fixture = json_decode(file_get_contents($fixturePath), true, flags: JSON_THROW_ON_ERROR);
 $childDirection = isset($fixture['sdk_child_direction']);
 $timerAuthor = isset($fixture['sdk_timer_author']);
-if (! in_array($phase, $timerAuthor ? ['original', 'replacement'] : ($childDirection ? ['original', 'child', 'replacement'] : ['original', 'activity', 'replacement']), true)) {
+$signalDirection = isset($fixture['sdk_signal_direction']);
+if (! in_array($phase, $signalDirection ? ['original', 'signal-1', 'resumed', 'signal-2', 'replacement'] : ($timerAuthor ? ['original', 'replacement'] : ($childDirection ? ['original', 'child', 'replacement'] : ['original', 'activity', 'replacement'])), true)) {
     throw new InvalidArgumentException('Unknown SDK direction phase');
 }
 $deadline = microtime(true) + (float) $remaining;
@@ -41,13 +42,22 @@ $stack->push(static function (callable $handler) use (&$worker, $phase): callabl
 });
 $client = new Client($url, namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null,
     transport: new Psr18Transport(client: new GuzzleClient(['http_errors' => false, 'handler' => $stack])));
-if ($phase === 'original') {
+if ($signalDirection && in_array($phase, ['signal-1', 'signal-2'], true)) {
+    $result = $client->signalWorkflow($workflowId, 'payload', [$fixture['signal_value']]);
+    echo json_encode(['pid' => getmypid(), 'language' => 'php',
+        'sdk_version' => ltrim(InstalledVersions::getPrettyVersion('durable-workflow/sdk'), 'v'),
+        'phase' => $phase, 'workflow_id' => $workflowId, 'run_id' => $runId,
+        'signal_sent' => true, 'sender_finished' => true, 'client_result' => $result],
+        JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)."\n";
+    exit(0);
+}
+if ($phase === 'original' && ! $signalDirection) {
     $runId = $client->startWorkflow($fixture['workflow_type'], $workflowId,
         $timerAuthor ? 'server-parity-sdk-timer' : ($childDirection ? 'server-parity-sdk-parent' : 'server-parity-sdk-workflow'), [$fixture['input']])->selectedRunId;
 }
-$queue = $timerAuthor ? 'server-parity-sdk-timer' : ($childDirection
+$queue = $signalDirection ? 'server-parity-sdk-signals' : ($timerAuthor ? 'server-parity-sdk-timer' : ($childDirection
     ? ($phase === 'child' ? 'server-parity-sdk-child' : 'server-parity-sdk-parent')
-    : ($phase === 'activity' ? 'server-parity-sdk-activity' : 'server-parity-sdk-workflow'));
+    : ($phase === 'activity' ? 'server-parity-sdk-activity' : 'server-parity-sdk-workflow')));
 $workerId = $workflowId.':'.$phase;
 $worker = new Worker($client, $queue, workerId: $workerId,
     clock: static function () use ($deadline): float {
@@ -58,7 +68,17 @@ $worker = new Worker($client, $queue, workerId: $workerId,
         return microtime(true);
     });
 $workflowInvocations = $activityInvocations = 0;
-if ($timerAuthor) {
+if ($signalDirection) {
+    $worker->registerWorkflow('parity.v1.sdk_signals', static function (WorkflowContext $ctx, mixed $value, int $target) use (&$workflowInvocations, &$runId): mixed {
+        ++$workflowInvocations;
+        $runId = $ctx->runId;
+        for ($index = 0; $index < $target; ++$index) {
+            $ctx->waitCondition(fn (): bool => count($ctx->signals('payload')) > $index, 'payload:'.$index);
+        }
+
+        return $ctx->signals('payload')[$target - 1][0];
+    })->declareSignal('parity.v1.sdk_signals', 'payload', static fn (array $value) => null);
+} elseif ($timerAuthor) {
     $worker->registerWorkflow('parity.v1.sdk_timer', static function (WorkflowContext $ctx, mixed $value) use (&$workflowInvocations): mixed {
         ++$workflowInvocations;
         $ctx->sleep($value['sleep_ms'] / 1000);

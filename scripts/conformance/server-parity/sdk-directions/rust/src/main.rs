@@ -5,7 +5,8 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use durable_workflow::{
-    ActivityOptions, ChildWorkflowOptions, Client, Error, Result, Worker, SDK_VERSION,
+    ActivityOptions, ChildWorkflowOptions, Client, ConditionWaitOptions, Error, Result, Worker,
+    SDK_VERSION,
 };
 use serde_json::{json, Value};
 
@@ -28,7 +29,10 @@ async fn main() -> Result<()> {
     .map_err(|error| Error::WorkerLoop(error.to_string()))?;
     let child_direction = fixture.get("sdk_child_direction").is_some();
     let timer_author = fixture.get("sdk_timer_author").is_some();
-    let phases: &[&str] = if timer_author {
+    let signal_direction = fixture.get("sdk_signal_direction").is_some();
+    let phases: &[&str] = if signal_direction {
+        &["original", "signal-1", "resumed", "signal-2", "replacement"]
+    } else if timer_author {
         &["original", "replacement"]
     } else if child_direction {
         &["original", "child", "replacement"]
@@ -38,7 +42,9 @@ async fn main() -> Result<()> {
     if !phases.contains(&phase.as_str()) {
         return Err(Error::WorkerLoop("Unknown SDK direction phase".into()));
     }
-    let queue = if timer_author {
+    let queue = if signal_direction {
+        "server-parity-sdk-signals"
+    } else if timer_author {
         "server-parity-sdk-timer"
     } else if child_direction {
         if phase == "child" {
@@ -62,7 +68,20 @@ async fn main() -> Result<()> {
         .namespace("default")
         .token(std::env::var("DW_PARITY_TOKEN").ok())
         .build()?;
-    let run_id = if phase == "original" {
+    if signal_direction && matches!(phase.as_str(), "signal-1" | "signal-2") {
+        let result = client
+            .signal_workflow(workflow_id, "payload", json!([fixture["signal_value"]]))
+            .await?;
+        println!(
+            "{}",
+            json!({"pid": std::process::id(), "language": "rust",
+                "sdk_version": SDK_VERSION.trim_start_matches("durable-workflow-rust/"),
+                "phase": phase, "workflow_id": workflow_id, "run_id": selected_run,
+                "signal_sent": true, "sender_finished": true, "client_result": result})
+        );
+        return Ok(());
+    }
+    let mut run_id = if phase == "original" && !signal_direction {
         client
             .start_workflow(
                 fixture["workflow_type"]
@@ -84,7 +103,47 @@ async fn main() -> Result<()> {
     let mut worker = Worker::new(client.clone(), queue)
         .worker_id(&worker_id)
         .poll_timeout(Duration::from_secs(1));
-    if timer_author {
+    if signal_direction {
+        let invocations = Arc::clone(&workflow_invocations);
+        worker.register_workflow(
+            "parity.v1.sdk_signals",
+            move |ctx, arguments: Value| {
+                invocations.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    // The ordinary positional API preserves this two-argument input.
+                    // Published typed handlers accept one request value only.
+                    let target = arguments
+                        .as_array()
+                        .and_then(|values| values.get(1))
+                        .and_then(Value::as_u64)
+                        .and_then(|value| usize::try_from(value).ok())
+                        .ok_or_else(|| Error::WorkerLoop("No signal count argument".into()))?;
+                    for index in 0..target {
+                        let predicate_ctx = ctx.clone();
+                        ctx.wait_condition(
+                            ConditionWaitOptions::new(
+                                format!("payload:{index}"),
+                                // SHA256 of the two authored predicate identities.
+                                if index == 0 {
+                                    "sha256:b67992a5ee48704611dcf6a181c3ab94b69d0933c44525137210dd2467aec563"
+                                } else {
+                                    "sha256:474b0d8e3a116beb308c37e8084f7f16a402f8142468144d34ff135bc5ef0910"
+                                },
+                            ),
+                            move || Ok(predicate_ctx.signals("payload")?.len() > index),
+                        )
+                        .await?;
+                    }
+                    ctx.signals("payload")?
+                        .last()
+                        .and_then(|arguments| arguments.first())
+                        .cloned()
+                        .ok_or_else(|| Error::WorkerLoop("No final decoded signal value".into()))
+                }
+            },
+        );
+        worker.declare_workflow_signals("parity.v1.sdk_signals", &["payload"])?;
+    } else if timer_author {
         let invocations = Arc::clone(&workflow_invocations);
         worker.register_typed_workflow("parity.v1.sdk_timer", move |ctx, value: Value| {
             invocations.fetch_add(1, Ordering::SeqCst);
@@ -154,8 +213,22 @@ async fn main() -> Result<()> {
             }
             // Public SDK registration and task loop: no synthetic protocol or history.
             worker.run_once().await?;
+            if signal_direction && run_id.is_empty() {
+                if workflow_invocations.load(Ordering::SeqCst) == 0 {
+                    continue;
+                }
+                run_id = client
+                    .describe_workflow(workflow_id)
+                    .await?
+                    .run_id
+                    .ok_or_else(|| Error::WorkerLoop("No original claimed run ID".into()))?;
+            }
             let run = client.describe_workflow_run(workflow_id, &run_id).await?;
             let reached = match phase.as_str() {
+                "original" | "resumed" if signal_direction => {
+                    workflow_invocations.load(Ordering::SeqCst) == 1
+                        && run.status.as_deref() == Some("waiting")
+                }
                 "original" => run.status.as_deref() == Some("waiting"),
                 "activity" => activity_invocations.load(Ordering::SeqCst) == 1,
                 _ => run.status.as_deref() == Some("completed"),

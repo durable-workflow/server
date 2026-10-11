@@ -2,8 +2,9 @@
 
 The reviewed additive definitions cover all nine PHP/Python/Rust signal-client
 and workflow-author combinations. They reuse the timer/child published tuple
-without changing prior fixtures or envelopes. Adapters, reader guards and
-six-database runtime qualification remain to implement.
+without changing prior fixtures or envelopes. Normal published client/worker
+adapters, canonical embedded execution, recorder guards and all six database
+profiles are implemented. Actual runtime qualification remains pending.
 
 The original normal worker registers its signal declaration before the PHP
 observer starts the original run. Three distinct author processes open the
@@ -29,6 +30,13 @@ Qualification requires all six database configurations, exact installed package
 and runner identities, inspected resource limits and independent runtime/wire
 inspection. Reuse one shared SDK preparation and the native binary. The owning
 job must clean the isolated profile through its always-run path.
+
+Local source checks pass: 56 signal reader models, all 4,478 reader models,
+PHP recorder regressions (5 tests/24 assertions), PHP/JavaScript syntax,
+Python parsing, Rust formatting, shell syntax and the Docker isolation policy
+with 72 regression tests. These checks do not establish SDK compilation or
+completed durable signal execution. Qualification must inspect the actual
+published processes, receipts, typed histories and complete retained wires.
 
 These definitions do not qualify run-targeted calls, continuation/current-run
 races, all signal policies, CPU-load fairness, performance or cutover.
