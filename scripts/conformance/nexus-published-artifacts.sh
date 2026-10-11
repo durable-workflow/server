@@ -43,6 +43,11 @@ Environment overrides:
   DW_PHP_SDK_VERSION               Exact published durable-workflow/sdk package version.
   DW_PYTHON_SDK_VERSION            Exact published Python SDK package version.
   DW_WATERLINE_VERSION             Exact published Waterline package version.
+  DW_NEXUS_WATERLINE_IMAGE          Optional immutable Waterline image for actual
+                                    catalog API/browser inspection before teardown.
+  DW_NEXUS_WATERLINE_INSPECTOR      Waterline service-catalog-published.mjs path.
+  DW_NEXUS_WATERLINE_PLAYWRIGHT_ROOT
+                                    Isolated installed Playwright package directory.
   DW_SERVER_ARTIFACT_SOURCE        Published server artifact source.
   DW_CLI_ARTIFACT_SOURCE           Published CLI artifact source.
   DW_WORKFLOW_ARTIFACT_SOURCE      Published Workflow PHP artifact source.
@@ -748,7 +753,7 @@ function freePort(options = {}) {
   });
 }
 
-function composeYaml(image, port, token) {
+function composeYaml(image, port, token, observer = null) {
   const escapedImage = JSON.stringify(image);
   const escapedToken = JSON.stringify(token);
   return `
@@ -835,6 +840,21 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+${observer === null ? '' : [['waterline-owner', 'shared', observer.ownerPort], ['waterline-foreign', 'tenant-a', observer.foreignPort]].map(([name, namespace, observerPort]) => `
+  ${name}:
+    image: ${JSON.stringify(observer.image)}
+    ports:
+      - "127.0.0.1:${observerPort}:8080"
+    environment:
+      WATERLINE_SERVER_ENDPOINT: http://server:8080
+      WATERLINE_SERVER_TOKEN: ${escapedToken}
+      WATERLINE_NAMESPACE: ${namespace}
+      WATERLINE_ACCESS_MODE: read_only
+      WATERLINE_ALLOW_UNAUTHENTICATED: "true"
+    depends_on:
+      server:
+        condition: service_healthy
+`).join('')}
 volumes:
   mysql_data:
   redis_data:
@@ -4852,7 +4872,20 @@ async function main() {
   const token = randomToken('nexus-token');
   const project = `dw-nexus-${crypto.randomBytes(5).toString('hex')}`;
   const composePath = path.join(runRoot, 'compose.yml');
-  fs.writeFileSync(composePath, composeYaml(image, port, token));
+  const observerImage = env('DW_NEXUS_WATERLINE_IMAGE');
+  const observerScript = env('DW_NEXUS_WATERLINE_INSPECTOR');
+  const playwrightRoot = env('DW_NEXUS_WATERLINE_PLAYWRIGHT_ROOT');
+  const wantsObserver = [observerImage, observerScript, playwrightRoot].some(value => value !== null);
+  if (wantsObserver && (!observerImage || !observerScript || !playwrightRoot
+    || !/^durableworkflow\/waterline@sha256:[0-9a-f]{64}$/.test(observerImage)
+    || !fs.statSync(observerScript).isFile()
+    || !fs.statSync(path.join(playwrightRoot, 'package.json')).isFile())) {
+    throw new Error('Waterline inspection requires its immutable published image, inspector and installed Playwright directory');
+  }
+  const observer = wantsObserver ? {image: observerImage,
+    ownerPort: await freePort({honorServerPortOverride: false}),
+    foreignPort: await freePort({honorServerPortOverride: false})} : null;
+  fs.writeFileSync(composePath, composeYaml(image, port, token, observer));
 
   let serverDigest = '';
   try {
@@ -4949,6 +4982,38 @@ async function main() {
         {namespace_responses: namespaceResponses, setup_error: `${error.name}: ${error.message}`},
       ));
       return;
+    }
+
+    if (observer !== null) {
+      runLogged('docker', ['pull', observer.image], path.join(resultDir, 'nexus-waterline-image-pull.log'));
+      runLogged('docker', ['compose', '-p', project, '-f', composePath, 'up', '--detach', '--wait',
+        'waterline-owner', 'waterline-foreign'], path.join(resultDir, 'nexus-waterline-startup.log'));
+      const identity = spawnSync('docker', ['image', 'inspect', observer.image], {encoding: 'utf8'});
+      if (identity.status !== 0) throw new Error('Could not inspect the published Waterline image');
+      const labels = JSON.parse(identity.stdout)[0].Config.Labels;
+      if (labels['dev.durable-workflow.release.tag'] !== versions.waterline
+        || !/^[0-9a-f]{40}$/.test(labels['org.opencontainers.image.revision'])) {
+        throw new Error('Published Waterline image does not match the selected artifact version/source');
+      }
+      const metadata = await fetchJson('https://repo.packagist.org/p2/durable-workflow/waterline.json');
+      const published = metadata.packages?.['durable-workflow/waterline']?.find(row => row.version === versions.waterline);
+      if (published?.source?.reference !== labels['org.opencontainers.image.revision']
+        || published?.dist?.reference !== labels['org.opencontainers.image.revision']) {
+        throw new Error('Published Waterline image source differs from the selected Packagist source/dist');
+      }
+      const inspectionDir = path.join(resultDir, 'waterline-catalog');
+      runLogged(process.execPath, [path.resolve(observerScript),
+        '--base-url', `http://127.0.0.1:${observer.ownerPort}`,
+        '--foreign-base-url', `http://127.0.0.1:${observer.foreignPort}`,
+        '--nexus-evidence-dir', resultDir, '--output-dir', inspectionDir,
+        '--playwright-root', path.resolve(playwrightRoot)], path.join(resultDir, 'nexus-waterline-inspection.log'));
+      const inspection = JSON.parse(fs.readFileSync(path.join(inspectionDir, 'report.json'), 'utf8'));
+      if (inspection.outcome !== 'pass' || inspection.classification !== 'published_api_browser'
+        || inspection.original_calls !== 24) throw new Error('Published Waterline inspection did not qualify all original calls');
+      fs.writeFileSync(path.join(resultDir, 'nexus-waterline-image-identity.json'), JSON.stringify({
+        image: observer.image, version: versions.waterline,
+        source_commit: labels['org.opencontainers.image.revision'], original_calls: inspection.original_calls,
+      }, null, 2) + '\n');
     }
 
     const finishedAt = timestamp();
