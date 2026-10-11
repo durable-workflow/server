@@ -2751,18 +2751,21 @@ async function probePublishedTypedOutcomes(baseUrl, token, compose, phpService, 
   }
 }
 
-async function probePublishedPhpCallerRecovery(baseUrl, token, compose, phpService) {
+async function probePublishedCallerRecovery(baseUrl, token, compose, phpService, pythonService) {
   const fixtureDir = path.dirname(process.argv[5]);
   fs.copyFileSync(path.join(fixtureDir, 'nexus-php-caller-recovery.php'), path.join(compose.runRoot, 'nexus-php-caller-recovery.php'));
+  fs.copyFileSync(path.join(fixtureDir, 'nexus-python-caller-recovery.py'), path.join(compose.runRoot, 'nexus-python-caller-recovery.py'));
   const reports = [];
-  for (const service of ['php', 'python']) {
+  for (const [caller, service] of [['php', 'php'], ['php', 'python'], ['python', 'php'], ['python', 'python']]) {
     const input = {token, endpoint: `published-${service}-workflow-service`,
       service: service === 'php' ? 'PublishedWorkflowGreeter' : 'PublishedPythonWorkflowGreeter', operation: 'greet'};
-    const inputName = `nexus-php-${service}-caller-recovery-input.json`;
+    const inputName = `nexus-${caller}-${service}-caller-recovery-input.json`;
     fs.writeFileSync(path.join(compose.runRoot, inputName), JSON.stringify(input));
-    const observation = dockerExecJson(phpService.containerName,
-      `php /work/nexus-php-caller-recovery.php /work/${inputName}`,
-      path.join(resultDir, `nexus-php-${service}-caller-recovery.log`));
+    const container = caller === 'php' ? phpService.containerName : pythonService.containerName;
+    const command = caller === 'php' ? `php /work/nexus-php-caller-recovery.php /work/${inputName}`
+      : `. /tmp/dw-python/bin/activate && python /work/nexus-python-caller-recovery.py /work/${inputName}`;
+    const observation = dockerExecJson(container, command,
+      path.join(resultDir, `nexus-${caller}-${service}-caller-recovery.log`));
     for (const row of observation.body?.observations || []) {
       const callId = row.original_service_call_id;
       if (!callId) continue;
@@ -2771,9 +2774,9 @@ async function probePublishedPhpCallerRecovery(baseUrl, token, compose, phpServi
       row.caller_operations = responseSummary(await apiRequest(baseUrl, token, row.caller_namespace, 'GET',
         `/workflows/${encodeURIComponent(row.workflow_id)}/runs/${encodeURIComponent(row.run_id)}/nexus-operations`));
     }
-    reports.push({caller: 'php', service, observation});
+    reports.push({caller, service, observation});
     fs.writeFileSync(path.join(resultDir, 'nexus-caller-recovery-probes.json'), JSON.stringify({
-      scope: 'actual_php_caller_sigkill_recovery', reports,
+      scope: 'actual_php_python_caller_sigkill_recovery', reports,
     }, null, 2) + '\n');
   }
 }
@@ -3376,7 +3379,7 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
     }
 
     try {
-      await probePublishedPhpCallerRecovery(baseUrl, token, compose, phpService);
+      await probePublishedCallerRecovery(baseUrl, token, compose, phpService, pythonService);
     } catch (error) {
       fs.writeFileSync(path.join(resultDir, 'nexus-caller-recovery-probes-error.json'), JSON.stringify({
         runner_blocked: true, failure_reason: String(error),
