@@ -168,6 +168,11 @@ async def execute(input_data, namespace):
                 recorded.get("status") == "cancelled"
                 and recorded.get("failure_class") == "NexusOperationFailed"
             )
+            observation["deadline_qualified"] = (
+                recorded.get("status") == "failed"
+                and recorded.get("failure_class") == "NexusOperationFailed"
+                and surface.get("outcome") == "timed_out"
+            )
             return observation
         finally:
             await asyncio.wait_for(worker.stop(), timeout=10)
@@ -184,7 +189,7 @@ async def main():
         observations.append(await execute(input_data, namespace))
     print(json.dumps({
         "scope": f"python_caller_{input_data.get('service_language', 'php')}_workflow_service",
-        "outcome": "pass" if all(row[{"failed": "typed_failure_qualified", "cancelled": "cancellation_qualified"}
+        "outcome": "pass" if all(row[{"failed": "typed_failure_qualified", "cancelled": "cancellation_qualified", "deadline": "deadline_qualified"}
                                      .get(input_data.get("scenario"), "completed")] for row in observations) else "fail",
         "observations": observations,
         "recovery_qualified": False,

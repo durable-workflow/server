@@ -117,6 +117,29 @@ test('an admission or independent failure cannot qualify original typed delivery
     assert.throws(() => assertTypedServiceFailure({scenario: 'failed', typed_failure_qualified: false}, 'python'));
 });
 
+if (process.env.NEXUS_DEADLINE_PROBE) {
+    test('the original call deadline rejects a late PHP service result in both namespaces', () => {
+        const proof = JSON.parse(fs.readFileSync(process.env.NEXUS_DEADLINE_PROBE, 'utf8'));
+        assert.equal(proof.scope, 'python_caller_php_service_original_deadline');
+        assert.deepEqual(proof.declared_policy, {timeout_seconds: 1});
+        assert.equal(proof.handler_sleep_seconds, 3);
+        assert.equal(proof.registration.ok, true);
+        assert.deepEqual(proof.registration.body.deadline_policy, proof.declared_policy);
+        assert.equal(proof.observation.ok, true);
+        assert.deepEqual(proof.observation.body.observations.map(row => row.caller_namespace), ['shared', 'tenant-b']);
+        for (const row of proof.observation.body.observations) {
+            assert.equal(row.scenario, 'deadline');
+            assert.equal(row.request_qualified, true);
+            assert.equal(row.deadline_qualified, true, JSON.stringify(row.failure || row.result));
+            assertOriginalServiceDelivery(row, 'sdk-python', 'failed');
+            assert.equal(row.result.failure_class, 'NexusOperationFailed');
+            const call = row.durable_service_call.body.service_call || row.durable_service_call.body;
+            assert.equal(call.outcome, 'timed_out');
+            assert.ok(call.failed_at);
+        }
+    });
+}
+
 if (process.env.NEXUS_CANCELLATION_PROBES) {
     test('cooperatively cancelled services close original PHP/Python caller operations once', () => {
         const proof = JSON.parse(fs.readFileSync(process.env.NEXUS_CANCELLATION_PROBES, 'utf8'));

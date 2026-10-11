@@ -31,6 +31,9 @@ $client = new Client('http://server:8080', namespace: 'shared', workerToken: $in
         if ($name === 'fail') {
             throw new NexusFixtureFailure('fixture service failure');
         }
+        if ($name === 'deadline') {
+            $context->sleep(3);
+        }
         if ($name === 'cancel') {
             try {
                 $context->sleep(300);
