@@ -2729,6 +2729,38 @@ async function probePublishedTypedOutcomes(baseUrl, token, compose, phpService, 
   }
 }
 
+async function probePublishedServiceDeadline(baseUrl, token, compose, pythonService) {
+  const endpoint = 'published-php-workflow-service';
+  const service = 'PublishedWorkflowGreeter';
+  const operation = 'greet-deadline';
+  const declaredPolicy = {timeout_seconds: 1};
+  const registration = await apiRequest(baseUrl, token, 'shared', 'POST',
+    `/service-endpoints/${endpoint}/services/${service}/operations`, {
+      operation_name: operation, operation_mode: 'sync', handler_binding_kind: 'start_workflow',
+      handler_target_reference: 'nexus.fixture.php.greeter',
+      handler_binding: {workflow_type: 'nexus.fixture.php.greeter', queue: 'nexus-php-workflow'},
+      deadline_policy: declaredPolicy,
+      boundary_policy: {authorization: {caller_namespaces: {allow: ['shared', 'tenant-b']}}},
+    });
+  if (!registration.ok) throw new Error('Could not register the deadline service operation');
+  fs.writeFileSync(path.join(compose.runRoot, 'nexus-deadline-input.json'), JSON.stringify({
+    token, endpoint, service, operation, service_language: 'php', scenario: 'deadline', name: 'deadline',
+  }));
+  const observation = dockerExecJson(pythonService.containerName,
+    '. /tmp/dw-python/bin/activate && python /work/nexus-python-workflow-probe.py /work/nexus-deadline-input.json',
+    path.join(resultDir, 'nexus-deadline-probe.log'));
+  for (const row of observation.body?.observations || []) {
+    const callId = row.result?.service_call_id;
+    if (!callId) continue;
+    row.durable_service_call = responseSummary(await apiRequest(baseUrl, token, 'shared', 'GET',
+      `/service-endpoints/${endpoint}/services/${service}/operations/${operation}/service-calls/${encodeURIComponent(callId)}`));
+  }
+  fs.writeFileSync(path.join(resultDir, 'nexus-deadline-probe.json'), JSON.stringify({
+    scope: 'python_caller_php_service_original_deadline', declared_policy: declaredPolicy,
+    handler_sleep_seconds: 3, registration: responseSummary(registration), observation,
+  }, null, 2) + '\n');
+}
+
 function reflectedPublicServiceCallSurface(runtimeEvidence) {
   const surface = runtimeEvidence?.public_service_call_surface || null;
   if (publicSurfaceAvailable(surface)) {
@@ -3306,6 +3338,14 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
       await probePublishedTypedOutcomes(baseUrl, token, compose, phpService, pythonService, 'cancelled');
     } catch (error) {
       fs.writeFileSync(path.join(resultDir, 'nexus-cancellation-probes-error.json'), JSON.stringify({
+        runner_blocked: true, failure_reason: String(error),
+      }, null, 2) + '\n');
+    }
+
+    try {
+      await probePublishedServiceDeadline(baseUrl, token, compose, pythonService);
+    } catch (error) {
+      fs.writeFileSync(path.join(resultDir, 'nexus-deadline-probes-error.json'), JSON.stringify({
         runner_blocked: true, failure_reason: String(error),
       }, null, 2) + '\n');
     }
