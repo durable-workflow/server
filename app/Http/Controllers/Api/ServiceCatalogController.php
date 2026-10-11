@@ -673,7 +673,7 @@ class ServiceCatalogController
                 $arguments,
                 'arguments',
                 app(NamespaceExternalPayloadStorage::class)->driverFor($this->namespace($request)),
-                retainExternal: true,
+                true, // Retain the namespace's existing immutable external bytes.
             );
             if (! is_string($resolved['payload']) || $resolved['codec'] === null) {
                 throw ValidationException::withMessages([
