@@ -83,7 +83,7 @@ export function checkSdkSignalDirection(fixture, observation, workflowId) {
       const requests = phase.requests.filter(item => item.method === 'POST' && item.path === '/api/workflows/' + workflowId + '/signal/payload');
       assert.equal(requests.length, 1, 'one actual instance-scoped signal request per client process');
       const request = requests[0], receipt = request.response;
-      assert.equal(request.status, 201);
+      assert.equal(request.status, 202, 'normal accepted signal uses the published HTTP 202 contract');
       assert.equal(request.request.run_id, undefined, 'normal common instance API has no run selector');
       frame(request.request.input);
       assert.deepEqual(request.decoded_input, [fixture.signal_value]);

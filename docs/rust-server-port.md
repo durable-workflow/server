@@ -88,10 +88,14 @@ client receipt object, and retains actual server receipts. Canonical embedded
 direct-signal histories stay intact. The separate manifest preserves prior
 tuples and envelopes. Normal published client/worker adapters, the canonical
 embedded author, recorder/reader guards and all six database profiles are
-implemented. Local 56 signal reader models and all 4,478 reader models pass,
+implemented. Local 57 signal reader models and all 4,479 reader models pass,
 alongside PHP recorder 5 tests/24 assertions, syntax/AST/format/shell checks and
-the Docker isolation policy with 72 regressions. Actual SDK compilation and
-six-database durable signal qualification remain pending; models are not
+the Docker isolation policy with 72 regressions. SDK compilation and exact
+package/source hashes pass. The [first runtime discrepancy](https://github.com/durable-workflow/server/pull/415#issuecomment-6114095382)
+exposed the new reader's incorrect HTTP 201 signal expectation: published PHP
+and native require HTTP 202. The corrected reader passes the unchanged first
+failed PHP observation, with its original failed label retained. All-direction
+six-database durable signal qualification remains pending; models are not
 runtime evidence. Independent inspection must bind five actual phase processes
 and the separate observer to original full histories and accepted receipts.
 

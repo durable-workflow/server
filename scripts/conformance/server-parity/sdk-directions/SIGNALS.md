@@ -17,6 +17,11 @@ receipt object and has no run selector; inspect the actual HTTP receipt and
 durable history against the original run. Do not invent a Python return value
 or change an SDK. The observer start is identified separately from the SDK
 worker, and its actual request must follow successful original registration.
+Normal accepted signal submissions require HTTP 202. Registration and start
+retain HTTP 201; task claims and fenced completions retain HTTP 200. The
+[first runtime discrepancy](https://github.com/durable-workflow/server/pull/415#issuecomment-6114095382)
+was the new reader's incorrect HTTP 201 signal expectation, corrected to the
+published PHP and native contract while preserving the failed record.
 
 Require distinct accepted signal and command IDs, ordered acceptance/application
 and cursor advances, original wait identities, full unchanged history prefixes,
@@ -34,11 +39,13 @@ and runner identities, inspected resource limits and independent runtime/wire
 inspection. Reuse one shared SDK preparation and the native binary. The owning
 job must clean the isolated profile through its always-run path.
 
-Local source checks pass: 56 signal reader models, all 4,478 reader models,
+Local source checks pass: 57 signal reader models, all 4,479 reader models,
 PHP recorder regressions (5 tests/24 assertions), PHP/JavaScript syntax,
 Python parsing, Rust formatting, shell syntax and the Docker isolation policy
-with 72 regression tests. These checks do not establish SDK compilation or
-completed durable signal execution. Qualification must inspect the actual
+with 72 regression tests. SDK preparation passes with exact source and package
+hashes. The corrected reader diagnostically passes the unchanged first failed
+PHP observation; complete durable signal qualification remains pending.
+Qualification must inspect the actual
 published processes, receipts, typed histories and complete retained wires.
 
 These definitions do not qualify run-targeted calls, continuation/current-run

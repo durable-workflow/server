@@ -82,7 +82,7 @@ function observed(fixture, mode = 'http') {
       const signalIndex = index === 1 ? 0 : 1, receipt = copy(raw.signal_deliveries[signalIndex].response);
       raw.signal_deliveries[signalIndex].before = copy(recorded[index - 1].snapshot.execution);
       const wire = request('/api/workflows/' + workflowId + '/signal/payload',
-        {input: {codec: 'avro', blob: 'signal-frame-' + signalIndex}}, receipt, 201);
+        {input: {codec: 'avro', blob: 'signal-frame-' + signalIndex}}, receipt, 202);
       wire.decoded_input = [fixture.signal_value];
       wire.typed_decoded_input = {type: 'list', value: [fixture.typed_signal_value]};
       recorded.push({phase, language: spec.client, sdk_version: artifacts['sdk_' + spec.client],
@@ -165,6 +165,7 @@ const mutations = {
   'new start before cold replay': value => {replacement(value).requests.push(copy(value.sdk_signal_direction.phases[0].requests[1]));},
   'start before registration': value => {value.sdk_signal_direction.phases[0].requests.reverse();},
   'signal refused': value => {firstSender(value).requests[0].status = 409;},
+  'created signal status': value => {firstSender(value).requests[0].status = 201;},
   'wrong accepted run': value => {firstSender(value).requests[0].response.run_id = 'other';},
   'run selector added': value => {firstSender(value).requests[0].request.run_id = value.run_id;},
   'unbound delivery receipt': value => {value.signal_deliveries[0].response.command_id = 'other';},
