@@ -265,15 +265,59 @@ Native scheduling now writes the leased task snapshot in the same transaction
 as the activity event. The execution regression checks the original task and
 lease owner, later-turn task identity, and immutable history after restart,
 duplicate/stale completion and final completion. The checkpoint checker stays
-strict. Fresh qualification is tracked on the follow-up PR; the original failed
-main run remains unqualified.
+strict. [#388](https://github.com/durable-workflow/server/pull/388) merged the
+correction at e0960964. Its candidate and
+[main matrix](https://github.com/durable-workflow/server/actions/runs/38107240820)
+pass all six configurations, with 65 native tests per cell and independently
+audited 954 shared observations, including the real task snapshots. The first
+main MariaDB attempt stopped on a Composer download HTTP 504 before its tests;
+the bounded failed-job retry passed. That first artifact remains unqualified.
 
 The next range/repair investigation reproduced a terminal application failure
 on normally installed embedded Workflow 2.5.7 when cold code excludes recorded
 version 1. Restoring the original definition and requesting same-run repair
 returns `rejected_not_active`. [Workflow #744](https://github.com/durable-workflow/workflow/issues/744#issuecomment-6104611717)
-records that reference observation. Published SDK directions and the contract
-decision remain pending before any corresponding native repair implementation.
+records that unchanged reference observation. The separate published PHP Server
+2.5.14 / PHP SDK 2.2.6 HTTP diagnostic blocks the affected replay and repairs the
+same original task after compatible source is restored. The
+[reviewed decision](https://github.com/durable-workflow/server/issues/325#issuecomment-6104832243)
+treats an out-of-range recorded version or legacy default as a replay
+compatibility fault: preserve the original nonterminal run, history, marker and
+completed work; restore compatible code and explicitly repair with a new fenced
+attempt. Already closed runs stay closed.
+
+[Workflow #749](https://github.com/durable-workflow/workflow/pull/749) implements
+that source behavior with a specific range exception derived from the existing
+base exception, a blocked task and diagnostic range metadata. Ordinary
+application exceptions retain their terminal behavior. A new persisted-marker
+corpus fixture exercises executor, fiber and query replay; the real repair case
+preserves one activity, the complete original history prefix and exact
+int64/null/Unicode values. Three cold embedded processes and unchanged published
+PHP SDK HTTP diagnostics independently verify the source change.
+[Full source qualification](https://github.com/durable-workflow/workflow/actions/runs/38111925625)
+and [post-merge main](https://github.com/durable-workflow/workflow/actions/runs/38112937931)
+pass MySQL/PostgreSQL feature suites, representative MariaDB checks, Laravel
+9–13 upgrades and the aggregate coverage gate (93.45% against 93.08%).
+
+[Workflow #750](https://github.com/durable-workflow/workflow/pull/750) published
+the 2.5.8 patch at 58f387d3. Its
+[published package check](https://github.com/durable-workflow/workflow/actions/runs/38114525265)
+passes the contract and all 16 Laravel/PHP upgrade cells. A fresh Packagist
+distribution install and three cold embedded SQLite processes verify the
+original nonterminal run, immutable history prefix, one completed activity and
+explicit repair of the same blocked task after byte-identical source restoration.
+Independent loaded-source and PHP output audits preserve the published identity
+and exact int64/null/Unicode values. The
+[published qualification record](https://github.com/durable-workflow/workflow/issues/744#issuecomment-6105840885)
+distinguishes this embedded proof from the pending Server image and consumer
+directions. This Server change advances its committed Workflow pin and normal
+lock to that published source, preserving every other package identity, and
+prepares the existing Server/Helm source-release metadata for a rebuilt image.
+Frozen fixture inputs and earlier
+observations retain their original versions and digests. Native persisted
+replay blockage and explicit repair still require the next reviewed shared
+fixtures and implementation. No native range/repair, performance or takeover
+qualification is claimed by this package repair.
 
 [#381](https://github.com/durable-workflow/server/pull/381) implements ordinary
 workflow-task failure retries on the original run. A failed lease and its new
