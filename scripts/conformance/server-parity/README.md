@@ -535,3 +535,28 @@ inapplicable. The frozen default, three-case source tuple and fault manifest
 are unchanged; the profile reuses compiled Rust and locked dependencies. These
 two new real executions are pending hosted qualification. Explicit native
 maintenance, published artifacts and broader #325 remain open.
+
+The separate `version-range-repair` profile freezes a newer published PHP
+reference and a normal locked PHP SDK independently of earlier cohorts.
+`range-repair-profile.sh <backend>` reuses the owning job's isolated database
+service and network (`RESOURCE_SCOPE`, plus `MYSQL_IMAGE` or `POSTGRES_IMAGE`
+for those backends). It creates independent PHP and embedded databases, starts
+the exact published reference image, records both adapters and compares them.
+All processes use one CPU, 512 MiB RAM and no swap. The command retains logs,
+terminal container state and observations under
+`parity-evidence/version-range-repair`, then removes its containers, databases
+and installed dependency tree on exit. The owning job retains that evidence
+and removes its database service and network.
+
+The selected `range-marked-activity-completed` fixture runs three cold author
+processes. The original records a 1..1 marker and schedules one activity. The
+incompatible 2..2 author completes that activity, then observes blocked replay
+without closing the run or scheduling an automatic workflow retry. The
+byte-identical restored author explicitly repairs the original selected run,
+reuses its blocked task at the next attempt and completes with unchanged
+history and exact int64/null/Unicode output. The reader checks loaded SDK and
+engine bytes against the source manifest and preserves the distinct HTTP and
+embedded diagnostic representations. The ordinary shared-fixture workflow
+runs this reference check on all six existing database configurations. It
+currently records PHP and embedded only; native repair, an activity still
+pending at the failure, other SDK authors and performance remain unqualified.

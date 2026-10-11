@@ -592,7 +592,7 @@ export function compareRecords(records, expectedFixtureHashes, expectedFixtures,
       const baseline = reference.cases[index];
       assert.equal(item.fixture_id, item.fixture.id, 'case identity matches fixture');
       assert.deepStrictEqual(item.fixture, expectedFixtures[`${item.fixture_id}.json`], 'case expectations match the current reviewed source fixture');
-      if (item.fixture.signal_count || item.fixture.schedule || item.fixture.visibility || item.fixture.admission || item.fixture.patch_deployment) assert.equal(item.observation.mode, record.mode, 'observation uses its recording adapter');
+      if (item.fixture.signal_count || item.fixture.schedule || item.fixture.visibility || item.fixture.admission || item.fixture.patch_deployment || item.fixture.range_repair) assert.equal(item.observation.mode, record.mode, 'observation uses its recording adapter');
       assert.equal(item.observation.sdk_php, record.artifacts.sdk_php, 'installed SDK matches tuple');
       checkPublishedPatchArtifacts(item.fixture, record.artifacts);
       checkRangeArtifacts(item.fixture, record.artifacts);

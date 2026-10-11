@@ -30,6 +30,7 @@ function model(mode) {
     typed_input: {type: 'list', value: [fixture.typed_value]},
     sdk_php: artifacts.sdk_php, sdk_php_source: artifacts.sdk_php_source_commit,
     sdk_composer_lock_sha256: artifacts.sdk_php_composer_lock_sha256,
+    sdk_loaded_sources: structuredClone(artifacts.sdk_php_loaded_sources),
     workflow_package: artifacts.workflow, workflow_source: artifacts.embedded_image_path_reference,
     workflow_provenance: ['https://github.com/durable-workflow/workflow.git', artifacts.workflow, artifacts.workflow_source_commit],
     embedded_composer_lock_sha256: artifacts.embedded_image_composer_lock_sha256,
@@ -40,9 +41,11 @@ function model(mode) {
   const incompatible = {...structuredClone(base), phase: 'incompatible', pid: 102, status: 'waiting', output: null,
     versions: [], activity_invocations: 1, definition_sha256: 'b'.repeat(64), events: structuredClone(events.slice(0, 6)),
     debug: {execution: {liveness_state: 'workflow_replay_blocked'}, pending_workflow_tasks: [], pending_activities: [], recent_failures: [],
-      latest_workflow_task_failure: {task_id: 'blocked', replay_blocked: true, reason: 'version_marker_incompatible_range'}},
+      latest_workflow_task_failure: {task_id: 'blocked', replay_blocked: true, reason: 'version_marker_incompatible_range',
+        type: 'DurableWorkflow\\Exception\\NonDeterministicWorkflow', sequence: 1}},
     requests: [{method: 'POST', path: '/api/worker/workflow-tasks/blocked/fail', status: 200,
-      request: {workflow_task_attempt: 1, lease_owner: 'bad-worker', failure: {reason: 'version_marker_incompatible_range', sequence: 1}},
+      request: {workflow_task_attempt: 1, lease_owner: 'bad-worker',
+        failure: {reason: 'version_marker_incompatible_range', type: 'DurableWorkflow\\Exception\\NonDeterministicWorkflow', sequence: 1}},
       response: {recorded: true, next_task_id: null}}],
     failures: [], tasks: [{id: 'blocked', task_type: 'workflow', status: 'failed', lease_expires_at: null, payload: {
       replay_blocked: true, replay_blocked_reason: 'version_marker_incompatible_range', replay_blocked_workflow_sequence: 1,
@@ -90,6 +93,8 @@ for (const [name, change] of [
   ['failure loses sequence', x => delete x.requests[0].request.failure.sequence],
   ['failure creates next task', x => x.requests[0].response.next_task_id = 'retry'],
   ['missing replay block flag', x => delete x.debug.latest_workflow_task_failure.replay_blocked],
+  ['failure type changed', x => x.requests[0].request.failure.type = 'ApplicationError'],
+  ['diagnostic sequence changed', x => x.debug.latest_workflow_task_failure.sequence = 2],
 ]) test('HTTP model refuses ' + name, () => {
   const raw = model('http'); change(raw.range_repair.incompatible);
   assert.throws(() => checkRangeRepair(fixture, raw, 'test'));
@@ -110,5 +115,10 @@ for (const [name, change] of [
   ['stale loaded executor', x => x.workflow_loaded_sources['src/V2/Support/WorkflowExecutor.php'] = '0'.repeat(64)],
 ]) test('package model refuses ' + name, () => {
   const raw = model('embedded'); change(raw.range_repair.incompatible);
+  assert.throws(() => checkRangePackages(fixture, raw, artifacts));
+});
+test('HTTP package model refuses stale loaded worker bytes', () => {
+  const raw = model('http');
+  raw.range_repair.incompatible.sdk_loaded_sources['DurableWorkflow\\Worker'] = '0'.repeat(64);
   assert.throws(() => checkRangePackages(fixture, raw, artifacts));
 });

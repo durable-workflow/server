@@ -16,6 +16,9 @@ export function checkRangeArtifacts(fixture, artifacts) {
   }
   assert.deepEqual(Object.keys(artifacts.workflow_loaded_sources).sort(),
     ['TaskRepair', 'VersionResolver', 'WorkflowExecutor'].map(name => 'src/V2/Support/' + name + '.php').sort());
+  assert.deepEqual(Object.keys(artifacts.sdk_php_loaded_sources).sort(),
+    ['DurableWorkflow\\Worker', 'DurableWorkflow\\Worker\\WorkflowContext'].sort());
+  for (const hash of Object.values(artifacts.sdk_php_loaded_sources)) assert.match(hash, /^[a-f0-9]{64}$/);
 }
 
 export function checkRangePackages(fixture, observation, artifacts) {
@@ -26,7 +29,10 @@ export function checkRangePackages(fixture, observation, artifacts) {
     assert.equal(phase.sdk_php, artifacts.sdk_php);
     assert.equal(phase.sdk_php_source, artifacts.sdk_php_source_commit);
     assert.equal(phase.sdk_composer_lock_sha256, artifacts.sdk_php_composer_lock_sha256);
-    if (observation.mode !== 'embedded') continue;
+    if (observation.mode !== 'embedded') {
+      assert.deepEqual(phase.sdk_loaded_sources, artifacts.sdk_php_loaded_sources, 'actually loaded published SDK bytes');
+      continue;
+    }
     assert.equal(phase.workflow_package, artifacts.workflow);
     assert.equal(phase.workflow_source, artifacts.embedded_image_path_reference, 'normal path reference stays a path reference');
     assert.deepEqual(phase.workflow_provenance,
@@ -119,12 +125,15 @@ export function checkRangeRepair(fixture, observation, workflowId) {
     blockedTask = failure.path.split('/').at(-2);
     assert.equal(failure.request.workflow_task_attempt, 1);
     assert.equal(failure.request.failure.reason, 'version_marker_incompatible_range');
+    assert.equal(failure.request.failure.type, 'DurableWorkflow\\Exception\\NonDeterministicWorkflow');
     assert.equal(failure.request.failure.sequence, 1);
     assert.equal(failure.response.recorded, true);
     assert.equal(failure.response.next_task_id, null, 'no automatic retry');
     assert.equal(incompatible.debug.latest_workflow_task_failure.task_id, blockedTask);
     assert.equal(incompatible.debug.latest_workflow_task_failure.replay_blocked, true);
     assert.equal(incompatible.debug.latest_workflow_task_failure.reason, failure.request.failure.reason);
+    assert.equal(incompatible.debug.latest_workflow_task_failure.type, failure.request.failure.type);
+    assert.equal(incompatible.debug.latest_workflow_task_failure.sequence, failure.request.failure.sequence);
     const repair = oneRequest(corrected, '/repair', '/api/workflows/');
     assert.ok(repair.path.includes('/runs/' + observation.run_id + '/'), 'explicit selected original run');
     const completion = oneRequest(corrected, '/complete', '/api/worker/workflow-tasks/');

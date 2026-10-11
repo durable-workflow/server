@@ -23,6 +23,10 @@
   "sdk_php": "2.2.7",
   "sdk_php_source_commit": "7c40c7755789790ce4c0ce706a8e3a6462742956",
   "sdk_php_composer_lock_sha256": "af600c49741d714aea69e2830309db8065461c9fd6b0e499c68699f74641faab",
+  "sdk_php_loaded_sources": {
+    "DurableWorkflow\\Worker": "38722c5de194037ae49f610f68436ff11e82de2c5ca0d2c7ac2f66fce1972983",
+    "DurableWorkflow\\Worker\\WorkflowContext": "ba8dbc9ac535490109862270e1f734dfdd83fda065ae1aeada3799b156f99d2f"
+  },
   "sdk_python": "2.5.4",
   "sdk_rust": "3.4.4",
   "cli": "2.2.3",
