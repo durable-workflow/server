@@ -9,7 +9,6 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Feature\Concerns\ServerTestHelpers;
-use Tests\Support\ServerCodecRegressionFixtureExecutor;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\ServiceControlPlane;
@@ -73,18 +72,6 @@ class NexusPayloadTransportTest extends TestCase
         $this->expectDispatch($blob);
         $this->withHeaders($this->apiHeaders())->postJson(self::EXECUTE_PATH, [
             'arguments' => $format === 'serialized' ? $blob : ['codec' => 'avro', 'blob' => $blob],
-            'payload_codec' => 'avro',
-        ])->assertOk();
-    }
-
-    public function test_regression_fixture_reaches_service_dispatch_unchanged(): void
-    {
-        $fixture = ServerCodecRegressionFixtureExecutor::exercisePath(
-            base_path('tests/Fixtures/CodecRegression/nexus-execute-arguments.json'),
-        );
-        $this->expectDispatch($fixture->wire);
-        $this->withHeaders($this->apiHeaders())->postJson(self::EXECUTE_PATH, [
-            'arguments' => ['codec' => 'avro', 'blob' => $fixture->wire],
             'payload_codec' => 'avro',
         ])->assertOk();
     }

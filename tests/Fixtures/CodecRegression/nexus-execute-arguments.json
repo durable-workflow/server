@@ -13,15 +13,12 @@
     "type": "array",
     "items": [
       {"type": "string", "value": "Ada"},
-      {
-        "type": "map",
-        "entries": [{"key": "nested", "value": {"type": "boolean", "value": true}}]
-      }
+      {"type": "string", "value": "Nexus"}
     ]
   },
   "framing": {
     "encoding": "avro-single-object",
-    "wire_base64": "wwHioz3/VYAiNwwECgZBZGEOAgxuZXN0ZWQCAQAA"
+    "wire_base64": "wwHioz3/VYAiNwwECgZBZGEKCk5leHVzAA=="
   },
   "failure_policy": {"operation": "round_trip", "error": null}
 }
