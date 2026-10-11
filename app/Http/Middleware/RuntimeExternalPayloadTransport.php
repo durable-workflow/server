@@ -153,6 +153,11 @@ class RuntimeExternalPayloadTransport
 
     /** @var array<string, list<list<string>>> */
     private const OUTGOING_REFERENCE_PATHS = [
+        'ServiceCatalogReadController@callShow' => [
+            ['failure_payload_reference'],
+            ['input_payload_reference'],
+            ['output_payload_reference'],
+        ],
         'ServiceCatalogController@executeOperation' => [
             ['failure_payload_reference'],
             ['input_payload_reference'],
