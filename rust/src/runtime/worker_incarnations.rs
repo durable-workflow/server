@@ -57,7 +57,12 @@ fn failure(status: StatusCode, reason: &'static str, worker_id: &str, token: &st
     }
 }
 
-async fn repair_payload(codec: Arc<Semaphore>, task_id: String) -> Result<String> {
+pub(super) async fn repair_payload(
+    codec: Arc<Semaphore>,
+    task_id: String,
+    liveness_state: &'static str,
+    wait_kind: Option<&'static str>,
+) -> Result<String> {
     let permit = codec
         .acquire_owned()
         .await
@@ -69,11 +74,13 @@ async fn repair_payload(codec: Arc<Semaphore>, task_id: String) -> Result<String
         let value = crate::codec::Value::Map(std::collections::BTreeMap::from([
             (
                 "liveness_state".into(),
-                crate::codec::Value::String("repair_needed".into()),
+                crate::codec::Value::String(liveness_state.into()),
             ),
             (
                 "wait_kind".into(),
-                crate::codec::Value::String("workflow-task".into()),
+                wait_kind.map_or(crate::codec::Value::Null, |kind| {
+                    crate::codec::Value::String(kind.into())
+                }),
             ),
             ("task_id".into(), crate::codec::Value::String(task_id)),
             (
@@ -279,7 +286,13 @@ where
         let command_sequence = DB::number(&run, "last_command_sequence")?
             .checked_add(1)
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "command_sequence_exhausted"))?;
-        let payload = repair_payload(codec, task_id.clone()).await?;
+        let payload = repair_payload(
+            codec,
+            task_id.clone(),
+            "repair_needed",
+            Some("workflow-task"),
+        )
+        .await?;
         let timestamp = now();
         let command_id = id();
         let workflow_id = DB::string(&run, "workflow_instance_id")?;

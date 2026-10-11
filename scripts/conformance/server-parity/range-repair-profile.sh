@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Published PHP and embedded reference only; native range repair is unqualified.
+# Three implementations in independent databases, with the exact published author.
 # Reuse the owning shared-fixture job's isolated database service and network.
 set -euo pipefail
 backend="$1"
+native_url="${2:?Set the independently isolated native URL}"
 test -n "${RESOURCE_SCOPE:?Set the owning isolated network/resource scope}"
 profile=tests/Fixtures/ServerParityProfiles/version-range-repair
 image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' "$profile/artifacts.json")
@@ -79,5 +80,8 @@ docker run --name "$RESOURCE_SCOPE-range-record-embedded" "${limits[@]}" --netwo
   -e DW_MODE=embedded -e CACHE_STORE=file -e QUEUE_CONNECTION=database -w /app "$image" \
   node /source/scripts/conformance/server-parity.mjs record --mode embedded --application-root /app \
   --target embedded "${selection[@]}" --output /evidence/embedded.json > "$evidence/embedded-record.txt" 2>&1
+docker run --name "$RESOURCE_SCOPE-range-record-native" "${limits[@]}" --network "$RESOURCE_SCOPE" --entrypoint node "${shared[@]}" -e DW_PARITY_TOKEN=parity-test-token \
+  "$image" scripts/conformance/server-parity.mjs record --mode http --url "$native_url" \
+  --target rust "${selection[@]}" --output /evidence/rust.json > "$evidence/rust-record.txt" 2>&1
 docker run --name "$RESOURCE_SCOPE-range-compare" "${limits[@]}" --network none --entrypoint node "${shared[@]}" "$image" scripts/conformance/server-parity.mjs compare \
-  /evidence/php.json /evidence/embedded.json "${selection[@]}" > "$evidence/comparison.json" 2>&1
+  /evidence/php.json /evidence/embedded.json /evidence/rust.json "${selection[@]}" > "$evidence/comparison.json" 2>&1

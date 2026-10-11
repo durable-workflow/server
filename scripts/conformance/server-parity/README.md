@@ -538,11 +538,14 @@ maintenance, published artifacts and broader #325 remain open.
 
 The separate `version-range-repair` profile freezes a newer published PHP
 reference and a normal locked PHP SDK independently of earlier cohorts.
-`range-repair-profile.sh <backend>` reuses the owning job's isolated database
+`range-repair-profile.sh <backend> <native-url>` reuses the owning job's isolated database
 service and network (`RESOURCE_SCOPE`, plus `MYSQL_IMAGE` or `POSTGRES_IMAGE`
 for those backends). It creates independent PHP and embedded databases, starts
-the exact published reference image, records both adapters and compares them.
-All processes use one CPU, 512 MiB RAM and no swap. The command retains logs,
+the exact published reference image and records PHP, embedded and native targets.
+The native URL must use its independently bootstrapped native database. Reuse
+the owning job's compiled native binary; the profile starts no new Cargo build.
+Server and author processes use one CPU, 512 MiB RAM and no swap; the manifest
+declares the backend-specific database caps. The command retains logs,
 terminal container state and observations under
 `parity-evidence/version-range-repair`. The owning job's always-run step calls
 `range-repair-cleanup.sh <backend>` to collect that state and remove the

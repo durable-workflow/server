@@ -10,6 +10,8 @@ pub(super) enum Operation {
     DescribeRun,
     History,
     Cancel,
+    Repair,
+    Debug,
 }
 
 impl Operation {
@@ -56,6 +58,8 @@ impl Operation {
             Self::DescribeRun => ("describe_run", &["workflow_id"], &["run_id"]),
             Self::History => ("history", &["workflow_id", "run_id"], &["next_page_token"]),
             Self::Cancel => ("cancel", &["workflow_id"], &["outcome"]),
+            Self::Repair => ("repair", &["workflow_id"], &["outcome"]),
+            Self::Debug => ("debug", &["workflow_id"], &[]),
         };
         let mut metadata = json!({"schema":"durable-workflow.v2.control-plane-response", "version":1,
             "operation":operation, "workflow_id":body.get("workflow_id"),
@@ -90,7 +94,7 @@ impl Operation {
             ]);
             metadata["contract"]["rejection_reasons"] = json!(["control_plane_internal_error"]);
         }
-        if matches!(self, Self::Cancel) {
+        if matches!(self, Self::Cancel | Self::Repair) {
             metadata["contract"]["rejection_fields"] =
                 json!(["workflow_id", "run_id", "reason", "message", "remediation"]);
             metadata["contract"]["rejection_reasons"] = json!(["v1_projection_read_only"]);
@@ -148,6 +152,10 @@ pub(super) async fn admission_response(request: Request, mut body: Value) -> Val
         ("GET", ["api", "workflows", _, "runs", _, "history"]) => Operation::History,
         ("POST", ["api", "workflows", _, "cancel"])
         | ("POST", ["api", "workflows", _, "runs", _, "cancel"]) => Operation::Cancel,
+        ("POST", ["api", "workflows", _, "repair"])
+        | ("POST", ["api", "workflows", _, "runs", _, "repair"]) => Operation::Repair,
+        ("GET", ["api", "workflows", _, "debug"])
+        | ("GET", ["api", "workflows", _, "runs", _, "debug"]) => Operation::Debug,
         // Additional control-plane operations require their own shared contracts.
         _ => return body,
     };

@@ -967,8 +967,8 @@ where
     }
 
     pub(crate) async fn fail_workflow_task(&self, task_id: &str, body: Value) -> Result<Value> {
-        // Waiting acknowledgement and ordinary task retry are separate
-        // transitions. Blocked replay/manual repair remain explicit gates.
+        // Waiting acknowledgement, ordinary retry and a persisted range block
+        // are distinct transitions. Other replay blockers remain explicit gates.
         text(&body, "lease_owner")?;
         if body["workflow_task_attempt"]
             .as_i64()
@@ -1022,7 +1022,13 @@ where
             || format!("{kind} {message}")
                 .to_ascii_lowercase()
                 .contains("workflow task waiting for scheduled history");
-        if !waiting && super::task_failures::blocks_replay(&body["failure"]) {
+        let range_blocked = !waiting
+            && failure
+                .get("reason")
+                .and_then(Value::as_str)
+                .map(super::task_failures::php_trim)
+                == Some("version_marker_incompatible_range");
+        if !waiting && !range_blocked && super::task_failures::blocks_replay(&body["failure"]) {
             return Err(refuse(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "development_workflow_task_failure_unqualified",
@@ -1082,8 +1088,31 @@ where
             if let Some(sequence) = failure.get("sequence").and_then(Value::as_i64) {
                 payload["failure_sequence"] = json!(sequence);
             }
+            if range_blocked {
+                payload["replay_blocked"] = json!(true);
+                payload["replay_blocked_reason"] = json!("worker_reported_replay_failure");
+                if let Some(kind) = payload.get("failure_type").cloned() {
+                    payload["replay_blocked_failure_type"] = kind;
+                }
+            }
             Self::query("UPDATE workflow_tasks SET status='failed',lease_expires_at=NULL,last_error=$1,payload=$2 WHERE id=$3")
                 .bind(message).bind(DB::document(&payload)).bind(task_id).execute(&mut *tx).await?;
+            if range_blocked {
+                // Keep the original run/history and logical task. Only explicit
+                // repair may make this lease runnable again; ordinary poll or
+                // worker deregistration must not turn the block into a retry.
+                Self::query("UPDATE workflow_tasks SET updated_at=$1 WHERE id=$2")
+                    .bind(DB::bind_time(now()))
+                    .bind(task_id)
+                    .execute(&mut *tx)
+                    .await?;
+                tx.commit().await?;
+                self.wake.notify_waiters();
+                return Ok(
+                    json!({"task_id":task_id,"workflow_task_attempt":body["workflow_task_attempt"],
+                    "outcome":"failed","recorded":true,"reason":null,"next_task_id":null}),
+                );
+            }
             let open = Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status IN ('ready','leased')")
                 .bind(&run_id).fetch_one(&mut *tx).await?;
             let mut next_task_id = None;

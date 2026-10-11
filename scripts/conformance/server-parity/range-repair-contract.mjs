@@ -165,6 +165,41 @@ export function checkRangeRepair(fixture, observation, workflowId) {
     assert.deepEqual(corrected.failures, []);
   }
   assert.equal(finalTask.id, blockedTask, 'repair reuses the original logical workflow task');
+  const event = observation.events.find(x => x.event_type === 'RepairRequested');
+  const repair = event.payload, command = repair.command;
+  assert.equal(repair.task_id, blockedTask);
+  assert.equal(repair.task_type, 'workflow');
+  assert.equal(repair.liveness_state, 'workflow_replay_blocked');
+  assert.equal(repair.wait_kind, null);
+  assert.equal(repair.task.id, blockedTask);
+  assert.equal(repair.task.status, 'ready');
+  assert.equal(repair.task.attempt_count, 1);
+  assert.equal(repair.task.repair_count, 1);
+  assert.equal(command.id, repair.workflow_command_id);
+  assert.equal(command.sequence, 2);
+  assert.equal(command.type, 'repair');
+  assert.equal(command.status, 'accepted');
+  assert.equal(command.outcome, 'repair_dispatched');
+  assert.equal(command.resolved_run_id, observation.run_id);
+  assert.equal(command.target_scope, observation.mode === 'http' ? 'instance' : 'run');
+  assert.equal(command.requested_run_id ?? null, observation.mode === 'http' ? null : observation.run_id);
+  assert.equal(command.source, observation.mode === 'http' ? 'control_plane' : 'php');
+  assert.equal(command.payload_codec, 'avro');
+  assert.deepEqual(event.decoded.repair_command, {
+    liveness_state: 'workflow_replay_blocked', wait_kind: null, task_id: blockedTask, task_type: 'workflow',
+  }, 'official decoder preserves the exact repair command values');
+  if (observation.mode === 'http') {
+    assert.equal(command.principal_type, 'auth:token');
+    assert.equal(command.principal_id, 'legacy-token');
+    assert.equal(command.principal_label, 'Admin');
+    assert.deepEqual(command.context.principal, {type: 'auth:token', id: 'legacy-token', label: 'Admin'});
+    assert.equal(command.auth_status, 'authorized');
+    assert.equal(command.auth_method, 'token');
+    assert.equal(command.caller_label, 'Standalone Server');
+    assert.equal(command.request_method, 'POST');
+    assert.equal(command.request_path, corrected.requests.find(x => x.path.endsWith('/repair')).path);
+    assert.match(command.request_fingerprint, /^sha256:[a-f0-9]{64}$/);
+  }
   return {checkpoint: spec.checkpoint, change_id: spec.change_id, recorded_version: 1,
     incompatible_range: [2, 2], blocked_history_events: spec.blocked_event_count,
     same_run: true, same_task: true, restored_definition: true, activity_invocations: 1,
