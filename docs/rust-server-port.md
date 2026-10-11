@@ -327,6 +327,9 @@ The separate `version-range-repair` profile freezes that published cohort for
 three cold author phases: original compatible code, incompatible range, and
 byte-identical restored code with explicit repair. The HTTP and embedded
 adapters observe actual SDK requests, durable history and task diagnostics.
+The expanded correctness run gives its MySQL 8.4 database 1 GiB after a retained
+768 MiB OOM during the later pressure profile; application and author processes
+keep one CPU, 512 MiB and no swap. Database caps are declared in the profile.
 Reference execution and native qualification remain tracked separately. Native
 replay-blocking failures still refuse an unqualified transition; range blockage,
 manual repair and diagnostics need implementation against this shared fixture.

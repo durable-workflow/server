@@ -130,7 +130,7 @@ jobs:
             memory: 768m
           - label: existing-php-mysql-matrix
             image: mirror.gcr.io/library/mysql@sha256:679e7e924f38a3cbb62a3d7df32924b83f7321a602d3f9f967c01b3df18495d6
-            memory: 768m
+            memory: 1g
           - label: mariadb-10.11
             image: mirror.gcr.io/library/mariadb@sha256:7db29378d4fdab73f8123bbc2b48905c90d1a4b00cf848b028f1e81e623257f2
             memory: 512m
