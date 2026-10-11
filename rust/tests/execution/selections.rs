@@ -335,6 +335,70 @@ async fn activity_winner_survives_restart_and_losing_timer_without_another_wakeu
 }
 
 #[tokio::test]
+async fn losing_activity_preserves_a_later_wakeup_while_winner_workflow_is_leased() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(
+        &app,
+        "leased-selection",
+        json!(["echo"]),
+        json!(["echo_activity"]),
+    )
+    .await;
+    let started = start(&app, "leased-selection-wakeup").await;
+    let initial = poll(&app, "leased-selection", "workflow").await;
+    assert_eq!(
+        finish_task(&app, &initial, mixed_commands(2)).await.0,
+        StatusCode::OK
+    );
+    wait_for_events(&app, &started, 7).await;
+    let winner_task = poll(&app, "leased-selection", "workflow").await;
+    assert_eq!(winner_task["history_events"].as_array().unwrap().len(), 7);
+    let activity = poll(&app, "leased-selection", "activity").await;
+    let completed = request(&app, "POST", &format!("/api/worker/activity-tasks/{}/complete", activity["task_id"].as_str().unwrap()),
+        json!({"lease_owner":activity["lease_owner"],"activity_attempt_id":activity["activity_attempt_id"],
+            "result":envelope(Payload::Long(9007199254740993))})).await;
+    assert_eq!(completed.0, StatusCode::OK);
+    assert_ne!(completed.1["next_task_id"], winner_task["task_id"]);
+    let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    assert_eq!(history.as_array().unwrap().len(), 9);
+    let waiting = request(&app, "POST", &format!("/api/worker/workflow-tasks/{}/fail", winner_task["task_id"].as_str().unwrap()),
+        json!({"lease_owner":winner_task["lease_owner"],"workflow_task_attempt":winner_task["workflow_task_attempt"],
+            "failure":{"type":"WorkflowTaskWaitingForHistory","message":"workflow task waiting for scheduled history"}})).await;
+    assert_eq!(waiting.1["outcome"], "waiting_for_history");
+    assert_eq!(
+        run_history(&app, &started["workflow_id"], &started["run_id"]).await,
+        history
+    );
+    let later = poll(&app, "leased-selection", "workflow").await;
+    assert_eq!(later["task_id"], completed.1["next_task_id"]);
+    assert_ne!(later["task_id"], winner_task["task_id"]);
+    assert_eq!(later["history_events"].as_array().unwrap().len(), 9);
+    assert_eq!(
+        finish_task(
+            &app,
+            &later,
+            json!([{"type":"complete_workflow","result":envelope(Payload::Long(9007199254740993))}])
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        run_history(&app, &started["workflow_id"], &started["run_id"])
+            .await
+            .as_array()
+            .unwrap()
+            .len(),
+        10
+    );
+    assert!(poll(&app, "leased-selection", "workflow").await.is_null());
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
 async fn invalid_or_partial_selection_batches_leave_history_and_original_lease_usable() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();

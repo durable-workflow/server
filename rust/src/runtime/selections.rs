@@ -213,7 +213,10 @@ where
         metadata: &Value,
     ) -> Result<String> {
         if metadata.get("parallel_group_id").is_some() {
-            let open = Self::query("SELECT id FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status IN ('ready','leased') ORDER BY available_at,id LIMIT 1")
+            // A leased worker may be replaying an older history snapshot.
+            // Coalesce only a ready wakeup, otherwise preserve a later task
+            // even if the active lease subsequently acknowledges waiting.
+            let open = Self::query("SELECT id FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status='ready' ORDER BY available_at,id LIMIT 1")
                 .bind(run_id).fetch_optional(&mut **tx).await?;
             if let Some(task) = open {
                 return DB::string(&task, "id");

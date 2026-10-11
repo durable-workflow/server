@@ -406,6 +406,9 @@ An activity-first regression also preserves the committed winner across a
 restart and losing timer, with one outstanding workflow wakeup. Failed/retrying
 selection activities are explicitly refused before mutation until their own
 shared fixture qualifies that behavior.
+Wakeups coalesce only a ready task. A leased worker can hold an older history
+snapshot, so a later member keeps a new ready task even if that worker then
+acknowledges waiting; a dedicated HTTP regression covers this interleaving.
 
 The separate `pending-native` profile binds the same published artifact bytes
 and unchanged fixture under a new qualification scope, including the SHA-256
