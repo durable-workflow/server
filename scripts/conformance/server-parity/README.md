@@ -563,5 +563,39 @@ history and exact int64/null/Unicode output. The reader checks loaded SDK and
 engine bytes against the source manifest and preserves the distinct HTTP and
 embedded diagnostic representations. The ordinary shared-fixture workflow
 runs this reference check on all six existing database configurations. It
-currently records PHP and embedded only; native repair, an activity still
-pending at the failure, other SDK authors and performance remain unqualified.
+records PHP, embedded and native for that completed-activity case. An activity
+still pending at the failure, other SDK authors and performance remain separate
+qualification gates.
+
+The optional `pending-reference` third argument selects
+`range-selected-timer-activity-pending` with the same exact published package
+tuple and a separate manifest declaring PHP HTTP and embedded targets only.
+The original definition records its version and selects between an activity
+routed to `server-parity-range-activity` and a positive-delay timer. Only the
+workflow queue is served until a cold incompatible definition blocks the
+timer-selected replay. The restored definition explicitly repairs that same
+task, replays the original timer winner and waits for the still-pending activity.
+One activity execution then resumes a later workflow task to finish the original
+run. An `all` barrier does not produce this wake while another successful member
+is pending. Full checkpoint histories, original activity/group/timer identities,
+deadlines, waiting acknowledgement, repair command and exact payload values
+remain in the recordings and semantic checks.
+
+This selection uses independent `range_pending_php_ref` and
+`range_pending_embedded_ref` databases, a distinct HTTP network alias and task
+resource names, `parity-range-pending-state`, and evidence under
+`parity-evidence/version-range-repair-pending`. Invoke
+`range-repair-cleanup.sh <backend> pending-reference` after success or failure,
+before removing the owning database/network. The ordinary six-configuration
+workflow includes this reference selection. Its first bounded SQLite HTTP run
+fails because manual repair redispatches the older activity while the workflow
+task stays replay blocked; embedded execution was not reached.
+[Workflow #755](https://github.com/durable-workflow/workflow/issues/755) and
+[fix #756](https://github.com/durable-workflow/workflow/pull/756) own the task
+ordering correction. The repair command must identify the blocked workflow
+task, with `wait_kind: activity` preserving the actual pending operation.
+The selected profile manifest supplies the published image and SDK lock
+identity; a corrected pending cohort is qualified separately while the old
+completed cohort and failed observations remain unchanged.
+No native pending-activity result is claimed. The completed-activity fixture,
+manifest, original queue/prefix and default corpus retain their identities.

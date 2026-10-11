@@ -26,6 +26,27 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+Range repair #392 is merged and verified on main: all six shared execution
+configurations and PHP/source checks pass at `3278ef8ea`. Its scope is the
+completed-activity range case; full parity, performance and takeover remain open.
+The next reviewed fixture, `range-selected-timer-activity-pending`, uses the
+published `select` operation. An `all` barrier waits for all successful members
+and cannot produce this pending-activity wake. The timer winner must resume a
+cold incompatible author while the separately routed activity stays pending.
+Explicit repair restores the same blocked task; its compatible replay awaits
+the original activity before a later task completes the run. PHP HTTP/embedded
+reference execution is pending before native implementation. The historical
+completed-activity fixture and exact published artifact tuple remain unchanged.
+
+The first bounded pending reference exposes a PHP task-selection defect:
+manual repair identifies the older activity while the workflow task remains
+replay blocked. [Workflow #755](https://github.com/durable-workflow/workflow/issues/755)
+and [fix #756](https://github.com/durable-workflow/workflow/pull/756) own that
+dependency. The repair command must identify the blocked workflow task while
+`wait_kind: activity` describes the original pending operation. The old failed
+recording remains evidence; corrected published HTTP/embedded qualification
+must pass before native pending implementation.
+
 The pending `worker-registration-fencing` fixture defines the first shared
 Server #358 lifecycle slice on a separate exact PHP/SDK source tuple. It retains
 an original leased echo across token rotation, heartbeat, terminal refusals,

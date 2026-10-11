@@ -8,6 +8,8 @@ final class RangeRepairState
 
     public static array $versions = [];
 
+    public static array $selections = [];
+
     public static int $activityInvocations = 0;
 }
 
@@ -73,6 +75,11 @@ function rangeRepairObservation(array $fixture, array $options): array
 
 function rangeHttpPhase(array $fixture, array $options): array
 {
+    if ($fixture['range_repair']['pending_activity'] ?? false) {
+        require __DIR__.'/range-pending-probe.php';
+
+        return rangePendingHttpPhase($fixture, $options);
+    }
     $phase = $options['range-phase'];
     $worker = null;
     $requests = $diagnostics = [];
@@ -154,6 +161,11 @@ function rangeHttpPhase(array $fixture, array $options): array
 
 function rangeEmbeddedPhase(array $fixture, array $options): array
 {
+    if ($fixture['range_repair']['pending_activity'] ?? false) {
+        require __DIR__.'/range-pending-probe.php';
+
+        return rangePendingEmbeddedPhase($fixture, $options);
+    }
     $root = $options['application-root'];
     require $root.'/vendor/autoload.php';
     $app = require $root.'/bootstrap/app.php';
