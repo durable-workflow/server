@@ -24,6 +24,7 @@ on:
       - tests/Unit/ServerParityTaskRetryContractTest.mjs
       - tests/Unit/ServerParityPublishedPatchContractTest.mjs
       - tests/Unit/ServerParityPublishedPatchTransportTest.mjs
+      - tests/Unit/ServerParityLegacyMarkerContractTest.mjs
       - tests/Support/ServerParityAdmissionObservation.mjs
       - tests/Support/ServerParityVisibilityObservation.mjs
       - rust/**
@@ -51,6 +52,7 @@ on:
       - tests/Unit/ServerParityTaskRetryContractTest.mjs
       - tests/Unit/ServerParityPublishedPatchContractTest.mjs
       - tests/Unit/ServerParityPublishedPatchTransportTest.mjs
+      - tests/Unit/ServerParityLegacyMarkerContractTest.mjs
       - tests/Support/ServerParityAdmissionObservation.mjs
       - tests/Support/ServerParityVisibilityObservation.mjs
       - rust/**
@@ -96,6 +98,15 @@ jobs:
           cd published-sdk-adapters
           find . -type f ! -path ./SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
           sha256sum -c SHA256SUMS >/dev/null
+      - name: Build genuine legacy-marker adapters with the existing cache
+        run: bash scripts/conformance/server-parity/legacy-marker-adapters.sh
+      - name: Share genuine legacy-marker adapters without build trees or caches
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: legacy-marker-adapters
+          path: legacy-marker-adapters
+          retention-days: 90
+          if-no-files-found: error
       - name: Share thin adapters without build trees or caches
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -132,6 +143,12 @@ jobs:
         with:
           name: published-sdk-patch-adapters
           path: published-sdk-adapters
+          digest-mismatch: error
+      - name: Fetch this run's genuine legacy-marker adapters
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: legacy-marker-adapters
+          path: legacy-marker-adapters
           digest-mismatch: error
       - name: Create TLS fixture certificates
         run: |
@@ -328,6 +345,7 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json > parity-evidence/comparison.json
           bash scripts/conformance/server-parity/published-sdk-patch-profile.sh mysql http://parity-php:8080 http://parity-native-a:8080
           bash scripts/conformance/server-parity/repeated-patch-profile.sh mysql http://parity-php:8080 http://parity-native-a:8080
+          bash scripts/conformance/server-parity/legacy-marker-profile.sh mysql http://parity-php:8080 http://parity-native-a:8080
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint sh \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" -ec '
@@ -487,6 +505,12 @@ jobs:
         with:
           name: published-sdk-patch-adapters
           path: published-sdk-adapters
+          digest-mismatch: error
+      - name: Fetch this run's genuine legacy-marker adapters
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: legacy-marker-adapters
+          path: legacy-marker-adapters
           digest-mismatch: error
       - name: Bootstrap independent published PHP and native PostgreSQL databases
         env:
@@ -659,6 +683,7 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json > parity-evidence/comparison.json
           bash scripts/conformance/server-parity/published-sdk-patch-profile.sh pgsql http://parity-php:8080 http://parity-native-a:8080
           bash scripts/conformance/server-parity/repeated-patch-profile.sh pgsql http://parity-php:8080 http://parity-native-a:8080
+          bash scripts/conformance/server-parity/legacy-marker-profile.sh pgsql http://parity-php:8080 http://parity-native-a:8080
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint sh \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" -ec '
@@ -841,6 +866,12 @@ jobs:
           name: published-sdk-patch-adapters
           path: published-sdk-adapters
           digest-mismatch: error
+      - name: Fetch this run's genuine legacy-marker adapters
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: legacy-marker-adapters
+          path: legacy-marker-adapters
+          digest-mismatch: error
       - name: Execute official Rust codec and cross-decode with published PHP
         run: |
           set -euo pipefail
@@ -964,6 +995,7 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json > parity-evidence/comparison.json
           bash scripts/conformance/server-parity/published-sdk-patch-profile.sh sqlite http://parity-server:8080 http://parity-rust:8080
           bash scripts/conformance/server-parity/repeated-patch-profile.sh sqlite http://parity-server:8080 http://parity-rust:8080
+          bash scripts/conformance/server-parity/legacy-marker-profile.sh sqlite http://parity-server:8080 http://parity-rust:8080
           docker run --rm --user=1000:1000 --entrypoint php --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/restart.php \

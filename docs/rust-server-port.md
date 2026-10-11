@@ -200,6 +200,40 @@ execution. Workflow #744 owns the published engine repair and its downstream
 follow-through. A Server package pin retains #358's fault/budget and unpublished
 PHP fencing/schema release gates; it does not qualify a new Server release.
 
+The separate `legacy-marker-aliases` profile executes genuine published authors:
+Python 2.5.0 for one- and two-marker histories, and Rust 3.4.3 for fresh marker
+deduplication. A separate cold Rust 3.4.3 worker resumes each original run after
+an activity checkpoint. Its four fixtures cover a pending activity, a completed
+activity, a single-marker control and fresh deduplication. Both retained same-ID
+markers keep their original positions and timestamps; the original activity and
+exact typed int64 output complete once.
+
+Embedded counterparts normally install Workflow 2.5.5 for the retained-history
+author and Workflow 2.5.7 for the cold reader, each with its complete dependency
+lock and actual autoloaded source hashes. The two-marker controls observe both
+distinct original microsecond clocks after the corresponding replay calls;
+single-marker and fresh controls reuse the first clock. Each database job builds
+neither SDK: a preparation job builds the locked published adapters once using
+its existing registry/target cache, then shares only binaries, dependencies and
+installation receipts. All four local fixtures and their raw observations pass
+on PHP, native and embedded targets. Qualification across the six hosted
+database configurations is tracked in [#382](https://github.com/durable-workflow/server/pull/382).
+The profile explicitly checks published poll-capacity refusal: a null task,
+one-second retry hint and successful recovery with identical worker, queue and
+poll options. The published worker may choose a fresh poll identity after this
+explicit no-task admission refusal. An idle query worker may instead withdraw
+after its own accepted commit; workflow/activity polls require actual recovery.
+Backend-lock pressure still requires the same original poll identity.
+Immediate sticky failover, blocked
+repair, migration, full fault budgets and performance remain separate gates.
+Its opt-in HTTP observer records whether the complete request body arrived and
+whether an upstream request started. A locally cancelled, incomplete poll has
+no inferred worker identity and is accepted only after a real phase commit and
+each registered worker's authenticated withdrawal after its own commit. A
+forwarded cancellation still requires its actual worker and queue. Completion
+and failure requests cannot use this shutdown exception. Frozen profiles retain
+their original wire-record schema.
+
 [#381](https://github.com/durable-workflow/server/pull/381) implements ordinary
 workflow-task failure retries on the original run. A failed lease and its new
 ready task commit together, carrying attempt count and routing without adding

@@ -3,12 +3,14 @@ import http from 'node:http';
 import {appendFileSync} from 'node:fs';
 import {gunzipSync, inflateSync, brotliDecompressSync} from 'node:zlib';
 
-const [target, journal] = process.argv.slice(2);
+const [target, journal, observationMode] = process.argv.slice(2);
+if (observationMode !== undefined && observationMode !== '--forwarding-state') throw new Error('Unknown observation mode');
 const upstream = new URL(target);
 if (upstream.protocol !== 'http:') throw new Error('Isolated fixture target must use HTTP');
 const server = http.createServer((request, response) => {
   const chunks = [];
   let forwarded;
+  let requestBodyComplete = false;
   let recorded = false;
   const record = fields => {
     if (recorded) return;
@@ -16,7 +18,9 @@ const server = http.createServer((request, response) => {
     appendFileSync(journal, JSON.stringify({method: request.method, path: new URL(request.url, upstream).pathname,
       request_body: Buffer.concat(chunks).toString('utf8'), status: 0, response_encoding: 'identity',
       response_retry_after: null, response_bytes_base64: '', response_body: '', client_cancelled: false,
-      transport_error: null, ...fields})+'\n');
+      transport_error: null, ...(observationMode === '--forwarding-state' ? {
+        request_body_complete: requestBodyComplete, upstream_request_started: Boolean(forwarded),
+      } : {}), ...fields})+'\n');
   };
   const failed = error => {
     record({transport_error: error.code ?? 'upstream_error'});
@@ -30,6 +34,7 @@ const server = http.createServer((request, response) => {
   });
   request.on('data', chunk => chunks.push(chunk));
   request.on('end', () => {
+    requestBodyComplete = true;
     if (recorded) return;
     const body = Buffer.concat(chunks);
     forwarded = http.request(new URL(request.url, upstream), {
