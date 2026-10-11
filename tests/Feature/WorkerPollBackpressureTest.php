@@ -7,6 +7,7 @@ use App\Support\LongPollWaitSlotStore;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Feature\Concerns\ServerTestHelpers;
+use Tests\Support\OpenApiSchema;
 use Tests\TestCase;
 
 class WorkerPollBackpressureTest extends TestCase
@@ -161,7 +162,7 @@ class WorkerPollBackpressureTest extends TestCase
         string $taskKind,
         string $waitPool,
     ): void {
-        $this->postJson($path, $payload, $this->workerHeaders())
+        $response = $this->postJson($path, $payload, $this->workerHeaders())
             ->assertStatus(429)
             ->assertHeader('Retry-After', '1')
             ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
@@ -172,6 +173,12 @@ class WorkerPollBackpressureTest extends TestCase
             ->assertJsonPath('wait_pool', $waitPool)
             ->assertJsonPath('retry_after_seconds', 1)
             ->assertJsonPath('retryable', true);
+
+        OpenApiSchema::fromFile(dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-api.openapi.yaml')
+            ->assertReferenceMatches(
+                '#/components/schemas/WorkerPollBackpressure',
+                json_decode($response->getContent(), false, 512, JSON_THROW_ON_ERROR),
+            );
     }
 
     private function setWorkerRuntime(string $runtime): void
