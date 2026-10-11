@@ -15,7 +15,7 @@
       {"type": "string", "value": "Ada"},
       {
         "type": "map",
-        "entries": [{"key": "nested", "value": {"type": "bool", "value": true}}]
+        "entries": [{"key": "nested", "value": {"type": "boolean", "value": true}}]
       }
     ]
   },
