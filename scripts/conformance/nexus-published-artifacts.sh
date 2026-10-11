@@ -351,7 +351,8 @@ const net = require('net');
 const path = require('path');
 const crypto = require('crypto');
 const {isDeepStrictEqual} = require('util');
-const {spawnSync} = require('child_process');
+const {spawn, spawnSync} = require('child_process');
+const readline = require('readline');
 const {replayPostWithStaleSocketRecovery} = require(process.argv[5]);
 
 const resultDir = process.argv[2];
@@ -2781,6 +2782,119 @@ async function probePublishedCallerRecovery(baseUrl, token, compose, phpService,
   }
 }
 
+async function interruptPublishedBackend(baseUrl, compose, checkpoint) {
+  const deadline = Date.now() + checkpoint.remaining_seconds * 1000;
+  const proof = {checkpoint, restored: false};
+  const docker = (args) => {
+    const result = spawnSync('docker', args, {encoding: 'utf8', timeout: 6000});
+    if (result.status !== 0) throw new Error(`docker ${args[0]} failed: ${result.error || result.stderr}`);
+    return result.stdout.trim();
+  };
+  const state = (id) => JSON.parse(docker(['inspect', '--format', '{{json .State}}', id]));
+  let database;
+  try {
+    database = docker(['compose', '-p', compose.project, '-f', compose.composePath, 'ps', '-q', 'mysql']);
+    if (!database) throw new Error('The published stack has no original database container');
+    proof.original_database_id = database;
+    proof.before_stop = state(database);
+    proof.stop_requested_at = timestamp();
+    docker(['stop', '--time', '2', database]);
+    proof.stopped_at = timestamp();
+    proof.stopped = state(database);
+    const readiness = await fetch(`${baseUrl}/api/ready`, {signal: AbortSignal.timeout(3000)});
+    proof.unready = {status: readiness.status, body: await readiness.json()};
+    // Keep the database absent across the original target's durable timer.
+    const holdUntil = Date.parse(checkpoint.timer_fire_at) + 1000;
+    if (!Number.isFinite(holdUntil) || holdUntil >= deadline - 10000) {
+      throw new Error('Original timer cannot be crossed within the original recovery budget');
+    }
+    if (Date.now() < holdUntil) await new Promise(resolve => setTimeout(resolve, holdUntil - Date.now()));
+    proof.down_until = timestamp();
+  } catch (error) {
+    proof.error = String(error);
+  } finally {
+    if (database) {
+      try {
+        proof.restart_requested_at = timestamp();
+        docker(['start', database]);
+        const readyUntil = Math.min(deadline - 5000, Date.now() + 20000);
+        while (Date.now() < readyUntil) {
+          try {
+            const ready = await fetch(`${baseUrl}/api/ready`, {signal: AbortSignal.timeout(2000)});
+            if (ready.ok) {
+              proof.ready = {status: ready.status, body: await ready.json()};
+              break;
+            }
+          } catch { /* Retry only inside the original case budget. */ }
+          await new Promise(resolve => setTimeout(resolve, 250));
+        }
+        proof.restored_at = timestamp();
+        proof.restored_database_id = database;
+        proof.after_restart = state(database);
+        proof.restored = proof.ready?.status === 200 && proof.after_restart.Running;
+      } catch (error) {
+        proof.restore_error = String(error);
+      }
+    }
+    fs.writeFileSync(path.join(compose.runRoot, checkpoint.resume_file), JSON.stringify(proof));
+  }
+  return proof;
+}
+
+async function probePublishedBackendInterruption(baseUrl, token, compose, phpService, pythonService) {
+  const reports = [];
+  for (const [caller, service] of [['php', 'php'], ['php', 'python'], ['python', 'php'], ['python', 'python']]) {
+    const inputName = `nexus-${caller}-${service}-backend-input.json`;
+    const input = {token, endpoint: `published-${service}-workflow-service`,
+      service: service === 'php' ? 'PublishedWorkflowGreeter' : 'PublishedPythonWorkflowGreeter', operation: 'greet',
+      backend_resume_prefix: `nexus-${caller}-${service}-backend-resume`};
+    fs.writeFileSync(path.join(compose.runRoot, inputName), JSON.stringify(input));
+    const container = caller === 'php' ? phpService.containerName : pythonService.containerName;
+    const command = caller === 'php' ? `php /work/nexus-php-caller-recovery.php /work/${inputName}`
+      : `. /tmp/dw-python/bin/activate && python /work/nexus-python-caller-recovery.py /work/${inputName}`;
+    const child = spawn('docker', ['exec', container, 'sh', '-lc', command], {timeout: 130000});
+    let stdout = '', stderr = '', hooks = Promise.resolve();
+    child.stdout.on('data', chunk => { stdout += chunk; });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    const lines = readline.createInterface({input: child.stdout});
+    lines.on('line', line => {
+      try {
+        const checkpoint = JSON.parse(line);
+        if (checkpoint.phase === 'backend_interruption_ready') {
+          if (checkpoint.resume_file !== `${input.backend_resume_prefix}-${checkpoint.caller_namespace}.json`
+            || !['shared', caller === 'php' ? 'tenant-a' : 'tenant-b'].includes(checkpoint.caller_namespace)) {
+            throw new Error('Unexpected backend checkpoint path or namespace');
+          }
+          hooks = hooks.then(() => interruptPublishedBackend(baseUrl, compose, checkpoint));
+        }
+      } catch (error) { stderr += `\nCheckpoint refused: ${error}`; }
+    });
+    const exit = await new Promise(resolve => {
+      child.once('error', error => resolve({code: null, error: String(error)}));
+      child.once('close', (code, signal) => resolve({code, signal}));
+    });
+    await hooks;
+    lines.close();
+    fs.writeFileSync(path.join(resultDir, `nexus-${caller}-${service}-backend.log`), `${JSON.stringify(exit)}\n${stdout}\n${stderr}`);
+    let body;
+    try { body = JSON.parse(stdout.trim().split('\n').at(-1)); }
+    catch { body = {error: 'Backend helper did not return its original recovery report', exit, stderr}; }
+    const observation = {ok: exit.code === 0 && Array.isArray(body.observations), status: 0, body};
+    for (const row of body.observations || []) {
+      const callId = row.original_service_call_id;
+      if (!callId) continue;
+      row.durable_service_call = responseSummary(await apiRequest(baseUrl, token, 'shared', 'GET',
+        `/service-endpoints/${input.endpoint}/services/${input.service}/operations/greet/service-calls/${encodeURIComponent(callId)}`));
+      row.caller_operations = responseSummary(await apiRequest(baseUrl, token, row.caller_namespace, 'GET',
+        `/workflows/${encodeURIComponent(row.workflow_id)}/runs/${encodeURIComponent(row.run_id)}/nexus-operations`));
+    }
+    reports.push({caller, service, observation});
+    fs.writeFileSync(path.join(resultDir, 'nexus-backend-interruption-probes.json'), JSON.stringify({
+      scope: 'actual_php_python_caller_sigkill_and_mysql_restart', reports,
+    }, null, 2) + '\n');
+  }
+}
+
 async function probePublishedServiceDeadline(baseUrl, token, compose, pythonService) {
   const endpoint = 'published-php-workflow-service';
   const service = 'PublishedWorkflowGreeter';
@@ -3382,6 +3496,14 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
       await probePublishedCallerRecovery(baseUrl, token, compose, phpService, pythonService);
     } catch (error) {
       fs.writeFileSync(path.join(resultDir, 'nexus-caller-recovery-probes-error.json'), JSON.stringify({
+        runner_blocked: true, failure_reason: String(error),
+      }, null, 2) + '\n');
+    }
+
+    try {
+      await probePublishedBackendInterruption(baseUrl, token, compose, phpService, pythonService);
+    } catch (error) {
+      fs.writeFileSync(path.join(resultDir, 'nexus-backend-interruption-probes-error.json'), JSON.stringify({
         runner_blocked: true, failure_reason: String(error),
       }, null, 2) + '\n');
     }
