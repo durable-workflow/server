@@ -2570,12 +2570,13 @@ async function probePublishedPythonCallerWorkflows(baseUrl, token, compose, phpS
     await apiRequest(baseUrl, token, 'shared', 'POST', '/service-endpoints', {endpoint_name: endpoint}),
     await apiRequest(baseUrl, token, 'shared', 'POST', `/service-endpoints/${endpoint}/services`, {service_name: service}),
     await apiRequest(baseUrl, token, 'shared', 'POST', `/service-endpoints/${endpoint}/services/${service}/operations`, {
-      operation_name: operation, operation_mode: 'sync', handler_binding_kind: 'workflow_run',
+      operation_name: operation, operation_mode: 'sync', handler_binding_kind: 'start_workflow',
       handler_target_reference: 'nexus.fixture.php.greeter',
       handler_binding: {workflow_type: 'nexus.fixture.php.greeter', queue: 'nexus-php-workflow'},
       boundary_policy: {authorization: {caller_namespaces: {allow: ['shared', 'tenant-b']}}},
     }),
   ];
+  fs.writeFileSync(path.join(resultDir, 'nexus-workflow-service-setup.json'), JSON.stringify(setup, null, 2) + '\n');
   if (setup.some((response) => !response.ok)) throw new Error('Could not register the actual PHP workflow service');
   const fixtureDir = path.dirname(process.argv[5]);
   for (const name of ['nexus-php-service-worker.php', 'nexus-python-workflow-probe.py']) {
@@ -3146,7 +3147,13 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
       pairs: clientMatrix,
     }, null, 2) + '\n');
 
-    await probePublishedPythonCallerWorkflows(baseUrl, token, compose, phpService, pythonService);
+    try {
+      await probePublishedPythonCallerWorkflows(baseUrl, token, compose, phpService, pythonService);
+    } catch (error) {
+      fs.writeFileSync(path.join(resultDir, 'nexus-python-workflow-probe.json'), JSON.stringify({
+        ok: false, body: {runner_blocked: true, failure_reason: String(error)},
+      }, null, 2) + '\n');
+    }
 
     const phpPublicSurface = reflectedPublicServiceCallSurface(runtimeEvidence.php);
     const pythonPublicSurface = reflectedPublicServiceCallSurface(runtimeEvidence.python);
