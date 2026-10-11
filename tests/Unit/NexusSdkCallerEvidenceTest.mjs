@@ -95,7 +95,7 @@ function assertTypedServiceFailure(row, caller) {
     assert.equal(call.service_error_type, failureType);
 }
 
-function assertPhpCallerRecovery(row, service) {
+function assertCallerRecovery(row, service, caller = 'php') {
     assert.equal(row.scenario, 'caller_recovery');
     assert.equal(row.recovery_qualified, true, JSON.stringify(row.failure));
     assert.ok(row.worker_process_id > 0 && row.replacement_worker_process_id > 0);
@@ -108,11 +108,11 @@ function assertPhpCallerRecovery(row, service) {
     assert.ok(row.elapsed_seconds > 0 && row.elapsed_seconds < row.budget_seconds);
     assert.ok(row.installed_sdk_version && row.worker_log);
     const expected = {language: service, name: 'recover', greeting: 'hello, recover'};
-    assert.deepEqual(row.result.result, expected);
+    assert.deepEqual(caller === 'python' ? row.decoded_service_result : row.result.result, expected);
     assert.deepEqual(row.linked_service_result, expected);
     assert.equal(row.result.status, 'completed');
     assert.equal(row.result.service_call_id, row.original_service_call_id);
-    assertOriginalServiceDelivery(row, 'sdk-php');
+    assertOriginalServiceDelivery(row, `sdk-${caller}`);
     const call = row.durable_service_call.body.service_call || row.durable_service_call.body;
     const original = row.original_service_call;
     assert.equal(original.service_call_id || original.id, row.original_service_call_id);
@@ -155,7 +155,7 @@ function callerRecoveryFixture() {
 }
 
 test('caller recovery rejects a surviving worker, duplicate call, changed deadline or independently completed run', () => {
-    assertPhpCallerRecovery(callerRecoveryFixture(), 'php');
+    assertCallerRecovery(callerRecoveryFixture(), 'php');
     for (const mutate of [
         row => { row.killed_worker.running = true; },
         row => { row.replacement_worker_process_id = row.worker_process_id; },
@@ -166,20 +166,32 @@ test('caller recovery rejects a surviving worker, duplicate call, changed deadli
     ]) {
         const row = callerRecoveryFixture();
         mutate(row);
-        assert.throws(() => assertPhpCallerRecovery(row, 'php'));
+        assert.throws(() => assertCallerRecovery(row, 'php'));
     }
 });
 
+test('Python caller recovery requires its decoded result and original Python delivery boundary', () => {
+    const row = callerRecoveryFixture();
+    row.decoded_service_result = row.result.result;
+    row.result.result = 'encoded-avro';
+    row.history.events[0].payload.caller_sdk_language = 'sdk-python';
+    assertCallerRecovery(row, 'php', 'python');
+    row.decoded_service_result = {language: 'php', name: 'recover', greeting: 'wrong result'};
+    assert.throws(() => assertCallerRecovery(row, 'php', 'python'));
+});
+
 if (process.env.NEXUS_CALLER_RECOVERY_PROBES) {
-    test('an actual replacement PHP caller resumes the original call after SIGKILL in both namespaces', () => {
+    test('actual replacement PHP/Python callers resume the original call after SIGKILL in every direction', () => {
         const proof = JSON.parse(fs.readFileSync(process.env.NEXUS_CALLER_RECOVERY_PROBES, 'utf8'));
-        assert.equal(proof.scope, 'actual_php_caller_sigkill_recovery');
-        assert.deepEqual(proof.reports.map(({caller, service}) => [caller, service]), [['php', 'php'], ['php', 'python']]);
-        for (const {service, observation} of proof.reports) {
+        assert.equal(proof.scope, 'actual_php_python_caller_sigkill_recovery');
+        assert.deepEqual(proof.reports.map(({caller, service}) => [caller, service]),
+            [['php', 'php'], ['php', 'python'], ['python', 'php'], ['python', 'python']]);
+        for (const {caller, service, observation} of proof.reports) {
             assert.equal(observation.ok, true);
             assert.equal(observation.body.outcome, 'pass');
-            assert.deepEqual(observation.body.observations.map(row => row.caller_namespace), ['shared', 'tenant-a']);
-            for (const row of observation.body.observations) assertPhpCallerRecovery(row, service);
+            assert.deepEqual(observation.body.observations.map(row => row.caller_namespace),
+                ['shared', caller === 'php' ? 'tenant-a' : 'tenant-b']);
+            for (const row of observation.body.observations) assertCallerRecovery(row, service, caller);
         }
     });
 }
