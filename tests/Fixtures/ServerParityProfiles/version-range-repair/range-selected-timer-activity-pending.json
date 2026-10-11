@@ -1,0 +1,71 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "range-selected-timer-activity-pending",
+  "workflow_type": "parity.v1.range_pending_repair",
+  "input": {
+    "message": "range retained λ",
+    "count": 9007199254740992,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "range retained λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": true,
+  "range_repair": {
+    "change_id": "parity.range-pending-repair",
+    "checkpoint": "timer_selected_with_activity_pending",
+    "pending_activity": true,
+    "timer_delay_seconds": 3,
+    "activity_queue": "server-parity-range-activity",
+    "original_range": [
+      1,
+      1
+    ],
+    "incompatible_range": [
+      2,
+      2
+    ],
+    "recorded_version": 1,
+    "marker": {
+      "sequence": 1,
+      "change_id": "parity.range-pending-repair",
+      "version": 1,
+      "min_supported": 1,
+      "max_supported": 1
+    },
+    "original_event_count": 5,
+    "blocked_event_count": 7,
+    "repaired_task_attempt": 2,
+    "repaired_task_repair_count": 1,
+    "final_task_attempt": 1,
+    "final_task_repair_count": 0
+  },
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "VersionMarkerRecorded",
+    "ActivityScheduled",
+    "TimerScheduled",
+    "TimerFired",
+    "SelectionResolved",
+    "RepairRequested",
+    "ActivityStarted",
+    "ActivityCompleted",
+    "WorkflowCompleted"
+  ],
+  "contract": "The original published PHP author records version 1 and selects between a separately routed activity and a positive-delay timer, then exits before either completes. A cold workflow-only author with range 2..2 receives the legitimate timer-selected resume and reports the incompatible recorded version; the original activity remains pending, never started, and the original run remains open. Restoring the byte-identical compatible definition and explicitly repairing its blocked workflow task must preserve the entire history and pending activity. The repaired task replays the committed timer winner, then waits for the original activity without new scheduling or another repair. A real activity worker executes that original activity once. Its subsequent workflow task completes the original run with exact Avro values. The repaired task and final completion task are distinct; this case does not assert that repair itself completes pending work. PHP HTTP and embedded reference execution precede native qualification; the frozen completed-activity case and artifact tuple remain unchanged."
+}
