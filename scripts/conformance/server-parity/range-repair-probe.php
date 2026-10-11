@@ -8,7 +8,22 @@ final class RangeRepairState
 
     public static array $versions = [];
 
+    public static array $selections = [];
+
     public static int $activityInvocations = 0;
+}
+
+function rangeDecodeHistory(array $events, callable $decode): array
+{
+    $events = decodeHistory($events, $decode);
+    foreach ($events as &$event) {
+        if ($event['event_type'] === 'RepairRequested') {
+            $event['decoded']['repair_command'] = $decode($event['payload']['command']['payload']);
+            $event['typed_decoded']['repair_command'] = typedValue($event['decoded']['repair_command']);
+        }
+    }
+
+    return $events;
 }
 
 function rangeRepairObservation(array $fixture, array $options): array
@@ -60,6 +75,11 @@ function rangeRepairObservation(array $fixture, array $options): array
 
 function rangeHttpPhase(array $fixture, array $options): array
 {
+    if ($fixture['range_repair']['pending_activity'] ?? false) {
+        require __DIR__.'/range-pending-probe.php';
+
+        return rangePendingHttpPhase($fixture, $options);
+    }
     $phase = $options['range-phase'];
     $worker = null;
     $requests = $diagnostics = [];
@@ -118,11 +138,11 @@ function rangeHttpPhase(array $fixture, array $options): array
         $error = ['class' => $failure::class, 'message' => $failure->getMessage()];
     }
     $execution = $client->describeWorkflow($options['workflow-id'], $runId);
-    $events = decodeHistory(httpHistory($client, $options['workflow-id'], $runId), $client->payloadCodec()->decodeEnvelope(...));
+    $events = rangeDecodeHistory(httpHistory($client, $options['workflow-id'], $runId), $client->payloadCodec()->decodeEnvelope(...));
     $debug = (new \GuzzleHttp\Client(['http_errors' => false]))->get($options['url'].'/api/workflows/'
         .rawurlencode($options['workflow-id']).'/runs/'.rawurlencode($runId).'/debug', [
             'headers' => ['Authorization' => 'Bearer '.(getenv('DW_PARITY_TOKEN') ?: ''),
-                'X-Durable-Namespace' => 'default', 'X-Durable-Workflow-Control-Plane-Version' => '2'],
+                'X-Namespace' => 'default', 'X-Durable-Workflow-Control-Plane-Version' => '2'],
         ]);
     $loaded = [];
     foreach ([\DurableWorkflow\Worker::class, \DurableWorkflow\Worker\WorkflowContext::class] as $class) {
@@ -141,6 +161,11 @@ function rangeHttpPhase(array $fixture, array $options): array
 
 function rangeEmbeddedPhase(array $fixture, array $options): array
 {
+    if ($fixture['range_repair']['pending_activity'] ?? false) {
+        require __DIR__.'/range-pending-probe.php';
+
+        return rangePendingEmbeddedPhase($fixture, $options);
+    }
     $root = $options['application-root'];
     require $root.'/vendor/autoload.php';
     $app = require $root.'/bootstrap/app.php';
@@ -203,7 +228,7 @@ function rangeEmbeddedPhase(array $fixture, array $options): array
         'workflow_type' => $run->workflow_type, 'namespace' => $run->namespace, 'task_queue' => $run->queue,
         'status' => $run->status->value, 'payload_codec' => $run->payload_codec,
         'input' => $run->workflowArguments(), 'output' => $output, 'execution' => $run->toArray(),
-        'events' => decodeHistory($events, static fn ($value) => \Workflow\Serializers\Serializer::unserializeWithCodec('avro', is_array($value) ? $value['blob'] : $value)),
+        'events' => rangeDecodeHistory($events, static fn ($value) => \Workflow\Serializers\Serializer::unserializeWithCodec('avro', is_array($value) ? $value['blob'] : $value)),
         'versions' => RangeRepairState::$versions, 'activity_invocations' => RangeRepairState::$activityInvocations,
         'definition_sha256' => hash_file('sha256', $definition), 'tasks' => $tasks,
         'failures' => $run->failures()->get()->map->toArray()->all(), 'worker_output' => $workerOutput,

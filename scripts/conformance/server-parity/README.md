@@ -538,11 +538,14 @@ maintenance, published artifacts and broader #325 remain open.
 
 The separate `version-range-repair` profile freezes a newer published PHP
 reference and a normal locked PHP SDK independently of earlier cohorts.
-`range-repair-profile.sh <backend>` reuses the owning job's isolated database
+`range-repair-profile.sh <backend> <native-url>` reuses the owning job's isolated database
 service and network (`RESOURCE_SCOPE`, plus `MYSQL_IMAGE` or `POSTGRES_IMAGE`
 for those backends). It creates independent PHP and embedded databases, starts
-the exact published reference image, records both adapters and compares them.
-All processes use one CPU, 512 MiB RAM and no swap. The command retains logs,
+the exact published reference image and records PHP, embedded and native targets.
+The native URL must use its independently bootstrapped native database. Reuse
+the owning job's compiled native binary; the profile starts no new Cargo build.
+Server and author processes use one CPU, 512 MiB RAM and no swap; the manifest
+declares the backend-specific database caps. The command retains logs,
 terminal container state and observations under
 `parity-evidence/version-range-repair`. The owning job's always-run step calls
 `range-repair-cleanup.sh <backend>` to collect that state and remove the
@@ -560,5 +563,50 @@ history and exact int64/null/Unicode output. The reader checks loaded SDK and
 engine bytes against the source manifest and preserves the distinct HTTP and
 embedded diagnostic representations. The ordinary shared-fixture workflow
 runs this reference check on all six existing database configurations. It
-currently records PHP and embedded only; native repair, an activity still
-pending at the failure, other SDK authors and performance remain unqualified.
+records PHP, embedded and native for that completed-activity case. An activity
+still pending at the failure, other SDK authors and performance remain separate
+qualification gates.
+
+The optional `pending-reference` third argument selects the two-reference
+qualification retained by Server #397. The additional
+`pending-native` value selects the same fixture and published reference bytes
+in `version-range-repair-pending-native`, requires an actual Rust recording
+alongside PHP HTTP and embedded, and uses separate resource names, prefix,
+databases and evidence directory. Its manifest binds the unchanged reference
+manifest hash. Native implementation/qualification remains separate from the
+already qualified two-reference result. Normal six-configuration gates select
+this three-runtime profile; `pending-reference` remains available unchanged.
+
+Both pending profiles select
+`range-selected-timer-activity-pending` with the same exact published package
+tuple. The reference manifest declares PHP HTTP and embedded targets; the
+native manifest adds Rust without changing those published artifact bytes.
+The original definition records its version and selects between an activity
+routed to `server-parity-range-activity` and a positive-delay timer. Only the
+workflow queue is served until a cold incompatible definition blocks the
+timer-selected replay. The restored definition explicitly repairs that same
+task, replays the original timer winner and waits for the still-pending activity.
+One activity execution then resumes a later workflow task to finish the original
+run. An `all` barrier does not produce this wake while another successful member
+is pending. Full checkpoint histories, original activity/group/timer identities,
+deadlines, waiting acknowledgement, repair command and exact payload values
+remain in the recordings and semantic checks.
+
+This selection uses independent `range_pending_php_ref` and
+`range_pending_embedded_ref` databases, a distinct HTTP network alias and task
+resource names, `parity-range-pending-state`, and evidence under
+`parity-evidence/version-range-repair-pending`. Invoke
+`range-repair-cleanup.sh <backend> pending-reference` after success or failure,
+before removing the owning database/network. The ordinary six-configuration
+workflow includes this reference selection. Its first bounded SQLite HTTP run
+fails because manual repair redispatches the older activity while the workflow
+task stays replay blocked; embedded execution was not reached.
+[Workflow #755](https://github.com/durable-workflow/workflow/issues/755) and
+[fix #756](https://github.com/durable-workflow/workflow/pull/756) own the task
+ordering correction. The repair command must identify the blocked workflow
+task, with `wait_kind: activity` preserving the actual pending operation.
+The selected profile manifest supplies the published image and SDK lock
+identity; a corrected pending cohort is qualified separately while the old
+completed cohort and failed observations remain unchanged.
+No native pending-activity result is claimed. The completed-activity fixture,
+manifest, original queue/prefix and default corpus retain their identities.

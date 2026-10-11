@@ -285,6 +285,61 @@ impl Runtime {
             }
         }
     }
+    pub(crate) async fn repair_range_blocked(
+        &self,
+        workflow_id: &str,
+        run_id: Option<&str>,
+        body: Value,
+        context: Value,
+    ) -> Result<Value> {
+        match &*self.storage {
+            Storage::Sqlite(store) => {
+                store
+                    .repair_range_blocked(
+                        workflow_id,
+                        run_id,
+                        body,
+                        context,
+                        self.signal_codec.clone(),
+                    )
+                    .await
+            }
+            Storage::Postgres(store) => {
+                store
+                    .repair_range_blocked(
+                        workflow_id,
+                        run_id,
+                        body,
+                        context,
+                        self.signal_codec.clone(),
+                    )
+                    .await
+            }
+            Storage::MySql(store) => {
+                store
+                    .repair_range_blocked(
+                        workflow_id,
+                        run_id,
+                        body,
+                        context,
+                        self.signal_codec.clone(),
+                    )
+                    .await
+            }
+        }
+    }
+
+    pub(crate) async fn range_debug(
+        &self,
+        workflow_id: &str,
+        run_id: Option<&str>,
+    ) -> Result<Value> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.range_debug(workflow_id, run_id).await,
+            Storage::Postgres(store) => store.range_debug(workflow_id, run_id).await,
+            Storage::MySql(store) => store.range_debug(workflow_id, run_id).await,
+        }
+    }
     pub(crate) async fn describe(&self, workflow_id: &str, run_id: Option<&str>) -> Result<Value> {
         let description = match &*self.storage {
             Storage::Sqlite(store) => store.describe(workflow_id, run_id).await?,

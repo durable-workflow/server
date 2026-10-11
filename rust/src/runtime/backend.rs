@@ -15,6 +15,10 @@ pub(super) trait Backend: Database {
     const TASK_CANDIDATES_SQL: &'static str = super::store::TASK_CANDIDATES_SQL;
     const POLL_RECEIPT_CLEANUP_SQL: &'static str = super::store::POLL_RECEIPT_CLEANUP_SQL;
     const TIMER_TASK_SQL: &'static str;
+    const SELECTION_RESOLUTION_SQL: &'static str = "SELECT id,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SelectionResolved' AND payload->>'selection_group_id'=$2 ORDER BY sequence LIMIT 1";
+    // Frozen run command/task repair counters use each backend's actual width.
+    const REPAIR_COUNTER_MAX: i64 = i32::MAX as i64;
+    const RANGE_REPAIR_TASK_SQL: &'static str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND namespace=$2 AND task_type='workflow' AND status='failed' AND payload->>'replay_blocked'='true' AND payload->>'failure_reason'='version_marker_incompatible_range' ORDER BY CASE WHEN available_at IS NULL THEN 1 ELSE 0 END,available_at,created_at,id LIMIT 1";
     const QUERY_CACHE_SCAN: &'static str = "SELECT \"key\",value,expiration FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' ORDER BY \"key\" LIMIT 65";
     const QUERY_CACHE_GET: &'static str =
         "SELECT value,expiration FROM dw_query_cache WHERE \"key\"=$1";
@@ -69,10 +73,13 @@ fn sqlite_instant(value: String) -> Result<DateTime<Utc>> {
 }
 
 impl Backend for Sqlite {
+    const SELECTION_RESOLUTION_SQL: &'static str = "SELECT id,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SelectionResolved' AND json_extract(payload,'$.selection_group_id')=$2 ORDER BY sequence LIMIT 1";
+    const REPAIR_COUNTER_MAX: i64 = i64::MAX;
+    const RANGE_REPAIR_TASK_SQL: &'static str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND namespace=$2 AND task_type='workflow' AND status='failed' AND json_extract(payload,'$.replay_blocked')=1 AND json_extract(payload,'$.failure_reason')='version_marker_incompatible_range' ORDER BY CASE WHEN available_at IS NULL THEN 1 ELSE 0 END,available_at,created_at,id LIMIT 1";
     const VISIBILITY_PAGE: &'static str = super::visibility::SQLITE_VISIBILITY_PAGE;
     type EncodedTime = String;
     type EncodedDocument = String;
-    const TIMER_TASK_SQL: &'static str = "SELECT id FROM workflow_tasks WHERE workflow_run_id=$1 AND namespace='default' AND task_type='timer' AND status='ready' AND json_extract(payload,'$.timer_id')=$2";
+    const TIMER_TASK_SQL: &'static str = "SELECT id,payload FROM workflow_tasks WHERE workflow_run_id=$1 AND namespace='default' AND task_type='timer' AND status='ready' AND json_extract(payload,'$.timer_id')=$2";
     const HISTORY_PAGE: &'static str = "SELECT * FROM (SELECT *,SUM(length(CAST(payload AS BLOB))) OVER (ORDER BY sequence) AS page_bytes FROM workflow_history_events WHERE workflow_run_id=$1 AND sequence>$2 ORDER BY sequence LIMIT $3) AS page WHERE page_bytes<=8388608 ORDER BY sequence";
     // Normalize only the two supported UTC storage shapes. Removing trailing
     // fractional zeros preserves exact decimal ordering, including earlier
@@ -187,7 +194,7 @@ impl Encode<'_, Postgres> for PostgresDocument {
 impl Backend for Postgres {
     type EncodedTime = NaiveDateTime;
     type EncodedDocument = PostgresDocument;
-    const TIMER_TASK_SQL: &'static str = "SELECT id FROM workflow_tasks WHERE workflow_run_id=$1 AND namespace='default' AND task_type='timer' AND status='ready' AND payload->>'timer_id'=$2";
+    const TIMER_TASK_SQL: &'static str = "SELECT id,payload FROM workflow_tasks WHERE workflow_run_id=$1 AND namespace='default' AND task_type='timer' AND status='ready' AND payload->>'timer_id'=$2";
     const HISTORY_PAGE: &'static str = "SELECT * FROM (SELECT *,SUM(octet_length(payload::text)) OVER (ORDER BY sequence) AS page_bytes FROM workflow_history_events WHERE workflow_run_id=$1 AND sequence>$2 ORDER BY sequence LIMIT $3) AS page WHERE page_bytes<=8388608 ORDER BY sequence";
     fn bind_time(time: DateTime<Utc>) -> NaiveDateTime {
         time.naive_utc()
@@ -259,6 +266,9 @@ impl Backend for Postgres {
 }
 
 impl Backend for MySql {
+    const SELECTION_RESOLUTION_SQL: &'static str = "SELECT id,payload FROM workflow_history_events WHERE workflow_run_id=? AND event_type='SelectionResolved' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.selection_group_id'))=? ORDER BY sequence LIMIT 1";
+    const REPAIR_COUNTER_MAX: i64 = u32::MAX as i64;
+    const RANGE_REPAIR_TASK_SQL: &'static str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=? AND namespace=? AND task_type='workflow' AND status='failed' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.replay_blocked'))='true' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.failure_reason'))='version_marker_incompatible_range' ORDER BY CASE WHEN available_at IS NULL THEN 1 ELSE 0 END,available_at,created_at,id LIMIT 1";
     type EncodedTime = DateTime<Utc>;
     type EncodedDocument = Json<Value>;
     const QUERY_CACHE_SCAN: &'static str = "SELECT `key`,value,expiration FROM dw_query_cache WHERE `key` LIKE 'dw-native-query:%' ORDER BY `key` LIMIT 65";
@@ -269,16 +279,20 @@ impl Backend for MySql {
     const QUERY_CACHE_UPDATE: &'static str =
         "UPDATE dw_query_cache SET value=$1,expiration=$2 WHERE `key`=$3";
     const QUERY_CACHE_DELETE: &'static str = "DELETE FROM dw_query_cache WHERE `key`=$1";
-    const TIMER_TASK_SQL: &'static str = "SELECT id FROM workflow_tasks WHERE workflow_run_id=? AND namespace='default' AND task_type='timer' AND status='ready' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.timer_id'))=?";
+    const TIMER_TASK_SQL: &'static str = "SELECT id,payload FROM workflow_tasks WHERE workflow_run_id=? AND namespace='default' AND task_type='timer' AND status='ready' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.timer_id'))=?";
     // First use the preserved run/sequence index to materialize only IDs and
     // byte counts for this bounded page. Sorting JSON payloads in the window
     // exhausts MySQL's default sort buffer before the size rejection can run.
     const HISTORY_PAGE: &'static str = "SELECT h.* FROM (SELECT id,sequence,SUM(payload_bytes) OVER (ORDER BY sequence) AS page_bytes FROM (SELECT id,sequence,LENGTH(CAST(payload AS CHAR CHARACTER SET utf8mb4)) AS payload_bytes FROM workflow_history_events FORCE INDEX (workflow_history_events_workflow_run_id_sequence_unique) WHERE workflow_run_id=? AND sequence>? ORDER BY sequence LIMIT ?) AS sizes) AS page JOIN workflow_history_events h ON h.id=page.id WHERE page.page_bytes<=8388608 ORDER BY page.sequence";
     const WORKER_REGISTRATION_SQL: &'static str = "INSERT INTO workflow_worker_registrations(namespace,worker_id,task_queue,runtime,sdk_version,build_id,supported_workflow_types,supported_activity_types,capabilities,capability_manifest,last_heartbeat_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE task_queue=VALUES(task_queue),runtime=VALUES(runtime),sdk_version=VALUES(sdk_version),build_id=VALUES(build_id),supported_workflow_types=VALUES(supported_workflow_types),supported_activity_types=VALUES(supported_activity_types),capabilities=VALUES(capabilities),capability_manifest=VALUES(capability_manifest),last_heartbeat_at=VALUES(last_heartbeat_at),updated_at=VALUES(updated_at)";
     fn statement(sql: &'static str) -> Cow<'static, str> {
-        // This driver-owned template already uses '?' bindings and contains a
-        // literal '$.timer_id' JSON path, not a PostgreSQL bind placeholder.
-        if !sql.contains('$') || sql == Self::TIMER_TASK_SQL {
+        // These driver-owned templates already use '?' bindings and contain
+        // literal '$.' JSON paths, not PostgreSQL bind placeholders.
+        if !sql.contains('$')
+            || sql == Self::TIMER_TASK_SQL
+            || sql == Self::RANGE_REPAIR_TASK_SQL
+            || sql == Self::SELECTION_RESOLUTION_SQL
+        {
             return Cow::Borrowed(sql);
         }
         // Shared templates use ordered, unique $N positions. Convert only

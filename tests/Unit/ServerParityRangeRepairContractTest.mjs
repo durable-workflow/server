@@ -25,6 +25,18 @@ function model(mode) {
     event_type === 'VersionMarkerRecorded' ? {...fixture.range_repair.marker, task: {id: 'initial', status: 'leased'}}
       : event_type === 'WorkflowCompleted' ? {task: {id: 'blocked', status: 'leased', lease_owner: 'corrected-worker', attempt_count: 2, repair_count: 1}}
         : {sequence: 2, activity_execution_id: 'original-activity'}}));
+  events[6].payload = {workflow_command_id: 'repair-command', task_id: 'blocked', task_type: 'workflow',
+    liveness_state: 'workflow_replay_blocked', wait_kind: null,
+    task: {id: 'blocked', status: 'ready', attempt_count: 1, repair_count: 1},
+    command: {id: 'repair-command', sequence: 2, type: 'repair', status: 'accepted', outcome: 'repair_dispatched',
+      target_scope: mode === 'http' ? 'instance' : 'run', requested_run_id: mode === 'http' ? null : 'original-run',
+      resolved_run_id: 'original-run', source: mode === 'http' ? 'control_plane' : 'php', payload_codec: 'avro',
+      principal_type: 'auth:token', principal_id: 'legacy-token', principal_label: 'Admin',
+      context: {principal: {type: 'auth:token', id: 'legacy-token', label: 'Admin'}},
+      auth_status: 'authorized', auth_method: 'token', caller_label: 'Standalone Server',
+      request_method: 'POST', request_path: '/api/workflows/test/runs/original-run/repair', request_fingerprint: 'sha256:' + 'c'.repeat(64)}};
+  events[6].decoded = {repair_command: {liveness_state: 'workflow_replay_blocked', wait_kind: null,
+    task_id: 'blocked', task_type: 'workflow'}};
   const base = {mode, workflow_id: 'test', run_id: 'original-run', workflow_type: fixture.workflow_type,
     namespace: 'default', task_queue: 'server-parity-v1', payload_codec: 'avro',
     typed_input: {type: 'list', value: [fixture.typed_value]},
@@ -80,6 +92,13 @@ for (const mode of ['http', 'embedded']) {
     ['repair creates another task', x => x.corrected.events[7].payload.task.id = 'another-task'],
     ['repair resets attempt', x => x.corrected.events[7].payload.task.attempt_count = 1],
     ['repair count missing', x => delete x.corrected.events[7].payload.task.repair_count],
+    ['repair rewrites liveness', x => x.corrected.events[6].payload.liveness_state = 'repair_needed'],
+    ['repair invents wait kind', x => x.corrected.events[6].payload.wait_kind = 'workflow-task'],
+    ['repair resets command sequence', x => x.corrected.events[6].payload.command.sequence = 1],
+    ['repair targets another run', x => x.corrected.events[6].payload.command.resolved_run_id = 'another-run'],
+    ['repair changes target scope', x => x.corrected.events[6].payload.command.target_scope = 'unexpected'],
+    ['repair codec loses null', x => x.corrected.events[6].decoded.repair_command.wait_kind = 'workflow-task'],
+    ['repair codec changes task', x => x.corrected.events[6].decoded.repair_command.task_id = 'another-task'],
   ]) test(mode + ': model refuses ' + name, () => {
     const raw = model(mode); change(raw.range_repair);
     raw.events = raw.range_repair.corrected.events;

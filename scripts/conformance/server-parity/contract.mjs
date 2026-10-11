@@ -15,7 +15,7 @@ import {checkWaitingHistory} from './waiting-history-contract.mjs';
 import {checkTaskRetry} from './task-retry-contract.mjs';
 import {checkRangeRepair, checkRangeArtifacts, checkRangePackages} from './range-repair-contract.mjs';
 
-function instantNanoseconds(value) {
+export function instantNanoseconds(value) {
   const shape = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.(\d{1,9}))?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
   const milliseconds = Date.parse(value);
   assert.ok(shape && Number.isFinite(milliseconds), 'persisted timer timestamp');
@@ -97,7 +97,7 @@ export function checkObservation(fixture, observation, workflowId) {
     ? checkLegacyMarkerDeployment(fixture, observation, workflowId) : checkPatchDeployment(fixture, observation, workflowId)) : null;
   const waitingHistory = fixture.waiting_for_history ? checkWaitingHistory(fixture, observation, workflowId) : null;
   const taskRetry = fixture.workflow_task_retry ? checkTaskRetry(fixture, observation, workflowId) : null;
-  const rangeRepair = fixture.range_repair ? checkRangeRepair(fixture, observation, workflowId) : null;
+  const rangeRepair = fixture.range_repair ? checkRangeRepair(fixture, observation, workflowId, instantNanoseconds) : null;
   const cooperative = fixture.cooperative_cancellation
     ? checkCooperativeCancellation(fixture, observation, identities, projectedEvents, instantNanoseconds) : null;
   if (fixture.child_cancellation) {
@@ -524,7 +524,10 @@ export function checkObservation(fixture, observation, workflowId) {
     const markerCount = fixture.patch_deployment?.legacy_marker_history?.original_marker_count ?? (fixture.patch_deployment?.marker || fixture.range_repair?.marker ? 1 : 0);
     const activityIndex = 2 + markerCount;
     const activitySequence = 1 + markerCount;
-    const [scheduled, running, completed] = events.slice(activityIndex, activityIndex + 3);
+    const activityEvents = fixture.range_repair?.pending_activity
+      ? ['ActivityScheduled', 'ActivityStarted', 'ActivityCompleted'].map(type => events.find(event => event.event_type === type))
+      : events.slice(activityIndex, activityIndex + 3);
+    const [scheduled, running, completed] = activityEvents;
     const id = scheduled.payload.activity_execution_id;
     const attempt = running.payload.activity_attempt_id;
     nonempty(id, 'activity identity');
@@ -536,7 +539,7 @@ export function checkObservation(fixture, observation, workflowId) {
       equal(event.payload.activity_execution_id, id, 'same activity throughout history');
       equal(event.payload.activity_type, 'parity.v1.echo_activity', 'registered activity type');
       equal(event.payload.sequence, activitySequence, 'deterministic activity command sequence');
-      Object.assign(projectedEvents[index + activityIndex], {activity_execution_id: '@activity:1', command_sequence: activitySequence, activity_type: event.payload.activity_type});
+      Object.assign(projectedEvents[event.sequence - 1], {activity_execution_id: '@activity:1', command_sequence: activitySequence, activity_type: event.payload.activity_type});
     }
     equal(scheduled.decoded.activity_arguments, [fixture.input], 'scheduled activity arguments');
     equal(running.decoded.activity_arguments, [fixture.input], 'started activity arguments');
@@ -545,7 +548,7 @@ export function checkObservation(fixture, observation, workflowId) {
     for (const [index, event] of [running, completed].entries()) {
       equal(event.payload.activity_attempt_id, attempt, 'same committed attempt');
       equal(event.payload.attempt_number, 1, 'one attempt');
-      Object.assign(projectedEvents[index + activityIndex + 1], {activity_attempt_id: '@attempt:1', attempt_number: 1});
+      Object.assign(projectedEvents[event.sequence - 1], {activity_attempt_id: '@attempt:1', attempt_number: 1});
     }
     equal(completed.decoded.result, fixture.input, 'committed activity result');
     equal(completed.typed_decoded.result, fixture.typed_value, 'committed activity result types');

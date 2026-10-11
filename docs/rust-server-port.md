@@ -26,6 +26,30 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+[#399](https://github.com/durable-workflow/server/pull/399) implements and
+qualifies native pending mixed-selection repair. Its timer winner resumes a
+cold incompatible author while the separately routed activity remains pending.
+Explicit repair restores that original blocked workflow task; compatible replay
+waits, an activity-only worker executes the original activity once, and a later
+distinct task completes the same run. All six configurations pass the
+[exact-source Shared gate](https://github.com/durable-workflow/server/actions/runs/38141199951),
+[PHP/source checks](https://github.com/durable-workflow/server/actions/runs/38141199897)
+and boundaries. The 18 actual PHP HTTP/embedded/native recordings verify this
+one scenario, including unchanged waiting history and exact typed Avro output.
+Merge `2dbf05dcb4cfab8fc89973e24245438a167e3d37` retains the qualified tree;
+[post-merge Shared verification](https://github.com/durable-workflow/server/actions/runs/38142464272)
+and [PHP verification](https://github.com/durable-workflow/server/actions/runs/38142464238)
+are tracked separately until they complete.
+
+[Workflow #755](https://github.com/durable-workflow/workflow/issues/755) is
+closed as delivered: published Workflow 2.5.10 and Server 2.5.20 repair the
+blocked workflow task before the older activity. Reference #397 passes all six
+candidate and main configurations. The pending cohort keeps those exact
+published artifacts and PHP SDK 2.2.7; its earlier failed recordings and
+completed-activity range case #392 remain unchanged. Broader selection/repair,
+SDK and consumer directions, matched performance, migration and cutover remain
+open under #325. Native execution transitions are still serialized.
+
 The pending `worker-registration-fencing` fixture defines the first shared
 Server #358 lifecycle slice on a separate exact PHP/SDK source tuple. It retains
 an original leased echo across token rotation, heartbeat, terminal refusals,
@@ -330,13 +354,90 @@ adapters observe actual SDK requests, durable history and task diagnostics.
 The expanded correctness run gives its MySQL 8.4 database 1 GiB after a retained
 768 MiB OOM during the later pressure profile; application and author processes
 keep one CPU, 512 MiB and no swap. Database caps are declared in the profile.
-Reference execution and native qualification remain tracked separately. Native
-replay-blocking failures still refuse an unqualified transition; range blockage,
-manual repair and diagnostics need implementation against this shared fixture.
+Reference execution and native qualification remain tracked separately. The
+native follow-up implements the worker-reported range blockage as a failed,
+released original task with no automatic retry or terminal failure history.
+Empty-body selected-run repair restores that task to ready, clears replay-block
+metadata and records the published instance-targeted command with official
+Avro values and server-derived audit identity. [#392](https://github.com/durable-workflow/server/pull/392)
+owns source qualification and the actual three-runtime recordings; its normal
+six-configuration differential gates must pass before merge. Modeled readers
+and source inspection are not runtime proof. Repair checks the physical
+32-bit PostgreSQL/unsigned MySQL or 64-bit SQLite counter bounds before changing
+the task, command or history.
+The physical debug read covers only this default-namespace checkpoint, with
+pending or completed activities, no ready/leased workflow task, no messages,
+no cancellation and no application failures. It exposes actual blockage and
+failure identity; broader task-queue, compatibility, payload-preview and
+cancellation diagnostics remain unqualified. Manual repair of other shapes,
+named namespaces and historical/closed-run outcome parity remain separate gates.
 The pending-activity case also needs a legitimate cold wake, because repair of
 ordinary waiting work does not create a ready workflow task. Frozen fixture
 inputs and earlier observations retain their original versions and digests.
-No native range/repair, performance or takeover qualification is claimed.
+This slice does not establish performance, takeover, another SDK author language
+or repair while an activity is still pending.
+
+The pending checkpoint is now a separate qualified PHP HTTP/embedded reference
+in [#397](https://github.com/durable-workflow/server/pull/397), merged as
+`b70ba209384a0959e2c61598c1f8e5bd08c14d9f`. The timer wins a real mixed select
+while its activity has never started; an incompatible cold version author
+blocks replay. This exposed [Workflow #755](https://github.com/durable-workflow/workflow/issues/755),
+where manual repair selected the older activity. Published Workflow 2.5.10 and
+Server 2.5.20 correct selection while retaining the truthful activity wait kind.
+All six [candidate database jobs](https://github.com/durable-workflow/server/actions/runs/38135489945)
+pass actual PHP HTTP and embedded recordings: the repaired original task waits
+without changing history, one original activity executes, and a distinct later
+workflow task completes the same run with 11 events. Exact post-merge main
+[Shared fixtures](https://github.com/durable-workflow/server/actions/runs/38136690281),
+[PHP/source](https://github.com/durable-workflow/server/actions/runs/38136690284)
+and [boundary](https://github.com/durable-workflow/server/actions/runs/38136690280)
+also pass; Workflow #755 is closed as fulfilled. The failed published tuple,
+its evidence and the completed-activity reference remain unchanged.
+
+Native follow-through in #399 implements the same checkpoint with complete mixed
+activity/timer group metadata and a first committed `SelectionResolved` that
+binds the actual terminal history event. Member resolution and wakeup share the
+existing database transition lock; a losing member retains its original work
+and cannot overwrite the winner. Explicit range repair admits only the
+timer-won, unclaimed pending-activity shape, preserves its row/attempt and
+restores the blocked workflow task. Messages, cancellation, running activities,
+additional open work and unsupported groups remain refused. Native regressions
+cover actual HTTP transitions, two-node timer recovery, original-task repair,
+waiting replay, stale fencing and whole-batch rollback. The exact-source
+six-configuration qualification includes actual published-author native records.
+An activity-first regression also preserves the committed winner across a
+restart and losing timer, with one outstanding workflow wakeup. Failed/retrying
+selection activities are explicitly refused before mutation until their own
+shared fixture qualifies that behavior.
+Wakeups coalesce only a ready task. A leased worker can hold an older history
+snapshot, so a later member keeps a new ready task even if that worker then
+acknowledges waiting; a dedicated HTTP regression covers this interleaving.
+Native scheduling explicitly initializes unclaimed activities at zero, matching
+both PHP references; only an actual worker claim consumes an attempt. The
+physical schema and earlier durable data/history remain unchanged. Winner
+regressions query the actual persisted event at its public history sequence to
+verify the physical relationship; public history intentionally omits internal
+event IDs. Native registration accepts the published PHP activity-only worker's
+empty contract map representation `[]` and stores an empty map. Nonempty arrays
+and scalars remain refused, with history/pending-work preservation checked.
+Failed and cancelled candidates retain separate diagnostic receipts in #399.
+
+Actual SQLite execution passes 71 tests. All 18 pending records preserve
+5 → 7 → 8 → 8 → 11 events, three cold author PIDs, activity invocations 0/0/1,
+the original timer winner and blocked-task repair, a distinct completion task,
+and exact int64/Unicode/null output. All six official artifact sizes and digests
+were independently matched against their API and uploader receipts. Candidate
+`6d40e2d3` and actual checkout `8bf75a7` have tree
+`80938cdf8ce0d38965c9006d4ab2745bd8141415`, retained by the merge.
+
+The separate `pending-native` profile binds the same published artifact bytes
+and unchanged fixture under a new qualification scope, including the SHA-256
+of the qualified reference manifest. Its three isolated runtime recordings
+replace the two-reference invocation in normal six-configuration gates; the
+original `pending-reference` invocation and frozen manifest remain available.
+The source keeps broader selection/repair, another author language, matched
+performance and takeover as separate gates. No local Cargo/target tree is
+required for this follow-through; normal hosted jobs compile the exact source.
 
 [#381](https://github.com/durable-workflow/server/pull/381) implements ordinary
 workflow-task failure retries on the original run. A failed lease and its new
