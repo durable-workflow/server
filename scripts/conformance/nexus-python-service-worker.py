@@ -11,9 +11,15 @@ from importlib.metadata import version
 from durable_workflow import Client, Worker, workflow
 
 
+class NexusFixtureFailure(RuntimeError):
+    pass
+
+
 @workflow.defn(name="nexus.fixture.python.greeter")
 class PythonGreeter:
     def run(self, context, name):
+        if name == "fail":
+            raise NexusFixtureFailure("fixture service failure")
         return {"language": "python", "name": name, "greeting": f"hello, {name}"}
 
 

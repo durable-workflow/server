@@ -8,6 +8,10 @@ use DurableWorkflow\Client;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\WorkflowContext;
 
+final class NexusFixtureFailure extends RuntimeException
+{
+}
+
 $input = json_decode(file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR);
 error_log(json_encode([
     'process_id' => getmypid(),
@@ -19,6 +23,9 @@ error_log(json_encode([
 $client = new Client('http://server:8080', namespace: 'shared', workerToken: $input['token']);
 Worker::create($client, 'nexus-php-workflow')
     ->registerWorkflow('nexus.fixture.php.greeter', static function (WorkflowContext $context, string $name): array {
+        if ($name === 'fail') {
+            throw new NexusFixtureFailure('fixture service failure');
+        }
         return ['language' => 'php', 'name' => $name, 'greeting' => "hello, {$name}"];
     })
     ->run();

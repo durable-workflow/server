@@ -72,6 +72,7 @@ jobs:
             NEXUS_PHP_WORKFLOW_PROBE="$DW_NEXUS_RESULT_DIR/nexus-php-workflow-probe.json" \
             NEXUS_PHP_PHP_WORKFLOW_PROBE="$DW_NEXUS_RESULT_DIR/nexus-php-php-workflow-probe.json" \
             NEXUS_PYTHON_PYTHON_WORKFLOW_PROBE="$DW_NEXUS_RESULT_DIR/nexus-python-python-workflow-probe.json" \
+            NEXUS_TYPED_FAILURE_PROBES="$DW_NEXUS_RESULT_DIR/nexus-typed-failure-probes.json" \
             node --test tests/Unit/NexusSdkCallerEvidenceTest.mjs
       - name: Retain actual requests and durable observations
         if: always()

@@ -9,16 +9,25 @@ import os
 import sys
 from importlib.metadata import version
 
-from durable_workflow import Client, Worker, serializer, workflow
+from durable_workflow import Client, NexusOperationFailed, Worker, serializer, workflow
 
 
 @workflow.defn(name="nexus.fixture.python.caller")
 class PythonNexusCaller:
     def run(self, context, endpoint, service, operation, name, target_namespace):
-        result = yield context.call_nexus_service(
-            endpoint, service, operation, [name], wait_timeout_seconds=5,
-            target_namespace=target_namespace,
-        )
+        try:
+            result = yield context.call_nexus_service(
+                endpoint, service, operation, [name], wait_timeout_seconds=5,
+                target_namespace=target_namespace,
+            )
+        except NexusOperationFailed as failure:
+            return {
+                "service_call_id": failure.service_call_id, "status": failure.status,
+                "failure_type": failure.service_error_type,
+                "failure_message": failure.typed_error_message or str(failure),
+                "failure_class": type(failure).__name__,
+                "response_or_failure_surface": failure.body,
+            }
         return result.to_recorded_payload()
 
 
@@ -55,12 +64,13 @@ async def execute(input_data, namespace):
             handle = await client.start_workflow(
                 workflow_type="nexus.fixture.python.caller",
                 task_queue="nexus-python-workflow",
-                workflow_id=f"nexus-python-caller-{namespace}-{os.getpid()}",
+                workflow_id=f"nexus-python-caller-{namespace}-{input_data.get('scenario', 'completed')}-{os.getpid()}",
                 input=[input_data["endpoint"], input_data["service"],
-                       input_data["operation"], "world", "shared" if namespace != "shared" else None],
+                       input_data["operation"], input_data.get("name", "world"), "shared" if namespace != "shared" else None],
             )
             observation = {
                 "caller_namespace": namespace, "target_namespace": "shared",
+                "scenario": input_data.get("scenario", "completed"),
                 "workflow_id": handle.workflow_id, "run_id": handle.run_id,
                 "process_id": os.getpid(), "installed_sdk_version": version("durable-workflow"),
                 "public_method": "WorkflowContext.call_nexus_service",
@@ -100,7 +110,7 @@ async def execute(input_data, namespace):
                 and command.get("namespace", namespace) == "shared"
                 and command.get("payload_codec") == "avro"
                 and isinstance(command.get("request_payload"), str)
-                and serializer.decode(command["request_payload"], codec="avro") == ["world"]
+                and serializer.decode(command["request_payload"], codec="avro") == [input_data.get("name", "world")]
                 for command in commands
             ) and any(
                 event.get("caller_workflow_instance_id") == handle.workflow_id
@@ -130,6 +140,11 @@ async def execute(input_data, namespace):
                 service_result = serializer.decode(service_result, codec="avro")
             observation["decoded_service_result"] = service_result
             observation["completed"] = recorded.get("status") == "completed" and service_result == expected_result
+            observation["typed_failure_qualified"] = (
+                recorded.get("status") == "failed"
+                and recorded.get("failure_class") == "NexusOperationFailed"
+                and recorded.get("failure_message") == "fixture service failure"
+            )
             return observation
         finally:
             await asyncio.wait_for(worker.stop(), timeout=10)
@@ -146,9 +161,10 @@ async def main():
         observations.append(await execute(input_data, namespace))
     print(json.dumps({
         "scope": f"python_caller_{input_data.get('service_language', 'php')}_workflow_service",
-        "outcome": "pass" if all(row["completed"] for row in observations) else "fail",
+        "outcome": "pass" if all(row["typed_failure_qualified" if input_data.get("scenario") == "failed"
+                                     else "completed"] for row in observations) else "fail",
         "observations": observations,
-        "recovery_qualified": False, "typed_failure_qualified": False,
+        "recovery_qualified": False,
         "cancellation_qualified": False,
     }))
 
