@@ -19,10 +19,14 @@ error_log(json_encode([
     'installed_sdk_version' => Composer\InstalledVersions::getPrettyVersion('durable-workflow/sdk'),
     'namespace' => 'shared',
     'workflow_type' => 'nexus.fixture.php.greeter',
+    'worker_protocol' => '1.20',
+    'cooperative_cancellation' => true,
+    'pcntl_available' => function_exists('pcntl_fork'),
+    'posix_available' => function_exists('posix_kill'),
 ], JSON_THROW_ON_ERROR));
 
-$client = new Client('http://server:8080', namespace: 'shared', workerToken: $input['token']);
-Worker::create($client, 'nexus-php-workflow')
+$client = new Client('http://server:8080', namespace: 'shared', workerToken: $input['token'], workerProtocolVersion: '1.20');
+(new Worker($client, 'nexus-php-workflow', enableCooperativeCancellation: true))
     ->registerWorkflow('nexus.fixture.php.greeter', static function (WorkflowContext $context, string $name): array {
         if ($name === 'fail') {
             throw new NexusFixtureFailure('fixture service failure');

@@ -138,7 +138,7 @@ async def execute(input_data, namespace):
                 for event in admissions
             )
             recorded = observation.get("result", {})
-            surface = recorded.get("response_or_failure_surface", {})
+            surface = recorded.get("response_or_failure_surface", {}) or (admissions[0].get("service_call", {}) if admissions else {})
             surface = surface.get("service_call", surface)
             linked_id = surface.get("linked_workflow_instance_id")
             linked_run_id = surface.get("linked_workflow_run_id")

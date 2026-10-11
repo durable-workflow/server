@@ -131,6 +131,9 @@ if (process.env.NEXUS_CANCELLATION_PROBES) {
             const logs = observation.service_worker_log.split('\n').flatMap(line => {
                 try { return [JSON.parse(line.slice(line.indexOf('{')))]; } catch { return []; }
             });
+            assert.ok(logs.some(log => log.worker_protocol === '1.20' && log.cooperative_cancellation === true
+                && (service !== 'php' || (log.pcntl_available === true && log.posix_available === true))),
+                'The actual service worker must explicitly enable cooperative cancellation');
             for (const row of observation.body.observations) {
                 assert.equal(row.cancellation_qualified, true, JSON.stringify(row.failure || row.result));
                 assert.equal(row.scenario, 'cancelled');

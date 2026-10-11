@@ -126,7 +126,7 @@ foreach (['shared', 'tenant-a'] as $namespace) {
             && ($admissions[0]['payload']['caller_workflow_instance_id'] ?? null) === $handle->workflowId
             && ($admissions[0]['payload']['caller_workflow_run_id'] ?? null) === $handle->selectedRunId
             && ($admissions[0]['payload']['caller_sdk_language'] ?? null) === 'sdk-php';
-        $surface = $row['result']['service_call'] ?? [];
+        $surface = $row['result']['service_call'] ?? $admissions[0]['payload']['service_call'] ?? [];
         $linkedId = $surface['linked_workflow_instance_id'] ?? null;
         $linkedRun = $surface['linked_workflow_run_id'] ?? null;
         if (is_string($linkedId) && is_string($linkedRun)) {
