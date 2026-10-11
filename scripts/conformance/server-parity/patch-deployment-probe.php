@@ -235,7 +235,7 @@ function patchPublishedSdkPhase(array $fixture, array $options): array
                 'exit_status' => $status, 'transport_jsonl' => file_get_contents($journal),
             ], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE)."\n");
         }
-        $requests = array_map(static function ($line): array {
+        $requests = array_map(static function ($line) use ($fixture): array {
             $request = json_decode($line, true, flags: JSON_THROW_ON_ERROR);
             foreach (['request', 'response'] as $key) {
                 $body = $request[$key.'_body'];
@@ -249,8 +249,15 @@ function patchPublishedSdkPhase(array $fixture, array $options): array
             if ($request['method'] === 'GET' || str_ends_with($request['path'], '/poll')) {
                 // Full read/poll bytes remain in the raw sidecar. Avoid copying
                 // every repeated capability manifest into all three phases.
+                $fields = ['task', 'poll_status', 'workflow_id', 'run_id', 'status', 'reason', 'message'];
+                if (isset($fixture['patch_deployment']['legacy_marker_history']) && $request['method'] === 'GET'
+                    && str_ends_with($request['path'], '/history')) {
+                    // A persisted checkpoint can arrive before its completion
+                    // ACK; preserve the real event prefix for shutdown proof.
+                    $fields[] = 'events';
+                }
                 $request['response'] = array_intersect_key($request['response'] ?? [],
-                    array_flip(['task', 'poll_status', 'workflow_id', 'run_id', 'status', 'reason', 'message']));
+                    array_flip($fields));
                 $request['response_projection'] = 'read_or_poll_summary';
             }
 
