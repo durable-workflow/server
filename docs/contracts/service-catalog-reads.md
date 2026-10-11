@@ -60,6 +60,13 @@ fractional digits. `failure_type` exposes the recorded terminal type when
 present. This read does not reset deadlines, admit another attempt or execute
 the service.
 
+For the payload owner, `result_envelope` uses the same committed result envelope
+as service execution reads. It includes inline Avro results or authenticated
+opaque external envelopes. A valid Avro null, false or zero is a recorded result.
+For a foreign observer it is null, and the internal `metadata.nexus_result`
+copy is removed. `failure_type` retains the original committed service error
+type, including the existing control-plane metadata forms.
+
 `caller_link`, `linked_run_ref` and `linked_update_ref` identify whether each
 reference belongs to the observer namespace. A foreign reference remains an
 opaque identity and does not grant authority to browse the run or update.
