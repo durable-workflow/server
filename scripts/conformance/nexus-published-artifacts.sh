@@ -840,7 +840,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
-${observer === null ? '' : [['waterline-owner', 'shared', observer.ownerPort], ['waterline-foreign', 'tenant-a', observer.foreignPort]].map(([name, namespace, observerPort]) => `
+${observer === null ? '' : [['waterline-owner', 'shared', observer.ownerPort], ['waterline-foreign', 'tenant-a', observer.foreignPort], ['waterline-second-foreign', 'tenant-b', observer.secondForeignPort]].map(([name, namespace, observerPort]) => `
   ${name}:
     image: ${JSON.stringify(observer.image)}
     ports:
@@ -4886,7 +4886,8 @@ async function main() {
   }
   const observer = wantsObserver ? {image: observerImage,
     ownerPort: await freePort({honorServerPortOverride: false}),
-    foreignPort: await freePort({honorServerPortOverride: false})} : null;
+    foreignPort: await freePort({honorServerPortOverride: false}),
+    secondForeignPort: await freePort({honorServerPortOverride: false})} : null;
   fs.writeFileSync(composePath, composeYaml(image, port, token, observer));
 
   let serverDigest = '';
@@ -4989,7 +4990,7 @@ async function main() {
     if (observer !== null) {
       runLogged('docker', ['pull', observer.image], path.join(resultDir, 'nexus-waterline-image-pull.log'));
       runLogged('docker', ['compose', '-p', project, '-f', composePath, 'up', '--detach', '--wait',
-        'waterline-owner', 'waterline-foreign'], path.join(resultDir, 'nexus-waterline-startup.log'));
+        'waterline-owner', 'waterline-foreign', 'waterline-second-foreign'], path.join(resultDir, 'nexus-waterline-startup.log'));
       const identity = spawnSync('docker', ['image', 'inspect', observer.image], {encoding: 'utf8'});
       if (identity.status !== 0) throw new Error('Could not inspect the published Waterline image');
       const labels = JSON.parse(identity.stdout)[0].Config.Labels;
@@ -5007,6 +5008,7 @@ async function main() {
       runLogged(process.execPath, [path.resolve(observerScript),
         '--base-url', `http://127.0.0.1:${observer.ownerPort}`,
         '--foreign-base-url', `http://127.0.0.1:${observer.foreignPort}`,
+        '--second-foreign-base-url', `http://127.0.0.1:${observer.secondForeignPort}`,
         '--nexus-evidence-dir', resultDir, '--output-dir', inspectionDir,
         '--playwright-root', path.resolve(playwrightRoot)], path.join(resultDir, 'nexus-waterline-inspection.log'));
       const inspection = JSON.parse(fs.readFileSync(path.join(inspectionDir, 'report.json'), 'utf8'));
