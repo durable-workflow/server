@@ -2573,7 +2573,7 @@ async function probePublishedPythonCallerWorkflows(baseUrl, token, compose, phpS
       operation_name: operation, operation_mode: 'sync', handler_binding_kind: 'start_workflow',
       handler_target_reference: 'nexus.fixture.php.greeter',
       handler_binding: {workflow_type: 'nexus.fixture.php.greeter', queue: 'nexus-php-workflow'},
-      boundary_policy: {authorization: {caller_namespaces: {allow: ['shared', 'tenant-b']}}},
+      boundary_policy: {authorization: {caller_namespaces: {allow: ['shared', 'tenant-a', 'tenant-b']}}},
     }),
   ];
   fs.writeFileSync(path.join(resultDir, 'nexus-workflow-service-setup.json'), JSON.stringify(setup, null, 2) + '\n');
@@ -2615,7 +2615,7 @@ async function probePublishedPhpCallerWorkflows(baseUrl, token, compose, phpServ
       operation_name: operation, operation_mode: 'sync', handler_binding_kind: 'start_workflow',
       handler_target_reference: 'nexus.fixture.python.greeter',
       handler_binding: {workflow_type: 'nexus.fixture.python.greeter', queue: 'nexus-python-service'},
-      boundary_policy: {authorization: {caller_namespaces: {allow: ['shared', 'tenant-a']}}},
+      boundary_policy: {authorization: {caller_namespaces: {allow: ['shared', 'tenant-a', 'tenant-b']}}},
     }),
   ];
   fs.writeFileSync(path.join(resultDir, 'nexus-php-workflow-service-setup.json'), JSON.stringify(setup, null, 2) + '\n');
@@ -2625,7 +2625,7 @@ async function probePublishedPhpCallerWorkflows(baseUrl, token, compose, phpServ
     fs.copyFileSync(path.join(fixtureDir, name), path.join(compose.runRoot, name));
   }
   fs.writeFileSync(path.join(compose.runRoot, 'nexus-php-workflow-input.json'), JSON.stringify({
-    token, endpoint, service, operation,
+    token, endpoint, service, operation, service_language: 'python',
   }));
   const start = spawnSync('docker', ['exec', '-d', pythonService.containerName, 'sh', '-lc',
     '. /tmp/dw-python/bin/activate && python /work/nexus-python-service-worker.py /work/nexus-php-workflow-input.json > /tmp/nexus-python-service-worker.log 2>&1'],
@@ -2644,6 +2644,32 @@ async function probePublishedPhpCallerWorkflows(baseUrl, token, compose, phpServ
   const serviceLog = spawnSync('docker', ['exec', pythonService.containerName, 'cat', '/tmp/nexus-python-service-worker.log'],
     {encoding: 'utf8', maxBuffer: 8 * 1024 * 1024});
   fs.writeFileSync(path.join(resultDir, 'nexus-python-service-worker.log'), (serviceLog.stdout || '') + (serviceLog.stderr || ''));
+
+  fs.writeFileSync(path.join(compose.runRoot, 'nexus-php-php-workflow-input.json'), JSON.stringify({
+    token, endpoint: 'published-php-workflow-service', service: 'PublishedWorkflowGreeter',
+    operation: 'greet', service_language: 'php',
+  }));
+  const phpSelf = dockerExecJson(phpService.containerName,
+    'php /work/nexus-php-workflow-probe.php /work/nexus-php-php-workflow-input.json',
+    path.join(resultDir, 'nexus-php-php-workflow-probe.log'));
+  for (const row of phpSelf.body?.observations || []) {
+    const callId = row.result?.service_call_id;
+    if (!callId) continue;
+    row.durable_service_call = responseSummary(await apiRequest(baseUrl, token, 'shared', 'GET',
+      `/service-endpoints/published-php-workflow-service/services/PublishedWorkflowGreeter/operations/greet/service-calls/${encodeURIComponent(callId)}`));
+  }
+  fs.writeFileSync(path.join(resultDir, 'nexus-php-php-workflow-probe.json'), JSON.stringify(phpSelf, null, 2) + '\n');
+
+  const pythonSelf = dockerExecJson(pythonService.containerName,
+    '. /tmp/dw-python/bin/activate && python /work/nexus-python-workflow-probe.py /work/nexus-php-workflow-input.json',
+    path.join(resultDir, 'nexus-python-python-workflow-probe.log'));
+  for (const row of pythonSelf.body?.observations || []) {
+    const callId = row.result?.service_call_id;
+    if (!callId) continue;
+    row.durable_service_call = responseSummary(await apiRequest(baseUrl, token, 'shared', 'GET',
+      `/service-endpoints/${endpoint}/services/${service}/operations/${operation}/service-calls/${encodeURIComponent(callId)}`));
+  }
+  fs.writeFileSync(path.join(resultDir, 'nexus-python-python-workflow-probe.json'), JSON.stringify(pythonSelf, null, 2) + '\n');
 }
 
 function reflectedPublicServiceCallSurface(runtimeEvidence) {

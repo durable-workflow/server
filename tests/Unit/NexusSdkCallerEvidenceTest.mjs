@@ -50,12 +50,34 @@ function fixture(status = 'accepted', processId = 123) {
     };
 }
 
-if (process.env.NEXUS_PHP_WORKFLOW_PROBE) {
-    test('actual PHP caller workflows complete through the Python service in both namespaces', () => {
-        const response = JSON.parse(fs.readFileSync(process.env.NEXUS_PHP_WORKFLOW_PROBE, 'utf8'));
+function assertOriginalServiceDelivery(row, sdkLanguage) {
+    const call = row.durable_service_call?.body?.service_call || row.durable_service_call?.body;
+    assert.equal(call?.status, 'completed');
+    assert.equal(call.service_call_id || call.id, row.result.service_call_id);
+    assert.equal(call.caller_workflow_instance_id, row.workflow_id);
+    assert.equal(call.caller_workflow_run_id, row.run_id);
+    assert.equal(call.linked_workflow_run_id, row.linked_service_run_id);
+    const events = row.history.events;
+    const starts = events.filter(event => (event.event_type || event.type) === 'ServiceCallStarted');
+    const completions = events.filter(event => (event.event_type || event.type) === 'ServiceCallCompleted');
+    assert.equal(starts.length, 1);
+    assert.equal(completions.length, 1);
+    assert.equal(starts[0].payload.caller_sdk_language, sdkLanguage);
+    assert.equal(starts[0].payload.service_call_id, row.result.service_call_id);
+    assert.equal(completions[0].payload.service_call_id, row.result.service_call_id);
+    assert.equal(completions[0].payload.sequence, starts[0].payload.sequence);
+}
+
+for (const [input, service] of [
+    [process.env.NEXUS_PHP_WORKFLOW_PROBE, 'python'],
+    [process.env.NEXUS_PHP_PHP_WORKFLOW_PROBE, 'php'],
+]) {
+    if (!input) continue;
+    test(`actual PHP caller workflows complete through the ${service} service in both namespaces`, () => {
+        const response = JSON.parse(fs.readFileSync(input, 'utf8'));
         assert.equal(response.ok, true, 'PHP application probe must execute before outcomes can qualify');
         const observation = response.body;
-        assert.equal(observation.scope, 'php_caller_python_workflow_service');
+        assert.equal(observation.scope, `php_caller_${service}_workflow_service`);
         assert.deepEqual(observation.observations.map(row => row.caller_namespace), ['shared', 'tenant-a']);
         for (const row of observation.observations) {
             assert.ok(row.workflow_id && row.run_id && row.process_id > 0 && row.worker_process_id > 0);
@@ -66,16 +88,7 @@ if (process.env.NEXUS_PHP_WORKFLOW_PROBE) {
             assert.ok(row.linked_service_run_id && row.linked_service_history);
             assert.equal(row.worker_exit_code, row.worker_signal_handlers_available ? 0 : 143,
                 'PHP worker must exit through its available signal handling');
-            const call = row.durable_service_call?.body?.service_call || row.durable_service_call?.body;
-            assert.equal(call?.status, 'completed');
-            const events = row.history.events;
-            const starts = events.filter(event => (event.event_type || event.type) === 'ServiceCallStarted');
-            const completions = events.filter(event => (event.event_type || event.type) === 'ServiceCallCompleted');
-            assert.equal(starts.length, 1);
-            assert.equal(completions.length, 1);
-            assert.equal(starts[0].payload.service_call_id, row.result.service_call_id);
-            assert.equal(completions[0].payload.service_call_id, row.result.service_call_id);
-            assert.equal(completions[0].payload.sequence, starts[0].payload.sequence);
+            assertOriginalServiceDelivery(row, 'sdk-php');
         }
     });
 }
@@ -129,9 +142,13 @@ if (process.env.NEXUS_SDK_CLIENT_MATRIX) {
     });
 }
 
-if (process.env.NEXUS_PYTHON_WORKFLOW_PROBE) {
-    test('installed Python SDK routes original caller identity and Avro input to the actual PHP worker', () => {
-        const response = JSON.parse(fs.readFileSync(process.env.NEXUS_PYTHON_WORKFLOW_PROBE, 'utf8'));
+for (const [input, service] of [
+    [process.env.NEXUS_PYTHON_WORKFLOW_PROBE, 'php'],
+    [process.env.NEXUS_PYTHON_PYTHON_WORKFLOW_PROBE, 'python'],
+]) {
+    if (!input) continue;
+    test(`installed Python SDK routes original caller identity and Avro input to the actual ${service} worker`, () => {
+        const response = JSON.parse(fs.readFileSync(input, 'utf8'));
         assert.equal(response.ok, true, 'The application probe must actually execute');
         assert.deepEqual(response.body.observations.map(row => row.caller_namespace), ['shared', 'tenant-b']);
         for (const row of response.body.observations) {
@@ -141,16 +158,17 @@ if (process.env.NEXUS_PYTHON_WORKFLOW_PROBE) {
         }
     });
 
-    test('actual Python caller workflows complete through the PHP service in both namespaces', () => {
-        const response = JSON.parse(fs.readFileSync(process.env.NEXUS_PYTHON_WORKFLOW_PROBE, 'utf8'));
+    test(`actual Python caller workflows complete through the ${service} service in both namespaces`, () => {
+        const response = JSON.parse(fs.readFileSync(input, 'utf8'));
         assert.equal(response.ok, true, 'Python application probe must execute before outcomes can qualify');
         const observation = response.body;
-        assert.equal(observation.scope, 'python_caller_php_workflow_service');
+        assert.equal(observation.scope, `python_caller_${service}_workflow_service`);
         assert.deepEqual(observation.observations.map(row => row.caller_namespace), ['shared', 'tenant-b']);
         for (const row of observation.observations) {
             assert.ok(row.workflow_id && row.run_id && row.process_id > 0 && row.installed_sdk_version);
             assert.equal(row.completed, true, `${row.caller_namespace}: ${JSON.stringify(row.failure || row.result)}`);
             assert.ok(row.receipts.some(receipt => receipt.method === 'POST' && receipt.status === 200));
+            assertOriginalServiceDelivery(row, 'sdk-python');
         }
     });
 }

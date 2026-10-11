@@ -122,7 +122,8 @@ async def execute(input_data, namespace):
                         observation["linked_service_failure"] = {"type": type(error).__name__, "message": str(error)}
                     observation["linked_service_history"] = await service_handle.get_history()
                 observation["linked_service_run_id"] = linked_run_id
-            expected_result = {"language": "php", "name": "world", "greeting": "hello, world"}
+            expected_result = {"language": input_data.get("service_language", "php"),
+                               "name": "world", "greeting": "hello, world"}
             observation["service_input_qualified"] = observation.get("linked_service_result") == expected_result
             service_result = recorded.get("result")
             if isinstance(service_result, str):
@@ -144,7 +145,7 @@ async def main():
     for namespace in ["shared", "tenant-b"]:
         observations.append(await execute(input_data, namespace))
     print(json.dumps({
-        "scope": "python_caller_php_workflow_service",
+        "scope": f"python_caller_{input_data.get('service_language', 'php')}_workflow_service",
         "outcome": "pass" if all(row["completed"] for row in observations) else "fail",
         "observations": observations,
         "recovery_qualified": False, "typed_failure_qualified": False,

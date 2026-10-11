@@ -99,7 +99,7 @@ foreach (['shared', 'tenant-a'] as $namespace) {
             $row['linked_service_run_id'] = $linkedRun;
             $row['linked_service_history'] = $serviceClient->workflowHistory($linkedId, $linkedRun);
         }
-        $expected = ['greeting' => 'hello, world', 'language' => 'python', 'name' => 'world'];
+        $expected = ['greeting' => 'hello, world', 'language' => $input['service_language'], 'name' => 'world'];
         $matches = static function (mixed $value) use ($expected): bool {
             if (!is_array($value)) {
                 return false;
@@ -122,7 +122,7 @@ foreach (['shared', 'tenant-a'] as $namespace) {
     }
 }
 echo json_encode([
-    'scope' => 'php_caller_python_workflow_service',
+    'scope' => 'php_caller_'.$input['service_language'].'_workflow_service',
     'outcome' => count(array_filter($observations, static fn (array $row): bool => $row['completed'])) === 2 ? 'pass' : 'fail',
     'observations' => $observations,
     'recovery_qualified' => false, 'typed_failure_qualified' => false, 'cancellation_qualified' => false,
