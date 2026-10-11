@@ -690,6 +690,113 @@ fn child_command(value: i64) -> Value {
 }
 
 #[tokio::test]
+async fn published_task_queue_survives_child_routing_and_parent_resumption() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    for (worker, queue, workflow_type) in [
+        ("parent-worker", "parent-queue", "echo"),
+        ("child-worker", "child-queue", "child"),
+    ] {
+        assert_eq!(
+            request(
+                &app,
+                "POST",
+                "/api/worker/register",
+                json!({
+                    "worker_id": worker, "task_queue": queue, "runtime": "php",
+                    "supported_workflow_types": [workflow_type], "supported_activity_types": []
+                })
+            )
+            .await
+            .0,
+            StatusCode::CREATED
+        );
+    }
+    let (status, parent) = request(&app, "POST", "/api/workflows", json!({
+        "workflow_id": "published-claim-queue", "workflow_type": "echo", "task_queue": "parent-queue",
+        "input": envelope(Payload::Array(vec![Payload::Long(9007199254740993)]))
+    })).await;
+    assert_eq!(status, StatusCode::CREATED, "{parent}");
+    let (status, claim) = request(
+        &app,
+        "POST",
+        "/api/worker/workflow-tasks/poll",
+        json!({"worker_id":"parent-worker", "task_queue":"parent-queue", "timeout_seconds":0}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{claim}");
+    let original = &claim["task"];
+    assert_eq!(
+        original["task_queue"], "parent-queue",
+        "published workflow claim queue"
+    );
+    let mut command = child_command(9007199254740993);
+    command["queue"] = json!("child-queue");
+    assert_eq!(
+        finish_task(&app, original, json!([command])).await.0,
+        StatusCode::OK
+    );
+
+    let (status, claim) = request(
+        &app,
+        "POST",
+        "/api/worker/workflow-tasks/poll",
+        json!({"worker_id":"child-worker", "task_queue":"child-queue", "timeout_seconds":0}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{claim}");
+    let child = &claim["task"];
+    assert_eq!(
+        child["task_queue"], "child-queue",
+        "published child claim queue"
+    );
+    let child_run = child["run_id"].clone();
+    assert_eq!(
+        finish_task(
+            &app,
+            child,
+            json!([{
+                "type":"complete_workflow", "result":envelope(Payload::Long(9007199254740993))
+            }])
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+
+    let (status, claim) = request(
+        &app,
+        "POST",
+        "/api/worker/workflow-tasks/poll",
+        json!({"worker_id":"parent-worker", "task_queue":"parent-queue", "timeout_seconds":0}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{claim}");
+    let resumed = &claim["task"];
+    assert_eq!(
+        resumed["task_queue"], "parent-queue",
+        "original parent resume queue"
+    );
+    assert_eq!(resumed["run_id"], parent["run_id"]);
+    assert_eq!(resumed["child_workflow_run_id"], child_run);
+    assert_eq!(
+        finish_task(
+            &app,
+            resumed,
+            json!([{
+                "type":"complete_workflow", "result":envelope(Payload::Long(9007199254740993))
+            }])
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
 async fn sequential_children_commit_original_links_results_and_one_parent_resumption() {
     let database = TestDatabase::new().await;
     let node_a = database.open().await.unwrap();

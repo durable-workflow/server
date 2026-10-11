@@ -22,7 +22,7 @@ function sdkDirectionResponseSummary(mixed $response, bool $childDirection = fal
         $summary['task'] = array_intersect_key($summary['task'], array_flip([
             'task_id', 'workflow_id', 'run_id', 'workflow_run_id', 'task_type',
             'workflow_task_attempt', 'activity_attempt_id', 'lease_owner', 'task_queue',
-            ...($childDirection ? ['workflow_type', 'history_events', 'child_call_id',
+            ...($childDirection ? ['queue', 'workflow_type', 'history_events', 'child_call_id',
                 'child_workflow_run_id', 'resume_source_kind', 'resume_source_id',
                 'workflow_event_type', 'workflow_sequence', 'open_wait_id'] : []),
         ]));

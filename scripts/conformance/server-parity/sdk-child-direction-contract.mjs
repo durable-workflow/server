@@ -88,11 +88,12 @@ export function checkSdkChildDirection(fixture, observation, workflowId) {
     const polls = phase.requests.filter(item => item.path === '/api/worker/workflow-tasks/poll' && item.response?.task);
     assert.equal(polls.length, 1, 'one actual original workflow task per phase');
     assert.equal(polls[0].status, 200);
+    assert.equal(polls[0].request.task_queue, phase.task_queue, 'actual published poll queue selector');
     const task = polls[0].response.task;
     assert.equal(task.workflow_id, actor.workflow_id);
     assert.equal(task.run_id, actor.run_id);
     assert.equal(task.workflow_type, actor.workflow_type);
-    assert.equal(task.task_queue, phase.task_queue);
+    assert.equal(task.task_queue, phase.task_queue, 'published claimed original durable task queue');
     assert.equal(task.workflow_task_attempt, 1);
     assert(typeof task.lease_owner === 'string' && task.lease_owner.length > 0);
     assert(typeof task.task_id === 'string' && task.task_id.length > 0);

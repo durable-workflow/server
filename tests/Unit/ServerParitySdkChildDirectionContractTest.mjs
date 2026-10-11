@@ -86,7 +86,7 @@ function observed(fixture, mode = 'http') {
       workflow_type: fixture.workflow_type, task_queue: raw.task_queue}, {run_id: raw.run_id}, 201));
     requests.push(request('/api/worker/register', {worker_id: workerId, task_queue: actor.task_queue,
       supported_workflow_types: [actor.workflow_type], supported_activity_types: []}, {registered: true}, 201));
-    requests.push(request('/api/worker/workflow-tasks/poll', {}, {task}));
+    requests.push(request('/api/worker/workflow-tasks/poll', {task_queue: actor.task_queue}, {task}));
     const completion = request('/api/worker/workflow-tasks/' + task.task_id + '/complete',
       {lease_owner: task.lease_owner, workflow_task_attempt: 1, commands: [command]},
       {recorded: true, run_id: actor.run_id, task_id: task.task_id});
@@ -134,6 +134,8 @@ const mutations = {
   'parent prefix rewritten': value => {value.sdk_child_direction.phases[0].snapshot.events[2].payload.child_call_id = 'other';},
   'child prefix rewritten': value => {value.sdk_child_direction.phases[0].child_snapshot.events[0].payload.parent_sequence = 2;},
   'child queue collapsed': value => {value.children[0].task_queue = value.task_queue;},
+  'poll selects wrong queue': value => {value.sdk_child_direction.phases[1].requests[1].request.task_queue = 'other';},
+  'claim reports wrong queue': value => {value.sdk_child_direction.phases[1].requests[1].response.task.task_queue = 'other';},
   'original link changed': value => {value.events[3].payload.workflow_link_id = 'other';},
   'original child missing': value => {value.children = [];},
   'extra child': value => {value.children.push(copy(value.children[0]));},
