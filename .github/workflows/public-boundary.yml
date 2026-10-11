@@ -18,6 +18,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Verify metadata scan failures
+        run: bash tests/Unit/Support/public_boundary_test.sh
+
       - name: Scan files and commit metadata
         shell: bash
         run: |
@@ -25,8 +28,10 @@ jobs:
 
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             range="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            range="-1 ${{ github.sha }}"
           elif [[ "${{ github.event.before }}" =~ ^0+$ ]]; then
-            range="${{ github.sha }}^..${{ github.sha }}"
+            range="-1 ${{ github.sha }}"
           else
             range="${{ github.event.before }}..${{ github.sha }}"
           fi
