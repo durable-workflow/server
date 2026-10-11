@@ -19,13 +19,14 @@ mkdir -p "$evidence"
 docker stop --time 30 "$resource-server" || true
 stages=(sdk tests bootstrap-php bootstrap-embedded server record-php record-embedded compare)
 if test "$checkpoint" = completed; then stages+=(record-native); fi
-containers=()
 for stage in "${stages[@]}"; do
-  containers+=("$resource-$stage")
   docker logs "$resource-$stage" > "$evidence/$stage.log" 2>&1 || true
   docker inspect "$resource-$stage" > "$evidence/$stage-container.json" 2>&1 || true
 done
-docker rm -f "${containers[@]}" || true
+docker rm -f "$resource-sdk" "$resource-tests" \
+  "$resource-bootstrap-php" "$resource-bootstrap-embedded" "$resource-server" \
+  "$resource-record-php" "$resource-record-embedded" "$resource-compare" || true
+if test "$checkpoint" = completed; then docker rm -f "$resource-record-native" || true; fi
 case "$backend" in
   mysql)
     docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint mysql "$MYSQL_IMAGE" \
