@@ -39,7 +39,7 @@ export function checkSdkSignalDirection(fixture, observation, workflowId) {
   if (!fixture.sdk_signal_direction) return null;
   checkSdkSignalDirectionArtifacts(fixture, artifacts);
   const spec = fixture.sdk_signal_direction, direction = observation.sdk_signal_direction;
-  const projection = {two_distinct_identical_signals: true, three_cold_authors: true, exact_typed_completion: true};
+  const projection = {two_distinct_identical_signals: true, exact_typed_completion: true};
   if (observation.mode === 'embedded') {
     assert.deepEqual(direction, {applicable: false, reason: 'embedded_executes_php_author_definitions'});
     return projection;

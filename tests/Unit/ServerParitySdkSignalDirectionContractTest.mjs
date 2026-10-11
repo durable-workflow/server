@@ -126,7 +126,7 @@ for (const author of ['php', 'python', 'rust']) for (const client of ['php', 'py
     const fixture = fixtureFor(author, client), value = observed(fixture, mode);
     checkSdkSignalDirectionPackages(fixture, value, artifacts);
     assert.deepEqual(checkObservation(fixture, value, workflowId).sdk_signal_direction,
-      {two_distinct_identical_signals: true, three_cold_authors: true, exact_typed_completion: true});
+      {two_distinct_identical_signals: true, exact_typed_completion: true});
   });
 }
 const fixture = fixtureFor('python', 'python');

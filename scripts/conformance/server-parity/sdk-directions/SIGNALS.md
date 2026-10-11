@@ -25,6 +25,9 @@ completion receipts, exact typed Avro results and the stored result frame.
 Retain complete phase wire sidecars. Canonical embedded execution uses direct
 signal waits and explicitly marks SDK language transport inapplicable; preserve
 its different full event inventory before comparing common signal semantics.
+The common projection contains delivery and typed-completion semantics only.
+Three distinct cold SDK author processes are HTTP-specific proof; embedded
+execution explicitly marks those SDK transport roles inapplicable.
 
 Qualification requires all six database configurations, exact installed package
 and runner identities, inspected resource limits and independent runtime/wire
