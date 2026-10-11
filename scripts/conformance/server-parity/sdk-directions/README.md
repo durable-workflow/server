@@ -1,5 +1,9 @@
 # Published SDK execution directions
 
+Observations keep the actual claim and receipt fields needed by the reader.
+Separate per-target phase sidecars retain every full HTTP request/response and
+exact response bytes, including repeated discovery and capability metadata.
+
 This opt-in Server #325 profile defines all nine PHP/Python/Rust workflow and
 activity directions using installed published SDKs. Each direction starts a new
 run before worker registration, stops a workflow-only author after scheduling,

@@ -1,8 +1,34 @@
 <?php
 
 declare(strict_types=1);
+use Composer\InstalledVersions;
+use DurableWorkflow\Client;
+use DurableWorkflow\Worker;
+use DurableWorkflow\Worker\WorkflowContext;
 
-function sdkDirectionSnapshot(\DurableWorkflow\Client $client, string $workflowId, string $runId): array
+function sdkDirectionResponseSummary(mixed $response): mixed
+{
+    if (! is_array($response)) {
+        return $response;
+    }
+    // Full responses and exact bytes are already retained in the phase sidecar.
+    // Repeated discovery/capability metadata must not fill the recorder's pipe.
+    $summary = array_intersect_key($response, array_flip([
+        'run_id', 'registered', 'recorded', 'task', 'task_id', 'activity_attempt_id',
+        'workflow_task_attempt', 'run_status', 'poll_status', 'outcome', 'reason',
+        'error', 'message', 'version', 'server_id',
+    ]));
+    if (is_array($summary['task'] ?? null)) {
+        $summary['task'] = array_intersect_key($summary['task'], array_flip([
+            'task_id', 'workflow_id', 'run_id', 'workflow_run_id', 'task_type',
+            'workflow_task_attempt', 'activity_attempt_id', 'lease_owner', 'task_queue',
+        ]));
+    }
+
+    return $summary;
+}
+
+function sdkDirectionSnapshot(Client $client, string $workflowId, string $runId): array
 {
     $execution = $client->describeWorkflow($workflowId, $runId);
 
@@ -32,7 +58,7 @@ function sdkDirectionHttpObservation(array $fixture, array $options): array
     fclose($proxyPipes[0]);
     $phases = [];
     $runId = '';
-    $client = new \DurableWorkflow\Client($options['url'], namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null);
+    $client = new Client($options['url'], namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null);
     $deadline = microtime(true) + 35;
     try {
         $url = trim(fgets($proxyPipes[1]));
@@ -79,6 +105,7 @@ function sdkDirectionHttpObservation(array $fixture, array $options): array
                 }
                 // Exact request/response bytes remain in the retained sidecar.
                 unset($item['request_body'], $item['response_body'], $item['response_bytes_base64']);
+                $item['response'] = sdkDirectionResponseSummary($item['response']);
 
                 return $item;
             }, $lines);
@@ -121,11 +148,11 @@ function sdkDirectionPackageObservation(array &$observation, string $sdkAutoload
 {
     $observation['sdk_composer_lock_sha256'] = hash_file('sha256', dirname($sdkAutoload, 2).'/composer.lock');
     $observation['sdk_loaded_sources'] = [];
-    foreach ([\DurableWorkflow\Worker::class, \DurableWorkflow\Worker\WorkflowContext::class] as $class) {
+    foreach ([Worker::class, WorkflowContext::class] as $class) {
         $observation['sdk_loaded_sources'][$class] = hash_file('sha256', (new ReflectionClass($class))->getFileName());
     }
     if ($applicationRoot !== null) {
-        $observation['workflow_source'] = \Composer\InstalledVersions::getReference('durable-workflow/workflow');
+        $observation['workflow_source'] = InstalledVersions::getReference('durable-workflow/workflow');
         $observation['embedded_composer_lock_sha256'] = hash_file('sha256', $applicationRoot.'/composer.lock');
         $observation['workflow_loaded_sources'] = [];
         foreach (['TaskRepair', 'VersionResolver', 'WorkflowExecutor'] as $class) {
