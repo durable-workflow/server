@@ -86,7 +86,7 @@ for target in php embedded; do
   if test "$target" = embedded; then mode=embedded; fi
   run "bootstrap-$target" --network "$RESOURCE_SCOPE" "${database[@]}" -e DB_DATABASE="$db" \
     -e DW_MODE="$mode" -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
-    "$image" artisan server:bootstrap --force > "$evidence/$target-bootstrap.txt" 2>&1
+    "$image" php artisan server:bootstrap --force > "$evidence/$target-bootstrap.txt" 2>&1
 done
 php_db=range_php_ref
 embedded_db=range_embedded_ref
