@@ -174,4 +174,3 @@ test('child package checks reject substituted source and wheel identity', () => 
   const altered = copy(artifacts); altered.server.source_commit = 'd'.repeat(40);
   assert.throws(() => checkSdkChildDirectionArtifacts(fixture, altered));
 });
-

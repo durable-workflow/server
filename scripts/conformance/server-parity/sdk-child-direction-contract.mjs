@@ -132,4 +132,3 @@ export function checkSdkChildDirection(fixture, observation, workflowId) {
   assert.deepEqual(childPhase.child_snapshot.events, replacement.child_snapshot.events, 'cold replay does not mutate the completed child');
   return projection;
 }
-
