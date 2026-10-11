@@ -156,6 +156,48 @@ for (const id of ['legacy-two-markers-pending', 'legacy-two-markers-completed', 
     });
   }
   for (const phase of ['original', 'replacement']) for (const kind of ['workflow', 'activity', 'query']) {
+    function capacityRecoveryModel(freshIdentity = true) {
+      const state = queryCapacityModel(phase);
+      state.refusal.path = '/api/worker/'+kind+'-tasks/poll';
+      const recovery = {...structuredClone(state.refusal), status: 200, response_retry_after: null, response: {task: null}};
+      if (freshIdentity) recovery.request.poll_request_id = 'fresh-admitted-poll';
+      state.requests.splice(state.requests.indexOf(state.refusal) + 1, 0, recovery);
+      return {...state, recovery};
+    }
+    for (const freshIdentity of [true, false]) test(`${id} ${phase} ${kind}: accepts no-task admission recovery with ${freshIdentity ? 'fresh' : 'original'} poll identity`, () => {
+      checkLegacyMarkerDeployment(fixture, capacityRecoveryModel(freshIdentity).raw, 'test');
+    });
+    for (const [name, mutate] of [
+      ['foreign recovered worker', x => x.recovery.request.worker_id = 'other-worker'],
+      ['foreign recovered queue', x => x.recovery.request.task_queue = 'other-queue'],
+      ['changed timeout', x => x.recovery.request.timeout_seconds++],
+      ['changed history page size', x => x.recovery.request.history_page_size = 20],
+      ['empty recovered poll identity', x => x.recovery.request.poll_request_id = ''],
+      ['missing recovered poll identity', x => delete x.recovery.request.poll_request_id],
+      ['different recovered path', x => x.recovery.path = '/api/worker/other-tasks/poll'],
+      ['cancelled recovery', x => x.recovery.client_cancelled = true],
+      ['failed recovery', x => x.recovery.status = 500],
+      ['recovery transport failure', x => x.recovery.transport_error = 'ECONNRESET'],
+      ['refusal contains a task', x => x.refusal.response.task = {task_id: 'lost-task'}],
+      ['refusal has another reason', x => x.refusal.response.reason = 'unauthorized'],
+    ]) test(`${id} ${phase} ${kind}: rejects capacity ${name}`, () => {
+      const state = capacityRecoveryModel();
+      // Disable the separate query-shutdown alternative by placing withdrawal
+      // before refusal, so these mutations isolate recovery evidence.
+      if (kind === 'query') {
+        state.requests.splice(state.requests.indexOf(state.withdrawal), 1);
+        state.requests.splice(state.requests.indexOf(state.refusal), 0, state.withdrawal);
+      }
+      mutate(state);
+      assert.throws(() => checkLegacyMarkerDeployment(fixture, state.raw, 'test'));
+    });
+    if (kind !== 'query') test(`${id} ${phase} ${kind}: rejects withdrawal without an admitted replacement poll`, () => {
+      const state = capacityRecoveryModel();
+      state.requests.splice(state.requests.indexOf(state.recovery), 1);
+      assert.throws(() => checkLegacyMarkerDeployment(fixture, state.raw, 'test'));
+    });
+  }
+  for (const phase of ['original', 'replacement']) for (const kind of ['workflow', 'activity', 'query']) {
     function cancelledModel() {
       const raw = model('http');
       raw.patch_deployment[phase].requests.push({method: 'POST', path: '/api/worker/'+kind+'-tasks/poll',

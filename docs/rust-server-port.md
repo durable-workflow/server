@@ -218,9 +218,13 @@ its existing registry/target cache, then shares only binaries, dependencies and
 installation receipts. All four local fixtures and their raw observations pass
 on PHP, native and embedded targets. Qualification across the six hosted
 database configurations is tracked in [#382](https://github.com/durable-workflow/server/pull/382).
-The profile explicitly checks published query-capacity refusal: a null task,
-one-second retry hint and identical-request recovery or clean authenticated
-withdrawal after that worker's own accepted commit. Immediate sticky failover, blocked
+The profile explicitly checks published poll-capacity refusal: a null task,
+one-second retry hint and successful recovery with identical worker, queue and
+poll options. The published worker may choose a fresh poll identity after this
+explicit no-task admission refusal. An idle query worker may instead withdraw
+after its own accepted commit; workflow/activity polls require actual recovery.
+Backend-lock pressure still requires the same original poll identity.
+Immediate sticky failover, blocked
 repair, migration, full fault budgets and performance remain separate gates.
 Its opt-in HTTP observer records whether the complete request body arrived and
 whether an upstream request started. A locally cancelled, incomplete poll has
