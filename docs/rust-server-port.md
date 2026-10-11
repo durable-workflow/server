@@ -45,8 +45,9 @@ despite PHP's associative empty-contract-map observation projection.
 Merge `b5a6e8d1e478d43af5219c560ec392e6d17258aa` retains the qualified tree;
 post-merge checks and their outcome are tracked in #401. Its first main run
 passed five runtime configurations; PostgreSQL 16 completed every comparison,
-cleanup and artifact upload, but exceeded its 15-minute job limit. That job is
-being rerun against the same merge. PostgreSQL now receives the same bounded
+cleanup and artifact upload, but exceeded its 15-minute job limit. Its retry
+retains that exact merge; the outcome is tracked in #401. PostgreSQL receives
+the same bounded
 20-minute allowance as MySQL, including cleanup and evidence retention.
 This is one authored
 workflow/activity scenario in the default namespace, with nine language

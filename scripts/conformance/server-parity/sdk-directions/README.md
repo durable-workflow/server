@@ -16,8 +16,11 @@ SDK sources and registry checksums. Existing fixtures and manifests remain
 unchanged. Embedded runs the canonical PHP author and explicitly marks SDK
 transport inapplicable.
 
-The adapters and reader are implemented; actual PHP/native/embedded
-qualification is pending. The existing shared workflow builds each locked SDK
+[#401](https://github.com/durable-workflow/server/pull/401) qualifies this bounded
+scenario on all six candidate database configurations, including actual
+PHP/native SDK execution and canonical embedded counterparts. The
+[port log](../../../../docs/rust-server-port.md) records the scope, raw evidence
+checks and main follow-through. The shared workflow builds each locked SDK
 adapter once beside its earlier adapters, reuses the registry and target cache,
 and distributes only the binary, installed Python packages and identity
 receipts. Debug information and incremental compilation stay disabled.
