@@ -31,6 +31,7 @@ use App\Support\SchedulesRuntimeContract;
 use App\Support\SearchAttributeRuntimeContract;
 use App\Support\ServerReadiness;
 use App\Support\ServerTopology;
+use App\Support\ServiceCatalogReadContract;
 use App\Support\SignalQueryRuntimeContract;
 use App\Support\SingleRegionFailoverContract;
 use App\Support\SkewRefusalMatrixContract;
@@ -272,6 +273,7 @@ class HealthController
                 ],
             );
             $response['nexus_contract'] = NexusContract::manifest();
+            $response['service_catalog_read_contract'] = ServiceCatalogReadContract::manifest();
         }
 
         $response['workflow_streams_contract'] = WorkflowStreamsContract::manifest();
