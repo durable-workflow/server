@@ -2612,6 +2612,7 @@ async function probePublishedPythonCallerWorkflows(baseUrl, token, compose, phpS
       operation_name: operation, operation_mode: 'sync', handler_binding_kind: 'start_workflow',
       handler_target_reference: 'nexus.fixture.php.greeter',
       handler_binding: {workflow_type: 'nexus.fixture.php.greeter', queue: 'nexus-php-workflow'},
+      ...(env('DW_NEXUS_WATERLINE_IMAGE') ? {deadline_policy: {timeout_seconds: 120}} : {}),
       boundary_policy: {authorization: {caller_namespaces: {allow: ['shared', 'tenant-a', 'tenant-b']}}},
     }),
   ];
@@ -2654,6 +2655,7 @@ async function probePublishedPhpCallerWorkflows(baseUrl, token, compose, phpServ
       operation_name: operation, operation_mode: 'sync', handler_binding_kind: 'start_workflow',
       handler_target_reference: 'nexus.fixture.python.greeter',
       handler_binding: {workflow_type: 'nexus.fixture.python.greeter', queue: 'nexus-python-service'},
+      ...(env('DW_NEXUS_WATERLINE_IMAGE') ? {deadline_policy: {timeout_seconds: 120}} : {}),
       boundary_policy: {authorization: {caller_namespaces: {allow: ['shared', 'tenant-a', 'tenant-b']}}},
     }),
   ];
