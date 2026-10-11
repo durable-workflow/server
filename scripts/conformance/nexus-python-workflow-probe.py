@@ -151,8 +151,9 @@ async def execute(input_data, namespace):
                         observation["linked_service_failure"] = {"type": type(error).__name__, "message": str(error)}
                     observation["linked_service_history"] = await service_handle.get_history()
                 observation["linked_service_run_id"] = linked_run_id
+            expected_name = input_data.get("name", "world")
             expected_result = {"language": input_data.get("service_language", "php"),
-                               "name": "world", "greeting": "hello, world"}
+                               "name": expected_name, "greeting": f"hello, {expected_name}"}
             observation["service_input_qualified"] = observation.get("linked_service_result") == expected_result
             service_result = recorded.get("result")
             if isinstance(service_result, str):
@@ -173,6 +174,18 @@ async def execute(input_data, namespace):
                 and recorded.get("failure_class") == "NexusOperationFailed"
                 and surface.get("outcome") == "timed_out"
             )
+            if observation["deadline_qualified"]:
+                async with Client("http://server:8080", namespace="shared", token=input_data["token"]) as replay_client:
+                    replay_client._http.event_hooks["response"] = [observe]
+                    duplicate = await replay_client.execute_nexus_operation(
+                        input_data["endpoint"], input_data["service"], input_data["operation"],
+                        [input_data.get("name", "world")], caller_namespace=namespace,
+                        idempotency_key=commands[0]["idempotency_key"],
+                        caller_workflow_instance_id=handle.workflow_id,
+                        caller_workflow_run_id=handle.run_id,
+                        wait_for="completed", wait_timeout_seconds=5, raise_on_failure=False,
+                    )
+                observation["duplicate_result"] = duplicate.to_recorded_payload()
             return observation
         finally:
             await asyncio.wait_for(worker.stop(), timeout=10)
