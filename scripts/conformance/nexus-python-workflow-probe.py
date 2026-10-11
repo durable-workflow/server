@@ -23,6 +23,7 @@ class PythonNexusCaller:
 
 async def execute(input_data, namespace):
     receipts = []
+    rejected = asyncio.Event()
 
     async def observe(response):
         if "/service-endpoints/" not in response.request.url.path:
@@ -36,6 +37,8 @@ async def execute(input_data, namespace):
             "status": response.status_code,
             "response": response.json(),
         })
+        if response.status_code >= 400:
+            rejected.set()
 
     async with Client("http://server:8080", namespace=namespace,
                       token=input_data["token"], worker_token=input_data["token"]) as client:
@@ -58,13 +61,37 @@ async def execute(input_data, namespace):
                 "process_id": os.getpid(), "installed_sdk_version": version("durable-workflow"),
                 "public_method": "WorkflowContext.call_nexus_service",
             }
+            finishing = asyncio.create_task(handle.result(timeout=30))
+            refusal = asyncio.create_task(rejected.wait())
             try:
-                observation["result"] = await handle.result(timeout=30)
+                done, _ = await asyncio.wait([finishing, refusal], return_when=asyncio.FIRST_COMPLETED)
+                if finishing in done:
+                    observation["result"] = await finishing
+                else:
+                    observation["failure"] = {
+                        "type": "NexusAdmissionRefused",
+                        "message": receipts[-1]["response"].get("reason"),
+                    }
             except Exception as error:
                 observation["failure"] = {"type": type(error).__name__, "message": str(error)}
+            finally:
+                for pending in [finishing, refusal]:
+                    pending.cancel()
+                await asyncio.gather(finishing, refusal, return_exceptions=True)
             observation["history"] = await handle.get_history()
             observation["receipts"] = receipts
             recorded = observation.get("result", {})
+            surface = recorded.get("response_or_failure_surface", {})
+            linked_id = surface.get("linked_workflow_instance_id")
+            linked_run_id = surface.get("linked_workflow_run_id")
+            if linked_id and linked_run_id:
+                service_handle = client.get_workflow_handle(linked_id, run_id=linked_run_id)
+                try:
+                    observation["linked_service_result"] = await service_handle.result(timeout=10)
+                except Exception as error:
+                    observation["linked_service_failure"] = {"type": type(error).__name__, "message": str(error)}
+                observation["linked_service_history"] = await service_handle.get_history()
+                observation["linked_service_run_id"] = linked_run_id
             service_result = recorded.get("result")
             if isinstance(service_result, str):
                 service_result = serializer.decode(service_result, codec="avro")

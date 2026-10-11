@@ -1,4 +1,4 @@
-name: Published Nexus SDK callers
+name: Published Nexus SDK execution
 
 on:
   pull_request:
@@ -29,7 +29,7 @@ concurrency:
 
 jobs:
   callers:
-    name: PHP/Python SDK callers (admission only)
+    name: SDK client admissions and Python caller workflows
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
