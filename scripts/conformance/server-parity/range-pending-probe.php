@@ -86,7 +86,7 @@ function rangePendingHttpPhase(array $fixture, array $options): array
             $worker->registerWorkflow($fixture['workflow_type'], $handler);
         }
         try {
-            $worker->run(0);
+            $worker->run(1);
         } catch (Throwable $failure) {
             $error = ['class' => $failure::class, 'message' => $failure->getMessage()];
             break;
