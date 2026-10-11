@@ -1,5 +1,63 @@
 use super::*;
 
+impl TestDatabase {
+    async fn selection_history_id(&self, run: &str, sequence: i64) -> String {
+        // Public HTTP history intentionally omits the internal event ID.
+        // Verify the winner's physical relationship against the database,
+        // rather than synthesizing an ID in the public representation.
+        let query =
+            "SELECT id FROM workflow_history_events WHERE workflow_run_id=$1 AND sequence=$2";
+        match self {
+            Self::Sqlite(dir) => {
+                let pool = sqlx::SqlitePool::connect(&format!(
+                    "sqlite://{}",
+                    dir.path().join("runtime.sqlite").display()
+                ))
+                .await
+                .unwrap();
+                let identity = sqlx::query_scalar::<_, String>(query)
+                    .bind(run)
+                    .bind(sequence)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+                identity
+            }
+            Self::Postgres { options, .. } => {
+                let pool = sqlx::postgres::PgPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
+                let identity = sqlx::query_scalar::<_, String>(query)
+                    .bind(run)
+                    .bind(sequence)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+                identity
+            }
+            Self::MySql { options, .. } => {
+                let pool = sqlx::mysql::MySqlPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
+                let identity = sqlx::query_scalar::<_, String>(
+                    "SELECT id FROM workflow_history_events WHERE workflow_run_id=? AND sequence=?",
+                )
+                .bind(run)
+                .bind(sequence)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                pool.close().await;
+                identity
+            }
+        }
+    }
+}
+
 fn mixed_commands(base: i64) -> Value {
     let mut activity = json!({"type":"schedule_activity","activity_type":"echo_activity",
         "arguments":envelope(Payload::Array(vec![Payload::Long(9007199254740993)]))});
@@ -89,7 +147,12 @@ async fn timer_winner_and_pending_activity_survive_original_task_repair_and_rest
     assert_eq!(selected[6]["payload"]["operation_kind"], "timer");
     assert_eq!(
         selected[6]["payload"]["resolution_event_id"],
-        selected[5]["id"]
+        database
+            .selection_history_id(
+                started["run_id"].as_str().unwrap(),
+                selected[5]["sequence"].as_i64().unwrap()
+            )
+            .await
     );
     assert_eq!(
         selected[6]["payload"]["operation_identity"],
@@ -287,7 +350,15 @@ async fn activity_winner_survives_restart_and_losing_timer_without_another_wakeu
         winner[7]["payload"]["operation_identity"],
         activity["activity_execution_id"]
     );
-    assert_eq!(winner[7]["payload"]["resolution_event_id"], winner[6]["id"]);
+    assert_eq!(
+        winner[7]["payload"]["resolution_event_id"],
+        database
+            .selection_history_id(
+                started["run_id"].as_str().unwrap(),
+                winner[6]["sequence"].as_i64().unwrap()
+            )
+            .await
+    );
     drop(app);
     first.close().await;
     // Advance only this isolated test database's losing timer after the

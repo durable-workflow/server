@@ -417,6 +417,11 @@ and the newer pending reference do; only an actual worker claim consumes an
 attempt. The physical schema and earlier durable data/history remain unchanged.
 The failed candidate and raw test/artifact receipts remain distinct from the
 required corrected exact-source qualification.
+The corrected counter candidate compiled but stopped on two test assertions
+that expected internal event IDs in public HTTP history. Lease identity checks
+pass; public history intentionally omits those IDs. Winner regressions now
+query the actual persisted event at the public sequence and verify its physical
+relationship directly, preserving the public response and fixture contract.
 
 The separate `pending-native` profile binds the same published artifact bytes
 and unchanged fixture under a new qualification scope, including the SHA-256
