@@ -457,8 +457,6 @@ jobs:
           grep -Fq storage_unavailable parity-evidence/tls-wrong-hostname.txt
       - name: Collect logs and clean owned resources
         if: always()
-        env:
-          POSTGRES_IMAGE: ${{ matrix.image }}
         run: |
           mkdir -p parity-evidence
           docker logs "$RESOURCE_SCOPE-php" > parity-evidence/php.log 2>&1 || true
@@ -504,6 +502,7 @@ jobs:
             image: mirror.gcr.io/library/postgres@sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826
     env:
       RESOURCE_SCOPE: dw-pg-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ matrix.label }}
+      POSTGRES_IMAGE: ${{ matrix.image }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Fetch this run's published SDK adapters
