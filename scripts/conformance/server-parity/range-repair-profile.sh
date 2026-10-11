@@ -7,13 +7,15 @@ checkpoint="${3:-completed}"
 case "$checkpoint" in
   completed) tag=range; prefix=range-repair-v1; fixture=range-marked-activity-completed ;;
   pending-reference) tag=range-pending; prefix=range-pending-v1; fixture=range-selected-timer-activity-pending ;;
-  *) echo 'Choose completed or pending-reference' >&2; exit 2 ;;
+  pending-native) tag=range-pending-native; prefix=range-pending-native-v1; fixture=range-selected-timer-activity-pending ;;
+  *) echo 'Choose completed, pending-reference or pending-native' >&2; exit 2 ;;
 esac
 native_url="${2:?Set the independently isolated native URL}"
 test -n "${RESOURCE_SCOPE:?Set the owning isolated network/resource scope}"
 profile=tests/Fixtures/ServerParityProfiles/version-range-repair
 cohort=version-range-repair
 if test "$checkpoint" = pending-reference; then cohort=version-range-repair-pending; fi
+if test "$checkpoint" = pending-native; then cohort=version-range-repair-pending-native; fi
 manifest="tests/Fixtures/ServerParityProfiles/$cohort/artifacts.json"
 image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' "$manifest")
 php_alias="parity-$tag-php"
@@ -54,7 +56,7 @@ docker run --name "$resource-sdk" "${limits[@]}" --entrypoint composer -e COMPOS
 printf '%s  %s\n' "$(jq -r '.sdk_php_composer_lock_sha256' "$manifest")" "$state/sdk/composer.lock" \
   | sha256sum -c > "$evidence/sdk-lock.txt"
 reader_tests=(tests/Unit/ServerParityRangeRepairContractTest.mjs)
-if test "$checkpoint" = pending-reference; then reader_tests+=(tests/Unit/ServerParityPendingRangeRepairContractTest.mjs); fi
+if test "$checkpoint" != completed; then reader_tests+=(tests/Unit/ServerParityPendingRangeRepairContractTest.mjs); fi
 docker run --name "$resource-tests" "${limits[@]}" --network none --entrypoint node "${shared[@]}" "$image" \
   --test "${reader_tests[@]}" > "$evidence/comparator-tests.txt" 2>&1
 for target in php embedded; do
@@ -96,7 +98,7 @@ docker run --name "$resource-record-embedded" "${limits[@]}" --network "$RESOURC
   -e DW_MODE=embedded -e CACHE_STORE=file -e QUEUE_CONNECTION=database -w /app "$image" \
   node /source/scripts/conformance/server-parity.mjs record --mode embedded --application-root /app \
   --target embedded "${selection[@]}" --output /evidence/embedded.json > "$evidence/embedded-record.txt" 2>&1
-if test "$checkpoint" = completed; then
+if test "$checkpoint" != pending-reference; then
   docker run --name "$resource-record-native" "${limits[@]}" --network "$RESOURCE_SCOPE" --entrypoint node "${shared[@]}" -e DW_PARITY_TOKEN=parity-test-token \
   "$image" scripts/conformance/server-parity.mjs record --mode http --url "$native_url" \
   --target rust "${selection[@]}" --output /evidence/rust.json > "$evidence/rust-record.txt" 2>&1

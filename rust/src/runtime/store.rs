@@ -80,7 +80,7 @@ where
             "SELECT id,status,closed_reason,closed_at,last_progress_at,arguments,output,last_history_sequence,last_command_sequence,run_deadline_at FROM workflow_runs LIMIT 0",
             "SELECT id,sequence,payload,recorded_at FROM workflow_history_events LIMIT 0",
             "SELECT id,status,payload,lease_owner,lease_expires_at,attempt_count FROM workflow_tasks LIMIT 0",
-            "SELECT id,sequence,activity_type,status,arguments,result,retry_policy,exception,attempt_count,current_attempt_id FROM activity_executions LIMIT 0",
+            "SELECT id,sequence,activity_type,status,arguments,result,retry_policy,exception,attempt_count,current_attempt_id,parallel_group_path FROM activity_executions LIMIT 0",
             "SELECT id,workflow_task_id,attempt_number,status FROM activity_attempts LIMIT 0",
             "SELECT id,workflow_run_id,source_kind,source_id,propagation_kind,failure_category,non_retryable,handled,exception_class,message FROM workflow_failures LIMIT 0",
             "SELECT id,workflow_run_id,sequence,status,delay_seconds,fire_at,fired_at FROM workflow_run_timers LIMIT 0",
@@ -579,10 +579,18 @@ where
             }
         }
         let runtime = text(&body, "runtime")?;
-        if body
+        let contracts = body
             .get("workflow_command_contracts")
-            .is_some_and(|value| !value.is_object())
-        {
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        // PHP encodes an empty associative map as []; activity-only published
+        // workers send this shape. Preserve a map internally for lookups.
+        let contracts = if contracts.as_array().is_some_and(|values| values.is_empty()) {
+            json!({})
+        } else {
+            contracts
+        };
+        if !contracts.is_object() {
             return Err(refuse(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "invalid_worker_definition",
@@ -616,7 +624,7 @@ where
             .execute(&mut *tx)
             .await?;
         Self::query("UPDATE workflow_worker_registrations SET status='active',workflow_command_contracts=$1 WHERE worker_id=$2 AND namespace=$3")
-            .bind(DB::document(body.get("workflow_command_contracts").unwrap_or(&json!({})))).bind(worker_id).bind(self.namespace.as_ref()).execute(&mut *tx).await?;
+            .bind(DB::document(&contracts)).bind(worker_id).bind(self.namespace.as_ref()).execute(&mut *tx).await?;
         self.rotate_incarnation(&mut tx, worker_id, &token).await?;
         tx.commit().await?;
         self.wake.notify_waiters();
@@ -1182,6 +1190,7 @@ where
             .as_array()
             .filter(|c| !c.is_empty() && c.len() <= 100)
             .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_commands"))?;
+        super::selections::validate_batch(commands)?;
         // Validate the entire batch before mutation. Unknown commands and
         // options cannot be silently accepted as unsupported durable effects.
         for (index, command) in commands.iter().enumerate() {
@@ -1202,7 +1211,7 @@ where
                     envelope(command, "result")?;
                 }
                 "schedule_activity" => {
-                    reject_fields(
+                    super::selections::fields(
                         command,
                         &[
                             "type",
@@ -1220,7 +1229,7 @@ where
                     super::children::validate_child(command)?;
                 }
                 "start_timer" => {
-                    reject_fields(command, &["type", "delay_seconds"])?;
+                    super::selections::fields(command, &["type", "delay_seconds"])?;
                     timer_deadline(command)?;
                 }
                 "record_version_marker" => {
@@ -1292,6 +1301,16 @@ where
                 "cancellation_cleanup_command_not_available",
             ));
         }
+        if Self::cancellation_request(&run)?.is_some()
+            && commands
+                .iter()
+                .any(|command| command.get("parallel_group_path").is_some())
+        {
+            return Err(refuse(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "development_selection_cancellation_unqualified",
+            ));
+        }
         let update_id = task_payload["workflow_update_id"].as_str();
         if commands
             .iter()
@@ -1327,6 +1346,8 @@ where
                 .await?;
             } else if command["type"] == "schedule_activity" {
                 sequence += 1;
+                let metadata = super::selections::metadata(command, "activity")?;
+                super::selections::check_sequence(&metadata, sequence)?;
                 let activity_id = id();
                 let queue = command
                     .get("queue")
@@ -1336,9 +1357,13 @@ where
                 let activity_type = text(command, "activity_type")?;
                 let arguments = envelope(command, "arguments")?;
                 let policy = super::activity_failures::retry_policy(command)?;
-                Self::query("INSERT INTO activity_executions(id,workflow_run_id,sequence,activity_type,activity_class,status,payload_codec,arguments,queue,retry_policy) VALUES ($1,$2,$3,$4,$5,'pending','avro',$6,$7,$8)")
+                // The preserved SQL schema defaults this counter to one.
+                // Published authored scheduling explicitly starts at zero;
+                // only the original worker claim consumes its first attempt.
+                Self::query("INSERT INTO activity_executions(id,workflow_run_id,sequence,activity_type,activity_class,status,attempt_count,payload_codec,arguments,queue,retry_policy,parallel_group_path) VALUES ($1,$2,$3,$4,$5,'pending',0,'avro',$6,$7,$8,$9)")
                     .bind(&activity_id).bind(&run_id).bind(sequence).bind(activity_type).bind(activity_type)
-                    .bind(&arguments).bind(&queue).bind(policy.as_ref().map(DB::document)).execute(&mut *tx).await?;
+                    .bind(&arguments).bind(&queue).bind(policy.as_ref().map(DB::document))
+                    .bind(DB::optional_document(&metadata["parallel_group_path"])).execute(&mut *tx).await?;
                 let activity = Self::query("SELECT * FROM activity_executions WHERE id=$1")
                     .bind(&activity_id)
                     .fetch_one(&mut *tx)
@@ -1368,20 +1393,34 @@ where
                     .await?;
             } else if command["type"] == "start_timer" {
                 sequence += 1;
+                let metadata = super::selections::metadata(command, "timer")?;
+                super::selections::check_sequence(&metadata, sequence)?;
                 let timer_id = id();
                 let delay = command["delay_seconds"].as_i64().unwrap();
                 let fire_at = timer_deadline(command)?;
                 Self::query("INSERT INTO workflow_run_timers(id,workflow_run_id,sequence,status,delay_seconds,fire_at) VALUES ($1,$2,$3,'pending',$4,$5)")
                     .bind(&timer_id).bind(&run_id).bind(sequence).bind(delay).bind(DB::bind_time(fire_at)).execute(&mut *tx).await?;
-                Self::append(&mut tx, &run_id, "TimerScheduled", json!({"timer_id":timer_id,"sequence":sequence,"delay_seconds":delay,"fire_at":fire_at,
+                let mut timer_payload = json!({"timer_id":timer_id,"sequence":sequence,"delay_seconds":delay,"fire_at":fire_at,
                     "task":{"id":task_id,"type":"workflow","status":"leased","lease_owner":DB::optional_string(&task,"lease_owner")?,
-                        "lease_expires_at":DB::optional_instant(&task,"lease_expires_at")?,"attempt_count":DB::number(&task,"attempt_count")?}}), Some(task_id), None).await?;
+                        "lease_expires_at":DB::optional_instant(&task,"lease_expires_at")?,"attempt_count":DB::number(&task,"attempt_count")?}});
+                super::selections::merge(&mut timer_payload, &metadata);
+                Self::append(
+                    &mut tx,
+                    &run_id,
+                    "TimerScheduled",
+                    timer_payload,
+                    Some(task_id),
+                    None,
+                )
+                .await?;
+                let mut timer_task_payload = json!({"timer_id":timer_id});
+                super::selections::merge(&mut timer_task_payload, &metadata);
                 let timer_task = Self::create_task(
                     &mut tx,
                     &run_id,
                     &DB::string(&run, "queue")?,
                     "timer",
-                    json!({"timer_id":timer_id}),
+                    timer_task_payload,
                 )
                 .await?;
                 Self::query("UPDATE workflow_tasks SET available_at=$1 WHERE id=$2")
@@ -1540,6 +1579,10 @@ where
             .fetch_one(&mut *tx)
             .await?;
         let mut payload = Self::activity_payload(&activity)?;
+        let metadata = super::selections::activity_metadata(DB::optional_document_row(
+            &activity,
+            "parallel_group_path",
+        )?)?;
         payload["activity_attempt_id"] = json!(attempt_id);
         payload["attempt_number"] = json!(DB::number(&attempt, "attempt_number")?);
         payload["result"] = wire(&result);
@@ -1555,6 +1598,15 @@ where
             None,
         )
         .await?;
+        Self::resolve_selection(
+            &mut tx,
+            &run_id,
+            &metadata,
+            "activity",
+            &activity_id,
+            "ActivityCompleted",
+        )
+        .await?;
         Self::query("UPDATE activity_attempts SET status='completed',closed_at=$1 WHERE id=$2")
             .bind(DB::bind_time(now()))
             .bind(attempt_id)
@@ -1565,12 +1617,12 @@ where
             .execute(&mut *tx)
             .await?;
         Self::record_completion(&mut tx, task_id, &body).await?;
-        let next_task_id = Self::create_task(
+        let next_task_id = Self::selection_resume(
             &mut tx,
             &run_id,
             &DB::string(&run, "queue")?,
-            "workflow",
             json!({"activity_execution_id": activity_id}),
+            &metadata,
         )
         .await?;
         tx.commit().await?;
@@ -1623,7 +1675,28 @@ where
                 .fetch_one(&mut *tx)
                 .await?;
             let task_id = DB::string(&task, "id")?;
-            Self::append(&mut tx, &run_id, "TimerFired", json!({"timer_id":timer_id,"sequence":DB::number(&timer,"sequence")?,"delay_seconds":DB::number(&timer,"delay_seconds")?,"fire_at":fire_at,"fired_at":fired_at}),Some(&task_id),None).await?;
+            let metadata =
+                super::selections::metadata(&DB::document_row(&task, "payload")?, "timer")?;
+            let mut payload = json!({"timer_id":timer_id,"sequence":DB::number(&timer,"sequence")?,"delay_seconds":DB::number(&timer,"delay_seconds")?,"fire_at":fire_at,"fired_at":fired_at});
+            super::selections::merge(&mut payload, &metadata);
+            Self::append(
+                &mut tx,
+                &run_id,
+                "TimerFired",
+                payload,
+                Some(&task_id),
+                None,
+            )
+            .await?;
+            Self::resolve_selection(
+                &mut tx,
+                &run_id,
+                &metadata,
+                "timer",
+                &timer_id,
+                "TimerFired",
+            )
+            .await?;
             Self::query("UPDATE workflow_run_timers SET status='fired',fired_at=$1 WHERE id=$2")
                 .bind(DB::bind_time(fired_at))
                 .bind(&timer_id)
@@ -1633,12 +1706,12 @@ where
                 .bind(&task_id)
                 .execute(&mut *tx)
                 .await?;
-            Self::create_task(
+            Self::selection_resume(
                 &mut tx,
                 &run_id,
                 &DB::string(&timer, "queue")?,
-                "workflow",
                 json!({"timer_id":timer_id}),
+                &metadata,
             )
             .await?;
         }
@@ -1784,8 +1857,7 @@ where
     }
 
     pub(super) fn activity_payload(activity: &DB::Row) -> Result<Value> {
-        Ok(
-            json!({"activity_execution_id": DB::string(activity,"id")?, "activity_type": DB::string(activity,"activity_type")?,
+        let mut payload = json!({"activity_execution_id": DB::string(activity,"id")?, "activity_type": DB::string(activity,"activity_type")?,
         "activity_class": DB::string(activity,"activity_class")?, "sequence": DB::number(activity,"sequence")?,
         "activity": {"id":DB::string(activity,"id")?,"idempotency_key":DB::string(activity,"id")?,
             "activity_type": DB::string(activity,"activity_type")?, "arguments": wire(&DB::string(activity,"arguments")?),
@@ -1794,8 +1866,13 @@ where
             "closed_at":DB::optional_instant(activity,"closed_at")?,
             "attempt_id":DB::optional_string(activity,"current_attempt_id")?,
             "exception":DB::optional_string(activity,"exception")?.map(|value|wire(&value)),
-            "payload_codec": "avro", "queue": DB::string(activity,"queue")?}}),
-        )
+            "payload_codec": "avro", "queue": DB::string(activity,"queue")?}});
+        let metadata = super::selections::activity_metadata(DB::optional_document_row(
+            activity,
+            "parallel_group_path",
+        )?)?;
+        super::selections::merge(&mut payload, &metadata);
+        Ok(payload)
     }
 
     fn event(row: DB::Row) -> Result<Value> {

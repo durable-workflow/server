@@ -567,9 +567,20 @@ records PHP, embedded and native for that completed-activity case. An activity
 still pending at the failure, other SDK authors and performance remain separate
 qualification gates.
 
-The optional `pending-reference` third argument selects
+The optional `pending-reference` third argument selects the two-reference
+qualification retained by Server #397. The additional
+`pending-native` value selects the same fixture and published reference bytes
+in `version-range-repair-pending-native`, requires an actual Rust recording
+alongside PHP HTTP and embedded, and uses separate resource names, prefix,
+databases and evidence directory. Its manifest binds the unchanged reference
+manifest hash. Native implementation/qualification remains separate from the
+already qualified two-reference result. Normal six-configuration gates select
+this three-runtime profile; `pending-reference` remains available unchanged.
+
+Both pending profiles select
 `range-selected-timer-activity-pending` with the same exact published package
-tuple and a separate manifest declaring PHP HTTP and embedded targets only.
+tuple. The reference manifest declares PHP HTTP and embedded targets; the
+native manifest adds Rust without changing those published artifact bytes.
 The original definition records its version and selects between an activity
 routed to `server-parity-range-activity` and a positive-delay timer. Only the
 workflow queue is served until a cold incompatible definition blocks the

@@ -49,6 +49,9 @@ mod waiting_history;
 #[path = "execution/task_retry.rs"]
 mod task_retry;
 
+#[path = "execution/selections.rs"]
+mod selections;
+
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
     Postgres {
