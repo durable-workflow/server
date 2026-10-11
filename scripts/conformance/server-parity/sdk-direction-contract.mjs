@@ -73,7 +73,8 @@ export function checkSdkDirection(fixture, observation, workflowId) {
     const registrations = phase.requests.filter(item => item.method === 'POST' && item.path === '/api/worker/register');
     assert.equal(registrations.length, 1, 'one real SDK registration for this phase');
     const registration = registrations[0];
-    assert.equal(registration.status, 200);
+    assert.equal(registration.status, 201, 'new phase worker registration was created');
+    assert.equal(registration.response.registered, true);
     assert.equal(registration.request.worker_id, phase.worker_id);
     assert.equal(registration.request.task_queue, phase.task_queue);
     assert.deepEqual(registration.request.supported_workflow_types, index === 1 ? [] : [fixture.workflow_type]);

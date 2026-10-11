@@ -30,9 +30,9 @@ function observed(fixture) {
     const request = (path, body, response) => ({method: 'POST', path, status: 200, request: body, response});
     const requests = [];
     if (index === 0) requests.push({...request('/api/workflows', {workflow_id: workflowId}, {run_id: runId}), status: 201});
-    requests.push(request('/api/worker/register', {worker_id: workerId, task_queue: taskQueue,
+    requests.push({...request('/api/worker/register', {worker_id: workerId, task_queue: taskQueue,
       supported_workflow_types: index === 1 ? [] : [fixture.workflow_type],
-      supported_activity_types: index === 1 ? ['parity.v1.echo_activity'] : []}, {}));
+      supported_activity_types: index === 1 ? ['parity.v1.echo_activity'] : []}, {registered: true}), status: 201});
     requests.push(request('/api/worker/' + kind + '-tasks/poll', {}, {task: {task_id: 'task-' + phase}}));
     const command = index === 0 ? {type: 'schedule_activity', activity_type: 'parity.v1.echo_activity', queue: 'server-parity-sdk-activity'}
       : {type: 'complete_workflow'};
@@ -75,6 +75,7 @@ const mutations = {
   'activity checkpoint missing': value => {value.sdk_direction.phases[1].snapshot.events.pop();},
   'int64 rounded at cold replay': value => {value.sdk_direction.phases[2].snapshot.typed_output.value.count.value = '9007199254740992';},
   'SDK registration fabricated': value => {value.sdk_direction.phases[1].requests[0].status = 422;},
+  'SDK registration not acknowledged': value => {value.sdk_direction.phases[1].requests[0].response.registered = false;},
   'activity registration contains workflow': value => {value.sdk_direction.phases[1].requests[0].request.supported_workflow_types.push(fixture.workflow_type);},
   'completion missing': value => {value.sdk_direction.phases[2].requests.pop();},
   'completion was refused': value => {value.sdk_direction.phases[2].requests.at(-1).response.recorded = false;},
