@@ -25,7 +25,7 @@ error_log(json_encode([
     'posix_available' => function_exists('posix_kill'),
 ], JSON_THROW_ON_ERROR));
 
-$client = new Client('http://server:8080', namespace: 'shared', workerToken: $input['token'], workerProtocolVersion: '1.20');
+$client = new Client('http://server:8080', namespace: 'shared', token: $input['token'], workerProtocolVersion: '1.20');
 (new Worker($client, 'nexus-php-workflow', enableCooperativeCancellation: true))
     ->registerWorkflow('nexus.fixture.php.greeter', static function (WorkflowContext $context, string $name): array {
         if ($name === 'fail') {

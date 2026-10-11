@@ -865,6 +865,8 @@ async function apiRequest(baseUrl, token, namespace, method, apiPath, body = nul
     'X-Durable-Workflow-Control-Plane-Version': '2',
     'X-Namespace': namespace,
     Accept: 'application/json',
+    // Docker SDK probes block Node while Apache's idle connections can expire.
+    Connection: 'close',
   };
   const init = {method, headers};
   if (body !== null) {
@@ -895,6 +897,7 @@ async function apiRequest(baseUrl, token, namespace, method, apiPath, body = nul
 
   return {
     request: {method, path: `/api${apiPath}`, namespace, body,
+      connection: 'close',
       transport_attempts: transportRetry === null ? 1 : 2, transport_retry: transportRetry},
     status: response.status,
     ok: response.ok,
