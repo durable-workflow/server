@@ -781,6 +781,9 @@ try {
         require __DIR__.'/patch-deployment-probe.php';
         PatchDeploymentState::$changeId = $fixture['patch_deployment']['change_id'];
         PatchDeploymentState::$expectedDecisions = $fixture['patch_deployment']['expected_decisions'];
+        if (($options['patch-phase'] ?? null) === 'original' && isset($fixture['patch_deployment']['legacy_marker_history'])) {
+            PatchDeploymentState::$expectedDecisions = array_fill(0, $fixture['patch_deployment']['legacy_marker_history']['original_calls'], true);
+        }
         $observation = isset($options['patch-phase'])
             ? match ($mode) {
                 'http' => patchHttpPhase($fixture, $options),
@@ -825,7 +828,10 @@ try {
         $observation['workflow_source'] = InstalledVersions::getReference('durable-workflow/workflow');
         $observation['embedded_composer_lock_sha256'] = hash_file('sha256', $options['application-root'].'/composer.lock');
         $observation['workflow_loaded_sources'] = [];
-        foreach (['VersionDecisions', 'WorkflowExecutor', 'WorkflowFiberRunner', 'QueryStateReplayer'] as $name) {
+        $versionClass = ($options['patch-phase'] ?? null) === 'original'
+            && ($fixture['patch_deployment']['legacy_marker_history']['embedded_original'] ?? null) === '2.5.5'
+            ? 'VersionResolver' : 'VersionDecisions';
+        foreach ([$versionClass, 'WorkflowExecutor', 'WorkflowFiberRunner', 'QueryStateReplayer'] as $name) {
             $class = new ReflectionClass('Workflow\\V2\\Support\\'.$name);
             $observation['workflow_loaded_sources']['src/V2/Support/'.$name.'.php'] = hash_file('sha256', $class->getFileName());
         }
