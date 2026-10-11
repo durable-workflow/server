@@ -9,6 +9,7 @@ image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "
 evidence="$PWD/parity-evidence/version-range-repair"
 state="$PWD/parity-range-state"
 mkdir -p "$evidence" "$state/sdk"
+chmod 0777 "$evidence" "$state" "$state/sdk"
 cp "$profile/sdk/composer.json" "$profile/sdk/composer.lock" "$state/sdk/"
 export DW_PARITY_RUNNER_REVISION
 DW_PARITY_RUNNER_REVISION=$(git rev-parse HEAD)
@@ -30,6 +31,7 @@ case "$backend" in
     database=(-e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password) ;;
   sqlite)
     touch "$state/range_php_ref" "$state/range_embedded_ref"
+    chmod 0666 "$state/range_php_ref" "$state/range_embedded_ref"
     database=(-e DB_CONNECTION=sqlite -v "$state:/range-state") ;;
   *) echo 'Choose mysql, pgsql or sqlite' >&2; exit 2 ;;
 esac
