@@ -2592,6 +2592,12 @@ async function probePublishedPythonCallerWorkflows(baseUrl, token, compose, phpS
   const observation = dockerExecJson(pythonService.containerName,
     '. /tmp/dw-python/bin/activate && python /work/nexus-python-workflow-probe.py /work/nexus-workflow-input.json',
     path.join(resultDir, 'nexus-python-workflow-probe.log'));
+  for (const row of observation.body?.observations || []) {
+    const callId = row.result?.service_call_id;
+    if (!callId) continue;
+    row.durable_service_call = responseSummary(await apiRequest(baseUrl, token, 'shared', 'GET',
+      `/service-endpoints/${endpoint}/services/${service}/operations/${operation}/service-calls/${encodeURIComponent(callId)}`));
+  }
   fs.writeFileSync(path.join(resultDir, 'nexus-python-workflow-probe.json'), JSON.stringify(observation, null, 2) + '\n');
   const serviceLog = spawnSync('docker', ['exec', phpService.containerName, 'cat', '/tmp/nexus-php-service-worker.log'],
     {encoding: 'utf8', maxBuffer: 8 * 1024 * 1024});
