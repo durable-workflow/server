@@ -228,9 +228,10 @@ Immediate sticky failover, blocked
 repair, migration, full fault budgets and performance remain separate gates.
 Its opt-in HTTP observer records whether the complete request body arrived and
 whether an upstream request started. A locally cancelled, incomplete poll has
-no inferred worker identity and is accepted only after a real phase commit and
-each registered worker's authenticated withdrawal after its own commit. A
-forwarded cancellation still requires its actual worker and queue. Completion
+no inferred worker identity; every active registration must have committed
+before cancellation and receive its own accepted completion before authenticated
+withdrawal. A forwarded cancellation requires its actual worker and queue with
+the same commit and withdrawal checks. Completion
 and failure requests cannot use this shutdown exception. Frozen profiles retain
 their original wire-record schema.
 
@@ -241,6 +242,18 @@ failed artifact is retained in #382. The test now waits up to two seconds for a
 newline-terminated receipt before parsing it; all byte, non-forwarding and
 zero-upstream assertions remain required. The observer and runtime are
 unchanged. Fresh qualification of this correction is tracked separately.
+
+The #384 candidate passed all six configurations, but merged-source MySQL 8.0
+exposed a separate ordering assumption. Its actual original-run history showed
+`ActivityScheduled` and `ActivityCompleted` before the respective workers
+cancelled idle polls; their completion acknowledgments arrived afterward. The
+observer records response completion, rather than database commit order. This
+profile retains history event prefixes in its read summaries and requires either
+an earlier own accepted completion or an earlier original-run checkpoint with
+the exact retained prefix, task identity and lease owner. Each worker must still
+receive its accepted completion before authenticated withdrawal. Missing, late,
+foreign or changed checkpoints and lost-task responses are rejected. The failed
+run stays unqualified; runtime, observer and published inputs are unchanged.
 
 [#381](https://github.com/durable-workflow/server/pull/381) implements ordinary
 workflow-task failure retries on the original run. A failed lease and its new
