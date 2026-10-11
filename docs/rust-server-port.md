@@ -234,6 +234,14 @@ forwarded cancellation still requires its actual worker and queue. Completion
 and failure requests cannot use this shutdown exception. Frozen profiles retain
 their original wire-record schema.
 
+The qualified #382 candidate passed all six configurations, but its first
+merged-source SQLite check exposed a transport-test race: a filesystem creation
+notification can arrive before the complete first JSONL receipt. That original
+failed artifact is retained in #382. The test now waits up to two seconds for a
+newline-terminated receipt before parsing it; all byte, non-forwarding and
+zero-upstream assertions remain required. The observer and runtime are
+unchanged. Fresh qualification of this correction is tracked separately.
+
 [#381](https://github.com/durable-workflow/server/pull/381) implements ordinary
 workflow-task failure retries on the original run. A failed lease and its new
 ready task commit together, carrying attempt count and routing without adding
