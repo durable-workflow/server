@@ -1,0 +1,68 @@
+{
+  "schema": "durable-workflow.server-port-artifacts/v1",
+  "server": {
+    "version": "2.5.20",
+    "source_commit": "fdce11f2b3da1b5ef3e6ad2e081a65f02f28019d",
+    "workflow": "2.5.10",
+    "workflow_source_commit": "52e810c7971d0af9907f2d59b349efedd43e7749",
+    "image_index": "sha256:38e7cb9c4f6756a4dbb23fc933858312fe5845870b991a101d7545193ee8e6ee",
+    "images": {
+      "linux/amd64": "durableworkflow/server@sha256:d4a146f9054bbbc47f060734cca9b1fcbeb7834ed77e0dc1e9a9bd4a188af862",
+      "linux/arm64": "durableworkflow/server@sha256:31bce3f00cbdb070fc4548fa290a4a3c6c7e77805af3d6d31dbbb5294d021cc0"
+    }
+  },
+  "workflow": "2.5.10",
+  "workflow_source_commit": "52e810c7971d0af9907f2d59b349efedd43e7749",
+  "workflow_loaded_sources": {
+    "src/V2/Support/TaskRepair.php": "744339f862de8302cbeddee74f4c1a31881582a1649e73f63f952c03ae2d0ecc",
+    "src/V2/Support/VersionResolver.php": "473b2ecd645d688622735508dd4460cff95e32ad17d25a6e3206e781cee0adf7",
+    "src/V2/Support/WorkflowExecutor.php": "9b85a1daf80fbe63d4f0ec3e23513c213e4971379f9a280495c0df6dc9655062"
+  },
+  "embedded_image_composer_lock_sha256": "9c6195e596c430c958e68ac375c236fcee7c4d1dc9929ed44311d266cc62ce0d",
+  "embedded_image_path_reference": "09f6dde2edfc612addea5a134c9183d8062deb5e",
+  "sdk_php": "2.2.7",
+  "sdk_php_source_commit": "7c40c7755789790ce4c0ce706a8e3a6462742956",
+  "sdk_php_composer_lock_sha256": "af600c49741d714aea69e2830309db8065461c9fd6b0e499c68699f74641faab",
+  "sdk_php_loaded_sources": {
+    "DurableWorkflow\\Worker": "38722c5de194037ae49f610f68436ff11e82de2c5ca0d2c7ac2f66fce1972983",
+    "DurableWorkflow\\Worker\\WorkflowContext": "ba8dbc9ac535490109862270e1f734dfdd83fda065ae1aeada3799b156f99d2f"
+  },
+  "sdk_python": "2.5.4",
+  "sdk_rust": "3.4.4",
+  "cli": "2.2.3",
+  "waterline": "2.9.1",
+  "capacity_suite": "1.9.0",
+  "performance_status": "not_measured",
+  "qualification_scope": "Published PHP/Python/Rust durable timer authors, fractional-delay rounding, original timer identity/deadline and cold replay; three authors across PHP HTTP, native HTTP and canonical embedded counterparts",
+  "resource_limits": {
+    "cpus": 1,
+    "memory_bytes": 536870912,
+    "memory_swap_bytes": 536870912
+  },
+  "database_memory_limits_bytes": {
+    "mysql-8.0": 1073741824,
+    "existing-php-mysql-matrix": 1073741824,
+    "mariadb-10.11": 536870912,
+    "postgres-17": 536870912,
+    "existing-php-matrix": 536870912
+  },
+  "runtime_targets": [
+    "php",
+    "rust",
+    "embedded"
+  ],
+  "published_sdk_artifacts": {
+    "python": {
+      "version": "2.5.4",
+      "source_commit": "86cfced48a3938b41d707f26eea1ff098e07ffcb",
+      "archive_sha256": "55e1be185f5bbe6e8c6dac10c36d5a777d11d85e7bf052eed1926cc02100889d"
+    },
+    "rust": {
+      "version": "3.4.4",
+      "source_commit": "6f316506de136ebaa7124cdfd011f656b355192a",
+      "archive_sha256": "b3e0acde01baa1e552735af89a5623bee37b90f62405105abca480fc978874d6"
+    }
+  },
+  "prior_published_tuples_unchanged": true,
+  "resource_scope": "Current conformance CI allowances; historical receipts retain their original limits and this profile does not authorize a performance comparison"
+}

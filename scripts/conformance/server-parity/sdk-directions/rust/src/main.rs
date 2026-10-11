@@ -27,15 +27,20 @@ async fn main() -> Result<()> {
     )
     .map_err(|error| Error::WorkerLoop(error.to_string()))?;
     let child_direction = fixture.get("sdk_child_direction").is_some();
-    let phases = if child_direction {
-        ["original", "child", "replacement"]
+    let timer_author = fixture.get("sdk_timer_author").is_some();
+    let phases: &[&str] = if timer_author {
+        &["original", "replacement"]
+    } else if child_direction {
+        &["original", "child", "replacement"]
     } else {
-        ["original", "activity", "replacement"]
+        &["original", "activity", "replacement"]
     };
     if !phases.contains(&phase.as_str()) {
         return Err(Error::WorkerLoop("Unknown SDK direction phase".into()));
     }
-    let queue = if child_direction {
+    let queue = if timer_author {
+        "server-parity-sdk-timer"
+    } else if child_direction {
         if phase == "child" {
             "server-parity-sdk-child"
         } else {
@@ -79,7 +84,19 @@ async fn main() -> Result<()> {
     let mut worker = Worker::new(client.clone(), queue)
         .worker_id(&worker_id)
         .poll_timeout(Duration::from_secs(1));
-    if child_direction && phase == "child" {
+    if timer_author {
+        let invocations = Arc::clone(&workflow_invocations);
+        worker.register_typed_workflow("parity.v1.sdk_timer", move |ctx, value: Value| {
+            invocations.fetch_add(1, Ordering::SeqCst);
+            async move {
+                let milliseconds = value["sleep_ms"]
+                    .as_u64()
+                    .ok_or_else(|| Error::WorkerLoop("Missing timer duration".into()))?;
+                ctx.sleep(Duration::from_millis(milliseconds)).await?;
+                Ok(value)
+            }
+        });
+    } else if child_direction && phase == "child" {
         let invocations = Arc::clone(&workflow_invocations);
         worker.register_typed_workflow("parity.v1.echo_child", move |_ctx, value: Value| {
             invocations.fetch_add(1, Ordering::SeqCst);

@@ -300,6 +300,17 @@ final class TimerWorkflow extends Workflow
     }
 }
 
+#[Type('parity.v1.sdk_timer')]
+final class SdkTimerWorkflow extends Workflow
+{
+    public function handle(array $value): array
+    {
+        timer((int) ceil($value['sleep_ms'] / 1000));
+
+        return $value;
+    }
+}
+
 #[Type('parity.v1.signals')]
 #[Signal('payload', [['name' => 'value', 'type' => 'array']])]
 final class SignalsWorkflow extends Workflow

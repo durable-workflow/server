@@ -1,0 +1,24 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "timer-sdk-rust",
+  "workflow_type": "parity.v1.sdk_timer",
+  "input": {"message": "cold timer λ", "count": 9007199254740993, "optional": null, "sleep_ms": 5250},
+  "typed_value": {"type": "map", "value": {
+    "message": {"type": "string", "value": "cold timer λ"},
+    "count": {"type": "int64", "value": "9007199254740993"},
+    "optional": {"type": "null", "value": null},
+    "sleep_ms": {"type": "int64", "value": "5250"}
+  }},
+  "activity": false,
+  "timer_delays": [6],
+  "sdk_timer_author": {
+    "language": "rust",
+    "phase_order": ["original", "replacement"],
+    "task_queue": "server-parity-sdk-timer",
+    "start_before_worker_registration": true,
+    "requested_delay_ms": 5250,
+    "rounded_delay_seconds": 6
+  },
+  "expected_events": ["StartAccepted", "WorkflowStarted", "TimerScheduled", "TimerFired", "WorkflowCompleted"],
+  "contract": "The normal published SDK author requests 5.25 seconds of durable sleep, which rounds to six whole seconds. The original process stops after its actual scheduling commit; a distinct cold process consumes the same original timer and completes the same run. Preserve timer identity, sequence, deadline, full history prefixes, original task/run/queue/lease authority, real committed receipts and exact int64/Unicode/null Avro values. Firing cannot be early, replay cannot reschedule, and no activity or replacement run is created. Embedded executes a canonical PHP author and labels SDK language transport inapplicable."
+}
