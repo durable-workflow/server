@@ -9,7 +9,7 @@ import os
 import sys
 from importlib.metadata import version
 
-from durable_workflow import Client, NexusOperationFailed, Worker, serializer, workflow
+from durable_workflow import Client, NexusOperationFailed, Worker, WorkflowCancelled, serializer, workflow
 
 
 @workflow.defn(name="nexus.fixture.python.caller")
@@ -75,6 +75,25 @@ async def execute(input_data, namespace):
                 "process_id": os.getpid(), "installed_sdk_version": version("durable-workflow"),
                 "public_method": "WorkflowContext.call_nexus_service",
             }
+            if input_data.get("scenario") == "cancelled":
+                async with Client("http://server:8080", namespace="shared", token=input_data["token"]) as service_client:
+                    async def cancel_waiting_service():
+                        while True:
+                            history = await handle.get_history()
+                            started = [event["payload"] for event in history.get("events", [])
+                                       if event.get("event_type") == "ServiceCallStarted"]
+                            linked = started[0].get("service_call", {}) if started else {}
+                            linked_id, linked_run = linked.get("linked_workflow_instance_id"), linked.get("linked_workflow_run_id")
+                            if linked_id and linked_run:
+                                service_handle = service_client.get_workflow_handle(linked_id, run_id=linked_run)
+                                service_history = await service_handle.get_history()
+                                if any(event.get("event_type") == "TimerScheduled" for event in service_history.get("events", [])):
+                                    return [await service_client.request_workflow_cancellation(
+                                        linked_id, run_id=linked_run, reason="fixture service cancellation", cleanup_timeout_seconds=30),
+                                        await service_client.request_workflow_cancellation(
+                                        linked_id, run_id=linked_run, reason="duplicate must not replace reason", cleanup_timeout_seconds=1)]
+                            await asyncio.sleep(.1)
+                    observation["linked_cancellation_requests"] = await asyncio.wait_for(cancel_waiting_service(), timeout=20)
             finishing = asyncio.create_task(handle.result(timeout=30))
             refusal = asyncio.create_task(rejected.wait())
             try:
@@ -119,7 +138,7 @@ async def execute(input_data, namespace):
                 for event in admissions
             )
             recorded = observation.get("result", {})
-            surface = recorded.get("response_or_failure_surface", {})
+            surface = recorded.get("response_or_failure_surface", {}) or (admissions[0].get("service_call", {}) if admissions else {})
             surface = surface.get("service_call", surface)
             linked_id = surface.get("linked_workflow_instance_id")
             linked_run_id = surface.get("linked_workflow_run_id")
@@ -128,7 +147,7 @@ async def execute(input_data, namespace):
                     service_handle = service_client.get_workflow_handle(linked_id, run_id=linked_run_id)
                     try:
                         observation["linked_service_result"] = await service_handle.result(timeout=10)
-                    except Exception as error:
+                    except (Exception, WorkflowCancelled) as error:
                         observation["linked_service_failure"] = {"type": type(error).__name__, "message": str(error)}
                     observation["linked_service_history"] = await service_handle.get_history()
                 observation["linked_service_run_id"] = linked_run_id
@@ -144,6 +163,10 @@ async def execute(input_data, namespace):
                 recorded.get("status") == "failed"
                 and recorded.get("failure_class") == "NexusOperationFailed"
                 and recorded.get("failure_message") == "fixture service failure"
+            )
+            observation["cancellation_qualified"] = (
+                recorded.get("status") == "cancelled"
+                and recorded.get("failure_class") == "NexusOperationFailed"
             )
             return observation
         finally:
@@ -161,8 +184,8 @@ async def main():
         observations.append(await execute(input_data, namespace))
     print(json.dumps({
         "scope": f"python_caller_{input_data.get('service_language', 'php')}_workflow_service",
-        "outcome": "pass" if all(row["typed_failure_qualified" if input_data.get("scenario") == "failed"
-                                     else "completed"] for row in observations) else "fail",
+        "outcome": "pass" if all(row[{"failed": "typed_failure_qualified", "cancelled": "cancellation_qualified"}
+                                     .get(input_data.get("scenario"), "completed")] for row in observations) else "fail",
         "observations": observations,
         "recovery_qualified": False,
         "cancellation_qualified": False,

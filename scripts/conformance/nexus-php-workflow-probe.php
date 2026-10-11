@@ -87,6 +87,33 @@ foreach (['shared', 'tenant-a'] as $namespace) {
             'public_method' => 'WorkflowContext.serviceOperation',
         ];
         try {
+            if (($input['scenario'] ?? null) === 'cancelled') {
+                $readyUntil = microtime(true) + 20;
+                $serviceClient = new Client('http://server:8080', namespace: 'shared', controlToken: $input['token']);
+                do {
+                    $history = $client->workflowHistory($handle->workflowId, $handle->selectedRunId);
+                    $started = array_values(array_filter($history['events'] ?? [],
+                        static fn (array $event): bool => ($event['event_type'] ?? null) === 'ServiceCallStarted'));
+                    $linked = $started[0]['payload']['service_call'] ?? [];
+                    $linkedId = $linked['linked_workflow_instance_id'] ?? null;
+                    $linkedRun = $linked['linked_workflow_run_id'] ?? null;
+                    $serviceHistory = is_string($linkedId) && is_string($linkedRun)
+                        ? $serviceClient->workflowHistory($linkedId, $linkedRun) : [];
+                    $waiting = array_filter($serviceHistory['events'] ?? [],
+                        static fn (array $event): bool => ($event['event_type'] ?? null) === 'TimerScheduled');
+                    if ($waiting !== []) {
+                        $row['linked_cancellation_requests'] = [
+                            $serviceClient->requestWorkflowCancellation($linkedId, 'fixture service cancellation', 30, $linkedRun),
+                            $serviceClient->requestWorkflowCancellation($linkedId, 'duplicate must not replace reason', 1, $linkedRun),
+                        ];
+                        break;
+                    }
+                    usleep(100000);
+                } while (microtime(true) < $readyUntil);
+                if (!isset($row['linked_cancellation_requests'])) {
+                    throw new RuntimeException('The real linked service did not reach its durable timer before cancellation.');
+                }
+            }
             $row['result'] = $handle->resultOfSelectedRun(30);
         } catch (Throwable $failure) {
             $row['failure'] = ['type' => $failure::class, 'message' => $failure->getMessage()];
@@ -99,7 +126,7 @@ foreach (['shared', 'tenant-a'] as $namespace) {
             && ($admissions[0]['payload']['caller_workflow_instance_id'] ?? null) === $handle->workflowId
             && ($admissions[0]['payload']['caller_workflow_run_id'] ?? null) === $handle->selectedRunId
             && ($admissions[0]['payload']['caller_sdk_language'] ?? null) === 'sdk-php';
-        $surface = $row['result']['service_call'] ?? [];
+        $surface = $row['result']['service_call'] ?? $admissions[0]['payload']['service_call'] ?? [];
         $linkedId = $surface['linked_workflow_instance_id'] ?? null;
         $linkedRun = $surface['linked_workflow_run_id'] ?? null;
         if (is_string($linkedId) && is_string($linkedRun)) {
@@ -129,6 +156,9 @@ foreach (['shared', 'tenant-a'] as $namespace) {
             && ($row['result']['failure_class'] ?? null) === ServiceOperationFailed::class
             && ($row['result']['failure_message'] ?? null) === 'fixture service failure'
             && ($row['result']['cancelled'] ?? null) === false;
+        $row['cancellation_qualified'] = ($row['result']['status'] ?? null) === 'cancelled'
+            && ($row['result']['failure_class'] ?? null) === ServiceOperationFailed::class
+            && ($row['result']['cancelled'] ?? null) === true;
     } finally {
         proc_terminate($worker, 15);
         $exitCode = proc_close($worker);
@@ -142,7 +172,9 @@ foreach (['shared', 'tenant-a'] as $namespace) {
 echo json_encode([
     'scope' => 'php_caller_'.$input['service_language'].'_workflow_service',
     'outcome' => count(array_filter($observations, static fn (array $row): bool =>
-        $row[($input['scenario'] ?? 'completed') === 'failed' ? 'typed_failure_qualified' : 'completed'])) === 2 ? 'pass' : 'fail',
+        $row[match ($input['scenario'] ?? 'completed') {
+            'failed' => 'typed_failure_qualified', 'cancelled' => 'cancellation_qualified', default => 'completed',
+        }])) === 2 ? 'pass' : 'fail',
     'observations' => $observations,
     'recovery_qualified' => false, 'cancellation_qualified' => false,
 ], JSON_THROW_ON_ERROR).PHP_EOL;

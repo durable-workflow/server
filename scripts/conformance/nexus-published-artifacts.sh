@@ -865,6 +865,8 @@ async function apiRequest(baseUrl, token, namespace, method, apiPath, body = nul
     'X-Durable-Workflow-Control-Plane-Version': '2',
     'X-Namespace': namespace,
     Accept: 'application/json',
+    // Docker SDK probes block Node while Apache's idle connections can expire.
+    Connection: 'close',
   };
   const init = {method, headers};
   if (body !== null) {
@@ -895,6 +897,7 @@ async function apiRequest(baseUrl, token, namespace, method, apiPath, body = nul
 
   return {
     request: {method, path: `/api${apiPath}`, namespace, body,
+      connection: 'close',
       transport_attempts: transportRetry === null ? 1 : 2, transport_retry: transportRetry},
     status: response.status,
     ok: response.ok,
@@ -2224,6 +2227,7 @@ async function startPythonSdkService(compose, versions) {
     '--name', containerName,
     '--network', dockerComposeNetwork(compose.project),
     '--network-alias', 'nexus-python-sdk-service',
+    '--user', '1000:1000',
     '-p', `127.0.0.1:${port}:8091`,
     '-v', `${compose.runRoot}:/work:ro`,
     'python:3.12-slim',
@@ -2245,10 +2249,12 @@ async function startPhpWorkflowService(compose, versions) {
     '--name', containerName,
     '--network', dockerComposeNetwork(compose.project),
     '--network-alias', 'nexus-php-workflow-service',
+    '--user', '1000:1000',
+    '--entrypoint', 'sh',
+    '-e', 'COMPOSER_HOME=/tmp/dw-composer',
     '-p', `127.0.0.1:${port}:8092`,
     '-v', `${compose.runRoot}:/work:ro`,
-    'composer:2',
-    'sh',
+    serverImage(),
     '-lc',
     `mkdir -p /tmp/dw-php && cd /tmp/dw-php && composer init --no-interaction --name=dw/nexus-conformance --require=durable-workflow/workflow:${JSON.stringify(versions.workflow).slice(1, -1)} --require=durable-workflow/sdk:${JSON.stringify(versions['sdk-php']).slice(1, -1)} >/tmp/dw-php-composer-init.log 2>&1 && composer update --no-interaction --prefer-dist --no-progress >/tmp/dw-php-composer-update.log 2>&1 && php -S 0.0.0.0:8092 /work/nexus-php-workflow-service.php`,
   ], path.join(resultDir, 'nexus-php-workflow-service-start.log'));
@@ -2685,22 +2691,31 @@ async function probePublishedPhpCallerWorkflows(baseUrl, token, compose, phpServ
   fs.writeFileSync(path.join(resultDir, 'nexus-python-python-workflow-probe.json'), JSON.stringify(pythonSelf, null, 2) + '\n');
 }
 
-async function probePublishedTypedFailures(baseUrl, token, compose, phpService, pythonService) {
+async function probePublishedTypedOutcomes(baseUrl, token, compose, phpService, pythonService, scenario) {
   const reports = [];
+  const label = scenario === 'cancelled' ? 'cancellation' : 'failure';
   for (const [caller, service] of [['php', 'python'], ['python', 'php'], ['php', 'php'], ['python', 'python']]) {
     const input = {
       token, endpoint: `published-${service}-workflow-service`,
       service: service === 'php' ? 'PublishedWorkflowGreeter' : 'PublishedPythonWorkflowGreeter',
-      operation: 'greet', service_language: service, scenario: 'failed', name: 'fail',
+      operation: 'greet', service_language: service, scenario, name: scenario === 'cancelled' ? 'cancel' : 'fail',
     };
-    const inputName = `nexus-${caller}-${service}-failure-input.json`;
+    const inputName = `nexus-${caller}-${service}-${label}-input.json`;
     fs.writeFileSync(path.join(compose.runRoot, inputName), JSON.stringify(input));
     const container = caller === 'php' ? phpService.containerName : pythonService.containerName;
     const command = caller === 'php'
       ? `php /work/nexus-php-workflow-probe.php /work/${inputName}`
       : `. /tmp/dw-python/bin/activate && python /work/nexus-python-workflow-probe.py /work/${inputName}`;
     const observation = dockerExecJson(container, command,
-      path.join(resultDir, `nexus-${caller}-${service}-failure-probe.log`));
+      path.join(resultDir, `nexus-${caller}-${service}-${label}-probe.log`));
+    if (scenario === 'cancelled') {
+      const serviceContainer = service === 'php' ? phpService.containerName : pythonService.containerName;
+      const serviceLog = spawnSync('docker', ['exec', serviceContainer, 'cat', `/tmp/nexus-${service}-service-worker.log`],
+        {encoding: 'utf8', maxBuffer: 8 * 1024 * 1024});
+      observation.service_worker_log = (serviceLog.stdout || '') + (serviceLog.stderr || '');
+      fs.writeFileSync(path.join(resultDir, `nexus-${caller}-${service}-cancellation-service-worker.log`),
+        observation.service_worker_log);
+    }
     for (const row of observation.body?.observations || []) {
       const callId = row.result?.service_call_id;
       if (!callId) continue;
@@ -2708,8 +2723,8 @@ async function probePublishedTypedFailures(baseUrl, token, compose, phpService, 
         `/service-endpoints/${input.endpoint}/services/${input.service}/operations/greet/service-calls/${encodeURIComponent(callId)}`));
     }
     reports.push({caller, service, observation});
-    fs.writeFileSync(path.join(resultDir, 'nexus-typed-failure-probes.json'), JSON.stringify({
-      scope: 'actual_workflow_typed_failure', reports,
+    fs.writeFileSync(path.join(resultDir, `nexus-${scenario === 'cancelled' ? 'cancellation' : 'typed-failure'}-probes.json`), JSON.stringify({
+      scope: scenario === 'cancelled' ? 'linked_workflow_cooperative_cancellation' : 'actual_workflow_typed_failure', reports,
     }, null, 2) + '\n');
   }
 }
@@ -3121,7 +3136,7 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
         service_call_methods: crossLanguageRuntimeArray('service_call_methods', pythonHealth, pythonProbe, pythonReflection),
       },
       php: {
-        container_image: 'composer:2',
+        container_image: serverImage(),
         package_imported: crossLanguageRuntimeBool('package_imported', phpHealth, phpProbe, phpReflection),
         package_version: crossLanguageRuntimeString('package_version', versions.workflow || '', phpHealth, phpProbe, phpReflection),
         sdk_package_version: crossLanguageRuntimeString('sdk_package_version', versions['sdk-php'] || '', phpHealth, phpProbe, phpReflection),
@@ -3280,9 +3295,17 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
     }
 
     try {
-      await probePublishedTypedFailures(baseUrl, token, compose, phpService, pythonService);
+      await probePublishedTypedOutcomes(baseUrl, token, compose, phpService, pythonService, 'failed');
     } catch (error) {
       fs.writeFileSync(path.join(resultDir, 'nexus-typed-failure-probes-error.json'), JSON.stringify({
+        runner_blocked: true, failure_reason: String(error),
+      }, null, 2) + '\n');
+    }
+
+    try {
+      await probePublishedTypedOutcomes(baseUrl, token, compose, phpService, pythonService, 'cancelled');
+    } catch (error) {
+      fs.writeFileSync(path.join(resultDir, 'nexus-cancellation-probes-error.json'), JSON.stringify({
         runner_blocked: true, failure_reason: String(error),
       }, null, 2) + '\n');
     }
