@@ -4,7 +4,9 @@ The reviewed additive definitions cover all nine PHP/Python/Rust signal-client
 and workflow-author combinations. They reuse the timer/child published tuple
 without changing prior fixtures or envelopes. Normal published client/worker
 adapters, canonical embedded execution, recorder guards and all six database
-profiles are implemented. Actual runtime qualification remains pending.
+profiles are implemented. The initial native correction passes all six runtime
+configurations; final current-main integration qualification remains pending
+in [#415](https://github.com/durable-workflow/server/pull/415).
 
 The original normal worker registers its signal declaration before the PHP
 observer starts the original run. Three distinct author processes open the
@@ -45,21 +47,28 @@ Local source checks pass: 60 signal reader models, all 4,482 reader models,
 PHP recorder regressions (5 tests/24 assertions), PHP/JavaScript syntax,
 Python parsing, changed-file Rust formatting, shell syntax and the Docker isolation policy
 with 72 regression tests. SDK preparation passes with exact source and package
-hashes. The corrected reader diagnostically passes the unchanged first failed
-PHP observation; complete durable signal qualification remains pending.
-Qualification must inspect the actual
-published processes, receipts, typed histories and complete retained wires.
+hashes. The initial [correction run](https://github.com/durable-workflow/server/actions/runs/38182926674)
+passes all six database configurations, PHP/source and both boundaries.
+Independent original SQLite inspection passes all 27 observations, binds all
+90 HTTP sidecars and verifies 133 original/archive member hashes. Separate
+MySQL 8.0 inspection passes 27 observations and 135 member hashes with actual
+database limits and TLS checks. Both native outputs pass all 75 execution tests.
+Complete signal profiles and thin SDK proof are retained; duplicate downloads
+and scratch are removed. Final current-main strict qualification remains ahead.
 
-The corrected HTTP-202 profile records all nine PHP and embedded directions
-passing on PostgreSQL 17. Native records six PHP/Python-author directions,
-then exposes its rejection of the normal Rust worker's optional authored
-`condition_wait_occurrence_id`. The [contract decision](https://github.com/durable-workflow/server/pull/415#issuecomment-6114363122)
-preserves that nullable string metadata and omits null/empty values as PHP
-does. The native validator/payload correction and two database/HTTP restart,
-duplicate/stale completion and invalid-type regressions are implemented;
-fresh native compilation and all-six qualification remain pending. Earlier
-failed records remain unchanged. The separate frozen SQLite patch baseline
-pressure failure also remains recorded with its strict assertions intact.
+Normal Rust authoring exposed native rejection of authored
+`condition_wait_occurrence_id` and variadic signal arguments. The
+[occurrence decision](https://github.com/durable-workflow/server/pull/415#issuecomment-6114363122)
+retains nonempty string metadata through original wait satisfaction and omits
+null/empty values as PHP does. The
+[variadic decision](https://github.com/durable-workflow/server/pull/415#issuecomment-6114821113)
+accepts zero or more tail values after required positional prefixes, validates
+each value without coercion and respects nullability. Three HTTP/database
+regressions pass for cold reopening/fences, optional metadata/types and exact
+variadic values/refusals. Defaults, optional fixed prefixes and non-final
+variadics remain unsupported; older-protocol occurrence routing is unqualified.
+Earlier failed records and the separate frozen SQLite patch baseline pressure
+failure remain unchanged with strict assertions intact.
 
 These definitions do not qualify run-targeted calls, continuation/current-run
 races, all signal policies, CPU-load fairness, performance or cutover.
