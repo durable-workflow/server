@@ -31,6 +31,7 @@
     "pending_activity": true,
     "timer_delay_seconds": 3,
     "activity_queue": "server-parity-range-activity",
+    "repair_wait_kind": "activity",
     "original_range": [
       1,
       1

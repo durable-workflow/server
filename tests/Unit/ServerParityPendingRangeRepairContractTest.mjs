@@ -8,15 +8,27 @@ const directory = new URL('../Fixtures/ServerParityProfiles/version-range-repair
 const fixture = JSON.parse(readFileSync(new URL('range-selected-timer-activity-pending.json', directory)));
 const frozen = JSON.parse(readFileSync(new URL('artifacts.json', directory)));
 const artifacts = JSON.parse(readFileSync(new URL('../version-range-repair-pending/artifacts.json', directory)));
+const priorFailed = JSON.parse(readFileSync(new URL('../version-range-repair-pending/prior-failed-artifacts.json', directory)));
 
-test('pending reference retains exact frozen published tuple and declares its narrower targets', () => {
+test('pending reference binds its exact published tuple and preserves the prior failed cohort', () => {
   checkRangeArtifacts(fixture, artifacts);
-  const {qualification_scope, runtime_targets, ...tuple} = artifacts;
+  const {qualification_scope: failedScope, runtime_targets: failedTargets, ...priorTuple} = priorFailed;
   const {qualification_scope: earlierScope, ...earlierTuple} = frozen;
-  assert.deepEqual(tuple, earlierTuple);
-  assert.deepEqual(runtime_targets, ['php', 'embedded']);
-  assert.match(qualification_scope, /native qualification is separate/);
+  assert.deepEqual(priorTuple, earlierTuple);
+  for (const key of ['sdk_php', 'sdk_php_source_commit', 'sdk_php_composer_lock_sha256',
+    'sdk_php_loaded_sources', 'resource_limits', 'database_memory_limits_bytes']) {
+    assert.deepEqual(artifacts[key], priorFailed[key], 'unchanged ' + key);
+  }
+  assert.deepEqual(failedTargets, ['php', 'embedded']);
+  assert.deepEqual(artifacts.runtime_targets, ['php', 'embedded']);
+  assert.match(artifacts.qualification_scope, /native qualification is separate/);
   assert.match(readFileSync(new URL('range-selected-timer-activity-pending.json', directory), 'utf8'), /"count": 9007199254740993,/);
+});
+
+test('pending reference rejects a well-formed source substitution', () => {
+  const substituted = structuredClone(artifacts);
+  substituted.server.source_commit = 'f'.repeat(40);
+  assert.throws(() => checkRangeArtifacts(fixture, substituted));
 });
 
 function model(mode) {
@@ -40,7 +52,7 @@ function model(mode) {
     selection_group_size: 2, member_key: 'timer', member_index: 1, member_base_sequence: 3,
     member_size: 1, operation_kind: 'timer', operation_identity: 'timer', outcome: 'completed',
     resolution_event_type: 'TimerFired', resolution_event_id: 'timer-event'};
-  const repairValues = {liveness_state: 'workflow_replay_blocked', wait_kind: null, task_id: 'blocked', task_type: 'workflow'};
+  const repairValues = {liveness_state: 'workflow_replay_blocked', wait_kind: fixture.range_repair.repair_wait_kind, task_id: 'blocked', task_type: 'workflow'};
   events[7].payload = {...repairValues, workflow_command_id: 'repair-command',
     task: {id: 'blocked', status: 'ready', attempt_count: 1, repair_count: 1},
     command: {id: 'repair-command', sequence: 2, type: 'repair', status: 'accepted', outcome: 'repair_dispatched',
@@ -110,7 +122,7 @@ for (const mode of ['http', 'embedded']) {
     ['selection loses timer identity', x => x.corrected.selections[0].identity = 'other'],
     ['original definition changes', x => x.corrected.definition_sha256 = 'c'.repeat(64)],
     ['int64 output changes', x => x.corrected.typed_output.value.count.value = '9007199254740992'],
-    ['repair codec loses null', x => x.corrected.events[7].decoded.repair_command.wait_kind = 'activity'],
+    ['repair codec loses pending wait kind', x => x.corrected.events[7].decoded.repair_command.wait_kind = null],
     ['repair changes task', x => x.corrected.events[7].payload.task.id = 'other'],
     ['final task reuses waiting task', x => x.corrected.events[10].payload.task.id = 'blocked'],
     ['final task invents a repair', x => x.corrected.events[10].payload.task.repair_count = 1],

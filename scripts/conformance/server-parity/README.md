@@ -587,6 +587,15 @@ resource names, `parity-range-pending-state`, and evidence under
 `parity-evidence/version-range-repair-pending`. Invoke
 `range-repair-cleanup.sh <backend> pending-reference` after success or failure,
 before removing the owning database/network. The ordinary six-configuration
-workflow includes this reference selection; its actual execution is pending.
+workflow includes this reference selection. Its first bounded SQLite HTTP run
+fails because manual repair redispatches the older activity while the workflow
+task stays replay blocked; embedded execution was not reached.
+[Workflow #755](https://github.com/durable-workflow/workflow/issues/755) and
+[fix #756](https://github.com/durable-workflow/workflow/pull/756) own the task
+ordering correction. The repair command must identify the blocked workflow
+task, with `wait_kind: activity` preserving the actual pending operation.
+The selected profile manifest supplies the published image and SDK lock
+identity; a corrected pending cohort is qualified separately while the old
+completed cohort and failed observations remain unchanged.
 No native pending-activity result is claimed. The completed-activity fixture,
 manifest, original queue/prefix and default corpus retain their identities.

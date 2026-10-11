@@ -135,7 +135,7 @@ export function checkPendingRangeRepair(fixture, observation, workflowId, instan
   assert.ok(blockedTask && blockedTask !== initialTask.id);
   assert.equal(repair.task_type, 'workflow');
   assert.equal(repair.liveness_state, 'workflow_replay_blocked');
-  assert.equal(repair.wait_kind, null);
+  assert.equal(repair.wait_kind, spec.repair_wait_kind);
   assert.equal(repair.task.id, blockedTask);
   assert.equal(repair.task.status, 'ready');
   assert.equal(repair.task.attempt_count, 1);
@@ -151,7 +151,7 @@ export function checkPendingRangeRepair(fixture, observation, workflowId, instan
   assert.equal(command.source, observation.mode === 'http' ? 'control_plane' : 'php');
   assert.equal(command.payload_codec, 'avro');
   assert.deepEqual(repaired.decoded.repair_command,
-    {liveness_state: 'workflow_replay_blocked', wait_kind: null, task_id: blockedTask, task_type: 'workflow'});
+    {liveness_state: 'workflow_replay_blocked', wait_kind: spec.repair_wait_kind, task_id: blockedTask, task_type: 'workflow'});
   assert.equal(corrected.repair.outcome, 'repair_dispatched');
   assert.equal(corrected.repair.run_id, observation.run_id);
   const finalTask = completed.payload.task;

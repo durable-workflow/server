@@ -1,11 +1,16 @@
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {checkPendingRangeRepair} from './range-pending-contract.mjs';
 
 export function checkRangeArtifacts(fixture, artifacts) {
   if (!fixture.range_repair) return;
-  assert.equal(artifacts.server.version, '2.5.18', 'new published reference cohort');
-  assert.equal(artifacts.workflow, '2.5.8');
-  assert.equal(artifacts.sdk_php, '2.2.7');
+  const profile = fixture.range_repair.pending_activity ? 'version-range-repair-pending' : 'version-range-repair';
+  const frozen = JSON.parse(readFileSync(new URL(
+    '../../../tests/Fixtures/ServerParityProfiles/' + profile + '/artifacts.json', import.meta.url,
+  ), 'utf8'));
+  assert.deepEqual(artifacts, frozen, 'exact published tuple from the selected frozen profile');
+  assert.equal(artifacts.server.workflow, artifacts.workflow);
+  assert.equal(artifacts.server.workflow_source_commit, artifacts.workflow_source_commit);
   assert.match(artifacts.server.source_commit, /^[a-f0-9]{40}$/);
   assert.match(artifacts.workflow_source_commit, /^[a-f0-9]{40}$/);
   assert.match(artifacts.sdk_php_source_commit, /^[a-f0-9]{40}$/);

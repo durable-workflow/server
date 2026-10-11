@@ -12,10 +12,10 @@ esac
 native_url="${2:?Set the independently isolated native URL}"
 test -n "${RESOURCE_SCOPE:?Set the owning isolated network/resource scope}"
 profile=tests/Fixtures/ServerParityProfiles/version-range-repair
-image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' "$profile/artifacts.json")
 cohort=version-range-repair
 if test "$checkpoint" = pending-reference; then cohort=version-range-repair-pending; fi
 manifest="tests/Fixtures/ServerParityProfiles/$cohort/artifacts.json"
+image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' "$manifest")
 php_alias="parity-$tag-php"
 resource="$RESOURCE_SCOPE-$tag"
 php_database="$(printf '%s' "$tag" | tr '-' '_')_php_ref"
@@ -51,7 +51,7 @@ case "$backend" in
 esac
 docker run --name "$resource-sdk" "${limits[@]}" --entrypoint composer -e COMPOSER_HOME=/tmp/composer -v "$state/sdk:/sdk" -w /sdk "$image" \
   install --no-interaction --no-progress --no-cache > "$evidence/sdk-install.txt" 2>&1
-printf '%s  %s\n' "$(jq -r '.sdk_php_composer_lock_sha256' "$profile/artifacts.json")" "$state/sdk/composer.lock" \
+printf '%s  %s\n' "$(jq -r '.sdk_php_composer_lock_sha256' "$manifest")" "$state/sdk/composer.lock" \
   | sha256sum -c > "$evidence/sdk-lock.txt"
 reader_tests=(tests/Unit/ServerParityRangeRepairContractTest.mjs)
 if test "$checkpoint" = pending-reference; then reader_tests+=(tests/Unit/ServerParityPendingRangeRepairContractTest.mjs); fi

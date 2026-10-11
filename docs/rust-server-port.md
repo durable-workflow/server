@@ -38,6 +38,15 @@ the original activity before a later task completes the run. PHP HTTP/embedded
 reference execution is pending before native implementation. The historical
 completed-activity fixture and exact published artifact tuple remain unchanged.
 
+The first bounded pending reference exposes a PHP task-selection defect:
+manual repair identifies the older activity while the workflow task remains
+replay blocked. [Workflow #755](https://github.com/durable-workflow/workflow/issues/755)
+and [fix #756](https://github.com/durable-workflow/workflow/pull/756) own that
+dependency. The repair command must identify the blocked workflow task while
+`wait_kind: activity` describes the original pending operation. The old failed
+recording remains evidence; corrected published HTTP/embedded qualification
+must pass before native pending implementation.
+
 The pending `worker-registration-fencing` fixture defines the first shared
 Server #358 lifecycle slice on a separate exact PHP/SDK source tuple. It retains
 an original leased echo across token rotation, heartbeat, terminal refusals,
