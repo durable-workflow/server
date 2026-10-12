@@ -55,6 +55,9 @@ mod selections;
 #[path = "execution/condition_occurrences.rs"]
 mod condition_occurrences;
 
+#[path = "execution/query_arguments.rs"]
+mod query_arguments;
+
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
     Postgres {

@@ -34,6 +34,23 @@ fn key(id: &str) -> Result<String> {
     Ok(format!("{PREFIX}{id}"))
 }
 
+pub(super) async fn empty_arguments(semaphore: Arc<Semaphore>) -> Result<String> {
+    let permit = semaphore
+        .acquire_owned()
+        .await
+        .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "query_codec_unavailable"))?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let codec = crate::codec::ValueCodec::new()
+            .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "query_codec_unavailable"))?;
+        codec
+            .encode(&crate::codec::Value::Array(vec![]))
+            .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "query_codec_unavailable"))
+    })
+    .await
+    .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "query_codec_unavailable"))?
+}
+
 pub(super) async fn decode(
     semaphore: Arc<Semaphore>,
     blob: String,

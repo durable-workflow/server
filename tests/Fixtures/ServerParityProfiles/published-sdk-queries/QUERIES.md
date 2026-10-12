@@ -65,11 +65,24 @@ failed on the public-history ID assumption. The corrected reader passes a
 complete diagnostic replay of that untouched PHP/PHP record; this does not
 qualify either source tree or substitute for a fresh runtime run.
 
-The initial runtime gate must preserve the ordinary Python omitted-input
-disagreement before applying the reviewed native correction. Native currently
-requires an explicit input field; PHP validates and officially serializes zero
-arguments when omitted. Malformed/unknown supplied fields must retain their
-existing refusals.
+The corrected reader reaches the ordinary Python omitted-input disagreement
+in the original SQLite records: nine PHP and nine embedded directions pass,
+and native PHP/PHP completes its 13-event run. Native PHP author/Python client
+then sends a complete uncancelled `{}` request and receives HTTP 422 with
+`unsupported_request_field`. Its original run stays waiting with three events
+and an unchanged full snapshot. That failed source and all original wires stay
+retained; the SDK is unchanged.
+
+The native correction now encodes an omitted zero-argument request through the
+official Avro Value codec on the existing bounded blocking path. Only a root
+empty object takes this path. Supplied envelopes, unknown fields, root
+arrays/null and required parameters keep their validation. A new HTTP/database
+regression completes omitted and explicit-empty queries, checks exact worker
+arguments/results and full original state/history, and rejects fifteen invalid
+requests without creating query-cache entries. Formatting passes; compilation
+and all six fresh database executions are pending. No JSON payload fallback or
+tuple advance. Current main, including General's PHP recovery correction, is
+integrated for this next qualification.
 
 Next: qualify this exact source on all six database configurations, proceeding
 from #415's identical previously qualified candidate/main tree. Its fresh main
@@ -87,3 +100,4 @@ performance are separate gates.
 [Independent PHP correction](https://github.com/durable-workflow/server/issues/325#issuecomment-6116357816).
 [Initial recorder disagreement and correction](https://github.com/durable-workflow/server/pull/422#issuecomment-6116719443).
 [Worker/public history and completion response shapes](https://github.com/durable-workflow/server/pull/422#issuecomment-6117007924).
+[Ordinary Python refusal and native correction](https://github.com/durable-workflow/server/pull/422#issuecomment-6117247506).

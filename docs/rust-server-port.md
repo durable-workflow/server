@@ -1279,8 +1279,8 @@ availability is separated from durable comparison, retaining boolean/presence
 checks and the complete observed values. Every other action, progress/wait
 field, control-plane copy and full history stays strict. Validation passes 71
 query models, all 4,753 Node tests and 16 PHP recorder tests/80 assertions; these
-are source checks, not fresh runtime qualification. Native Rust is unchanged,
-and the ordinary Python omitted-input refusal has not yet been reached.
+are source checks, not fresh runtime qualification. Those recorder changes
+leave native Rust unchanged.
 
 The first recorder correction's PHP/source passes 2,696 tests/61,322 assertions
 and SDK artifact integrity passes 297 original hashes, nine thin comparisons
@@ -1296,6 +1296,25 @@ by that replay. The parallel PostgreSQL 17 signal profile independently passes
 27 observations/90 sidecars; all 177 original signal/query files and compressed
 round-trip hashes pass. Frozen tuples, resource limits and native code remain
 unchanged; fresh full-cohort execution is required.
+
+The later SQLite original records reach actual native SDK execution: all nine
+PHP directions, nine embedded directions and native PHP/PHP pass. Native PHP
+author/Python client then sends its ordinary zero-argument `{}` query and gets
+HTTP 422 `unsupported_request_field`; the original run remains waiting with
+three events and an unchanged complete snapshot. The [original refusal and
+reviewed correction](https://github.com/durable-workflow/server/pull/422#issuecomment-6117247506)
+remain explicit. Independent full-reader/package audits validate those 19
+successful observations and bind the refusal to the original complete wire.
+
+Native now encodes only a root empty object as an official Avro empty array on
+the existing bounded blocking codec path. Supplied input retains its validation;
+unknown fields, arrays/null, malformed/non-Avro input and required parameters
+keep their refusals. A new real HTTP/database regression completes both omitted
+and explicit empty queries and checks unchanged full original state/history;
+fifteen invalid cases must leave query-cache inventory unchanged. Formatting
+passes, but native compilation/tests and fresh all-six qualification are still
+pending. Current main's PHP recovery and release preparation are integrated
+without changing the frozen tuples or taking over General's release work.
 
 ## Contract and verification inventory
 

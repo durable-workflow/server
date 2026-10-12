@@ -404,13 +404,17 @@ impl Runtime {
         name: &str,
         body: Value,
     ) -> Result<(StatusCode, Value)> {
-        if body.as_object().is_none_or(|m| m.len() != 1) {
+        if body.as_object().is_none_or(|m| m.len() > 1) {
             return Err(refuse(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "unsupported_request_field",
             ));
         }
-        let arguments = super::envelope(&body, "input")?;
+        let arguments = if body.as_object().is_some_and(|m| m.is_empty()) {
+            super::queries::empty_arguments(self.signal_codec.clone()).await?
+        } else {
+            super::envelope(&body, "input")?
+        };
         if arguments.len() > super::queries::ARGUMENT_BYTES {
             return Err(refuse(
                 StatusCode::PAYLOAD_TOO_LARGE,
