@@ -98,6 +98,23 @@ final class ControlPlaneFailureDiagnostics
         ));
     }
 
+    public function reportRecoveredCommand(Throwable $exception, WorkflowCommand $command): void
+    {
+        Log::warning('Recovered a committed command after a post-commit exception.', $this->context(
+            exception: $exception,
+            errorId: (string) Str::ulid(),
+            operation: new ControlPlaneOperation(
+                operation: $command->command_type->value,
+                operationName: null,
+                workflowId: $command->workflow_instance_id,
+                runId: $command->resolvedRunId(),
+            ),
+            command: $command,
+            request: null,
+            recovery: 'committed_command',
+        ));
+    }
+
     /**
      * @return array<string, mixed>
      */
