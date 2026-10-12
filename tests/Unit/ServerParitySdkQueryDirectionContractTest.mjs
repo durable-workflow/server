@@ -16,10 +16,14 @@ const typedState = (fixture, count) => ({type: 'map', value: {
 function model(fixture, mode = 'http') {
   const spec = fixture.sdk_query_direction, workflowId = 'query-model', runId = 'original-query-run';
   const names = mode === 'embedded' ? fixture.embedded_expected_events : fixture.expected_events;
-  const events = names.map((event_type, i) => ({id: 'event-' + i, sequence: i + 1, event_type, payload: {}}));
+  const events = names.map((event_type, i) => ({sequence: i + 1, event_type,
+    timestamp: '2026-10-12T00:00:' + String(i).padStart(2, '0') + '.000000Z', payload: {}}));
   events[1].payload.declared_queries = ['state'];
   const received = events.filter(item => item.event_type === 'SignalReceived');
   received.forEach((item, i) => { item.payload.workflow_command_id = 'signal-command-' + i; });
+  const workerEvents = events.map(({sequence, event_type, payload, timestamp}, i) => ({id: 'event-' + i,
+    sequence, event_type, payload, recorded_at: timestamp,
+    workflow_task_id: null, workflow_command_id: payload.workflow_command_id ?? null}));
   const input = {type: 'list', value: [fixture.typed_value, {type: 'int64', value: '2'}]};
   const observation = {mode, workflow_id: workflowId, run_id: runId, workflow_type: fixture.workflow_type,
     namespace: 'default', task_queue: spec.task_queue, payload_codec: 'avro', events, typed_input: input,
@@ -72,7 +76,8 @@ function model(fixture, mode = 'http') {
       request: {workflow_id: workflowId}, response: {run_id: runId}});
     const task = {task_id: 'workflow-task-' + turn, lease_owner: 'workflow-lease-' + turn, workflow_task_attempt: 1,
       workflow_id: workflowId, run_id: runId, workflow_type: fixture.workflow_type,
-      task_queue: spec.task_queue, history_events: clone(events.slice(0, [2, 4, 9][turn]))};
+      task_queue: spec.task_queue, history_events: clone(workerEvents.slice(0, [2, 4, 9][turn])).map(event =>
+        ({...event, namespace: 'default'}))};
     phase.requests.push({method: 'POST', path: '/api/worker/workflow-tasks/poll', status: 200,
       request: {task_queue: spec.task_queue}, response: {task}});
     const commands = turn === 2 ? [{type: 'complete_workflow', result: envelope('final-result')}]
@@ -90,14 +95,14 @@ function model(fixture, mode = 'http') {
     const queryTask = {query_task_id: 'query-task-' + turn, lease_owner: 'query-lease-' + turn, query_task_attempt: 1,
       workflow_id: workflowId, run_id: runId, workflow_type: fixture.workflow_type, task_queue: spec.task_queue,
       query_name: 'state', query_arguments: envelope('empty-arguments'), workflow_arguments: envelope('workflow-arguments'),
-      history_events: clone(phase.snapshot.events)};
+      history_events: clone(workerEvents.slice(0, [3, 8, 13][turn]))};
     phase.requests.push({method: 'POST', path: '/api/worker/query-tasks/poll', status: 200,
       request: {task_queue: spec.task_queue}, response: {task: queryTask},
       typed_query_arguments: fixture.typed_query_arguments, typed_workflow_arguments: input});
     const value = {received: turn, last: turn ? fixture.signal_value : null};
     phase.requests.push({method: 'POST', path: '/api/worker/query-tasks/' + queryTask.query_task_id + '/complete', status: 200,
       request: {lease_owner: queryTask.lease_owner, query_task_attempt: 1, result_envelope: envelope('query-result-' + turn)},
-      response: {query_task_id: queryTask.query_task_id, query_task_attempt: 1, outcome: 'completed', reason: null, status: 200},
+      response: {query_task_id: queryTask.query_task_id, query_task_attempt: 1, outcome: 'completed', status: 200},
       decoded_result: value, typed_decoded_result: typedState(fixture, turn)});
     const caller = phases[i + 1];
     Object.assign(caller, {query_sent: true, client_finished: true, snapshot_before: clone(phase.snapshot)});
@@ -168,9 +173,19 @@ const mutations = [
   ['missing query lease', o => { o.sdk_query_direction.phases[0].requests.find(r => r.path === '/api/worker/query-tasks/poll').response.task.lease_owner = ''; }],
   ['incomplete query history', o => { o.sdk_query_direction.phases[0].requests.find(r => r.path === '/api/worker/query-tasks/poll').response.task.history_events.pop(); }],
   ['query uses foreign event ID', o => { o.sdk_query_direction.phases[0].requests.find(r => r.path === '/api/worker/query-tasks/poll').response.task.history_events[0].id = 'foreign-event'; }],
+  ['query loses original event ID', o => { delete o.sdk_query_direction.phases[0].requests.find(r => r.path === '/api/worker/query-tasks/poll').response.task.history_events[2].id; }],
+  ['query aliases original event IDs', o => { o.sdk_query_direction.phases[0].requests.find(r => r.path === '/api/worker/query-tasks/poll').response.task.history_events[2].id = 'event-0'; }],
+  ['query changes original timestamp', o => { o.sdk_query_direction.phases[0].requests.find(r => r.path === '/api/worker/query-tasks/poll').response.task.history_events[0].recorded_at = 'changed'; }],
+  ['query changes task link', o => { o.sdk_query_direction.phases[0].requests.find(r => r.path === '/api/worker/query-tasks/poll').response.task.history_events[0].workflow_task_id = 'foreign-task'; }],
+  ['query changes command link', o => { o.sdk_query_direction.phases[0].requests.find(r => r.path === '/api/worker/query-tasks/poll').response.task.history_events[0].workflow_command_id = 'foreign-command'; }],
+  ['query loses task link', o => { delete o.sdk_query_direction.phases[0].requests.find(r => r.path === '/api/worker/query-tasks/poll').response.task.history_events[2].workflow_task_id; }],
+  ['query changes earlier complete row', o => { o.sdk_query_direction.phases[3].requests.find(r => r.path === '/api/worker/query-tasks/poll').response.task.history_events[2].changed = true; }],
+  ['workflow claim changes earlier query row ID', o => { o.sdk_query_direction.phases[3].requests.find(r => r.path === '/api/worker/workflow-tasks/poll').response.task.history_events[2].id = 'different'; }],
+  ['workflow claim changes original namespace', o => { o.sdk_query_direction.phases[0].requests.find(r => r.path === '/api/worker/workflow-tasks/poll').response.task.history_events[0].namespace = 'foreign'; }],
   ['query completion wrong lease', o => { o.sdk_query_direction.phases[0].requests.find(r => /query-tasks\/.*\/complete/.test(r.path)).request.lease_owner = 'old-lease'; }],
   ['query completion wrong task', o => { o.sdk_query_direction.phases[0].requests.find(r => /query-tasks\/.*\/complete/.test(r.path)).response.query_task_id = 'foreign-query'; }],
   ['query completion failed', o => { o.sdk_query_direction.phases[0].requests.find(r => /query-tasks\/.*\/complete/.test(r.path)).response.outcome = 'failed'; }],
+  ['query completion supplies an error reason', o => { o.sdk_query_direction.phases[0].requests.find(r => /query-tasks\/.*\/complete/.test(r.path)).response.reason = 'failed'; }],
   ['receipt envelope replaced', o => { o.sdk_query_direction.phases[1].requests[0].response.result_envelope.blob = 'foreign-result'; }],
   ['missing author query callback', o => { o.sdk_query_direction.phases[0].query_invocations = 0; }],
   ['uniform callback count hides Python replay', o => { o.sdk_query_direction.phases[0].workflow_invocations = 1; }],
@@ -199,4 +214,12 @@ test('reject package tuple drift', () => {
   const observation = model(fixture);
   observation.sdk_query_direction.packages.python.version = 'unfrozen';
   assert.throws(() => checkSdkQueryDirectionPackages(fixture, observation, artifacts));
+});
+test('accept explicit null reason on successful native query completion', () => {
+  const observation = model(fixture);
+  for (const phase of observation.sdk_query_direction.phases) for (const request of phase.requests) {
+    if (/query-tasks\/.*\/complete/.test(request.path)) request.response.reason = null;
+  }
+  assert.deepEqual(checkSdkQueryDirection(fixture, observation, 'query-model'),
+    {three_fresh_readonly_queries: true, exact_typed_completion: true});
 });

@@ -1262,7 +1262,7 @@ the ordinary omitted-input disagreement before its reviewed native correction.
 See [the query cohort](../tests/Fixtures/ServerParityProfiles/published-sdk-queries/QUERIES.md).
 
 Initial [query #422 qualification](https://github.com/durable-workflow/server/pull/422#issuecomment-6116719443)
-fails all six runtime jobs before native queries. Independently inspected
+fails all six runtime jobs. Independently inspected
 SQLite stops on the first PHP/PHP direction: eight real SDK processes complete
 three query receipts and the original 13-event run, but the reader compares
 computed query availability as durable state. The resumption snapshot can also
@@ -1277,10 +1277,25 @@ receipt before taking each checkpoint snapshot. It binds task/run, owner,
 attempt, actual command and request index. Only raw computed `can_query`
 availability is separated from durable comparison, retaining boolean/presence
 checks and the complete observed values. Every other action, progress/wait
-field, control-plane copy and full history stays strict. Validation passes 60
-query models, all 4,742 Node tests and 16 PHP recorder tests/80 assertions; these
+field, control-plane copy and full history stays strict. Validation passes 71
+query models, all 4,753 Node tests and 16 PHP recorder tests/80 assertions; these
 are source checks, not fresh runtime qualification. Native Rust is unchanged,
 and the ordinary Python omitted-input refusal has not yet been reached.
+
+The first recorder correction's PHP/source passes 2,696 tests/61,322 assertions
+and SDK artifact integrity passes 297 original hashes, nine thin comparisons
+and ten worker-source hashes. Its untouched PostgreSQL 17 query record remains
+failed because the reader expected database row IDs in public history. The
+[reviewed response-shape correction](https://github.com/durable-workflow/server/pull/422#issuecomment-6117007924)
+binds row IDs, links and timestamps across actual worker claims and repeated
+full query prefixes, and checks exact sequence/type/payload/timestamp against
+the public API. Successful query worker receipts permit absent/null reason,
+rejecting supplied errors. The complete original PHP/PHP record passes a
+diagnostic replay under the corrected reader; neither tree is runtime-qualified
+by that replay. The parallel PostgreSQL 17 signal profile independently passes
+27 observations/90 sidecars; all 177 original signal/query files and compressed
+round-trip hashes pass. Frozen tuples, resource limits and native code remain
+unchanged; fresh full-cohort execution is required.
 
 ## Contract and verification inventory
 

@@ -39,10 +39,16 @@ present, its boolean shape and presence stay checked; this one flag can change
 as a cold author deregisters. Every other action, original run field, wait
 reason, progress time and control-plane copy remains part of strict unchanged
 snapshot comparison. Broader query-availability/routing policy remains open.
+Public history exposes sequence/type/payload/timestamp, while worker histories
+also carry database row IDs and task/command links. The reader binds those
+worker fields across actual workflow/query claims and repeated complete query
+prefixes, requiring unique nonempty IDs and exact public timestamps. It does
+not expect an unexposed row ID in the public API. A successful HTTP 200 query
+worker receipt may omit `reason` or send null; a supplied error reason fails.
 Embedded authors run their normal zero-argument method over canonical direct
 signal histories, without HTTP worker transport.
 
-Current recorder preparation passes 60 reader models and the full 4,742-test Node suite,
+Current recorder preparation passes 71 reader models and the full 4,753-test Node suite,
 PHP syntax, Python AST, Rust fixture formatting, shell syntax and the Docker
 isolation policy with 72 regressions. Sixteen PHP recorder tests pass 80
 assertions, including root empty-object/array distinction, exact int64 values
@@ -53,6 +59,11 @@ compiled SDK preparation is independently audited; the frozen PHP/PHP query
 direction completes its three reads and original 13-event run, but its
 unchanged initial record remains failed on snapshot validation. Embedded/native
 queries were not reached. Fresh full-cohort runtime qualification is pending.
+The first recorder correction passes PHP/source (2,696 tests/61,322 assertions)
+and SDK artifact integrity, but its original PostgreSQL 17 query record stays
+failed on the public-history ID assumption. The corrected reader passes a
+complete diagnostic replay of that untouched PHP/PHP record; this does not
+qualify either source tree or substitute for a fresh runtime run.
 
 The initial runtime gate must preserve the ordinary Python omitted-input
 disagreement before applying the reviewed native correction. Native currently
@@ -75,3 +86,4 @@ performance are separate gates.
 [Bounded scheduling](https://github.com/durable-workflow/server/issues/325#issuecomment-6116091307).
 [Independent PHP correction](https://github.com/durable-workflow/server/issues/325#issuecomment-6116357816).
 [Initial recorder disagreement and correction](https://github.com/durable-workflow/server/pull/422#issuecomment-6116719443).
+[Worker/public history and completion response shapes](https://github.com/durable-workflow/server/pull/422#issuecomment-6117007924).

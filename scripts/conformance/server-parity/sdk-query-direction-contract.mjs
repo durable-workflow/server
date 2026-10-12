@@ -7,6 +7,20 @@ const languages = ['php', 'python', 'rust'];
 const phases = ['original', 'query-0', 'signal-1', 'resumed', 'query-1', 'signal-2', 'replacement', 'query-2'];
 const nonempty = value => assert(typeof value === 'string' && value.length > 0);
 const history = events => events.map(({sequence, event_type, payload}) => ({sequence, event_type, payload}));
+const publicHistory = events => events.map(({sequence, event_type, payload, timestamp}) => ({sequence, event_type, payload, timestamp}));
+const workerHistory = events => events.map(({id, sequence, event_type, payload, workflow_task_id, workflow_command_id, recorded_at}) =>
+  ({id, sequence, event_type, payload, workflow_task_id, workflow_command_id, recorded_at}));
+function checkWorkerHistory(events) {
+  for (const event of events) {
+    nonempty(event.id); nonempty(event.recorded_at);
+    for (const field of ['workflow_task_id', 'workflow_command_id']) {
+      assert(Object.hasOwn(event, field), 'worker history retains ' + field);
+      if (event[field] !== null) nonempty(event[field]);
+    }
+    if (Object.hasOwn(event, 'namespace')) assert.equal(event.namespace, 'default');
+  }
+  assert.equal(new Set(events.map(event => event.id)).size, events.length, 'unique original worker event IDs');
+}
 const frame = value => {
   if (typeof value === 'string') { nonempty(value); return value; }
   assert.equal(value?.codec, 'avro'); nonempty(value?.blob); return value.blob;
@@ -98,6 +112,7 @@ export function checkSdkQueryDirection(fixture, observation, workflowId) {
   assert(!direction.phases.some(item => item.pid === observer.pid));
   assert.equal(observer.run_id, observation.run_id);
   const queryIds = [], workflowTasks = [], workflowCompletions = [], signalIds = [];
+  let priorQueryHistory = [];
   for (const [index, phase] of direction.phases.entries()) {
     const caller = phase.phase.startsWith('query-');
     const sender = phase.phase.startsWith('signal-');
@@ -175,11 +190,15 @@ export function checkSdkQueryDirection(fixture, observation, workflowId) {
       assert.equal(task.task_queue, spec.task_queue);
       assert.equal(task.query_task_attempt, 1);
       nonempty(task.query_task_id); nonempty(task.lease_owner); queryIds.push(task.query_task_id);
-      assert.deepEqual(history(task.history_events), history(snapshot.events), 'complete immutable claimed query snapshot');
-      for (const [i, event] of task.history_events.entries()) {
-        const id = event.id ?? event.event_id;
-        if (id !== undefined) assert.equal(id, snapshot.events[i].id ?? snapshot.events[i].event_id);
-      }
+      checkWorkerHistory(task.history_events);
+      assert.deepEqual(publicHistory(task.history_events.map(event => ({...event, timestamp: event.recorded_at}))),
+        publicHistory(snapshot.events), 'complete immutable query public history and timestamps');
+      const workflowHistory = workflowTasks.at(-1).history_events;
+      assert.deepEqual(workerHistory(task.history_events.slice(0, workflowHistory.length)), workerHistory(workflowHistory),
+        'query retains actual workflow claim row IDs, links and timestamps');
+      assert.deepEqual(task.history_events.slice(0, priorQueryHistory.length), priorQueryHistory,
+        'repeated query retains complete earlier worker history rows');
+      priorQueryHistory = task.history_events;
       assert.deepEqual(claim.typed_query_arguments, fixture.typed_query_arguments);
       assert.deepEqual(claim.typed_workflow_arguments, {type: 'list', value: [
         fixture.typed_value, {type: 'int64', value: '2'}]});
@@ -192,7 +211,8 @@ export function checkSdkQueryDirection(fixture, observation, workflowId) {
       assert.equal(complete.request.query_task_attempt, task.query_task_attempt);
       assert.equal(complete.response.query_task_id, task.query_task_id);
       assert.equal(complete.response.query_task_attempt, task.query_task_attempt);
-      assert.equal(complete.response.outcome, 'completed'); assert.equal(complete.response.reason, null);
+      assert.equal(complete.response.outcome, 'completed');
+      if (Object.hasOwn(complete.response, 'reason')) assert.equal(complete.response.reason, null);
       assert.equal(complete.response.status, 200);
       assert.equal(frame(complete.request.result_envelope), frame(wire.response.result_envelope));
       assert.deepEqual(complete.decoded_result, state(fixture, count));
@@ -219,6 +239,9 @@ export function checkSdkQueryDirection(fixture, observation, workflowId) {
     assert.equal(claim.status, 200);
     for (const key of ['workflow_id', 'run_id', 'workflow_type', 'task_queue']) assert.equal(task[key], observation[key]);
     assert.equal(task.workflow_task_attempt, 1); nonempty(task.task_id); nonempty(task.lease_owner);
+    checkWorkerHistory(task.history_events);
+    assert.deepEqual(workerHistory(task.history_events.slice(0, priorQueryHistory.length)), workerHistory(priorQueryHistory),
+      'later workflow claim retains earlier query row IDs, links and timestamps');
     const turn = [0, 3, 6].indexOf(index);
     assert.deepEqual(history(task.history_events), history(observation.events.slice(0, [2, 4, 9][turn])));
     const complete = one(phase.requests, item => item.method === 'POST'
