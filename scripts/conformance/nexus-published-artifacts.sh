@@ -2620,7 +2620,7 @@ async function probePublishedPythonCallerWorkflows(baseUrl, token, compose, phpS
   fs.writeFileSync(path.join(resultDir, 'nexus-workflow-service-setup.json'), JSON.stringify(setup, null, 2) + '\n');
   if (setup.some((response) => !response.ok)) throw new Error('Could not register the actual PHP workflow service');
   const fixtureDir = path.dirname(process.argv[5]);
-  for (const name of ['nexus-php-service-worker.php', 'nexus-python-workflow-probe.py']) {
+  for (const name of ['nexus-php-service-worker.php', 'nexus-python-workflow-probe.py', 'nexus_python_caller_workflow.py']) {
     fs.copyFileSync(path.join(fixtureDir, name), path.join(compose.runRoot, name));
   }
   fs.writeFileSync(path.join(compose.runRoot, 'nexus-workflow-input.json'), JSON.stringify({

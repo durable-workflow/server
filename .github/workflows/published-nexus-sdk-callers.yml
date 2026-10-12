@@ -7,6 +7,7 @@ on:
       - scripts/conformance/nexus-published-artifacts.sh
       - scripts/conformance/nexus-replay-transport.cjs
       - scripts/conformance/nexus-python-workflow-probe.py
+      - scripts/conformance/nexus_python_caller_workflow.py
       - scripts/conformance/nexus-php-service-worker.php
       - scripts/conformance/nexus-php-workflow-probe.php
       - scripts/conformance/nexus-php-caller-recovery.php
@@ -20,6 +21,7 @@ on:
       - scripts/conformance/nexus-published-artifacts.sh
       - scripts/conformance/nexus-replay-transport.cjs
       - scripts/conformance/nexus-python-workflow-probe.py
+      - scripts/conformance/nexus_python_caller_workflow.py
       - scripts/conformance/nexus-php-service-worker.php
       - scripts/conformance/nexus-php-workflow-probe.php
       - scripts/conformance/nexus-php-caller-recovery.php

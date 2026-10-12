@@ -10,26 +10,9 @@ import sys
 import time
 from importlib.metadata import version
 
-from durable_workflow import Client, NexusOperationFailed, Worker, WorkflowCancelled, serializer, workflow
+from durable_workflow import Client, Worker, WorkflowCancelled, serializer
 
-
-@workflow.defn(name="nexus.fixture.python.caller")
-class PythonNexusCaller:
-    def run(self, context, endpoint, service, operation, name, target_namespace):
-        try:
-            result = yield context.call_nexus_service(
-                endpoint, service, operation, [name], wait_timeout_seconds=5,
-                target_namespace=target_namespace,
-            )
-        except NexusOperationFailed as failure:
-            return {
-                "service_call_id": failure.service_call_id, "status": failure.status,
-                "failure_type": failure.service_error_type,
-                "failure_message": failure.typed_error_message or str(failure),
-                "failure_class": type(failure).__name__,
-                "response_or_failure_surface": failure.body,
-            }
-        return result.to_recorded_payload()
+from nexus_python_caller_workflow import PythonNexusCaller
 
 
 async def execute(input_data, namespace):
@@ -45,6 +28,8 @@ async def execute(input_data, namespace):
         body = json.loads(request.content) if request.content else {}
         row = {"method": request.method, "path": request.url.path, "status": None,
                "started_at": time.time(), "request_id": body.get("poll_request_id")}
+        if request.url.path.endswith("/register"):
+            row["workflow_definition_fingerprints"] = body.get("workflow_definition_fingerprints")
         request_rows[id(request)] = row
         worker_requests.append(row)
 
@@ -105,6 +90,7 @@ async def execute(input_data, namespace):
                 "scenario": input_data.get("scenario", "completed"),
                 "workflow_id": handle.workflow_id, "run_id": handle.run_id,
                 "process_id": os.getpid(), "installed_sdk_version": version("durable-workflow"),
+                "workflow_definition_fingerprint": worker.workflow_definition_fingerprints["nexus.fixture.python.caller"],
                 "public_method": "WorkflowContext.call_nexus_service",
             }
             if input_data.get("scenario") == "cancelled":
