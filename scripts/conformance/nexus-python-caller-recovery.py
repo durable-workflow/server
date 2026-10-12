@@ -105,6 +105,21 @@ async def execute(input_data, namespace):
                     raise RuntimeError("The original caller process was not confirmed dead from SIGKILL.")
                 worker = None
 
+                if "backend_resume_prefix" in input_data:
+                    resume_path = Path(f"/work/{input_data['backend_resume_prefix']}-{namespace}.json")
+                    print(json.dumps({"phase": "backend_interruption_ready", "caller_namespace": namespace,
+                                      "resume_file": resume_path.name, "remaining_seconds": deadline - time.monotonic(),
+                                      "timer_fire_at": events(service_history, "TimerScheduled")[0]["payload"]["fire_at"],
+                                      "workflow_id": handle.workflow_id, "run_id": handle.run_id,
+                                      "service_call_id": row["original_service_call_id"]}), flush=True)
+                    while not resume_path.is_file() and time.monotonic() < deadline:
+                        await asyncio.sleep(.1)
+                    if not resume_path.is_file():
+                        raise RuntimeError("Backend restoration exceeded the original recovery budget.")
+                    row["backend_interruption"] = json.loads(resume_path.read_text())
+                    if not row["backend_interruption"].get("restored"):
+                        raise RuntimeError(f"The original database was not restored: {row['backend_interruption'].get('error')}")
+
                 row["linked_service_result"] = await service_handle.result(timeout=max(1, min(20, deadline - time.monotonic())))
                 row["linked_service_history"] = await service_handle.get_history()
                 row["before_replacement_history"] = await handle.get_history()

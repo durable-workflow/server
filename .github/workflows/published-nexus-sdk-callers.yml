@@ -7,6 +7,7 @@ on:
       - scripts/conformance/nexus-published-artifacts.sh
       - scripts/conformance/nexus-replay-transport.cjs
       - scripts/conformance/nexus-python-workflow-probe.py
+      - scripts/conformance/nexus_python_caller_workflow.py
       - scripts/conformance/nexus-php-service-worker.php
       - scripts/conformance/nexus-php-workflow-probe.php
       - scripts/conformance/nexus-php-caller-recovery.php
@@ -20,6 +21,7 @@ on:
       - scripts/conformance/nexus-published-artifacts.sh
       - scripts/conformance/nexus-replay-transport.cjs
       - scripts/conformance/nexus-python-workflow-probe.py
+      - scripts/conformance/nexus_python_caller_workflow.py
       - scripts/conformance/nexus-php-service-worker.php
       - scripts/conformance/nexus-php-workflow-probe.php
       - scripts/conformance/nexus-php-caller-recovery.php
@@ -79,6 +81,7 @@ jobs:
             NEXUS_TYPED_FAILURE_PROBES="$DW_NEXUS_RESULT_DIR/nexus-typed-failure-probes.json" \
             NEXUS_CANCELLATION_PROBES="$DW_NEXUS_RESULT_DIR/nexus-cancellation-probes.json" \
             NEXUS_CALLER_RECOVERY_PROBES="$DW_NEXUS_RESULT_DIR/nexus-caller-recovery-probes.json" \
+            NEXUS_BACKEND_INTERRUPTION_PROBES="$DW_NEXUS_RESULT_DIR/nexus-backend-interruption-probes.json" \
             NEXUS_DEADLINE_PROBE="$DW_NEXUS_RESULT_DIR/nexus-deadline-probe.json" \
             node --test tests/Unit/NexusSdkCallerEvidenceTest.mjs
       - name: Retain actual requests and durable observations

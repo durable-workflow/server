@@ -154,6 +154,83 @@ function callerRecoveryFixture() {
         caller_operations: {ok: true, body: {workflow_run_id: 'run', nexus_operations: [{service_call_id: 'call'}]}}};
 }
 
+function assertBackendInterruption(row, service, caller) {
+    assertCallerRecovery(row, service, caller);
+    assert.equal(row.budget_seconds, 60, 'Keep the original recovery budget');
+    const proof = row.backend_interruption;
+    assert.equal(proof.restored, true, JSON.stringify(proof));
+    assert.equal(proof.error, undefined);
+    assert.equal(proof.restore_error, undefined);
+    assert.match(proof.original_database_id, /^[0-9a-f]{64}$/);
+    assert.equal(proof.restored_database_id, proof.original_database_id);
+    assert.equal(proof.before_stop.Running, true);
+    assert.equal(proof.stopped.Running, false);
+    assert.equal(proof.failure_signal, 9, 'The database crash is an explicit SIGKILL');
+    assert.equal(proof.stopped.ExitCode, 137);
+    assert.equal(proof.stopped.OOMKilled, false, 'Resource exhaustion must not imitate the requested crash');
+    assert.equal(proof.unready.status, 503, 'Readiness must fail while the database is absent');
+    assert.equal(proof.ready.status, 200);
+    assert.equal(proof.after_restart.Running, true);
+    assert.equal(proof.checkpoint.workflow_id, row.workflow_id);
+    assert.equal(proof.checkpoint.run_id, row.run_id);
+    assert.equal(proof.checkpoint.service_call_id, row.original_service_call_id);
+    assert.equal(proof.checkpoint.caller_namespace, row.caller_namespace);
+    const timer = row.before_kill_service_history.events.find(event => event.event_type === 'TimerScheduled');
+    assert.equal(proof.checkpoint.timer_fire_at, timer.payload.fire_at);
+    const times = ['stop_requested_at', 'stopped_at', 'down_until', 'restart_requested_at', 'restored_at'];
+    const parsed = times.map(field => Date.parse(proof[field]));
+    assert.ok(parsed.every(Number.isFinite), 'Every backend transition needs its actual timestamp');
+    for (let index = 1; index < parsed.length; index++) assert.ok(parsed[index] >= parsed[index - 1]);
+    const fireAt = Date.parse(timer.payload.fire_at);
+    assert.ok(parsed[1] < fireAt, 'Stop the database before the original target timer is due');
+    assert.ok(parsed[2] > fireAt, 'Keep it absent across the original timer boundary');
+}
+
+test('backend evidence rejects a running database, healthy readiness, new database or changed budget', () => {
+    const row = callerRecoveryFixture();
+    row.caller_namespace = 'shared';
+    row.before_kill_service_history.events[0].payload = {fire_at: '2026-10-11T00:00:08Z'};
+    row.backend_interruption = {restored: true, original_database_id: 'a'.repeat(64), restored_database_id: 'a'.repeat(64),
+        failure_signal: 9, before_stop: {Running: true}, stopped: {Running: false, ExitCode: 137, OOMKilled: false}, after_restart: {Running: true},
+        unready: {status: 503}, ready: {status: 200}, stop_requested_at: '2026-10-11T00:00:01Z',
+        stopped_at: '2026-10-11T00:00:02Z', down_until: '2026-10-11T00:00:09Z',
+        restart_requested_at: '2026-10-11T00:00:09Z', restored_at: '2026-10-11T00:00:10Z',
+        checkpoint: {workflow_id: 'caller', run_id: 'run', service_call_id: 'call', caller_namespace: 'shared',
+            timer_fire_at: '2026-10-11T00:00:08Z'}};
+    assertBackendInterruption(row, 'php', 'php');
+    for (const mutate of [
+        copy => { copy.backend_interruption.stopped.Running = true; },
+        copy => { copy.backend_interruption.stopped.OOMKilled = true; },
+        copy => { copy.backend_interruption.failure_signal = 15; },
+        copy => { copy.backend_interruption.unready.status = 200; },
+        copy => { copy.backend_interruption.restored_database_id = 'b'.repeat(64); },
+        copy => { copy.backend_interruption.checkpoint.service_call_id = 'other'; },
+        copy => { copy.backend_interruption.stopped_at = '2026-10-11T00:00:08Z'; },
+        copy => { copy.backend_interruption.down_until = '2026-10-11T00:00:07Z'; },
+        copy => { copy.budget_seconds = 120; },
+    ]) {
+        const copy = structuredClone(row);
+        mutate(copy);
+        assert.throws(() => assertBackendInterruption(copy, 'php', 'php'));
+    }
+});
+
+if (process.env.NEXUS_BACKEND_INTERRUPTION_PROBES) {
+    test('actual PHP/Python callers preserve their original call across SIGKILL and a database interruption', () => {
+        const proof = JSON.parse(fs.readFileSync(process.env.NEXUS_BACKEND_INTERRUPTION_PROBES, 'utf8'));
+        assert.equal(proof.scope, 'actual_php_python_caller_sigkill_and_mysql_crash_restart');
+        assert.deepEqual(proof.reports.map(({caller, service}) => [caller, service]),
+            [['php', 'php'], ['php', 'python'], ['python', 'php'], ['python', 'python']]);
+        for (const {caller, service, observation} of proof.reports) {
+            assert.equal(observation.ok, true);
+            assert.equal(observation.body.outcome, 'pass');
+            assert.deepEqual(observation.body.observations.map(row => row.caller_namespace),
+                ['shared', caller === 'php' ? 'tenant-a' : 'tenant-b']);
+            for (const row of observation.body.observations) assertBackendInterruption(row, service, caller);
+        }
+    });
+}
+
 test('caller recovery rejects a surviving worker, duplicate call, changed deadline or independently completed run', () => {
     assertCallerRecovery(callerRecoveryFixture(), 'php');
     for (const mutate of [
