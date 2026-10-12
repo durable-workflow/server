@@ -67,6 +67,8 @@ x-durable-workflow-cooperative-cancellation-contract:
   delivery_identity: [request_id, sequence, call_kind, sequence_span, operation_sequence, operation_sequence_span]
   pending_child_delivery: { status: 200, delivered: false, reason: cancellation_waiting_for_child, claim_released: true, canonical_delivery_recorded: false, resume_source: child_terminal_history }
   pending_activity_delivery: { status: 200, delivered: false, reason: cancellation_waiting_for_activity, claim_released: true, canonical_delivery_recorded: false, resume_source: canonical_callback_outcome_or_original_stop_receipt_or_fenced_never_started_operation }
+  pending_service_operation_delivery: { status: 200, delivered: false, reason: cancellation_waiting_for_service_operation, claim_released: true, canonical_delivery_recorded: false, resume_source: canonical_owned_target_terminal_history }
+  nexus_cooperative_cancellation: { minimum_protocol_version: "1.20", required_worker_capabilities: [cooperative_cancellation, nexus_cooperative_cancellation], discovery_flag: nexus_cooperative_cancellation, discovery_binding_kinds: [workflow_run], owned_start_outcome: started_new, returned_existing_active_owned: false, cleanup_deadline_immutable: true, call_deadline_unchanged: true }
   child_operation_policies: [try_cancel, wait_cancellation_completed, abandon]
   cooperative_parent_close_policy: request_cancellation
   legacy_terminal_parent_close_policy: request_cancel
@@ -1996,7 +1998,7 @@ components:
         workflow_task_attempt: { type: integer, minimum: 1 }
         request_id: { type: string, minLength: 1 }
         sequence: { type: integer, minimum: 1 }
-        call_kind: { type: string, enum: [activity, local_activity, timer, condition, signal, child, parallel, selection_handle] }
+        call_kind: { type: string, enum: [activity, local_activity, timer, condition, signal, child, parallel, selection_handle, service_operation] }
         sequence_span: { type: [integer, "null"], minimum: 1, default: 1 }
         operation_sequence: { type: [integer, "null"], minimum: 1 }
         operation_sequence_span: { type: [integer, "null"], minimum: 1, default: 1 }
@@ -2012,7 +2014,7 @@ components:
                 workflow_run_id: { type: string, minLength: 1 }
                 request_id: { type: string, minLength: 1 }
                 sequence: { type: integer, minimum: 1 }
-                call_kind: { type: string, enum: [activity, local_activity, timer, condition, signal, child, parallel, selection_handle] }
+                call_kind: { type: string, enum: [activity, local_activity, timer, condition, signal, child, parallel, selection_handle, service_operation] }
                 sequence_span: { type: integer, minimum: 1 }
                 operation_sequence: { type: [integer, "null"], minimum: 1 }
                 operation_sequence_span: { type: integer, minimum: 1 }
@@ -2030,7 +2032,7 @@ components:
                 sequence_span: { type: "null" }
                 operation_sequence: { type: "null" }
                 operation_sequence_span: { type: "null" }
-                reason: { type: string, enum: [cancellation_waiting_for_child, cancellation_waiting_for_activity] }
+                reason: { type: string, enum: [cancellation_waiting_for_child, cancellation_waiting_for_activity, cancellation_waiting_for_service_operation] }
     CancellationScopeDeliveryRequest:
       allOf:
         - $ref: "#/components/schemas/CooperativeCancellationDeliveryRequest"

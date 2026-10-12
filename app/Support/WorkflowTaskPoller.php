@@ -2341,6 +2341,11 @@ final class WorkflowTaskPoller
             && ! CooperativeCancellationPolicy::supports($capabilities, $protocolVersion)) {
             return false;
         }
+        if ($run instanceof WorkflowRun && is_string($run->cancellation_request_command_id)
+            && NexusCooperativeCancellationPolicy::pendingCall($run) !== null
+            && ! NexusCooperativeCancellationPolicy::supports($capabilities, $protocolVersion)) {
+            return false;
+        }
 
         return PreparedLocalActivityPolicy::canReplayRun($runId, $capabilities, $protocolVersion)
             && WorkflowMetadataCapabilityPolicy::canReplayRun(
