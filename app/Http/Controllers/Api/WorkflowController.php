@@ -837,6 +837,7 @@ class WorkflowController
             $workflowId,
             [
                 'namespace' => $namespace,
+                'run_id' => $this->controlPlaneRunId($request),
                 'reason' => $validated['reason'] ?? null,
                 'command_context' => $this->commandContexts->make(
                     $request,
@@ -886,6 +887,7 @@ class WorkflowController
             $workflowId,
             [
                 'namespace' => $namespace,
+                'run_id' => $this->controlPlaneRunId($request),
                 'reason' => $validated['reason'] ?? null,
                 'command_context' => $this->commandContexts->make(
                     $request,
@@ -934,6 +936,7 @@ class WorkflowController
             $workflowId,
             [
                 'namespace' => $namespace,
+                'run_id' => $this->controlPlaneRunId($request),
                 'command_context' => $this->commandContexts->make(
                     $request,
                     workflowId: $workflowId,
@@ -981,6 +984,7 @@ class WorkflowController
             $workflowId,
             [
                 'namespace' => $namespace,
+                'run_id' => $this->controlPlaneRunId($request),
                 'reason' => $validated['reason'] ?? null,
                 'command_context' => $this->commandContexts->make(
                     $request,
