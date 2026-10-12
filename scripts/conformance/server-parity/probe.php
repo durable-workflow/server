@@ -641,14 +641,25 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
         if (isset($fixture['update_values'])) {
             if ($pendingUpdate !== null) {
                 $completed = $stub->inspectUpdate($pendingUpdate['accepted']['update_id']);
-                if (! $completed->completed()) {
+                $expectsFailure = isset($fixture['sdk_update_failure']) && count($updates) === 0;
+                if ($expectsFailure ? ! $completed->failed() : ! $completed->completed()) {
                     throw new RuntimeException('Embedded update did not complete through its real queue job.');
                 }
                 $historyBefore = $history();
                 $duplicate = $stub->withCommandContext(CommandContext::phpApi()->with(['request' => ['request_id' => $pendingUpdate['request_id']]]))
                     ->submitUpdateWithArguments($fixture['update_name'], [$fixture['duplicate_update_value']]);
-                $result = $stub->inspectUpdate($duplicate->updateId())->result();
-                $updates[] = [...$pendingUpdate, 'result' => $result, 'typed_result' => typedValue($result),
+                $inspected = $stub->inspectUpdate($duplicate->updateId());
+                if ($expectsFailure ? ! $inspected->failed() : ! $inspected->completed()) {
+                    throw new RuntimeException('Embedded completed duplicate changed the original update outcome.');
+                }
+                $result = $inspected->result();
+                $outcome = $expectsFailure ? ['failed_result' => [
+                    'failure_id' => $completed->failureId(), 'message' => $completed->failureMessage(),
+                    'update_status' => $completed->updateStatus(), 'outcome' => $completed->outcome()],
+                    'duplicate_failed_result' => ['failure_id' => $inspected->failureId(),
+                        'message' => $inspected->failureMessage(), 'update_status' => $inspected->updateStatus(),
+                        'outcome' => $inspected->outcome()]] : ['result' => $result, 'typed_result' => typedValue($result)];
+                $updates[] = [...$pendingUpdate, ...$outcome,
                     'history_before_result' => $historyBefore, 'history_after_result' => $history()];
                 $pendingUpdate = null;
             }

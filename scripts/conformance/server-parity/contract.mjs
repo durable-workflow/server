@@ -124,11 +124,15 @@ export function checkObservation(fixture, observation, workflowId) {
     const acceptedUpdates = events.filter(event => event.event_type === 'UpdateAccepted');
     const appliedUpdates = events.filter(event => event.event_type === 'UpdateApplied');
     const completedUpdates = events.filter(event => event.event_type === 'UpdateCompleted');
+    equal(acceptedUpdates.length, fixture.update_values.length, 'exact original update admissions');
+    equal(completedUpdates.length, fixture.update_values.length, 'exact original update completions');
+    equal(appliedUpdates.length, fixture.update_values.length - (fixture.sdk_update_failure ? 1 : 0), 'only successful updates apply');
     const signalSequence = events.find(event => event.event_type === 'SignalReceived').sequence;
     for (const [index, value] of fixture.update_values.entries()) {
       const update = observation.updates[index];
       const acceptedUpdate = acceptedUpdates[index];
-      const applied = appliedUpdates[index];
+      const failed = Boolean(fixture.sdk_update_failure && index === fixture.sdk_update_failure.failed_index);
+      const applied = appliedUpdates.find(event => event.payload.update_id === acceptedUpdate.payload.update_id);
       const completed = completedUpdates[index];
       const cursor = events[completed.sequence];
       const updateId = acceptedUpdate.payload.update_id;
@@ -145,11 +149,11 @@ export function checkObservation(fixture, observation, workflowId) {
       equal(update.before.id ?? update.before.run_id, observation.run_id, 'update original waiting run');
       equal(update.before.status, 'waiting', 'update occurs during a durable wait');
       const completedSdkReceipts = observation.mode === 'http' && fixture.sdk_update_direction;
-      const updateReceipts = completedSdkReceipts ? update.completed_receipts : [update.accepted, update.duplicate_accepted];
+      const updateReceipts = completedSdkReceipts ? (failed ? update.failed_receipts : update.completed_receipts) : [update.accepted, update.duplicate_accepted];
       if (completedSdkReceipts) equal(updateReceipts.length, 3, 'three real completed SDK update responses');
       for (const receipt of updateReceipts) {
         equal(receipt.command_status ?? (receipt.accepted ? 'accepted' : 'rejected'), 'accepted', 'accepted update command');
-        equal(receipt.update_status, completedSdkReceipts ? 'completed' : 'accepted', 'actual requested update wait stage');
+        equal(receipt.update_status, completedSdkReceipts ? (failed ? 'failed' : 'completed') : 'accepted', 'actual requested update wait stage');
         equal(receipt.command_id, commandId, 'repeat request retains its original command');
         equal(receipt.update_id, updateId, 'repeat request retains its original update');
         equal(receipt.workflow_id, workflowId, 'update acknowledgment workflow');
@@ -160,26 +164,69 @@ export function checkObservation(fixture, observation, workflowId) {
       equal(update.history_after_result, update.history_before_result, 'completed duplicate has no durable effect');
       equal(update.history_after_acceptance.at(-1).payload.update_id, updateId, 'acknowledged update is durably accepted');
       equal(update.history_before_result.filter(event => event.event_type === 'UpdateCompleted').length, index + 1, 'result observes the correct completed update prefix');
-      for (const event of [acceptedUpdate, applied, completed]) {
+      for (const event of [acceptedUpdate, ...(failed ? [] : [applied]), completed]) {
         equal(event.payload.update_id, updateId, 'original update across lifecycle');
         equal(event.payload.workflow_command_id, commandId, 'original command across update lifecycle');
         equal(event.payload.workflow_instance_id, workflowId, 'update history workflow');
         equal(event.payload.workflow_run_id, observation.run_id, 'update history run');
         equal(event.payload.update_name, fixture.update_name, 'update history declaration');
       }
-      for (const event of [acceptedUpdate, applied]) {
+      for (const event of [acceptedUpdate, ...(failed ? [] : [applied])]) {
         equal(event.decoded.arguments, [value], 'durable original update arguments');
         equal(event.typed_decoded.arguments, arguments_, 'durable exact update argument types');
       }
-      assert.ok(Number.isInteger(applied.payload.sequence) && applied.payload.sequence > 0, 'update callback authoring position');
-      equal(completed.payload.sequence, applied.payload.sequence, 'update completion retains callback position');
-      assert.ok(acceptedUpdate.sequence < applied.sequence && applied.sequence < completed.sequence && completed.sequence < signalSequence, 'update lifecycle completes before finishing signal');
-      const result = {value, applied: index + 1};
-      const typedResult = {type: 'map', value: {value: fixture.typed_update_values[index], applied: {type: 'int64', value: String(index + 1)}}};
-      equal(update.result, result, 'completed repeat returns the original stateful update result');
-      equal(update.typed_result, typedResult, 'exact returned update result types');
-      equal(completed.decoded.result, result, 'durable update result');
-      equal(completed.typed_decoded.result, typedResult, 'durable exact update result types');
+      const applicationCount = index + 1 - (fixture.sdk_update_failure ? 1 : 0);
+      let typedResult;
+      if (failed) {
+        equal(applied, undefined, 'failed handler has no successful application event');
+        equal(completed.decoded.result, undefined, 'failed handler has no successful result');
+        equal(completed.typed_decoded.result, undefined, 'failed handler has no typed successful result');
+        assert.ok(acceptedUpdate.sequence < completed.sequence && completed.sequence < signalSequence, 'failure is durable before parent resumption');
+        nonempty(completed.payload.failure_id, 'durable failure identity');
+        identities.push(completed.payload.failure_id);
+        equal(new Set(identities).size, identities.length, 'distinct failure/update/command/run identities');
+        equal(completed.payload.failure_category, 'application', 'handler failure category');
+        equal(completed.payload.non_retryable, observation.mode === 'http', 'explicit embedded versus external handler retry classification');
+        assert.ok(Number.isInteger(completed.payload.sequence) && completed.payload.sequence > 0, 'failure authoring position');
+        if (observation.mode === 'http') {
+          for (const receipt of updateReceipts) {
+            equal(receipt.outcome, 'update_failed', 'accepted handler failure outcome');
+            equal(receipt.reason, null, 'failure does not become an admission rejection');
+            equal(receipt.rejection_reason, null, 'accepted failure retains admission');
+            equal(receipt.failure_id, completed.payload.failure_id, 'duplicate keeps original durable failure');
+            equal(receipt.failure_message, completed.payload.message, 'duplicate keeps original failure message');
+            equal(receipt.result, null, 'failed receipt carries no result');
+            equal(receipt.result_envelope, null, 'failed receipt carries no result frame');
+            equal(receipt.workflow_sequence, completed.payload.sequence, 'failed receipt preserves authoring sequence');
+            equal(receipt.closed_at, updateReceipts[0].closed_at, 'failure close timestamp is immutable');
+            equal(receipt.accepted_at, updateReceipts[0].accepted_at, 'original admission timestamp is immutable');
+            equal(receipt.applied_at, updateReceipts[0].applied_at, 'original failure timestamp is immutable');
+            for (const key of ['workflow_id', 'run_id', 'command_id', 'command_status', 'update_id', 'update_status', 'outcome', 'reason']) {
+              equal(receipt.control_plane[key], receipt[key], 'canonical failure response retains ' + key);
+            }
+          }
+        } else {
+          equal(completed.payload.exception_type, null, 'embedded original exception has no external SDK type');
+          equal(completed.payload.exception_class, 'RuntimeException', 'embedded original failure class');
+          equal(completed.payload.message, fixture.sdk_update_failure.handler_message, 'embedded original handler message');
+          equal(update.failed_result, {failure_id: completed.payload.failure_id, message: completed.payload.message,
+            update_status: 'failed', outcome: 'update_failed'}, 'embedded failure receipt binds original history');
+          equal(update.duplicate_failed_result, update.failed_result, 'embedded duplicate preserves original failure');
+        }
+        equal(update.result, undefined, 'failed update has no observed successful result');
+        equal(update.typed_result, undefined, 'failed update has no observed typed successful result');
+        typedResult = {outcome: 'update_failed', failure_category: 'application'};
+      } else {
+        assert.ok(Number.isInteger(applied.payload.sequence) && applied.payload.sequence > 0, 'update callback authoring position');
+        equal(completed.payload.sequence, applied.payload.sequence, 'update completion retains callback position');
+        assert.ok(acceptedUpdate.sequence < applied.sequence && applied.sequence < completed.sequence && completed.sequence < signalSequence, 'update lifecycle completes before finishing signal');
+        const result = {value, applied: applicationCount};
+        typedResult = {type: 'map', value: {value: fixture.typed_update_values[index], applied: {type: 'int64', value: String(applicationCount)}}};
+        equal(update.result, result, 'completed repeat returns the original stateful update result');
+        equal(update.typed_result, typedResult, 'exact returned update result types');
+        equal(completed.decoded.result, result, 'durable update result');
+        equal(completed.typed_decoded.result, typedResult, 'durable exact update result types');
+      }
       equal(cursor.event_type, 'MessageCursorAdvanced', 'update advances ordered message cursor');
       equal(cursor.payload.stream_key, `instance:${workflowId}`, 'update cursor stream');
       equal(cursor.payload.previous_position, index, 'update cursor previous position');
@@ -201,7 +248,8 @@ export function checkObservation(fixture, observation, workflowId) {
         nonempty(task.lease_owner, 'actual update task lease owner');
         equal(worker.arguments, [value], 'worker decodes original accepted arguments');
         equal(worker.typed_arguments, arguments_, 'worker exact accepted argument types');
-        equal(task.history_events.filter(event => event.event_type === 'UpdateApplied').length, index, 'worker sees prior committed updates');
+        equal(task.history_events.filter(event => event.event_type === 'UpdateApplied').length,
+          index - (fixture.sdk_update_failure && index > 0 ? 1 : 0), 'worker sees prior successful applications');
       }
       projectedUpdates.push({name: update.name, request_id: update.request_id,
         arguments: arguments_, result: typedResult, message_sequence: index + 1});

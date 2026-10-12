@@ -68,6 +68,17 @@ final class ServerParitySdkUpdateTransportTest extends TestCase
         self::assertNull(\sdkUpdateWorkflowAcknowledgement($this->requests(), 'original', 'run', 'resumed-1', 'foreign'));
     }
 
+    public function test_failed_handler_checkpoint_cannot_be_replaced_by_a_successful_update_ack(): void
+    {
+        $requests = $this->requests();
+        self::assertNull(\sdkUpdateWorkflowAcknowledgement($requests, 'original', 'run', 'resumed-1', 'update', 'fail_update'));
+        $requests[1]['request']['commands'][0]['type'] = 'fail_update';
+        self::assertNotNull(\sdkUpdateWorkflowAcknowledgement($requests, 'original', 'run', 'resumed-1', 'update', 'fail_update'));
+        self::assertNull(\sdkUpdateWorkflowAcknowledgement($requests, 'original', 'run', 'resumed-1', 'update'));
+        $requests[1]['request']['commands'][0]['update_id'] = 'foreign';
+        self::assertNull(\sdkUpdateWorkflowAcknowledgement($requests, 'original', 'run', 'resumed-1', 'update', 'fail_update'));
+    }
+
     private function arrival(): array
     {
         return ['schema' => 'durable-workflow.server-parity-http-request-arrival/v1', 'request_observation_id' => 1,

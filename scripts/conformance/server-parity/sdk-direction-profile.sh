@@ -48,7 +48,14 @@ case "${3:-activity}" in
     fixture_pattern=update-sdk-*.json
     reader_tests=(tests/Unit/ServerParitySdkUpdateDirectionContractTest.mjs)
     ;;
-  *) echo 'Choose activity, child, timer, signal, query or update SDK directions' >&2; exit 2 ;;
+  update-failure)
+    tag=sdk-update-failures
+    prefix=sdk-update-failures-v1
+    cohort=published-sdk-update-failures
+    fixture_pattern=update-failure-sdk-*.json
+    reader_tests=(tests/Unit/ServerParitySdkUpdateDirectionContractTest.mjs)
+    ;;
+  *) echo 'Choose activity, child, timer, signal, query, update or update-failure SDK directions' >&2; exit 2 ;;
 esac
 profile="$fixture_base/$cohort"
 manifest="$profile/artifacts.json"

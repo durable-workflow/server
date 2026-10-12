@@ -9,11 +9,18 @@ const artifacts = JSON.parse(readFileSync(new URL('artifacts.json', profile)));
 const languages = ['php', 'python', 'rust'], clone = value => structuredClone(value);
 const envelope = blob => ({codec: 'avro', blob});
 const fixtureFor = (author, client) => JSON.parse(readFileSync(new URL('update-sdk-' + author + '-' + client + '.json', profile)));
+const failureProfile = new URL('../Fixtures/ServerParityProfiles/published-sdk-update-failures/', import.meta.url);
+const failureArtifacts = JSON.parse(readFileSync(new URL('artifacts.json', failureProfile)));
+const failureFixtureFor = (author, client) => JSON.parse(readFileSync(new URL('update-failure-sdk-' + author + '-' + client + '.json', failureProfile)));
 const typedResult = (fixture, index) => ({type: 'map', value: {
-  value: fixture.typed_update_values[index], applied: {type: 'int64', value: String(index + 1)},
+  value: fixture.typed_update_values[index], applied: {type: 'int64', value: String(index + 1 - (fixture.sdk_update_failure ? 1 : 0))},
 }});
 const transport = {client_cancelled: false, request_body_complete: true, upstream_request_started: true, transport_error: null};
 function model(fixture, mode = 'http') {
+  const fails = Boolean(fixture.sdk_update_failure);
+  const handlerFailure = {php: {exception_type: 'RuntimeException', exception_class: 'RuntimeException', message: 'parity update handler failure λ'},
+    python: {exception_type: 'ValueError', exception_class: 'builtins.ValueError', message: 'update handler failed: parity update handler failure λ'},
+    rust: {exception_type: 'UpdateFailed', exception_class: 'RuntimeException', message: 'worker loop error: parity update handler failure λ'}}[fixture.sdk_update_direction.workflow];
   const spec = fixture.sdk_update_direction, workflowId = 'update-model', runId = 'original-update-run';
   const events = (mode === 'http' ? fixture.expected_events : fixture.embedded_expected_events)
     .map((event_type, index) => ({event_type, sequence: index + 1,
@@ -22,7 +29,8 @@ function model(fixture, mode = 'http') {
   events.filter(event => event.event_type === 'UpdateAccepted').forEach((event, index) =>
     Object.assign(event.payload, {update_id: 'update-' + index, workflow_command_id: 'update-command-' + index}));
   events.filter(event => event.event_type === 'UpdateCompleted').forEach((event, index) => {
-    event.payload.result = envelope('update-result-' + index);
+    if (fails && index === 0) Object.assign(event.payload, {failure_id: 'original-failure', ...handlerFailure});
+    else event.payload.result = envelope('update-result-' + index);
   });
   const input = {type: 'list', value: [fixture.typed_value, {type: 'int64', value: '1'}]};
   const observation = {mode, workflow_id: workflowId, run_id: runId, workflow_type: fixture.workflow_type,
@@ -60,14 +68,14 @@ function model(fixture, mode = 'http') {
     const language = phase === 'signal' ? 'php' : caller ? spec.client : spec.workflow;
     return {phase, language, pid: 100 + index, sdk_version: artifacts['sdk_' + language],
       workflow_id: workflowId, run_id: runId, requests: [], request_arrivals: [],
-      snapshot: snapshot([3, 7, 7, 7, 7, 11, 11, 11, 11, 12, 16][index], index === 10 ? 'completed' : 'waiting')};
+      snapshot: snapshot((fails ? [3, 6, 6, 6, 6, 10, 10, 10, 10, 11, 15] : [3, 7, 7, 7, 7, 11, 11, 11, 11, 12, 16])[index], index === 10 ? 'completed' : 'waiting')};
   });
   const tasks = [], completions = [];
   for (const [turn, index] of [0, 3, 7, 10].entries()) {
     const phase = phases[index], workerId = workflowId + ':' + phase.phase;
     Object.assign(phase, {worker_id: workerId, task_queue: spec.task_queue, worker_finished: true,
       workflow_invocations: spec.workflow === 'python' ? 1 : [1, 0, 0, 1][turn],
-      update_invocations: spec.workflow === 'python' ? [0, 1, 2, 2][turn] : [0, 1, 1, 0][turn],
+      update_invocations: spec.workflow === 'python' ? (fails ? [0, 1, 1, 1] : [0, 1, 2, 2])[turn] : [0, 1, 1, 0][turn],
       activity_invocations: 0, ...(spec.workflow === 'php' ? {workflow_completions: 1} : {})});
     phase.requests.push({...transport, method: 'POST', path: '/api/worker/register', status: 201,
       request: {worker_id: workerId, task_queue: spec.task_queue, supported_workflow_types: [fixture.workflow_type],
@@ -77,17 +85,20 @@ function model(fixture, mode = 'http') {
       request: {workflow_id: workflowId}, response: {run_id: runId}});
     const task = {task_id: 'task-' + turn, lease_owner: workerId, workflow_task_attempt: 1,
       workflow_id: workflowId, run_id: runId, workflow_type: fixture.workflow_type, task_queue: spec.task_queue,
-      history_events: clone(workerEvents.slice(0, [2, 4, 8, 12][turn])),
+      history_events: clone(workerEvents.slice(0, (fails ? [2, 4, 7, 11] : [2, 4, 8, 12])[turn])),
       ...(turn === 1 || turn === 2 ? {workflow_update_id: 'update-' + (turn - 1)} : {})};
     phase.requests.push({...transport, method: 'POST', path: '/api/worker/workflow-tasks/poll', status: 200,
       response: {task}});
-    const command = turn === 0 ? {type: 'open_condition_wait', condition_key: 'payload:0'}
+    const command = fails && turn === 1 ? {type: 'fail_update', update_id: task.workflow_update_id,
+      exception_type: handlerFailure.exception_type, ...(spec.workflow === 'python' ? {exception_class: handlerFailure.exception_class} : {}),
+      message: handlerFailure.message, non_retryable: true}
+      : turn === 0 ? {type: 'open_condition_wait', condition_key: 'payload:0'}
       : turn === 3 ? {type: 'complete_workflow', result: envelope('final-result')}
         : {type: 'complete_update', update_id: task.workflow_update_id, result: envelope('update-result-' + (turn - 1))};
     const complete = {...transport, method: 'POST', path: '/api/worker/workflow-tasks/' + task.task_id + '/complete',
       status: 200, request: {lease_owner: workerId, workflow_task_attempt: 1, commands: [command]},
       response: {task_id: task.task_id, run_id: runId, workflow_task_attempt: 1, recorded: true},
-      decoded_commands: [{typed_decoded: turn === 0 ? {} : {result: turn === 3 ? fixture.typed_output : typedResult(fixture, turn - 1)}}]};
+      decoded_commands: [{typed_decoded: turn === 0 || fails && turn === 1 ? {} : {result: turn === 3 ? fixture.typed_output : typedResult(fixture, turn - 1)}}]};
     phase.requests.push(complete);
     phase.checkpoint_workflow_ack = {path: complete.path, task_id: task.task_id, lease_owner: workerId,
       workflow_task_attempt: 1, request_index: phase.requests.indexOf(complete), status: 200};
@@ -97,21 +108,32 @@ function model(fixture, mode = 'http') {
     const receipts = [];
     for (const index of indexes) {
       const phase = phases[index], original = phase.phase.startsWith('update-');
-      const value = {value: fixture.update_values[number], applied: number + 1};
+      const failed = fails && number === 0;
+      const value = {value: fixture.update_values[number], applied: number + 1 - (fails ? 1 : 0)};
       const response = {workflow_id: workflowId, run_id: runId, update_name: 'set_payload', update_status: 'completed',
         command_id: 'update-command-' + number, update_id: 'update-' + number,
         result: null, result_envelope: envelope('update-result-' + number)};
+      if (failed) Object.assign(response, {update_status: 'failed', outcome: 'update_failed', reason: null,
+        failure_id: 'original-failure', failure_message: handlerFailure.message, result_envelope: null});
       const request = {input: envelope(original ? 'original-value-' + number : 'duplicate-value'),
         request_id: workflowId + ':update:' + number, wait_for: 'completed'};
       Object.assign(phase, {client_finished: true, update_sent: true, request_id: request.request_id,
         client_result: spec.client === 'python' ? {...response, result: value} : value,
         typed_client_result: spec.client === 'python' ? {type: 'map', value: {result: typedResult(fixture, number)}} : typedResult(fixture, number)});
+      if (failed) {
+        delete phase.client_result; delete phase.typed_client_result;
+        phase.client_failure = {class: {php: 'DurableWorkflow\\Exception\\UpdateFailed', python: 'durable_workflow.errors.UpdateFailed',
+          rust: 'durable_workflow::Error::Http'}[spec.client], message: 'actual SDK error', status: 422, body: response,
+          ...(spec.client === 'php' ? {reason: null} : {}), ...(spec.client === 'python' ? {workflow_id: workflowId,
+            run_id: runId, update_id: response.update_id, failure_id: response.failure_id} : {})};
+      }
       const wire = {...transport, request_observation_id: 1, method: 'POST',
-        path: '/api/workflows/' + workflowId + '/update/set_payload', status: 200, request, response,
+        path: '/api/workflows/' + workflowId + '/update/set_payload', status: failed ? 422 : 200, request, response,
         decoded_input: [original ? fixture.update_values[number] : fixture.duplicate_update_value],
         typed_decoded_input: {type: 'list', value: [original ? fixture.typed_update_values[number]
           : {type: 'map', value: {message: {type: 'string', value: 'duplicate must not apply'}}}]},
         decoded_result: value, typed_decoded_result: typedResult(fixture, number)};
+      if (failed) { delete wire.decoded_result; delete wire.typed_decoded_result; }
       phase.requests.push(wire);
       if (!phase.phase.startsWith('duplicate-completed-')) {
         phase.pending_before_author = {client_running: true, completed_update_responses: 0};
@@ -119,15 +141,15 @@ function model(fixture, mode = 'http') {
           request_observation_id: 1, method: wire.method, path: wire.path, request_body: JSON.stringify(request),
           request_body_complete: true, upstream_request_started: true, response_observed: false};
         phase.request_arrivals.push(clone(phase.submission));
-        if (original) phase.acceptance_snapshot = snapshot(number === 0 ? 4 : 8);
+        if (original) phase.acceptance_snapshot = snapshot(number === 0 ? 4 : fails ? 7 : 8);
         else {
-          phase.snapshot_before = snapshot(number === 0 ? 4 : 8);
+          phase.snapshot_before = snapshot(number === 0 ? 4 : fails ? 7 : 8);
           phase.submission_snapshot = clone(phase.snapshot_before);
         }
       } else phase.snapshot_before = clone(phase.snapshot);
       receipts.push(response);
     }
-    observation.updates.push({completed_receipts: receipts});
+    observation.updates.push(fails && number === 0 ? {failed_receipts: receipts} : {completed_receipts: receipts});
   }
   const sender = phases[9], signalResponse = {workflow_id: workflowId, run_id: runId,
     command_id: 'signal-command', outcome: 'signal_received'};
@@ -207,5 +229,67 @@ const mutations = [
 ];
 for (const [name, mutate] of mutations) test('rejects ' + name, () => {
   const observation = model(fixture); mutate(observation);
+  assert.throws(() => checkSdkUpdateDirection(fixture, observation, 'update-model'));
+});
+
+for (const author of languages) for (const client of languages) {
+  const failedFixture = failureFixtureFor(author, client);
+  test(author + '/' + client + ' failed handler keeps original failure across cold checkpoints', () => {
+    const observation = model(failedFixture);
+    checkSdkUpdateDirectionArtifacts(failedFixture, failureArtifacts);
+    checkSdkUpdateDirectionPackages(failedFixture, observation, failureArtifacts);
+    assert.equal(checkSdkUpdateDirection(failedFixture, observation, 'update-model').failed_handler_preserved, true);
+  });
+}
+const failedFixture = failureFixtureFor('python', 'python');
+for (const [name, mutate] of [
+  ['failed handler reported as success', o => { o.sdk_update_direction.phases[1].requests[0].status = 200; }],
+  ['failure outcome changed to rejection', o => { o.sdk_update_direction.phases[1].requests[0].response.outcome = 'update_rejected'; }],
+  ['failure ID changed on duplicate', o => { o.sdk_update_direction.phases[2].requests[0].response.failure_id = 'new-failure'; }],
+  ['failed handler manufactures result', o => { o.sdk_update_direction.phases[1].requests[0].response.result_envelope = envelope('invented'); }],
+  ['SDK swallows failed outcome', o => { delete o.sdk_update_direction.phases[1].client_failure; }],
+  ['SDK failure loses original response', o => { o.sdk_update_direction.phases[1].client_failure.body = {}; }],
+  ['failure changes typed SDK class', o => { o.sdk_update_direction.phases[1].client_failure.class = 'GenericError'; }],
+  ['failure loses SDK identity', o => { delete o.sdk_update_direction.phases[1].client_failure.failure_id; }],
+  ['failed handler has a successful command', o => { o.sdk_update_direction.phases[3].requests[2].request.commands[0].type = 'complete_update'; }],
+  ['failed handler changes original message', o => { o.sdk_update_direction.phases[3].requests[2].request.commands[0].message = 'changed'; }],
+  ['failed handler changes original exception class', o => { o.sdk_update_direction.phases[3].requests[2].request.commands[0].exception_class = 'Changed'; }],
+  ['failed handler changes retry policy', o => { o.sdk_update_direction.phases[3].requests[2].request.commands[0].non_retryable = false; }],
+  ['failed callback replayed as successful state', o => { o.sdk_update_direction.phases[7].update_invocations = 2; }],
+  ['failure duplicate receipt missing', o => { o.updates[0].failed_receipts.pop(); }],
+]) test('rejects ' + name, () => {
+  const observation = model(failedFixture); mutate(observation);
+  assert.throws(() => checkSdkUpdateDirection(failedFixture, observation, 'update-model'));
+});
+
+function canonicalPythonResultModel() {
+  const fixture = failureFixtureFor('php', 'python');
+  const observation = model(fixture);
+  for (const index of [5, 6, 8]) {
+    const phase = observation.sdk_update_direction.phases[index];
+    const wire = phase.requests[0];
+    wire.response.control_plane = {schema: 'durable-workflow.v2.control-plane-response',
+      version: 1, operation: 'update', update_id: wire.response.update_id,
+      result: null, result_envelope: clone(wire.response.result_envelope)};
+    phase.client_result.control_plane = {...wire.response.control_plane, result: clone(wire.decoded_result)};
+    phase.typed_client_result.value.control_plane = {type: 'map', value: {result: clone(typedResult(fixture, 1))}};
+  }
+  return {fixture, observation};
+}
+
+test('Python hydrates the canonical result while retaining the original null wire view', () => {
+  const {fixture, observation} = canonicalPythonResultModel();
+  checkSdkUpdateDirection(fixture, observation, 'update-model');
+  for (const index of [5, 6, 8]) assert.equal(observation.sdk_update_direction.phases[index].requests[0].response.control_plane.result, null);
+});
+
+for (const [name, mutate] of [
+  ['changed canonical decoded result', phase => { phase.client_result.control_plane.result = {changed: true}; }],
+  ['foreign canonical result frame', phase => { phase.requests[0].response.control_plane.result_envelope = envelope('foreign'); }],
+  ['rounded canonical int64', phase => { phase.typed_client_result.value.control_plane.value.result.value.value.value.number.value = '9007199254740996'; }],
+  ['unrelated canonical metadata change', phase => { phase.client_result.control_plane.update_id = 'foreign'; }],
+]) test('rejects ' + name, () => {
+  const {fixture, observation} = canonicalPythonResultModel();
+  mutate(observation.sdk_update_direction.phases[5]);
   assert.throws(() => checkSdkUpdateDirection(fixture, observation, 'update-model'));
 });
