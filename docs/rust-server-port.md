@@ -26,6 +26,27 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+[#422](https://github.com/durable-workflow/server/pull/422) is merged and its
+[fresh-main verification](https://github.com/durable-workflow/server/issues/325#issuecomment-6119269193)
+is complete at e3ae32999d1e14813bf84498a716ad62cddf9813. Candidate and main share
+tree eb07a0d709a18a09caac850da02d6c8092799e9a. All six database jobs, PHP/source
+and boundary checks pass. Each original artifact independently passes 27 query
+observations / 144 full query sidecars, 27 signals / 90 full signal sidecars,
+and 76 native execution tests. All 2,041 selected original/archive hashes match.
+Fresh main PHP/source passes 2,706 tests / 61,424 assertions. The SDK artifact
+passes 297 original member hashes, nine thin comparisons and ten source hashes,
+with frozen installed/source/archive identities unchanged. Historical failed
+and cancelled jobs retain their original outcomes.
+
+The next slice defines nine pending published SDK update-client/author
+directions in [the pending corpus](../tests/Fixtures/ServerParityPending/published-sdk-updates/README.md).
+Its contract preserves duplicate request IDs and original typed results across
+cold committed checkpoints, then an ordered finishing signal. Request arrival
+is observed separately from durable acceptance. Worker adapters, the strict
+reader and actual all-six runtime qualification remain to be implemented.
+Full query policies, queued controls, unchanged consumers, migration,
+multi-node acceptance, matched performance and release/cutover remain open.
+
 [#408](https://github.com/durable-workflow/server/pull/408) qualifies nine
 published parent/child language directions using the one-activity component
 tuple. Its original

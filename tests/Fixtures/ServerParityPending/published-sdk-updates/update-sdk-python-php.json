@@ -1,0 +1,54 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "update-sdk-python-php",
+  "workflow_type": "parity.v1.sdk_updates",
+  "input": {"message": "original workflow λ"},
+  "typed_value": {"type": "map", "value": {"message": {"type": "string", "value": "original workflow λ"}}},
+  "activity": false,
+  "signal_count": 1,
+  "signal_value": {"finish": true},
+  "typed_signal_value": {"type": "map", "value": {"finish": {"type": "boolean", "value": true}}},
+  "update_name": "set_payload",
+  "update_values": [{"message": "first update λ", "number": 9007199254740993, "optional": null}, {"message": "second update λ", "number": 42, "ready": true}],
+  "typed_update_values": [
+    {"type": "map", "value": {"message": {"type": "string", "value": "first update λ"}, "number": {"type": "int64", "value": "9007199254740993"}, "optional": {"type": "null", "value": null}}},
+    {"type": "map", "value": {"message": {"type": "string", "value": "second update λ"}, "number": {"type": "int64", "value": "42"}, "ready": {"type": "boolean", "value": true}}}
+  ],
+  "duplicate_update_value": {"message": "duplicate must not apply"},
+  "output": {"values": [{"message": "first update λ", "number": 9007199254740993, "optional": null}, {"message": "second update λ", "number": 42, "ready": true}]},
+  "typed_output": {"type": "map", "value": {"values": {"type": "list", "value": [
+    {"type": "map", "value": {"message": {"type": "string", "value": "first update λ"}, "number": {"type": "int64", "value": "9007199254740993"}, "optional": {"type": "null", "value": null}}},
+    {"type": "map", "value": {"message": {"type": "string", "value": "second update λ"}, "number": {"type": "int64", "value": "42"}, "ready": {"type": "boolean", "value": true}}}
+  ]}}},
+  "expected_events": ["StartAccepted", "WorkflowStarted", "ConditionWaitOpened", "UpdateAccepted", "UpdateApplied", "UpdateCompleted", "MessageCursorAdvanced", "UpdateAccepted", "UpdateApplied", "UpdateCompleted", "MessageCursorAdvanced", "SignalReceived", "MessageCursorAdvanced", "SignalApplied", "ConditionWaitSatisfied", "WorkflowCompleted"],
+  "embedded_expected_events": ["StartAccepted", "WorkflowStarted", "SignalWaitOpened", "UpdateAccepted", "UpdateApplied", "UpdateCompleted", "MessageCursorAdvanced", "UpdateAccepted", "UpdateApplied", "UpdateCompleted", "MessageCursorAdvanced", "SignalReceived", "MessageCursorAdvanced", "SignalApplied", "WorkflowCompleted"],
+  "sdk_update_direction": {
+    "workflow": "python",
+    "client": "php",
+    "phase_order": [
+      "original",
+      "update-1",
+      "duplicate-pending-1",
+      "resumed-1",
+      "duplicate-completed-1",
+      "update-2",
+      "duplicate-pending-2",
+      "resumed-2",
+      "duplicate-completed-2",
+      "signal",
+      "replacement"
+    ],
+    "task_queue": "server-parity-sdk-updates",
+    "update_name": "set_payload",
+    "target": "instance-current-run",
+    "start_after_worker_registration": true,
+    "first_poll_after_start_receipt": true,
+    "start_client": "php-observer",
+    "signal_client": "php",
+    "signal_name": "payload",
+    "cold_author_processes": 4,
+    "update_client_processes": 6,
+    "pending_submission_before_author": true
+  },
+  "contract": "Normal published SDK update clients submit two exact typed updates to each PHP/Python/Rust workflow author blocked on a finishing signal. For each update, an original client and a separate pending duplicate client use the same stable request ID with different arguments before the cold author starts; a later completed duplicate uses that ID again. Complete original HTTP bodies and separate request-arrival evidence bind submissions before author execution without treating arrival as server acceptance. Preserve original command/update/run identities, original arguments and results, full accepted/applied/completed history, and one durable application and cursor advance per update. Client return shapes and historical callback replay remain explicit for each published SDK. Four cold author processes serve initial wait, each update checkpoint and final signal resumption. Every checkpoint follows the actual matching fenced workflow-task completion acknowledgment. Results contain the exact original value and applied count; final output contains both original values once in order. Canonical embedded PHP executes real update methods and ordered finishing signal, with its explicit history and no HTTP worker transport. This fixture is pending until real adapters and a strict full reader are integrated and all six configurations are qualified; validators, failures, queued controls, wait policies, routing, namespaces/auth, migration and performance remain separate gates."
+}
