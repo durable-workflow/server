@@ -70,6 +70,47 @@ final class NexusCooperativeCancellationPolicy
         return null;
     }
 
+    public static function requiresCapabilityForReplay(WorkflowRun $run): bool
+    {
+        if (! $run->relationLoaded('historyEvents') && ! $run->historyEvents()
+            ->where('event_type', HistoryEventType::ServiceCallStarted->value)->exists()) {
+            return false;
+        }
+        $run->loadMissing('historyEvents');
+        $calls = [];
+        $outcomes = [];
+        $requestSequence = null;
+        foreach ($run->historyEvents as $event) {
+            $payload = $event->payload;
+            if ($event->event_type === HistoryEventType::CooperativeCancellationDelivered
+                && ($payload['call_kind'] ?? null) === 'service_operation') {
+                return true;
+            }
+            if ($event->event_type === HistoryEventType::CooperativeCancellationRequested
+                && ($payload['workflow_command_id'] ?? null) === $run->cancellation_request_command_id) {
+                $requestSequence = $event->sequence;
+            }
+            if ($event->event_type === HistoryEventType::ServiceCallStarted
+                && ($payload['operation_mode'] ?? null) === 'sync'
+                && ($payload['wait_for'] ?? null) === 'completed') {
+                $calls[] = $payload['sequence'] ?? null;
+            }
+            if (in_array($event->event_type, [HistoryEventType::ServiceCallCompleted,
+                HistoryEventType::ServiceCallFailed, HistoryEventType::ServiceCallCancelled], true)) {
+                $outcomes[$payload['sequence'] ?? null] = $event->sequence;
+            }
+        }
+        foreach ($calls as $sequence) {
+            if (! isset($outcomes[$sequence])
+                || ($run->cancellation_delivery_sequence === null
+                    && ($requestSequence === null || $outcomes[$sequence] > $requestSequence))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /** @return array<string, mixed>|null */
     public static function requestUnavailable(WorkflowRun $run): ?array
     {

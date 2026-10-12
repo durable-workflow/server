@@ -130,6 +130,76 @@ class CooperativeCancellationProtocolTest extends TestCase
             ->assertJsonPath('unavailable', ['installed_runtime_nexus_cancellation']);
     }
 
+    #[DataProvider('nexusReplayBoundaries')]
+    public function test_nexus_cleanup_replay_routes_only_to_workers_that_can_read_its_boundary(?string $deliveryKind, bool $requiresNexus, bool $resolved, bool $beforeRequest): void
+    {
+        [$workflowId, $runId] = $this->start();
+        $this->register('ordinary-cooperative', true);
+        $original = $beforeRequest ? null : $this->requestCancellation($workflowId, ['cleanup_timeout_seconds' => 120])
+            ->assertStatus(202)->json('cancellation_request');
+        $run = WorkflowRun::query()->findOrFail($runId);
+        // Reconstruct retained history to isolate routing from the installed
+        // package's optional Nexus delivery implementation.
+        WorkflowHistoryEvent::record($run, HistoryEventType::ServiceCallStarted, [
+            'sequence' => 1, 'service_call_id' => 'original-call', 'endpoint_name' => 'service',
+            'service_name' => 'greeter', 'operation_name' => 'greet', 'operation_mode' => 'sync', 'wait_for' => 'completed',
+        ]);
+        if ($resolved) {
+            WorkflowHistoryEvent::record($run, HistoryEventType::ServiceCallCancelled, [
+                'sequence' => 1, 'service_call_id' => 'original-call',
+            ]);
+        }
+        if ($beforeRequest) {
+            $original = $this->requestCancellation($workflowId, ['cleanup_timeout_seconds' => 120])
+                ->assertStatus(202)->json('cancellation_request');
+            $run->refresh();
+        }
+        if ($deliveryKind !== null) {
+            $sequence = $deliveryKind === 'service_operation' ? 1 : 2;
+            WorkflowHistoryEvent::record($run, HistoryEventType::CooperativeCancellationDelivered, [
+                'workflow_command_id' => $original['request_id'], 'workflow_run_id' => $runId,
+                'sequence' => $sequence, 'call_kind' => $deliveryKind,
+            ]);
+            $run->forceFill(['cancellation_delivery_sequence' => $sequence, 'cancellation_delivered_at' => now()])->save();
+        }
+        $ready = $run->tasks()->where('task_type', 'workflow')->where('status', TaskStatus::Ready->value)->sole();
+        $before = $ready->getRawOriginal();
+        $poll = $this->poll('ordinary-cooperative')->assertOk();
+        if ($requiresNexus) {
+            $poll->assertJsonPath('task', null);
+            $this->assertSame($before, $ready->fresh()->getRawOriginal());
+            $this->withHeaders($this->headers())->postJson('/api/worker/register', [
+                'worker_id' => 'nexus-capable', 'task_queue' => 'cooperative', 'runtime' => 'rust',
+                'supported_workflow_types' => ['tests.external-greeting-workflow'],
+                'capabilities' => [CooperativeCancellationPolicy::CAPABILITY, NexusCooperativeCancellationPolicy::CAPABILITY],
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
+            ])->assertCreated();
+            $poll = $this->poll('nexus-capable')->assertOk();
+        }
+        $poll->assertJsonPath('task.task_id', $ready->id);
+        $markers = array_values(array_filter($poll->json('task.history_events'), static fn ($event) => $event['event_type'] === HistoryEventType::CooperativeCancellationDelivered->value));
+        $this->assertCount($deliveryKind === null ? 0 : 1, $markers);
+        if ($deliveryKind !== null) {
+            $this->assertSame($deliveryKind, $markers[0]['payload']['call_kind']);
+            $this->assertSame($original['request_id'], $markers[0]['payload']['workflow_command_id']);
+        }
+        $this->requestCancellation($workflowId, ['cleanup_timeout_seconds' => 3600])->assertOk()
+            ->assertJsonPath('duplicate', true)->assertJsonPath('cancellation_request.request_id', $original['request_id'])
+            ->assertJsonPath('cancellation_request.cleanup_deadline_at', $original['cleanup_deadline_at']);
+    }
+
+    public static function nexusReplayBoundaries(): array
+    {
+        return [
+            'waiting for original service cleanup' => [null, true, false, false],
+            'target cleanup finished before caller delivery' => [null, true, true, false],
+            'cold service boundary after target cleanup' => ['service_operation', true, true, false],
+            'ordinary activity after a resolved service call' => ['activity', false, true, true],
+            'ordinary timer after a resolved service call' => ['timer', false, true, true],
+            'service result predates the request' => [null, false, true, true],
+        ];
+    }
+
     public function test_active_claim_observes_request_on_heartbeat_and_cached_poll_without_losing_lease(): void
     {
         [$workflowId] = $this->start();

@@ -2342,7 +2342,7 @@ final class WorkflowTaskPoller
             return false;
         }
         if ($run instanceof WorkflowRun && is_string($run->cancellation_request_command_id)
-            && NexusCooperativeCancellationPolicy::pendingCall($run) !== null
+            && NexusCooperativeCancellationPolicy::requiresCapabilityForReplay($run)
             && ! NexusCooperativeCancellationPolicy::supports($capabilities, $protocolVersion)) {
             return false;
         }
