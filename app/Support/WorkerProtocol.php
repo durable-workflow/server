@@ -553,6 +553,8 @@ class WorkerProtocol
             'activity_retry_policy' => true,
             'activity_timeouts' => true,
             'cooperative_cancellation' => CooperativeCancellationPolicy::serverSupported(),
+            'nexus_cooperative_cancellation' => NexusCooperativeCancellationPolicy::serverSupported(),
+            'nexus_cooperative_cancellation_binding_kinds' => NexusCooperativeCancellationPolicy::serverSupported() ? ['workflow_run'] : [],
             'prepared_local_activities' => PreparedLocalActivityPolicy::serverSupported(),
             'prepared_local_activity_groups' => PreparedLocalActivityPolicy::groupsSupported(),
             'prepared_local_activity_cancellation_policies' => PreparedLocalActivityPolicy::cancellationPolicies(),

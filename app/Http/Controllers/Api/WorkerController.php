@@ -12,6 +12,7 @@ use App\Support\BackendLockPressure;
 use App\Support\CachedPollTaskKindConflict;
 use App\Support\CooperativeCancellationPolicy;
 use App\Support\ExternalPayloadStorageUnavailable;
+use App\Support\FencedWorkerDeregistration;
 use App\Support\HistoryRetentionEnforcer;
 use App\Support\LongPollCapacityExhaustedException;
 use App\Support\MessageStreamsContract;
@@ -19,6 +20,7 @@ use App\Support\MessageStreamService;
 use App\Support\NamespaceDurableStateQuota;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
+use App\Support\NexusCooperativeCancellationPolicy;
 use App\Support\PayloadCodecContract;
 use App\Support\PollRequestTaskKindsConflict;
 use App\Support\PreparedLocalActivityAdmissionRefused;
@@ -266,6 +268,15 @@ class WorkerController
                 'requested_version' => WorkerProtocol::requestVersion($request),
             ], 409);
         }
+        if (in_array(NexusCooperativeCancellationPolicy::CAPABILITY, $workerCapabilities, true)
+            && ! NexusCooperativeCancellationPolicy::supports($workerCapabilities, WorkerProtocol::requestVersion($request))) {
+            return WorkerProtocol::json([
+                'registered' => false, 'reason' => 'nexus_cooperative_cancellation_capability_mismatch',
+                'required_capabilities' => [CooperativeCancellationPolicy::CAPABILITY, NexusCooperativeCancellationPolicy::CAPABILITY],
+                'minimum_protocol_version' => CooperativeCancellationPolicy::MINIMUM_PROTOCOL_VERSION,
+                'requested_version' => WorkerProtocol::requestVersion($request),
+            ], 409);
+        }
         if (in_array(CooperativeCancellationPolicy::CAPABILITY, $workerCapabilities, true)
             && ! CooperativeCancellationPolicy::supports($workerCapabilities, WorkerProtocol::requestVersion($request))) {
             return WorkerProtocol::json([
@@ -510,7 +521,7 @@ class WorkerController
         return WorkerProtocol::json([
             'worker_id' => $workerId,
             'registered' => true,
-            ...(\App\Support\FencedWorkerDeregistration::available()
+            ...(FencedWorkerDeregistration::available()
                 ? ['registration_token' => $registration->registration_token] : []),
             'namespace' => $registration->namespace,
             'task_queue' => $registration->task_queue,
