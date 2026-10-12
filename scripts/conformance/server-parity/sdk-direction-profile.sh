@@ -40,7 +40,7 @@ case "${3:-activity}" in
     cohort=published-sdk-namespace-signals
     fixture_base=tests/Fixtures/ServerParityPending
     fixture_pattern=signal-namespace-sdk-*.json
-    reader_tests=(tests/Unit/ServerParitySdkNamespaceSignalContractTest.mjs)
+    reader_tests=(tests/Unit/ServerParitySdkNamespaceSignalContractTest.mjs tests/Unit/ServerParitySdkNamespaceControlRetentionTest.mjs)
     ;;
   query)
     tag=sdk-queries

@@ -113,29 +113,49 @@ function namespaceSignalHttpObservation(array $fixture, array $options): array
     $ids = [$options['workflow-id'], $options['workflow-id'].':peer'];
     $fixtures = [namespaceSignalRunFixture($fixture, false), namespaceSignalRunFixture($fixture, true)];
     $paths = $fibers = $clients = [];
-    $journal = tempnam(sys_get_temp_dir(), 'parity-namespace-control-');
+    $controlBase = $evidence.'/sdk-namespace-signal-'.$ids[0].'-control';
+    $journal = $controlBase.'-http.jsonl';
+    $arrivals = $controlBase.'-arrivals.jsonl';
+    $progress = $controlBase.'-progress.json';
+    if (file_put_contents($journal, '') === false || file_put_contents($arrivals, '') === false) {
+        throw new RuntimeException('Could not initialize retained namespace control journals.');
+    }
+    $checkpoint = static function (string $stage, ?string $namespace = null) use ($progress, $ids, $pairStart, &$state): void {
+        if (file_put_contents($progress, json_encode([
+            'schema' => 'durable-workflow.server-parity-namespace-control-progress/v1',
+            'stage' => $stage, 'workflow_id' => $ids[0], 'namespace' => $namespace,
+            'at_unix' => microtime(true), 'pair_started_at_unix' => $pairStart,
+            'pair_deadline_at_unix' => $pairStart + 70, 'run_budgets' => $state['run_budgets'],
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)."\n") === false) {
+            throw new RuntimeException('Could not checkpoint namespace control setup.');
+        }
+    };
+    $checkpoint('observer_start');
     $proxy = proc_open(['node', __DIR__.'/published-sdk-patch/observe-http.mjs', $options['url'], $journal, '--forwarding-state'],
         [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $proxyPipes, null,
-        [...getenv(), 'DW_PARITY_HTTP_CAPTURE_NAMESPACE' => '1']);
+        [...getenv(), 'DW_PARITY_HTTP_CAPTURE_NAMESPACE' => '1', 'DW_PARITY_HTTP_REQUEST_ARRIVALS' => $arrivals]);
     if (! is_resource($proxy)) {
-        unlink($journal);
         throw new RuntimeException('Could not start namespace control observer.');
     }
     fclose($proxyPipes[0]);
     try {
+        $checkpoint('observer_bind');
         $url = trim(fgets($proxyPipes[1]));
         if (! preg_match('#^http://127\.0\.0\.1:[0-9]+$#', $url)) {
             throw new RuntimeException('Namespace control observer did not bind its local port.');
         }
+        $checkpoint('client_setup');
         $admin = new Client($url, namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null);
         foreach ($fixtures as $index => $runFixture) {
             try {
+                $checkpoint('namespace_describe', $runFixture['namespace']);
                 $namespace = $admin->describeNamespace($runFixture['namespace']);
                 $created = false;
             } catch (ServerException $error) {
                 if ($error->status !== 404) {
                     throw $error;
                 }
+                $checkpoint('namespace_create', $runFixture['namespace']);
                 $namespace = $admin->createNamespace($runFixture['namespace'], 'Paired SDK signal conformance', 7);
                 $created = true;
             }
@@ -149,6 +169,7 @@ function namespaceSignalHttpObservation(array $fixture, array $options): array
             $runOptions = [...$options, 'workflow-id' => $ids[$index], 'fixture' => $paths[$index]];
             $fibers[$index] = new Fiber(static fn (): array => sdkDirectionHttpObservation($runFixture, $runOptions,
                 static function (array $phase): void { Fiber::suspend($phase); }, $deadline));
+            $checkpoint('original_author', $runFixture['namespace']);
             $original = $fibers[$index]->start();
             if (! is_array($original) || $original['phase'] !== 'original' || $original['snapshot']['status'] !== 'waiting') {
                 throw new RuntimeException('Both original namespace runs must durably wait before signal delivery.');
@@ -205,15 +226,23 @@ function namespaceSignalHttpObservation(array $fixture, array $options): array
                 try { $fiber->throw(new RuntimeException('Paired namespace recording aborted.')); } catch (Throwable) { }
             }
         }
-        file_put_contents($evidence.'/sdk-namespace-signal-'.$ids[0].'-control.json',
-            json_encode(['state' => $state, 'transport_jsonl' => file_get_contents($journal)],
-                JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)."\n");
+        $consolidated = file_put_contents($controlBase.'.json',
+            json_encode(['state' => $state, 'transport_jsonl' => file_get_contents($journal),
+                'request_arrivals_jsonl' => file_get_contents($arrivals)],
+                JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)."\n") !== false;
         proc_terminate($proxy);
         fclose($proxyPipes[1]);
         fclose($proxyPipes[2]);
         proc_close($proxy);
-        unlink($journal);
+        if ($consolidated) {
+            unlink($journal);
+            unlink($arrivals);
+            unlink($progress);
+        }
         foreach ($paths as $path) { unlink($path); }
+        if (! $consolidated) {
+            throw new RuntimeException('Could not consolidate namespace control evidence; partial journals retained.');
+        }
     }
 }
 

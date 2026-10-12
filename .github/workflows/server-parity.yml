@@ -527,6 +527,10 @@ jobs:
           docker logs "$RESOURCE_SCOPE-php-maintenance" > parity-evidence/php-maintenance.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-native-a" > parity-evidence/native-a.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-native-b" > parity-evidence/native-b.log 2>&1 || true
+          docker inspect --format '{{json .State}}' "$RESOURCE_SCOPE-native-a" > parity-evidence/native-a-state.json 2>&1 || true
+          docker inspect --format '{{json .State}}' "$RESOURCE_SCOPE-native-b" > parity-evidence/native-b-state.json 2>&1 || true
+          docker inspect --format '{"memory":{{json .HostConfig.Memory}},"memory_swap":{{json .HostConfig.MemorySwap}},"nano_cpus":{{json .HostConfig.NanoCpus}}}' "$RESOURCE_SCOPE-native-a" > parity-evidence/native-a-limits.json 2>&1 || true
+          docker inspect --format '{"memory":{{json .HostConfig.Memory}},"memory_swap":{{json .HostConfig.MemorySwap}},"nano_cpus":{{json .HostConfig.NanoCpus}}}' "$RESOURCE_SCOPE-native-b" > parity-evidence/native-b-limits.json 2>&1 || true
           docker logs "$RESOURCE_SCOPE-recovered" > parity-evidence/native-recovered.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-db" > parity-evidence/database.log 2>&1 || true
           bash scripts/conformance/server-parity/range-repair-cleanup.sh mysql
@@ -954,6 +958,10 @@ jobs:
           docker logs "$RESOURCE_SCOPE-php-maintenance" > parity-evidence/php-maintenance.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-native-a" > parity-evidence/native-a.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-native-b" > parity-evidence/native-b.log 2>&1 || true
+          docker inspect --format '{{json .State}}' "$RESOURCE_SCOPE-native-a" > parity-evidence/native-a-state.json 2>&1 || true
+          docker inspect --format '{{json .State}}' "$RESOURCE_SCOPE-native-b" > parity-evidence/native-b-state.json 2>&1 || true
+          docker inspect --format '{"memory":{{json .HostConfig.Memory}},"memory_swap":{{json .HostConfig.MemorySwap}},"nano_cpus":{{json .HostConfig.NanoCpus}}}' "$RESOURCE_SCOPE-native-a" > parity-evidence/native-a-limits.json 2>&1 || true
+          docker inspect --format '{"memory":{{json .HostConfig.Memory}},"memory_swap":{{json .HostConfig.MemorySwap}},"nano_cpus":{{json .HostConfig.NanoCpus}}}' "$RESOURCE_SCOPE-native-b" > parity-evidence/native-b-limits.json 2>&1 || true
           docker logs "$RESOURCE_SCOPE-recovered" > parity-evidence/native-recovered.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-db" > parity-evidence/postgres.log 2>&1 || true
           bash scripts/conformance/server-parity/range-repair-cleanup.sh pgsql
@@ -1263,6 +1271,10 @@ jobs:
           docker logs "$RESOURCE_SCOPE-php-maintenance" > parity-evidence/php-maintenance.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-rust" > parity-evidence/rust.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-recovered" > parity-evidence/rust-recovered.log 2>&1 || true
+          docker inspect --format '{{json .State}}' "$RESOURCE_SCOPE-rust" > parity-evidence/rust-state.json 2>&1 || true
+          docker inspect --format '{{json .State}}' "$RESOURCE_SCOPE-recovered" > parity-evidence/rust-recovered-state.json 2>&1 || true
+          docker inspect --format '{"memory":{{json .HostConfig.Memory}},"memory_swap":{{json .HostConfig.MemorySwap}},"nano_cpus":{{json .HostConfig.NanoCpus}}}' "$RESOURCE_SCOPE-rust" > parity-evidence/rust-limits.json 2>&1 || true
+          docker inspect --format '{"memory":{{json .HostConfig.Memory}},"memory_swap":{{json .HostConfig.MemorySwap}},"nano_cpus":{{json .HostConfig.NanoCpus}}}' "$RESOURCE_SCOPE-recovered" > parity-evidence/rust-recovered-limits.json 2>&1 || true
           bash scripts/conformance/server-parity/range-repair-cleanup.sh sqlite
           bash scripts/conformance/server-parity/range-repair-cleanup.sh sqlite pending-native
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh sqlite

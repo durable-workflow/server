@@ -46,26 +46,32 @@ fixture actors accept an explicit namespace through the unchanged SDK API.
 The paired recorder and strict reader are implemented. All nine published
 client/author directions and canonical embedded counterparts pass the SQLite
 reference baseline, with 36 original runs, complete transport and persisted
-relationships checked. All 4,755 reader tests pass; the initial path/typed-error
-reader failures remain unchanged. Native current-run signal lookup and untimed
-condition waits are prepared, with qualification pending. The new profile is
-wired into all six database jobs and stays in the pending directory. Expanded
-jobs have a 35-minute whole-job ceiling; existing run budgets and resource caps
-stay fixed. The first native execution regression compiled but failed because
-wrong-namespace signal refusal omitted PHP's canonical signal metadata. That
-original failure is retained; the response mapping correction and stronger
-identity checks await fresh execution. The next original regression correctly
-refused the test's incomplete signal argument registration; that test now
-declares and checks the frozen int64 contract without relaxing validation.
-The shared reader now requires the
-refusal's canonical workflow, operation and signal identities; all original
-PHP/embedded raw pairs pass the stronger rules without rerunning the baseline.
-The workflow isolation check also
-rejected the new stop-option spelling; the existing accepted spelling now
-passes locally. Existing default-profile checks cannot qualify these new cases.
-An original MySQL 8.4 default-profile failure records four storage 503s and four
-native missing-row diagnostics. Fixed lookup labels are under qualification;
-the exact lookup/cause and historical MariaDB failure's cause remain unknown.
+relationships checked. All 4,755 reader guards and the SDK-dependent forced
+setup-loss regression pass with the locked PHP SDK. The initial path/typed-error
+reader failures remain unchanged. Native current-run signals, canonical refusal
+metadata and untimed condition waits are implemented and the new profile runs
+in all six database jobs. The fixture directory remains pending. Expanded jobs
+have a 35-minute ceiling; original run budgets and runtime caps stay fixed.
+
+Exact `6bac8f677` [run 38304548447](https://github.com/durable-workflow/server/actions/runs/38304548447)
+passes five jobs and fails MariaDB. Original PostgreSQL 17 artifact review
+verifies all 27 paired observations / 54 original runs / 306 full HTTP sidecars
+and 78 native execution tests. The other successful artifacts still need review.
+MariaDB passes all PHP/embedded counterparts, but native's first failing update
+in the Python-author/PHP-client direction returns an opaque storage 503. Its
+fixed diagnostic identifies the post-commit update receipt lookup; the reason
+that lookup found no row remains unknown. The first native namespace setup
+separately exhausts its 75-second outer recorder ceiling without a phase sidecar.
+Those [original failures remain unchanged](https://github.com/durable-workflow/server/pull/429#issuecomment-6132750228).
+
+The recorder now preserves setup checkpoints and HTTP/arrival journals through
+forced child loss, consolidating them only after a final control receipt.
+The real locked-SDK regression passes and fails on the prior recorder source.
+Always-run native state/limit receipts retain process-loss evidence. This changes
+evidence retention, not SQL, HTTP semantics, retries or deadlines. Next inspect
+the remaining originals, reproduce the missing receipt and qualify the new
+namespace matrix before promotion. Earlier MariaDB/MySQL failure causes remain
+unestablished; the new lookup site does not retroactively establish them.
 Full namespace authorization, other families, consumers,
 migration, multi-node acceptance and matched performance remain open.
 
