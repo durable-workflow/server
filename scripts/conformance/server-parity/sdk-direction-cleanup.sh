@@ -10,10 +10,11 @@ case "${2:-activity}" in
   child) tag=sdk-child-directions; cohort=published-sdk-child-directions ;;
   timer) tag=sdk-timers; cohort=published-sdk-timers ;;
   signal) tag=sdk-signals; cohort=published-sdk-signals ;;
+  namespace-signal) tag=sdk-namespace-signals; cohort=published-sdk-namespace-signals; fixture_base=tests/Fixtures/ServerParityPending ;;
   query) tag=sdk-queries; cohort=published-sdk-queries ;;
   update) tag=sdk-updates; cohort=published-sdk-updates ;;
   update-failure) tag=sdk-update-failures; cohort=published-sdk-update-failures ;;
-  *) echo 'Choose activity, child, timer, signal, query, update or update-failure SDK directions' >&2; exit 2 ;;
+  *) echo 'Choose activity, child, timer, signal, namespace-signal, query, update or update-failure SDK directions' >&2; exit 2 ;;
 esac
 test -n "${RESOURCE_SCOPE:?Set the owning isolated network/resource scope}"
 profile="$fixture_base/$cohort"

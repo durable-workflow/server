@@ -42,10 +42,20 @@ is [paired named-namespace SDK signals](../tests/Fixtures/ServerParityPending/pu
 Nine pending client/author definitions cover distinct original runs with the
 same type and queue, wrong-namespace signal refusal, an empty foreign-Worker
 poll and cold completion with exact independent Avro values. The ordinary
-fixture actors now accept an explicit namespace through the unchanged SDK API.
-Paired observation, its strict reader, the actual PHP/embedded baseline and
-native support remain pending. Existing default-profile checks cannot qualify
-these new cases. Full namespace authorization, other families, consumers,
+fixture actors accept an explicit namespace through the unchanged SDK API.
+The paired recorder and strict reader are implemented. All nine published
+client/author directions and canonical embedded counterparts pass the SQLite
+reference baseline, with 36 original runs, complete transport and persisted
+relationships checked. All 4,750 reader tests pass; the initial path/typed-error
+reader failures remain unchanged. Native current-run signal lookup and untimed
+condition waits are prepared, with qualification pending. The new profile is
+wired into all six database jobs and stays in the pending directory. Expanded
+jobs have a 35-minute whole-job ceiling; existing run budgets and resource caps
+stay fixed. Existing default-profile checks cannot qualify these new cases.
+An original MySQL 8.4 default-profile failure records four storage 503s and four
+native missing-row diagnostics. Fixed lookup labels are under qualification;
+the exact lookup/cause and historical MariaDB failure's cause remain unknown.
+Full namespace authorization, other families, consumers,
 migration, multi-node acceptance and matched performance remain open.
 
 [#422](https://github.com/durable-workflow/server/pull/422) is merged and its
