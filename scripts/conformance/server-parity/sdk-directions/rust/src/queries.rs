@@ -14,7 +14,10 @@ pub async fn run(arguments: &[String], fixture: Value) -> Result<()> {
     let phases = fixture["sdk_query_direction"]["phase_order"]
         .as_array()
         .ok_or_else(|| Error::WorkerLoop("No SDK query phases".into()))?;
-    if !phases.iter().any(|value| value.as_str() == Some(phase.as_str())) {
+    if !phases
+        .iter()
+        .any(|value| value.as_str() == Some(phase.as_str()))
+    {
         return Err(Error::WorkerLoop("Unknown SDK query phase".into()));
     }
     let seconds: f64 = remaining
