@@ -1,7 +1,7 @@
 //! Durable updates admitted at a quiescent wait, with original request receipts.
 //! Concurrent queued control routing and validator tasks are not qualified.
 use super::{
-    Result,
+    Result, RuntimeError,
     backend::Backend,
     envelope, refuse,
     store::{PreparedControlArguments, Store, id, now, reject_fields, validate_arguments},
@@ -14,6 +14,47 @@ use std::time::Duration;
 
 const MAX_UPDATES_PER_RUN: i64 = 64;
 const UPDATE_ROW: &str = "SELECT u.*,c.workflow_type,c.message_sequence FROM workflow_updates u JOIN workflow_commands c ON c.id=u.workflow_command_id WHERE u.id=$1";
+
+#[derive(Clone, Copy)]
+enum UpdateLookup {
+    AdmissionOwnership,
+    AdmissionRun,
+    StartContract,
+    Inventory,
+    WaitLookup,
+    HistoryAppend,
+    TaskEnqueue,
+    ReceiptRead,
+}
+
+impl UpdateLookup {
+    fn label(self) -> &'static str {
+        match self {
+            Self::AdmissionOwnership => "admission_ownership",
+            Self::AdmissionRun => "admission_run",
+            Self::StartContract => "start_contract",
+            Self::Inventory => "inventory",
+            Self::WaitLookup => "wait_lookup",
+            Self::HistoryAppend => "history_append",
+            Self::TaskEnqueue => "task_enqueue",
+            Self::ReceiptRead => "receipt_read",
+        }
+    }
+}
+
+fn update_lookup_diagnostic(error: &RuntimeError, lookup: UpdateLookup) -> Option<Value> {
+    matches!(error, RuntimeError::Database(sqlx::Error::RowNotFound))
+        .then(|| json!({"event":"runtime_update_lookup_missing","lookup":lookup.label()}))
+}
+
+fn at_update_lookup(error: RuntimeError, lookup: UpdateLookup) -> RuntimeError {
+    if let Some(diagnostic) = update_lookup_diagnostic(&error, lookup) {
+        // A closed label inventory identifies the lookup without SQL, IDs,
+        // error text or inputs. Keep the original error and HTTP behavior.
+        eprintln!("{diagnostic}");
+    }
+    error
+}
 
 // Match PHP trim(), including NUL and vertical tab, without stripping Unicode
 // whitespace from an exception's identity or message.
@@ -89,6 +130,73 @@ pub(super) fn update_failure(command: &Value) -> Result<UpdateFailure<'_>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_lookup_diagnostics_have_only_closed_labels() {
+        let lookups = [
+            UpdateLookup::AdmissionOwnership,
+            UpdateLookup::AdmissionRun,
+            UpdateLookup::StartContract,
+            UpdateLookup::Inventory,
+            UpdateLookup::WaitLookup,
+            UpdateLookup::HistoryAppend,
+            UpdateLookup::TaskEnqueue,
+            UpdateLookup::ReceiptRead,
+        ];
+        let expected = [
+            "admission_ownership",
+            "admission_run",
+            "start_contract",
+            "inventory",
+            "wait_lookup",
+            "history_append",
+            "task_enqueue",
+            "receipt_read",
+        ];
+        for (lookup, label) in lookups.into_iter().zip(expected) {
+            assert_eq!(
+                update_lookup_diagnostic(&RuntimeError::Database(sqlx::Error::RowNotFound), lookup),
+                Some(json!({"event":"runtime_update_lookup_missing","lookup":label}))
+            );
+        }
+    }
+
+    #[test]
+    fn unrelated_errors_and_refusals_have_no_lookup_diagnostic() {
+        for error in [
+            RuntimeError::Database(sqlx::Error::Protocol(
+                "SYNTHETIC_PRIVATE_SQL_PAYLOAD_AUTH".into(),
+            )),
+            RuntimeError::Database(sqlx::Error::ColumnNotFound(
+                "SYNTHETIC_PRIVATE_COLUMN".into(),
+            )),
+            RuntimeError::Database(sqlx::Error::PoolTimedOut),
+            refuse(StatusCode::NOT_FOUND, "instance_not_found"),
+        ] {
+            assert!(update_lookup_diagnostic(&error, UpdateLookup::ReceiptRead).is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn lookup_annotation_preserves_the_original_http_response() {
+        use axum::response::IntoResponse;
+        let original = RuntimeError::Database(sqlx::Error::RowNotFound).into_response();
+        let annotated = at_update_lookup(
+            RuntimeError::Database(sqlx::Error::RowNotFound),
+            UpdateLookup::ReceiptRead,
+        )
+        .into_response();
+        assert_eq!(original.status(), annotated.status());
+        assert_eq!(original.headers(), annotated.headers());
+        assert_eq!(
+            axum::body::to_bytes(original.into_body(), 256)
+                .await
+                .unwrap(),
+            axum::body::to_bytes(annotated.into_body(), 256)
+                .await
+                .unwrap()
+        );
+    }
 
     #[test]
     fn failure_commands_keep_php_normalization_and_classification() {
@@ -176,7 +284,10 @@ where
                     })
             })
             .transpose()?;
-        let mut tx = self.begin().await?;
+        let mut tx = self
+            .begin()
+            .await
+            .map_err(|error| at_update_lookup(error, UpdateLookup::AdmissionOwnership))?;
         let instance = Self::query("SELECT current_run_id,last_message_sequence FROM workflow_instances WHERE id=$1 AND namespace='default'")
             .bind(workflow_id).fetch_optional(&mut *tx).await?
             .ok_or_else(|| refuse(StatusCode::NOT_FOUND, "instance_not_found"))?;
@@ -206,9 +317,12 @@ where
             }
             DB::string(&existing, "id")?
         } else {
-            let run = Self::active_run(&mut tx, &run_id).await?;
+            let run = Self::active_run(&mut tx, &run_id)
+                .await
+                .map_err(|error| at_update_lookup(error, UpdateLookup::AdmissionRun))?;
             let started = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowStarted' ORDER BY sequence LIMIT 1")
-                .bind(&run_id).fetch_one(&mut *tx).await?;
+                .bind(&run_id).fetch_one(&mut *tx).await
+                .map_err(|error| at_update_lookup(error.into(), UpdateLookup::StartContract))?;
             let contract = DB::document_row(&started, "payload")?;
             if !contract["declared_updates"]
                 .as_array()
@@ -234,15 +348,21 @@ where
                 "invalid_update_arguments",
             )?;
             let open_tasks = Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status IN ('ready','leased')")
-                .bind(&run_id).fetch_one(&mut *tx).await?;
+                .bind(&run_id).fetch_one(&mut *tx).await
+                .map_err(|error| at_update_lookup(error.into(), UpdateLookup::Inventory))?;
             let pending_signals = Self::scalar("SELECT COUNT(*) FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received'")
-                .bind(&run_id).fetch_one(&mut *tx).await?;
+                .bind(&run_id).fetch_one(&mut *tx).await
+                .map_err(|error| at_update_lookup(error.into(), UpdateLookup::Inventory))?;
             let pending_updates = Self::scalar("SELECT COUNT(*) FROM workflow_updates WHERE workflow_run_id=$1 AND status='accepted'")
-                .bind(&run_id).fetch_one(&mut *tx).await?;
+                .bind(&run_id).fetch_one(&mut *tx).await
+                .map_err(|error| at_update_lookup(error.into(), UpdateLookup::Inventory))?;
             if open_tasks != 0
                 || pending_signals != 0
                 || pending_updates != 0
-                || Self::open_wait(&mut tx, &run_id).await?.is_none()
+                || Self::open_wait(&mut tx, &run_id)
+                    .await
+                    .map_err(|error| at_update_lookup(error, UpdateLookup::WaitLookup))?
+                    .is_none()
             {
                 return Err(refuse(StatusCode::CONFLICT, "update_snapshot_busy"));
             }
@@ -250,7 +370,8 @@ where
                 Self::scalar("SELECT COUNT(*) FROM workflow_updates WHERE workflow_run_id=$1")
                     .bind(&run_id)
                     .fetch_one(&mut *tx)
-                    .await?;
+                    .await
+                    .map_err(|error| at_update_lookup(error.into(), UpdateLookup::Inventory))?;
             if count >= MAX_UPDATES_PER_RUN {
                 return Err(refuse(
                     StatusCode::SERVICE_UNAVAILABLE,
@@ -288,9 +409,11 @@ where
                 "workflow_run_id":run_id,"update_name":name,"arguments":wire(&prepared.arguments),"ordering_state":"ready",
                 "request_id":request_id,"command":{"id":command_id,"sequence":command_sequence,"message_sequence":message_sequence,
                     "type":"update","target_scope":"instance","resolved_run_id":run_id,"status":"accepted","outcome":null}
-            }), None, Some(&command_id)).await?;
+            }), None, Some(&command_id)).await
+                .map_err(|error| at_update_lookup(error, UpdateLookup::HistoryAppend))?;
             Self::create_task(&mut tx, &run_id, &DB::string(&run, "queue")?, "workflow",
-                json!({"resume_source_kind":"workflow_update","workflow_update_id":update_id,"workflow_command_id":command_id})).await?;
+                json!({"resume_source_kind":"workflow_update","workflow_update_id":update_id,"workflow_command_id":command_id})).await
+                .map_err(|error| at_update_lookup(error, UpdateLookup::TaskEnqueue))?;
             update_id
         };
         // A completion wait owns neither the transaction nor a pool connection.
@@ -303,7 +426,8 @@ where
             let update = Self::query(UPDATE_ROW)
                 .bind(&update_id)
                 .fetch_one(&self.pool)
-                .await?;
+                .await
+                .map_err(|error| at_update_lookup(error.into(), UpdateLookup::ReceiptRead))?;
             let status = DB::string(&update, "status")?;
             let completed = status == "completed";
             let failed = status == "failed";
