@@ -54,9 +54,10 @@ in all six database jobs. The fixture directory remains pending. Expanded jobs
 have a 35-minute ceiling; original run budgets and runtime caps stay fixed.
 
 Exact `6bac8f677` [run 38304548447](https://github.com/durable-workflow/server/actions/runs/38304548447)
-passes five jobs and fails MariaDB. Original PostgreSQL 17 artifact review
-verifies all 27 paired observations / 54 original runs / 306 full HTTP sidecars
-and 78 native execution tests. The other successful artifacts still need review.
+passes five jobs and fails MariaDB. Independent original artifact review across
+SQLite, PostgreSQL 16/17 and MySQL 8.0/8.4 verifies 135 paired observations,
+270 original runs, 1,530 full HTTP sidecars, 9,585 wire exchanges and all 8,352
+original member hashes. Each also passes 78 native execution tests.
 MariaDB passes all PHP/embedded counterparts, but native's first failing update
 in the Python-author/PHP-client direction returns an opaque storage 503. Its
 fixed diagnostic identifies the post-commit update receipt lookup; the reason
@@ -68,8 +69,22 @@ The recorder now preserves setup checkpoints and HTTP/arrival journals through
 forced child loss, consolidating them only after a final control receipt.
 The real locked-SDK regression passes and fails on the prior recorder source.
 Always-run native state/limit receipts retain process-loss evidence. This changes
-evidence retention, not SQL, HTTP semantics, retries or deadlines. Next inspect
-the remaining originals, reproduce the missing receipt and qualify the new
+evidence retention, not SQL, HTTP semantics, retries or deadlines.
+
+The subsequent original SQLite job fails in frozen PHP patch replay, before
+namespace execution. Its original PHP Worker recovers a documented SQLite
+workflow-poll pressure response and the cold replacement completes the same
+run. The [reviewed reader correction](https://github.com/durable-workflow/server/pull/429#issuecomment-6133295115)
+extends the existing strict PHP pressure check to that original PHP phase,
+excluding language SDK producers. Exact response shape, original registration,
+bounded retry hint, diagnostic, authority and successful same-phase recovery
+remain required. Generic storage failures remain refused; Python/Rust retain
+their distinct same-request retry contract. The unchanged observation passes
+the corrected reader and still fails the original reader. All 4,817 pure-reader
+guards pass; the unchanged SDK-dependent retention regression retains its
+separate real-runtime qualification. No tuple or original deadline changes.
+The original job and record remain failed. Next reproduce the missing receipt
+and qualify the new
 namespace matrix before promotion. Earlier MariaDB/MySQL failure causes remain
 unestablished; the new lookup site does not retroactively establish them.
 Full namespace authorization, other families, consumers,

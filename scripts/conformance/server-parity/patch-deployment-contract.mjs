@@ -10,7 +10,7 @@ export function checkPatchPollPressureResponse(response) {
   if (Object.hasOwn(response, 'message')) assert.equal(typeof response.message, 'string', 'published diagnostic message is text');
 }
 
-function checkRepeatedPhpPollPressure(item, index, phase, observation, workflowId) {
+function checkPhpPollPressure(item, index, phase, observation, workflowId) {
   assert.equal(item.method, 'POST');
   assert.equal(item.path, '/api/worker/workflow-tasks/poll', 'PHP pressure is confined to workflow polling');
   assert.equal(item.client_cancelled ?? false, false);
@@ -228,8 +228,10 @@ export function checkPatchDeployment(fixture, observation, workflowId) {
           'no hidden worker or shutdown failure');
       }
       for (const [index, item] of phase.requests.entries()) {
-        if (phase === replacement && spec.embedded_clock_probe && !spec.consumer && item.status === 503) {
-          checkRepeatedPhpPollPressure(item, index, phase, observation, workflowId);
+        const phpWorkerPhase = phase === original ? !spec.legacy_marker_history
+          : spec.embedded_clock_probe && !spec.consumer;
+        if (phpWorkerPhase && item.status === 503) {
+          checkPhpPollPressure(item, index, phase, observation, workflowId);
           continue;
         }
         if (phase === replacement && spec.consumer && item.client_cancelled === true) {
