@@ -51,7 +51,7 @@ pub async fn run(arguments: &[String], fixture: Value) -> Result<()> {
             fixture["duplicate_update_value"].clone()
         };
         let request_id = format!("{workflow_id}:update:{index}");
-        result["client_result"] = tokio::time::timeout(
+        let response = tokio::time::timeout(
             Duration::from_secs_f64(seconds),
             client.update_workflow(
                 workflow_id,
@@ -61,7 +61,25 @@ pub async fn run(arguments: &[String], fixture: Value) -> Result<()> {
             ),
         )
         .await
-        .map_err(|_| Error::WorkerLoop("SDK update client exceeded fixture budget".into()))??;
+        .map_err(|_| Error::WorkerLoop("SDK update client exceeded fixture budget".into()))?;
+        let expects_failure = fixture.get("sdk_update_failure").is_some() && index == 0;
+        match response {
+            Ok(_) if expects_failure => {
+                return Err(Error::WorkerLoop(
+                    "Failed update unexpectedly returned a successful result".into(),
+                ));
+            }
+            Ok(value) => result["client_result"] = value,
+            Err(Error::Http { status, body }) if expects_failure && status.as_u16() == 422 => {
+                let response: Value = serde_json::from_str(&body)?;
+                if response["outcome"] != "update_failed" {
+                    return Err(Error::Http { status, body });
+                }
+                result["client_failure"] = json!({"class": "durable_workflow::Error::Http",
+                    "message": format!("http {status}: {body}"), "status": status.as_u16(), "body": response});
+            }
+            Err(error) => return Err(error),
+        }
         result["request_id"] = json!(request_id);
         result["update_sent"] = json!(true);
         result["client_finished"] = json!(true);
@@ -105,6 +123,13 @@ pub async fn run(arguments: &[String], fixture: Value) -> Result<()> {
             let values =
                 ctx.updates("set_payload")?
                     .into_iter()
+                    // Accepted inputs include failed handlers. Replay this
+                    // application's rejection before deriving its values.
+                    .filter(|arguments| {
+                        arguments
+                            .first()
+                            .is_none_or(|value| value["fail_handler"] != true)
+                    })
                     .map(|arguments| {
                         arguments.into_iter().next().ok_or_else(|| {
                             Error::WorkerLoop("Missing committed update value".into())
@@ -128,6 +153,9 @@ pub async fn run(arguments: &[String], fixture: Value) -> Result<()> {
                     .ok_or_else(|| Error::WorkerLoop("Update expects one map argument".into()))?;
                 if !values[0].is_object() {
                     return Err(Error::WorkerLoop("Update expects a map argument".into()));
+                }
+                if values[0]["fail_handler"] == true {
+                    return Err(Error::WorkerLoop("parity update handler failure λ".into()));
                 }
                 let applied = ctx
                     .history_events()

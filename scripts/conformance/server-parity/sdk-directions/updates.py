@@ -4,7 +4,7 @@ import importlib.metadata
 import json
 import os
 
-from durable_workflow import Client, Worker, workflow
+from durable_workflow import Client, UpdateFailed, Worker, workflow
 
 WORKFLOW_INVOCATIONS = 0
 UPDATE_INVOCATIONS = 0
@@ -24,6 +24,8 @@ class Updates:
     def set_payload(self, value):
         global UPDATE_INVOCATIONS
         UPDATE_INVOCATIONS += 1
+        if value.get("fail_handler") is True:
+            raise ValueError("parity update handler failure λ")
         self.values.append(value)
         return {"value": value, "applied": len(self.values)}
 
@@ -48,10 +50,23 @@ async def main(arguments, fixture):
                 value = (fixture["update_values"][index] if phase.startswith("update-")
                          else fixture["duplicate_update_value"])
                 request_id = workflow_id + ":update:" + str(index)
-                result = await client.update_workflow(workflow_id, "set_payload", args=[value],
-                                                      wait_for="completed", request_id=request_id)
+                expects_failure = "sdk_update_failure" in fixture and index == 0
+                try:
+                    result = await client.update_workflow(workflow_id, "set_payload", args=[value],
+                                                          wait_for="completed", request_id=request_id)
+                    if expects_failure:
+                        raise RuntimeError("Failed update unexpectedly returned a successful result")
+                    outcome = {"client_result": result}
+                except UpdateFailed as error:
+                    if not expects_failure:
+                        raise
+                    outcome = {"client_failure": {"class": type(error).__module__ + "." + type(error).__qualname__,
+                                                  "message": str(error), "status": error.status,
+                                                  "body": error.body, "workflow_id": error.workflow_id,
+                                                  "run_id": error.run_id, "update_id": error.update_id,
+                                                  "failure_id": error.failure_id}}
                 print(json.dumps({**common, "update_sent": True, "client_finished": True,
-                                  "request_id": request_id, "client_result": result}))
+                                  "request_id": request_id, **outcome}))
                 return
             if phase == "signal":
                 result = await client.signal_workflow(workflow_id, "payload", args=[fixture["signal_value"]])

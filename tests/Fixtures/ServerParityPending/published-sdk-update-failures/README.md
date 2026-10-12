@@ -36,7 +36,22 @@ The immutable SDK producers differ: PHP sends its exception class as
 and its error display message. The reader must preserve these actual differences
 while checking each original failure and its duplicates.
 
-This directory is the acceptance contract only. Actors, executable fixtures,
-original baseline recordings, native correction and qualification are pending.
+Nine candidate fixtures and failure-aware ordinary SDK actors are implemented.
+The observer retains typed SDK failures and requires the matching original
+`fail_update` acknowledgment. Strict checks cover terminal failure identity,
+unchanged pending/completed duplicates, full history/cursor/worker rows and
+parent continuation. These checks remain distinct from runtime qualification.
+
+A preliminary SQLite PHP/PHP recording and canonical embedded recording pass
+the full lifecycle reader. The actual HTTP response has `outcome=update_failed`
+and `reason=null`. Embedded PHP retains its own original exception metadata and
+retry classification. PHP/Rust `updates()` enumerate accepted inputs, including
+failed handlers; the fixture's final state replays its explicit rejection
+condition. Python reconstructs state through successful `UpdateApplied` events.
+The first PHP author assumption is retained as a failed reader record.
+
+The complete cross-language baseline, native correction and all-six
+qualification remain pending. No executable failure profile is promoted or
+included in the automatic runtime matrix yet.
 Validators, queued routing, other failure policies, alternate wait stages,
 namespaces/auth, consumers, migration and performance remain separate gates.

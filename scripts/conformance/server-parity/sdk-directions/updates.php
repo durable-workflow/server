@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Composer\InstalledVersions;
 use DurableWorkflow\Client;
+use DurableWorkflow\Exception\UpdateFailed;
 use DurableWorkflow\Transport\Psr18Transport;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\QueryContext;
@@ -42,10 +43,23 @@ if (preg_match('/^(update|duplicate-pending|duplicate-completed)-([12])$/', $pha
     $index = (int) $match[2] - 1;
     $value = $match[1] === 'update' ? $fixture['update_values'][$index] : $fixture['duplicate_update_value'];
     $requestId = $workflowId.':update:'.$index;
-    $result = $client->updateWorkflow($workflowId, 'set_payload', [$value],
-        waitFor: 'completed', requestId: $requestId);
+    $expectsFailure = isset($fixture['sdk_update_failure']) && $index === 0;
+    try {
+        $result = $client->updateWorkflow($workflowId, 'set_payload', [$value],
+            waitFor: 'completed', requestId: $requestId);
+        if ($expectsFailure) {
+            throw new RuntimeException('Failed update unexpectedly returned a successful result');
+        }
+        $outcome = ['client_result' => $result];
+    } catch (UpdateFailed $error) {
+        if (! $expectsFailure) {
+            throw $error;
+        }
+        $outcome = ['client_failure' => ['class' => $error::class, 'message' => $error->getMessage(),
+            'status' => $error->status, 'reason' => $error->reason, 'body' => $error->details]];
+    }
     echo json_encode($common + ['update_sent' => true, 'client_finished' => true,
-        'request_id' => $requestId, 'client_result' => $result], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)."\n";
+        'request_id' => $requestId] + $outcome, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)."\n";
     return;
 }
 if ($phase === 'signal') {
@@ -71,10 +85,18 @@ $worker->registerWorkflow($type, static function (WorkflowContext $ctx, mixed $v
     $runId = $ctx->runId;
     $ctx->waitCondition(fn (): bool => $ctx->signals('payload') !== [], 'payload:0');
 
-    return ['values' => array_map(static fn (array $arguments): mixed => $arguments[0], $ctx->updates('set_payload'))];
+    // updates() includes accepted inputs, even when their handler failed. The
+    // fixture's application rejects fail_handler before changing its state.
+    $updates = array_filter($ctx->updates('set_payload'), static fn (array $arguments): bool =>
+        ($arguments[0]['fail_handler'] ?? false) !== true);
+
+    return ['values' => array_values(array_map(static fn (array $arguments): mixed => $arguments[0], $updates))];
 })->declareSignal($type, 'payload', static fn (array $value) => null)
     ->registerUpdate($type, 'set_payload', static function (QueryContext $ctx, array $value) use (&$updateInvocations): array {
         ++$updateInvocations;
+        if (($value['fail_handler'] ?? false) === true) {
+            throw new RuntimeException('parity update handler failure λ');
+        }
 
         return ['value' => $value, 'applied' => count($ctx->events('UpdateApplied')) + 1];
     });

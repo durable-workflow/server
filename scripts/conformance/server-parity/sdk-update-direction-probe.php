@@ -104,6 +104,7 @@ function sdkUpdateDirectionHttpObservation(array $fixture, array $options): arra
     $author = static function (string $phase, ?string $updateId, int $completedCount) use (&$actors, &$records, &$runId,
         &$observerStart, $client, $fixture, $spec, $options, $deadline, $workflowId, $trace, $finish): array {
         $actor = &$actors[$phase];
+        $commandType = isset($fixture['sdk_update_failure']) && $phase === 'resumed-1' ? 'fail_update' : 'complete_update';
         $ack = $snapshot = null;
         while (microtime(true) < $deadline) {
             $requests = sdkQueryLiveWireRequests($actor);
@@ -125,7 +126,7 @@ function sdkUpdateDirectionHttpObservation(array $fixture, array $options): arra
                 }
             }
             if ($runId !== '') {
-                $ack = sdkUpdateWorkflowAcknowledgement($requests, $workflowId, $runId, $phase, $updateId);
+                $ack = sdkUpdateWorkflowAcknowledgement($requests, $workflowId, $runId, $phase, $updateId, $commandType);
                 if ($ack !== null) {
                     $snapshot = sdkDirectionSnapshot($client, $workflowId, $runId);
                     $completed = count(array_filter($snapshot['events'], static fn (array $event): bool => $event['event_type'] === 'UpdateCompleted'));
@@ -137,7 +138,7 @@ function sdkUpdateDirectionHttpObservation(array $fixture, array $options): arra
             if (! sdkQueryActorPoll($actor)) {
                 // A synchronous SDK may already have exited after its response.
                 $requests = sdkQueryLiveWireRequests($actor);
-                $ack = sdkUpdateWorkflowAcknowledgement($requests, $workflowId, $runId, $phase, $updateId);
+                $ack = sdkUpdateWorkflowAcknowledgement($requests, $workflowId, $runId, $phase, $updateId, $commandType);
                 if ($ack !== null) {
                     $snapshot = sdkDirectionSnapshot($client, $workflowId, $runId);
                 }
@@ -272,6 +273,10 @@ function sdkUpdateDirectionHttpObservation(array $fixture, array $options): arra
                 } elseif ($request['method'] === 'POST' && $request['path'] === '/api/workflows/'.$workflowId.'/update/set_payload') {
                     $request['decoded_input'] = $client->payloadCodec()->decodeEnvelope($request['request']['input']);
                     $request['typed_decoded_input'] = typedValue($request['decoded_input']);
+                    if (isset($fixture['sdk_update_failure']) && str_ends_with($phase, '-1')
+                        && $request['status'] === 422 && ($request['response']['outcome'] ?? null) === 'update_failed') {
+                        $updates[0]['failed_receipts'][] = $request['response'];
+                    }
                     if (isset($request['response']['result_envelope'])) {
                         $request['decoded_result'] = $client->payloadCodec()->decodeEnvelope($request['response']['result_envelope']);
                         $request['typed_decoded_result'] = typedValue($request['decoded_result']);
@@ -353,7 +358,7 @@ function sdkUpdateSubmission(array &$actor, string $workflowId, string $requestI
     throw new RuntimeException('Actual update submission did not reach its complete forwarded request; sidecar retained.');
 }
 
-function sdkUpdateWorkflowAcknowledgement(array $requests, string $workflowId, string $runId, string $phase, ?string $updateId): ?array
+function sdkUpdateWorkflowAcknowledgement(array $requests, string $workflowId, string $runId, string $phase, ?string $updateId, string $commandType = 'complete_update'): ?array
 {
     if ($phase === 'original' || $phase === 'replacement') {
         return sdkQueryWorkflowAcknowledgement($requests, $workflowId, $runId, $phase === 'original' ? 0 : 2);
@@ -385,7 +390,8 @@ function sdkUpdateWorkflowAcknowledgement(array $requests, string $workflowId, s
                 continue;
             }
             $commands = $request['commands'] ?? null;
-            if (! is_array($commands) || count($commands) !== 1 || ($commands[0]['type'] ?? null) !== 'complete_update'
+            if (! in_array($commandType, ['complete_update', 'fail_update'], true)
+                || ! is_array($commands) || count($commands) !== 1 || ($commands[0]['type'] ?? null) !== $commandType
                 || ($commands[0]['update_id'] ?? null) !== $updateId) {
                 continue;
             }
