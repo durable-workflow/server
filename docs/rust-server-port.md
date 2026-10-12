@@ -90,10 +90,18 @@ passes all 27 observations, binds all 90 HTTP phase sidecars and verifies all
 passes 27 observations and 135 member hashes, with actual 1 GiB database limits
 and TLS checks. Both original native outputs pass all 75 execution tests.
 Complete signal profiles, tests and thin SDK proof are retained; duplicate
-downloads and extraction scratch are removed. Final current-main integration
-qualification remains pending in #415.
+downloads and extraction scratch are removed. [Final candidate qualification](https://github.com/durable-workflow/server/pull/415#issuecomment-6116076532)
+passes all six configurations at `75cb353b6c7fde323aa11bd98ff15372ee37d8cb`.
+Merged main `567f3cd49e6bd49a35658d56c4ae638395511e0f` has the same tree
+`f38c3e1555632400040377b4c5d04278f6e1061a`. Its [fresh main verification](https://github.com/durable-workflow/server/pull/415#issuecomment-6116428625)
+passes five databases, PHP/source (2,685 tests/61,266 assertions) and boundary;
+SQLite fails in the frozen PHP base child-cancellation fixture before signals.
+Main all-six qualification remains unproven. Independent main MySQL 8.0
+inspection verifies 27 signal observations, 90 complete HTTP sidecars and 135
+original/archive hashes; SDK preparation independently verifies 297 original,
+nine thin-byte and seven current-source checks.
 
-The latest integration exposes a separate frozen-PHP startup overlap:
+An earlier integration exposed a separate frozen-PHP startup overlap:
 [original SQLite failure](https://github.com/durable-workflow/server/pull/415#issuecomment-6115559242).
 Five directions pass and the sixth completes its original 13-event run, but
 the first worker claims `WorkflowStarted` before the successful start response;
@@ -112,7 +120,23 @@ overlap remains unqualified, and the failed record is not relabeled.
 Focused source validation passes 61 signal models and five socket-based
 transport cases; the current Node contract suite passes all 4,681 tests and
 the changed PHP recorder passes syntax checking. The native Rust and SDK
-adapter sources remain unchanged. Fresh runtime qualification is still required.
+adapter sources remain unchanged. The later candidate qualifies the bounded
+post-start cohort on all six databases; the original overlap failure remains
+retained and outside that claim.
+
+The fresh-main SQLite failure is a distinct frozen Server 2.5.14 / Workflow
+2.5.5 / PHP SDK 2.2.6 reference finding. Its original child cancels its pending
+timer and closes, but an accepted cancellation is followed by an identical
+rejected command and the SDK receives 409. A separate real SQLite writer-lock
+fault reproduction proves that PHP can retry the whole cancellation after its
+commit when publishing the parent's delivery hint encounters contention. One
+ordinary SDK request produces two commands; no retransmission or observer
+reentrancy occurs in that reproduction. This identifies a matching source
+boundary, without claiming the original run's exact lost exception or a current
+released-image reproduction. The [PHP correction is handed to General](https://github.com/durable-workflow/server/issues/325#issuecomment-6116357816),
+who acknowledged ownership of correction and current-release qualification.
+The original failed main record, frozen tuple and strict accepted/duplicate
+receipt guards remain unchanged. Release and cutover qualification stay held.
 
 The original normal worker registers its declaration before the observer starts
 the run, and its first workflow claim follows the observed successful start
@@ -1222,8 +1246,10 @@ order, stable public workflow identity, retained run/operation relationships,
 decoded input/result values and one committed completion. Passing these cases
 does not prove the remaining acceptance criteria.
 
-Normal published SDK query directions are independently prepared while #415's
-current-main integration qualifies. The [reviewed next scope](https://github.com/durable-workflow/server/issues/325#issuecomment-6115419641)
+Normal published SDK query directions proceed from #415's identical previously
+qualified tree, independently of General's PHP correction. Fresh main's frozen
+SQLite reference failure stays retained; it is not relabeled or substituted
+with the successful candidate. The [reviewed next scope](https://github.com/durable-workflow/server/issues/325#issuecomment-6115419641)
 adds all nine query-client/workflow-author combinations, overlapping real author
 and query-client processes, three cold committed checkpoints, exact fresh
 Unicode/int64/boolean/null state and unchanged original durable histories.
@@ -1245,7 +1271,7 @@ See [the query cohort](../tests/Fixtures/ServerParityProfiles/published-sdk-quer
 | Workflow lifecycle, duplicate commands, typed history, continuation, child workflows, cancellation, cleanup replay | Workflow lifecycle, migration, child-workflow and replay runners; Feature cooperative cancellation, history, migration and repeated-signal tests | Bounded authored completion, activity retry/failure, direct children/cancellation and root cooperative cleanup; broader propagation, replay and continuation semantics pending |
 | Timers, schedules, signals, queries, updates, search attributes, memo, sagas | Corresponding runners in `scripts/conformance/`, manifests in `static/platform-conformance/`; Sample App polyglot experiments | Bounded durable sleep, repeated signals, state queries/updates and two UTC schedule cases; broader policies, search attributes, memo and sagas pending |
 | Local activities, cancellation scopes, worker sessions, streams, service catalog/Nexus, bridge adapters, standalone activities, debugging and repair | `routes/api.php`, `docs/contracts/`, worker/control-plane specifications, corresponding Feature tests and Nexus runner | Pending; not omitted from parity |
-| Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | Published PHP SDK and embedded directions for 29 default fixtures plus a separate role profile; #401 qualifies nine PHP/Python/Rust workflow/activity directions, #408 nine parent/child directions and #411 normal timer authors, with cold replay and canonical embedded counterparts; unchanged CLI 2.2.0 list/describe/history; nine signal client/author directions implemented with runtime qualification pending; broader SDK families, CLI commands, Waterline and Sample App pending |
+| Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | Published PHP SDK and embedded directions for 29 default fixtures plus a separate role profile; #401 qualifies nine PHP/Python/Rust workflow/activity directions, #408 nine parent/child directions, #411 normal timer authors and #415 nine post-start signal client/author directions, with cold replay and canonical embedded counterparts; #415 candidate all-six passes, fresh main retains a frozen-PHP SQLite cancellation failure; unchanged CLI 2.2.0 list/describe/history; nine query client/author directions prepared with runtime qualification pending; broader SDK families, CLI commands, Waterline and Sample App pending |
 | SQL schema and stored representations | `database/migrations/`, Workflow package `src/migrations/`, model casts, `Workflow\\Serializers\\Serializer`, queue job payloads, exported history and credential digests | [Representation checkpoints](rust-server-storage-audit.md) recorded; complete mapping and executable migration tests pending |
 | Images, architecture, bootstrap, configuration, readiness, metrics and graceful shutdown | `Dockerfile`, `docker/`, `config/`, `docker-compose*.yml`, `k8s/helm/`, `docs/server-reference.md`, small-cluster/multi-region validation docs | Pending |
 | Backup and in-place upgrade | `docs/self-hosted-backup-and-restore.md`, external payload backup holds; last PHP image writes, all PHP roles stop, Rust takes over same DB sequentially | Pending on SQLite, MariaDB/MySQL, PostgreSQL |

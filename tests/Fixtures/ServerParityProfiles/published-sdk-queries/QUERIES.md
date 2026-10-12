@@ -47,8 +47,11 @@ requires an explicit input field; PHP validates and officially serializes zero
 arguments when omitted. Malformed/unknown supplied fields must retain their
 existing refusals.
 
-Next: finish #415/main verification, qualify this exact source on all six
-database configurations, retain disagreements and correct the responsible
+Next: qualify this exact source on all six database configurations, proceeding
+from #415's identical previously qualified candidate/main tree. Its fresh main
+SQLite frozen-PHP cancellation failure remains independently recorded; General
+owns that PHP correction and current-release qualification. Release and cutover
+qualification remain held. Retain query disagreements and correct the responsible
 implementation, then repeat strict qualification and independently inspect
 original records and complete wires. Busy snapshots, errors/recovery policies,
 historical selectors, older-protocol routing, namespace/auth policies and
@@ -57,3 +60,4 @@ performance are separate gates.
 [Reviewed acceptance](https://github.com/durable-workflow/server/issues/325#issuecomment-6115419641).
 [Process/result clarification](https://github.com/durable-workflow/server/issues/325#issuecomment-6115688730).
 [Bounded scheduling](https://github.com/durable-workflow/server/issues/325#issuecomment-6116091307).
+[Independent PHP correction](https://github.com/durable-workflow/server/issues/325#issuecomment-6116357816).
