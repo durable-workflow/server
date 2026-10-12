@@ -3,7 +3,7 @@ import {readFileSync} from 'node:fs';
 import {checkPublishedSdkPackages} from './sdk-direction-contract.mjs';
 
 const artifacts = JSON.parse(readFileSync(new URL('../../../tests/Fixtures/ServerParityProfiles/published-sdk-updates/artifacts.json', import.meta.url)));
-const failureArtifacts = JSON.parse(readFileSync(new URL('../../../tests/Fixtures/ServerParityPending/published-sdk-update-failures/artifacts.json', import.meta.url)));
+const failureArtifacts = JSON.parse(readFileSync(new URL('../../../tests/Fixtures/ServerParityProfiles/published-sdk-update-failures/artifacts.json', import.meta.url)));
 const artifactsFor = fixture => fixture.sdk_update_failure ? failureArtifacts : artifacts;
 const languages = ['php', 'python', 'rust'];
 const phases = ['original', 'update-1', 'duplicate-pending-1', 'resumed-1', 'duplicate-completed-1',

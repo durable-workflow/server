@@ -75,7 +75,7 @@ completed candidate and main qualification.
 
 The [next reviewed boundary](https://github.com/durable-workflow/server/issues/325#issuecomment-6121730771)
 is failed update handlers with continued parent execution. The
-[pending cohort contract](../tests/Fixtures/ServerParityPending/published-sdk-update-failures/README.md)
+[cohort contract](../tests/Fixtures/ServerParityProfiles/published-sdk-update-failures/README.md)
 requires ordinary frozen SDK clients and authors, original accepted failure
 identities, pending and completed duplicates, cold replay, and a later successful
 update plus finishing signal on the same run. Preliminary SQLite PHP/PHP and
@@ -89,13 +89,13 @@ Language-specific exception type, class and message remain observable; a failed
 handler emits no successful `UpdateApplied`.
 
 The nine-direction failure profile now runs after the successful-update profile
-in all six database jobs. Its fixtures remain pending until original runtime
-artifacts and normal source checks qualify the complete cohort. The expanded
+in all six database jobs. Its original candidate qualification and independent
+artifact review permit promotion into the qualified profiles. The expanded
 jobs have a 30-minute whole-job limit to include this additional workload;
 individual scenario deadlines, frozen tuples and resource limits are unchanged.
 The preceding `dc881518` run retains its original failures and cancellations
-under the original 25-minute limit. Full failed-handler qualification remains
-open. The expanded 6121f343 matrix retains all six failed runtime jobs, with
+under the original 25-minute limit. The expanded 6121f343 matrix retains all six
+failed runtime jobs, with
 native test/build stages and PHP/source passing. A separate local diagnostic
 passes all nine directions on published PHP Server, embedded PHP and native,
 followed by a passing three-record comparison. Independent inspection binds
@@ -132,8 +132,14 @@ defect. A [reviewed storage diagnostic](https://github.com/durable-workflow/serv
 now emits only fixed error categories and bounded driver codes, preserving the
 HTTP response and excluding error text, SQL, payloads and authentication data.
 Five diagnostic tests, 30 library tests and 77 SQLite execution regressions pass
-locally. MariaDB reproduction and fresh six-database qualification are required;
-the diagnostic is not a failure correction or permission to accept generic 503s.
+locally. The original 929638262 matrix and normal source checks pass. Independent
+inspection verifies 162 failed-update observations and 1,188 original HTTP
+sidecars across all six databases, plus successful-update, query and signal
+families: 648 observations, 3,780 sidecars and 7,925 original member hashes in
+total. Actual runner `1f091ae1` has reviewed tree `64a6729b` on base `5fd56e0c`.
+Current-main integration remains a separate checkpoint. The original MariaDB
+storage fault remains unresolved; these clean workloads are not a failure
+correction or permission to accept generic 503s.
 Validators, full query policies, queued controls,
 unchanged consumers, migration,
 multi-node acceptance, matched performance and release/cutover remain open.

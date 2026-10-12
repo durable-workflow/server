@@ -33,7 +33,7 @@
   "waterline": "2.9.1",
   "capacity_suite": "1.9.0",
   "performance_status": "not_measured",
-  "qualification_scope": "PENDING: nine published SDK failed-handler update client/author directions, original pending/completed duplicate failure identities, cold parent continuation and later successful update, canonical embedded counterparts",
+  "qualification_scope": "Nine published SDK failed-handler update client/author directions, original pending/completed duplicate failure identities, cold parent continuation and later successful update, canonical embedded counterparts; default namespace and serialized transactions; original candidate 929638262 qualified across six database configurations",
   "resource_limits": {
     "cpus": 1,
     "memory_bytes": 536870912,

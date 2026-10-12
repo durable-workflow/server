@@ -9,7 +9,7 @@ const artifacts = JSON.parse(readFileSync(new URL('artifacts.json', profile)));
 const languages = ['php', 'python', 'rust'], clone = value => structuredClone(value);
 const envelope = blob => ({codec: 'avro', blob});
 const fixtureFor = (author, client) => JSON.parse(readFileSync(new URL('update-sdk-' + author + '-' + client + '.json', profile)));
-const failureProfile = new URL('../Fixtures/ServerParityPending/published-sdk-update-failures/', import.meta.url);
+const failureProfile = new URL('../Fixtures/ServerParityProfiles/published-sdk-update-failures/', import.meta.url);
 const failureArtifacts = JSON.parse(readFileSync(new URL('artifacts.json', failureProfile)));
 const failureFixtureFor = (author, client) => JSON.parse(readFileSync(new URL('update-failure-sdk-' + author + '-' + client + '.json', failureProfile)));
 const typedResult = (fixture, index) => ({type: 'map', value: {
