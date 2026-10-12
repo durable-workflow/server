@@ -1328,6 +1328,21 @@ deadline or runtime budgets. Five real child-process regressions and all
 4,758 Node tests pass. New exact-source runtime qualification remains required;
 the other four failed raw causes are not assumed identical.
 
+The capture correction's fresh matrix passes SQLite/MariaDB, fails MySQL
+8.0/8.4 and is cancelled on PostgreSQL 16/17. Inspected MySQL records stop on
+the recorder's JSON parsing of an actively appended journal. Complete retained
+lines parse; an unterminated prefix of an actual line reproduces the same
+exception, while the exact original transient read is unavailable. The
+[reviewed live-read correction](https://github.com/durable-workflow/server/pull/422#issuecomment-6117918727)
+reads only newline-committed records incrementally, retaining exact bytes and
+indexes. Final parsing binds one retained snapshot and refuses incomplete or
+malformed data. PHP recorder tests pass 21 cases/97 assertions; four new checks
+fail against the previous live-read path, and all 4,758 Node tests pass.
+PostgreSQL 17's query cohort independently passes all 27 observations, but its
+later pressure cancellation remains an incomplete job. Fixed execution budgets,
+native code, SDKs, tuples and semantic reader rules are unchanged; exact-source
+all-six qualification is still required.
+
 ## Contract and verification inventory
 
 | Surface | Current authority and reusable checks | Port status |

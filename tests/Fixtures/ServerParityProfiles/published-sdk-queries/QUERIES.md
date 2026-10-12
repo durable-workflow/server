@@ -50,7 +50,7 @@ signal histories, without HTTP worker transport.
 
 Current recorder preparation passes 71 reader models and the full 4,758-test Node suite,
 PHP syntax, Python AST, Rust fixture formatting, shell syntax and the Docker
-isolation policy with 72 regressions. Sixteen PHP recorder tests pass 80
+isolation policy with 72 regressions. Twenty-one PHP recorder tests pass 97
 assertions, including root empty-object/array distinction, exact int64 values
 and cancelled partial/fully received bodies; the feature workflow includes the
 new parser regressions. These are source/model checks. No new
@@ -96,6 +96,21 @@ Five real subprocess regressions check large JSON, nonzero exit, missing
 executable, timeout and oversized output. This transport correction still
 requires a new exact-source all-six qualification.
 
+That correction's fresh run passes SQLite/MariaDB but fails MySQL 8.0/8.4 and
+is cancelled on PostgreSQL 16/17. The MySQL records retain a recorder JSON
+exception while observing a live append-only journal. Complete retained lines
+parse correctly; a controlled unterminated prefix of an actual retained line
+reproduces the original exception. The exact transient read bytes were not
+retained. Live observation now consumes only newline-committed records once,
+keeping complete bytes and stable request indexes. Final observation parses
+the exact retained snapshot and refuses an unterminated tail; malformed
+committed lines still fail. Five regressions cover partial receipts, large
+pending writes, malformed committed records, final refusal and lost committed
+bytes. Four checks fail against the former live-read path. PostgreSQL 17's
+query cohort independently passes all 27 observations, but its later native
+pressure step is cancelled; that job remains unqualified. Execution deadlines
+and resource budgets are unchanged. A new all-six run is required.
+
 Next: qualify this exact source on all six database configurations, proceeding
 from #415's identical previously qualified candidate/main tree. Its fresh main
 SQLite frozen-PHP cancellation failure remains independently recorded; General
@@ -114,3 +129,4 @@ performance are separate gates.
 [Worker/public history and completion response shapes](https://github.com/durable-workflow/server/pull/422#issuecomment-6117007924).
 [Ordinary Python refusal and native correction](https://github.com/durable-workflow/server/pull/422#issuecomment-6117247506).
 [Original output capture failure and correction](https://github.com/durable-workflow/server/pull/422#issuecomment-6117614915).
+[Original live-journal disagreement and correction](https://github.com/durable-workflow/server/pull/422#issuecomment-6117918727).

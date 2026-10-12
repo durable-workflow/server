@@ -154,4 +154,102 @@ final class ServerParitySdkQueryTransportTest extends TestCase
         self::assertSame(['version' => 'published', 'server_id' => 'original-server'], $request['response']);
         self::assertLessThan(512, strlen(json_encode($request, JSON_THROW_ON_ERROR)));
     }
+
+    private function journalRecord(array $request): string
+    {
+        return json_encode($request + ['request_body' => '{}', 'response_body' => '',
+            'request_body_complete' => true, 'upstream_request_started' => true,
+            'client_cancelled' => false, 'transport_error' => null], JSON_THROW_ON_ERROR)."\n";
+    }
+
+    public function test_live_partial_write_cannot_release_a_checkpoint_before_its_receipt_is_committed(): void
+    {
+        $journal = tempnam(sys_get_temp_dir(), 'query-live-test-');
+        $actor = ['journal' => $journal];
+        try {
+            [$poll, $receipt] = $this->acknowledgementRequests();
+            $poll['response_body'] = json_encode($poll['response'], JSON_THROW_ON_ERROR);
+            unset($poll['response']);
+            $receipt['request_body'] = json_encode($receipt['request'], JSON_THROW_ON_ERROR);
+            $receipt['response_body'] = json_encode($receipt['response'], JSON_THROW_ON_ERROR);
+            unset($receipt['request'], $receipt['response']);
+            $first = $this->journalRecord($poll);
+            $second = $this->journalRecord($receipt);
+            $split = intdiv(strlen($second), 2);
+            file_put_contents($journal, $first.substr($second, 0, $split));
+            $before = file_get_contents($journal);
+            $requests = \sdkQueryLiveWireRequests($actor);
+            self::assertCount(1, $requests);
+            self::assertNull(\sdkQueryWorkflowAcknowledgement($requests, 'original', 'run', 0));
+            self::assertSame($before, file_get_contents($journal));
+            self::assertSame($requests, \sdkQueryLiveWireRequests($actor), 'an unfinished tail is not a new record');
+            file_put_contents($journal, substr($second, $split), FILE_APPEND);
+            $requests = \sdkQueryLiveWireRequests($actor);
+            self::assertCount(2, $requests);
+            self::assertSame(1, \sdkQueryWorkflowAcknowledgement($requests, 'original', 'run', 0)['request_index']);
+            self::assertEquals($requests, \sdkQueryWireRequests($actor));
+            self::assertSame($first.$second, file_get_contents($journal));
+        } finally {
+            unlink($journal);
+        }
+    }
+
+    public function test_a_live_tail_without_any_committed_record_stays_pending(): void
+    {
+        $journal = tempnam(sys_get_temp_dir(), 'query-live-test-');
+        $actor = ['journal' => $journal];
+        try {
+            $line = $this->journalRecord(['method' => 'GET', 'path' => '/api/cluster/info', 'status' => 200,
+                'response_body' => json_encode(['details' => str_repeat('metadata λ', 70000)], JSON_THROW_ON_ERROR)]);
+            file_put_contents($journal, substr($line, 0, intdiv(strlen($line), 2)));
+            self::assertSame([], \sdkQueryLiveWireRequests($actor));
+            file_put_contents($journal, $line);
+            self::assertCount(1, \sdkQueryLiveWireRequests($actor));
+            self::assertSame($line, file_get_contents($journal));
+        } finally {
+            unlink($journal);
+        }
+    }
+
+    public function test_malformed_committed_live_record_still_fails(): void
+    {
+        $journal = tempnam(sys_get_temp_dir(), 'query-live-test-');
+        $actor = ['journal' => $journal];
+        try {
+            file_put_contents($journal, "{\"method\":\n");
+            $this->expectException(JsonException::class);
+            \sdkQueryLiveWireRequests($actor);
+        } finally {
+            unlink($journal);
+        }
+    }
+
+    public function test_final_observation_refuses_even_valid_json_without_its_commit_newline(): void
+    {
+        $journal = tempnam(sys_get_temp_dir(), 'query-live-test-');
+        try {
+            file_put_contents($journal, rtrim($this->journalRecord(['method' => 'GET', 'path' => '/api', 'status' => 200]), "\n"));
+            $this->expectException(\RuntimeException::class);
+            $this->expectExceptionMessage('unterminated record');
+            \sdkQueryWireRequests(['journal' => $journal]);
+        } finally {
+            unlink($journal);
+        }
+    }
+
+    public function test_a_live_journal_cannot_lose_already_committed_bytes(): void
+    {
+        $journal = tempnam(sys_get_temp_dir(), 'query-live-test-');
+        $actor = ['journal' => $journal];
+        try {
+            file_put_contents($journal, $this->journalRecord(['method' => 'GET', 'path' => '/api', 'status' => 200]));
+            self::assertCount(1, \sdkQueryLiveWireRequests($actor));
+            file_put_contents($journal, '');
+            $this->expectException(\RuntimeException::class);
+            $this->expectExceptionMessage('lost committed bytes');
+            \sdkQueryLiveWireRequests($actor);
+        } finally {
+            unlink($journal);
+        }
+    }
 }

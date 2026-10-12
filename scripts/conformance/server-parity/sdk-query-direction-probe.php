@@ -80,28 +80,70 @@ function sdkQueryActorPoll(array &$actor): bool
     return $status['running'];
 }
 
-function sdkQueryWireRequests(array $actor): array
+function sdkQueryWireRecord(string $line): array
 {
-    return array_map(static function (string $line): array {
-        $wire = json_decode($line, true, flags: JSON_THROW_ON_ERROR);
-        foreach (['request', 'response'] as $side) {
-            $bytes = $wire[$side.'_body'];
-            $incomplete = $side === 'request' && ! $wire['request_body_complete']
-                && ! $wire['upstream_request_started'];
-            $wire[$side] = $bytes === '' || $incomplete ? null : json_decode($bytes, true, flags: JSON_THROW_ON_ERROR);
-            if ($wire[$side] === [] && ! $incomplete
-                && json_decode($bytes, flags: JSON_THROW_ON_ERROR) instanceof stdClass) {
-                $wire[$side] = (object) [];
-            }
+    $wire = json_decode($line, true, flags: JSON_THROW_ON_ERROR);
+    foreach (['request', 'response'] as $side) {
+        $bytes = $wire[$side.'_body'];
+        $incomplete = $side === 'request' && ! $wire['request_body_complete']
+            && ! $wire['upstream_request_started'];
+        $wire[$side] = $bytes === '' || $incomplete ? null : json_decode($bytes, true, flags: JSON_THROW_ON_ERROR);
+        if ($wire[$side] === [] && ! $incomplete
+            && json_decode($bytes, flags: JSON_THROW_ON_ERROR) instanceof stdClass) {
+            $wire[$side] = (object) [];
         }
-        unset($wire['request_body'], $wire['response_body'], $wire['response_bytes_base64']);
-        // Keep every task/receipt field; summarize only repeated discovery bodies.
-        if (is_array($wire['response']) && in_array($wire['path'], ['/api', '/api/version', '/api/capabilities', '/api/cluster/info'], true)) {
-            $wire['response'] = sdkDirectionResponseSummary($wire['response']);
-        }
+    }
+    unset($wire['request_body'], $wire['response_body'], $wire['response_bytes_base64']);
+    // Keep every task/receipt field; summarize only repeated discovery bodies.
+    if (is_array($wire['response']) && in_array($wire['path'], ['/api', '/api/version', '/api/capabilities', '/api/cluster/info'], true)) {
+        $wire['response'] = sdkDirectionResponseSummary($wire['response']);
+    }
 
-        return $wire;
-    }, file($actor['journal'], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES));
+    return $wire;
+}
+
+function sdkQueryWireRequests(array $actor, ?string $journal = null): array
+{
+    $journal ??= file_get_contents($actor['journal']);
+    if ($journal !== '' && ! str_ends_with($journal, "\n")) {
+        throw new RuntimeException('Final SDK query journal has an unterminated record.');
+    }
+
+    return array_map(sdkQueryWireRecord(...), array_values(array_filter(explode("\n", $journal),
+        static fn (string $line): bool => $line !== '')));
+}
+
+function sdkQueryLiveWireRequests(array &$actor): array
+{
+    $offset = $actor['live_wire_offset'] ?? 0;
+    $stream = fopen($actor['journal'], 'rb');
+    if ($stream === false) {
+        throw new RuntimeException('Could not read live SDK query journal.');
+    }
+    try {
+        if (fstat($stream)['size'] < $offset) {
+            throw new RuntimeException('Live SDK query journal lost committed bytes.');
+        }
+        if (fseek($stream, $offset) !== 0) {
+            throw new RuntimeException('Could not seek live SDK query journal.');
+        }
+        $pending = stream_get_contents($stream);
+    } finally {
+        fclose($stream);
+    }
+    $newline = strrpos($pending, "\n");
+    if ($newline === false) {
+        return $actor['live_wire_requests'] ?? [];
+    }
+    // appendFileSync's newline commits a record. A concurrent read can observe
+    // an unfinished tail; leave its bytes for the next read, without altering it.
+    $committed = substr($pending, 0, $newline + 1);
+    $parsed = sdkQueryWireRequests($actor, $committed);
+    $actor['live_wire_requests'] ??= [];
+    array_push($actor['live_wire_requests'], ...$parsed);
+    $actor['live_wire_offset'] = $offset + strlen($committed);
+
+    return $actor['live_wire_requests'];
 }
 
 function sdkQueryWorkflowAcknowledgement(array $requests, string $workflowId, string $runId, int $checkpoint): ?array
@@ -172,7 +214,7 @@ function sdkQueryActorFinish(array &$actor, float $deadline, string $evidence, s
         'transport_jsonl' => $journal, 'observer_error' => $actor['observer_error'],
         ...($actor['phase'] === 'original' ? ['observer_start' => $actor['observer_start'] ?? null] : []),
     ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)."\n");
-    $requests = sdkQueryWireRequests($actor);
+    $requests = sdkQueryWireRequests($actor, $journal);
     proc_terminate($actor['proxy']);
     fclose($actor['proxyPipes'][1]);
     fclose($actor['proxyPipes'][2]);
@@ -216,7 +258,7 @@ function sdkQueryDirectionHttpObservation(array $fixture, array $options): array
                     break;
                 }
                 if ($phase === 'original' && $observerStart === null) {
-                    foreach (sdkQueryWireRequests($author) as $request) {
+                    foreach (sdkQueryLiveWireRequests($author) as $request) {
                         if ($request['method'] === 'POST' && $request['path'] === '/api/worker/register'
                             && $request['status'] === 201 && ($request['response']['registered'] ?? null) === true
                             && ($request['request']['worker_id'] ?? null) === $options['workflow-id'].':original') {
@@ -233,7 +275,7 @@ function sdkQueryDirectionHttpObservation(array $fixture, array $options): array
                 }
                 if ($runId !== '') {
                     $checkpointAcknowledgement = sdkQueryWorkflowAcknowledgement(
-                        sdkQueryWireRequests($author), $options['workflow-id'], $runId, $checkpoint);
+                        sdkQueryLiveWireRequests($author), $options['workflow-id'], $runId, $checkpoint);
                     if ($checkpointAcknowledgement === null) {
                         usleep(10000);
 
