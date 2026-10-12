@@ -2765,10 +2765,13 @@ async function probePublishedTypedOutcomes(baseUrl, token, compose, phpService, 
 
 async function probePublishedWaitingCallerCancellation(baseUrl, token, compose, phpService, pythonService) {
   const reports = [];
+  const operations = new Map();
   for (const [caller, service] of [['php', 'python'], ['python', 'php'], ['php', 'php'], ['python', 'python']]) {
     const endpoint = `published-${service}-workflow-service`;
     const serviceName = service === 'php' ? 'PublishedWorkflowGreeter' : 'PublishedPythonWorkflowGreeter';
-    const setup = await apiRequest(baseUrl, token, 'shared', 'POST',
+    let setup = operations.get(service);
+    if (setup === undefined) {
+      setup = await apiRequest(baseUrl, token, 'shared', 'POST',
       `/service-endpoints/${endpoint}/services/${serviceName}/operations`, {
         operation_name: 'greet-caller-cancel', operation_mode: 'sync', handler_binding_kind: 'start_workflow',
         handler_target_reference: `nexus.fixture.${service}.greeter`,
@@ -2778,7 +2781,9 @@ async function probePublishedWaitingCallerCancellation(baseUrl, token, compose, 
         cancellation_policy: {allow_cancel: true, propagate_to_linked_workflow: true},
         boundary_policy: {authorization: {caller_namespaces: {allow: ['shared', 'tenant-a', 'tenant-b']}}},
       });
-    if (!setup.ok) throw new Error(`Could not register the cancellation-propagating ${service} operation`);
+      if (!setup.ok) throw new Error(`Could not register the cancellation-propagating ${service} operation`);
+      operations.set(service, setup);
+    }
     const inputName = `nexus-${caller}-${service}-caller-cancellation-input.json`;
     fs.writeFileSync(path.join(compose.runRoot, inputName), JSON.stringify({
       token, endpoint, service: serviceName, operation: 'greet-caller-cancel',

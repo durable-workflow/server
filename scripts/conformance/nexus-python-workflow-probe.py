@@ -76,7 +76,8 @@ async def execute(input_data, namespace):
         worker = Worker(client, task_queue="nexus-python-workflow",
                         worker_id=f"nexus-python-caller-{namespace}-{os.getpid()}",
                         workflows=[PythonNexusCaller], activities=[],
-                        capabilities=["cooperative_cancellation"] if input_data.get("scenario") == "caller_cancelled" else [])
+                        **({"capabilities": ["cooperative_cancellation"]}
+                           if input_data.get("scenario") == "caller_cancelled" else {}))
         polling = asyncio.create_task(worker.run())
         try:
             handle = await client.start_workflow(

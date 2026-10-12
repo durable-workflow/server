@@ -402,10 +402,12 @@ if (process.env.NEXUS_WAITING_CALLER_CANCELLATION_PROBES) {
                 const original = row.service_call_before_cancellation;
                 const call = row.durable_service_call.body.service_call || row.durable_service_call.body;
                 assert.equal(call.status, 'cancelled');
+                assert.equal(call.service_call_id || call.id, original.service_call_id || original.id);
                 assert.equal(call.caller_workflow_instance_id, row.workflow_id);
                 assert.equal(call.caller_workflow_run_id, row.run_id);
                 assert.equal(call.linked_workflow_run_id, original.linked_workflow_run_id);
-                assert.equal(call.deadline_at, original.deadline_at);
+                assert.ok(original.call_deadline_at);
+                assert.equal(call.call_deadline_at, original.call_deadline_at);
                 const starts = row.history.events.filter(event => event.event_type === 'ServiceCallStarted');
                 const terminals = row.history.events.filter(event =>
                     ['ServiceCallCompleted', 'ServiceCallFailed', 'ServiceCallCancelled'].includes(event.event_type));
