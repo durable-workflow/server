@@ -1343,6 +1343,20 @@ later pressure cancellation remains an incomplete job. Fixed execution budgets,
 native code, SDKs, tuples and semantic reader rules are unchanged; exact-source
 all-six qualification is still required.
 
+The live-read correction's original matrix independently passes 27 query
+observations/144 full query wire sidecars and 27 signal observations/90 full
+sidecars per database across all six configurations. Each native execution
+suite passes all 76 tests; PHP/source passes 2,706 tests/61,420 assertions.
+Four whole jobs pass (SQLite, MariaDB, MySQL 8.0/8.4); PostgreSQL 16/17 remain
+cancelled at the 20-minute job limit, confirmed by their GitHub annotations.
+All retained pressure records match the source reader, but do not qualify
+the cancelled jobs or establish completion before the deadline. The
+[reviewed CI budget correction](https://github.com/durable-workflow/server/pull/422#issuecomment-6118354755)
+gives SQLite and PostgreSQL the same bounded 25-minute job limit already used
+by MariaDB/MySQL. Fixture/probe/pressure deadlines, resource limits, SDK/native
+code, frozen tuples and semantic assertions are unchanged. Fresh exact-source
+full-matrix qualification remains required; earlier failed records stay held.
+
 ## Contract and verification inventory
 
 | Surface | Current authority and reusable checks | Port status |

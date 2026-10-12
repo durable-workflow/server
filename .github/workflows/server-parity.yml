@@ -536,7 +536,7 @@ jobs:
   postgres-storage:
     needs: published-sdk-adapters
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -937,7 +937,7 @@ jobs:
   execution-and-codec:
     needs: published-sdk-adapters
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Fetch this run's published SDK adapters

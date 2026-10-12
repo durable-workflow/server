@@ -111,6 +111,21 @@ query cohort independently passes all 27 observations, but its later native
 pressure step is cancelled; that job remains unqualified. Execution deadlines
 and resource budgets are unchanged. A new all-six run is required.
 
+The live-read correction's original run independently passes all 27 query
+observations and 144 complete query wire sidecars on each of the six databases.
+The existing signal cohort passes 27 observations and 90 full wire sidecars
+per database; all 76 native execution tests pass on each. PHP/source passes
+2,706 tests/61,420 assertions. Whole jobs pass on SQLite, MariaDB and MySQL
+8.0/8.4; PostgreSQL 16/17 remain cancelled. Both GitHub check annotations
+explicitly report the 20-minute job limit. PG16 reports all pressure targets
+passing immediately before cancellation; PG17's log stops during native
+pressure, although retained pressure records later include all three targets.
+Those original records do not qualify the cancelled jobs. The reviewed harness
+correction gives SQLite and PostgreSQL the same bounded 25-minute CI job limit
+already used by MariaDB/MySQL. Individual fixture/probe/pressure deadlines,
+resource limits, frozen SDK identities and semantic assertions stay unchanged.
+A fresh exact-source full matrix is required before acceptance.
+
 Next: qualify this exact source on all six database configurations, proceeding
 from #415's identical previously qualified candidate/main tree. Its fresh main
 SQLite frozen-PHP cancellation failure remains independently recorded; General
@@ -130,3 +145,4 @@ performance are separate gates.
 [Ordinary Python refusal and native correction](https://github.com/durable-workflow/server/pull/422#issuecomment-6117247506).
 [Original output capture failure and correction](https://github.com/durable-workflow/server/pull/422#issuecomment-6117614915).
 [Original live-journal disagreement and correction](https://github.com/durable-workflow/server/pull/422#issuecomment-6117918727).
+[Original job timeout and bounded CI budget correction](https://github.com/durable-workflow/server/pull/422#issuecomment-6118354755).
