@@ -89,6 +89,10 @@ function sdkQueryWireRequests(array $actor): array
             $incomplete = $side === 'request' && ! $wire['request_body_complete']
                 && ! $wire['upstream_request_started'];
             $wire[$side] = $bytes === '' || $incomplete ? null : json_decode($bytes, true, flags: JSON_THROW_ON_ERROR);
+            if ($wire[$side] === [] && ! $incomplete
+                && json_decode($bytes, flags: JSON_THROW_ON_ERROR) instanceof stdClass) {
+                $wire[$side] = (object) [];
+            }
         }
         unset($wire['request_body'], $wire['response_body'], $wire['response_bytes_base64']);
         // Keep every task/receipt field; summarize only repeated discovery bodies.
@@ -261,7 +265,7 @@ function sdkQueryDirectionHttpObservation(array $fixture, array $options): array
                     $observation['signal_deliveries'][] = ['before' => $record['snapshot_before']['execution'],
                         'response' => $request['response']];
                 } elseif ($request['method'] === 'POST' && preg_match('#^/api/workflows/[^/]+/query/state$#', $request['path'])) {
-                    $input = $request['request']['input'] ?? null;
+                    $input = is_array($request['request']) ? ($request['request']['input'] ?? null) : null;
                     $request['typed_decoded_input'] = typedValue($input === null ? [] : $client->payloadCodec()->decodeEnvelope($input));
                     if (isset($request['response']['result_envelope'])) {
                         $request['decoded_result'] = $client->payloadCodec()->decodeEnvelope($request['response']['result_envelope']);

@@ -28,7 +28,10 @@ signal histories, without HTTP worker transport.
 
 Source preparation passes 50 reader models and the full 4,731-test Node suite,
 PHP syntax, Python AST, Rust fixture formatting, shell syntax and the Docker
-isolation policy with 72 regressions. These are source/model checks. No new
+isolation policy with 72 regressions. Thirteen PHP recorder tests pass 56
+assertions, including root empty-object/array distinction, exact int64 values
+and cancelled partial/fully received bodies; the feature workflow includes the
+new parser regressions. These are source/model checks. No new
 SDK compilation or durable query runtime observation is claimed.
 
 The initial runtime gate must preserve the ordinary Python omitted-input
