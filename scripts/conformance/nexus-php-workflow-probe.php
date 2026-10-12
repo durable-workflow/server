@@ -19,7 +19,10 @@ if (($argv[2] ?? null) === 'worker') {
         'namespace' => $namespace,
     ], JSON_THROW_ON_ERROR));
     $client = new Client('http://server:8080', namespace: $namespace, workerToken: $input['token']);
-    Worker::create($client, 'nexus-php-caller')
+    $worker = ($input['scenario'] ?? null) === 'caller_cancelled'
+        ? new Worker($client, 'nexus-php-caller', enableCooperativeCancellation: true)
+        : Worker::create($client, 'nexus-php-caller');
+    $worker
         ->registerWorkflow('nexus.fixture.php.caller', static function (
             WorkflowContext $context,
             string $endpoint,
@@ -87,7 +90,7 @@ foreach (['shared', 'tenant-a'] as $namespace) {
             'public_method' => 'WorkflowContext.serviceOperation',
         ];
         try {
-            if (($input['scenario'] ?? null) === 'cancelled') {
+            if (in_array($input['scenario'] ?? null, ['cancelled', 'caller_cancelled'], true)) {
                 $readyUntil = microtime(true) + 20;
                 $serviceClient = new Client('http://server:8080', namespace: 'shared', controlToken: $input['token']);
                 do {
@@ -102,15 +105,23 @@ foreach (['shared', 'tenant-a'] as $namespace) {
                     $waiting = array_filter($serviceHistory['events'] ?? [],
                         static fn (array $event): bool => ($event['event_type'] ?? null) === 'TimerScheduled');
                     if ($waiting !== []) {
-                        $row['linked_cancellation_requests'] = [
-                            $serviceClient->requestWorkflowCancellation($linkedId, 'fixture service cancellation', 30, $linkedRun),
-                            $serviceClient->requestWorkflowCancellation($linkedId, 'duplicate must not replace reason', 1, $linkedRun),
-                        ];
+                        $row['service_call_before_cancellation'] = $linked;
+                        if (($input['scenario'] ?? null) === 'caller_cancelled') {
+                            $row['caller_cancellation_requests'] = [
+                                $client->requestWorkflowCancellation($handle->workflowId, 'fixture waiting caller cancellation', 30, $handle->selectedRunId),
+                                $client->requestWorkflowCancellation($handle->workflowId, 'duplicate must not replace reason', 1, $handle->selectedRunId),
+                            ];
+                        } else {
+                            $row['linked_cancellation_requests'] = [
+                                $serviceClient->requestWorkflowCancellation($linkedId, 'fixture service cancellation', 30, $linkedRun),
+                                $serviceClient->requestWorkflowCancellation($linkedId, 'duplicate must not replace reason', 1, $linkedRun),
+                            ];
+                        }
                         break;
                     }
                     usleep(100000);
                 } while (microtime(true) < $readyUntil);
-                if (!isset($row['linked_cancellation_requests'])) {
+                if (!isset($row['linked_cancellation_requests']) && !isset($row['caller_cancellation_requests'])) {
                     throw new RuntimeException('The real linked service did not reach its durable timer before cancellation.');
                 }
             }
@@ -159,6 +170,10 @@ foreach (['shared', 'tenant-a'] as $namespace) {
         $row['cancellation_qualified'] = ($row['result']['status'] ?? null) === 'cancelled'
             && ($row['result']['failure_class'] ?? null) === ServiceOperationFailed::class
             && ($row['result']['cancelled'] ?? null) === true;
+        $row['caller_cancellation_qualified'] = isset($row['caller_cancellation_requests'])
+            && strtolower($row['caller_status'] ?? '') === 'cancelled'
+            && count(array_filter($row['linked_service_history']['events'] ?? [],
+                static fn (array $event): bool => ($event['event_type'] ?? null) === 'WorkflowCancelled')) === 1;
     } finally {
         proc_terminate($worker, 15);
         $exitCode = proc_close($worker);
@@ -173,7 +188,8 @@ echo json_encode([
     'scope' => 'php_caller_'.$input['service_language'].'_workflow_service',
     'outcome' => count(array_filter($observations, static fn (array $row): bool =>
         $row[match ($input['scenario'] ?? 'completed') {
-            'failed' => 'typed_failure_qualified', 'cancelled' => 'cancellation_qualified', default => 'completed',
+            'failed' => 'typed_failure_qualified', 'cancelled' => 'cancellation_qualified',
+            'caller_cancelled' => 'caller_cancellation_qualified', default => 'completed',
         }])) === 2 ? 'pass' : 'fail',
     'observations' => $observations,
     'recovery_qualified' => false, 'cancellation_qualified' => false,

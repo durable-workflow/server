@@ -2763,6 +2763,51 @@ async function probePublishedTypedOutcomes(baseUrl, token, compose, phpService, 
   }
 }
 
+async function probePublishedWaitingCallerCancellation(baseUrl, token, compose, phpService, pythonService) {
+  const reports = [];
+  for (const [caller, service] of [['php', 'python'], ['python', 'php'], ['php', 'php'], ['python', 'python']]) {
+    const endpoint = `published-${service}-workflow-service`;
+    const serviceName = service === 'php' ? 'PublishedWorkflowGreeter' : 'PublishedPythonWorkflowGreeter';
+    const setup = await apiRequest(baseUrl, token, 'shared', 'POST',
+      `/service-endpoints/${endpoint}/services/${serviceName}/operations`, {
+        operation_name: 'greet-caller-cancel', operation_mode: 'sync', handler_binding_kind: 'start_workflow',
+        handler_target_reference: `nexus.fixture.${service}.greeter`,
+        handler_binding: {workflow_type: `nexus.fixture.${service}.greeter`,
+          queue: service === 'php' ? 'nexus-php-workflow' : 'nexus-python-service'},
+        deadline_policy: {timeout_seconds: 120},
+        cancellation_policy: {allow_cancel: true, propagate_to_linked_workflow: true},
+        boundary_policy: {authorization: {caller_namespaces: {allow: ['shared', 'tenant-a', 'tenant-b']}}},
+      });
+    if (!setup.ok) throw new Error(`Could not register the cancellation-propagating ${service} operation`);
+    const inputName = `nexus-${caller}-${service}-caller-cancellation-input.json`;
+    fs.writeFileSync(path.join(compose.runRoot, inputName), JSON.stringify({
+      token, endpoint, service: serviceName, operation: 'greet-caller-cancel',
+      service_language: service, scenario: 'caller_cancelled', name: 'cancel',
+    }));
+    const container = caller === 'php' ? phpService.containerName : pythonService.containerName;
+    const command = caller === 'php'
+      ? `php /work/nexus-php-workflow-probe.php /work/${inputName}`
+      : `. /tmp/dw-python/bin/activate && python /work/nexus-python-workflow-probe.py /work/${inputName}`;
+    const observation = dockerExecJson(container, command,
+      path.join(resultDir, `nexus-${caller}-${service}-caller-cancellation-probe.log`));
+    const serviceContainer = service === 'php' ? phpService.containerName : pythonService.containerName;
+    const serviceLog = spawnSync('docker', ['exec', serviceContainer, 'cat', `/tmp/nexus-${service}-service-worker.log`],
+      {encoding: 'utf8', maxBuffer: 8 * 1024 * 1024});
+    observation.service_worker_log = (serviceLog.stdout || '') + (serviceLog.stderr || '');
+    for (const row of observation.body?.observations || []) {
+      const callId = row.service_call_before_cancellation?.service_call_id
+        || row.history?.events?.find(event => event.event_type === 'ServiceCallStarted')?.payload?.service_call_id;
+      if (!callId) continue;
+      row.durable_service_call = responseSummary(await apiRequest(baseUrl, token, 'shared', 'GET',
+        `/service-endpoints/${endpoint}/services/${serviceName}/operations/greet-caller-cancel/service-calls/${encodeURIComponent(callId)}`));
+    }
+    reports.push({caller, service, setup: responseSummary(setup), observation});
+    fs.writeFileSync(path.join(resultDir, 'nexus-waiting-caller-cancellation-probes.json'), JSON.stringify({
+      scope: 'actual_waiting_caller_cooperative_cancellation', reports,
+    }, null, 2) + '\n');
+  }
+}
+
 async function probePublishedCallerRecovery(baseUrl, token, compose, phpService, pythonService) {
   const fixtureDir = path.dirname(process.argv[5]);
   fs.copyFileSync(path.join(fixtureDir, 'nexus-php-caller-recovery.php'), path.join(compose.runRoot, 'nexus-php-caller-recovery.php'));
@@ -3540,6 +3585,14 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
       await probePublishedServiceDeadline(baseUrl, token, compose, pythonService);
     } catch (error) {
       fs.writeFileSync(path.join(resultDir, 'nexus-deadline-probes-error.json'), JSON.stringify({
+        runner_blocked: true, failure_reason: String(error),
+      }, null, 2) + '\n');
+    }
+
+    try {
+      await probePublishedWaitingCallerCancellation(baseUrl, token, compose, phpService, pythonService);
+    } catch (error) {
+      fs.writeFileSync(path.join(resultDir, 'nexus-waiting-caller-cancellation-probes-error.json'), JSON.stringify({
         runner_blocked: true, failure_reason: String(error),
       }, null, 2) + '\n');
     }

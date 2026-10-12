@@ -373,6 +373,68 @@ if (process.env.NEXUS_DEADLINE_PROBE) {
     });
 }
 
+if (process.env.NEXUS_WAITING_CALLER_CANCELLATION_PROBES) {
+    test('cancelling actual waiting callers cooperatively closes their original target cascade', () => {
+        const proof = JSON.parse(fs.readFileSync(process.env.NEXUS_WAITING_CALLER_CANCELLATION_PROBES, 'utf8'));
+        assert.equal(proof.scope, 'actual_waiting_caller_cooperative_cancellation');
+        assert.deepEqual(proof.reports.map(row => [row.caller, row.service]), [
+            ['php', 'python'], ['python', 'php'], ['php', 'php'], ['python', 'python'],
+        ]);
+        for (const {caller, observation} of proof.reports) {
+            assert.equal(observation.ok, true, JSON.stringify(observation.body));
+            assert.deepEqual(observation.body.observations.map(row => row.caller_namespace),
+                ['shared', caller === 'php' ? 'tenant-a' : 'tenant-b']);
+            for (const row of observation.body.observations) {
+                assert.equal(row.request_qualified, true);
+                assert.equal(row.scenario, 'caller_cancelled');
+                assert.equal(row.caller_cancellation_qualified, true, JSON.stringify(row.failure || row.caller_status));
+                assert.equal(row.linked_cancellation_requests, undefined,
+                    'The investigator must not directly cancel the target');
+                const [first, duplicate] = row.caller_cancellation_requests;
+                assert.equal(first.accepted, true);
+                assert.equal(duplicate.duplicate, true);
+                const request = first.cancellation_request;
+                for (const field of ['request_id', 'requested_at', 'cleanup_deadline_at']) {
+                    assert.ok(request[field]);
+                    assert.equal(duplicate.cancellation_request[field], request[field]);
+                }
+                const deadline = Date.parse(request.cleanup_deadline_at);
+                const original = row.service_call_before_cancellation;
+                const call = row.durable_service_call.body.service_call || row.durable_service_call.body;
+                assert.equal(call.status, 'cancelled');
+                assert.equal(call.caller_workflow_instance_id, row.workflow_id);
+                assert.equal(call.caller_workflow_run_id, row.run_id);
+                assert.equal(call.linked_workflow_run_id, original.linked_workflow_run_id);
+                assert.equal(call.deadline_at, original.deadline_at);
+                const starts = row.history.events.filter(event => event.event_type === 'ServiceCallStarted');
+                const terminals = row.history.events.filter(event =>
+                    ['ServiceCallCompleted', 'ServiceCallFailed', 'ServiceCallCancelled'].includes(event.event_type));
+                assert.equal(starts.length, 1);
+                assert.equal(terminals.length, 1);
+                assert.equal(terminals[0].event_type, 'ServiceCallCancelled');
+                assert.equal(terminals[0].payload.service_call_id, starts[0].payload.service_call_id);
+                assert.equal(terminals[0].payload.sequence, starts[0].payload.sequence);
+                for (const events of [row.history.events, row.linked_service_history.events]) {
+                    for (const kind of ['CooperativeCancellationRequested', 'CooperativeCancellationDelivered', 'WorkflowCancelled']) {
+                        assert.equal(events.filter(event => event.event_type === kind).length, 1);
+                    }
+                    assert.equal(events.filter(event => event.event_type === 'WorkflowTerminated').length, 0);
+                    const requested = events.find(event => event.event_type === 'CooperativeCancellationRequested');
+                    const context = requested.payload.cancellation;
+                    assert.equal(context.root_request_id, request.request_id);
+                    assert.equal(context.root_workflow_instance_id, row.workflow_id);
+                    assert.equal(context.root_workflow_run_id, row.run_id);
+                    assert.equal(context.cleanup_deadline_at, request.cleanup_deadline_at);
+                    assert.equal(context.reason, 'fixture waiting caller cancellation');
+                    const terminal = events.find(event => event.event_type === 'WorkflowCancelled');
+                    assert.ok(Date.parse(terminal.timestamp) <= deadline);
+                    assert.equal(terminal.payload.cancellation_cleanup.outcome, 'completed');
+                }
+            }
+        }
+    });
+}
+
 if (process.env.NEXUS_CANCELLATION_PROBES) {
     test('cooperatively cancelled services close original PHP/Python caller operations once', () => {
         const proof = JSON.parse(fs.readFileSync(process.env.NEXUS_CANCELLATION_PROBES, 'utf8'));
