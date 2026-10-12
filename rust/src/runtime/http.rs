@@ -344,6 +344,9 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
     }
     if let Some(path) = path.strip_prefix("/api/workflows/") {
         let parts: Vec<_> = path.split('/').collect();
+        if matches!(parts.as_slice(), [_, "signal", _]) {
+            return method == "POST";
+        }
         return matches!(
             parts.as_slice(),
             [_] | [_, "cancel"] | [_, "runs", _] | [_, "runs", _, "history" | "cancel"]

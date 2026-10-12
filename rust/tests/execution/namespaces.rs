@@ -1,6 +1,202 @@
 use super::*;
 
 #[tokio::test]
+async fn named_signal_waits_keep_both_original_runs_and_foreign_polls_isolated() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let namespaces = ["alpha", "beta"];
+    let workflows = ["namespace-signal-first", "namespace-signal-second"];
+    let values = [9007199254740993, 9007199254740995];
+    let fingerprint = format!("sha256:{}", "a".repeat(64));
+    let mut starts = Vec::new();
+    for index in 0..2 {
+        create(&app, namespaces[index]).await;
+        let registration = scoped(
+            &app,
+            namespaces[index],
+            "POST",
+            "/api/worker/register",
+            json!({
+                "worker_id":"signal-worker","task_queue":"test","runtime":"php",
+                "supported_workflow_types":["echo"],"supported_activity_types":[],
+                "workflow_command_contracts":{"echo":{"signals":["data"]}}
+            }),
+        )
+        .await;
+        assert_eq!(registration.0, StatusCode::CREATED, "{}", registration.1);
+        starts.push(start_scoped(&app, namespaces[index], workflows[index]).await);
+        let task = scoped(
+            &app,
+            namespaces[index],
+            "POST",
+            "/api/worker/workflow-tasks/poll",
+            json!({
+                "worker_id":"signal-worker","task_queue":"test","timeout_seconds":0,
+                "poll_request_id":"original-signal-poll"
+            }),
+        )
+        .await
+        .1["task"]
+            .clone();
+        assert_eq!(task["run_id"], starts[index]["run_id"]);
+        let history_path = format!(
+            "/api/workflows/{}/runs/{}/history",
+            workflows[index],
+            starts[index]["run_id"].as_str().unwrap()
+        );
+        let before = scoped(&app, namespaces[index], "GET", &history_path, Value::Null).await;
+        let timed = scoped(&app,namespaces[index],"POST",&format!("/api/worker/workflow-tasks/{}/complete",task["task_id"].as_str().unwrap()),
+            completion(&task,json!([{"type":"open_condition_wait","condition_key":"data:0","condition_definition_fingerprint":fingerprint,"timeout_seconds":1}]))).await;
+        assert_eq!(timed.0, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            scoped(&app, namespaces[index], "GET", &history_path, Value::Null).await,
+            before
+        );
+        let opening = scoped(&app, namespaces[index], "POST", &format!("/api/worker/workflow-tasks/{}/complete",task["task_id"].as_str().unwrap()),
+            completion(&task,json!([{"type":"open_condition_wait","condition_key":"data:0","condition_definition_fingerprint":fingerprint}]))).await;
+        assert_eq!(opening.0, StatusCode::OK, "{}", opening.1);
+    }
+    let mut command_ids = Vec::new();
+    for signal in 0..2 {
+        for index in 0..2 {
+            let history_path = format!(
+                "/api/workflows/{}/runs/{}/history",
+                workflows[index],
+                starts[index]["run_id"].as_str().unwrap()
+            );
+            let before = scoped(&app, namespaces[index], "GET", &history_path, Value::Null).await;
+            let input = envelope(Payload::Array(vec![Payload::Long(values[index])]));
+            let signal_path = format!("/api/workflows/{}/signal/data", workflows[index]);
+            let foreign = scoped(
+                &app,
+                namespaces[1 - index],
+                "POST",
+                &signal_path,
+                json!({"input":input}),
+            )
+            .await;
+            assert_eq!(foreign.0, StatusCode::NOT_FOUND, "{}", foreign.1);
+            assert_eq!(foreign.1["reason"], "instance_not_found");
+            assert_eq!(foreign.1["control_plane"]["operation"], "signal");
+            assert_eq!(
+                scoped(&app, namespaces[index], "GET", &history_path, Value::Null).await,
+                before
+            );
+            let accepted = scoped(
+                &app,
+                namespaces[index],
+                "POST",
+                &signal_path,
+                json!({"input":input}),
+            )
+            .await;
+            assert_eq!(accepted.0, StatusCode::ACCEPTED, "{}", accepted.1);
+            assert_eq!(accepted.1["run_id"], starts[index]["run_id"]);
+            command_ids.push(accepted.1["command_id"].as_str().unwrap().to_owned());
+            let ready = scoped(&app, namespaces[index], "GET", &history_path, Value::Null).await;
+            let foreign_poll = scoped(
+                &app,
+                namespaces[1 - index],
+                "POST",
+                "/api/worker/workflow-tasks/poll",
+                json!({
+                    "worker_id":"signal-worker","task_queue":"test","timeout_seconds":0,
+                    "poll_request_id":format!("foreign-{index}-{signal}")
+                }),
+            )
+            .await;
+            assert_eq!(foreign_poll.0, StatusCode::OK, "{}", foreign_poll.1);
+            assert!(foreign_poll.1["task"].is_null());
+            assert_eq!(
+                scoped(&app, namespaces[index], "GET", &history_path, Value::Null).await,
+                ready
+            );
+            let claimed = scoped(
+                &app,
+                namespaces[index],
+                "POST",
+                "/api/worker/workflow-tasks/poll",
+                json!({
+                    "worker_id":"signal-worker","task_queue":"test","timeout_seconds":0,
+                    "poll_request_id":format!("correct-{index}-{signal}")
+                }),
+            )
+            .await
+            .1["task"]
+                .clone();
+            assert_eq!(claimed["run_id"], starts[index]["run_id"]);
+            assert_eq!(claimed["workflow_task_attempt"], 1);
+            let received: Vec<_> = claimed["history_events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|event| event["event_type"] == "SignalReceived")
+                .collect();
+            assert_eq!(received.len(), signal + 1);
+            for event in received {
+                assert_eq!(event["payload"]["workflow_instance_id"], workflows[index]);
+                assert_eq!(event["payload"]["workflow_run_id"], starts[index]["run_id"]);
+                assert_eq!(event["payload"]["arguments"], input);
+            }
+            let command = if signal == 0 {
+                json!({"type":"open_condition_wait","condition_key":"data:1","condition_definition_fingerprint":fingerprint})
+            } else {
+                json!({"type":"complete_workflow","result":envelope(Payload::Long(values[index]))})
+            };
+            let outcome = scoped(
+                &app,
+                namespaces[index],
+                "POST",
+                &format!(
+                    "/api/worker/workflow-tasks/{}/complete",
+                    claimed["task_id"].as_str().unwrap()
+                ),
+                completion(&claimed, json!([command])),
+            )
+            .await;
+            assert_eq!(outcome.0, StatusCode::OK, "{}", outcome.1);
+        }
+    }
+    command_ids.sort();
+    command_ids.dedup();
+    assert_eq!(command_ids.len(), 4);
+    for index in 0..2 {
+        let described = scoped(
+            &app,
+            namespaces[index],
+            "GET",
+            &format!("/api/workflows/{}", workflows[index]),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(described.0, StatusCode::OK);
+        assert_eq!(described.1["status"], "completed");
+        assert_eq!(described.1["run_id"], starts[index]["run_id"]);
+        assert_eq!(described.1["namespace"], namespaces[index]);
+        let unqualified = scoped(
+            &app,
+            namespaces[index],
+            "POST",
+            &format!(
+                "/api/workflows/{}/runs/{}/signal/data",
+                workflows[index],
+                starts[index]["run_id"].as_str().unwrap()
+            ),
+            json!({"input":envelope(Payload::Array(vec![Payload::Long(1)]))}),
+        )
+        .await;
+        assert_eq!(unqualified.0, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            unqualified.1["reason"],
+            "development_namespace_operation_unqualified"
+        );
+    }
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
 async fn named_idle_query_poll_preserves_same_id_default_namespace_claim() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
