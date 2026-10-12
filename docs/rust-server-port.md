@@ -51,7 +51,12 @@ reader failures remain unchanged. Native current-run signal lookup and untimed
 condition waits are prepared, with qualification pending. The new profile is
 wired into all six database jobs and stays in the pending directory. Expanded
 jobs have a 35-minute whole-job ceiling; existing run budgets and resource caps
-stay fixed. Existing default-profile checks cannot qualify these new cases.
+stay fixed. The first native execution regression compiled but failed because
+wrong-namespace signal refusal omitted PHP's canonical signal metadata. That
+original failure is retained; the response mapping correction and stronger
+identity checks await fresh execution. The workflow isolation check also
+rejected the new stop-option spelling; the existing accepted spelling now
+passes locally. Existing default-profile checks cannot qualify these new cases.
 An original MySQL 8.4 default-profile failure records four storage 503s and four
 native missing-row diagnostics. Fixed lookup labels are under qualification;
 the exact lookup/cause and historical MariaDB failure's cause remain unknown.

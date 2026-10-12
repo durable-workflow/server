@@ -79,6 +79,13 @@ async fn named_signal_waits_keep_both_original_runs_and_foreign_polls_isolated()
             assert_eq!(foreign.0, StatusCode::NOT_FOUND, "{}", foreign.1);
             assert_eq!(foreign.1["reason"], "instance_not_found");
             assert_eq!(foreign.1["control_plane"]["operation"], "signal");
+            assert_eq!(foreign.1["control_plane"]["workflow_id"], workflows[index]);
+            assert_eq!(foreign.1["control_plane"]["operation_name"], "data");
+            assert_eq!(
+                foreign.1["control_plane"]["operation_name_field"],
+                "signal_name"
+            );
+            assert_eq!(foreign.1["message"], "Workflow not found.");
             assert_eq!(
                 scoped(&app, namespaces[index], "GET", &history_path, Value::Null).await,
                 before
@@ -93,6 +100,15 @@ async fn named_signal_waits_keep_both_original_runs_and_foreign_polls_isolated()
             .await;
             assert_eq!(accepted.0, StatusCode::ACCEPTED, "{}", accepted.1);
             assert_eq!(accepted.1["run_id"], starts[index]["run_id"]);
+            assert_eq!(
+                accepted.1["control_plane"]["command_id"],
+                accepted.1["command_id"]
+            );
+            assert_eq!(
+                accepted.1["control_plane"]["resolved_run_id"],
+                starts[index]["run_id"]
+            );
+            assert_eq!(accepted.1["control_plane"]["operation_name"], "data");
             command_ids.push(accepted.1["command_id"].as_str().unwrap().to_owned());
             let ready = scoped(&app, namespaces[index], "GET", &history_path, Value::Null).await;
             let foreign_poll = scoped(

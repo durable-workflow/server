@@ -620,9 +620,15 @@ async fn signal_current(
     Path((workflow_id, name)): Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
+    let response = runtime
+        .signal(&workflow_id, None, &name, body)
+        .await
+        .map_err(|error| {
+            super::control_plane::Operation::Signal(&name).refusal(error, &workflow_id, None)
+        })?;
     Ok((
         StatusCode::ACCEPTED,
-        Json(runtime.signal(&workflow_id, None, &name, body).await?),
+        Json(super::control_plane::Operation::Signal(&name).response(response)),
     ))
 }
 
