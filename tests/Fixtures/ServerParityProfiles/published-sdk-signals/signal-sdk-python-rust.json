@@ -1,0 +1,93 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "signal-sdk-python-rust",
+  "workflow_type": "parity.v1.sdk_signals",
+  "input": {
+    "message": "signal workflow λ"
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "signal workflow λ"
+      }
+    }
+  },
+  "signal_value": {
+    "message": "cold signal λ",
+    "count": 9007199254740993,
+    "ready": true,
+    "optional": null
+  },
+  "typed_signal_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "cold signal λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "ready": {
+        "type": "boolean",
+        "value": true
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "signal_count": 2,
+  "sdk_signal_direction": {
+    "workflow": "python",
+    "client": "rust",
+    "phase_order": [
+      "original",
+      "signal-1",
+      "resumed",
+      "signal-2",
+      "replacement"
+    ],
+    "task_queue": "server-parity-sdk-signals",
+    "signal_name": "payload",
+    "target": "instance-current-run",
+    "start_after_worker_registration": true,
+    "first_poll_after_start_receipt": true,
+    "start_client": "php-observer",
+    "identical_repeated_payload": true
+  },
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "ConditionWaitOpened",
+    "SignalReceived",
+    "MessageCursorAdvanced",
+    "SignalApplied",
+    "ConditionWaitSatisfied",
+    "ConditionWaitOpened",
+    "SignalReceived",
+    "MessageCursorAdvanced",
+    "SignalApplied",
+    "ConditionWaitSatisfied",
+    "WorkflowCompleted"
+  ],
+  "embedded_expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "SignalWaitOpened",
+    "SignalReceived",
+    "MessageCursorAdvanced",
+    "SignalApplied",
+    "SignalWaitOpened",
+    "SignalReceived",
+    "MessageCursorAdvanced",
+    "SignalApplied",
+    "WorkflowCompleted"
+  ],
+  "contract": "The normal SDK worker registers its signal declaration before the observer starts the original run, and the first real workflow poll is forwarded only after the matching successful start response is observed. Two distinct normal published client processes send identical instance-scoped payloads to that current run. Three distinct author processes open the first condition wait, cold-replay the first signal into a second wait, then cold-replay both accepted signals and complete the same original run with the exact final signal payload. Preserve distinct command/signal identities, ordered acceptance/application and cursor advancement, original waits/queue/history, actual registration and fenced receipts, and exact int64/Unicode/boolean/null Avro values. Embedded uses its canonical direct-signal author; its explicitly different full history is retained and SDK language transport is inapplicable. The retained PHP startup-overlap failure is a separate unqualified interleaving. No continuation/current-run race, run-targeted client API, all signal policies or performance claim."
+}

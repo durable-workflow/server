@@ -53,7 +53,7 @@ and [completed main qualification](https://github.com/durable-workflow/server/pu
 are tracked in #408. This qualifies one bounded child scenario in nine language
 directions; it does not establish nine capability families or performance.
 
-The next additive profile defines normal published SDK timer authoring in PHP,
+The additive timer profile qualifies normal published SDK authoring in PHP,
 Python and Rust. Each requests 5.25 seconds of durable sleep, rounded to six
 whole seconds, then cold-replays the original timer and run with a distinct
 author process. The [reviewed next contract](https://github.com/durable-workflow/server/issues/325#issuecomment-6112280492)
@@ -64,9 +64,83 @@ dedicated reader guards and isolated profiles are integrated into all six
 database configurations. The existing SDK adapter build is reused. Local
 reader guards pass, including corrupt original deadlines, stale receipts,
 rescheduling, substituted Avro frames and one nanosecond early firing.
-Qualification requires all six database configurations and inspection of the
-retained runtime records and phase wire evidence; [#411](https://github.com/durable-workflow/server/pull/411)
-tracks the execution results.
+[#411](https://github.com/durable-workflow/server/pull/411) is merged with all six
+candidate database configurations, normal PHP/source and boundaries passing.
+The independently inspected current SQLite artifact passes nine timer
+observations, all twelve full phase wire sidecars and all 55 original ZIP
+member/archive roundtrip hashes. The MariaDB artifact separately passes nine
+observations, 72 native execution tests and TLS checks with inspected 512 MiB
+memory/swap caps. Candidate, actual PR runner and merged main have the same
+qualified tree. [Automatic main qualification is complete](https://github.com/durable-workflow/server/pull/411#issuecomment-6113537310):
+all six Shared configurations, PHP/source and boundary pass on that merge.
+Candidate PHP/source passes 2,683 tests/61,212 assertions; main passes
+2,683 tests/61,208 assertions. Both report six existing deprecations and one
+skip. Completed source resources and branches are removed.
+
+[#415](https://github.com/durable-workflow/server/pull/415) adds all nine
+published PHP/Python/Rust signal-client and workflow-author combinations. Its
+[initial correction run](https://github.com/durable-workflow/server/actions/runs/38182926674)
+passes all six database configurations at `2de70bf8d029728c9cf7a8890461ae56628e34a8`,
+with PHP/source and both boundaries passing. PHP reports 2,685 tests/61,266
+assertions, six existing deprecations and one skip. Independent original
+[SQLite inspection](https://github.com/durable-workflow/server/pull/415#issuecomment-6115075064)
+passes all 27 observations, binds all 90 HTTP phase sidecars and verifies all
+133 retained original/archive member hashes. Separate
+[MySQL 8.0 inspection](https://github.com/durable-workflow/server/pull/415#issuecomment-6115110451)
+passes 27 observations and 135 member hashes, with actual 1 GiB database limits
+and TLS checks. Both original native outputs pass all 75 execution tests.
+Complete signal profiles, tests and thin SDK proof are retained; duplicate
+downloads and extraction scratch are removed. Final current-main integration
+qualification remains pending in #415.
+
+The latest integration exposes a separate frozen-PHP startup overlap:
+[original SQLite failure](https://github.com/durable-workflow/server/pull/415#issuecomment-6115559242).
+Five directions pass and the sixth completes its original 13-event run, but
+the first worker claims `WorkflowStarted` before the successful start response;
+PHP subsequently adds ten declaration fields to that same original event.
+The strict full-history check fails. Original native output passes 75 tests,
+but this failed profile never reaches embedded/native signal execution.
+The full failed profile and wire bytes remain retained, with all 62 original
+and archive-roundtrip hashes verified; duplicate downloads and scratch are removed.
+The [PHP finding is handed off](https://github.com/durable-workflow/server/pull/420#issuecomment-6115559389)
+without claiming a current-release reproduction or changing PHP/SDK code.
+The [reviewed fixture decision](https://github.com/durable-workflow/server/pull/415#issuecomment-6115559242)
+holds the original real workflow poll in the byte-preserving observer until
+the matching successful start receipt. This bounds the cohort to post-start
+delivery and cold replay. Full metadata/history guards remain strict; startup
+overlap remains unqualified, and the failed record is not relabeled.
+Focused source validation passes 61 signal models and five socket-based
+transport cases; the current Node contract suite passes all 4,681 tests and
+the changed PHP recorder passes syntax checking. The native Rust and SDK
+adapter sources remain unchanged. Fresh runtime qualification is still required.
+
+The original normal worker registers its declaration before the observer starts
+the run, and its first workflow claim follows the observed successful start
+receipt. Two distinct normal clients send identical exact Avro payloads; three
+cold author processes retain both accepted identities and full original
+history through completion. The [reviewed scope](https://github.com/durable-workflow/server/issues/325#issuecomment-6113352490)
+uses the instance-current-run API, preserves Python's absent client return and
+retains actual server receipts. Canonical embedded direct-signal histories stay
+intact; the separate manifest preserves prior tuples and resource envelopes.
+Normal accepted signals require the published HTTP 202 contract. All 60 signal
+reader models and all 4,482 reader tests pass, alongside the recorder, language,
+shell and Docker isolation checks. Exact SDK preparation, source and package
+hashes pass; those model/build results remain distinct from runtime evidence.
+
+Normal Rust authoring exposed two native gaps. The
+[occurrence correction](https://github.com/durable-workflow/server/pull/415#issuecomment-6114363122)
+retains nonempty authored condition occurrence IDs through opening, restart and
+matching satisfaction, omitting absent/null/empty values as PHP does. The
+[variadic correction](https://github.com/durable-workflow/server/pull/415#issuecomment-6114821113)
+accepts zero or more tail values after required positional arguments, validates
+each value without coercion and preserves int64/float/null distinctions. Three
+database/HTTP regressions cover repeated waits, cold reopening, duplicate/stale
+completions, optional occurrence types and exact variadic values/refusals.
+Earlier failed records and the separate frozen SQLite patch-pressure failure
+remain unchanged. Defaults, optional fixed prefixes, non-final variadics,
+older-protocol occurrence routing and broader signal policies remain separate
+unqualified gates. Normal published SDK query directions are the next breadth
+slice; matched performance and cutover remain open.
 
 [#401](https://github.com/durable-workflow/server/pull/401) qualifies all nine
 fresh PHP/Python/Rust workflow-author and separately
@@ -99,7 +173,9 @@ This is one authored
 workflow/activity scenario in the default namespace, with nine language
 directions; it does not establish nine capability families or performance.
 Separately routed parent/child SDK directions are qualified in #408.
-Normal SDK timer authoring and cold replay are the next fixture slice.
+Normal SDK timer authoring and cold replay are qualified in #411; normal signal
+client/author directions are implemented with runtime qualification pending.
+Broader signal policies and query/update clients and authors remain ahead.
 The observed activity-only Python polling defect is handed to
 [SDK Python #119](https://github.com/durable-workflow/sdk-python/issues/119).
 
@@ -1156,7 +1232,7 @@ does not prove the remaining acceptance criteria.
 | Workflow lifecycle, duplicate commands, typed history, continuation, child workflows, cancellation, cleanup replay | Workflow lifecycle, migration, child-workflow and replay runners; Feature cooperative cancellation, history, migration and repeated-signal tests | Bounded authored completion, activity retry/failure, direct children/cancellation and root cooperative cleanup; broader propagation, replay and continuation semantics pending |
 | Timers, schedules, signals, queries, updates, search attributes, memo, sagas | Corresponding runners in `scripts/conformance/`, manifests in `static/platform-conformance/`; Sample App polyglot experiments | Bounded durable sleep, repeated signals, state queries/updates and two UTC schedule cases; broader policies, search attributes, memo and sagas pending |
 | Local activities, cancellation scopes, worker sessions, streams, service catalog/Nexus, bridge adapters, standalone activities, debugging and repair | `routes/api.php`, `docs/contracts/`, worker/control-plane specifications, corresponding Feature tests and Nexus runner | Pending; not omitted from parity |
-| Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | Published PHP SDK and embedded directions for 29 default fixtures plus a separate role profile; #401 qualifies nine PHP/Python/Rust workflow/activity directions and #408 nine parent/child directions, with cold replay and canonical embedded counterparts; unchanged CLI 2.2.0 list/describe/history; normal SDK timer workers and cold replay implemented with qualification tracked in #411; broader SDK families, CLI commands, Waterline and Sample App pending |
+| Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | Published PHP SDK and embedded directions for 29 default fixtures plus a separate role profile; #401 qualifies nine PHP/Python/Rust workflow/activity directions, #408 nine parent/child directions and #411 normal timer authors, with cold replay and canonical embedded counterparts; unchanged CLI 2.2.0 list/describe/history; nine signal client/author directions implemented with runtime qualification pending; broader SDK families, CLI commands, Waterline and Sample App pending |
 | SQL schema and stored representations | `database/migrations/`, Workflow package `src/migrations/`, model casts, `Workflow\\Serializers\\Serializer`, queue job payloads, exported history and credential digests | [Representation checkpoints](rust-server-storage-audit.md) recorded; complete mapping and executable migration tests pending |
 | Images, architecture, bootstrap, configuration, readiness, metrics and graceful shutdown | `Dockerfile`, `docker/`, `config/`, `docker-compose*.yml`, `k8s/helm/`, `docs/server-reference.md`, small-cluster/multi-region validation docs | Pending |
 | Backup and in-place upgrade | `docs/self-hosted-backup-and-restore.md`, external payload backup holds; last PHP image writes, all PHP roles stop, Rust takes over same DB sequentially | Pending on SQLite, MariaDB/MySQL, PostgreSQL |
@@ -1223,8 +1299,10 @@ signals must not move replayed activity/timer/wait positions. Official Avro
 signal decode/encode runs in `spawn_blocking` with one permit per runtime, held
 until that job finishes even when its HTTP request is cancelled. Transaction
 serialization, full codec resource limits and CPU/deadline qualification remain
-open. Initial signal argument support is positional, without default/variadic
-or class-type conversion; unsupported contracts fail before durable writes.
+open. Initial signal argument support was positional, without default/variadic
+or class-type conversion. The current normal SDK signal slice implements
+variadic tails with required positional prefixes; defaults and class-type
+conversion remain unsupported and fail before durable writes.
 Timed/grouped waits, cancellation, full rejection audit parity, authorization
 and namespace coverage still require their own slices.
 

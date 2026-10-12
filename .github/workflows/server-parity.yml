@@ -29,6 +29,7 @@ on:
       - tests/Unit/ServerParitySdkDirectionContractTest.mjs
       - tests/Unit/ServerParitySdkChildDirectionContractTest.mjs
       - tests/Unit/ServerParitySdkTimerAuthorContractTest.mjs
+      - tests/Unit/ServerParitySdkSignalDirectionContractTest.mjs
       - tests/Support/ServerParityAdmissionObservation.mjs
       - tests/Support/ServerParityVisibilityObservation.mjs
       - rust/**
@@ -61,6 +62,7 @@ on:
       - tests/Unit/ServerParitySdkDirectionContractTest.mjs
       - tests/Unit/ServerParitySdkChildDirectionContractTest.mjs
       - tests/Unit/ServerParitySdkTimerAuthorContractTest.mjs
+      - tests/Unit/ServerParitySdkSignalDirectionContractTest.mjs
       - tests/Support/ServerParityAdmissionObservation.mjs
       - tests/Support/ServerParityVisibilityObservation.mjs
       - rust/**
@@ -376,6 +378,8 @@ jobs:
           bash scripts/conformance/server-parity/sdk-direction-profile.sh mysql http://parity-native-a:8080 child
           docker stop --time 30 "$RESOURCE_SCOPE-sdk-child-directions-server"
           bash scripts/conformance/server-parity/sdk-direction-profile.sh mysql http://parity-native-a:8080 timer
+          docker stop --time 30 "$RESOURCE_SCOPE-sdk-timers-server"
+          bash scripts/conformance/server-parity/sdk-direction-profile.sh mysql http://parity-native-a:8080 signal
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint sh \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" -ec '
@@ -497,6 +501,7 @@ jobs:
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh mysql
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh mysql child
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh mysql timer
+          bash scripts/conformance/server-parity/sdk-direction-cleanup.sh mysql signal
           docker inspect --format '{{json .State}}' "$RESOURCE_SCOPE-db" > parity-evidence/database-state.json 2>&1 || true
           docker inspect --format '{{json .HostConfig.Memory}}' "$RESOURCE_SCOPE-db" > parity-evidence/database-memory-limit.json 2>&1 || true
           for profile in fence pressure; do
@@ -733,6 +738,8 @@ jobs:
           bash scripts/conformance/server-parity/sdk-direction-profile.sh pgsql http://parity-native-a:8080 child
           docker stop --time 30 "$RESOURCE_SCOPE-sdk-child-directions-server"
           bash scripts/conformance/server-parity/sdk-direction-profile.sh pgsql http://parity-native-a:8080 timer
+          docker stop --time 30 "$RESOURCE_SCOPE-sdk-timers-server"
+          bash scripts/conformance/server-parity/sdk-direction-profile.sh pgsql http://parity-native-a:8080 signal
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint sh \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" -ec '
@@ -886,6 +893,7 @@ jobs:
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh pgsql
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh pgsql child
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh pgsql timer
+          bash scripts/conformance/server-parity/sdk-direction-cleanup.sh pgsql signal
           docker inspect --format '{{json .State}}' "$RESOURCE_SCOPE-db" > parity-evidence/database-state.json 2>&1 || true
           docker inspect --format '{{json .HostConfig.Memory}}' "$RESOURCE_SCOPE-db" > parity-evidence/database-memory-limit.json 2>&1 || true
           for profile in fence pressure; do
@@ -1063,6 +1071,8 @@ jobs:
           bash scripts/conformance/server-parity/sdk-direction-profile.sh sqlite http://parity-rust:8080 child
           docker stop --time 30 "$RESOURCE_SCOPE-sdk-child-directions-server"
           bash scripts/conformance/server-parity/sdk-direction-profile.sh sqlite http://parity-rust:8080 timer
+          docker stop --time 30 "$RESOURCE_SCOPE-sdk-timers-server"
+          bash scripts/conformance/server-parity/sdk-direction-profile.sh sqlite http://parity-rust:8080 signal
           docker run --rm --user=1000:1000 --entrypoint php --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/restart.php \
@@ -1155,6 +1165,7 @@ jobs:
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh sqlite
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh sqlite child
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh sqlite timer
+          bash scripts/conformance/server-parity/sdk-direction-cleanup.sh sqlite signal
           for profile in fence pressure; do
             for target in php native; do
               docker logs "$RESOURCE_SCOPE-$profile-$target" > "parity-evidence/$profile-$target.log" 2>&1 || true

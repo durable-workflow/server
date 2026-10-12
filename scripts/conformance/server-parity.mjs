@@ -13,6 +13,7 @@ import {checkSdkDirectionArtifacts, checkSdkDirectionPackages} from './server-pa
 import {parseDatabaseResourceLimits} from './server-parity/database-resource-contract.mjs';
 import {checkSdkChildDirectionArtifacts, checkSdkChildDirectionPackages} from './server-parity/sdk-child-direction-contract.mjs';
 import {checkSdkTimerAuthorArtifacts, checkSdkTimerAuthorPackages} from './server-parity/sdk-timer-author-contract.mjs';
+import {checkSdkSignalDirectionArtifacts, checkSdkSignalDirectionPackages} from './server-parity/sdk-signal-direction-contract.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const {values, positionals} = parseArgs({allowPositionals: true, options: {
@@ -83,6 +84,7 @@ try {
       checkSdkDirectionArtifacts(fixture, record.artifacts);
       checkSdkChildDirectionArtifacts(fixture, record.artifacts);
       checkSdkTimerAuthorArtifacts(fixture, record.artifacts);
+      checkSdkSignalDirectionArtifacts(fixture, record.artifacts);
       if (fixture.patch_deployment?.legacy_marker_history) checkLegacyMarkerArtifacts(fixture, record.artifacts);
       const workflowId = `${values.prefix}-${fixture.id}`;
       const arguments_ = [resolve(root, 'scripts/conformance/server-parity/probe.php'), '--mode', values.mode, '--fixture', path, '--workflow-id', workflowId];
@@ -108,6 +110,7 @@ try {
         checkSdkDirectionPackages(fixture, item.observation, record.artifacts);
         checkSdkChildDirectionPackages(fixture, item.observation, record.artifacts);
         checkSdkTimerAuthorPackages(fixture, item.observation, record.artifacts);
+        checkSdkSignalDirectionPackages(fixture, item.observation, record.artifacts);
         item.outcome = 'product-fail';
         item.projection = checkObservation(fixture, item.observation, workflowId);
         item.outcome = 'pass';

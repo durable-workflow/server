@@ -326,6 +326,21 @@ final class SignalsWorkflow extends Workflow
     }
 }
 
+#[Type('parity.v1.sdk_signals')]
+#[Signal('payload', [['name' => 'value', 'type' => 'array']])]
+final class SdkSignalsWorkflow extends Workflow
+{
+    public function handle(array $value, int $target): array
+    {
+        $received = null;
+        for ($index = 0; $index < $target; $index++) {
+            $received = signal('payload');
+        }
+
+        return $received;
+    }
+}
+
 #[Type('parity.v1.queries')]
 #[Signal('payload', [['name' => 'value', 'type' => 'array']])]
 final class QueriesWorkflow extends Workflow

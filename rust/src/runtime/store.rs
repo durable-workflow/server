@@ -1238,8 +1238,19 @@ where
                 "open_condition_wait" => {
                     reject_fields(
                         command,
-                        &["type", "condition_key", "condition_definition_fingerprint"],
+                        &[
+                            "type",
+                            "condition_key",
+                            "condition_definition_fingerprint",
+                            "condition_wait_occurrence_id",
+                        ],
                     )?;
+                    if command
+                        .get("condition_wait_occurrence_id")
+                        .is_some_and(|value| !value.is_null() && !value.is_string())
+                    {
+                        return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_request"));
+                    }
                     text(command, "condition_key")?;
                     let fingerprint = text(command, "condition_definition_fingerprint")?;
                     if !fingerprint.strip_prefix("sha256:").is_some_and(|hash| {
@@ -1442,6 +1453,18 @@ where
                 let direct = command["type"] == "open_signal_wait";
                 let mut payload = command.clone();
                 payload.as_object_mut().unwrap().remove("type");
+                // Match PHP's optional occurrence payload: retain authored
+                // nonempty strings and omit null/empty legacy values.
+                if !direct
+                    && payload
+                        .get("condition_wait_occurrence_id")
+                        .is_some_and(|value| value.is_null() || value.as_str() == Some(""))
+                {
+                    payload
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("condition_wait_occurrence_id");
+                }
                 let wait_id = if direct {
                     let pending = Self::query("SELECT signal_wait_id FROM workflow_signal_records WHERE workflow_run_id=$1 AND signal_name=$2 AND status='received' ORDER BY command_sequence,id LIMIT 1")
                         .bind(&run_id).bind(text(command, "signal_name")?).fetch_optional(&mut *tx).await?;
@@ -2024,22 +2047,37 @@ pub(super) fn validate_arguments(
         .and_then(|contracts| contracts.iter().find(|contract| contract["name"] == name))
         .and_then(|contract| contract["parameters"].as_array())
         .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, unsupported))?;
-    if parameters.len() != values.len() {
+    let variadic = parameters
+        .last()
+        .is_some_and(|parameter| parameter["variadic"] == true);
+    let fixed_count = parameters.len() - usize::from(variadic);
+    if parameters.iter().enumerate().any(|(index, parameter)| {
+        parameter["default_available"] == true
+            || (parameter["variadic"] == true && index + 1 != parameters.len())
+            || (variadic && index < fixed_count && parameter["required"] != true)
+    }) {
+        return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, unsupported));
+    }
+    if values.len() < fixed_count || (!variadic && parameters.len() != values.len()) {
         return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, invalid));
     }
-    for (parameter, value) in parameters.iter().zip(values) {
-        if parameter["variadic"] == true || parameter["default_available"] == true {
-            return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, unsupported));
-        }
-        if matches!(value, crate::codec::Value::Null) && parameter["allows_null"] == true {
-            continue;
+    for (index, value) in values.iter().enumerate() {
+        let parameter = &parameters[index.min(fixed_count)];
+        if matches!(value, crate::codec::Value::Null) {
+            if parameter["allows_null"]
+                .as_bool()
+                .unwrap_or(parameter["type"].is_null() || parameter["type"] == "")
+            {
+                continue;
+            }
+            return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, invalid));
         }
         use crate::codec::Value as Payload;
         let valid = match parameter["type"].as_str() {
             None | Some("mixed") => true,
             Some("array") => matches!(value, Payload::Array(_) | Payload::Map(_)),
             Some("int") => matches!(value, Payload::Long(_)),
-            Some("float") => matches!(value, Payload::Double(_)),
+            Some("float") => matches!(value, Payload::Double(_) | Payload::Long(_)),
             Some("bool") => matches!(value, Payload::Boolean(_)),
             Some("string") => matches!(value, Payload::String(_)),
             _ => {

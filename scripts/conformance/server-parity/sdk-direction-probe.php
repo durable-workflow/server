@@ -52,7 +52,11 @@ function sdkDirectionHttpObservation(array $fixture, array $options): array
     }
     $name = preg_replace('/[^A-Za-z0-9_.-]/', '_', $options['workflow-id']);
     $journal = tempnam(sys_get_temp_dir(), 'parity-direction-');
-    $proxy = proc_open(['node', __DIR__.'/published-sdk-patch/observe-http.mjs', $options['url'], $journal, '--forwarding-state'],
+    $proxyArguments = ['node', __DIR__.'/published-sdk-patch/observe-http.mjs', $options['url'], $journal, '--forwarding-state'];
+    if (isset($fixture['sdk_signal_direction'])) {
+        array_push($proxyArguments, '--workflow-poll-after-start', $options['workflow-id']);
+    }
+    $proxy = proc_open($proxyArguments,
         [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $proxyPipes);
     if (! is_resource($proxy)) {
         unlink($journal);
@@ -63,19 +67,23 @@ function sdkDirectionHttpObservation(array $fixture, array $options): array
     $runId = '';
     $childDirection = isset($fixture['sdk_child_direction']);
     $timerAuthor = isset($fixture['sdk_timer_author']);
-    $directionKey = $timerAuthor ? 'sdk_timer_author' : ($childDirection ? 'sdk_child_direction' : 'sdk_direction');
+    $signalDirection = isset($fixture['sdk_signal_direction']);
+    $directionKey = $signalDirection ? 'sdk_signal_direction' : ($timerAuthor ? 'sdk_timer_author' : ($childDirection ? 'sdk_child_direction' : 'sdk_direction'));
     $spec = $fixture[$directionKey];
     $childWorkflowId = $childRunId = '';
     $client = new Client($options['url'], namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null);
     $deadline = microtime(true) + 35;
+    $observerStart = null;
     try {
         $url = trim(fgets($proxyPipes[1]));
         if (! preg_match('#^http://127\\.0\\.0\\.1:[0-9]+$#', $url)) {
             throw new RuntimeException('SDK observer did not bind its local port.');
         }
+        $startClient = $signalDirection ? new Client($url, namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null) : null;
         foreach ($spec['phase_order'] as $phase) {
-            $language = $timerAuthor ? $spec['language'] : ($childDirection ? $spec[$phase === 'child' ? 'child' : 'parent']
-                : $spec[$phase === 'activity' ? 'activity' : 'workflow']);
+            $language = $signalDirection ? $spec[in_array($phase, ['signal-1', 'signal-2'], true) ? 'client' : 'workflow']
+                : ($timerAuthor ? $spec['language'] : ($childDirection ? $spec[$phase === 'child' ? 'child' : 'parent']
+                : $spec[$phase === 'activity' ? 'activity' : 'workflow']));
             $actorWorkflowId = $phase === 'child' ? $childWorkflowId : $options['workflow-id'];
             $actorRunId = $phase === 'child' ? $childRunId : $runId;
             $arguments = match ($language) {
@@ -92,20 +100,72 @@ function sdkDirectionHttpObservation(array $fixture, array $options): array
                 throw new RuntimeException('Could not start the published SDK phase.');
             }
             fclose($pipes[0]);
+            $observedStatus = null;
+            $observerError = null;
             try {
-                $stdout = stream_get_contents($pipes[1]);
-                $stderr = stream_get_contents($pipes[2]);
+                if ($signalDirection && $phase === 'original') {
+                    // Admit signals from the real worker's captured declaration.
+                    // The observer starts only after its successful registration.
+                    stream_set_blocking($pipes[1], false);
+                    stream_set_blocking($pipes[2], false);
+                    $stdout = $stderr = '';
+                    while (true) {
+                        $stdout .= stream_get_contents($pipes[1]);
+                        $stderr .= stream_get_contents($pipes[2]);
+                        $processStatus = proc_get_status($process);
+                        if (! $processStatus['running']) {
+                            $observedStatus = $processStatus['exitcode'];
+                            $stdout .= stream_get_contents($pipes[1]);
+                            $stderr .= stream_get_contents($pipes[2]);
+                            break;
+                        }
+                        if (microtime(true) >= $deadline) {
+                            throw new RuntimeException('Signal original worker exceeded the remaining fixture budget.');
+                        }
+                        if ($observerStart === null) {
+                            foreach (array_slice(file($journal, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES), $offset) as $line) {
+                                $wire = json_decode($line, true);
+                                if (! is_array($wire) || $wire['method'] !== 'POST' || $wire['path'] !== '/api/worker/register' || $wire['status'] !== 201) {
+                                    continue;
+                                }
+                                $registration = json_decode($wire['request_body'], true, flags: JSON_THROW_ON_ERROR);
+                                $receipt = json_decode($wire['response_body'], true, flags: JSON_THROW_ON_ERROR);
+                                if (($registration['worker_id'] ?? null) !== $actorWorkflowId.':original' || ($receipt['registered'] ?? null) !== true) {
+                                    continue;
+                                }
+                                $runId = $startClient->startWorkflow($fixture['workflow_type'], $actorWorkflowId,
+                                    $spec['task_queue'], [$fixture['input'], $fixture['signal_count']])->selectedRunId;
+                                $observerStart = ['role' => 'observer', 'language' => 'php', 'pid' => getmypid(),
+                                    'sdk_version' => ltrim(InstalledVersions::getPrettyVersion('durable-workflow/sdk'), 'v'),
+                                    'run_id' => $runId];
+                                break;
+                            }
+                        }
+                        usleep(10000);
+                    }
+                } else {
+                    $stdout = stream_get_contents($pipes[1]);
+                    $stderr = stream_get_contents($pipes[2]);
+                }
+            } catch (Throwable $error) {
+                if (! $signalDirection) {
+                    throw $error;
+                }
+                $observerError = $error::class.': '.$error->getMessage();
+                proc_terminate($process);
             } finally {
                 fclose($pipes[1]);
                 fclose($pipes[2]);
             }
-            $status = proc_close($process);
+            $closedStatus = proc_close($process);
+            $status = $observedStatus ?? $closedStatus;
             $lines = array_slice(file($journal, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES), $offset);
-            file_put_contents($evidence.'/'.($timerAuthor ? 'sdk-timer-author-' : ($childDirection ? 'sdk-child-direction-' : 'sdk-direction-')).$name.'-'.$phase.'.json', json_encode([
+            file_put_contents($evidence.'/'.($signalDirection ? 'sdk-signal-direction-' : ($timerAuthor ? 'sdk-timer-author-' : ($childDirection ? 'sdk-child-direction-' : 'sdk-direction-'))).$name.'-'.$phase.'.json', json_encode([
                 'language' => $language, 'phase' => $phase, 'stdout' => $stdout, 'stderr' => $stderr,
                 'exit_status' => $status, 'transport_jsonl' => implode("\n", $lines)."\n",
+                ...($signalDirection && $phase === 'original' ? ['observer_start' => $observerStart, 'observer_error' => $observerError] : []),
             ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)."\n");
-            $requests = array_map(static function (string $line) use ($childDirection, $timerAuthor): array {
+            $requests = array_map(static function (string $line) use ($childDirection, $timerAuthor, $signalDirection): array {
                 $item = json_decode($line, true, flags: JSON_THROW_ON_ERROR);
                 foreach (['request', 'response'] as $side) {
                     $body = $item[$side.'_body'];
@@ -116,13 +176,17 @@ function sdkDirectionHttpObservation(array $fixture, array $options): array
                 }
                 // Exact request/response bytes remain in the retained sidecar.
                 unset($item['request_body'], $item['response_body'], $item['response_bytes_base64']);
-                $item['response'] = sdkDirectionResponseSummary($item['response'], $childDirection || $timerAuthor);
+                $signalReceipt = $signalDirection && $item['method'] === 'POST'
+                    && preg_match('#^/api/workflows/[^/]+/signal/payload$#', $item['path']);
+                if (! $signalReceipt) {
+                    $item['response'] = sdkDirectionResponseSummary($item['response'], $childDirection || $timerAuthor || $signalDirection);
+                }
 
                 return $item;
             }, $lines);
             $result = $status === 0 ? json_decode($stdout, true, flags: JSON_THROW_ON_ERROR)
                 : ['phase' => $phase, 'language' => $language, 'worker_finished' => false, 'worker_error' => trim($stderr)];
-            if ((! $childDirection && ! $timerAuthor) || $phase === 'original') {
+            if ((! $childDirection && ! $timerAuthor && ! $signalDirection) || $phase === 'original') {
                 $runId = $result['run_id'] ?? $runId;
             }
             if ($runId === '') {
@@ -150,7 +214,8 @@ function sdkDirectionHttpObservation(array $fixture, array $options): array
                 }
             }
             $phases[] = $result + ['requests' => $requests, 'snapshot' => $snapshot,
-                ...($childDirection ? ['child_snapshot' => $childSnapshot] : [])];
+                ...($childDirection ? ['child_snapshot' => $childSnapshot] : []),
+                ...($observerError !== null ? ['observer_error' => $observerError] : [])];
             if ($status !== 0) {
                 break; // Preserve the actual open run and let the reader classify the product failure.
             }
@@ -158,11 +223,31 @@ function sdkDirectionHttpObservation(array $fixture, array $options): array
         $observation = $phases[array_key_last($phases)]['snapshot'];
         $identityPath = getenv('DW_PARITY_DIRECTION_IDENTITY') ?: '/sdk-directions/identity.json';
         $observation[$directionKey] = ['applicable' => true, 'phases' => $phases,
-            'packages' => json_decode(file_get_contents($identityPath), true, flags: JSON_THROW_ON_ERROR)];
+            'packages' => json_decode(file_get_contents($identityPath), true, flags: JSON_THROW_ON_ERROR),
+            ...($signalDirection ? ['observer_start' => $observerStart] : [])];
         if ($childDirection) {
             $observation['children'] = [$phases[array_key_last($phases)]['child_snapshot']];
         }
-        if ($childDirection || $timerAuthor) {
+        if ($signalDirection) {
+            $observation['signal_deliveries'] = [];
+            foreach ($phases as $index => &$phase) {
+                if (! in_array($phase['phase'], ['signal-1', 'signal-2'], true)) {
+                    continue;
+                }
+                foreach ($phase['requests'] as &$request) {
+                    if ($request['method'] === 'POST' && $request['path'] === '/api/workflows/'.$options['workflow-id'].'/signal/payload') {
+                        $request['decoded_input'] = $client->payloadCodec()->decodeEnvelope($request['request']['input']);
+                        $request['typed_decoded_input'] = typedValue($request['decoded_input']);
+                        $observation['signal_deliveries'][] = ['before' => $phases[$index - 1]['snapshot']['execution'],
+                            'response' => $request['response']];
+                    }
+                }
+                unset($request);
+            }
+            unset($phase);
+            $observation[$directionKey]['phases'] = $phases;
+        }
+        if ($childDirection || $timerAuthor || $signalDirection) {
             $observation['workflow_polls'] = $observation['workflow_completions'] = [];
             foreach ($phases as $phase) {
                 foreach ($phase['requests'] as $request) {
