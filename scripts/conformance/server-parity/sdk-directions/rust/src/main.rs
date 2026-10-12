@@ -10,6 +10,8 @@ use durable_workflow::{
 };
 use serde_json::{json, Value};
 
+mod queries;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -27,6 +29,9 @@ async fn main() -> Result<()> {
             .map_err(|error| Error::WorkerLoop(error.to_string()))?,
     )
     .map_err(|error| Error::WorkerLoop(error.to_string()))?;
+    if fixture.get("sdk_query_direction").is_some() {
+        return queries::run(&arguments, fixture).await;
+    }
     let child_direction = fixture.get("sdk_child_direction").is_some();
     let timer_author = fixture.get("sdk_timer_author").is_some();
     let signal_direction = fixture.get("sdk_signal_direction").is_some();

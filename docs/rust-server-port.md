@@ -1222,6 +1222,19 @@ order, stable public workflow identity, retained run/operation relationships,
 decoded input/result values and one committed completion. Passing these cases
 does not prove the remaining acceptance criteria.
 
+Normal published SDK query directions are independently prepared while #415's
+current-main integration qualifies. The [reviewed next scope](https://github.com/durable-workflow/server/issues/325#issuecomment-6115419641)
+adds all nine query-client/workflow-author combinations, overlapping real author
+and query-client processes, three cold committed checkpoints, exact fresh
+Unicode/int64/boolean/null state and unchanged original durable histories.
+The reader preserves Python's hydrated response and zero-argument input omission
+and its additional workflow replay callback. Canonical embedded query execution
+remains explicit. Source/model checks pass 50 query cases and all 4,731 Node
+tests, language/format/shell checks and isolation policy plus 72 regressions.
+These do not qualify runtime queries: initial live fixture execution must retain
+the ordinary omitted-input disagreement before its reviewed native correction.
+See [the query cohort](../tests/Fixtures/ServerParityProfiles/published-sdk-queries/QUERIES.md).
+
 ## Contract and verification inventory
 
 | Surface | Current authority and reusable checks | Port status |
