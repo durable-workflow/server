@@ -11,6 +11,7 @@ use durable_workflow::{
 use serde_json::{json, Value};
 
 mod queries;
+mod updates;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -29,6 +30,9 @@ async fn main() -> Result<()> {
             .map_err(|error| Error::WorkerLoop(error.to_string()))?,
     )
     .map_err(|error| Error::WorkerLoop(error.to_string()))?;
+    if fixture.get("sdk_update_direction").is_some() {
+        return updates::run(&arguments, fixture).await;
+    }
     if fixture.get("sdk_query_direction").is_some() {
         return queries::run(&arguments, fixture).await;
     }

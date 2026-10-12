@@ -8,6 +8,7 @@ prefix=sdk-directions-v1
 native_url="${2:?Set the independently isolated native URL}"
 test -n "${RESOURCE_SCOPE:?Set the owning isolated network/resource scope}"
 cohort=published-sdk-directions
+fixture_base=tests/Fixtures/ServerParityProfiles
 fixture_pattern=sdk-*.json
 reader_tests=(tests/Unit/ServerParitySdkDirectionContractTest.mjs)
 case "${3:-activity}" in
@@ -40,10 +41,17 @@ case "${3:-activity}" in
     fixture_pattern=query-sdk-*.json
     reader_tests=(tests/Unit/ServerParitySdkQueryDirectionContractTest.mjs)
     ;;
-  *) echo 'Choose activity, child, timer, signal or query SDK directions' >&2; exit 2 ;;
+  update)
+    tag=sdk-updates
+    prefix=sdk-updates-v1
+    cohort=published-sdk-updates
+    fixture_pattern=update-sdk-*.json
+    reader_tests=(tests/Unit/ServerParitySdkUpdateDirectionContractTest.mjs)
+    ;;
+  *) echo 'Choose activity, child, timer, signal, query or update SDK directions' >&2; exit 2 ;;
 esac
-profile="tests/Fixtures/ServerParityProfiles/$cohort"
-manifest="tests/Fixtures/ServerParityProfiles/$cohort/artifacts.json"
+profile="$fixture_base/$cohort"
+manifest="$profile/artifacts.json"
 image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' "$manifest")
 php_alias="parity-$tag-php"
 resource="$RESOURCE_SCOPE-$tag"

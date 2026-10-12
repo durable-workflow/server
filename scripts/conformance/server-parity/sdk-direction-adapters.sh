@@ -28,7 +28,7 @@ docker run --rm --user="$(id -u):$(id -g)" --network=none --entrypoint node \
   -v "$PWD:/source:ro" -v "$PWD/sdk-direction-adapters:/adapters" -w /source "$image" \
   "$adapter/identity.mjs" /adapters "$profile/artifacts.json"
 git rev-parse HEAD > sdk-direction-adapters/runner-revision.txt
-sha256sum "$adapter"/rust/{Cargo.toml,Cargo.lock,src/main.rs,src/queries.rs} "$adapter"/{python.py,php.php,queries.py,queries.php,requirements.txt,identity.mjs} \
+sha256sum "$adapter"/rust/{Cargo.toml,Cargo.lock,src/main.rs,src/queries.rs,src/updates.rs} "$adapter"/{python.py,php.php,queries.py,queries.php,updates.py,updates.php,requirements.txt,identity.mjs} \
   > sdk-direction-adapters/source-hashes.sha256
 cd sdk-direction-adapters
 find . -type f ! -path ./SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS

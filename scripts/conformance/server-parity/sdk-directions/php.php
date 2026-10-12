@@ -16,6 +16,10 @@ use Psr\Http\Message\ResponseInterface;
 require getenv('DW_PARITY_SDK_AUTOLOAD') ?: dirname(__DIR__).'/vendor/autoload.php';
 [$script, $phase, $url, $workflowId, $runId, $fixturePath, $remaining] = $argv;
 $fixture = json_decode(file_get_contents($fixturePath), true, flags: JSON_THROW_ON_ERROR);
+if (isset($fixture['sdk_update_direction'])) {
+    require __DIR__.'/updates.php';
+    exit(0);
+}
 if (isset($fixture['sdk_query_direction'])) {
     require __DIR__.'/queries.php';
     exit(0);
