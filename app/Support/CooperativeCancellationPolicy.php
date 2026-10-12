@@ -99,6 +99,13 @@ final class CooperativeCancellationPolicy
         return [
             ...WorkerPollFence::snapshot($worker),
             'registration_id' => $worker->getKey(),
+            // Bind the incarnation without exposing the registration credential
+            // in durable task payloads or exported diagnostics.
+            'registration_incarnation' => is_string($worker->registration_token)
+                ? hash('sha256', $worker->registration_token) : null,
+            'runtime' => $worker->runtime,
+            'sdk_version' => $worker->sdk_version,
+            'build_id' => $worker->build_id,
             'protocol_version' => $protocolVersion,
             'capabilities' => is_array($worker->capabilities) ? $worker->capabilities : [],
         ];

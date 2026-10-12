@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "52"
+  version: "53"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -88,6 +88,16 @@ x-durable-workflow-cooperative-cancellation-contract:
   claim_proof: immutable_registration_snapshot_bound_to_task_run_owner_and_attempt
   request_against_incompatible_active_claim: { status: 409, reason: active_claim_cancellation_not_supported, history_appended: false }
   request_claim_race: serialized_on_workflow_run_lock
+  nexus_target_admission:
+    first_request: validate_original_owned_call_and_target_under_commit_locks
+    ordinary_target: { minimum_protocol: "1.20", capabilities: [cooperative_cancellation] }
+    pending_or_retained_service_operation_target: { minimum_protocol: "1.20", capabilities: [cooperative_cancellation, nexus_cooperative_cancellation] }
+    active_claim: immutable_capability_and_registration_incarnation_proof
+    no_active_claim: fresh_namespace_queue_type_build_and_recorded_definition_matching_worker
+    embedded_target: backend_owned
+    known_incompatible: { status: 409, reason: nexus_cooperative_cancellation_not_supported, history_appended: false }
+    temporary_absence: { status: 503, reason: nexus_cooperative_cancellation_temporarily_unavailable, retryable: true, history_appended: false }
+    accepted_duplicate: original_identity_and_deadlines_without_eligibility_recheck
   prior_completed_calls: replay_normally_before_canonical_delivery_boundary
   cleanup_deadline: immutable_original_request_deadline
   cleanup_completion: cancelled_with_original_request_id
