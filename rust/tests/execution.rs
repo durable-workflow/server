@@ -230,6 +230,52 @@ impl TestDatabase {
         }
     }
 
+    async fn update_failure_count(&self, command: &str, failure: &str) -> i64 {
+        let query = "SELECT COUNT(*) FROM workflow_failures WHERE source_id=$1 AND id=$2 AND source_kind='workflow_command' AND propagation_kind='update' AND failure_category='application' AND non_retryable=true AND handled=false";
+        match self {
+            Self::Sqlite(dir) => {
+                let pool = sqlx::SqlitePool::connect(&format!(
+                    "sqlite://{}",
+                    dir.path().join("runtime.sqlite").display()
+                ))
+                .await
+                .unwrap();
+                let count = sqlx::query_scalar(query)
+                    .bind(command)
+                    .bind(failure)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+                count
+            }
+            Self::Postgres { options, .. } => {
+                let pool = sqlx::postgres::PgPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
+                let count = sqlx::query_scalar(query)
+                    .bind(command)
+                    .bind(failure)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+                count
+            }
+            Self::MySql { options, .. } => {
+                let pool = sqlx::mysql::MySqlPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
+                let count = sqlx::query_scalar("SELECT COUNT(*) FROM workflow_failures WHERE source_id=? AND id=? AND source_kind='workflow_command' AND propagation_kind='update' AND failure_category='application' AND non_retryable=true AND handled=false")
+                    .bind(command).bind(failure).fetch_one(&pool).await.unwrap();
+                pool.close().await;
+                count
+            }
+        }
+    }
+
     async fn cancellation_failure_message(&self, failure: &str) -> String {
         let query = "SELECT message FROM workflow_failures WHERE id=$1";
         match self {
@@ -1670,6 +1716,251 @@ async fn updates_preserve_original_receipts_and_fence_recovered_tasks_across_poo
             .await
             .1["status"],
         "completed"
+    );
+    reopened.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn failed_updates_preserve_terminal_identity_and_parent_continuation_after_reopen() {
+    let database = TestDatabase::new().await;
+    let first = database.open().await.unwrap();
+    let second = database.open().await.unwrap();
+    let a = router(first.clone());
+    let b = router(second.clone());
+    update_worker(&a, "failure-author").await;
+    let started = start(&a, "failed-update-parent").await;
+    open_update_wait(&a, "failure-author").await;
+    let path = "/api/workflows/failed-update-parent/update/set";
+    let history_path = format!(
+        "/api/workflows/failed-update-parent/runs/{}/history",
+        started["run_id"].as_str().unwrap()
+    );
+    let input = json!({"input":envelope(Payload::Array(vec![Payload::Long(9007199254740993)])),
+        "request_id":"failed-original","wait_for":"accepted"});
+    let admitted = request(&a, "POST", path, input.clone()).await;
+    assert_eq!(admitted.0, StatusCode::ACCEPTED);
+    let before = request(&a, "GET", &history_path, Value::Null).await.1;
+    let mut duplicate = input.clone();
+    duplicate["input"] = envelope(Payload::Array(vec![Payload::String(
+        "changed duplicate".into(),
+    )]));
+    assert_eq!(
+        request(&b, "POST", path, duplicate.clone()).await.1["update_id"],
+        admitted.1["update_id"]
+    );
+    assert_eq!(
+        request(&b, "GET", &history_path, Value::Null).await.1,
+        before
+    );
+    let task = poll(&a, "failure-author", "workflow").await;
+    let task_path = format!(
+        "/api/worker/workflow-tasks/{}/complete",
+        task["task_id"].as_str().unwrap()
+    );
+    let failed = completion(
+        &task,
+        json!([{"type":"fail_update","update_id":admitted.1["update_id"],
+        "message":"original failure λ","exception_type":"ValueError","exception_class":"builtins.ValueError","non_retryable":true}]),
+    );
+    for (field, value) in [
+        ("message", Value::Null),
+        ("message", json!("\u{0000} \t")),
+        ("update_id", json!("foreign")),
+        ("result", envelope(Payload::Null)),
+    ] {
+        let mut wrong = failed.clone();
+        wrong["commands"][0][field] = value;
+        assert!(!request(&b, "POST", &task_path, wrong).await.0.is_success());
+        assert_eq!(
+            request(&b, "GET", &history_path, Value::Null).await.1,
+            before
+        );
+    }
+    let mut stale = failed.clone();
+    stale["workflow_task_attempt"] = json!(99);
+    assert_eq!(
+        request(&b, "POST", &task_path, stale).await.0,
+        StatusCode::CONFLICT
+    );
+    duplicate["wait_for"] = json!("completed");
+    duplicate["wait_timeout_seconds"] = json!(5);
+    let waiting = {
+        let app = b.clone();
+        let body = duplicate.clone();
+        tokio::spawn(async move { request(&app, "POST", path, body).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    assert!(
+        !waiting.is_finished(),
+        "failed result is not invented before its original author completes"
+    );
+    let failed_ack = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        request(&a, "POST", &task_path, failed.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(failed_ack.0, StatusCode::OK, "{}", failed_ack.1);
+    let receipt = waiting.await.unwrap();
+    assert_eq!(receipt.0, StatusCode::UNPROCESSABLE_ENTITY, "{}", receipt.1);
+    assert_eq!(receipt.1["update_status"], "failed");
+    assert_eq!(receipt.1["outcome"], "update_failed");
+    assert_eq!(receipt.1["reason"], Value::Null);
+    assert_eq!(receipt.1["command_status"], "accepted");
+    assert_eq!(receipt.1["workflow_sequence"], 2);
+    assert_eq!(receipt.1["failure_message"], "original failure λ");
+    assert_eq!(receipt.1["result_envelope"], Value::Null);
+    for key in [
+        "workflow_id",
+        "run_id",
+        "command_id",
+        "command_status",
+        "update_id",
+        "update_status",
+        "outcome",
+        "reason",
+    ] {
+        assert_eq!(receipt.1["control_plane"][key], receipt.1[key]);
+    }
+    let failure_id = receipt.1["failure_id"].as_str().unwrap();
+    assert_eq!(
+        database
+            .update_failure_count(admitted.1["command_id"].as_str().unwrap(), failure_id)
+            .await,
+        1
+    );
+    let completed_history = request(&a, "GET", &history_path, Value::Null).await.1;
+    assert_eq!(
+        completed_history["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| event["event_type"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "StartAccepted",
+            "WorkflowStarted",
+            "SignalWaitOpened",
+            "UpdateAccepted",
+            "UpdateCompleted",
+            "MessageCursorAdvanced"
+        ]
+    );
+    let failure_event = &completed_history["events"][4]["payload"];
+    assert_eq!(failure_event["failure_id"], receipt.1["failure_id"]);
+    assert_eq!(failure_event["exception_class"], "builtins.ValueError");
+    assert_eq!(failure_event["exception_type"], "ValueError");
+    assert_eq!(failure_event["exception"]["message"], "original failure λ");
+    assert_eq!(completed_history["events"][5]["payload"]["new_position"], 1);
+    assert_eq!(
+        request(&a, "POST", &task_path, failed.clone()).await.1["recorded"],
+        false
+    );
+    let mut changed = failed;
+    changed["commands"][0]["message"] = json!("another failure");
+    assert_eq!(
+        request(&b, "POST", &task_path, changed).await.0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        request(&b, "GET", &history_path, Value::Null).await.1,
+        completed_history
+    );
+    first.close().await;
+    second.close().await;
+    let reopened = database.open().await.unwrap();
+    let app = router(reopened.clone());
+    let repeated = request(&app, "POST", path, duplicate.clone()).await;
+    assert_eq!(repeated.0, StatusCode::UNPROCESSABLE_ENTITY);
+    for key in [
+        "command_id",
+        "update_id",
+        "failure_id",
+        "failure_message",
+        "accepted_at",
+        "applied_at",
+        "closed_at",
+        "workflow_sequence",
+    ] {
+        assert_eq!(
+            repeated.1[key], receipt.1[key],
+            "original failed receipt {key}"
+        );
+    }
+    assert_eq!(
+        request(&app, "GET", &history_path, Value::Null).await.1,
+        completed_history
+    );
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            "/api/workflows/failed-update-parent",
+            Value::Null
+        )
+        .await
+        .1["status"],
+        "waiting"
+    );
+    update_worker(&app, "replacement-author").await;
+    let mut good = input;
+    good["request_id"] = json!("later-good-update");
+    let admitted_good = request(&app, "POST", path, good).await;
+    assert_eq!(admitted_good.0, StatusCode::ACCEPTED);
+    let good_task = poll(&app, "replacement-author", "workflow").await;
+    assert_eq!(good_task["history_events"].as_array().unwrap().len(), 7);
+    assert_eq!(
+        good_task["history_events"][4]["payload"]["failure_id"],
+        receipt.1["failure_id"]
+    );
+    let good_path = format!(
+        "/api/worker/workflow-tasks/{}/complete",
+        good_task["task_id"].as_str().unwrap()
+    );
+    assert_eq!(request(&app, "POST", &good_path, completion(&good_task, json!([{"type":"complete_update",
+        "update_id":admitted_good.1["update_id"],"result":envelope(Payload::Long(9007199254740995))}]))).await.0, StatusCode::OK);
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            "/api/workflows/failed-update-parent/signal/finish",
+            json!({"input":envelope(Payload::Array(vec![Payload::Long(1)]))})
+        )
+        .await
+        .0,
+        StatusCode::ACCEPTED
+    );
+    let final_task = poll(&app, "replacement-author", "workflow").await;
+    let final_path = format!(
+        "/api/worker/workflow-tasks/{}/complete",
+        final_task["task_id"].as_str().unwrap()
+    );
+    assert_eq!(request(&app, "POST", &final_path, completion(&final_task,
+        json!([{"type":"complete_workflow","result":envelope(Payload::Long(9007199254740995))}]))).await.0, StatusCode::OK);
+    let parent = request(
+        &app,
+        "GET",
+        "/api/workflows/failed-update-parent",
+        Value::Null,
+    )
+    .await
+    .1;
+    assert_eq!(parent["status"], "completed");
+    assert_eq!(parent["run_id"], started["run_id"]);
+    assert_eq!(
+        parent["output_envelope"],
+        envelope(Payload::Long(9007199254740995))
+    );
+    assert_eq!(
+        database
+            .update_failure_count(admitted.1["command_id"].as_str().unwrap(), failure_id)
+            .await,
+        1
+    );
+    assert_eq!(
+        request(&app, "POST", path, duplicate).await.1["failure_id"],
+        receipt.1["failure_id"]
     );
     reopened.close().await;
     database.remove().await;

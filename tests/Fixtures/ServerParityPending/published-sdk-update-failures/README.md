@@ -50,8 +50,16 @@ failed handlers; the fixture's final state replays its explicit rejection
 condition. Python reconstructs state through successful `UpdateApplied` events.
 The first PHP author assumption is retained as a failed reader record.
 
-The complete cross-language baseline, native correction and all-six
-qualification remain pending. No executable failure profile is promoted or
-included in the automatic runtime matrix yet.
+Native failure-command validation, durable failure links and terminal HTTP 422
+receipts are implemented, with duplicate, fencing and database reopen/parent
+continuation regressions. A normalization corpus checks actual PHP rules and
+the native implementation. Compilation and runtime qualification remain pending.
+
+The executable pending profile is included after the successful-update profile
+in all six automatic database jobs. The additional workload uses a 30-minute
+whole-job limit, preserving individual scenario budgets, resource limits and
+frozen package identities. Historical 25-minute failures/cancellations remain
+unchanged. The complete cross-language baseline and independently inspected
+all-six native/PHP/embedded qualification are required before promotion.
 Validators, queued routing, other failure policies, alternate wait stages,
 namespaces/auth, consumers, migration and performance remain separate gates.

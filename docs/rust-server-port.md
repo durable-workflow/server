@@ -78,10 +78,25 @@ is failed update handlers with continued parent execution. The
 [pending cohort contract](../tests/Fixtures/ServerParityPending/published-sdk-update-failures/README.md)
 requires ordinary frozen SDK clients and authors, original accepted failure
 identities, pending and completed duplicates, cold replay, and a later successful
-update plus finishing signal on the same run. Actual PHP and embedded recordings
-must establish the contract before native implementation. Language-specific
-exception type, class and message remain observable; a failed handler emits no
-successful `UpdateApplied`. No failed-handler execution is qualified yet.
+update plus finishing signal on the same run. Preliminary SQLite PHP/PHP and
+embedded recordings pass the complete lifecycle reader; the first PHP author's
+incorrect accepted-input assumption remains a separate failed record.
+[#427](https://github.com/durable-workflow/server/pull/427) implements native
+failure-command validation, durable failure links, terminal HTTP 422 receipts,
+duplicate identity and parent continuation, with database reopen regressions.
+A shared normalization corpus is checked against the actual PHP failure rules.
+Language-specific exception type, class and message remain observable; a failed
+handler emits no successful `UpdateApplied`.
+
+The nine-direction failure profile now runs after the successful-update profile
+in all six database jobs. Its fixtures remain pending until original runtime
+artifacts and normal source checks qualify the complete cohort. The expanded
+jobs have a 30-minute whole-job limit to include this additional workload;
+individual scenario deadlines, frozen tuples and resource limits are unchanged.
+The preceding `dc881518` run retains its original failures and cancellations
+under the original 25-minute limit. Native and cross-language failed-handler
+execution remain unqualified; artifact retrieval currently times out before
+receiving bytes, so the earlier SQLite/MariaDB failures are not yet attributed.
 Validators, full query policies, queued controls,
 unchanged consumers, migration,
 multi-node acceptance, matched performance and release/cutover remain open.

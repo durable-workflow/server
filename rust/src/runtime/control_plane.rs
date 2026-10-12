@@ -12,6 +12,7 @@ pub(super) enum Operation {
     Cancel,
     Repair,
     Debug,
+    Update,
 }
 
 impl Operation {
@@ -60,6 +61,11 @@ impl Operation {
             Self::Cancel => ("cancel", &["workflow_id"], &["outcome"]),
             Self::Repair => ("repair", &["workflow_id"], &["outcome"]),
             Self::Debug => ("debug", &["workflow_id"], &[]),
+            Self::Update => (
+                "update",
+                &["workflow_id", "operation_name", "operation_name_field"],
+                &["outcome"],
+            ),
         };
         let mut metadata = json!({"schema":"durable-workflow.v2.control-plane-response", "version":1,
             "operation":operation, "workflow_id":body.get("workflow_id"),
@@ -98,6 +104,53 @@ impl Operation {
             metadata["contract"]["rejection_fields"] =
                 json!(["workflow_id", "run_id", "reason", "message", "remediation"]);
             metadata["contract"]["rejection_reasons"] = json!(["v1_projection_read_only"]);
+        }
+        if matches!(self, Self::Update) {
+            metadata["operation_name"] = body["update_name"].clone();
+            metadata["operation_name_field"] = json!("update_name");
+            metadata["contract"]["rejection_fields"] = json!([
+                "workflow_id",
+                "run_id",
+                "update_id",
+                "update_name",
+                "update_status",
+                "outcome",
+                "reason",
+                "rejection_reason",
+                "validation_errors",
+                "retryable",
+                "message",
+                "remediation"
+            ]);
+            metadata["contract"]["rejection_reasons"] = json!([
+                "update_validator_rejected",
+                "update_validator_contract_missing",
+                "update_validation_request_id_required",
+                "update_validation_idempotency_conflict",
+                "update_validation_capability_unsupported",
+                "update_validator_worker_unavailable",
+                "update_validator_worker_incompatible",
+                "update_validator_worker_lost",
+                "update_validation_task_not_claimed",
+                "update_validation_execution_timeout",
+                "duplicate_update_validation_completion",
+                "stale_update_validation_completion",
+                "invalid_update_arguments",
+                "v1_projection_read_only"
+            ]);
+            for field in [
+                "command_id",
+                "target_scope",
+                "result",
+                "result_envelope",
+                "update_id",
+                "update_status",
+                "wait_for",
+                "wait_timed_out",
+                "wait_timeout_seconds",
+            ] {
+                metadata[field] = body[field].clone();
+            }
         }
         // Copy scalar read identities/state, never input/output/event payloads.
         for field in [
