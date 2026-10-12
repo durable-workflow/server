@@ -18,6 +18,10 @@ the matching successful start receipt. Three cold author processes serve the
 committed checkpoints before signals, after the first resumption and after final
 completion. Each author overlaps its independent normal query client until the
 real query completion; each process retains a separate complete HTTP journal.
+The observer takes each checkpoint snapshot after the matching original
+workflow task's actual successful completion receipt, bound to task, run, lease
+owner, attempt and request index. Updated history alone cannot release that
+checkpoint before the command's final run projection is acknowledged.
 
 Two ordinary PHP signal clients provide the same exact signal map between reads.
 The query result is `{"received": 0|1|2, "last": null|<signal map>}`, preserving
@@ -30,16 +34,25 @@ The published PHP/Rust clients return decoded values. The frozen Python client
 returns its hydrated response object and omits input for zero arguments.
 Python's query worker replays the workflow; PHP/Rust use immutable snapshot
 handlers. Callback counts remain explicit rather than being forced to match.
+Raw `actions.can_query` remains recorded as computed worker availability. When
+present, its boolean shape and presence stay checked; this one flag can change
+as a cold author deregisters. Every other action, original run field, wait
+reason, progress time and control-plane copy remains part of strict unchanged
+snapshot comparison. Broader query-availability/routing policy remains open.
 Embedded authors run their normal zero-argument method over canonical direct
 signal histories, without HTTP worker transport.
 
-Source preparation passes 50 reader models and the full 4,731-test Node suite,
+Current recorder preparation passes 60 reader models and the full 4,742-test Node suite,
 PHP syntax, Python AST, Rust fixture formatting, shell syntax and the Docker
-isolation policy with 72 regressions. Thirteen PHP recorder tests pass 56
+isolation policy with 72 regressions. Sixteen PHP recorder tests pass 80
 assertions, including root empty-object/array distinction, exact int64 values
 and cancelled partial/fully received bodies; the feature workflow includes the
 new parser regressions. These are source/model checks. No new
-SDK compilation or durable query runtime observation is claimed.
+SDK compilation is required for these recorder-only corrections. The initial
+compiled SDK preparation is independently audited; the frozen PHP/PHP query
+direction completes its three reads and original 13-event run, but its
+unchanged initial record remains failed on snapshot validation. Embedded/native
+queries were not reached. Fresh full-cohort runtime qualification is pending.
 
 The initial runtime gate must preserve the ordinary Python omitted-input
 disagreement before applying the reviewed native correction. Native currently
@@ -61,3 +74,4 @@ performance are separate gates.
 [Process/result clarification](https://github.com/durable-workflow/server/issues/325#issuecomment-6115688730).
 [Bounded scheduling](https://github.com/durable-workflow/server/issues/325#issuecomment-6116091307).
 [Independent PHP correction](https://github.com/durable-workflow/server/issues/325#issuecomment-6116357816).
+[Initial recorder disagreement and correction](https://github.com/durable-workflow/server/pull/422#issuecomment-6116719443).

@@ -31,7 +31,10 @@ function model(fixture, mode = 'http') {
     payload_codec: 'avro', status, typed_input: input, typed_output: status === 'completed'
       ? fixture.typed_signal_value : {type: 'null', value: null},
     events: clone(events.slice(0, length)),
-    execution: {id: runId, workflow_instance_id: workflowId, status, last_history_sequence: length}});
+    execution: {id: runId, workflow_instance_id: workflowId, status, last_history_sequence: length,
+      last_progress_at: 'checkpoint-' + length, wait_reason: status === 'completed' ? null : 'committed-wait',
+      control_plane: {last_progress_at: 'checkpoint-' + length, wait_reason: status === 'completed' ? null : 'committed-wait'},
+      actions: {can_query: false, can_signal: status === 'waiting', can_archive: false}}});
   if (mode === 'embedded') {
     observation.sdk_query_direction = {applicable: false, reason: 'embedded_executes_php_author_definitions'};
     observation.workflow_package = artifacts.workflow;
@@ -76,10 +79,13 @@ function model(fixture, mode = 'http') {
       : [{type: 'open_condition_wait', condition_key: 'payload:' + turn}];
     const complete = {method: 'POST', path: '/api/worker/workflow-tasks/' + task.task_id + '/complete', status: 200,
       request: {lease_owner: task.lease_owner, workflow_task_attempt: 1, commands},
-      response: {task_id: task.task_id, run_id: runId, recorded: true},
+      response: {task_id: task.task_id, run_id: runId, workflow_task_attempt: 1, recorded: true},
       decoded_commands: [{decoded: turn === 2 ? {result: fixture.signal_value} : {},
         typed_decoded: turn === 2 ? {result: fixture.typed_signal_value} : {}}]};
     phase.requests.push(complete);
+    phase.checkpoint_workflow_ack = {path: complete.path, task_id: task.task_id,
+      lease_owner: task.lease_owner, workflow_task_attempt: 1,
+      request_index: phase.requests.indexOf(complete), status: 200};
     workflowTasks.push(task); completions.push(complete);
     const queryTask = {query_task_id: 'query-task-' + turn, lease_owner: 'query-lease-' + turn, query_task_attempt: 1,
       workflow_id: workflowId, run_id: runId, workflow_type: fixture.workflow_type, task_queue: spec.task_queue,
@@ -95,6 +101,7 @@ function model(fixture, mode = 'http') {
       decoded_result: value, typed_decoded_result: typedState(fixture, turn)});
     const caller = phases[i + 1];
     Object.assign(caller, {query_sent: true, client_finished: true, snapshot_before: clone(phase.snapshot)});
+    caller.snapshot_before.execution.actions.can_query = true; // The author is still registered here.
     const response = {workflow_id: workflowId, run_id: runId, query_name: 'state', reason: null,
       result: null, result_envelope: envelope('query-result-' + turn)};
     caller.requests.push({method: 'POST', path: '/api/workflows/' + workflowId + '/query/state', status: 200,
@@ -139,6 +146,16 @@ const mutations = [
   ['missing query declaration', o => { o.events[1].payload.declared_queries = []; }],
   ['mutated original history', o => { o.sdk_query_direction.phases[1].snapshot.events[0].payload.changed = true; }],
   ['query changes run state', o => { o.sdk_query_direction.phases[1].snapshot.execution.message_cursor = 1; }],
+  ['query changes progress time', o => { o.sdk_query_direction.phases[1].snapshot.execution.last_progress_at = 'changed'; }],
+  ['query changes wait reason', o => { o.sdk_query_direction.phases[4].snapshot.execution.wait_reason = 'prior-wait'; }],
+  ['query changes control-plane progress', o => { o.sdk_query_direction.phases[1].snapshot.execution.control_plane.last_progress_at = 'changed'; }],
+  ['query changes control-plane wait reason', o => { o.sdk_query_direction.phases[4].snapshot.execution.control_plane.wait_reason = 'changed'; }],
+  ['query changes another action', o => { o.sdk_query_direction.phases[1].snapshot.execution.actions.can_signal = false; }],
+  ['query availability loses boolean type', o => { o.sdk_query_direction.phases[1].snapshot.execution.actions.can_query = 'false'; }],
+  ['query availability disappears', o => { delete o.sdk_query_direction.phases[1].snapshot.execution.actions.can_query; }],
+  ['missing workflow checkpoint receipt', o => { delete o.sdk_query_direction.phases[0].checkpoint_workflow_ack; }],
+  ['checkpoint receipt uses another task', o => { o.sdk_query_direction.phases[0].checkpoint_workflow_ack.task_id = 'different'; }],
+  ['checkpoint receipt uses another request', o => { o.sdk_query_direction.phases[0].checkpoint_workflow_ack.request_index = 0; }],
   ['query changes history ID', o => { o.sdk_query_direction.phases[1].snapshot.events[0].id = 'different-event'; }],
   ['missing query request', o => { o.sdk_query_direction.phases[1].requests = []; }],
   ['supplied Python empty input', o => { o.sdk_query_direction.phases[1].requests[0].request.input = envelope('empty-arguments'); }],

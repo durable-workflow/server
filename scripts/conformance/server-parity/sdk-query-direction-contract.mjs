@@ -24,6 +24,18 @@ const one = (requests, predicate, message) => {
 function unchanged(before, after, message) {
   assert.deepEqual(after, before, message);
 }
+function unchangedDurableSnapshot(before, after, message) {
+  const hasAvailability = snapshot => Object.hasOwn(snapshot.execution?.actions ?? {}, 'can_query');
+  assert.equal(hasAvailability(after), hasAvailability(before), 'computed query availability field stays present');
+  const durable = snapshot => {
+    if (!hasAvailability(snapshot)) return snapshot;
+    assert.equal(typeof snapshot.execution.actions.can_query, 'boolean', 'actual computed query availability');
+    const actions = {...snapshot.execution.actions};
+    delete actions.can_query; // Only live worker availability; complete raw value stays recorded.
+    return {...snapshot, execution: {...snapshot.execution, actions}};
+  };
+  unchanged(durable(before), durable(after), message);
+}
 
 export function checkSdkQueryDirectionArtifacts(fixture, selected) {
   if (!fixture.sdk_query_direction) return;
@@ -129,8 +141,8 @@ export function checkSdkQueryDirection(fixture, observation, workflowId) {
       assert.equal(phase.query_sent, true); assert.equal(phase.client_finished, true);
       assert(!phase.requests.some(item => item.path.startsWith('/api/worker/')));
       assert(!phase.requests.some(item => item.method === 'POST' && item.path === '/api/workflows'));
-      unchanged(phase.snapshot_before, snapshot, 'query leaves every original durable field/history unchanged');
-      assert.deepEqual(phase.snapshot_before, direction.phases[index - 1].snapshot);
+      unchangedDurableSnapshot(phase.snapshot_before, snapshot, 'query leaves every original durable field/history unchanged');
+      unchangedDurableSnapshot(phase.snapshot_before, direction.phases[index - 1].snapshot, 'same acknowledged author snapshot');
       const wire = one(phase.requests, item => item.method === 'POST'
         && item.path === '/api/workflows/' + workflowId + '/query/state', 'one normal instance-scoped query');
       assert.equal(wire.status, 200);
@@ -229,6 +241,9 @@ export function checkSdkQueryDirection(fixture, observation, workflowId) {
       assert(phase.requests.indexOf(register) < phase.requests.indexOf(start));
       assert(phase.requests.indexOf(start) < phase.requests.indexOf(claim), 'original first claim after successful start receipt');
     } else assert(!phase.requests.some(item => item.path === '/api/workflows'));
+    assert.deepEqual(phase.checkpoint_workflow_ack, {path: complete.path, task_id: task.task_id,
+      lease_owner: task.lease_owner, workflow_task_attempt: task.workflow_task_attempt,
+      request_index: phase.requests.indexOf(complete), status: 200}, 'matching workflow receipt observed before snapshot');
     workflowTasks.push(task); workflowCompletions.push(complete);
   }
   assert.equal(new Set(queryIds).size, 3, 'each repeated query receives its own actual task');

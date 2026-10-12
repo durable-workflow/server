@@ -13,6 +13,62 @@ require_once dirname(__DIR__, 2).'/scripts/conformance/server-parity/sdk-query-d
 
 final class ServerParitySdkQueryTransportTest extends TestCase
 {
+    private function acknowledgementRequests(int $checkpoint = 0): array
+    {
+        return [
+            ['method' => 'POST', 'path' => '/api/worker/workflow-tasks/poll', 'status' => 200,
+                'response' => ['task' => ['task_id' => 'original-task', 'workflow_id' => 'original', 'run_id' => 'run',
+                    'lease_owner' => 'author', 'workflow_task_attempt' => 1]]],
+            ['method' => 'POST', 'path' => '/api/worker/workflow-tasks/original-task/complete', 'status' => 200,
+                'client_cancelled' => false, 'request_body_complete' => true, 'upstream_request_started' => true, 'transport_error' => null,
+                'request' => ['lease_owner' => 'author', 'workflow_task_attempt' => 1,
+                    'commands' => [$checkpoint === 2 ? ['type' => 'complete_workflow']
+                        : ['type' => 'open_condition_wait', 'condition_key' => 'payload:'.$checkpoint]]],
+                'response' => ['task_id' => 'original-task', 'run_id' => 'run', 'workflow_task_attempt' => 1,
+                    'recorded' => true, 'reason' => null]],
+        ];
+    }
+
+    public function test_each_original_checkpoint_waits_for_its_matching_successful_receipt(): void
+    {
+        foreach ([0, 1, 2] as $checkpoint) {
+            self::assertSame(['path' => '/api/worker/workflow-tasks/original-task/complete', 'task_id' => 'original-task',
+                'lease_owner' => 'author', 'workflow_task_attempt' => 1, 'request_index' => 1, 'status' => 200],
+                \sdkQueryWorkflowAcknowledgement($this->acknowledgementRequests($checkpoint), 'original', 'run', $checkpoint));
+        }
+    }
+
+    public function test_matching_receipt_must_follow_the_original_claim(): void
+    {
+        self::assertNull(\sdkQueryWorkflowAcknowledgement(array_reverse($this->acknowledgementRequests()), 'original', 'run', 0));
+        self::assertNull(\sdkQueryWorkflowAcknowledgement([$this->acknowledgementRequests()[0]], 'original', 'run', 0));
+    }
+
+    public function test_failed_partial_or_foreign_completions_do_not_release_the_checkpoint(): void
+    {
+        foreach ([
+            ['status', 409], ['method', 'GET'], ['path', '/api/worker/workflow-tasks/foreign-task/complete'],
+            ['client_cancelled', true], ['request_body_complete', false], ['upstream_request_started', false],
+            ['transport_error', 'connection closed'], ['request', new stdClass()], ['response', new stdClass()],
+        ] as [$field, $value]) {
+            $requests = $this->acknowledgementRequests();
+            $requests[1][$field] = $value;
+            self::assertNull(\sdkQueryWorkflowAcknowledgement($requests, 'original', 'run', 0), $field);
+        }
+        foreach ([
+            ['request', 'lease_owner', 'foreign'], ['request', 'workflow_task_attempt', 2],
+            ['response', 'task_id', 'foreign'], ['response', 'run_id', 'foreign'],
+            ['response', 'workflow_task_attempt', 2], ['response', 'recorded', false], ['response', 'reason', 'ignored'],
+        ] as [$side, $field, $value]) {
+            $requests = $this->acknowledgementRequests();
+            $requests[1][$side][$field] = $value;
+            self::assertNull(\sdkQueryWorkflowAcknowledgement($requests, 'original', 'run', 0), $side.'.'.$field);
+        }
+        self::assertNull(\sdkQueryWorkflowAcknowledgement($this->acknowledgementRequests(), 'foreign', 'run', 0));
+        self::assertNull(\sdkQueryWorkflowAcknowledgement($this->acknowledgementRequests(), 'original', 'foreign', 0));
+        self::assertNull(\sdkQueryWorkflowAcknowledgement($this->acknowledgementRequests(1), 'original', 'run', 0));
+    }
+
     private function parse(string $request, string $response = '', array $fields = []): array
     {
         $journal = tempnam(sys_get_temp_dir(), 'query-wire-test-');

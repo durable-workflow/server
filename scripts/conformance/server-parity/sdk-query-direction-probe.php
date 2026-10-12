@@ -104,6 +104,50 @@ function sdkQueryWireRequests(array $actor): array
     }, file($actor['journal'], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES));
 }
 
+function sdkQueryWorkflowAcknowledgement(array $requests, string $workflowId, string $runId, int $checkpoint): ?array
+{
+    foreach ($requests as $pollIndex => $poll) {
+        if (($poll['method'] ?? null) !== 'POST' || ($poll['path'] ?? null) !== '/api/worker/workflow-tasks/poll'
+            || ($poll['status'] ?? null) !== 200 || ! is_array($poll['response'] ?? null)) {
+            continue;
+        }
+        $task = $poll['response']['task'] ?? null;
+        if (! is_array($task) || ($task['workflow_id'] ?? null) !== $workflowId || ($task['run_id'] ?? null) !== $runId
+            || ! is_string($task['task_id'] ?? null) || $task['task_id'] === ''
+            || ! is_string($task['lease_owner'] ?? null) || $task['lease_owner'] === ''
+            || ! is_int($task['workflow_task_attempt'] ?? null) || $task['workflow_task_attempt'] < 1) {
+            continue;
+        }
+        $path = '/api/worker/workflow-tasks/'.$task['task_id'].'/complete';
+        foreach ($requests as $index => $completion) {
+            $request = $completion['request'] ?? null;
+            $response = $completion['response'] ?? null;
+            if ($index <= $pollIndex || ($completion['method'] ?? null) !== 'POST' || ($completion['path'] ?? null) !== $path
+                || ($completion['status'] ?? null) !== 200 || ($completion['client_cancelled'] ?? true) !== false
+                || ($completion['request_body_complete'] ?? false) !== true || ($completion['upstream_request_started'] ?? false) !== true
+                || ($completion['transport_error'] ?? null) !== null || ! is_array($request) || ! is_array($response)
+                || ($request['lease_owner'] ?? null) !== $task['lease_owner']
+                || ($request['workflow_task_attempt'] ?? null) !== $task['workflow_task_attempt']
+                || ($response['task_id'] ?? null) !== $task['task_id'] || ($response['run_id'] ?? null) !== $runId
+                || ($response['workflow_task_attempt'] ?? null) !== $task['workflow_task_attempt']
+                || ($response['recorded'] ?? null) !== true || ($response['reason'] ?? null) !== null) {
+                continue;
+            }
+            $commands = $request['commands'] ?? null;
+            if (! is_array($commands) || count($commands) !== 1
+                || ($commands[0]['type'] ?? null) !== ($checkpoint === 2 ? 'complete_workflow' : 'open_condition_wait')
+                || ($checkpoint < 2 && ($commands[0]['condition_key'] ?? null) !== 'payload:'.$checkpoint)) {
+                continue;
+            }
+
+            return ['path' => $path, 'task_id' => $task['task_id'], 'lease_owner' => $task['lease_owner'],
+                'workflow_task_attempt' => $task['workflow_task_attempt'], 'request_index' => $index, 'status' => 200];
+        }
+    }
+
+    return null;
+}
+
 function sdkQueryActorFinish(array &$actor, float $deadline, string $evidence, string $workflowId): array
 {
     while (sdkQueryActorPoll($actor)) {
@@ -164,6 +208,7 @@ function sdkQueryDirectionHttpObservation(array $fixture, array $options): array
     $snapshot = null;
     try {
         foreach (['original', 'resumed', 'replacement'] as $checkpoint => $phase) {
+            $snapshot = $checkpointAcknowledgement = null;
             $actors[$phase] = sdkQueryActorOpen($spec['workflow'], $phase, $fixture, $options, $runId, $deadline);
             $author = &$actors[$phase];
             while (true) {
@@ -187,6 +232,15 @@ function sdkQueryDirectionHttpObservation(array $fixture, array $options): array
                     }
                 }
                 if ($runId !== '') {
+                    $checkpointAcknowledgement = sdkQueryWorkflowAcknowledgement(
+                        sdkQueryWireRequests($author), $options['workflow-id'], $runId, $checkpoint);
+                    if ($checkpointAcknowledgement === null) {
+                        usleep(10000);
+
+                        continue;
+                    }
+                    // Read only after the matching real completion response;
+                    // an updated history can precede its final run projection.
                     $snapshot = sdkDirectionSnapshot($client, $options['workflow-id'], $runId);
                     $applied = count(array_filter($snapshot['events'], static fn (array $event): bool => $event['event_type'] === 'SignalApplied'));
                     if ($applied === $checkpoint && $snapshot['status'] === ($checkpoint === 2 ? 'completed' : 'waiting')) {
@@ -195,7 +249,7 @@ function sdkQueryDirectionHttpObservation(array $fixture, array $options): array
                 }
                 usleep(10000);
             }
-            if ($snapshot === null || $snapshot['status'] !== ($checkpoint === 2 ? 'completed' : 'waiting')
+            if ($checkpointAcknowledgement === null || $snapshot === null || $snapshot['status'] !== ($checkpoint === 2 ? 'completed' : 'waiting')
                 || count(array_filter($snapshot['events'], static fn (array $event): bool => $event['event_type'] === 'SignalApplied')) !== $checkpoint) {
                 $failed = sdkQueryActorFinish($author, $deadline, $evidence, $options['workflow-id']);
                 if ($runId === '') {
@@ -215,7 +269,8 @@ function sdkQueryDirectionHttpObservation(array $fixture, array $options): array
                 proc_terminate($author['process']);
             }
             $result = sdkQueryActorFinish($author, $deadline, $evidence, $options['workflow-id']);
-            $phases[] = $result + ['snapshot' => sdkDirectionSnapshot($client, $options['workflow-id'], $runId)];
+            $phases[] = $result + ['snapshot' => sdkDirectionSnapshot($client, $options['workflow-id'], $runId),
+                'checkpoint_workflow_ack' => $checkpointAcknowledgement];
             $phases[] = $query + ['snapshot_before' => $before, 'snapshot' => $after];
             unset($author);
             if (($result['worker_finished'] ?? false) !== true || ($query['client_finished'] ?? false) !== true) {

@@ -1261,6 +1261,27 @@ These do not qualify runtime queries: initial live fixture execution must retain
 the ordinary omitted-input disagreement before its reviewed native correction.
 See [the query cohort](../tests/Fixtures/ServerParityProfiles/published-sdk-queries/QUERIES.md).
 
+Initial [query #422 qualification](https://github.com/durable-workflow/server/pull/422#issuecomment-6116719443)
+fails all six runtime jobs before native queries. Independently inspected
+SQLite stops on the first PHP/PHP direction: eight real SDK processes complete
+three query receipts and the original 13-event run, but the reader compares
+computed query availability as durable state. The resumption snapshot can also
+mix updated history with its prior progress/wait projection because the recorder
+does not await the workflow-completion receipt. The original failed record and
+complete wires remain retained. The parallel signal profile independently
+passes 27 observations and 90 sidecars; all 173 original signal/query members
+and compressed round-trip hashes are verified, with disposable resources removed.
+
+The current recorder waits for the matching successful original workflow-task
+receipt before taking each checkpoint snapshot. It binds task/run, owner,
+attempt, actual command and request index. Only raw computed `can_query`
+availability is separated from durable comparison, retaining boolean/presence
+checks and the complete observed values. Every other action, progress/wait
+field, control-plane copy and full history stays strict. Validation passes 60
+query models, all 4,742 Node tests and 16 PHP recorder tests/80 assertions; these
+are source checks, not fresh runtime qualification. Native Rust is unchanged,
+and the ordinary Python omitted-input refusal has not yet been reached.
+
 ## Contract and verification inventory
 
 | Surface | Current authority and reusable checks | Port status |
