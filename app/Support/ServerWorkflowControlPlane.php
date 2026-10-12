@@ -267,9 +267,10 @@ final class ServerWorkflowControlPlane implements RuntimeSignalControlPlane, Wor
             ->where('command_type', $commandType)
             ->where('status', CommandStatus::Accepted->value)
             ->whereNotNull('applied_at')
+            ->where('context->server->operation_id', $operationId)
+            ->where('context->request->fingerprint', $fingerprint)
             ->when($requestedRunId !== null, fn ($query) => $query->where('workflow_run_id', $requestedRunId))
             ->orderByDesc('command_sequence')
-            ->limit(20)
             ->get()
             ->first(function (WorkflowCommand $command) use ($operationId, $fingerprint, $requestId, $namespace, $eventType): bool {
                 $stored = $command->commandContext();
