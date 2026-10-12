@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import {observed} from '../Fixtures/ServerParityReaders/sdk-signals.mjs';
-import {checkObservation} from '../../scripts/conformance/server-parity/contract.mjs';
+import {checkObservation, compareRecords} from '../../scripts/conformance/server-parity/contract.mjs';
 import {namespaceSignalRunFixture} from '../../scripts/conformance/server-parity/sdk-namespace-signal-contract.mjs';
 
 const directory = new URL('../Fixtures/ServerParityPending/published-sdk-namespace-signals/', import.meta.url);
@@ -84,6 +84,19 @@ for (const author of ['php', 'python', 'rust']) for (const client of ['php', 'py
   });
 }
 const fixture = fixtureFor('python', 'python');
+test('paired saved records revalidate their raw original workflow identity', () => {
+  const artifacts = JSON.parse(readFileSync(new URL('artifacts.json', directory), 'utf8'));
+  const hashes = {[fixture.id + '.json']: 'reader-guard-model-hash'};
+  const records = ['http', 'embedded'].map(mode => {
+    const observation = pairModel(fixture, mode);
+    return {schema: 'durable-workflow.server-parity-record/v1', target: mode === 'http' ? 'php' : 'embedded',
+      mode, outcome: 'pass', artifacts, fixture_hashes: hashes, runner_revision: 'same-reader-model',
+      cases: [{fixture_id: fixture.id, fixture, observation, projection: checkObservation(fixture, observation, workflowId)}]};
+  });
+  compareRecords(records, hashes, {[fixture.id + '.json']: fixture}, artifacts);
+  records[1].cases[0].projection.workflow_id = 'other';
+  assert.throws(() => compareRecords(records, hashes, {[fixture.id + '.json']: fixture}, artifacts));
+});
 test('retain equivalent encoded and unencoded peer workflow path', () => {
   const php = fixtureFor('php', 'php'), value = pairModel(php);
   for (const phase of value.namespace_signal_pair.peer.sdk_signal_direction.phases) {

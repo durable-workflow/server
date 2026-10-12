@@ -146,7 +146,7 @@ export function checkNamespaceSignalPair(fixture, observation, workflowId, check
     const authorPids = runs.flatMap(run => run.sdk_signal_direction.phases.map(phase => phase.pid));
     assert.equal(new Set([...authorPids, ...foreignPids]).size, authorPids.length + foreignPids.length, 'all actual SDK phases use distinct processes');
   }
-  return {primary: projections[0], peer: projections[1], namespace_signal_pair: {
+  return {workflow_id: workflowId, primary: projections[0], peer: projections[1], namespace_signal_pair: {
     both_original_runs_waited: true, distinct_namespace_values: true, foreign_signal_refusals: 2,
     unchanged_original_budgets: true}};
 }
