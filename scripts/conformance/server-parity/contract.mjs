@@ -19,6 +19,7 @@ import {checkDatabaseResourceLimits} from './database-resource-contract.mjs';
 import {checkSdkChildDirection, checkSdkChildDirectionPackages} from './sdk-child-direction-contract.mjs';
 import {checkSdkTimerAuthor, checkSdkTimerAuthorPackages} from './sdk-timer-author-contract.mjs';
 import {checkSdkSignalDirection, checkSdkSignalDirectionPackages} from './sdk-signal-direction-contract.mjs';
+import {checkSdkQueryDirection, checkSdkQueryDirectionPackages} from './sdk-query-direction-contract.mjs';
 
 export function instantNanoseconds(value) {
   const shape = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.(\d{1,9}))?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
@@ -41,7 +42,7 @@ export function checkObservation(fixture, observation, workflowId) {
   nonempty(observation.run_id, 'run identity');
   equal(observation.workflow_type, fixture.workflow_type, 'registered workflow type');
   equal(observation.namespace, fixture.namespace ?? 'default', 'namespace');
-  equal(observation.task_queue, fixture.sdk_signal_direction?.task_queue ?? fixture.sdk_timer_author?.task_queue ?? fixture.sdk_child_direction?.parent_queue ?? fixture.sdk_direction?.workflow_queue ?? 'server-parity-v1', 'task queue');
+  equal(observation.task_queue, fixture.sdk_query_direction?.task_queue ?? fixture.sdk_signal_direction?.task_queue ?? fixture.sdk_timer_author?.task_queue ?? fixture.sdk_child_direction?.parent_queue ?? fixture.sdk_direction?.workflow_queue ?? 'server-parity-v1', 'task queue');
   const cancelled = Boolean(fixture.immediate_cancellation || fixture.cooperative_cancellation);
   equal(observation.status, cancelled ? 'cancelled' : 'completed', 'actual durable terminal state');
   equal(observation.payload_codec, 'avro', 'payload codec');
@@ -107,6 +108,7 @@ export function checkObservation(fixture, observation, workflowId) {
   const sdkChildDirection = checkSdkChildDirection(fixture, observation, workflowId);
   const sdkTimerAuthor = checkSdkTimerAuthor(fixture, observation, workflowId);
   const sdkSignalDirection = checkSdkSignalDirection(fixture, observation, workflowId);
+  const sdkQueryDirection = checkSdkQueryDirection(fixture, observation, workflowId);
   const cooperative = fixture.cooperative_cancellation
     ? checkCooperativeCancellation(fixture, observation, identities, projectedEvents, instantNanoseconds) : null;
   if (fixture.child_cancellation) {
@@ -587,6 +589,7 @@ export function checkObservation(fixture, observation, workflowId) {
     ...(sdkChildDirection ? {sdk_child_direction: sdkChildDirection} : {}),
     ...(sdkTimerAuthor ? {sdk_timer_author: sdkTimerAuthor} : {}),
     ...(sdkSignalDirection ? {sdk_signal_direction: sdkSignalDirection} : {}),
+    ...(sdkQueryDirection ? {sdk_query_direction: sdkQueryDirection} : {}),
   };
 }
 
@@ -622,6 +625,7 @@ export function compareRecords(records, expectedFixtureHashes, expectedFixtures,
       checkSdkChildDirectionPackages(item.fixture, item.observation, record.artifacts);
       checkSdkTimerAuthorPackages(item.fixture, item.observation, record.artifacts);
       checkSdkSignalDirectionPackages(item.fixture, item.observation, record.artifacts);
+      checkSdkQueryDirectionPackages(item.fixture, item.observation, record.artifacts);
       if (item.fixture.patch_deployment?.legacy_marker_history) {
         checkLegacyMarkerArtifacts(item.fixture, record.artifacts);
         checkLegacyMarkerPackageObservation(item.fixture, item.observation, record.artifacts);

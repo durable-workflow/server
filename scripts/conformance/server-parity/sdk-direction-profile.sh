@@ -33,7 +33,14 @@ case "${3:-activity}" in
     fixture_pattern=signal-sdk-*.json
     reader_tests=(tests/Unit/ServerParitySdkSignalDirectionContractTest.mjs)
     ;;
-  *) echo 'Choose activity, child, timer or signal SDK directions' >&2; exit 2 ;;
+  query)
+    tag=sdk-queries
+    prefix=sdk-queries-v1
+    cohort=published-sdk-queries
+    fixture_pattern=query-sdk-*.json
+    reader_tests=(tests/Unit/ServerParitySdkQueryDirectionContractTest.mjs)
+    ;;
+  *) echo 'Choose activity, child, timer, signal or query SDK directions' >&2; exit 2 ;;
 esac
 profile="tests/Fixtures/ServerParityProfiles/$cohort"
 manifest="tests/Fixtures/ServerParityProfiles/$cohort/artifacts.json"

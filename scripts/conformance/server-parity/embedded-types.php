@@ -341,6 +341,30 @@ final class SdkSignalsWorkflow extends Workflow
     }
 }
 
+#[Type('parity.v1.sdk_queries')]
+#[Signal('payload', [['name' => 'value', 'type' => 'array']])]
+final class SdkQueriesWorkflow extends Workflow
+{
+    private int $received = 0;
+    private ?array $last = null;
+
+    public function handle(array $value, int $target): array
+    {
+        for ($index = 0; $index < $target; ++$index) {
+            $this->last = signal('payload');
+            ++$this->received;
+        }
+
+        return $this->last;
+    }
+
+    #[QueryMethod('state')]
+    public function state(): array
+    {
+        return ['received' => $this->received, 'last' => $this->last];
+    }
+}
+
 #[Type('parity.v1.queries')]
 #[Signal('payload', [['name' => 'value', 'type' => 'array']])]
 final class QueriesWorkflow extends Workflow

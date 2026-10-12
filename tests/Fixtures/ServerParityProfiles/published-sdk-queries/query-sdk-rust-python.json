@@ -1,0 +1,108 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "query-sdk-rust-python",
+  "workflow_type": "parity.v1.sdk_queries",
+  "input": {
+    "message": "query workflow λ"
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "query workflow λ"
+      }
+    }
+  },
+  "signal_value": {
+    "message": "cold signal λ",
+    "count": 9007199254740993,
+    "ready": true,
+    "optional": null
+  },
+  "typed_signal_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "cold signal λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "ready": {
+        "type": "boolean",
+        "value": true
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "query_name": "state",
+  "query_arguments": [],
+  "typed_query_arguments": {"type": "list", "value": []},
+  "query_checkpoints": [
+    {"after_signal_count": 0, "status": "waiting"},
+    {"after_signal_count": 1, "status": "waiting"},
+    {"after_signal_count": 2, "status": "completed"}
+  ],
+  "activity": false,
+  "signal_count": 2,
+  "sdk_query_direction": {
+    "workflow": "rust",
+    "client": "python",
+    "phase_order": [
+      "original",
+      "query-0",
+      "signal-1",
+      "resumed",
+      "query-1",
+      "signal-2",
+      "replacement",
+      "query-2"
+    ],
+    "task_queue": "server-parity-sdk-queries",
+    "query_name": "state",
+    "target": "instance-current-run",
+    "start_after_worker_registration": true,
+    "first_poll_after_start_receipt": true,
+    "start_client": "php-observer",
+    "signal_client": "php",
+    "signal_name": "payload",
+    "query_arguments": [],
+    "cold_author_processes": 3,
+    "query_client_processes": 3
+  },
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "ConditionWaitOpened",
+    "SignalReceived",
+    "MessageCursorAdvanced",
+    "SignalApplied",
+    "ConditionWaitSatisfied",
+    "ConditionWaitOpened",
+    "SignalReceived",
+    "MessageCursorAdvanced",
+    "SignalApplied",
+    "ConditionWaitSatisfied",
+    "WorkflowCompleted"
+  ],
+  "embedded_expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "SignalWaitOpened",
+    "SignalReceived",
+    "MessageCursorAdvanced",
+    "SignalApplied",
+    "SignalWaitOpened",
+    "SignalReceived",
+    "MessageCursorAdvanced",
+    "SignalApplied",
+    "WorkflowCompleted"
+  ],
+  "contract": "Normal published query clients read the same zero-argument state query before signals, after the first cold resumption, and after the original run completes. Real normal workers register before observer start; the first original workflow poll follows the matching successful start receipt, and three separate cold author processes serve the committed checkpoints. Each author and query client overlaps until the actual query completion receipt. The exact query result is a map with received equal to the committed signal count and last equal to null before any signal or the exact most recent signal map afterward. Preserve original workflow/run/queue identities, complete unchanged durable histories across queries, distinct real query task/attempt/lease and completion receipts, and exact state counts, Unicode/int64/boolean/null Avro values. Preserve Python's hydrated response-object return and omitted input for zero arguments; its query worker replays the workflow and has different actual callback counts from PHP/Rust snapshot handlers. Two ordinary PHP signal clients advance committed state between the independent query reads. Embedded executes canonical PHP author/query methods with its explicit direct-signal history and no HTTP worker transport. Busy snapshots, errors/recovery policies, older-protocol routing, auth/namespaces and performance remain separate gates."
+}

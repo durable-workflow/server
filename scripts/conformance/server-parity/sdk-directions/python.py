@@ -78,6 +78,10 @@ async def main():
     phase, url, workflow_id, run_id, fixture_path, remaining = sys.argv[1:]
     with open(fixture_path, encoding="utf-8") as source:
         fixture = json.load(source)
+    if "sdk_query_direction" in fixture:
+        from queries import main as query_main
+        await query_main(sys.argv[1:], fixture)
+        return
     child_direction = "sdk_child_direction" in fixture
     timer_author = "sdk_timer_author" in fixture
     signal_direction = "sdk_signal_direction" in fixture

@@ -9,7 +9,8 @@ case "${2:-activity}" in
   child) tag=sdk-child-directions; cohort=published-sdk-child-directions ;;
   timer) tag=sdk-timers; cohort=published-sdk-timers ;;
   signal) tag=sdk-signals; cohort=published-sdk-signals ;;
-  *) echo 'Choose activity, child, timer or signal SDK directions' >&2; exit 2 ;;
+  query) tag=sdk-queries; cohort=published-sdk-queries ;;
+  *) echo 'Choose activity, child, timer, signal or query SDK directions' >&2; exit 2 ;;
 esac
 test -n "${RESOURCE_SCOPE:?Set the owning isolated network/resource scope}"
 profile="tests/Fixtures/ServerParityProfiles/$cohort"
