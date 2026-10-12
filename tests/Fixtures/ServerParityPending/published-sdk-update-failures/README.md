@@ -53,7 +53,8 @@ The first PHP author assumption is retained as a failed reader record.
 Native failure-command validation, durable failure links and terminal HTTP 422
 receipts are implemented, with duplicate, fencing and database reopen/parent
 continuation regressions. A normalization corpus checks actual PHP rules and
-the native implementation. Compilation and runtime qualification remain pending.
+the native implementation. Native compilation and database regression stages
+pass; complete runtime qualification remains pending.
 
 The executable pending profile is included after the successful-update profile
 in all six automatic database jobs. The additional workload uses a 30-minute
@@ -61,11 +62,14 @@ whole-job limit, preserving individual scenario budgets, resource limits and
 frozen package identities. Historical 25-minute failures/cancellations remain
 unchanged. The complete cross-language baseline and independently inspected
 all-six native/PHP/embedded qualification are required before promotion.
-The local nine-direction PHP Server and embedded comparison passes. A native
-recording exposes the frozen Python SDK's recursive hydration of nullable
+The local nine-direction PHP Server, embedded and native comparison passes,
+with original HTTP sidecars and persisted database links independently checked.
+The initial native recording exposes the frozen Python SDK's recursive hydration of nullable
 canonical result metadata. The reader permits that verified decoder view while
 binding its original frame and exact typed int64 data; it retains the original
-null wire value. This is separate from runtime and original artifact
-qualification, and the failed original recording remains preserved.
+null wire value. Original CI bytes now independently confirm that mismatch.
+The corrected-head SQLite job fails in an earlier PHP repeated-patch pressure
+reader before this profile, while complete qualification remains open. The
+failed original recordings and jobs remain preserved.
 Validators, queued routing, other failure policies, alternate wait stages,
 namespaces/auth, consumers, migration and performance remain separate gates.
