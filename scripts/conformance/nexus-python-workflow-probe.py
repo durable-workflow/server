@@ -7,6 +7,7 @@ import contextlib
 import json
 import os
 import sys
+import time
 from importlib.metadata import version
 
 from durable_workflow import Client, NexusOperationFailed, Worker, WorkflowCancelled, serializer, workflow
@@ -34,9 +35,21 @@ class PythonNexusCaller:
 async def execute(input_data, namespace):
     receipts = []
     worker_requests = []
+    request_rows = {}
+    empty_activity_polls = 0
     rejected = asyncio.Event()
 
+    async def submitting(request):
+        if "/worker/" not in request.url.path:
+            return
+        body = json.loads(request.content) if request.content else {}
+        row = {"method": request.method, "path": request.url.path, "status": None,
+               "started_at": time.time(), "request_id": body.get("poll_request_id")}
+        request_rows[id(request)] = row
+        worker_requests.append(row)
+
     async def observe(response):
+        nonlocal empty_activity_polls
         path = response.request.url.path
         if "/worker/" in path:
             await response.aread()
@@ -44,11 +57,17 @@ async def execute(input_data, namespace):
                 body = response.json()
             except ValueError:
                 body = {}
-            worker_requests.append({"method": response.request.method, "path": path,
-                                    "status": response.status_code, "reason": body.get("reason"),
-                                    "poll_status": body.get("poll_status"),
-                                    "task_id": (body.get("task") or {}).get("id"),
-                                    "request_id": body.get("poll_request_id")})
+            row = request_rows.pop(id(response.request), None)
+            if row is None:
+                row = {"method": response.request.method, "path": path}
+                worker_requests.append(row)
+            row.update(status=response.status_code, finished_at=time.time(), reason=body.get("reason"),
+                       poll_status=body.get("poll_status"), retry_after_seconds=body.get("retry_after_seconds"),
+                       task_id=(body.get("task") or {}).get("id"))
+            if row["poll_status"] == "no_activity_capability":
+                empty_activity_polls += 1
+                if empty_activity_polls > 1:
+                    worker_requests.remove(row)
         if "/service-endpoints/" not in path and not (
             "/workflow-tasks/" in path and path.endswith("/complete")
         ):
@@ -68,6 +87,7 @@ async def execute(input_data, namespace):
     async with Client("http://server:8080", namespace=namespace,
                       token=input_data["token"], worker_token=input_data["token"]) as client:
         client._http.event_hooks["response"] = [observe]
+        client._http.event_hooks["request"] = [submitting]
         worker = Worker(client, task_queue="nexus-python-workflow",
                         worker_id=f"nexus-python-caller-{namespace}-{os.getpid()}",
                         workflows=[PythonNexusCaller], activities=[])
@@ -126,7 +146,20 @@ async def execute(input_data, namespace):
             observation["history"] = await handle.get_history()
             observation["receipts"] = receipts
             observation["worker_requests"] = worker_requests
+            observation["empty_activity_polls"] = empty_activity_polls
             observation["polling_stopped"] = polling.done()
+            observation["poller_tasks"] = []
+            for task in worker._poller_tasks:
+                frames = []
+                coroutine = task.get_coro()
+                while coroutine is not None:
+                    frame = getattr(coroutine, "cr_frame", None)
+                    if frame is not None:
+                        frames.append({"file": os.path.basename(frame.f_code.co_filename),
+                                       "function": frame.f_code.co_name, "line": frame.f_lineno})
+                    coroutine = getattr(coroutine, "cr_await", None)
+                observation["poller_tasks"].append({"done": task.done(), "cancelled": task.cancelled(),
+                    "error": str(task.exception()) if task.done() and not task.cancelled() else None, "frames": frames})
             commands = [command for row in receipts
                         if row["method"] == "POST" and row["path"].endswith("/complete")
                         and 200 <= row["status"] < 300 and row["request_namespace"] == namespace

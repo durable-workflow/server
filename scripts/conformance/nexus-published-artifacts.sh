@@ -2740,6 +2740,17 @@ async function probePublishedTypedOutcomes(baseUrl, token, compose, phpService, 
         observation.service_worker_log);
     }
     for (const row of observation.body?.observations || []) {
+      if (row.failure && typeof row.run_id === 'string' && /^[a-z0-9]+$/i.test(row.run_id)) {
+        const query = `SELECT JSON_OBJECT('id',id,'status',status,'queue',queue,'lease_owner',lease_owner,` +
+          `'available_at',available_at,'lease_expires_at',lease_expires_at,'last_dispatched_at',last_dispatched_at) ` +
+          `FROM workflow_tasks WHERE workflow_run_id='${row.run_id}'; SELECT COUNT(*) FROM failed_jobs;`;
+        const snapshot = spawnSync('docker', ['compose', '-p', compose.project, '-f', compose.composePath,
+          'exec', '-T', '-e', 'MYSQL_PWD=workflow', 'mysql', 'mysql', '-uworkflow', '-D', 'durable_workflow',
+          '--batch', '--skip-column-names', '-e', query], {encoding: 'utf8', timeout: 3000});
+        row.database_snapshot = {exit: snapshot.status, stdout: snapshot.stdout, stderr: snapshot.stderr};
+        row.workers = responseSummary(await apiRequest(baseUrl, token, row.caller_namespace, 'GET',
+          '/workers?task_queue=nexus-python-workflow'));
+      }
       const callId = row.result?.service_call_id;
       if (!callId) continue;
       row.durable_service_call = responseSummary(await apiRequest(baseUrl, token, 'shared', 'GET',
