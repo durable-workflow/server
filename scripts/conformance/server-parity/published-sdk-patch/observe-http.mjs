@@ -9,9 +9,15 @@ if (gateMode !== undefined && (gateMode !== '--workflow-poll-after-start' || !ga
   || observationMode !== '--forwarding-state')) throw new Error('Invalid workflow start gate');
 const upstream = new URL(target);
 if (upstream.protocol !== 'http:') throw new Error('Isolated fixture target must use HTTP');
+const arrivalJournal = process.env.DW_PARITY_HTTP_REQUEST_ARRIVALS;
+if (arrivalJournal !== undefined && (!arrivalJournal || observationMode !== '--forwarding-state')) {
+  throw new Error('Request-arrival capture requires a journal and forwarding-state mode');
+}
+let requestCounter = 0, arrivalCount = 0, arrivalBytes = 0;
 let startObserved = gateMode === undefined;
 const waitingPolls = new Set();
 const server = http.createServer((request, response) => {
+  const requestObservationId = ++requestCounter;
   const chunks = [];
   let forwarded;
   let forwardRequest;
@@ -25,7 +31,7 @@ const server = http.createServer((request, response) => {
       response_retry_after: null, response_bytes_base64: '', response_body: '', client_cancelled: false,
       transport_error: null, ...(observationMode === '--forwarding-state' ? {
         request_body_complete: requestBodyComplete, upstream_request_started: Boolean(forwarded),
-      } : {}), ...fields})+'\n');
+      } : {}), ...(arrivalJournal ? {request_observation_id: requestObservationId} : {}), ...fields})+'\n');
   };
   const failed = error => {
     record({transport_error: error.code ?? 'upstream_error'});
@@ -45,6 +51,14 @@ const server = http.createServer((request, response) => {
     const body = Buffer.concat(chunks);
     forwardRequest = () => {
       if (recorded) return;
+      const arrivalLine = arrivalJournal ? JSON.stringify({schema: 'durable-workflow.server-parity-http-request-arrival/v1',
+        request_observation_id: requestObservationId, method: request.method,
+        path: new URL(request.url, upstream).pathname, request_body: body.toString('utf8'),
+        request_body_complete: true, upstream_request_started: true, response_observed: false})+'\n' : null;
+      const arrivalSize = arrivalLine === null ? 0 : Buffer.byteLength(arrivalLine);
+      if (arrivalLine && (arrivalCount >= 512 || arrivalBytes + arrivalSize > 4 * 1024 * 1024)) {
+        throw new Error('Request-arrival journal exceeds its bounded fixture budget');
+      }
       forwarded = http.request(new URL(request.url, upstream), {
         method: request.method,
         headers: {...request.headers, host: upstream.host},
@@ -79,6 +93,11 @@ const server = http.createServer((request, response) => {
       });
       forwarded.on('error', failed);
       forwarded.end(body);
+      if (arrivalLine) {
+        appendFileSync(arrivalJournal, arrivalLine);
+        arrivalCount++;
+        arrivalBytes += arrivalSize;
+      }
     };
     // Keep the real worker request intact until this fixture's accepted start
     // is fully observed. Other cohorts retain their original forwarding behavior.
