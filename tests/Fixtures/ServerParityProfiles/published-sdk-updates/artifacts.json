@@ -33,7 +33,7 @@
   "waterline": "2.9.1",
   "capacity_suite": "1.9.0",
   "performance_status": "not_measured",
-  "qualification_scope": "PENDING: nine published PHP/Python/Rust workflow-update client/author directions, original request-ID duplicates across cold committed checkpoints, exact typed results and complete ordered histories, canonical embedded counterparts",
+  "qualification_scope": "nine published PHP/Python/Rust workflow-update client/author directions, original request-ID duplicates across cold committed checkpoints, exact typed results and complete ordered histories, canonical embedded counterparts",
   "resource_limits": {
     "cpus": 1,
     "memory_bytes": 536870912,

@@ -4,7 +4,7 @@ import {readFileSync} from 'node:fs';
 import {checkSdkUpdateDirection, checkSdkUpdateDirectionArtifacts,
   checkSdkUpdateDirectionPackages} from '../../scripts/conformance/server-parity/sdk-update-direction-contract.mjs';
 
-const profile = new URL('../Fixtures/ServerParityPending/published-sdk-updates/', import.meta.url);
+const profile = new URL('../Fixtures/ServerParityProfiles/published-sdk-updates/', import.meta.url);
 const artifacts = JSON.parse(readFileSync(new URL('artifacts.json', profile)));
 const languages = ['php', 'python', 'rust'], clone = value => structuredClone(value);
 const envelope = blob => ({codec: 'avro', blob});

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {checkPublishedSdkPackages} from './sdk-direction-contract.mjs';
 
-const artifacts = JSON.parse(readFileSync(new URL('../../../tests/Fixtures/ServerParityPending/published-sdk-updates/artifacts.json', import.meta.url)));
+const artifacts = JSON.parse(readFileSync(new URL('../../../tests/Fixtures/ServerParityProfiles/published-sdk-updates/artifacts.json', import.meta.url)));
 const languages = ['php', 'python', 'rust'];
 const phases = ['original', 'update-1', 'duplicate-pending-1', 'resumed-1', 'duplicate-completed-1',
   'update-2', 'duplicate-pending-2', 'resumed-2', 'duplicate-completed-2', 'signal', 'replacement'];

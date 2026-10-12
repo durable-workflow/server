@@ -11,7 +11,7 @@ case "${2:-activity}" in
   timer) tag=sdk-timers; cohort=published-sdk-timers ;;
   signal) tag=sdk-signals; cohort=published-sdk-signals ;;
   query) tag=sdk-queries; cohort=published-sdk-queries ;;
-  update) tag=sdk-updates; cohort=published-sdk-updates; fixture_base=tests/Fixtures/ServerParityPending ;;
+  update) tag=sdk-updates; cohort=published-sdk-updates ;;
   *) echo 'Choose activity, child, timer, signal, query or update SDK directions' >&2; exit 2 ;;
 esac
 test -n "${RESOURCE_SCOPE:?Set the owning isolated network/resource scope}"

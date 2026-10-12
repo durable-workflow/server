@@ -45,7 +45,6 @@ case "${3:-activity}" in
     tag=sdk-updates
     prefix=sdk-updates-v1
     cohort=published-sdk-updates
-    fixture_base=tests/Fixtures/ServerParityPending
     fixture_pattern=update-sdk-*.json
     reader_tests=(tests/Unit/ServerParitySdkUpdateDirectionContractTest.mjs)
     ;;

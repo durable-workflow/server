@@ -38,17 +38,23 @@ passes 297 original member hashes, nine thin comparisons and ten source hashes,
 with frozen installed/source/archive identities unchanged. Historical failed
 and cancelled jobs retain their original outcomes.
 
-The next slice defines nine pending published SDK update-client/author
-directions in [the pending corpus](../tests/Fixtures/ServerParityPending/published-sdk-updates/README.md).
+The update slice defines nine published SDK update-client/author
+directions in [the qualified profiles](../tests/Fixtures/ServerParityProfiles/published-sdk-updates/README.md).
 Its contract preserves duplicate request IDs and original typed results across
 cold committed checkpoints, then an ordered finishing signal. Request arrival
 is observed separately from durable acceptance. Draft
 [#424](https://github.com/durable-workflow/server/pull/424) implements normal
 published SDK clients and four cold author processes, complete wire and arrival
 capture, a strict reader, canonical embedded PHP and an isolated profile in
-all six database jobs. Local source/reader checks pass; actual update runtime
-qualification and independent original-artifact review remain pending. Source
-checks and the existing-profile actor-build baseline cannot qualify updates.
+all six database jobs. The [candidate and independent original-artifact review](https://github.com/durable-workflow/server/pull/424#issuecomment-6122426780)
+pass at fafcdba661ebbec111550668c1c80981c34fd96b, tree
+8a4e768d52dc2d53f48174b915c9640bdb2faf6d. Across all six configurations,
+162 update observations / 1,188 complete SDK sidecars, 162 query observations /
+864 sidecars and 162 signal observations / 540 sidecars pass. Each database
+also passes 76 native execution tests; all 3,497 original/archive hashes match.
+PHP/source passes 2,716 tests / 61,466 assertions and both boundaries pass.
+This fixture promotion requires fresh candidate and main verification before
+shared PHP dependency adoption. Source/model checks alone cannot qualify updates.
 The first completed update matrix fails in native discovery: unchanged Python
 clients require the published `accepted`/`completed` wait-stage list before
 submitting an update. Native discovery omitted that list despite implementing
@@ -57,8 +63,10 @@ preserve the failed original. Independent MariaDB review verifies all nine PHP
 Server directions and nine embedded cases, plus 99 original PHP SDK sidecars;
 that partial evidence does not qualify native or the failed job. Native now
 publishes the implemented stages and checks discovery in its existing update
-lifecycle/fencing regression. Fresh runtime qualification remains required.
-Full query policies, queued controls, unchanged consumers, migration,
+lifecycle/fencing regression. The corrected candidate's original audits pass;
+fresh promoted candidate and main verification remain required.
+Failed handler updates, validators, full query policies, queued controls,
+unchanged consumers, migration,
 multi-node acceptance, matched performance and release/cutover remain open.
 
 [#408](https://github.com/durable-workflow/server/pull/408) qualifies nine

@@ -1,16 +1,18 @@
-# Pending published SDK update directions
+# Published SDK update directions
 
-These nine fixtures define the next Server #325 slice. Ordinary SDK
-worker/client adapters, request-arrival capture, the strict reader and isolated
-profile are implemented in draft [#424](https://github.com/durable-workflow/server/pull/424).
-They remain pending until actual six-database differential execution and
-independent original-artifact review pass. Existing profiles and their frozen
+These nine fixtures qualify successful updates, original request-ID duplicates
+and cold replay in the Server #325 rewrite. Ordinary SDK worker/client adapters,
+request-arrival capture, the strict reader and isolated profile are implemented
+in [#424](https://github.com/durable-workflow/server/pull/424).
+The [six-database candidate and independent original-artifact review](https://github.com/durable-workflow/server/pull/424#issuecomment-6122426780)
+pass at fafcdba661ebbec111550668c1c80981c34fd96b. This promotion still requires
+fresh candidate and main verification. Existing profiles and their frozen
 manifests remain unchanged.
 
 Each PHP/Python/Rust update client targets each PHP/Python/Rust workflow author.
-The component tuple is the existing published signal/query tuple; the separate
-manifest labels this new qualification scope as pending. Current package
-releases do not replace these frozen components.
+The component tuple is the existing published signal/query tuple. The separate
+manifest identifies this bounded qualification scope. Current package releases
+do not replace these frozen components.
 
 The original author registers before observer start and claims only after the
 matching successful start receipt. It opens a wait for a finishing signal,
