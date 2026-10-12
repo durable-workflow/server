@@ -5,6 +5,13 @@ combinations on PHP Server, native Server and canonical embedded PHP authors.
 It keeps the signal cohort's exact published package tuple and existing resource
 limits. HTTP runs use the default namespace and serialized transitions.
 
+CI overlaps the independent signal/query profiles, then awaits both actual
+exits and fails if either fails. They use separate identities, queues, PHP and
+embedded databases, containers and complete evidence, sharing the existing
+native deployment/build. Each application/driver keeps its 512 MiB/one-CPU cap;
+database caps and job deadlines stay unchanged. This scheduling has no
+performance claim.
+
 The original normal worker registers its workflow, signal and zero-argument
 `state` query before an observer starts one run. Its first workflow poll follows
 the matching successful start receipt. Three cold author processes serve the
@@ -49,3 +56,4 @@ performance are separate gates.
 
 [Reviewed acceptance](https://github.com/durable-workflow/server/issues/325#issuecomment-6115419641).
 [Process/result clarification](https://github.com/durable-workflow/server/issues/325#issuecomment-6115688730).
+[Bounded scheduling](https://github.com/durable-workflow/server/issues/325#issuecomment-6116091307).
