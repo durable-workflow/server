@@ -2798,7 +2798,8 @@ async function interruptPublishedBackend(baseUrl, compose, checkpoint) {
     proof.original_database_id = database;
     proof.before_stop = state(database);
     proof.stop_requested_at = timestamp();
-    docker(['stop', '--time', '2', database]);
+    proof.failure_signal = 9;
+    docker(['kill', '--signal', 'KILL', database]);
     proof.stopped_at = timestamp();
     proof.stopped = state(database);
     const readiness = await fetch(`${baseUrl}/api/ready`, {signal: AbortSignal.timeout(3000)});
@@ -2890,7 +2891,7 @@ async function probePublishedBackendInterruption(baseUrl, token, compose, phpSer
     }
     reports.push({caller, service, observation});
     fs.writeFileSync(path.join(resultDir, 'nexus-backend-interruption-probes.json'), JSON.stringify({
-      scope: 'actual_php_python_caller_sigkill_and_mysql_restart', reports,
+      scope: 'actual_php_python_caller_sigkill_and_mysql_crash_restart', reports,
     }, null, 2) + '\n');
   }
 }

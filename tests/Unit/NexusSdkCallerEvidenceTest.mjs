@@ -165,7 +165,9 @@ function assertBackendInterruption(row, service, caller) {
     assert.equal(proof.restored_database_id, proof.original_database_id);
     assert.equal(proof.before_stop.Running, true);
     assert.equal(proof.stopped.Running, false);
-    assert.equal(proof.stopped.ExitCode, 0, 'This scenario is an ordinary database stop and restart');
+    assert.equal(proof.failure_signal, 9, 'The database crash is an explicit SIGKILL');
+    assert.equal(proof.stopped.ExitCode, 137);
+    assert.equal(proof.stopped.OOMKilled, false, 'Resource exhaustion must not imitate the requested crash');
     assert.equal(proof.unready.status, 503, 'Readiness must fail while the database is absent');
     assert.equal(proof.ready.status, 200);
     assert.equal(proof.after_restart.Running, true);
@@ -189,7 +191,7 @@ test('backend evidence rejects a running database, healthy readiness, new databa
     row.caller_namespace = 'shared';
     row.before_kill_service_history.events[0].payload = {fire_at: '2026-10-11T00:00:08Z'};
     row.backend_interruption = {restored: true, original_database_id: 'a'.repeat(64), restored_database_id: 'a'.repeat(64),
-        before_stop: {Running: true}, stopped: {Running: false, ExitCode: 0}, after_restart: {Running: true},
+        failure_signal: 9, before_stop: {Running: true}, stopped: {Running: false, ExitCode: 137, OOMKilled: false}, after_restart: {Running: true},
         unready: {status: 503}, ready: {status: 200}, stop_requested_at: '2026-10-11T00:00:01Z',
         stopped_at: '2026-10-11T00:00:02Z', down_until: '2026-10-11T00:00:09Z',
         restart_requested_at: '2026-10-11T00:00:09Z', restored_at: '2026-10-11T00:00:10Z',
@@ -198,6 +200,8 @@ test('backend evidence rejects a running database, healthy readiness, new databa
     assertBackendInterruption(row, 'php', 'php');
     for (const mutate of [
         copy => { copy.backend_interruption.stopped.Running = true; },
+        copy => { copy.backend_interruption.stopped.OOMKilled = true; },
+        copy => { copy.backend_interruption.failure_signal = 15; },
         copy => { copy.backend_interruption.unready.status = 200; },
         copy => { copy.backend_interruption.restored_database_id = 'b'.repeat(64); },
         copy => { copy.backend_interruption.checkpoint.service_call_id = 'other'; },
@@ -214,7 +218,7 @@ test('backend evidence rejects a running database, healthy readiness, new databa
 if (process.env.NEXUS_BACKEND_INTERRUPTION_PROBES) {
     test('actual PHP/Python callers preserve their original call across SIGKILL and a database interruption', () => {
         const proof = JSON.parse(fs.readFileSync(process.env.NEXUS_BACKEND_INTERRUPTION_PROBES, 'utf8'));
-        assert.equal(proof.scope, 'actual_php_python_caller_sigkill_and_mysql_restart');
+        assert.equal(proof.scope, 'actual_php_python_caller_sigkill_and_mysql_crash_restart');
         assert.deepEqual(proof.reports.map(({caller, service}) => [caller, service]),
             [['php', 'php'], ['php', 'python'], ['python', 'php'], ['python', 'python']]);
         for (const {caller, service, observation} of proof.reports) {

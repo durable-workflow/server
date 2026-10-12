@@ -33,10 +33,22 @@ class PythonNexusCaller:
 
 async def execute(input_data, namespace):
     receipts = []
+    worker_requests = []
     rejected = asyncio.Event()
 
     async def observe(response):
         path = response.request.url.path
+        if "/worker/" in path:
+            await response.aread()
+            try:
+                body = response.json()
+            except ValueError:
+                body = {}
+            worker_requests.append({"method": response.request.method, "path": path,
+                                    "status": response.status_code, "reason": body.get("reason"),
+                                    "poll_status": body.get("poll_status"),
+                                    "task_id": (body.get("task") or {}).get("id"),
+                                    "request_id": body.get("poll_request_id")})
         if "/service-endpoints/" not in path and not (
             "/workflow-tasks/" in path and path.endswith("/complete")
         ):
@@ -113,6 +125,8 @@ async def execute(input_data, namespace):
                 await asyncio.gather(finishing, refusal, return_exceptions=True)
             observation["history"] = await handle.get_history()
             observation["receipts"] = receipts
+            observation["worker_requests"] = worker_requests
+            observation["polling_stopped"] = polling.done()
             commands = [command for row in receipts
                         if row["method"] == "POST" and row["path"].endswith("/complete")
                         and 200 <= row["status"] < 300 and row["request_namespace"] == namespace
