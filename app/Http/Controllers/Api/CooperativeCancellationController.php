@@ -96,7 +96,7 @@ final class CooperativeCancellationController
                 return ['reason' => 'run_not_active', 'run_status' => $run->status->value, 'http_status' => 409];
             }
             if (($diagnostic = NexusCooperativeCancellationPolicy::requestUnavailable($run)) !== null) {
-                return [...$diagnostic, 'http_status' => 409];
+                return [...$diagnostic, 'http_status' => ($diagnostic['retryable'] ?? false) ? 503 : 409];
             }
 
             $claims = NamespaceWorkflowScope::taskQuery($namespace)
@@ -148,6 +148,7 @@ final class CooperativeCancellationController
                 'run_not_active' => 'The workflow run is already closed.',
                 'legacy_v1_operation_not_supported' => 'Imported legacy workflows do not support cooperative cancellation.',
                 'nexus_cooperative_cancellation_not_supported' => 'The original Nexus call requires an installed cooperative runtime and a capable workflow Worker. See the call and Worker diagnostics.',
+                'nexus_cooperative_cancellation_temporarily_unavailable' => 'The original Nexus target has no eligible live workflow Worker. Retry after its Worker becomes available. No cancellation was accepted.',
                 'run_not_found' => 'Workflow run not found.',
                 default => 'Workflow not found.',
             };

@@ -338,6 +338,11 @@ paths:
         "404": { $ref: "#/components/responses/ControlPlaneError" }
         "409": { $ref: "#/components/responses/ControlPlaneError" }
         "422": { $ref: "#/components/responses/ControlPlaneError" }
+        "503":
+          description: The original Nexus target temporarily has no eligible live Worker. No cancellation was admitted. Retryable availability diagnostics distinguish absence from known incompatibility.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ControlPlaneError" }
   /workflows/{workflowId}/runs/{runId}/request-cancellation:
     post:
       tags: [workflows]
@@ -359,6 +364,11 @@ paths:
         "404": { $ref: "#/components/responses/ControlPlaneError" }
         "409": { $ref: "#/components/responses/ControlPlaneError" }
         "422": { $ref: "#/components/responses/ControlPlaneError" }
+        "503":
+          description: The original Nexus target temporarily has no eligible live Worker. No cancellation was admitted. Retryable availability diagnostics distinguish absence from known incompatibility.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ControlPlaneError" }
   /workflows/{workflowId}/terminate:
     post:
       tags: [workflows]
