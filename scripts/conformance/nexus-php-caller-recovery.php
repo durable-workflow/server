@@ -81,6 +81,27 @@ foreach (['shared', 'tenant-a'] as $namespace) {
         $row['killed_worker_exit_code'] = proc_close($worker);
         $worker = null;
 
+        if (isset($input['backend_resume_prefix'])) {
+            $resumePath = '/work/'.$input['backend_resume_prefix'].'-'.$namespace.'.json';
+            echo json_encode(['phase' => 'backend_interruption_ready', 'caller_namespace' => $namespace,
+                'resume_file' => basename($resumePath), 'remaining_seconds' => $deadline - microtime(true),
+                'timer_fire_at' => $eventsOfType($serviceHistory, 'TimerScheduled')[0]['payload']['fire_at'],
+                'workflow_id' => $handle->workflowId, 'run_id' => $handle->selectedRunId,
+                'service_call_id' => $row['original_service_call_id'],
+            ], JSON_THROW_ON_ERROR).PHP_EOL;
+            flush();
+            while (!is_file($resumePath) && microtime(true) < $deadline) {
+                usleep(100000);
+            }
+            if (!is_file($resumePath)) {
+                throw new RuntimeException('Backend restoration exceeded the original recovery budget.');
+            }
+            $row['backend_interruption'] = json_decode(file_get_contents($resumePath), true, 512, JSON_THROW_ON_ERROR);
+            if (!($row['backend_interruption']['restored'] ?? false)) {
+                throw new RuntimeException('The original database was not restored: '.($row['backend_interruption']['error'] ?? 'unknown'));
+            }
+        }
+
         $serviceHandle = $serviceClient->workflowHandle($linkedId, $linkedRun);
         $row['linked_service_result'] = $serviceHandle->resultOfSelectedRun(max(1, (int) min(20, $deadline - microtime(true))));
         $row['linked_service_history'] = $serviceClient->workflowHistory($linkedId, $linkedRun);
