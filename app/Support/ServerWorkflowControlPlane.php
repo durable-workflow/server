@@ -132,21 +132,24 @@ final class ServerWorkflowControlPlane implements RuntimeSignalControlPlane, Wor
 
     public function cancel(string $instanceId, array $options = []): array
     {
-        return $this->mutations->run(
+        return $this->mutateCommand(
+            $instanceId, 'cancel', HistoryEventType::WorkflowCancelled, $options,
             fn (): array => $this->inner->cancel($instanceId, $options),
         );
     }
 
     public function terminate(string $instanceId, array $options = []): array
     {
-        return $this->mutations->run(
+        return $this->mutateCommand(
+            $instanceId, 'terminate', HistoryEventType::WorkflowTerminated, $options,
             fn (): array => $this->inner->terminate($instanceId, $options),
         );
     }
 
     public function repair(string $instanceId, array $options = []): array
     {
-        return $this->mutations->run(
+        return $this->mutateCommand(
+            $instanceId, 'repair', HistoryEventType::RepairRequested, $options,
             fn (): array => $this->inner->repair($instanceId, $options),
         );
     }
@@ -190,9 +193,118 @@ final class ServerWorkflowControlPlane implements RuntimeSignalControlPlane, Wor
 
     public function archive(string $instanceId, array $options = []): array
     {
-        return $this->mutations->run(
+        return $this->mutateCommand(
+            $instanceId, 'archive', HistoryEventType::ArchiveRequested, $options,
             fn (): array => $this->inner->archive($instanceId, $options),
         );
+    }
+
+    /**
+     * A terminal mutation or repair can commit before refresh or dispatch fails.
+     * Check its durable receipt before repeating any mutation, including when a
+     * previous receipt lookup itself failed under backend contention.
+     *
+     * @param  array<string, mixed>  $options
+     * @param  callable(): array<string, mixed>  $mutation
+     * @return array<string, mixed>
+     */
+    private function mutateCommand(
+        string $instanceId,
+        string $commandType,
+        HistoryEventType $eventType,
+        array $options,
+        callable $mutation,
+    ): array {
+        $failure = null;
+
+        return $this->mutations->run(function () use ($instanceId, $commandType, $eventType, $options, $mutation, &$failure): array {
+            if ($failure instanceof Throwable) {
+                $command = $this->committedCommandForRequest($instanceId, $commandType, $eventType, $options);
+
+                if ($command instanceof WorkflowCommand) {
+                    return $this->recoveredCommandResult($failure, $command);
+                }
+            }
+
+            try {
+                return $mutation();
+            } catch (Throwable $exception) {
+                $failure = $exception;
+                $command = $this->committedCommandForRequest($instanceId, $commandType, $eventType, $options);
+
+                if (! $command instanceof WorkflowCommand) {
+                    throw $exception;
+                }
+
+                return $this->recoveredCommandResult($exception, $command);
+            }
+        });
+    }
+
+    /**
+     * @param  array<string, mixed>  $options
+     */
+    private function committedCommandForRequest(
+        string $instanceId,
+        string $commandType,
+        HistoryEventType $eventType,
+        array $options,
+    ): ?WorkflowCommand {
+        $context = $this->commandContext($options);
+        $attributes = $context?->attributes() ?? [];
+        $operationId = $this->nonEmptyString(data_get($attributes, 'context.server.operation_id'));
+        $fingerprint = $this->nonEmptyString(data_get($attributes, 'context.request.fingerprint'));
+        $requestId = $this->nonEmptyString(data_get($attributes, 'context.request.request_id'));
+        $requestedRunId = $this->nonEmptyString($options['run_id'] ?? null);
+        $namespace = $this->namespace($options);
+
+        if ($operationId === null || $fingerprint === null) {
+            return null;
+        }
+
+        return WorkflowCommand::query()
+            ->where('workflow_instance_id', $instanceId)
+            ->where('command_type', $commandType)
+            ->where('status', CommandStatus::Accepted->value)
+            ->whereNotNull('applied_at')
+            ->where('context->server->operation_id', $operationId)
+            ->where('context->request->fingerprint', $fingerprint)
+            ->when($requestedRunId !== null, fn ($query) => $query->where('workflow_run_id', $requestedRunId))
+            ->orderByDesc('command_sequence')
+            ->get()
+            ->first(function (WorkflowCommand $command) use ($operationId, $fingerprint, $requestId, $namespace, $eventType): bool {
+                $stored = $command->commandContext();
+                $runId = $command->resolvedRunId();
+
+                return data_get($stored, 'server.operation_id') === $operationId
+                    && data_get($stored, 'request.fingerprint') === $fingerprint
+                    && ($requestId === null || data_get($stored, 'request.request_id') === $requestId)
+                    && ($namespace === null || data_get($stored, 'server.namespace') === $namespace)
+                    && is_string($runId) && $runId !== ''
+                    && $command->workflow_run_id === $runId
+                    && $command->historyEvents()
+                        ->where('workflow_run_id', $runId)
+                        ->where('event_type', $eventType->value)
+                        ->exists();
+            });
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function recoveredCommandResult(Throwable $exception, WorkflowCommand $command): array
+    {
+        $this->failureDiagnostics->reportRecoveredCommand($exception, $command);
+        $result = new CommandResult($command);
+
+        return array_merge(CommandResponse::payload($result), [
+            'accepted' => true,
+            'workflow_instance_id' => $command->workflow_instance_id,
+            'workflow_command_id' => $command->id,
+            'command_reason' => $result->reason(),
+            'reason' => null,
+            'status' => 200,
+        ]);
     }
 
     public function describe(string $instanceId, array $options = []): array
