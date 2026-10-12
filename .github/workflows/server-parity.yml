@@ -242,7 +242,7 @@ jobs:
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" \
             -v "$PWD/parity-evidence:/evidence" -w /source/rust --entrypoint bash \
             mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 -c \
-            'cargo test --locked --lib runtime::mysql::tests::qualification_ -- --ignored --nocapture --test-threads=2 > /evidence/mysql-tests.txt && cargo test --locked --test execution -- --nocapture --test-threads=2 > /evidence/mysql-execution-tests.txt && cargo build --locked'
+            'cargo test --locked --lib runtime::mysql:: -- --ignored --skip runtime::mysql::tests::bootstrap_child --nocapture --test-threads=2 > /evidence/mysql-tests.txt && cargo test --locked --test execution -- --nocapture --test-threads=2 > /evidence/mysql-execution-tests.txt && cargo build --locked'
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
             -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=native_ref \
             -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \

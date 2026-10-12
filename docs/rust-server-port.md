@@ -83,9 +83,23 @@ their distinct same-request retry contract. The unchanged observation passes
 the corrected reader and still fails the original reader. All 4,817 pure-reader
 guards pass; the unchanged SDK-dependent retention regression retains its
 separate real-runtime qualification. No tuple or original deadline changes.
-The original job and record remain failed. Next reproduce the missing receipt
-and qualify the new
-namespace matrix before promotion. Earlier MariaDB/MySQL failure causes remain
+The original job and record remain failed.
+
+An isolated exact SQLx 0.9.0/Tokio 1.53.2 MariaDB check now reproduces a pooled
+stale read after an ordinary BEGIN reply is delayed and its future is dropped.
+The returned session has a physical transaction but no logical transaction;
+it misses an independently committed row that a fresh connection sees.
+Rollback clears that stale view. The native pool now resets sessions before
+return, with a five-second reset budget and disposal on failure. Pool size,
+isolation, acquisition/lock budgets and public receipt/retry contracts stay
+fixed. This adds a return-time database statement that later performance
+qualification must measure. The real native-factory regression passes with
+reset and fails `RowNotFound` without it; an actual committed row survives a
+lost COMMIT reply. The [correction contract](https://github.com/durable-workflow/server/pull/429#issuecomment-6133464483)
+precedes implementation. The injected mechanism is proven; its connection to
+the original native failure is unestablished. Next qualify reset disposal and
+all three MySQL-family configurations, then the full namespace matrix before
+promotion. Earlier MariaDB/MySQL failure causes remain
 unestablished; the new lookup site does not retroactively establish them.
 Full namespace authorization, other families, consumers,
 migration, multi-node acceptance and matched performance remain open.
