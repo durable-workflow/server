@@ -61,5 +61,11 @@ whole-job limit, preserving individual scenario budgets, resource limits and
 frozen package identities. Historical 25-minute failures/cancellations remain
 unchanged. The complete cross-language baseline and independently inspected
 all-six native/PHP/embedded qualification are required before promotion.
+The local nine-direction PHP Server and embedded comparison passes. A native
+recording exposes the frozen Python SDK's recursive hydration of nullable
+canonical result metadata. The reader permits that verified decoder view while
+binding its original frame and exact typed int64 data; it retains the original
+null wire value. This is separate from runtime and original artifact
+qualification, and the failed original recording remains preserved.
 Validators, queued routing, other failure policies, alternate wait stages,
 namespaces/auth, consumers, migration and performance remain separate gates.

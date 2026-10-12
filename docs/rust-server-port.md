@@ -97,6 +97,17 @@ The preceding `dc881518` run retains its original failures and cancellations
 under the original 25-minute limit. Native and cross-language failed-handler
 execution remain unqualified; artifact retrieval currently times out before
 receiving bytes, so the earlier SQLite/MariaDB failures are not yet attributed.
+The expanded 6121f343 matrix also retains all six failed runtime jobs, with
+native test/build stages and PHP/source passing. A separate local diagnostic
+passes all nine published PHP Server directions and nine embedded cases. It
+[reproduces a reader mismatch](https://github.com/durable-workflow/server/pull/427#issuecomment-6127074676)
+on a completed native receipt: the frozen Python SDK hydrates nullable
+`result` views recursively, including canonical control metadata. The reader
+now checks both decoded views against their original Avro frame and exact typed
+result, while preserving the original wire body and all other metadata. Altered
+canonical values, frames and int64 values have focused refusal guards. The
+original local failure and unavailable CI artifacts remain separate from the
+new qualification; no tuple, runtime payload or scenario budget is changed.
 Validators, full query policies, queued controls,
 unchanged consumers, migration,
 multi-node acceptance, matched performance and release/cutover remain open.

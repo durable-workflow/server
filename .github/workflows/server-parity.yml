@@ -8,6 +8,7 @@ on:
       - scripts/conformance/server-parity/**
       - tests/Fixtures/ServerParity/**
       - tests/Fixtures/ServerParityBaselines/**
+      - tests/Fixtures/ServerParityNormalization/**
       - tests/Unit/ServerParityRunnerTest.mjs
       - tests/Unit/ServerParityCooperativeContractTest.mjs
       - tests/Unit/ServerParityChildCancellationContractTest.mjs
@@ -41,6 +42,7 @@ on:
       - scripts/conformance/server-parity/**
       - tests/Fixtures/ServerParity/**
       - tests/Fixtures/ServerParityBaselines/**
+      - tests/Fixtures/ServerParityNormalization/**
       - tests/Unit/ServerParityRunnerTest.mjs
       - tests/Unit/ServerParityCooperativeContractTest.mjs
       - tests/Unit/ServerParityChildCancellationContractTest.mjs

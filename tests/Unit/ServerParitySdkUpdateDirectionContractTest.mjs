@@ -261,3 +261,35 @@ for (const [name, mutate] of [
   const observation = model(failedFixture); mutate(observation);
   assert.throws(() => checkSdkUpdateDirection(failedFixture, observation, 'update-model'));
 });
+
+function canonicalPythonResultModel() {
+  const fixture = failureFixtureFor('php', 'python');
+  const observation = model(fixture);
+  for (const index of [5, 6, 8]) {
+    const phase = observation.sdk_update_direction.phases[index];
+    const wire = phase.requests[0];
+    wire.response.control_plane = {schema: 'durable-workflow.v2.control-plane-response',
+      version: 1, operation: 'update', update_id: wire.response.update_id,
+      result: null, result_envelope: clone(wire.response.result_envelope)};
+    phase.client_result.control_plane = {...wire.response.control_plane, result: clone(wire.decoded_result)};
+    phase.typed_client_result.value.control_plane = {type: 'map', value: {result: clone(typedResult(fixture, 1))}};
+  }
+  return {fixture, observation};
+}
+
+test('Python hydrates the canonical result while retaining the original null wire view', () => {
+  const {fixture, observation} = canonicalPythonResultModel();
+  checkSdkUpdateDirection(fixture, observation, 'update-model');
+  for (const index of [5, 6, 8]) assert.equal(observation.sdk_update_direction.phases[index].requests[0].response.control_plane.result, null);
+});
+
+for (const [name, mutate] of [
+  ['changed canonical decoded result', phase => { phase.client_result.control_plane.result = {changed: true}; }],
+  ['foreign canonical result frame', phase => { phase.requests[0].response.control_plane.result_envelope = envelope('foreign'); }],
+  ['rounded canonical int64', phase => { phase.typed_client_result.value.control_plane.value.result.value.value.value.number.value = '9007199254740996'; }],
+  ['unrelated canonical metadata change', phase => { phase.client_result.control_plane.update_id = 'foreign'; }],
+]) test('rejects ' + name, () => {
+  const {fixture, observation} = canonicalPythonResultModel();
+  mutate(observation.sdk_update_direction.phases[5]);
+  assert.throws(() => checkSdkUpdateDirection(fixture, observation, 'update-model'));
+});

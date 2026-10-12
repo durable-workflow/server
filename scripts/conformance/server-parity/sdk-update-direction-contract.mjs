@@ -200,7 +200,18 @@ export function checkSdkUpdateDirection(fixture, observation, workflowId) {
         assert.deepEqual(wire.typed_decoded_result, typedResultFor(fixture, number));
         assert.equal(frame(wire.response.result_envelope), frame(completed.payload.result));
         if (language === 'python') {
-          assert.deepEqual(phase.client_result, {...wire.response, result: wire.response.result ?? wire.decoded_result});
+          const clientResult = {...wire.response, result: wire.response.result ?? wire.decoded_result};
+          const canonical = wire.response.control_plane;
+          // The frozen Python SDK recursively hydrates nullable result views.
+          // Preserve the raw metadata and allow only its verified Avro result.
+          if (canonical?.result == null && canonical?.result_envelope != null) {
+            assert.equal(frame(canonical.result_envelope), frame(wire.response.result_envelope),
+              'canonical result retains the original completed frame');
+            clientResult.control_plane = {...canonical, result: wire.decoded_result};
+            assert.deepEqual(phase.typed_client_result.value.control_plane.value.result,
+              typedResultFor(fixture, number), 'exact typed canonical SDK result');
+          }
+          assert.deepEqual(phase.client_result, clientResult);
           assert.deepEqual(phase.typed_client_result.value.result, typedResultFor(fixture, number));
         } else {
           assert.deepEqual(phase.client_result, resultFor(fixture, number));
