@@ -45,7 +45,7 @@ function pairModel(fixture, mode = 'http') {
         workflow_id: runs[index].workflow_id, run_id: runs[index].run_id, signal_sent: false, sender_finished: true,
         requests: [{method: 'POST', path: '/api/workflows/' + runs[index].workflow_id + '/signal/payload',
           namespace: runs[1 - index].namespace, request: {input: {codec: 'avro', blob: 'foreign-input'}}, status: 404, response}],
-        typed_error: language === 'php' ? {class: 'DurableWorkflow\\Exception\\ServerException', status: 404, details: response}
+        typed_error: language === 'php' ? {class: 'DurableWorkflow\\Exception\\SignalFailed', status: 404, reason: response.reason, details: response}
           : language === 'rust' ? {class: 'durable_workflow::Error::Http', status: 404, body: JSON.stringify(response)}
           : {class: 'durable_workflow.errors.WorkflowNotFound', status: null, body: null}};
     }

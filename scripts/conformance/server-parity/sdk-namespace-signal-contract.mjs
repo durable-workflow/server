@@ -90,7 +90,8 @@ export function checkNamespaceSignalPair(fixture, observation, workflowId, check
     assert(!result.requests.some(request => request.path.startsWith('/api/worker/')));
     const error = result.typed_error;
     if (result.language === 'php') {
-      assert.equal(error.class, 'DurableWorkflow\\Exception\\ServerException'); assert.equal(error.status, 404);
+      assert.equal(error.class, 'DurableWorkflow\\Exception\\SignalFailed'); assert.equal(error.status, 404);
+      assert.equal(error.reason, wire.response.reason);
       assert.deepEqual(error.details, wire.response);
     } else if (result.language === 'rust') {
       assert.equal(error.class, 'durable_workflow::Error::Http'); assert.equal(error.status, 404);
