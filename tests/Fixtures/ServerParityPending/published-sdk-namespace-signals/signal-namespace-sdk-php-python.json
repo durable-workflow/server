@@ -1,0 +1,119 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "signal-namespace-sdk-php-python",
+  "namespace": "parity-signals-left",
+  "namespace_signal_pair": {
+    "peer_namespace": "parity-signals-right",
+    "pair_budget_seconds": 70,
+    "run_budget_seconds": 35,
+    "same_workflow_type_and_queue": true,
+    "both_original_runs_wait_before_delivery": true,
+    "foreign_signal_target": "original_workflow_id",
+    "foreign_signal_expected_status": 404,
+    "foreign_worker_probe": "real_empty_workflow_poll_before_correct_claim",
+    "peer_signal_value": {
+      "message": "right scope signal λ",
+      "count": 9007199254740995,
+      "ready": false,
+      "optional": null
+    },
+    "typed_peer_signal_value": {
+      "type": "map",
+      "value": {
+        "message": {"type": "string", "value": "right scope signal λ"},
+        "count": {"type": "int64", "value": "9007199254740995"},
+        "ready": {"type": "boolean", "value": false},
+        "optional": {"type": "null", "value": null}
+      }
+    }
+  },
+  "workflow_type": "parity.v1.sdk_signals",
+  "input": {
+    "message": "namespace signal workflow λ"
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "namespace signal workflow λ"
+      }
+    }
+  },
+  "signal_value": {
+    "message": "left scope signal λ",
+    "count": 9007199254740993,
+    "ready": true,
+    "optional": null
+  },
+  "typed_signal_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "left scope signal λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "ready": {
+        "type": "boolean",
+        "value": true
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "signal_count": 2,
+  "sdk_signal_direction": {
+    "workflow": "php",
+    "client": "python",
+    "phase_order": [
+      "original",
+      "signal-1",
+      "resumed",
+      "signal-2",
+      "replacement"
+    ],
+    "task_queue": "server-parity-sdk-signals",
+    "signal_name": "payload",
+    "target": "instance-current-run",
+    "start_after_worker_registration": true,
+    "first_poll_after_start_receipt": true,
+    "start_client": "php-observer",
+    "identical_repeated_payload": true
+  },
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "ConditionWaitOpened",
+    "SignalReceived",
+    "MessageCursorAdvanced",
+    "SignalApplied",
+    "ConditionWaitSatisfied",
+    "ConditionWaitOpened",
+    "SignalReceived",
+    "MessageCursorAdvanced",
+    "SignalApplied",
+    "ConditionWaitSatisfied",
+    "WorkflowCompleted"
+  ],
+  "embedded_expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "SignalWaitOpened",
+    "SignalReceived",
+    "MessageCursorAdvanced",
+    "SignalApplied",
+    "SignalWaitOpened",
+    "SignalReceived",
+    "MessageCursorAdvanced",
+    "SignalApplied",
+    "WorkflowCompleted"
+  ],
+  "contract": "Two original runs in distinct registered namespaces use the same type and queue, with distinguishable exact Avro values. Both reach durable waits before either receives a signal. An ordinary client selecting the peer namespace must receive a documented not-found refusal for the other workflow, with a typed SDK error and zero command/history/task mutation. A compatible real Worker polling only the peer namespace must observe an empty workflow poll while the target's task is ready. Correct cold authors then apply two distinct identical-payload signals in each own namespace and complete both original runs, preserving identities, histories, cursors, registrations, deadlines and fences. Each original run has one unchanged 35-second scenario budget; the combined 70-second ceiling cannot extend either. Embedded uses explicit public namespace arguments and real jobs with its canonical direct-signal history; HTTP Worker transport is inapplicable. Pending fixture definition: actors, paired recorder and actual reference/native qualification are not yet implemented. No full namespace/auth, run-targeted race, queued control, consumer, migration or performance claim."
+}

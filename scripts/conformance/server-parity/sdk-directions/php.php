@@ -48,7 +48,11 @@ $stack->push(static function (callable $handler) use (&$worker, $phase): callabl
         });
     };
 });
-$client = new Client($url, namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null,
+$namespace = array_key_exists('namespace', $fixture) ? $fixture['namespace'] : 'default';
+if (! is_string($namespace) || $namespace === '' || trim($namespace) !== $namespace) {
+    throw new InvalidArgumentException('Invalid fixture namespace');
+}
+$client = new Client($url, namespace: $namespace, token: getenv('DW_PARITY_TOKEN') ?: null,
     transport: new Psr18Transport(client: new GuzzleClient(['http_errors' => false, 'handler' => $stack])));
 if ($signalDirection && in_array($phase, ['signal-1', 'signal-2'], true)) {
     $result = $client->signalWorkflow($workflowId, 'payload', [$fixture['signal_value']]);

@@ -73,8 +73,17 @@ async fn main() -> Result<()> {
         return Err(Error::WorkerLoop("SDK direction deadline expired".into()));
     }
     let deadline = Instant::now() + Duration::from_secs_f64(seconds);
+    let namespace = match fixture.get("namespace") {
+        None => "default",
+        Some(Value::String(namespace))
+            if !namespace.is_empty() && namespace.trim() == namespace.as_str() =>
+        {
+            namespace.as_str()
+        }
+        _ => return Err(Error::WorkerLoop("Invalid fixture namespace".into())),
+    };
     let client = Client::builder(url)
-        .namespace("default")
+        .namespace(namespace)
         .token(std::env::var("DW_PARITY_TOKEN").ok())
         .build()?;
     if signal_direction && matches!(phase.as_str(), "signal-1" | "signal-2") {

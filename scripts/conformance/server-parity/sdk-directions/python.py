@@ -99,7 +99,10 @@ async def main():
              ("server-parity-sdk-activity" if phase == "activity" else "server-parity-sdk-workflow")))
     worker_id = workflow_id + ":" + phase
     async with asyncio.timeout(float(remaining)):
-        async with Client(url, token=os.environ.get("DW_PARITY_TOKEN"), namespace="default") as client:
+        namespace = fixture.get("namespace", "default")
+        if not isinstance(namespace, str) or not namespace or namespace.strip() != namespace:
+            raise ValueError("Invalid fixture namespace")
+        async with Client(url, token=os.environ.get("DW_PARITY_TOKEN"), namespace=namespace) as client:
             if signal_direction and phase in ("signal-1", "signal-2"):
                 result = await client.signal_workflow(workflow_id, "payload", args=[fixture["signal_value"]])
                 print(json.dumps({"pid": os.getpid(), "language": "python",
