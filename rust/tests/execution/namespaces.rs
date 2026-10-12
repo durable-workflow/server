@@ -20,7 +20,9 @@ async fn named_signal_waits_keep_both_original_runs_and_foreign_polls_isolated()
             json!({
                 "worker_id":"signal-worker","task_queue":"test","runtime":"php",
                 "supported_workflow_types":["echo"],"supported_activity_types":[],
-                "workflow_command_contracts":{"echo":{"signals":["data"]}}
+                "workflow_command_contracts":{"echo":{"signals":["data"],"signal_contracts":[{
+                    "name":"data","parameters":[{"name":"value","position":0,"type":"int",
+                        "required":true,"variadic":false,"default_available":false,"allows_null":false}]}]}}
             }),
         )
         .await;
@@ -46,6 +48,14 @@ async fn named_signal_waits_keep_both_original_runs_and_foreign_polls_isolated()
             starts[index]["run_id"].as_str().unwrap()
         );
         let before = scoped(&app, namespaces[index], "GET", &history_path, Value::Null).await;
+        assert_eq!(
+            before.1["events"][1]["payload"]["declared_signal_contracts"][0]["name"],
+            "data"
+        );
+        assert_eq!(
+            before.1["events"][1]["payload"]["declared_signal_contracts"][0]["parameters"][0]["type"],
+            "int"
+        );
         let timed = scoped(&app,namespaces[index],"POST",&format!("/api/worker/workflow-tasks/{}/complete",task["task_id"].as_str().unwrap()),
             completion(&task,json!([{"type":"open_condition_wait","condition_key":"data:0","condition_definition_fingerprint":fingerprint,"timeout_seconds":1}]))).await;
         assert_eq!(timed.0, StatusCode::UNPROCESSABLE_ENTITY);

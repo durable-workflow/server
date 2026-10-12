@@ -54,7 +54,10 @@ jobs have a 35-minute whole-job ceiling; existing run budgets and resource caps
 stay fixed. The first native execution regression compiled but failed because
 wrong-namespace signal refusal omitted PHP's canonical signal metadata. That
 original failure is retained; the response mapping correction and stronger
-identity checks await fresh execution. The shared reader now requires the
+identity checks await fresh execution. The next original regression correctly
+refused the test's incomplete signal argument registration; that test now
+declares and checks the frozen int64 contract without relaxing validation.
+The shared reader now requires the
 refusal's canonical workflow, operation and signal identities; all original
 PHP/embedded raw pairs pass the stronger rules without rerunning the baseline.
 The workflow isolation check also
