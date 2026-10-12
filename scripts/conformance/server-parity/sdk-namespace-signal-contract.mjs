@@ -81,7 +81,7 @@ export function checkNamespaceSignalPair(fixture, observation, workflowId, check
     assert.equal(result.workflow_id, ids[index]); assert.equal(result.run_id, runs[index].run_id);
     assert.equal(result.signal_sent, false); assert.equal(result.sender_finished, true);
     assert(Number.isInteger(result.pid) && result.pid > 0); foreignPids.push(result.pid);
-    const signals = result.requests.filter(request => request.method === 'POST' && request.path === '/api/workflows/' + ids[index] + '/signal/payload');
+    const signals = result.requests.filter(request => request.method === 'POST' && decodeURIComponent(request.path) === '/api/workflows/' + ids[index] + '/signal/payload');
     assert.equal(signals.length, 1, 'one actual wrong-scope SDK request');
     const wire = signals[0];
     assert.equal(wire.status, 404);

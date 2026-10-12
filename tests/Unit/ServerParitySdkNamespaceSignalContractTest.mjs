@@ -84,6 +84,15 @@ for (const author of ['php', 'python', 'rust']) for (const client of ['php', 'py
   });
 }
 const fixture = fixtureFor('python', 'python');
+test('retain equivalent encoded and unencoded peer workflow path', () => {
+  const php = fixtureFor('php', 'php'), value = pairModel(php);
+  for (const phase of value.namespace_signal_pair.peer.sdk_signal_direction.phases) {
+    for (const wire of phase.requests) if (wire.path.endsWith('/signal/payload')) wire.path = wire.path.replace(':peer', '%3Apeer');
+  }
+  value.namespace_signal_pair.foreign_signals[1].result.requests[0].path =
+    value.namespace_signal_pair.foreign_signals[1].result.requests[0].path.replace(':peer', '%3Apeer');
+  checkObservation(php, value, workflowId);
+});
 const mutations = {
   'same namespace': value => { value.namespace_signal_pair.peer.namespace = value.namespace; },
   'same original run': value => { value.namespace_signal_pair.peer.run_id = value.run_id; },

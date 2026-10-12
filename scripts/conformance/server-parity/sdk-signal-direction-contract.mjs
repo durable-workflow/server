@@ -86,7 +86,7 @@ export function checkSdkSignalDirection(fixture, observation, workflowId) {
       assert.equal(phase.signal_sent, true);
       assert.equal(phase.workflow_id, workflowId);
       assert(!phase.requests.some(item => item.path.startsWith('/api/worker/')), 'normal signal client performs no worker operations');
-      const requests = phase.requests.filter(item => item.method === 'POST' && item.path === '/api/workflows/' + workflowId + '/signal/payload');
+      const requests = phase.requests.filter(item => item.method === 'POST' && decodeURIComponent(item.path) === '/api/workflows/' + workflowId + '/signal/payload');
       assert.equal(requests.length, 1, 'one actual instance-scoped signal request per client process');
       const request = requests[0], receipt = request.response;
       assert.equal(request.status, 202, 'normal accepted signal uses the published HTTP 202 contract');

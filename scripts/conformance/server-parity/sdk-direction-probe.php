@@ -240,7 +240,7 @@ function sdkDirectionHttpObservation(array $fixture, array $options, ?Closure $a
                     continue;
                 }
                 foreach ($phase['requests'] as &$request) {
-                    if ($request['method'] === 'POST' && $request['path'] === '/api/workflows/'.$options['workflow-id'].'/signal/payload') {
+                    if ($request['method'] === 'POST' && rawurldecode($request['path']) === '/api/workflows/'.$options['workflow-id'].'/signal/payload') {
                         $request['decoded_input'] = $client->payloadCodec()->decodeEnvelope($request['request']['input']);
                         $request['typed_decoded_input'] = typedValue($request['decoded_input']);
                         $observation['signal_deliveries'][] = ['before' => $phases[$index - 1]['snapshot']['execution'],
