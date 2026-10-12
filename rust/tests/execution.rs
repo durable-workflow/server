@@ -1391,6 +1391,14 @@ async fn updates_preserve_original_receipts_and_fence_recovered_tasks_across_poo
     let second = database.open().await.unwrap();
     let a = router(first.clone());
     let b = router(second.clone());
+    let discovery = request(&a, "GET", "/api/cluster/info", Value::Null).await;
+    assert_eq!(discovery.0, StatusCode::OK);
+    assert_eq!(
+        discovery.1["control_plane"]["request_contract"]["operations"]["update"]["fields"]["wait_for"]
+            ["canonical_values"],
+        json!(["accepted", "completed"]),
+        "ordinary published clients discover the implemented update wait stages"
+    );
     update_worker(&a, "update-a").await;
     update_worker(&b, "update-b").await;
     let started = start(&a, "durable-update").await;

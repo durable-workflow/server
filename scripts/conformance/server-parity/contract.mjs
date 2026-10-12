@@ -20,6 +20,7 @@ import {checkSdkChildDirection, checkSdkChildDirectionPackages} from './sdk-chil
 import {checkSdkTimerAuthor, checkSdkTimerAuthorPackages} from './sdk-timer-author-contract.mjs';
 import {checkSdkSignalDirection, checkSdkSignalDirectionPackages} from './sdk-signal-direction-contract.mjs';
 import {checkSdkQueryDirection, checkSdkQueryDirectionPackages} from './sdk-query-direction-contract.mjs';
+import {checkSdkUpdateDirection, checkSdkUpdateDirectionPackages} from './sdk-update-direction-contract.mjs';
 
 export function instantNanoseconds(value) {
   const shape = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.(\d{1,9}))?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
@@ -42,7 +43,7 @@ export function checkObservation(fixture, observation, workflowId) {
   nonempty(observation.run_id, 'run identity');
   equal(observation.workflow_type, fixture.workflow_type, 'registered workflow type');
   equal(observation.namespace, fixture.namespace ?? 'default', 'namespace');
-  equal(observation.task_queue, fixture.sdk_query_direction?.task_queue ?? fixture.sdk_signal_direction?.task_queue ?? fixture.sdk_timer_author?.task_queue ?? fixture.sdk_child_direction?.parent_queue ?? fixture.sdk_direction?.workflow_queue ?? 'server-parity-v1', 'task queue');
+  equal(observation.task_queue, fixture.sdk_update_direction?.task_queue ?? fixture.sdk_query_direction?.task_queue ?? fixture.sdk_signal_direction?.task_queue ?? fixture.sdk_timer_author?.task_queue ?? fixture.sdk_child_direction?.parent_queue ?? fixture.sdk_direction?.workflow_queue ?? 'server-parity-v1', 'task queue');
   const cancelled = Boolean(fixture.immediate_cancellation || fixture.cooperative_cancellation);
   equal(observation.status, cancelled ? 'cancelled' : 'completed', 'actual durable terminal state');
   equal(observation.payload_codec, 'avro', 'payload codec');
@@ -109,6 +110,7 @@ export function checkObservation(fixture, observation, workflowId) {
   const sdkTimerAuthor = checkSdkTimerAuthor(fixture, observation, workflowId);
   const sdkSignalDirection = checkSdkSignalDirection(fixture, observation, workflowId);
   const sdkQueryDirection = checkSdkQueryDirection(fixture, observation, workflowId);
+  const sdkUpdateDirection = checkSdkUpdateDirection(fixture, observation, workflowId);
   const cooperative = fixture.cooperative_cancellation
     ? checkCooperativeCancellation(fixture, observation, identities, projectedEvents, instantNanoseconds) : null;
   if (fixture.child_cancellation) {
@@ -142,9 +144,12 @@ export function checkObservation(fixture, observation, workflowId) {
       equal(update.typed_arguments, arguments_, 'exact submitted update argument types');
       equal(update.before.id ?? update.before.run_id, observation.run_id, 'update original waiting run');
       equal(update.before.status, 'waiting', 'update occurs during a durable wait');
-      for (const receipt of [update.accepted, update.duplicate_accepted]) {
+      const completedSdkReceipts = observation.mode === 'http' && fixture.sdk_update_direction;
+      const updateReceipts = completedSdkReceipts ? update.completed_receipts : [update.accepted, update.duplicate_accepted];
+      if (completedSdkReceipts) equal(updateReceipts.length, 3, 'three real completed SDK update responses');
+      for (const receipt of updateReceipts) {
         equal(receipt.command_status ?? (receipt.accepted ? 'accepted' : 'rejected'), 'accepted', 'accepted update command');
-        equal(receipt.update_status, 'accepted', 'update acknowledgment precedes execution');
+        equal(receipt.update_status, completedSdkReceipts ? 'completed' : 'accepted', 'actual requested update wait stage');
         equal(receipt.command_id, commandId, 'repeat request retains its original command');
         equal(receipt.update_id, updateId, 'repeat request retains its original update');
         equal(receipt.workflow_id, workflowId, 'update acknowledgment workflow');
@@ -590,6 +595,7 @@ export function checkObservation(fixture, observation, workflowId) {
     ...(sdkTimerAuthor ? {sdk_timer_author: sdkTimerAuthor} : {}),
     ...(sdkSignalDirection ? {sdk_signal_direction: sdkSignalDirection} : {}),
     ...(sdkQueryDirection ? {sdk_query_direction: sdkQueryDirection} : {}),
+    ...(sdkUpdateDirection ? {sdk_update_direction: sdkUpdateDirection} : {}),
   };
 }
 
@@ -626,6 +632,7 @@ export function compareRecords(records, expectedFixtureHashes, expectedFixtures,
       checkSdkTimerAuthorPackages(item.fixture, item.observation, record.artifacts);
       checkSdkSignalDirectionPackages(item.fixture, item.observation, record.artifacts);
       checkSdkQueryDirectionPackages(item.fixture, item.observation, record.artifacts);
+      checkSdkUpdateDirectionPackages(item.fixture, item.observation, record.artifacts);
       if (item.fixture.patch_deployment?.legacy_marker_history) {
         checkLegacyMarkerArtifacts(item.fixture, record.artifacts);
         checkLegacyMarkerPackageObservation(item.fixture, item.observation, record.artifacts);
