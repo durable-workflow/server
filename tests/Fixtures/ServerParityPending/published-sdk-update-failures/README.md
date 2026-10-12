@@ -1,0 +1,42 @@
+# Failed updates and parent continuation
+
+This pending cohort extends the successful update slice in
+[#424](https://github.com/durable-workflow/server/pull/424). Its
+[reviewed boundary](https://github.com/durable-workflow/server/issues/325#issuecomment-6121730771)
+is one accepted update whose ordinary handler fails before mutating workflow
+state. A later independent update succeeds, and a finishing signal completes
+the original parent workflow. A failed update must not fail that parent.
+
+The existing successful-update fixture files and their exact published
+Server/Workflow/PHP/Python/Rust tuple remain unchanged. This cohort will select
+the same package and image identities in its own manifest; newer SDK releases
+and the separate PHP Nexus source integration do not change the reference.
+
+Required observations:
+
+- All nine ordinary PHP/Python/Rust update-client and workflow-author directions,
+  plus canonical embedded PHP, in separate databases.
+- Original HTTP 422 and SDK failure details, terminal `UpdateCompleted` with
+  `update_failed`, complete failure and command/update links, cursor advancement,
+  and no `UpdateApplied` for the failed update.
+- A real original request and pending duplicate submitted before the cold
+  author starts, followed by a completed duplicate. Changed duplicate arguments
+  preserve the original request, arguments, durable failure and full history.
+- Actual fenced author acknowledgments, complete wire and arrival journals,
+  stored worker rows and language-specific historical callback replay.
+- Cold parent continuation, a later successful update, and exact typed Avro
+  output on the same original run after its finishing signal.
+- PHP Server, native and embedded execution on all six existing database
+  configurations, independently reviewed original artifacts, and normal source
+  checks before promotion into the qualified profiles.
+
+The immutable SDK producers differ: PHP sends its exception class as
+`exception_type`; Python sends a short `exception_type`, qualified
+`exception_class` and prefixed message; Rust sends `exception_type=UpdateFailed`
+and its error display message. The reader must preserve these actual differences
+while checking each original failure and its duplicates.
+
+This directory is the acceptance contract only. Actors, executable fixtures,
+original baseline recordings, native correction and qualification are pending.
+Validators, queued routing, other failure policies, alternate wait stages,
+namespaces/auth, consumers, migration and performance remain separate gates.

@@ -42,19 +42,26 @@ The update slice defines nine published SDK update-client/author
 directions in [the qualified profiles](../tests/Fixtures/ServerParityProfiles/published-sdk-updates/README.md).
 Its contract preserves duplicate request IDs and original typed results across
 cold committed checkpoints, then an ordered finishing signal. Request arrival
-is observed separately from durable acceptance. Draft
+is observed separately from durable acceptance.
 [#424](https://github.com/durable-workflow/server/pull/424) implements normal
 published SDK clients and four cold author processes, complete wire and arrival
 capture, a strict reader, canonical embedded PHP and an isolated profile in
-all six database jobs. The [candidate and independent original-artifact review](https://github.com/durable-workflow/server/pull/424#issuecomment-6122426780)
-pass at fafcdba661ebbec111550668c1c80981c34fd96b, tree
-8a4e768d52dc2d53f48174b915c9640bdb2faf6d. Across all six configurations,
+all six database jobs. The [final candidate qualification](https://github.com/durable-workflow/server/pull/424#issuecomment-6123569353)
+passes at 93c71874b8b90b4383478deb00f7855a75051100. The
+[fresh-main qualification](https://github.com/durable-workflow/server/pull/424#issuecomment-6124273589)
+is complete at 5fd56e0c37933fdd0af459c965447c6168c4ad81; both have tree
+61bdf074734941b493d8d0dd681303c9d61c6509. All six fresh-main original database
+jobs pass on their first attempt. Across all six configurations,
 162 update observations / 1,188 complete SDK sidecars, 162 query observations /
 864 sidecars and 162 signal observations / 540 sidecars pass. Each database
 also passes 76 native execution tests; all 3,497 original/archive hashes match.
 PHP/source passes 2,716 tests / 61,466 assertions and both boundaries pass.
-This fixture promotion requires fresh candidate and main verification before
-shared PHP dependency adoption. Source/model checks alone cannot qualify updates.
+SDK preparation independently verifies 297 original member hashes, nine thin
+comparisons and thirteen source hashes. The original candidate MySQL 8.0
+25-minute cancellation remains unqualified; its single bounded retry passes
+with the original tuple and budget. The
+[source-only PHP integration window](https://github.com/durable-workflow/workflow/issues/753#issuecomment-6124274148)
+is confirmed for a separate source cohort. Frozen published tuples stay unchanged.
 The first completed update matrix fails in native discovery: unchanged Python
 clients require the published `accepted`/`completed` wait-stage list before
 submitting an update. Native discovery omitted that list despite implementing
@@ -63,9 +70,19 @@ preserve the failed original. Independent MariaDB review verifies all nine PHP
 Server directions and nine embedded cases, plus 99 original PHP SDK sidecars;
 that partial evidence does not qualify native or the failed job. Native now
 publishes the implemented stages and checks discovery in its existing update
-lifecycle/fencing regression. The corrected candidate's original audits pass;
-fresh promoted candidate and main verification remain required.
-Failed handler updates, validators, full query policies, queued controls,
+lifecycle/fencing regression. The failed original remains separate from the
+completed candidate and main qualification.
+
+The [next reviewed boundary](https://github.com/durable-workflow/server/issues/325#issuecomment-6121730771)
+is failed update handlers with continued parent execution. The
+[pending cohort contract](../tests/Fixtures/ServerParityPending/published-sdk-update-failures/README.md)
+requires ordinary frozen SDK clients and authors, original accepted failure
+identities, pending and completed duplicates, cold replay, and a later successful
+update plus finishing signal on the same run. Actual PHP and embedded recordings
+must establish the contract before native implementation. Language-specific
+exception type, class and message remain observable; a failed handler emits no
+successful `UpdateApplied`. No failed-handler execution is qualified yet.
+Validators, full query policies, queued controls,
 unchanged consumers, migration,
 multi-node acceptance, matched performance and release/cutover remain open.
 
