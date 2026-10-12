@@ -1312,9 +1312,21 @@ unknown fields, arrays/null, malformed/non-Avro input and required parameters
 keep their refusals. A new real HTTP/database regression completes both omitted
 and explicit empty queries and checks unchanged full original state/history;
 fifteen invalid cases must leave query-cache inventory unchanged. Formatting
-passes, but native compilation/tests and fresh all-six qualification are still
-pending. Current main's PHP recovery and release preparation are integrated
+and all 76 execution tests pass in inspected SQLite and MariaDB runs. SQLite
+independently passes all 27 query observations; fresh all-six qualification
+is still incomplete. Current main's PHP recovery and release preparation are integrated
 without changing the frozen tuples or taking over General's release work.
+
+That fresh run fails five database jobs. Independently inspected MariaDB stops
+in PHP reference recording after three passing directions, with
+`spawnSync php ENOBUFS`: all eight actors for the fourth direction exit zero,
+but full evidence exceeds the recorder's 4 MiB pipe buffer. The original failed
+record remains intact. The [reviewed capture correction](https://github.com/durable-workflow/server/pull/422#issuecomment-6117614915)
+uses temporary files, preserves complete observation bytes and enforces
+64 MiB stdout/4 MiB stderr admission limits without changing the 45-second probe
+deadline or runtime budgets. Five real child-process regressions and all
+4,758 Node tests pass. New exact-source runtime qualification remains required;
+the other four failed raw causes are not assumed identical.
 
 ## Contract and verification inventory
 

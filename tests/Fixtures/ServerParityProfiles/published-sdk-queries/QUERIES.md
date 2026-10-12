@@ -48,7 +48,7 @@ worker receipt may omit `reason` or send null; a supplied error reason fails.
 Embedded authors run their normal zero-argument method over canonical direct
 signal histories, without HTTP worker transport.
 
-Current recorder preparation passes 71 reader models and the full 4,753-test Node suite,
+Current recorder preparation passes 71 reader models and the full 4,758-test Node suite,
 PHP syntax, Python AST, Rust fixture formatting, shell syntax and the Docker
 isolation policy with 72 regressions. Sixteen PHP recorder tests pass 80
 assertions, including root empty-object/array distinction, exact int64 values
@@ -79,10 +79,22 @@ empty object takes this path. Supplied envelopes, unknown fields, root
 arrays/null and required parameters keep their validation. A new HTTP/database
 regression completes omitted and explicit-empty queries, checks exact worker
 arguments/results and full original state/history, and rejects fifteen invalid
-requests without creating query-cache entries. Formatting passes; compilation
-and all six fresh database executions are pending. No JSON payload fallback or
+requests without creating query-cache entries. Formatting and all 76 native
+execution tests pass on inspected SQLite and MariaDB runs. No JSON payload fallback or
 tuple advance. Current main, including General's PHP recovery correction, is
 integrated for this next qualification.
+
+Fresh SQLite independently passes all 27 query observations. The same all-six
+run still fails five database jobs. Inspected MariaDB stops in PHP reference
+recording with `spawnSync php ENOBUFS` after three passing directions: all eight
+actors for the fourth fixture exit zero, but complete retained output exceeds
+the recorder's 4 MiB pipe buffer. Its original record stays runner-blocked;
+native query recording was not reached. File-backed probe capture now admits
+complete stdout up to 64 MiB and stderr up to 4 MiB, removes temporary files,
+and preserves the 45-second probe deadline and all execution resource limits.
+Five real subprocess regressions check large JSON, nonzero exit, missing
+executable, timeout and oversized output. This transport correction still
+requires a new exact-source all-six qualification.
 
 Next: qualify this exact source on all six database configurations, proceeding
 from #415's identical previously qualified candidate/main tree. Its fresh main
@@ -101,3 +113,4 @@ performance are separate gates.
 [Initial recorder disagreement and correction](https://github.com/durable-workflow/server/pull/422#issuecomment-6116719443).
 [Worker/public history and completion response shapes](https://github.com/durable-workflow/server/pull/422#issuecomment-6117007924).
 [Ordinary Python refusal and native correction](https://github.com/durable-workflow/server/pull/422#issuecomment-6117247506).
+[Original output capture failure and correction](https://github.com/durable-workflow/server/pull/422#issuecomment-6117614915).

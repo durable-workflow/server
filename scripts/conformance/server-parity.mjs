@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import {readFileSync, writeFileSync, readdirSync} from 'node:fs';
 import {createHash} from 'node:crypto';
-import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {basename, dirname, resolve} from 'node:path';
 import {parseArgs} from 'node:util';
@@ -14,6 +13,7 @@ import {parseDatabaseResourceLimits} from './server-parity/database-resource-con
 import {checkSdkChildDirectionArtifacts, checkSdkChildDirectionPackages} from './server-parity/sdk-child-direction-contract.mjs';
 import {checkSdkTimerAuthorArtifacts, checkSdkTimerAuthorPackages} from './server-parity/sdk-timer-author-contract.mjs';
 import {checkSdkSignalDirectionArtifacts, checkSdkSignalDirectionPackages} from './server-parity/sdk-signal-direction-contract.mjs';
+import {captureProbe} from './server-parity/probe-capture.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const {values, positionals} = parseArgs({allowPositionals: true, options: {
@@ -91,7 +91,7 @@ try {
       for (const flag of ['url', 'application-root']) {
         if (values[flag]) arguments_.push(`--${flag}`, values[flag]);
       }
-      const probe = spawnSync('php', arguments_, {encoding: 'utf8', timeout: 45000, maxBuffer: 4 * 1024 * 1024,
+      const probe = captureProbe('php', arguments_, {directory: dirname(resolve(values.output)), timeout: 45000,
         env: {...process.env, DW_PARITY_FAILURE_EVIDENCE_DIR: dirname(resolve(values.output))}});
       const item = {fixture_id: fixture.id, fixture, outcome: 'runner-blocked'};
       try {
