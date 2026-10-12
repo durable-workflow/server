@@ -52,7 +52,11 @@ function sdkDirectionHttpObservation(array $fixture, array $options): array
     }
     $name = preg_replace('/[^A-Za-z0-9_.-]/', '_', $options['workflow-id']);
     $journal = tempnam(sys_get_temp_dir(), 'parity-direction-');
-    $proxy = proc_open(['node', __DIR__.'/published-sdk-patch/observe-http.mjs', $options['url'], $journal, '--forwarding-state'],
+    $proxyArguments = ['node', __DIR__.'/published-sdk-patch/observe-http.mjs', $options['url'], $journal, '--forwarding-state'];
+    if (isset($fixture['sdk_signal_direction'])) {
+        array_push($proxyArguments, '--workflow-poll-after-start', $options['workflow-id']);
+    }
+    $proxy = proc_open($proxyArguments,
         [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $proxyPipes);
     if (! is_resource($proxy)) {
         unlink($journal);

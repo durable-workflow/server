@@ -93,8 +93,30 @@ Complete signal profiles, tests and thin SDK proof are retained; duplicate
 downloads and extraction scratch are removed. Final current-main integration
 qualification remains pending in #415.
 
+The latest integration exposes a separate frozen-PHP startup overlap:
+[original SQLite failure](https://github.com/durable-workflow/server/pull/415#issuecomment-6115559242).
+Five directions pass and the sixth completes its original 13-event run, but
+the first worker claims `WorkflowStarted` before the successful start response;
+PHP subsequently adds ten declaration fields to that same original event.
+The strict full-history check fails. Original native output passes 75 tests,
+but this failed profile never reaches embedded/native signal execution.
+The full failed profile and wire bytes remain retained, with all 62 original
+and archive-roundtrip hashes verified; duplicate downloads and scratch are removed.
+The [PHP finding is handed off](https://github.com/durable-workflow/server/pull/420#issuecomment-6115559389)
+without claiming a current-release reproduction or changing PHP/SDK code.
+The [reviewed fixture decision](https://github.com/durable-workflow/server/pull/415#issuecomment-6115559242)
+holds the original real workflow poll in the byte-preserving observer until
+the matching successful start receipt. This bounds the cohort to post-start
+delivery and cold replay. Full metadata/history guards remain strict; startup
+overlap remains unqualified, and the failed record is not relabeled.
+Focused source validation passes 61 signal models and five socket-based
+transport cases; the current Node contract suite passes all 4,681 tests and
+the changed PHP recorder passes syntax checking. The native Rust and SDK
+adapter sources remain unchanged. Fresh runtime qualification is still required.
+
 The original normal worker registers its declaration before the observer starts
-the run. Two distinct normal clients send identical exact Avro payloads; three
+the run, and its first workflow claim follows the observed successful start
+receipt. Two distinct normal clients send identical exact Avro payloads; three
 cold author processes retain both accepted identities and full original
 history through completion. The [reviewed scope](https://github.com/durable-workflow/server/issues/325#issuecomment-6113352490)
 uses the instance-current-run API, preserves Python's absent client return and

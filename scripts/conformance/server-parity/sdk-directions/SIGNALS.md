@@ -9,7 +9,10 @@ configurations; final current-main integration qualification remains pending
 in [#415](https://github.com/durable-workflow/server/pull/415).
 
 The original normal worker registers its signal declaration before the PHP
-observer starts the original run. Three distinct author processes open the
+observer starts the original run. The original worker's first workflow poll
+is forwarded only after the matching real successful start receipt.
+The byte-preserving observer holds that original request without changing its
+bytes or synthesizing a result. Three distinct author processes open the
 first condition wait, cold-replay the first signal into a second wait, then
 cold-replay both accepted signals and complete that same run. Two separate
 published client processes send identical Unicode/int64/boolean/null values.
@@ -56,6 +59,13 @@ database limits and TLS checks. Both native outputs pass all 75 execution tests.
 Complete signal profiles and thin SDK proof are retained; duplicate downloads
 and scratch are removed. Final current-main strict qualification remains ahead.
 
+The new start-order correction passes 61 signal models plus five actual-socket
+transport tests, including unrelated/rejected starts, unchanged request/response
+bytes and cancellation of a fully received held poll. The complete current
+Node contract suite passes 4,681 tests, and the changed PHP recorder passes
+syntax checking. Native Rust and installed SDK adapter sources are unchanged;
+these source checks do not qualify the new runtime ordering.
+
 Normal Rust authoring exposed native rejection of authored
 `condition_wait_occurrence_id` and variadic signal arguments. The
 [occurrence decision](https://github.com/durable-workflow/server/pull/415#issuecomment-6114363122)
@@ -69,6 +79,18 @@ variadic values/refusals. Defaults, optional fixed prefixes and non-final
 variadics remain unsupported; older-protocol occurrence routing is unqualified.
 Earlier failed records and the separate frozen SQLite patch baseline pressure
 failure remain unchanged with strict assertions intact.
+
+The latest original SQLite run also catches a frozen-PHP startup overlap:
+[retained failure and contract decision](https://github.com/durable-workflow/server/pull/415#issuecomment-6115559242).
+Five directions pass; the sixth completes its 13-event original run, but its
+first claimed `WorkflowStarted` lacks ten declaration fields present afterward.
+The raw poll response precedes the successful start response. All 62 complete
+failed-profile member/archive hashes pass; original native output separately
+passes 75 tests, while embedded/native SIG profiles are not reached. The full
+failure is retained and the [PHP finding handed off](https://github.com/durable-workflow/server/pull/420#issuecomment-6115559389).
+The new first-poll ordering excludes this startup interleaving explicitly and
+preserves all full-history checks. It requires fresh six-profile qualification;
+earlier all-six passes do not qualify this changed fixture.
 
 These definitions do not qualify run-targeted calls, continuation/current-run
 races, all signal policies, CPU-load fairness, performance or cutover.

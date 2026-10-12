@@ -166,6 +166,10 @@ const mutations = {
   'int64 result rounded': value => {value.workflow_completions[2].decoded_commands[0].typed_decoded.result.value.count.value = '9007199254740992';},
   'new start before cold replay': value => {replacement(value).requests.push(copy(value.sdk_signal_direction.phases[0].requests[1]));},
   'start before registration': value => {value.sdk_signal_direction.phases[0].requests.reverse();},
+  'claim before accepted start': value => {
+    const requests = value.sdk_signal_direction.phases[0].requests;
+    [requests[1], requests[2]] = [requests[2], requests[1]];
+  },
   'signal refused': value => {firstSender(value).requests[0].status = 409;},
   'created signal status': value => {firstSender(value).requests[0].status = 201;},
   'wrong accepted run': value => {firstSender(value).requests[0].response.run_id = 'other';},

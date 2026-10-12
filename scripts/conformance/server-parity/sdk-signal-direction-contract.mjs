@@ -21,7 +21,8 @@ export function checkSdkSignalDirectionArtifacts(fixture, selected) {
   assert(languages.includes(spec.workflow) && languages.includes(spec.client));
   assert.deepEqual(spec, {workflow: spec.workflow, client: spec.client, phase_order: phases,
     task_queue: 'server-parity-sdk-signals', signal_name: 'payload', target: 'instance-current-run',
-    start_after_worker_registration: true, start_client: 'php-observer', identical_repeated_payload: true});
+    start_after_worker_registration: true, first_poll_after_start_receipt: true,
+    start_client: 'php-observer', identical_repeated_payload: true});
   assert.equal(fixture.id, 'signal-sdk-' + spec.workflow + '-' + spec.client);
   assert.equal(fixture.workflow_type, 'parity.v1.sdk_signals');
   assert.equal(fixture.signal_count, 2);
@@ -174,6 +175,8 @@ export function checkSdkSignalDirection(fixture, observation, workflowId) {
   assert.equal(starts[0].request.status, 201);
   assert.equal(starts[0].request.response.run_id, observation.run_id);
   for (const key of ['workflow_id', 'workflow_type', 'task_queue']) assert.equal(starts[0].request.request[key], observation[key]);
+  assert(direction.phases[0].requests.findIndex(item => item.path === '/api/worker/workflow-tasks/poll' && item.response?.task)
+    > direction.phases[0].requests.indexOf(starts[0].request), 'original workflow claim follows the real accepted start receipt');
   assert(direction.phases[0].requests.indexOf(starts[0].request) >
     direction.phases[0].requests.findIndex(item => item.path === '/api/worker/register'), 'start follows the actual successful registration');
   return projection;

@@ -3,13 +3,18 @@ import http from 'node:http';
 import {appendFileSync} from 'node:fs';
 import {gunzipSync, inflateSync, brotliDecompressSync} from 'node:zlib';
 
-const [target, journal, observationMode] = process.argv.slice(2);
+const [target, journal, observationMode, gateMode, gateWorkflowId, ...extra] = process.argv.slice(2);
 if (observationMode !== undefined && observationMode !== '--forwarding-state') throw new Error('Unknown observation mode');
+if (gateMode !== undefined && (gateMode !== '--workflow-poll-after-start' || !gateWorkflowId || extra.length
+  || observationMode !== '--forwarding-state')) throw new Error('Invalid workflow start gate');
 const upstream = new URL(target);
 if (upstream.protocol !== 'http:') throw new Error('Isolated fixture target must use HTTP');
+let startObserved = gateMode === undefined;
+const waitingPolls = new Set();
 const server = http.createServer((request, response) => {
   const chunks = [];
   let forwarded;
+  let forwardRequest;
   let requestBodyComplete = false;
   let recorded = false;
   const record = fields => {
@@ -27,6 +32,7 @@ const server = http.createServer((request, response) => {
     response.destroy(error);
   };
   response.on('close', () => {
+    waitingPolls.delete(forwardRequest);
     if (!recorded && !response.writableFinished) {
       record({client_cancelled: true});
       forwarded?.destroy();
@@ -37,28 +43,48 @@ const server = http.createServer((request, response) => {
     requestBodyComplete = true;
     if (recorded) return;
     const body = Buffer.concat(chunks);
-    forwarded = http.request(new URL(request.url, upstream), {
-      method: request.method,
-      headers: {...request.headers, host: upstream.host},
-    }, incoming => {
-      const received = [];
-      incoming.on('data', chunk => received.push(chunk));
-      incoming.on('end', () => {
-        if (recorded) return;
-        const bytes = Buffer.concat(received);
-        const encoding = incoming.headers['content-encoding'] ?? 'identity';
-        const decoders = {identity: value => value, gzip: gunzipSync, deflate: inflateSync, br: brotliDecompressSync};
-        if (!decoders[encoding]) throw new Error(`Unsupported observed content encoding: ${encoding}`);
-        record({status: incoming.statusCode, response_encoding: encoding,
-          response_retry_after: incoming.headers['retry-after'] ?? null,
-          response_bytes_base64: bytes.toString('base64'), response_body: decoders[encoding](bytes).toString('utf8')});
-        response.writeHead(incoming.statusCode, incoming.headers);
-        response.end(bytes);
+    forwardRequest = () => {
+      if (recorded) return;
+      forwarded = http.request(new URL(request.url, upstream), {
+        method: request.method,
+        headers: {...request.headers, host: upstream.host},
+      }, incoming => {
+        const received = [];
+        incoming.on('data', chunk => received.push(chunk));
+        incoming.on('end', () => {
+          if (recorded) return;
+          const bytes = Buffer.concat(received);
+          const encoding = incoming.headers['content-encoding'] ?? 'identity';
+          const decoders = {identity: value => value, gzip: gunzipSync, deflate: inflateSync, br: brotliDecompressSync};
+          if (!decoders[encoding]) throw new Error(`Unsupported observed content encoding: ${encoding}`);
+          const decoded = decoders[encoding](bytes).toString('utf8');
+          record({status: incoming.statusCode, response_encoding: encoding,
+            response_retry_after: incoming.headers['retry-after'] ?? null,
+            response_bytes_base64: bytes.toString('base64'), response_body: decoded});
+          response.writeHead(incoming.statusCode, incoming.headers);
+          response.end(bytes);
+          if (!startObserved && request.method === 'POST' && new URL(request.url, upstream).pathname === '/api/workflows'
+            && incoming.statusCode === 201) {
+            let started, receipt;
+            try { started = JSON.parse(body.toString('utf8')); receipt = JSON.parse(decoded); } catch { return; }
+            if (started.workflow_id === gateWorkflowId && typeof receipt.run_id === 'string' && receipt.run_id.length > 0) {
+              startObserved = true;
+              const pending = [...waitingPolls];
+              waitingPolls.clear();
+              for (const forward of pending) forward();
+            }
+          }
+        });
+        incoming.on('error', failed);
       });
-      incoming.on('error', failed);
-    });
-    forwarded.on('error', failed);
-    forwarded.end(body);
+      forwarded.on('error', failed);
+      forwarded.end(body);
+    };
+    // Keep the real worker request intact until this fixture's accepted start
+    // is fully observed. Other cohorts retain their original forwarding behavior.
+    if (!startObserved && request.method === 'POST'
+      && new URL(request.url, upstream).pathname === '/api/worker/workflow-tasks/poll') waitingPolls.add(forwardRequest);
+    else forwardRequest();
   });
 });
 server.listen(0, '127.0.0.1', () => console.log(`http://127.0.0.1:${server.address().port}`));

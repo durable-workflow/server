@@ -33,7 +33,7 @@
   "waterline": "2.9.1",
   "capacity_suite": "1.9.0",
   "performance_status": "not_measured",
-  "qualification_scope": "Published PHP/Python/Rust instance-scoped signal clients against each PHP/Python/Rust workflow author; two distinct identical accepted signals, original run/queue/history and three cold author processes; canonical embedded counterparts",
+  "qualification_scope": "Published PHP/Python/Rust instance-scoped signal clients against each PHP/Python/Rust workflow author; first workflow poll after the successful start receipt, two distinct identical accepted signals, original run/queue/history and three cold author processes; canonical embedded counterparts",
   "resource_limits": {
     "cpus": 1,
     "memory_bytes": 536870912,
