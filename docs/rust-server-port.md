@@ -49,6 +49,15 @@ capture, a strict reader, canonical embedded PHP and an isolated profile in
 all six database jobs. Local source/reader checks pass; actual update runtime
 qualification and independent original-artifact review remain pending. Source
 checks and the existing-profile actor-build baseline cannot qualify updates.
+The first completed update matrix fails in native discovery: unchanged Python
+clients require the published `accepted`/`completed` wait-stage list before
+submitting an update. Native discovery omitted that list despite implementing
+both stages. The [original review and correction contract](https://github.com/durable-workflow/server/pull/424#issuecomment-6121480311)
+preserve the failed original. Independent MariaDB review verifies all nine PHP
+Server directions and nine embedded cases, plus 99 original PHP SDK sidecars;
+that partial evidence does not qualify native or the failed job. Native now
+publishes the implemented stages and checks discovery in its existing update
+lifecycle/fencing regression. Fresh runtime qualification remains required.
 Full query policies, queued controls, unchanged consumers, migration,
 multi-node acceptance, matched performance and release/cutover remain open.
 
