@@ -379,15 +379,22 @@ jobs:
           docker stop --time 30 "$RESOURCE_SCOPE-sdk-child-directions-server"
           bash scripts/conformance/server-parity/sdk-direction-profile.sh mysql http://parity-native-a:8080 timer
           docker stop --time 30 "$RESOURCE_SCOPE-sdk-timers-server"
-          # Separate queues/databases/evidence; preserve all three profile outcomes.
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh mysql http://parity-native-a:8080 signal > parity-evidence/sdk-signals-profile.log 2>&1 &
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh mysql http://parity-native-a:8080 query > parity-evidence/sdk-queries-profile.log 2>&1 &
+          # Separate queues/databases/evidence; preserve statuses even after children exit.
+          (
+            signal_status=0
+            bash scripts/conformance/server-parity/sdk-direction-profile.sh mysql http://parity-native-a:8080 signal > parity-evidence/sdk-signals-profile.log 2>&1 || signal_status=$?
+            printf '%s\n' "$signal_status" > parity-evidence/sdk-signals-profile.status
+          ) &
+          (
+            query_status=0
+            bash scripts/conformance/server-parity/sdk-direction-profile.sh mysql http://parity-native-a:8080 query > parity-evidence/sdk-queries-profile.log 2>&1 || query_status=$?
+            printf '%s\n' "$query_status" > parity-evidence/sdk-queries-profile.status
+          ) &
           update_status=0
           bash scripts/conformance/server-parity/sdk-direction-profile.sh mysql http://parity-native-a:8080 update || update_status=$?
-          signal_status=0
-          wait %1 || signal_status=$?
-          query_status=0
-          wait %2 || query_status=$?
+          wait
+          signal_status=$(cat parity-evidence/sdk-signals-profile.status)
+          query_status=$(cat parity-evidence/sdk-queries-profile.status)
           cat parity-evidence/sdk-signals-profile.log parity-evidence/sdk-queries-profile.log
           test "$signal_status" -eq 0
           test "$query_status" -eq 0
@@ -753,15 +760,22 @@ jobs:
           docker stop --time 30 "$RESOURCE_SCOPE-sdk-child-directions-server"
           bash scripts/conformance/server-parity/sdk-direction-profile.sh pgsql http://parity-native-a:8080 timer
           docker stop --time 30 "$RESOURCE_SCOPE-sdk-timers-server"
-          # Separate queues/databases/evidence; preserve all three profile outcomes.
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh pgsql http://parity-native-a:8080 signal > parity-evidence/sdk-signals-profile.log 2>&1 &
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh pgsql http://parity-native-a:8080 query > parity-evidence/sdk-queries-profile.log 2>&1 &
+          # Separate queues/databases/evidence; preserve statuses even after children exit.
+          (
+            signal_status=0
+            bash scripts/conformance/server-parity/sdk-direction-profile.sh pgsql http://parity-native-a:8080 signal > parity-evidence/sdk-signals-profile.log 2>&1 || signal_status=$?
+            printf '%s\n' "$signal_status" > parity-evidence/sdk-signals-profile.status
+          ) &
+          (
+            query_status=0
+            bash scripts/conformance/server-parity/sdk-direction-profile.sh pgsql http://parity-native-a:8080 query > parity-evidence/sdk-queries-profile.log 2>&1 || query_status=$?
+            printf '%s\n' "$query_status" > parity-evidence/sdk-queries-profile.status
+          ) &
           update_status=0
           bash scripts/conformance/server-parity/sdk-direction-profile.sh pgsql http://parity-native-a:8080 update || update_status=$?
-          signal_status=0
-          wait %1 || signal_status=$?
-          query_status=0
-          wait %2 || query_status=$?
+          wait
+          signal_status=$(cat parity-evidence/sdk-signals-profile.status)
+          query_status=$(cat parity-evidence/sdk-queries-profile.status)
           cat parity-evidence/sdk-signals-profile.log parity-evidence/sdk-queries-profile.log
           test "$signal_status" -eq 0
           test "$query_status" -eq 0
@@ -1100,15 +1114,22 @@ jobs:
           docker stop --time 30 "$RESOURCE_SCOPE-sdk-child-directions-server"
           bash scripts/conformance/server-parity/sdk-direction-profile.sh sqlite http://parity-rust:8080 timer
           docker stop --time 30 "$RESOURCE_SCOPE-sdk-timers-server"
-          # Separate queues/databases/evidence; preserve all three profile outcomes.
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh sqlite http://parity-rust:8080 signal > parity-evidence/sdk-signals-profile.log 2>&1 &
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh sqlite http://parity-rust:8080 query > parity-evidence/sdk-queries-profile.log 2>&1 &
+          # Separate queues/databases/evidence; preserve statuses even after children exit.
+          (
+            signal_status=0
+            bash scripts/conformance/server-parity/sdk-direction-profile.sh sqlite http://parity-rust:8080 signal > parity-evidence/sdk-signals-profile.log 2>&1 || signal_status=$?
+            printf '%s\n' "$signal_status" > parity-evidence/sdk-signals-profile.status
+          ) &
+          (
+            query_status=0
+            bash scripts/conformance/server-parity/sdk-direction-profile.sh sqlite http://parity-rust:8080 query > parity-evidence/sdk-queries-profile.log 2>&1 || query_status=$?
+            printf '%s\n' "$query_status" > parity-evidence/sdk-queries-profile.status
+          ) &
           update_status=0
           bash scripts/conformance/server-parity/sdk-direction-profile.sh sqlite http://parity-rust:8080 update || update_status=$?
-          signal_status=0
-          wait %1 || signal_status=$?
-          query_status=0
-          wait %2 || query_status=$?
+          wait
+          signal_status=$(cat parity-evidence/sdk-signals-profile.status)
+          query_status=$(cat parity-evidence/sdk-queries-profile.status)
           cat parity-evidence/sdk-signals-profile.log parity-evidence/sdk-queries-profile.log
           test "$signal_status" -eq 0
           test "$query_status" -eq 0
