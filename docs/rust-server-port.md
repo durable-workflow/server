@@ -123,7 +123,17 @@ hint, acquires no hidden task, and retains every original marker, activity,
 history and completion check. Published Python/Rust consumers retain their
 separate same-request and HTTP Retry-After requirements. Frozen fixture bytes,
 tuples, runtime payloads and scenario budgets are unchanged. Original failures
-remain immutable; fresh six-database qualification is still required.
+remain immutable. The subsequent 38def797 original matrix has five successful
+database jobs and one MariaDB failure. In native Python/Python's later successful
+update, two opaque storage HTTP 503 responses precede the cold author and the
+strict recorder refuses. Original failure and cleanup-expired sidecars remain
+intact; the original logs do not establish a driver cause or an independent SDK
+defect. A [reviewed storage diagnostic](https://github.com/durable-workflow/server/pull/427#issuecomment-6128248670)
+now emits only fixed error categories and bounded driver codes, preserving the
+HTTP response and excluding error text, SQL, payloads and authentication data.
+Five diagnostic tests, 30 library tests and 77 SQLite execution regressions pass
+locally. MariaDB reproduction and fresh six-database qualification are required;
+the diagnostic is not a failure correction or permission to accept generic 503s.
 Validators, full query policies, queued controls,
 unchanged consumers, migration,
 multi-node acceptance, matched performance and release/cutover remain open.
