@@ -11,6 +11,7 @@ use App\Support\RuntimeExternalPayloadReference;
 use App\Support\RuntimeExternalPayloadRegistry;
 use App\Support\RuntimeLocalExternalPayloadStorage;
 use App\Support\WorkerProtocol;
+use App\Support\WorkflowHistoryPageToken;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Request;
@@ -24,6 +25,7 @@ use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\AvroBinaryValue;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\ExternalPayloads;
@@ -1042,6 +1044,59 @@ class RuntimeExternalPayloadTransportTest extends TestCase
             ->assertOk()
             ->assertJsonPath('payloads.arguments.data.external_payload.reference_id', $reference['reference_id'])
             ->assertJsonMissingPath('payloads.arguments.data.external_storage');
+    }
+
+    public function test_nexus_history_projects_original_request_result_and_surface_references(): void
+    {
+        Queue::fake();
+        $payload = Serializer::serializeWithCodec('avro', [str_repeat('N', 256)]);
+        $reference = $this->upload($payload)->assertCreated()->json('reference');
+        $stored = app(RuntimeExternalPayloadRegistry::class)->resolveAndClaim('default', $reference);
+        $start = $this->withHeaders($this->controlHeaders())->postJson('/api/workflows', [
+            'workflow_id' => 'nexus-external-history',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'runtime-payloads', 'input' => [],
+        ])->assertCreated();
+        $run = WorkflowRun::query()->sole();
+        WorkflowHistoryEvent::record($run, HistoryEventType::ServiceCallCompleted, [
+            'sequence' => 1, 'service_call_id' => 'original-service',
+            'request_payload' => $stored, 'response_payload' => $stored,
+            'service_call' => ['result_envelope' => $stored,
+                'input_payload_reference' => $stored['external_storage']['uri'],
+                'output_payload_reference' => $stored['external_storage']['uri'],
+                'failure_payload_reference' => null,
+                'metadata' => $this->reservedLookingBusinessMetadata()],
+            'response_or_failure_surface' => ['result_envelope' => $stored,
+                'output_payload_reference' => $stored['external_storage']['uri']],
+        ]);
+        $this->registerWorker('nexus-payload-worker', 'runtime-payloads');
+        $poll = $this->withHeaders($this->workerHeaders())->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'nexus-payload-worker', 'task_queue' => 'runtime-payloads',
+        ])->assertOk();
+        $task = $poll->json('task');
+        $responses = [
+            [$poll, 'task.history_events'],
+            [$this->withHeaders($this->controlHeaders())->getJson('/api/workflows/nexus-external-history/runs/'.$start->json('run_id').'/history')->assertOk(), 'events'],
+            [$this->withHeaders($this->controlHeaders())->getJson('/api/workflows/nexus-external-history/runs/'.$start->json('run_id').'/history/export')->assertOk(), 'history_events'],
+            [$this->withHeaders($this->workerHeaders())->postJson('/api/worker/workflow-tasks/'.$task['task_id'].'/history', [
+                'lease_owner' => 'nexus-payload-worker', 'workflow_task_attempt' => $task['workflow_task_attempt'],
+                'next_history_page_token' => WorkflowHistoryPageToken::encode(0),
+            ])->assertOk(), 'history_events'],
+        ];
+        foreach ($responses as [$response, $eventsPath]) {
+            $event = collect($response->json($eventsPath))->first(static fn ($event) => ($event['event_type'] ?? $event['type'] ?? null) === 'ServiceCallCompleted');
+            $this->assertNotNull($event, $eventsPath);
+            foreach (['request_payload', 'response_payload', 'service_call.result_envelope', 'response_or_failure_surface.result_envelope'] as $slot) {
+                $this->assertSame($reference, data_get($event['payload'], $slot.'.external_payload'));
+                $this->assertNull(data_get($event['payload'], $slot.'.external_storage'));
+            }
+            foreach (['service_call.input_payload_reference', 'service_call.output_payload_reference', 'response_or_failure_surface.output_payload_reference'] as $slot) {
+                $this->assertSame($reference, data_get($event['payload'], $slot));
+            }
+            $this->assertSame($this->reservedLookingBusinessMetadata(), $event['payload']['service_call']['metadata']);
+        }
+        $this->fetch($reference)->assertOk()->assertStreamedContent($payload);
+        $this->fetch($reference, 'other')->assertNotFound();
     }
 
     public function test_worker_memo_command_resolves_opaque_reference_before_recording_history(): void

@@ -16,6 +16,14 @@ class RuntimeExternalPayloadTransport
 {
     public const ATTRIBUTE_CLAIMED = 'runtime_external_payload.claimed';
 
+    /** @var list<list<string>> */
+    private const NEXUS_HISTORY_ENVELOPES = [
+        ['request_payload'],
+        ['response_payload'],
+        ['service_call', 'result_envelope'],
+        ['response_or_failure_surface', 'result_envelope'],
+    ];
+
     /** @var array<string, list<list<string>>> */
     private const INCOMING_ENVELOPE_PATHS = [
         'ActivityController@start' => [['input']],
@@ -222,7 +230,7 @@ class RuntimeExternalPayloadTransport
                     $response->getData(),
                     $namespace,
                     $this->outgoingEnvelopePaths($action),
-                    self::OUTGOING_REFERENCE_PATHS[$action] ?? [],
+                    $this->outgoingReferencePaths($action),
                 ));
             }
 
@@ -443,6 +451,12 @@ class RuntimeExternalPayloadTransport
     private function outgoingEnvelopePaths(string $action): array
     {
         $paths = self::OUTGOING_ENVELOPE_PATHS[$action] ?? [];
+        $historyPrefix = $this->historyPrefix($action);
+        if ($historyPrefix !== null) {
+            foreach (self::NEXUS_HISTORY_ENVELOPES as $slot) {
+                $paths[] = [...$historyPrefix, '*', 'payload', ...$slot];
+            }
+        }
         $historyExportPrefix = match ($action) {
             'HistoryController@export' => [],
             'WorkerController@pollQueryTasks',
@@ -457,6 +471,44 @@ class RuntimeExternalPayloadTransport
 
         foreach (self::HISTORY_EXPORT_ENVELOPE_PATHS as $path) {
             $paths[] = [...$historyExportPrefix, ...$path];
+        }
+        foreach (self::NEXUS_HISTORY_ENVELOPES as $slot) {
+            $paths[] = [...$historyExportPrefix, 'history_events', '*', 'payload', ...$slot];
+        }
+
+        return $paths;
+    }
+
+    /** @return list<string>|null */
+    private function historyPrefix(string $action): ?array
+    {
+        return match ($action) {
+            'HistoryController@show' => ['events'],
+            'HistoryController@export', 'WorkerController@workflowTaskHistory' => ['history_events'],
+            'WorkerController@pollQueryTasks',
+            'WorkerController@pollUpdateValidationTasks',
+            'WorkerController@pollWorkflowTasks' => ['task', 'history_events'],
+            default => null,
+        };
+    }
+
+    /** @return list<list<string>> */
+    private function outgoingReferencePaths(string $action): array
+    {
+        $paths = self::OUTGOING_REFERENCE_PATHS[$action] ?? [];
+        $prefixes = [];
+        if (($prefix = $this->historyPrefix($action)) !== null) {
+            $prefixes[] = $prefix;
+        }
+        if (in_array($action, ['WorkerController@pollQueryTasks', 'WorkerController@pollUpdateValidationTasks', 'WorkerController@pollWorkflowTasks'], true)) {
+            $prefixes[] = ['task', 'history_export', 'history_events'];
+        }
+        foreach ($prefixes as $prefix) {
+            foreach (['service_call', 'response_or_failure_surface'] as $surface) {
+                foreach (['input_payload_reference', 'output_payload_reference', 'failure_payload_reference'] as $field) {
+                    $paths[] = [...$prefix, '*', 'payload', $surface, $field];
+                }
+            }
         }
 
         return $paths;

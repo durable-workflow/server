@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
 use App\Support\CooperativeCancellationPolicy;
+use App\Support\NexusCooperativeCancellationPolicy;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
@@ -69,6 +70,134 @@ class CooperativeCancellationProtocolTest extends TestCase
                 ->assertJsonPath('unavailable', ['installed_runtime_scope_preparation_delivery']);
         }
         $this->assertSame($before, WorkflowHistoryEvent::query()->count());
+    }
+
+    public function test_nexus_discovery_refuses_an_installed_bridge_without_cooperative_delivery(): void
+    {
+        $this->app->instance(WorkflowTaskBridge::class, \Mockery::mock(WorkflowTaskBridge::class));
+        $this->withHeaders($this->headers())->getJson('/api/cluster/info')->assertOk()
+            ->assertJsonPath('worker_protocol.server_capabilities.nexus_cooperative_cancellation', false)
+            ->assertJsonPath('worker_protocol.server_capabilities.nexus_cooperative_cancellation_binding_kinds', []);
+    }
+
+    #[DataProvider('invalidNexusRegistrations')]
+    public function test_nexus_registration_requires_both_capabilities_on_protocol_120(array $capabilities, string $protocol): void
+    {
+        $this->withHeaders($this->headers($protocol))->postJson('/api/worker/register', [
+            'worker_id' => 'nexus-worker', 'task_queue' => 'cooperative', 'runtime' => 'php',
+            'supported_workflow_types' => ['tests.external-greeting-workflow'],
+            'capabilities' => $capabilities, 'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
+        ])->assertConflict()->assertJsonPath('reason', 'nexus_cooperative_cancellation_capability_mismatch');
+        $this->assertDatabaseMissing('workflow_worker_registrations', ['worker_id' => 'nexus-worker']);
+    }
+
+    public static function invalidNexusRegistrations(): array
+    {
+        return [
+            'no cooperative opt-in' => [[NexusCooperativeCancellationPolicy::CAPABILITY], '1.20'],
+            'older protocol' => [[CooperativeCancellationPolicy::CAPABILITY, NexusCooperativeCancellationPolicy::CAPABILITY], '1.19'],
+        ];
+    }
+
+    public function test_pending_nexus_call_refuses_missing_backend_before_any_cancellation_commit(): void
+    {
+        [$workflowId, $runId] = $this->start();
+        $this->register('old-nexus-sdk', true);
+        WorkflowHistoryEvent::record(WorkflowRun::query()->findOrFail($runId), HistoryEventType::ServiceCallStarted, [
+            'sequence' => 1, 'service_call_id' => 'original-call', 'endpoint_name' => 'service',
+            'service_name' => 'greeter', 'operation_name' => 'greet', 'operation_mode' => 'sync', 'wait_for' => 'completed',
+        ]);
+        $this->app->instance(WorkflowTaskBridge::class, \Mockery::mock(WorkflowTaskBridge::class));
+        $before = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->count();
+        $this->requestCancellation($workflowId)->assertConflict()
+            ->assertJsonPath('reason', 'nexus_cooperative_cancellation_not_supported')
+            ->assertJsonPath('service_call.service_call_id', 'original-call')
+            ->assertJsonPath('available_workers.0.worker_id', 'old-nexus-sdk')
+            ->assertJsonPath('available_workers.0.runtime', 'php');
+        $this->assertNull(WorkflowRun::query()->findOrFail($runId)->cancellation_request_command_id);
+        $this->assertSame($before, WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->count());
+    }
+
+    public function test_nexus_delivery_refuses_missing_backend_with_named_diagnostic(): void
+    {
+        [$workflowId] = $this->start();
+        $this->register('new', true);
+        $task = $this->poll('new')->json('task');
+        $request = $this->requestCancellation($workflowId)->assertStatus(202)->json('cancellation_request');
+        $this->app->instance(WorkflowTaskBridge::class, \Mockery::mock(WorkflowTaskBridge::class));
+        $this->deliver($task, $request['request_id'], ['call_kind' => 'service_operation'])->assertConflict()
+            ->assertJsonPath('reason', 'nexus_cooperative_cancellation_not_supported')
+            ->assertJsonPath('unavailable', ['installed_runtime_nexus_cancellation']);
+    }
+
+    #[DataProvider('nexusReplayBoundaries')]
+    public function test_nexus_cleanup_replay_routes_only_to_workers_that_can_read_its_boundary(?string $deliveryKind, bool $requiresNexus, bool $resolved, bool $beforeRequest): void
+    {
+        [$workflowId, $runId] = $this->start();
+        $this->register('ordinary-cooperative', true);
+        $original = $beforeRequest ? null : $this->requestCancellation($workflowId, ['cleanup_timeout_seconds' => 120])
+            ->assertStatus(202)->json('cancellation_request');
+        $run = WorkflowRun::query()->findOrFail($runId);
+        // Reconstruct retained history to isolate routing from the installed
+        // package's optional Nexus delivery implementation.
+        WorkflowHistoryEvent::record($run, HistoryEventType::ServiceCallStarted, [
+            'sequence' => 1, 'service_call_id' => 'original-call', 'endpoint_name' => 'service',
+            'service_name' => 'greeter', 'operation_name' => 'greet', 'operation_mode' => 'sync', 'wait_for' => 'completed',
+        ]);
+        if ($resolved) {
+            WorkflowHistoryEvent::record($run, HistoryEventType::ServiceCallCancelled, [
+                'sequence' => 1, 'service_call_id' => 'original-call',
+            ]);
+        }
+        if ($beforeRequest) {
+            $original = $this->requestCancellation($workflowId, ['cleanup_timeout_seconds' => 120])
+                ->assertStatus(202)->json('cancellation_request');
+            $run->refresh();
+        }
+        if ($deliveryKind !== null) {
+            $sequence = $deliveryKind === 'service_operation' ? 1 : 2;
+            WorkflowHistoryEvent::record($run, HistoryEventType::CooperativeCancellationDelivered, [
+                'workflow_command_id' => $original['request_id'], 'workflow_run_id' => $runId,
+                'sequence' => $sequence, 'call_kind' => $deliveryKind,
+            ]);
+            $run->forceFill(['cancellation_delivery_sequence' => $sequence, 'cancellation_delivered_at' => now()])->save();
+        }
+        $ready = $run->tasks()->where('task_type', 'workflow')->where('status', TaskStatus::Ready->value)->sole();
+        $before = $ready->getRawOriginal();
+        $poll = $this->poll('ordinary-cooperative')->assertOk();
+        if ($requiresNexus) {
+            $poll->assertJsonPath('task', null);
+            $this->assertSame($before, $ready->fresh()->getRawOriginal());
+            $this->withHeaders($this->headers())->postJson('/api/worker/register', [
+                'worker_id' => 'nexus-capable', 'task_queue' => 'cooperative', 'runtime' => 'rust',
+                'supported_workflow_types' => ['tests.external-greeting-workflow'],
+                'capabilities' => [CooperativeCancellationPolicy::CAPABILITY, NexusCooperativeCancellationPolicy::CAPABILITY],
+                'capability_manifest' => $this->portableWorkerAffinityRefusalManifest(),
+            ])->assertCreated();
+            $poll = $this->poll('nexus-capable')->assertOk();
+        }
+        $poll->assertJsonPath('task.task_id', $ready->id);
+        $markers = array_values(array_filter($poll->json('task.history_events'), static fn ($event) => $event['event_type'] === HistoryEventType::CooperativeCancellationDelivered->value));
+        $this->assertCount($deliveryKind === null ? 0 : 1, $markers);
+        if ($deliveryKind !== null) {
+            $this->assertSame($deliveryKind, $markers[0]['payload']['call_kind']);
+            $this->assertSame($original['request_id'], $markers[0]['payload']['workflow_command_id']);
+        }
+        $this->requestCancellation($workflowId, ['cleanup_timeout_seconds' => 3600])->assertOk()
+            ->assertJsonPath('duplicate', true)->assertJsonPath('cancellation_request.request_id', $original['request_id'])
+            ->assertJsonPath('cancellation_request.cleanup_deadline_at', $original['cleanup_deadline_at']);
+    }
+
+    public static function nexusReplayBoundaries(): array
+    {
+        return [
+            'waiting for original service cleanup' => [null, true, false, false],
+            'target cleanup finished before caller delivery' => [null, true, true, false],
+            'cold service boundary after target cleanup' => ['service_operation', true, true, false],
+            'ordinary activity after a resolved service call' => ['activity', false, true, true],
+            'ordinary timer after a resolved service call' => ['timer', false, true, true],
+            'service result predates the request' => [null, false, true, true],
+        ];
     }
 
     public function test_active_claim_observes_request_on_heartbeat_and_cached_poll_without_losing_lease(): void
