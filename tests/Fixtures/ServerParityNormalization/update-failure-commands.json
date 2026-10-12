@@ -2,6 +2,7 @@
   "schema": "durable-workflow.server-parity-update-failure-normalization/v1",
   "source": "Workflow 2.5.10 DefaultWorkflowTaskBridge and FailureFactory",
   "cases": [
+    {"command": {"type": "fail_update", "update_id": "original", "message": "failure λ", "result": "ignored result", "extra": {"ignored": true}}, "expected": {"update_id": "original", "message": "failure λ", "exception_class": "RuntimeException", "exception_type": null, "non_retryable": false, "category": "application"}},
     {"command": {"type": "fail_update", "update_id": "original", "message": "failure λ", "exception_type": "ValueError", "exception_class": "builtins.ValueError", "non_retryable": true}, "expected": {"update_id": "original", "message": "failure λ", "exception_class": "builtins.ValueError", "exception_type": "ValueError", "non_retryable": true, "category": "application"}},
     {"command": {"type": "fail_update", "update_id": "\u0000 original \t", "message": " \n failure λ \u0000", "exception_class": [], "exception_type": "", "non_retryable": "false"}, "expected": {"update_id": "original", "message": "failure λ", "exception_class": "RuntimeException", "exception_type": null, "non_retryable": false, "category": "application"}},
     {"command": {"type": "fail_update", "update_id": "original", "message": "\u2003failure λ\u2003", "exception_class": "\u2003PDOException\u2003"}, "expected": {"update_id": "original", "message": "\u2003failure λ\u2003", "exception_class": "\u2003PDOException\u2003", "exception_type": null, "non_retryable": false, "category": "application"}},

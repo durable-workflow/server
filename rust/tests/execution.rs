@@ -1761,13 +1761,14 @@ async fn failed_updates_preserve_terminal_identity_and_parent_continuation_after
     let failed = completion(
         &task,
         json!([{"type":"fail_update","update_id":admitted.1["update_id"],
-        "message":"original failure λ","exception_type":"ValueError","exception_class":"builtins.ValueError","non_retryable":true}]),
+        "message":"original failure λ","exception_type":"ValueError","exception_class":"builtins.ValueError","non_retryable":true,
+        "result":"ignored by PHP failure normalization","extra":{"ignored":true}}]),
     );
     for (field, value) in [
         ("message", Value::Null),
         ("message", json!("\u{0000} \t")),
         ("update_id", json!("foreign")),
-        ("result", envelope(Payload::Null)),
+        ("message", json!([])),
     ] {
         let mut wrong = failed.clone();
         wrong["commands"][0][field] = value;

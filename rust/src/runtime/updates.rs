@@ -34,17 +34,8 @@ pub(super) struct UpdateFailure<'a> {
 }
 
 pub(super) fn update_failure(command: &Value) -> Result<UpdateFailure<'_>> {
-    reject_fields(
-        command,
-        &[
-            "type",
-            "update_id",
-            "message",
-            "exception_class",
-            "exception_type",
-            "non_retryable",
-        ],
-    )?;
+    // PHP normalizes the recognized failure fields and ignores extra fields.
+    // In particular, an unrelated result cannot turn a failure into success.
     let update_id = php_string(&command["update_id"])
         .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_update_failure"))?;
     let message = php_string(&command["message"])
