@@ -113,4 +113,45 @@ final class ServerParitySdkUpdateTransportTest extends TestCase
         $this->expectException(JsonException::class);
         \sdkUpdateArrivalRecords("{\"schema\":\n");
     }
+
+    public function test_real_bodyless_discovery_prefix_is_not_decoded_as_update_json(): void
+    {
+        $discovery = $this->arrival();
+        $discovery['method'] = 'GET';
+        $discovery['path'] = '/api/cluster/info';
+        $discovery['request_body'] = '';
+        self::assertNull(\sdkUpdateSubmissionArrival([$discovery], 'original', 'stable'));
+        self::assertSame($this->arrival(), \sdkUpdateSubmissionArrival([$discovery, $this->arrival()], 'original', 'stable'));
+    }
+
+    public function test_foreign_paths_or_incomplete_forwarding_cannot_supply_an_update_submission(): void
+    {
+        foreach ([
+            ['method', 'GET'], ['path', '/api/workflows/foreign/update/set_payload'],
+            ['path', '/api/worker/workflow-tasks/poll'], ['schema', 'foreign-schema'],
+            ['request_body_complete', false], ['upstream_request_started', false], ['response_observed', true],
+        ] as [$field, $value]) {
+            $arrival = $this->arrival();
+            $arrival[$field] = $value;
+            $arrival['request_body'] = '{'; // Unrelated bytes must remain uninterpreted.
+            self::assertNull(\sdkUpdateSubmissionArrival([$arrival], 'original', 'stable'), $field);
+        }
+        self::assertNull(\sdkUpdateSubmissionArrival([$this->arrival()], 'original', 'foreign-id'));
+    }
+
+    public function test_matching_forwarded_empty_update_body_still_fails(): void
+    {
+        $arrival = $this->arrival();
+        $arrival['request_body'] = '';
+        $this->expectException(JsonException::class);
+        \sdkUpdateSubmissionArrival([$arrival], 'original', 'stable');
+    }
+
+    public function test_matching_forwarded_malformed_update_body_still_fails(): void
+    {
+        $arrival = $this->arrival();
+        $arrival['request_body'] = '{';
+        $this->expectException(JsonException::class);
+        \sdkUpdateSubmissionArrival([$arrival], 'original', 'stable');
+    }
 }

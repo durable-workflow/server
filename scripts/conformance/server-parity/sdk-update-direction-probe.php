@@ -321,17 +321,29 @@ function sdkUpdateLiveArrivals(array $actor): array
     return $newline === false ? [] : sdkUpdateArrivalRecords(substr($journal, 0, $newline + 1));
 }
 
+function sdkUpdateSubmissionArrival(array $arrivals, string $workflowId, string $requestId): ?array
+{
+    foreach ($arrivals as $arrival) {
+        if ($arrival['schema'] === 'durable-workflow.server-parity-http-request-arrival/v1'
+            && $arrival['method'] === 'POST' && $arrival['path'] === '/api/workflows/'.$workflowId.'/update/set_payload'
+            && $arrival['request_body_complete'] === true && $arrival['upstream_request_started'] === true
+            && $arrival['response_observed'] === false) {
+            $request = json_decode($arrival['request_body'], true, flags: JSON_THROW_ON_ERROR);
+            if (($request['request_id'] ?? null) === $requestId) {
+                return $arrival;
+            }
+        }
+    }
+
+    return null;
+}
+
 function sdkUpdateSubmission(array &$actor, string $workflowId, string $requestId, float $deadline): array
 {
     while (microtime(true) < $deadline) {
-        foreach (sdkUpdateLiveArrivals($actor) as $arrival) {
-            $request = json_decode($arrival['request_body'], true, flags: JSON_THROW_ON_ERROR);
-            if ($arrival['schema'] === 'durable-workflow.server-parity-http-request-arrival/v1'
-                && $arrival['method'] === 'POST' && $arrival['path'] === '/api/workflows/'.$workflowId.'/update/set_payload'
-                && $arrival['request_body_complete'] === true && $arrival['upstream_request_started'] === true
-                && $arrival['response_observed'] === false && ($request['request_id'] ?? null) === $requestId) {
-                return $arrival;
-            }
+        $arrival = sdkUpdateSubmissionArrival(sdkUpdateLiveArrivals($actor), $workflowId, $requestId);
+        if ($arrival !== null) {
+            return $arrival;
         }
         if (! sdkQueryActorPoll($actor)) {
             break;
