@@ -1271,6 +1271,9 @@ where
                     text(command, "update_id")?;
                     envelope(command, "result")?;
                 }
+                "fail_update" if commands.len() == 1 => {
+                    super::updates::update_failure(command)?;
+                }
                 _ => {
                     return Err(refuse(
                         StatusCode::UNPROCESSABLE_ENTITY,
@@ -1323,12 +1326,20 @@ where
             ));
         }
         let update_id = task_payload["workflow_update_id"].as_str();
-        if commands
-            .iter()
-            .any(|command| command["type"] == "complete_update")
-            != update_id.is_some()
+        if commands.iter().any(|command| {
+            matches!(
+                command["type"].as_str(),
+                Some("complete_update" | "fail_update")
+            )
+        }) != update_id.is_some()
             || update_id.is_some_and(|update_id| {
-                commands.len() != 1 || commands[0]["update_id"] != update_id
+                commands.len() != 1
+                    || if commands[0]["type"] == "fail_update" {
+                        super::updates::update_failure(&commands[0])
+                            .map_or(true, |failure| failure.update_id != update_id)
+                    } else {
+                        commands[0]["update_id"] != update_id
+                    }
             })
         {
             return Err(refuse(StatusCode::CONFLICT, "update_task_mismatch"));
@@ -1336,7 +1347,10 @@ where
         let mut sequence = Self::authored_sequence(&mut tx, &run_id).await?;
         Self::apply_task_signal(&mut tx, &run_id, task_id, &task, signal_codec).await?;
         for command in commands {
-            if command["type"] == "complete_update" {
+            if matches!(
+                command["type"].as_str(),
+                Some("complete_update" | "fail_update")
+            ) {
                 Self::apply_update(&mut tx, &run, &task, command, sequence + 1).await?;
             } else if command["type"] == "start_child_workflow" {
                 sequence += 1;

@@ -8,6 +8,7 @@ on:
       - scripts/conformance/server-parity/**
       - tests/Fixtures/ServerParity/**
       - tests/Fixtures/ServerParityBaselines/**
+      - tests/Fixtures/ServerParityNormalization/**
       - tests/Unit/ServerParityRunnerTest.mjs
       - tests/Unit/ServerParityCooperativeContractTest.mjs
       - tests/Unit/ServerParityChildCancellationContractTest.mjs
@@ -41,6 +42,7 @@ on:
       - scripts/conformance/server-parity/**
       - tests/Fixtures/ServerParity/**
       - tests/Fixtures/ServerParityBaselines/**
+      - tests/Fixtures/ServerParityNormalization/**
       - tests/Unit/ServerParityRunnerTest.mjs
       - tests/Unit/ServerParityCooperativeContractTest.mjs
       - tests/Unit/ServerParityChildCancellationContractTest.mjs
@@ -137,7 +139,8 @@ jobs:
   mysql-execution:
     needs: published-sdk-adapters
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Additional nine-direction failed-update cohort; scenario budgets stay fixed.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -392,6 +395,9 @@ jobs:
           ) &
           update_status=0
           bash scripts/conformance/server-parity/sdk-direction-profile.sh mysql http://parity-native-a:8080 update || update_status=$?
+          docker stop --time 30 "$RESOURCE_SCOPE-sdk-updates-server" || true
+          failure_status=0
+          bash scripts/conformance/server-parity/sdk-direction-profile.sh mysql http://parity-native-a:8080 update-failure || failure_status=$?
           wait
           signal_status=$(cat parity-evidence/sdk-signals-profile.status)
           query_status=$(cat parity-evidence/sdk-queries-profile.status)
@@ -399,6 +405,7 @@ jobs:
           test "$signal_status" -eq 0
           test "$query_status" -eq 0
           test "$update_status" -eq 0
+          test "$failure_status" -eq 0
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint sh \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" -ec '
@@ -523,6 +530,7 @@ jobs:
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh mysql signal
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh mysql query
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh mysql update
+          bash scripts/conformance/server-parity/sdk-direction-cleanup.sh mysql update-failure
           docker inspect --format '{{json .State}}' "$RESOURCE_SCOPE-db" > parity-evidence/database-state.json 2>&1 || true
           docker inspect --format '{{json .HostConfig.Memory}}' "$RESOURCE_SCOPE-db" > parity-evidence/database-memory-limit.json 2>&1 || true
           for profile in fence pressure; do
@@ -548,7 +556,8 @@ jobs:
   postgres-storage:
     needs: published-sdk-adapters
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Additional nine-direction failed-update cohort; scenario budgets stay fixed.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -773,6 +782,9 @@ jobs:
           ) &
           update_status=0
           bash scripts/conformance/server-parity/sdk-direction-profile.sh pgsql http://parity-native-a:8080 update || update_status=$?
+          docker stop --time 30 "$RESOURCE_SCOPE-sdk-updates-server" || true
+          failure_status=0
+          bash scripts/conformance/server-parity/sdk-direction-profile.sh pgsql http://parity-native-a:8080 update-failure || failure_status=$?
           wait
           signal_status=$(cat parity-evidence/sdk-signals-profile.status)
           query_status=$(cat parity-evidence/sdk-queries-profile.status)
@@ -780,6 +792,7 @@ jobs:
           test "$signal_status" -eq 0
           test "$query_status" -eq 0
           test "$update_status" -eq 0
+          test "$failure_status" -eq 0
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint sh \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" -ec '
@@ -936,6 +949,7 @@ jobs:
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh pgsql signal
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh pgsql query
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh pgsql update
+          bash scripts/conformance/server-parity/sdk-direction-cleanup.sh pgsql update-failure
           docker inspect --format '{{json .State}}' "$RESOURCE_SCOPE-db" > parity-evidence/database-state.json 2>&1 || true
           docker inspect --format '{{json .HostConfig.Memory}}' "$RESOURCE_SCOPE-db" > parity-evidence/database-memory-limit.json 2>&1 || true
           for profile in fence pressure; do
@@ -961,7 +975,8 @@ jobs:
   execution-and-codec:
     needs: published-sdk-adapters
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Additional nine-direction failed-update cohort; scenario budgets stay fixed.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Fetch this run's published SDK adapters
@@ -1127,6 +1142,9 @@ jobs:
           ) &
           update_status=0
           bash scripts/conformance/server-parity/sdk-direction-profile.sh sqlite http://parity-rust:8080 update || update_status=$?
+          docker stop --time 30 "$RESOURCE_SCOPE-sdk-updates-server" || true
+          failure_status=0
+          bash scripts/conformance/server-parity/sdk-direction-profile.sh sqlite http://parity-rust:8080 update-failure || failure_status=$?
           wait
           signal_status=$(cat parity-evidence/sdk-signals-profile.status)
           query_status=$(cat parity-evidence/sdk-queries-profile.status)
@@ -1134,6 +1152,7 @@ jobs:
           test "$signal_status" -eq 0
           test "$query_status" -eq 0
           test "$update_status" -eq 0
+          test "$failure_status" -eq 0
           docker run --rm --user=1000:1000 --entrypoint php --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/restart.php \
@@ -1229,6 +1248,7 @@ jobs:
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh sqlite signal
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh sqlite query
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh sqlite update
+          bash scripts/conformance/server-parity/sdk-direction-cleanup.sh sqlite update-failure
           for profile in fence pressure; do
             for target in php native; do
               docker logs "$RESOURCE_SCOPE-$profile-$target" > "parity-evidence/$profile-$target.log" 2>&1 || true

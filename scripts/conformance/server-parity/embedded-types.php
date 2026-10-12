@@ -206,6 +206,9 @@ final class SdkUpdatesWorkflow extends Workflow
     #[UpdateMethod('set_payload')]
     public function setPayload(array $value): array
     {
+        if (($value['fail_handler'] ?? false) === true) {
+            throw new \RuntimeException('parity update handler failure λ');
+        }
         $this->values[] = $value;
 
         return ['value' => $value, 'applied' => count($this->values)];

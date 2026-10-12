@@ -12,7 +12,8 @@ case "${2:-activity}" in
   signal) tag=sdk-signals; cohort=published-sdk-signals ;;
   query) tag=sdk-queries; cohort=published-sdk-queries ;;
   update) tag=sdk-updates; cohort=published-sdk-updates ;;
-  *) echo 'Choose activity, child, timer, signal, query or update SDK directions' >&2; exit 2 ;;
+  update-failure) tag=sdk-update-failures; cohort=published-sdk-update-failures; fixture_base=tests/Fixtures/ServerParityPending ;;
+  *) echo 'Choose activity, child, timer, signal, query, update or update-failure SDK directions' >&2; exit 2 ;;
 esac
 test -n "${RESOURCE_SCOPE:?Set the owning isolated network/resource scope}"
 profile="$fixture_base/$cohort"

@@ -42,19 +42,26 @@ The update slice defines nine published SDK update-client/author
 directions in [the qualified profiles](../tests/Fixtures/ServerParityProfiles/published-sdk-updates/README.md).
 Its contract preserves duplicate request IDs and original typed results across
 cold committed checkpoints, then an ordered finishing signal. Request arrival
-is observed separately from durable acceptance. Draft
+is observed separately from durable acceptance.
 [#424](https://github.com/durable-workflow/server/pull/424) implements normal
 published SDK clients and four cold author processes, complete wire and arrival
 capture, a strict reader, canonical embedded PHP and an isolated profile in
-all six database jobs. The [candidate and independent original-artifact review](https://github.com/durable-workflow/server/pull/424#issuecomment-6122426780)
-pass at fafcdba661ebbec111550668c1c80981c34fd96b, tree
-8a4e768d52dc2d53f48174b915c9640bdb2faf6d. Across all six configurations,
+all six database jobs. The [final candidate qualification](https://github.com/durable-workflow/server/pull/424#issuecomment-6123569353)
+passes at 93c71874b8b90b4383478deb00f7855a75051100. The
+[fresh-main qualification](https://github.com/durable-workflow/server/pull/424#issuecomment-6124273589)
+is complete at 5fd56e0c37933fdd0af459c965447c6168c4ad81; both have tree
+61bdf074734941b493d8d0dd681303c9d61c6509. All six fresh-main original database
+jobs pass on their first attempt. Across all six configurations,
 162 update observations / 1,188 complete SDK sidecars, 162 query observations /
 864 sidecars and 162 signal observations / 540 sidecars pass. Each database
 also passes 76 native execution tests; all 3,497 original/archive hashes match.
 PHP/source passes 2,716 tests / 61,466 assertions and both boundaries pass.
-This fixture promotion requires fresh candidate and main verification before
-shared PHP dependency adoption. Source/model checks alone cannot qualify updates.
+SDK preparation independently verifies 297 original member hashes, nine thin
+comparisons and thirteen source hashes. The original candidate MySQL 8.0
+25-minute cancellation remains unqualified; its single bounded retry passes
+with the original tuple and budget. The
+[source-only PHP integration window](https://github.com/durable-workflow/workflow/issues/753#issuecomment-6124274148)
+is confirmed for a separate source cohort. Frozen published tuples stay unchanged.
 The first completed update matrix fails in native discovery: unchanged Python
 clients require the published `accepted`/`completed` wait-stage list before
 submitting an update. Native discovery omitted that list despite implementing
@@ -63,9 +70,77 @@ preserve the failed original. Independent MariaDB review verifies all nine PHP
 Server directions and nine embedded cases, plus 99 original PHP SDK sidecars;
 that partial evidence does not qualify native or the failed job. Native now
 publishes the implemented stages and checks discovery in its existing update
-lifecycle/fencing regression. The corrected candidate's original audits pass;
-fresh promoted candidate and main verification remain required.
-Failed handler updates, validators, full query policies, queued controls,
+lifecycle/fencing regression. The failed original remains separate from the
+completed candidate and main qualification.
+
+The [next reviewed boundary](https://github.com/durable-workflow/server/issues/325#issuecomment-6121730771)
+is failed update handlers with continued parent execution. The
+[cohort contract](../tests/Fixtures/ServerParityProfiles/published-sdk-update-failures/README.md)
+requires ordinary frozen SDK clients and authors, original accepted failure
+identities, pending and completed duplicates, cold replay, and a later successful
+update plus finishing signal on the same run. Preliminary SQLite PHP/PHP and
+embedded recordings pass the complete lifecycle reader; the first PHP author's
+incorrect accepted-input assumption remains a separate failed record.
+[#427](https://github.com/durable-workflow/server/pull/427) implements native
+failure-command validation, durable failure links, terminal HTTP 422 receipts,
+duplicate identity and parent continuation, with database reopen regressions.
+A shared normalization corpus is checked against the actual PHP failure rules.
+Language-specific exception type, class and message remain observable; a failed
+handler emits no successful `UpdateApplied`.
+
+The nine-direction failure profile now runs after the successful-update profile
+in all six database jobs. Its original candidate qualification and independent
+artifact review permit promotion into the qualified profiles. The expanded
+jobs have a 30-minute whole-job limit to include this additional workload;
+individual scenario deadlines, frozen tuples and resource limits are unchanged.
+The preceding `dc881518` run retains its original failures and cancellations
+under the original 25-minute limit. The expanded 6121f343 matrix retains all six
+failed runtime jobs, with
+native test/build stages and PHP/source passing. A separate local diagnostic
+passes all nine directions on published PHP Server, embedded PHP and native,
+followed by a passing three-record comparison. Independent inspection binds
+198 original HTTP sidecars and 27 persisted runs; all 349 retained raw archive
+members match their original hashes. It
+[reproduces a reader mismatch](https://github.com/durable-workflow/server/pull/427#issuecomment-6127074676)
+on a completed native receipt: the frozen Python SDK hydrates nullable
+`result` views recursively, including canonical control metadata. The reader
+now checks both decoded views against their original Avro frame and exact typed
+result, while preserving the original wire body and all other metadata. Altered
+canonical values, frames and int64 values have focused refusal guards. The
+original local failure remains preserved. A working GitHub connector path now
+retrieves original CI bytes despite workspace download timeouts: the original
+612 SQLite artifact independently confirms the hydration mismatch; its MySQL
+8.0 log shows a frozen CLI download HTTP 504 before fixtures ran. Neither failed
+whole job is relabeled.
+
+The corrected-head SQLite job fails earlier in repeated-patch PHP polling,
+before the failed-update profile. Its
+[reviewed original recovery contract](https://github.com/durable-workflow/server/pull/427#issuecomment-6127538862)
+preserves a declared SQLite lock-pressure reply, actual PHP retry diagnostic
+and subsequent successful poll with unchanged worker, queue and options. The
+reader checks original registration protocol/capabilities and a bounded retry
+hint, acquires no hidden task, and retains every original marker, activity,
+history and completion check. Published Python/Rust consumers retain their
+separate same-request and HTTP Retry-After requirements. Frozen fixture bytes,
+tuples, runtime payloads and scenario budgets are unchanged. Original failures
+remain immutable. The subsequent 38def797 original matrix has five successful
+database jobs and one MariaDB failure. In native Python/Python's later successful
+update, two opaque storage HTTP 503 responses precede the cold author and the
+strict recorder refuses. Original failure and cleanup-expired sidecars remain
+intact; the original logs do not establish a driver cause or an independent SDK
+defect. A [reviewed storage diagnostic](https://github.com/durable-workflow/server/pull/427#issuecomment-6128248670)
+now emits only fixed error categories and bounded driver codes, preserving the
+HTTP response and excluding error text, SQL, payloads and authentication data.
+Five diagnostic tests, 30 library tests and 77 SQLite execution regressions pass
+locally. The original 929638262 matrix and normal source checks pass. Independent
+inspection verifies 162 failed-update observations and 1,188 original HTTP
+sidecars across all six databases, plus successful-update, query and signal
+families: 648 observations, 3,780 sidecars and 7,925 original member hashes in
+total. Actual runner `1f091ae1` has reviewed tree `64a6729b` on base `5fd56e0c`.
+Current-main integration remains a separate checkpoint. The original MariaDB
+storage fault remains unresolved; these clean workloads are not a failure
+correction or permission to accept generic 503s.
+Validators, full query policies, queued controls,
 unchanged consumers, migration,
 multi-node acceptance, matched performance and release/cutover remain open.
 
