@@ -46,7 +46,7 @@ fixture actors accept an explicit namespace through the unchanged SDK API.
 The paired recorder and strict reader are implemented. All nine published
 client/author directions and canonical embedded counterparts pass the SQLite
 reference baseline, with 36 original runs, complete transport and persisted
-relationships checked. All 4,750 reader tests pass; the initial path/typed-error
+relationships checked. All 4,755 reader tests pass; the initial path/typed-error
 reader failures remain unchanged. Native current-run signal lookup and untimed
 condition waits are prepared, with qualification pending. The new profile is
 wired into all six database jobs and stays in the pending directory. Expanded
@@ -54,7 +54,10 @@ jobs have a 35-minute whole-job ceiling; existing run budgets and resource caps
 stay fixed. The first native execution regression compiled but failed because
 wrong-namespace signal refusal omitted PHP's canonical signal metadata. That
 original failure is retained; the response mapping correction and stronger
-identity checks await fresh execution. The workflow isolation check also
+identity checks await fresh execution. The shared reader now requires the
+refusal's canonical workflow, operation and signal identities; all original
+PHP/embedded raw pairs pass the stronger rules without rerunning the baseline.
+The workflow isolation check also
 rejected the new stop-option spelling; the existing accepted spelling now
 passes locally. Existing default-profile checks cannot qualify these new cases.
 An original MySQL 8.4 default-profile failure records four storage 503s and four

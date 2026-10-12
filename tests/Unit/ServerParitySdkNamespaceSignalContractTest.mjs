@@ -40,7 +40,9 @@ function pairModel(fixture, mode = 'http') {
       result = {refused: true, typed_error: {class: 'Illuminate\\Database\\Eloquent\\ModelNotFoundException'}};
     } else {
       const language = fixture.sdk_signal_direction.client;
-      const response = {reason: 'workflow_not_found'};
+      const response = {reason: 'instance_not_found', workflow_id: runs[index].workflow_id,
+        control_plane: {operation: 'signal', workflow_id: runs[index].workflow_id,
+          operation_name: 'payload', operation_name_field: 'signal_name'}};
       result = {phase: 'foreign-signal', language, pid: 1001 + index, sdk_version: runs[index].sdk_signal_direction.phases[1].sdk_version,
         workflow_id: runs[index].workflow_id, run_id: runs[index].run_id, signal_sent: false, sender_finished: true,
         requests: [{method: 'POST', path: '/api/workflows/' + runs[index].workflow_id + '/signal/payload',
@@ -118,6 +120,11 @@ const mutations = {
   'foreign signal wrong namespace': value => { value.namespace_signal_pair.foreign_signals[0].result.requests[0].namespace = value.namespace; },
   'foreign signal run selector': value => { value.namespace_signal_pair.foreign_signals[0].result.requests[0].request.run_id = value.run_id; },
   'foreign signal untyped error': value => { value.namespace_signal_pair.foreign_signals[0].result.typed_error.class = 'RuntimeError'; },
+  'foreign refusal for unrelated workflow': value => { value.namespace_signal_pair.foreign_signals[0].result.requests[0].response.workflow_id = 'other'; },
+  'foreign refusal for unrelated operation': value => { value.namespace_signal_pair.foreign_signals[0].result.requests[0].response.control_plane.operation = 'query'; },
+  'foreign refusal metadata wrong workflow': value => { value.namespace_signal_pair.foreign_signals[0].result.requests[0].response.control_plane.workflow_id = 'other'; },
+  'foreign refusal metadata wrong signal': value => { value.namespace_signal_pair.foreign_signals[0].result.requests[0].response.control_plane.operation_name = 'other'; },
+  'foreign refusal metadata wrong name field': value => { value.namespace_signal_pair.foreign_signals[0].result.requests[0].response.control_plane.operation_name_field = 'query_name'; },
   'foreign signal missing': value => { value.namespace_signal_pair.foreign_signals.pop(); },
   'foreign signal changes history': value => { value.namespace_signal_pair.foreign_signals[0].after[0].events.pop(); },
   'foreign signal changes cursor': value => { value.namespace_signal_pair.foreign_signals[0].after[0].execution.message_cursor_position = 3; },
