@@ -40,7 +40,14 @@ async fn main() -> Result<()> {
     let timer_author = fixture.get("sdk_timer_author").is_some();
     let signal_direction = fixture.get("sdk_signal_direction").is_some();
     let phases: &[&str] = if signal_direction {
-        &["original", "signal-1", "resumed", "signal-2", "replacement"]
+        &[
+            "original",
+            "signal-1",
+            "resumed",
+            "signal-2",
+            "replacement",
+            "foreign-signal",
+        ]
     } else if timer_author {
         &["original", "replacement"]
     } else if child_direction {
@@ -86,6 +93,26 @@ async fn main() -> Result<()> {
         .namespace(namespace)
         .token(std::env::var("DW_PARITY_TOKEN").ok())
         .build()?;
+    if signal_direction && phase == "foreign-signal" {
+        let error = client
+            .signal_workflow(workflow_id, "payload", json!([fixture["signal_value"]]))
+            .await
+            .expect_err("Foreign namespace signal was admitted");
+        match error {
+            Error::Http { status, body } if status.as_u16() == 404 => {
+                println!(
+                    "{}",
+                    json!({"pid": std::process::id(), "language": "rust",
+                        "sdk_version": SDK_VERSION.trim_start_matches("durable-workflow-rust/"),
+                        "phase": phase, "workflow_id": workflow_id, "run_id": selected_run,
+                        "signal_sent": false, "sender_finished": true,
+                        "typed_error": {"class": "durable_workflow::Error::Http", "status": status.as_u16(), "body": body}})
+                );
+                return Ok(());
+            }
+            other => return Err(other),
+        }
+    }
     if signal_direction && matches!(phase.as_str(), "signal-1" | "signal-2") {
         let result = client
             .signal_workflow(workflow_id, "payload", json!([fixture["signal_value"]]))

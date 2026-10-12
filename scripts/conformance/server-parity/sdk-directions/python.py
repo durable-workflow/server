@@ -6,6 +6,7 @@ import os
 import sys
 
 from durable_workflow import Client, Worker, activity, workflow
+from durable_workflow.errors import ServerError, WorkflowNotFound
 
 WORKFLOW_INVOCATIONS = 0
 ACTIVITY_INVOCATIONS = 0
@@ -89,7 +90,7 @@ async def main():
     child_direction = "sdk_child_direction" in fixture
     timer_author = "sdk_timer_author" in fixture
     signal_direction = "sdk_signal_direction" in fixture
-    if phase not in (("original", "signal-1", "resumed", "signal-2", "replacement") if signal_direction else
+    if phase not in (("original", "signal-1", "resumed", "signal-2", "replacement", "foreign-signal") if signal_direction else
                     (("original", "replacement") if timer_author else
                     (("original", "child", "replacement") if child_direction else
                      ("original", "activity", "replacement")))):
@@ -103,6 +104,20 @@ async def main():
         if not isinstance(namespace, str) or not namespace or namespace.strip() != namespace:
             raise ValueError("Invalid fixture namespace")
         async with Client(url, token=os.environ.get("DW_PARITY_TOKEN"), namespace=namespace) as client:
+            if signal_direction and phase == "foreign-signal":
+                try:
+                    await client.signal_workflow(workflow_id, "payload", args=[fixture["signal_value"]])
+                    raise RuntimeError("Foreign namespace signal was admitted")
+                except (WorkflowNotFound, ServerError) as error:
+                    if isinstance(error, ServerError) and error.status != 404:
+                        raise
+                    print(json.dumps({"pid": os.getpid(), "language": "python",
+                        "sdk_version": importlib.metadata.version("durable-workflow"),
+                        "phase": phase, "workflow_id": workflow_id, "run_id": run_id,
+                        "signal_sent": False, "sender_finished": True,
+                        "typed_error": {"class": type(error).__module__ + "." + type(error).__name__,
+                            "status": getattr(error, "status", None), "body": getattr(error, "body", None)}}))
+                    return
             if signal_direction and phase in ("signal-1", "signal-2"):
                 result = await client.signal_workflow(workflow_id, "payload", args=[fixture["signal_value"]])
                 print(json.dumps({"pid": os.getpid(), "language": "python",

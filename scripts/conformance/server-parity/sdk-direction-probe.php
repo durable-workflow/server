@@ -44,7 +44,7 @@ function sdkDirectionSnapshot(Client $client, string $workflowId, string $runId)
         'events' => decodeHistory(httpHistory($client, $workflowId, $runId), $client->payloadCodec()->decodeEnvelope(...))];
 }
 
-function sdkDirectionHttpObservation(array $fixture, array $options): array
+function sdkDirectionHttpObservation(array $fixture, array $options, ?Closure $afterPhase = null, ?float $scenarioDeadline = null): array
 {
     $evidence = getenv('DW_PARITY_FAILURE_EVIDENCE_DIR');
     if (! is_string($evidence) || ! is_dir($evidence)) {
@@ -57,7 +57,8 @@ function sdkDirectionHttpObservation(array $fixture, array $options): array
         array_push($proxyArguments, '--workflow-poll-after-start', $options['workflow-id']);
     }
     $proxy = proc_open($proxyArguments,
-        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $proxyPipes);
+        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $proxyPipes, null,
+        isset($fixture['namespace_signal_run']) ? [...getenv(), 'DW_PARITY_HTTP_CAPTURE_NAMESPACE' => '1'] : null);
     if (! is_resource($proxy)) {
         unlink($journal);
         throw new RuntimeException('Could not start the byte-preserving SDK observer.');
@@ -71,15 +72,16 @@ function sdkDirectionHttpObservation(array $fixture, array $options): array
     $directionKey = $signalDirection ? 'sdk_signal_direction' : ($timerAuthor ? 'sdk_timer_author' : ($childDirection ? 'sdk_child_direction' : 'sdk_direction'));
     $spec = $fixture[$directionKey];
     $childWorkflowId = $childRunId = '';
-    $client = new Client($options['url'], namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null);
-    $deadline = microtime(true) + 35;
+    $namespace = $fixture['namespace'] ?? 'default';
+    $client = new Client($options['url'], namespace: $namespace, token: getenv('DW_PARITY_TOKEN') ?: null);
+    $deadline = $scenarioDeadline ?? microtime(true) + 35;
     $observerStart = null;
     try {
         $url = trim(fgets($proxyPipes[1]));
         if (! preg_match('#^http://127\\.0\\.0\\.1:[0-9]+$#', $url)) {
             throw new RuntimeException('SDK observer did not bind its local port.');
         }
-        $startClient = $signalDirection ? new Client($url, namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null) : null;
+        $startClient = $signalDirection ? new Client($url, namespace: $namespace, token: getenv('DW_PARITY_TOKEN') ?: null) : null;
         foreach ($spec['phase_order'] as $phase) {
             $language = $signalDirection ? $spec[in_array($phase, ['signal-1', 'signal-2'], true) ? 'client' : 'workflow']
                 : ($timerAuthor ? $spec['language'] : ($childDirection ? $spec[$phase === 'child' ? 'child' : 'parent']
@@ -216,6 +218,9 @@ function sdkDirectionHttpObservation(array $fixture, array $options): array
             $phases[] = $result + ['requests' => $requests, 'snapshot' => $snapshot,
                 ...($childDirection ? ['child_snapshot' => $childSnapshot] : []),
                 ...($observerError !== null ? ['observer_error' => $observerError] : [])];
+            if ($status === 0 && $afterPhase !== null) {
+                $afterPhase($phases[array_key_last($phases)]);
+            }
             if ($status !== 0) {
                 break; // Preserve the actual open run and let the reader classify the product failure.
             }
