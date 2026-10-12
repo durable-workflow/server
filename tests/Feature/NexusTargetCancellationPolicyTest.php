@@ -89,6 +89,8 @@ class NexusTargetCancellationPolicyTest extends TestCase
         WorkflowHistoryEvent::record($run, HistoryEventType::ServiceCallStarted, [
             'sequence' => 1, 'service_call_id' => 'nested-call', 'operation_mode' => 'sync', 'wait_for' => 'completed']);
         if ($resolved) {
+            $run->forceFill(['cancellation_request_command_id' => 'original-request'])->save();
+            WorkflowHistoryEvent::record($run, HistoryEventType::CooperativeCancellationRequested, ['workflow_command_id' => 'original-request']);
             WorkflowHistoryEvent::record($run, HistoryEventType::ServiceCallCancelled, ['sequence' => 1]);
         }
         if ($delivered) {
@@ -103,6 +105,17 @@ class NexusTargetCancellationPolicyTest extends TestCase
     public static function retainedServiceBoundaries(): array
     {
         return ['pending' => [false, false], 'completed before delivery' => [true, false], 'cold retained delivery' => [true, true]];
+    }
+
+    public function test_completed_service_result_before_target_request_remains_ordinary_cleanup(): void
+    {
+        $run = $this->start();
+        $this->register('ordinary', ['cooperative_cancellation']);
+        WorkflowHistoryEvent::record($run, HistoryEventType::ServiceCallStarted, [
+            'sequence' => 1, 'service_call_id' => 'completed-call', 'operation_mode' => 'sync', 'wait_for' => 'completed',
+        ]);
+        WorkflowHistoryEvent::record($run, HistoryEventType::ServiceCallCompleted, ['sequence' => 1]);
+        $this->assertNull(NexusCooperativeCancellationPolicy::targetUnavailable($run));
     }
 
     public function test_second_capable_worker_and_same_id_change_cannot_upgrade_old_claim(): void

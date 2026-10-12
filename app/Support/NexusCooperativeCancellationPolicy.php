@@ -223,7 +223,10 @@ final class NexusCooperativeCancellationPolicy
         if (is_subclass_of((string) $run->workflow_class, Workflow::class)) {
             return null;
         }
-        $nexus = self::requiresCapabilityForReplay($run);
+        // Before the target's first request, completed results are ordinary
+        // replay. Once a request exists, retain its canonical service boundary.
+        $nexus = self::pendingCall($run) !== null
+            || (CooperativeCancellationPolicy::pending($run) !== null && self::requiresCapabilityForReplay($run));
         $required = $nexus ? [CooperativeCancellationPolicy::CAPABILITY, self::CAPABILITY]
             : [CooperativeCancellationPolicy::CAPABILITY];
         $workers = WorkerRegistration::query()->where('namespace', $run->namespace)
