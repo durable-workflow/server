@@ -42,8 +42,13 @@ The next slice defines nine pending published SDK update-client/author
 directions in [the pending corpus](../tests/Fixtures/ServerParityPending/published-sdk-updates/README.md).
 Its contract preserves duplicate request IDs and original typed results across
 cold committed checkpoints, then an ordered finishing signal. Request arrival
-is observed separately from durable acceptance. Worker adapters, the strict
-reader and actual all-six runtime qualification remain to be implemented.
+is observed separately from durable acceptance. Draft
+[#424](https://github.com/durable-workflow/server/pull/424) implements normal
+published SDK clients and four cold author processes, complete wire and arrival
+capture, a strict reader, canonical embedded PHP and an isolated profile in
+all six database jobs. Local source/reader checks pass; actual update runtime
+qualification and independent original-artifact review remain pending. Source
+checks and the existing-profile actor-build baseline cannot qualify updates.
 Full query policies, queued controls, unchanged consumers, migration,
 multi-node acceptance, matched performance and release/cutover remain open.
 

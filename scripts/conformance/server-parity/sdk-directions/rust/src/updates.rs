@@ -96,7 +96,7 @@ pub async fn run(arguments: &[String], fixture: Value) -> Result<()> {
             let predicate_ctx = ctx.clone();
             ctx.wait_condition(
                 ConditionWaitOptions::new(
-                    "finish:0",
+                    "payload:0",
                     "sha256:b67992a5ee48704611dcf6a181c3ab94b69d0933c44525137210dd2467aec563",
                 ),
                 move || Ok(!predicate_ctx.signals("payload")?.is_empty()),

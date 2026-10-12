@@ -30,7 +30,7 @@ class Updates:
     def run(self, ctx, value, target):
         global WORKFLOW_INVOCATIONS
         WORKFLOW_INVOCATIONS += 1
-        yield ctx.wait_condition(lambda: self.finished, key="finish:0")
+        yield ctx.wait_condition(lambda: self.finished, key="payload:0")
         return {"values": self.values}
 
 

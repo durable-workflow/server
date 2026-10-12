@@ -69,7 +69,7 @@ $workflowInvocations = $updateInvocations = 0;
 $worker->registerWorkflow($type, static function (WorkflowContext $ctx, mixed $value, int $target) use (&$workflowInvocations, &$runId): array {
     ++$workflowInvocations;
     $runId = $ctx->runId;
-    $ctx->waitCondition(fn (): bool => $ctx->signals('payload') !== [], 'finish:0');
+    $ctx->waitCondition(fn (): bool => $ctx->signals('payload') !== [], 'payload:0');
 
     return ['values' => array_map(static fn (array $arguments): mixed => $arguments[0], $ctx->updates('set_payload'))];
 })->declareSignal($type, 'payload', static fn (array $value) => null)

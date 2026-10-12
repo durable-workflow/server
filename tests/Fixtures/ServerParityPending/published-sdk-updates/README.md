@@ -1,9 +1,11 @@
 # Pending published SDK update directions
 
-These nine fixtures define the next Server #325 slice. They are pending:
-ordinary SDK worker/client adapters, request-arrival capture, the strict reader,
-and six-database runtime qualification are still required. Existing profiles
-and their frozen manifests remain unchanged.
+These nine fixtures define the next Server #325 slice. Ordinary SDK
+worker/client adapters, request-arrival capture, the strict reader and isolated
+profile are implemented in draft [#424](https://github.com/durable-workflow/server/pull/424).
+They remain pending until actual six-database differential execution and
+independent original-artifact review pass. Existing profiles and their frozen
+manifests remain unchanged.
 
 Each PHP/Python/Rust update client targets each PHP/Python/Rust workflow author.
 The component tuple is the existing published signal/query tuple; the separate

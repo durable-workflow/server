@@ -4,16 +4,18 @@ set -u
 backend="$1"
 tag=sdk-directions
 cohort=published-sdk-directions
+fixture_base=tests/Fixtures/ServerParityProfiles
 case "${2:-activity}" in
   activity) ;;
   child) tag=sdk-child-directions; cohort=published-sdk-child-directions ;;
   timer) tag=sdk-timers; cohort=published-sdk-timers ;;
   signal) tag=sdk-signals; cohort=published-sdk-signals ;;
   query) tag=sdk-queries; cohort=published-sdk-queries ;;
-  *) echo 'Choose activity, child, timer, signal or query SDK directions' >&2; exit 2 ;;
+  update) tag=sdk-updates; cohort=published-sdk-updates; fixture_base=tests/Fixtures/ServerParityPending ;;
+  *) echo 'Choose activity, child, timer, signal, query or update SDK directions' >&2; exit 2 ;;
 esac
 test -n "${RESOURCE_SCOPE:?Set the owning isolated network/resource scope}"
-profile="tests/Fixtures/ServerParityProfiles/$cohort"
+profile="$fixture_base/$cohort"
 image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' "$profile/artifacts.json")
 resource="$RESOURCE_SCOPE-$tag"
 php_database="$(printf '%s' "$tag" | tr '-' '_')_php_ref"
