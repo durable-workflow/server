@@ -80,6 +80,12 @@ async fn markers_survive_restart_and_advance_later_authored_turns_once() {
     );
     assert_eq!(prefix[3]["payload"]["sequence"], 2);
     assert_eq!(prefix[3]["event_type"], "ActivityScheduled");
+    assert!(
+        prefix[3]["payload"]["activity"]
+            .get("retry_policy")
+            .is_none(),
+        "Legacy absence is preserved in the original history"
+    );
     assert_eq!(
         prefix[3]["payload"]["task"], original_task,
         "scheduled activity retains its original workflow task and lease owner"

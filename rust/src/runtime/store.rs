@@ -2037,6 +2037,14 @@ where
             "parallel_group_path",
         )?)?;
         super::selections::merge(&mut payload, &metadata);
+        if payload["activity"]["retry_policy"].is_null() {
+            // A legacy absent snapshot stays absent in its durable history.
+            // The activity claim may still advertise a nullable policy.
+            payload["activity"]
+                .as_object_mut()
+                .unwrap()
+                .remove("retry_policy");
+        }
         Ok(payload)
     }
 
