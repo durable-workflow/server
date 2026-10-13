@@ -1,0 +1,23 @@
+{
+  "id": "activity-deadline-authority",
+  "workflow_type": "parity.v1.activity_deadline",
+  "input": {"integer": 9007199254740993, "optional": null, "unicode": "deadline λ"},
+  "activity_deadline_authority": {
+    "fields": ["start_to_close_timeout", "schedule_to_start_timeout", "schedule_to_close_timeout", "heartbeat_timeout"],
+    "precedence": ["schedule_to_close", "schedule_to_start", "heartbeat", "start_to_close"],
+    "expiry_inclusive": true,
+    "ordinary_lease_seconds": 300,
+    "timeout_seconds": 1,
+    "terminal_max_attempts": 1,
+    "retry_max_attempts": 2,
+    "retry_backoff_seconds": [1, 2, 5, 10, 15, 30, 60, 120],
+    "original_schedule_to_close_survives_retry": true,
+    "same_original_execution": true,
+    "terminal_event": "ActivityTimedOut",
+    "retry_event": "ActivityRetryScheduled",
+    "failure_category": "timeout",
+    "exception_class": "Workflow\\V2\\Exceptions\\ActivityTimeoutException",
+    "overall_budget_seconds": 35
+  },
+  "contract": "Scheduling snapshots every authored timeout and complete retry list. Claims and heartbeats never replace elapsed authority. Schedule-to-close spans all attempts; schedule-to-start starts at admission or the original retry availability; start-to-close and heartbeat start on each actual claim. Expiry is inclusive, with the recorded precedence when several deadlines are elapsed. Completion/failure/heartbeat after expiry never commits an outcome, callback progress, new commands or lease renewal. A sweep closes the original attempt/task and either schedules one retry with the same original execution and unchanged global deadline, or records one terminal ActivityTimedOut and one parent wakeup. Identical already committed receipts remain readable after expiry; conflicting outcomes remain refused. This pending candidate needs actual PHP/native/embedded recordings before default-corpus adoption."
+}

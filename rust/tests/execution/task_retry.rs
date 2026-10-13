@@ -18,7 +18,7 @@ async fn report(app: &Router, task: &Value, body: Value) -> (StatusCode, Value) 
     .await
 }
 
-async fn rows(database: &TestDatabase, sql: &'static str) -> i64 {
+pub(super) async fn rows(database: &TestDatabase, sql: &'static str) -> i64 {
     match database {
         TestDatabase::Sqlite(dir) => {
             let pool = sqlx::SqlitePool::connect(&format!(

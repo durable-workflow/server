@@ -200,7 +200,7 @@ where
             "selection_group_id":group_id,"selection_group_base_sequence":metadata["parallel_group_base_sequence"],
             "selection_group_size":metadata["parallel_group_size"],"member_key":metadata["selection_member_key"],
             "member_index":metadata["selection_member_index"],"member_base_sequence":metadata["selection_member_base_sequence"],
-            "member_size":1,"operation_kind":kind,"operation_identity":identity,"outcome":"completed",
+            "member_size":1,"operation_kind":kind,"operation_identity":identity,"outcome":if event_type == "ActivityTimedOut" {"failed"} else {"completed"},
             "resolution_event_id":DB::string(&event,"id")?,"resolution_event_type":event_type,
         }), None, None).await
     }

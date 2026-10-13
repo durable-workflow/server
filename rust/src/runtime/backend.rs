@@ -8,6 +8,7 @@ use super::{Result, mysql, postgres, schema};
 
 pub(super) trait Backend: Database {
     type EncodedTime: for<'q> Encode<'q, Self> + Type<Self> + Send + Sync + 'static;
+    type EncodedOptionalTime: for<'q> Encode<'q, Self> + Type<Self> + Send + Sync + 'static;
     type EncodedDocument: for<'q> Encode<'q, Self> + Type<Self> + Send + Sync + 'static;
     const HISTORY_PAGE: &'static str;
     const VISIBILITY_PAGE: &'static str = super::visibility::VISIBILITY_PAGE;
@@ -19,6 +20,7 @@ pub(super) trait Backend: Database {
     // Frozen run command/task repair counters use each backend's actual width.
     const REPAIR_COUNTER_MAX: i64 = i32::MAX as i64;
     const RANGE_REPAIR_TASK_SQL: &'static str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND namespace=$2 AND task_type='workflow' AND status='failed' AND payload->>'replay_blocked'='true' ORDER BY CASE WHEN available_at IS NULL THEN 1 ELSE 0 END,available_at,created_at,id LIMIT 1";
+    const ACTIVITY_OPEN_TASK_SQL: &'static str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='activity' AND status IN ('ready','leased') AND payload->>'activity_execution_id'=$2 ORDER BY id LIMIT 1";
     const QUERY_CACHE_SCAN: &'static str = "SELECT \"key\",value,expiration FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' ORDER BY \"key\" LIMIT 65";
     const QUERY_CACHE_GET: &'static str =
         "SELECT value,expiration FROM dw_query_cache WHERE \"key\"=$1";
@@ -32,6 +34,7 @@ pub(super) trait Backend: Database {
     }
 
     fn bind_time(time: DateTime<Utc>) -> Self::EncodedTime;
+    fn optional_time(time: Option<DateTime<Utc>>) -> Self::EncodedOptionalTime;
     fn document(value: &Value) -> Self::EncodedDocument;
     fn optional_document(value: &Value) -> Option<Self::EncodedDocument> {
         (!value.is_null()).then(|| Self::document(value))
@@ -76,8 +79,10 @@ impl Backend for Sqlite {
     const SELECTION_RESOLUTION_SQL: &'static str = "SELECT id,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SelectionResolved' AND json_extract(payload,'$.selection_group_id')=$2 ORDER BY sequence LIMIT 1";
     const REPAIR_COUNTER_MAX: i64 = i64::MAX;
     const RANGE_REPAIR_TASK_SQL: &'static str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND namespace=$2 AND task_type='workflow' AND status='failed' AND json_extract(payload,'$.replay_blocked')=1 ORDER BY CASE WHEN available_at IS NULL THEN 1 ELSE 0 END,available_at,created_at,id LIMIT 1";
+    const ACTIVITY_OPEN_TASK_SQL: &'static str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='activity' AND status IN ('ready','leased') AND json_extract(payload,'$.activity_execution_id')=$2 ORDER BY id LIMIT 1";
     const VISIBILITY_PAGE: &'static str = super::visibility::SQLITE_VISIBILITY_PAGE;
     type EncodedTime = String;
+    type EncodedOptionalTime = Option<String>;
     type EncodedDocument = String;
     const TIMER_TASK_SQL: &'static str = "SELECT id,payload FROM workflow_tasks WHERE workflow_run_id=$1 AND namespace='default' AND task_type='timer' AND status='ready' AND json_extract(payload,'$.timer_id')=$2";
     const HISTORY_PAGE: &'static str = "SELECT * FROM (SELECT *,SUM(length(CAST(payload AS BLOB))) OVER (ORDER BY sequence) AS page_bytes FROM workflow_history_events WHERE workflow_run_id=$1 AND sequence>$2 ORDER BY sequence LIMIT $3) AS page WHERE page_bytes<=8388608 ORDER BY sequence";
@@ -117,6 +122,9 @@ DELETE FROM dw_poll_receipts WHERE (namespace,worker_id,kind,request_id) IN (
 "#;
     fn bind_time(time: DateTime<Utc>) -> String {
         time.format("%Y-%m-%d %H:%M:%S%.6f").to_string()
+    }
+    fn optional_time(time: Option<DateTime<Utc>>) -> Self::EncodedOptionalTime {
+        time.map(Self::bind_time)
     }
     fn document(value: &Value) -> String {
         value.to_string()
@@ -193,11 +201,15 @@ impl Encode<'_, Postgres> for PostgresDocument {
 
 impl Backend for Postgres {
     type EncodedTime = NaiveDateTime;
+    type EncodedOptionalTime = Option<NaiveDateTime>;
     type EncodedDocument = PostgresDocument;
     const TIMER_TASK_SQL: &'static str = "SELECT id,payload FROM workflow_tasks WHERE workflow_run_id=$1 AND namespace='default' AND task_type='timer' AND status='ready' AND payload->>'timer_id'=$2";
     const HISTORY_PAGE: &'static str = "SELECT * FROM (SELECT *,SUM(octet_length(payload::text)) OVER (ORDER BY sequence) AS page_bytes FROM workflow_history_events WHERE workflow_run_id=$1 AND sequence>$2 ORDER BY sequence LIMIT $3) AS page WHERE page_bytes<=8388608 ORDER BY sequence";
     fn bind_time(time: DateTime<Utc>) -> NaiveDateTime {
         time.naive_utc()
+    }
+    fn optional_time(time: Option<DateTime<Utc>>) -> Self::EncodedOptionalTime {
+        time.map(Self::bind_time)
     }
     fn document(value: &Value) -> PostgresDocument {
         PostgresDocument(Json(value.clone()))
@@ -269,7 +281,9 @@ impl Backend for MySql {
     const SELECTION_RESOLUTION_SQL: &'static str = "SELECT id,payload FROM workflow_history_events WHERE workflow_run_id=? AND event_type='SelectionResolved' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.selection_group_id'))=? ORDER BY sequence LIMIT 1";
     const REPAIR_COUNTER_MAX: i64 = u32::MAX as i64;
     const RANGE_REPAIR_TASK_SQL: &'static str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=? AND namespace=? AND task_type='workflow' AND status='failed' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.replay_blocked'))='true' ORDER BY CASE WHEN available_at IS NULL THEN 1 ELSE 0 END,available_at,created_at,id LIMIT 1";
+    const ACTIVITY_OPEN_TASK_SQL: &'static str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=? AND task_type='activity' AND status IN ('ready','leased') AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.activity_execution_id'))=? ORDER BY id LIMIT 1";
     type EncodedTime = DateTime<Utc>;
+    type EncodedOptionalTime = Option<DateTime<Utc>>;
     type EncodedDocument = Json<Value>;
     const QUERY_CACHE_SCAN: &'static str = "SELECT `key`,value,expiration FROM dw_query_cache WHERE `key` LIKE 'dw-native-query:%' ORDER BY `key` LIMIT 65";
     const QUERY_CACHE_GET: &'static str =
@@ -314,6 +328,9 @@ impl Backend for MySql {
     }
     fn bind_time(time: DateTime<Utc>) -> DateTime<Utc> {
         time
+    }
+    fn optional_time(time: Option<DateTime<Utc>>) -> Self::EncodedOptionalTime {
+        time.map(Self::bind_time)
     }
     fn document(value: &Value) -> Json<Value> {
         Json(value.clone())

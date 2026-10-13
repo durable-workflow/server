@@ -68,6 +68,7 @@ where
         let task_status = DB::string(&task, "status")?;
         let expires = DB::optional_instant(&attempt, "lease_expires_at")?
             .or(DB::optional_instant(&task, "lease_expires_at")?);
+        let activity_expiry = super::activity_deadlines::expired_kind::<DB>(&activity, now())?;
         let (can_continue, cancel_requested, reason) = if run_status == "cancelled" {
             (false, true, Some("run_cancelled"))
         } else if run_status == "terminated" {
@@ -96,6 +97,12 @@ where
                 .is_none_or(|expires| expires <= now())
         {
             (false, false, Some("lease_expired"))
+        } else if let Some(kind) = activity_expiry {
+            (
+                false,
+                false,
+                Some(super::activity_deadlines::timeout_reason(kind)),
+            )
         } else {
             (true, false, None)
         };
@@ -177,8 +184,17 @@ where
         {
             return Err(refuse(StatusCode::CONFLICT, "stale_attempt"));
         }
+        super::activity_deadlines::fence::<DB>(&activity)?;
         let at = now();
-        let expires = Self::cancellation_lease_expiry(&run)?;
+        let expires = if Self::cancellation_request(&run)?.is_none() {
+            at + chrono::Duration::seconds(300)
+        } else {
+            Self::cancellation_lease_expiry(&run)?
+        };
+        let policy = DB::optional_document_row(&activity, "retry_policy")?.unwrap_or(Value::Null);
+        super::activity_deadlines::validate_policy(&policy)?;
+        let heartbeat_deadline =
+            super::activity_deadlines::deadline(&policy, "heartbeat_timeout", at)?;
         Self::query(
             "UPDATE activity_attempts SET last_heartbeat_at=$1,lease_expires_at=$2 WHERE id=$3",
         )
@@ -187,8 +203,9 @@ where
         .bind(attempt_id)
         .execute(&mut *tx)
         .await?;
-        Self::query("UPDATE activity_executions SET last_heartbeat_at=$1 WHERE id=$2")
+        Self::query("UPDATE activity_executions SET last_heartbeat_at=$1,heartbeat_deadline_at=$2 WHERE id=$3")
             .bind(DB::bind_time(at))
+            .bind(DB::optional_time(heartbeat_deadline))
             .bind(&activity_id)
             .execute(&mut *tx)
             .await?;

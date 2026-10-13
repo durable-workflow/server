@@ -14,9 +14,17 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 pub(super) fn retry_policy(command: &Value) -> Result<Option<Value>> {
-    let Some(policy) = command.get("retry_policy").filter(|v| !v.is_null()) else {
+    let empty = json!({});
+    let supplied = command.get("retry_policy").filter(|v| !v.is_null());
+    let policy = supplied
+        .filter(|value| !value.as_array().is_some_and(Vec::is_empty))
+        .unwrap_or(&empty);
+    let timeouts = super::activity_deadlines::timeout_options(command)?;
+    if policy.as_object().is_some_and(|value| value.is_empty())
+        && timeouts.iter().all(Option::is_none)
+    {
         return Ok(None);
-    };
+    }
     reject_fields(
         policy,
         &[
@@ -100,8 +108,8 @@ pub(super) fn retry_policy(command: &Value) -> Result<Option<Value>> {
     }
     Ok(Some(
         json!({"snapshot_version":1,"max_attempts":max,"backoff_seconds":backoff,
-        "non_retryable_error_types":filters,"start_to_close_timeout":null,"schedule_to_start_timeout":null,
-        "schedule_to_close_timeout":null,"heartbeat_timeout":null}),
+        "non_retryable_error_types":filters,"start_to_close_timeout":timeouts[0],"schedule_to_start_timeout":timeouts[1],
+        "schedule_to_close_timeout":timeouts[2],"heartbeat_timeout":timeouts[3]}),
     ))
 }
 
@@ -241,6 +249,7 @@ where
         {
             return Err(refuse(StatusCode::CONFLICT, "stale_attempt"));
         }
+        super::activity_deadlines::fence::<DB>(&activity)?;
         if DB::optional_document_row(&activity, "parallel_group_path")?.is_some() {
             // The bounded selection contract covers successful member
             // resolution. Failed/retrying members need a separate fixture;
@@ -251,18 +260,7 @@ where
             ));
         }
         let policy = DB::optional_document_row(&activity, "retry_policy")?.unwrap_or(Value::Null);
-        if !policy.is_null() {
-            let normalized = retry_policy(
-                &json!({"retry_policy":{"max_attempts":policy["max_attempts"],
-                "backoff_seconds":policy["backoff_seconds"],"non_retryable_error_types":policy["non_retryable_error_types"]}}),
-            )?;
-            if normalized.as_ref() != Some(&policy) {
-                return Err(refuse(
-                    StatusCode::CONFLICT,
-                    "invalid_stored_activity_retry_policy",
-                ));
-            }
-        }
+        super::activity_deadlines::validate_policy(&policy)?;
         let max = policy["max_attempts"].as_i64().unwrap_or(1);
         // Class/type filters use exact PHP matching. Preserve the original
         // report's flag in its payload; the derived terminal classification
@@ -349,8 +347,9 @@ where
                 json!({"task_id":task_id,"activity_attempt_id":attempt_id,"outcome":"failed","recorded":true,"reason":null,"next_task_id":next}),
             );
         }
-        Self::query("UPDATE activity_executions SET status='pending',exception=$1,last_heartbeat_at=NULL WHERE id=$2")
-            .bind(blob).bind(&activity_id).execute(&mut *tx).await?;
+        Self::query("UPDATE activity_executions SET status='pending',exception=$1,last_heartbeat_at=NULL,close_deadline_at=NULL,heartbeat_deadline_at=NULL,schedule_deadline_at=$2 WHERE id=$3")
+            .bind(blob).bind(DB::optional_time(super::activity_deadlines::deadline(&policy, "schedule_to_start_timeout", available)?))
+            .bind(&activity_id).execute(&mut *tx).await?;
         let retry_task = Self::create_task(&mut tx,&run_id,&DB::string(&activity,"queue")?,"activity",
             json!({"activity_execution_id":activity_id,"retry_of_task_id":task_id,"retry_after_attempt_id":attempt_id,
                 "retry_after_attempt":count,"retry_backoff_seconds":backoff,"max_attempts":max,"retry_policy":policy})).await?;
