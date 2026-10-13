@@ -50,6 +50,14 @@ recovery and matched fixture gates is pending. New #435 runtime jobs have a
 prospective 55-minute whole-job ceiling to include the real five-minute lease
 wait; old 45-minute allocations and all individual scenario limits stay recorded
 unchanged. Runtime memory/CPU and compile limits are unchanged.
+All six original jobs in the separate `d36856486` run `38447782933` now pass;
+the original artifact audit remains pending. That run covers the existing
+corpus, rather than the expanded corrected marker cohort. The next runner
+wires eight portable cases across three runtimes and two service clock cases
+across both HTTP runtimes into all six configurations, using one explicit
+2.5.16 embedded manifest. Its prospective whole-job ceiling is 75 minutes;
+all scenario, phase, lease-wait and resource limits remain unchanged. Existing
+45/55-minute records are preserved. The new shared fixture gate is pending.
 
 The separate actual elapsed-deadline HTTP profile passes fresh matched
 published PHP/native SQLite recordings at `67cfd7b95`: four original expiry

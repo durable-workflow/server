@@ -19,6 +19,7 @@ state=${DW_PARITY_CORRECTED_STATE:-parity-corrected-state}
 evidence=${DW_PARITY_CORRECTED_EVIDENCE:-parity-evidence/corrected-marker}
 prefix=${DW_PARITY_CORRECTED_PREFIX:-corrected-markers-v1}
 mkdir -p "$state"/{current,original} "$evidence/embedded"
+chmod 0777 "$state" "$state/current" "$state/original" "$evidence/embedded"
 engine=(-e DW_MODE=embedded -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e LOG_CHANNEL=stderr
   -e DW_SERVER_KEY=base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=)
 case "$backend" in
@@ -34,10 +35,14 @@ case "$backend" in
     database=(-e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=embedded_corrected_ref
       -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password) ;;
   sqlite)
+    test ! -e "$state/embedded.sqlite"
     touch "$state/embedded.sqlite"
     database=(-e DB_CONNECTION=sqlite -e DB_DATABASE=/state/embedded.sqlite -v "$PWD/$state:/state") ;;
   *) exit 2 ;;
 esac
+if test -n "${DW_PARITY_CORRECTED_OWNERSHIP_DIR:-}"; then
+  printf '%s\n' "$RESOURCE_SCOPE" > "$DW_PARITY_CORRECTED_OWNERSHIP_DIR/embedded-database-owned.txt"
+fi
 for role in original current; do
   package_checks=()
   if test "$role" = original; then

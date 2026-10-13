@@ -19,6 +19,7 @@ image=$(jq -r '.server.images["linux/amd64"]' "$artifacts")
 evidence=${DW_PARITY_CORRECTED_EVIDENCE:-parity-evidence/corrected-marker}
 prefix=${DW_PARITY_CORRECTED_PREFIX:-corrected-markers-v1}
 mkdir -p "$evidence/$target"
+chmod 0777 "$evidence/$target"
 test "$(cat "$adapters/runner-revision.txt")" != ''
 # A native-only correction may reuse the unchanged installed actors. Preserve
 # their build revision separately; every compiled actor source must still match.

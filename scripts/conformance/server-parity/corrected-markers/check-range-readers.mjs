@@ -5,8 +5,9 @@ import {checkObservation} from '../contract.mjs';
 import {checkCorrectedRangePackages} from '../corrected-range-contract.mjs';
 
 const record = JSON.parse(readFileSync(process.argv[2]));
+assert.equal(record.outcome, 'pass');
 const results = [];
-for (const item of record.cases) {
+for (const item of record.cases.filter(item => item.fixture.corrected_range)) {
   const original = item.observation, fixture = item.fixture;
   const read = value => {
     checkCorrectedRangePackages(fixture, value, record.artifacts);
@@ -95,4 +96,5 @@ for (const item of record.cases) {
   }
   results.push({fixture_id: fixture.id, actual_record: true, mutation_controls: Object.keys(mutations)});
 }
+assert(results.length > 0, 'At least one actual range observation');
 console.log(JSON.stringify({outcome: 'pass', results}));

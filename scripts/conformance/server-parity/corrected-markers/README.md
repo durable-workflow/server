@@ -63,6 +63,22 @@ readback. All 931 installed runtime/resource files match the published tag.
 The same manifest option applies to adapter installation and HTTP recording;
 all three modes can declare one exact cohort without editing the earlier
 manifest.
+
+`corrected-marker-shared-profile.sh BACKEND NATIVE_URL` is the hosted wrapper
+for that explicitly selected cohort. The caller supplies its isolated database
+server/network, installed adapter bundle and running native target. It creates
+separate published PHP and embedded databases, records the same eight portable
+cases in all three modes and the two clock cases on both HTTP targets, compares
+the complete originals, then runs the existing mutation readers on each record.
+Database cleanup requires a creation receipt for that resource scope; the
+native database remains owned by the caller. Use `BACKEND cleanup` in the
+workflow's always-run cleanup before removing its database server/network.
+All six database configurations run this wrapper. The expanded jobs declare
+a prospective 75-minute whole-job limit; every individual scenario and phase
+budget stays unchanged. Earlier 45/55-minute jobs keep their original limits.
+The existing Rust 1.86 job cache is reused, and only installed actors and their
+identity/lock receipts are shared with the matrix. No compiler cache or target
+tree is uploaded. Expanded hosted qualification is pending.
 Embedded actors execute PHP
 backend handlers through real independent `queue:work --once` database workers;
 they do not claim a Rust SDK consumer or sustained queue-worker drain test.
