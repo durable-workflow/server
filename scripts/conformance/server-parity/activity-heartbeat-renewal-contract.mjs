@@ -79,8 +79,8 @@ export function checkActivityHeartbeatRenewal(fixture, observation, workflowId, 
     assert.deepEqual(row.typed_decoded.activity_arguments, {type: 'list', value: [fixture.typed_value]});
   }
   for (const row of events.slice(3, 7)) assert.equal(row.payload.activity_attempt_id, first.activity_attempt_id);
-  assert.deepEqual(events[4].payload.progress, {message: 'first renewal λ'});
-  assert.deepEqual(events[5].payload.progress, {message: 'second renewal λ'});
+  assert.deepEqual(events[4].payload.progress, {details: {message: 'first renewal λ'}});
+  assert.deepEqual(events[5].payload.progress, {details: {message: 'second renewal λ'}});
   assert.deepEqual(events[6].typed_decoded.result, fixture.typed_value);
   assert.deepEqual(events[7].typed_decoded.output, fixture.typed_value);
   assert(instant(events[6].timestamp) < instant(events[3].timestamp) + BigInt(spec.start_to_close_timeout) * 1_000_000_000n);

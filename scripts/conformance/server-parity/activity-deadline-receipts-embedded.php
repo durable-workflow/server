@@ -129,7 +129,7 @@ function activityDeadlineReceiptsEmbeddedObservation(array $fixture, array $opti
             'activity_invocations' => ParityReceiptState::$activityInvocations,
             'definition_sha256' => hash_file('sha256', __FILE__),
         ], $admittedAt, $snapshot, $budget, [
-            'heartbeat' => static fn (array $progress): array => $activityBridge->heartbeat($first['activity_attempt_id'], $progress),
+            'heartbeat' => static fn (array $progress): array => $activityBridge->heartbeat($first['activity_attempt_id'], ['details' => $progress]),
             'status' => static fn (): array => $activityBridge->status($first['activity_attempt_id']),
             'complete' => static fn (): array => $complete($first['activity_attempt_id'], $fixture['input']),
             'finish' => static function () use ($workflowBridge, $id, $runId, $fixture): array {
