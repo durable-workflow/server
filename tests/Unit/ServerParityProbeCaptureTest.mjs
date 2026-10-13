@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync, readdirSync, rmSync} from 'node:fs';
+import {mkdtempSync, readFileSync, readdirSync, rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {captureProbe} from '../../scripts/conformance/server-parity/probe-capture.mjs';
@@ -26,6 +26,20 @@ test('complete valid JSON above the former 4 MiB pipe limit remains readable', (
   assert.equal(observation.tail, '終わり');
   assert.equal(result.stderr, '');
 }));
+
+test('an explicitly preserved probe keeps original numeric bytes until its caller removes them', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'parity-original-test-'));
+  try {
+    const preserved = join(directory, 'original.stdout');
+    const raw = '{"result":9223372036854775807,"optional":null,"unicode":"λ"}\n';
+    const result = captureProbe(process.execPath, ['-e', `process.stdout.write(${JSON.stringify(raw)})`],
+      {directory, preserveStdout: preserved});
+    assert.equal(result.status, 0);
+    assert.equal(result.stdoutPath, preserved);
+    assert.equal(readFileSync(preserved, 'utf8'), raw);
+    assert.deepEqual(readdirSync(directory), ['original.stdout']);
+  } finally { rmSync(directory, {recursive: true}); }
+});
 
 test('a nonzero probe exit preserves both streams and refuses success', () => captured(run => {
   const result = run(process.execPath, ['-e', 'process.stdout.write("partial");process.stderr.write("original failure");process.exitCode=7;']);
