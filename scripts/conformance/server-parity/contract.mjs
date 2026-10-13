@@ -24,6 +24,7 @@ import {checkSdkUpdateDirection, checkSdkUpdateDirectionPackages} from './sdk-up
 import {checkNamespaceSignalPair} from './sdk-namespace-signal-contract.mjs';
 import {checkSelectedRunSignalPair} from './sdk-selected-run-signal-contract.mjs';
 import {checkCorrectedMarkers, checkCorrectedMarkerPackages} from './corrected-marker-contract.mjs';
+import {checkCorrectedRange, checkCorrectedRangePackages} from './corrected-range-contract.mjs';
 
 export function instantNanoseconds(value) {
   const shape = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.(\d{1,9}))?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
@@ -38,6 +39,7 @@ export function instantNanoseconds(value) {
 // Only this fixture's declared semantics are projected. The full observation
 // remains in the recording, including implementation metadata and timestamps.
 export function checkObservation(fixture, observation, workflowId) {
+  if (fixture.corrected_range) return checkCorrectedRange(fixture, observation, workflowId, instantNanoseconds);
   if (fixture.corrected_markers) return checkCorrectedMarkers(fixture, observation, workflowId);
   if (fixture.selected_run_signal_pair) return checkSelectedRunSignalPair(fixture, observation, workflowId, checkObservation);
   if (fixture.namespace_signal_pair) return checkNamespaceSignalPair(fixture, observation, workflowId, checkObservation);
@@ -685,6 +687,7 @@ export function compareRecords(records, expectedFixtureHashes, expectedFixtures,
       checkRangeArtifacts(item.fixture, record.artifacts);
       checkRangePackages(item.fixture, item.observation, record.artifacts);
       checkCorrectedMarkerPackages(item.fixture, item.observation, record.artifacts);
+      checkCorrectedRangePackages(item.fixture, item.observation, record.artifacts);
       checkSdkDirectionPackages(item.fixture, item.observation, record.artifacts);
       checkSdkChildDirectionPackages(item.fixture, item.observation, record.artifacts);
       checkSdkTimerAuthorPackages(item.fixture, item.observation, record.artifacts);

@@ -72,5 +72,14 @@
     "source_commit": "04790ae42e8da0a83f65026f096572b547b7baa8",
     "archive_sha256": "0f69fdb6e6103ab57ce6bc0f802504463b1498745e874a32ed9de58dabeb40be"
   },
+  "historical_php_range_producer": {
+    "version": "2.2.7",
+    "source_commit": "7c40c7755789790ce4c0ce706a8e3a6462742956",
+    "composer_lock_sha256": "af600c49741d714aea69e2830309db8065461c9fd6b0e499c68699f74641faab",
+    "loaded_sources": {
+      "DurableWorkflow\\Worker": "38722c5de194037ae49f610f68436ff11e82de2c5ca0d2c7ac2f66fce1972983",
+      "DurableWorkflow\\Worker\\WorkflowContext": "ba8dbc9ac535490109862270e1f734dfdd83fda065ae1aeada3799b156f99d2f"
+    }
+  },
   "performance_status": "not_measured"
 }

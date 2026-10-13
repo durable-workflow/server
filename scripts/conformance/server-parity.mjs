@@ -15,6 +15,7 @@ import {checkSdkTimerAuthorArtifacts, checkSdkTimerAuthorPackages} from './serve
 import {checkSdkSignalDirectionArtifacts, checkSdkSignalDirectionPackages} from './server-parity/sdk-signal-direction-contract.mjs';
 import {captureProbe} from './server-parity/probe-capture.mjs';
 import {checkCorrectedMarkerArtifacts, checkCorrectedMarkerPackages} from './server-parity/corrected-marker-contract.mjs';
+import {checkCorrectedRangeArtifacts, checkCorrectedRangePackages} from './server-parity/corrected-range-contract.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const {values, positionals} = parseArgs({allowPositionals: true, options: {
@@ -83,6 +84,7 @@ try {
       checkPublishedPatchArtifacts(fixture, record.artifacts);
       checkRangeArtifacts(fixture, record.artifacts);
       checkCorrectedMarkerArtifacts(fixture, record.artifacts);
+      checkCorrectedRangeArtifacts(fixture, record.artifacts);
       checkSdkDirectionArtifacts(fixture, record.artifacts);
       checkSdkChildDirectionArtifacts(fixture, record.artifacts);
       checkSdkTimerAuthorArtifacts(fixture, record.artifacts);
@@ -110,6 +112,7 @@ try {
         else checkPatchPackageObservation(fixture, item.observation, record.artifacts);
         checkRangePackages(fixture, item.observation, record.artifacts);
         checkCorrectedMarkerPackages(fixture, item.observation, record.artifacts);
+        checkCorrectedRangePackages(fixture, item.observation, record.artifacts);
         checkSdkDirectionPackages(fixture, item.observation, record.artifacts);
         checkSdkChildDirectionPackages(fixture, item.observation, record.artifacts);
         checkSdkTimerAuthorPackages(fixture, item.observation, record.artifacts);

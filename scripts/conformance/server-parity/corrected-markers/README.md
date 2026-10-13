@@ -33,6 +33,17 @@ repair replays the original three-second timer winner and awaits its retained
 activity handle. This source has an MSRV build check; actual shared admission,
 refusal, original-task repair and runtime observations remain required.
 
+`rust-range-completed.json` and `rust-range-timer-pending.json` add that Rust
+direction to the original PHP 2.2.7 recipes. They preserve the original fixture
+definitions, typed values and whole 35-second scenario budget. A normal PHP
+2.3.9 observer performs the one explicit repair; separate Rust processes reject
+the incompatible range, restore the original bounds and finish the original
+run. Two separately queued real neighboring runs must retain their original
+histories and tasks. The embedded adapter executes the original PHP definitions
+and declares the Rust author direction inapplicable; it still checks the same
+durable refusal and repair boundary. Actual recordings remain required before
+either fixture is qualified.
+
 The five positive HTTP and embedded recordings are documented on the draft PR.
 The separate published embedded policy-refusal original remains failed; its
 coordinated package correction is Workflow #776. Current Python clock consumers,

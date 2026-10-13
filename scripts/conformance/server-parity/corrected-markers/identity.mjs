@@ -31,6 +31,15 @@ for (const [path, expected] of Object.entries(artifacts.published_sdk_artifacts.
   assert.equal(sha(resolve(directory, 'php/vendor/durable-workflow/sdk', path)), expected);
 }
 const report = JSON.parse(readFileSync(resolve(directory, 'python250-install-report.json')));
+const rangeInstalled = JSON.parse(readFileSync(resolve(directory, 'php-range/vendor/composer/installed.json')));
+const range = rangeInstalled.packages.find(package_ => package_.name === 'durable-workflow/sdk');
+assert.equal(range.version, artifacts.historical_php_range_producer.version);
+assert.equal(range.source.reference, artifacts.historical_php_range_producer.source_commit);
+assert.equal(sha(resolve(directory, 'php-range/composer.lock')), artifacts.historical_php_range_producer.composer_lock_sha256);
+for (const [className, expected] of Object.entries(artifacts.historical_php_range_producer.loaded_sources)) {
+  const path = 'src/'+className.replace(/^DurableWorkflow\\/, '').replaceAll('\\', '/')+'.php';
+  assert.equal(sha(resolve(directory, 'php-range/vendor/durable-workflow/sdk', path)), expected);
+}
 const python = report.install.find(item => item.metadata.name === 'durable-workflow');
 assert.equal(python.metadata.version, artifacts.historical_python_producer.version);
 assert.equal(python.download_info.archive_info.hashes.sha256, artifacts.historical_python_producer.archive_sha256);
@@ -38,4 +47,5 @@ assert.equal(python.is_direct, false);
 writeFileSync(resolve(directory, 'identity.json'), JSON.stringify({outcome: 'pass',
   php: artifacts.published_sdk_artifacts.php, rust: artifacts.published_sdk_artifacts.rust,
   historical_python: artifacts.historical_python_producer,
+  historical_php_range: artifacts.historical_php_range_producer,
   binary_sha256: sha(resolve(directory, 'bin/rust-worker'))}, null, 2)+'\n');

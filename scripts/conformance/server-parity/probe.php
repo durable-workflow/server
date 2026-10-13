@@ -859,6 +859,13 @@ try {
         } else {
             throw new InvalidArgumentException('Mode must be http or embedded.');
         }
+    } elseif (isset($fixture['corrected_range'])) {
+        require __DIR__.'/corrected-range-probe.php';
+        $observation = match ($mode) {
+            'http' => correctedRangeHttpObservation($fixture, $options),
+            'embedded' => correctedRangeEmbeddedObservation($fixture, $options),
+            default => throw new InvalidArgumentException('Mode must be http or embedded.'),
+        };
     } elseif (isset($fixture['corrected_markers'])) {
         require __DIR__.'/corrected-marker-probe.php';
         $observation = match ($mode) {
@@ -922,7 +929,7 @@ try {
     if (isset($fixture['range_repair'])) {
         $observation['sdk_composer_lock_sha256'] = hash_file('sha256', dirname($sdkAutoload, 2).'/composer.lock');
     }
-    if (isset($fixture['corrected_markers'])) {
+    if (isset($fixture['corrected_markers']) || isset($fixture['corrected_range'])) {
         $observation['sdk_composer_lock_sha256'] = hash_file('sha256', dirname($sdkAutoload, 2).'/composer.lock');
         $observation['rust_consumer_cargo_lock_sha256'] = hash_file('sha256', getenv('DW_PARITY_CORRECTED_RUST_LOCK') ?: '/sdk-adapters/Cargo.lock');
         $observation['sdk_loaded_sources'] = [];
