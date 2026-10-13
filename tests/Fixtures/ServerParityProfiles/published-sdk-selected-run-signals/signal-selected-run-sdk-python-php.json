@@ -17,7 +17,7 @@
   },
   "signal_value": {
     "message": "left scope signal λ",
-    "count": 9007199254740992,
+    "count": 9007199254740993,
     "ready": true,
     "optional": null
   },
@@ -101,7 +101,7 @@
     "foreign_signal_expected_status": 404,
     "peer_signal_value": {
       "message": "right scope signal λ",
-      "count": 9007199254740996,
+      "count": 9007199254740995,
       "ready": false,
       "optional": null
     },
