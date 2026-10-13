@@ -198,7 +198,7 @@ export function checkCorrectedRange(fixture, observation, workflowId, instant) {
   const wire = requests(observation);
   const deliveries = wire.filter(row => row.method === 'POST' && row.path.endsWith('/workflow-tasks/poll') && row.response?.task);
   const expectedDeliveries = spec.pending_activity
-    ? [['original', 2], ['workflow:excluding', spec.blocked_event_count], ['workflow:repaired-wait', spec.blocked_event_count+1], ['workflow:restored', fixture.expected_events.length-1]]
+    ? [['original:original', 2], ['workflow:excluding', spec.blocked_event_count], ['workflow:repaired-wait', spec.blocked_event_count+1], ['workflow:restored', fixture.expected_events.length-1]]
     : [['original', 2], ['workflow:excluding', spec.blocked_event_count], ['workflow:restored', fixture.expected_events.length-1]];
   assert.equal(deliveries.length, expectedDeliveries.length, 'one actual cold delivery per original author/replay boundary');
   for (const [index, [role, count]] of expectedDeliveries.entries()) {
