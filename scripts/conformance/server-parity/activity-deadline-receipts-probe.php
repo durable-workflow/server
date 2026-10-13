@@ -14,6 +14,9 @@ function activityDeadlineReceiptsHttpObservation(array $fixture, array $options)
     }
     $name = preg_replace('/[^A-Za-z0-9_.-]/', '_', $options['workflow-id']);
     $journal = $directory.'/'.$name.'-http.jsonl';
+    if (file_exists($journal)) {
+        throw new RuntimeException('Receipt transport requires a fresh journal before admission');
+    }
     $proxy = proc_open(['node', __DIR__.'/published-sdk-patch/observe-http.mjs', $options['url'], $journal],
         [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $directory.'/'.$name.'-observer.stderr', 'w']], $pipes);
     if (! is_resource($proxy)) {
