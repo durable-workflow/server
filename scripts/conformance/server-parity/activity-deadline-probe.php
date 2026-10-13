@@ -73,6 +73,8 @@ function activityDeadlineHttpObservation(array $fixture, array $options): array
                     $activity['activity_attempt_id'], $activity['lease_owner']);
             }
             $step['before_expiry'] = $snapshot();
+            file_put_contents($directory.'/'.$name.'-'.$field.'-before-expiry.json', json_encode($step,
+                JSON_THROW_ON_ERROR|JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE)."\n");
             // Actual wall time crosses the original authored boundary; no SQL,
             // history or server clock is changed and no new deadline is granted.
             usleep(($spec['timeout_seconds'] * 1000000) + 250000);
@@ -89,6 +91,8 @@ function activityDeadlineHttpObservation(array $fixture, array $options): array
                         $activity['task_id'], $activity['activity_attempt_id'], $activity['lease_owner'], ['message'=>'late deadline progress'])),
                 ];
             }
+            file_put_contents($directory.'/'.$name.'-'.$field.'-late-outcomes.json', json_encode($step,
+                JSON_THROW_ON_ERROR|JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE)."\n");
             $parent = null;
             do {
                 $checkBudget();
