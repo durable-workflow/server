@@ -80,6 +80,10 @@ export function checkCorrectedRange(fixture, observation, workflowId, instant) {
   assert.deepEqual(observation.typed_output, fixture.typed_value);
   assert.deepEqual(observation.events.map(event => event.event_type), fixture.expected_events);
   assert.deepEqual(observation.events.map(event => event.sequence), observation.events.map((_, index) => index + 1));
+  for (const event of observation.events) {
+    assert.match(event.timestamp, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/);
+    instant(event.timestamp);
+  }
   assert.equal(observation.corrected_range.overall_budget_seconds, 35);
   if (observation.mode === 'embedded') {
     assert.equal(observation.corrected_range.applicable, false);
@@ -102,7 +106,11 @@ export function checkCorrectedRange(fixture, observation, workflowId, instant) {
     assert.deepEqual(after.events, before.events, 'neighbor history survives original-task repair');
     assert.deepEqual(after.typed_input, before.typed_input);
     for (const field of ['execution_deadline_at', 'run_deadline_at']) assert.equal(after.execution[field], before.execution[field]);
-    assert.deepEqual(after.debug.pending_workflow_tasks, before.debug.pending_workflow_tasks,
+    const taskIdentity = row => Object.fromEntries(['task_id', 'task_type', 'status', 'queue',
+      'attempt_count', 'repair_count', 'lease_owner', 'lease_expires_at', 'replay_blocked']
+      .filter(key => Object.hasOwn(row, key)).map(key => [key, row[key]]));
+    assert.equal(before.debug.pending_workflow_tasks.length, 1);
+    assert.deepEqual(after.debug.pending_workflow_tasks.map(taskIdentity), before.debug.pending_workflow_tasks.map(taskIdentity),
       'neighbor original task identity, attempts and repair count survive');
   }
   const order = spec.pending_activity ? ['original', 'incompatible', 'repair', 'repaired-wait', 'activity', 'final']
@@ -188,6 +196,26 @@ export function checkCorrectedRange(fixture, observation, workflowId, instant) {
   assert.deepEqual(phases.incompatible.debug.recent_failures, []);
   assert.deepEqual(phases.incompatible.debug.pending_workflow_tasks, []);
   const wire = requests(observation);
+  const deliveries = wire.filter(row => row.method === 'POST' && row.path.endsWith('/workflow-tasks/poll') && row.response?.task);
+  const expectedDeliveries = spec.pending_activity
+    ? [['original', 2], ['workflow:excluding', spec.blocked_event_count], ['workflow:repaired-wait', spec.blocked_event_count+1], ['workflow:restored', fixture.expected_events.length-1]]
+    : [['original', 2], ['workflow:excluding', spec.blocked_event_count], ['workflow:restored', fixture.expected_events.length-1]];
+  assert.equal(deliveries.length, expectedDeliveries.length, 'one actual cold delivery per original author/replay boundary');
+  for (const [index, [role, count]] of expectedDeliveries.entries()) {
+    const delivery = deliveries[index], task = delivery.response.task;
+    assert.equal(delivery.status, 200);
+    assert.equal(delivery.request.worker_id, workflowId+':'+role);
+    assert.equal(task.workflow_id, workflowId);
+    assert.equal(task.run_id, observation.run_id);
+    assert.equal(task.sticky_replay_mode, 'cold_replay');
+    assert.equal(task.next_history_page_token, null);
+    assert.equal(task.total_history_events, count);
+    assert.equal(task.history_events.length, count);
+    assert.deepEqual(task.history_events.map(row => ({sequence: Number(row.sequence), event_type: row.event_type,
+      timestamp: row.recorded_at, payload: row.payload})), observation.events.slice(0, count)
+      .map(({sequence, event_type, timestamp, payload}) => ({sequence, event_type, timestamp, payload})),
+      'cold public delivery retains complete prefix bytes and original microclocks');
+  }
   const failures = wire.filter(row => row.method === 'POST' && row.path.endsWith('/fail')
     && row.request?.failure?.type === 'RustWorkflowTaskFailure');
   assert.equal(failures.length, 1);
