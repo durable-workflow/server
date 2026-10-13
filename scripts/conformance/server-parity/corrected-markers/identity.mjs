@@ -3,7 +3,7 @@ import {createHash} from 'node:crypto';
 import {readFileSync, writeFileSync, readdirSync} from 'node:fs';
 import {resolve} from 'node:path';
 
-const [directory, profilePath] = process.argv.slice(2);
+const [directory, profilePath, registryDirectory] = process.argv.slice(2);
 const artifacts = JSON.parse(readFileSync(profilePath));
 const sha = path => createHash('sha256').update(readFileSync(path)).digest('hex');
 const lockPath = resolve(directory, 'bin/Cargo.lock');
@@ -16,7 +16,7 @@ assert.equal(field('source'), 'registry+https://github.com/rust-lang/crates.io-i
 assert.equal(field('version'), artifacts.sdk_rust);
 assert.equal(field('checksum'), artifacts.published_sdk_artifacts.rust.archive_sha256);
 assert.match(readFileSync(resolve(directory, 'rust-build.txt'), 'utf8'), /Finished `dev` profile/);
-const registry = resolve(directory, 'cargo/registry/src');
+const registry = registryDirectory ?? resolve(directory, 'cargo/registry/src');
 const sdk = readdirSync(registry).map(name => resolve(registry, name, `durable-workflow-${artifacts.sdk_rust}`))
   .find(path => { try { readFileSync(resolve(path, '.cargo_vcs_info.json')); return true; } catch { return false; } });
 assert(sdk, 'actual normally installed Rust source');

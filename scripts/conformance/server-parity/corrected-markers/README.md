@@ -8,6 +8,10 @@ unchanged. The machine-owned manifest is
 historical Python producer and the locked Rust public worker. Rust builds use
 one CPU, 1536 MiB RAM, no swap, debug=0 and no incremental artifacts. The build
 cache and target are retired after copying the runnable adapter and lock.
+Hosted jobs can reuse their existing Rust 1.86 cache by setting the relative
+`DW_PARITY_CORRECTED_CARGO` and `DW_PARITY_CORRECTED_TARGET` paths. These external
+job caches remain owned by the caller and are excluded from the adapter bundle.
+Registry source identity is still checked before the artifact is produced.
 
 After installing the adapters, `corrected-marker-http-profile.sh TARGET URL`
 runs the six marker/policy cases, both original-range repairs and both Python
@@ -52,6 +56,9 @@ second argument. It retains the completed SQLite database before retiring the
 runtime. Separate SQLite recordings at `a4c43d26c` pass all eight applicable
 marker/policy/range cases, with 176 actual-record controls and independent SQL
 readback. All 931 installed runtime/resource files match the published tag.
+The same manifest option applies to adapter installation and HTTP recording;
+all three modes can declare one exact cohort without editing the earlier
+manifest.
 Embedded actors execute PHP
 backend handlers through real independent `queue:work --once` database workers;
 they do not claim a Rust SDK consumer or sustained queue-worker drain test.
