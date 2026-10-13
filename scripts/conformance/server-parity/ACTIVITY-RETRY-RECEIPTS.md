@@ -1,11 +1,16 @@
 # Activity retry and terminal-response controls
 
-The two pending fixtures `activity-deadline-receipts.json` and
+The pending fixtures `activity-deadline-receipts.json` and
 `activity-deadline-active-receipts.json` exercise a real first-attempt timeout,
 the original retry backoff, a distinct successful second attempt and one
 workflow completion. The active-parent variant repeats the committed activity
 submission before and after expiry while preserving the seven-event prefix.
 Both retain the full retry list, typed values and original observer budget.
+
+`activity-global-deadline-retry.json` holds the second attempt beyond the
+original schedule-to-close deadline while its start-to-close deadline and a
+third attempt remain. It requires one schedule-to-close timeout, refused late
+outcomes and a real parent timeout delivery. It does not complete that parent.
 
 HTTP uses a normally installed SDK Client's worker-protocol methods. Embedded
 uses a real queue author followed by public activity/workflow worker bridges.
@@ -27,6 +32,7 @@ node scripts/conformance/server-parity.mjs record \
   --artifacts tests/Fixtures/ServerParityProfiles/corrected-markers/artifacts-workflow-2.5.16.json \
   --fixture tests/Fixtures/ServerParityPending/activity-deadline-active-receipts.json \
   --fixture tests/Fixtures/ServerParityPending/activity-deadline-receipts.json \
+  --fixture tests/Fixtures/ServerParityPending/activity-global-deadline-retry.json \
   --output /evidence/php.json
 ```
 
@@ -43,9 +49,15 @@ fixture. The readers use the original full record and reject corrupted copies
 without rewriting the original. Independent stopped, read-only database
 inspection verifies the absolute original global deadline, attempts, task
 repairs and unchanged database bytes.
+Use `activity-global-retry-readers.mjs RECORD` for the global deadline fixture.
+Include any nonempty SQLite WAL in that inspection. Reading an immutable main
+database file alone would omit uncheckpointed committed data.
 
 Published PHP/embedded SQLite comparison is recorded in
 [the owning outcome](https://github.com/durable-workflow/server/issues/325#issuecomment-6156509796).
-Native, other databases, an actual global timeout before retry exhaustion and
-live heartbeat/lease renewal remain pending. These fixtures do not enlarge the
+The separate global deadline comparison also passes on published PHP and
+embedded SQLite: seven events, two of three attempts and a retained parent
+delivery, with actual timeout between the original global and second-attempt
+close deadlines. Native, other databases and live heartbeat/lease renewal
+remain pending. These fixtures do not enlarge the
 default corpus or establish release or migration readiness.
