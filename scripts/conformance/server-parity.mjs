@@ -17,6 +17,7 @@ import {captureProbe} from './server-parity/probe-capture.mjs';
 import {checkCorrectedMarkerArtifacts, checkCorrectedMarkerPackages} from './server-parity/corrected-marker-contract.mjs';
 import {checkCorrectedRangeArtifacts, checkCorrectedRangePackages} from './server-parity/corrected-range-contract.mjs';
 import {checkActivityDeadlinePackages} from './server-parity/activity-deadline-contract.mjs';
+import {checkActivityDeadlineReceiptPackages} from './server-parity/activity-deadline-receipts-contract.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const {values, positionals} = parseArgs({allowPositionals: true, options: {
@@ -115,6 +116,7 @@ try {
         checkCorrectedMarkerPackages(fixture, item.observation, record.artifacts);
         checkCorrectedRangePackages(fixture, item.observation, record.artifacts);
         checkActivityDeadlinePackages(fixture, item.observation, record.artifacts);
+        checkActivityDeadlineReceiptPackages(fixture, item.observation, record.artifacts);
         checkSdkDirectionPackages(fixture, item.observation, record.artifacts);
         checkSdkChildDirectionPackages(fixture, item.observation, record.artifacts);
         checkSdkTimerAuthorPackages(fixture, item.observation, record.artifacts);

@@ -27,6 +27,7 @@ import {checkCorrectedMarkers, checkCorrectedMarkerPackages} from './corrected-m
 import {checkCorrectedRange, checkCorrectedRangePackages} from './corrected-range-contract.mjs';
 import {checkCorrectedClock} from './corrected-clock-contract.mjs';
 import {checkActivityDeadlines,checkActivityDeadlinePackages} from './activity-deadline-contract.mjs';
+import {checkActivityDeadlineReceipts, checkActivityDeadlineReceiptPackages} from './activity-deadline-receipts-contract.mjs';
 
 export function instantNanoseconds(value) {
   const shape = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.(\d{1,9}))?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
@@ -41,6 +42,7 @@ export function instantNanoseconds(value) {
 // Only this fixture's declared semantics are projected. The full observation
 // remains in the recording, including implementation metadata and timestamps.
 export function checkObservation(fixture, observation, workflowId) {
+  if (fixture.activity_deadline_receipts) return checkActivityDeadlineReceipts(fixture, observation, workflowId, instantNanoseconds);
   if (fixture.activity_deadline_authority) return checkActivityDeadlines(fixture, observation, workflowId);
   if (fixture.corrected_range) return checkCorrectedRange(fixture, observation, workflowId, instantNanoseconds);
   if (fixture.corrected_markers?.python_clock) return checkCorrectedClock(fixture, observation, workflowId);
@@ -693,6 +695,7 @@ export function compareRecords(records, expectedFixtureHashes, expectedFixtures,
       checkCorrectedMarkerPackages(item.fixture, item.observation, record.artifacts);
       checkCorrectedRangePackages(item.fixture, item.observation, record.artifacts);
       checkActivityDeadlinePackages(item.fixture, item.observation, record.artifacts);
+      checkActivityDeadlineReceiptPackages(item.fixture, item.observation, record.artifacts);
       checkSdkDirectionPackages(item.fixture, item.observation, record.artifacts);
       checkSdkChildDirectionPackages(item.fixture, item.observation, record.artifacts);
       checkSdkTimerAuthorPackages(item.fixture, item.observation, record.artifacts);

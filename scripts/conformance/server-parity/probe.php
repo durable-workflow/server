@@ -859,6 +859,12 @@ try {
         } else {
             throw new InvalidArgumentException('Mode must be http or embedded.');
         }
+    } elseif (isset($fixture['activity_deadline_receipts'])) {
+        require __DIR__.'/activity-deadline-receipts-probe.php';
+        if ($mode !== 'http') {
+            throw new RuntimeException('Embedded deadline receipt counterpart is not implemented');
+        }
+        $observation = activityDeadlineReceiptsHttpObservation($fixture, $options);
     } elseif (isset($fixture['activity_deadline_authority'])) {
         require __DIR__.'/activity-deadline-probe.php';
         if ($mode === 'embedded') {
@@ -936,6 +942,13 @@ try {
     }
     $observation['sdk_php'] = ltrim(InstalledVersions::getPrettyVersion('durable-workflow/sdk'), 'v');
     $observation['sdk_php_source'] = InstalledVersions::getReference('durable-workflow/sdk');
+    if (isset($fixture['activity_deadline_receipts'])) {
+        $observation['sdk_composer_lock_sha256'] = hash_file('sha256', dirname($sdkAutoload, 2).'/composer.lock');
+        $observation['sdk_loaded_sources'] = [];
+        foreach ([Client::class => 'src/Client.php', Worker::class => 'src/Worker.php', WorkflowContext::class => 'src/Worker/WorkflowContext.php'] as $class => $path) {
+            $observation['sdk_loaded_sources'][$path] = hash_file('sha256', (new ReflectionClass($class))->getFileName());
+        }
+    }
     if (isset($fixture['range_repair'])) {
         $observation['sdk_composer_lock_sha256'] = hash_file('sha256', dirname($sdkAutoload, 2).'/composer.lock');
     }
