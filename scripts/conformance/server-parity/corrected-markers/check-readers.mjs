@@ -56,6 +56,13 @@ if (original.mode === 'embedded') {
     'changed role dependency lock': value => { value.corrected_markers.phases.activity.embedded_composer_lock_sha256 = '0'.repeat(64); },
   });
 }
+if (original.mode === 'http' && fixture.corrected_markers.retire_killed_producer) {
+  Object.assign(mutations, {
+    'missing killed producer retirement': value => { delete value.corrected_markers.phases.original.actor.registration_retirement; },
+    'retired wrong worker': value => { value.corrected_markers.phases.original.actor.registration_retirement.worker_id = 'different'; },
+    'missing actual retirement request': value => { value.corrected_markers.requests = value.corrected_markers.requests.filter(item => item.method !== 'DELETE'); },
+  });
+}
 for (const [name, mutate] of Object.entries(mutations)) {
   const corrupted = structuredClone(original);
   mutate(corrupted);

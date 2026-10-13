@@ -35,8 +35,11 @@ The HTTP recorder executes a producer, a separate activity process and a cold
 Rust successor. Each phase has an original 30-second observation timeout inside
 a 90-second scenario budget; durable execution/run bounds are 1200 seconds.
 The genuine Python case kills the real author after the committed activity
-checkpoint. Its forwarded cancelled polls are explicit evidence, never outcome
-receipts. Full response bytes, deliveries, histories, clocks and exact typed
+checkpoint, then retires that registration through the published API before
+the activity resumes. This fences an already forwarded poll belonging to the
+dead author. Its cancelled polls are explicit evidence, never outcome receipts.
+The reader requires the actual retirement receipt and still refuses an extra
+repair event. Full response bytes, deliveries, histories, clocks and exact typed
 values remain in recorder sidecars. `check-readers.mjs` rejects mutated copies
 of actual observations, including missing bounds, rewritten prefixes, truncated
 retry lists and false completion.

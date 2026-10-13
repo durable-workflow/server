@@ -145,6 +145,14 @@ export function checkCorrectedMarkers(fixture, observation, workflowId) {
   assert.deepEqual(observation.typed_output, output, 'exact public decoded result types');
   const order = spec.replay_refusal?.phase_order ?? ['original', 'activity', 'replacement'];
   assert.deepEqual(Object.keys(phases), order);
+  if (observation.mode === 'http' && spec.retire_killed_producer) {
+    assert.equal(spec.original_shutdown, 'SIGKILL');
+    assert.equal(phases.original.actor.author_exit_code, -9);
+    const retired = phases.original.actor.registration_retirement;
+    assert.equal(retired.worker_id, workflowId + ':workflow:original');
+    assert.equal(retired.outcome, 'deregistered');
+    assert(Number.isSafeInteger(retired.recovered_workflow_task_count));
+  }
   assert.equal(new Set(Object.values(phases).map(phase => phase.actor.pid)).size, order.length, 'independent public worker processes');
   for (const [name, phase] of Object.entries(phases)) {
     assert(Number.isSafeInteger(phase.actor.pid) && phase.actor.pid > 0);
@@ -299,6 +307,15 @@ export function checkCorrectedMarkers(fixture, observation, workflowId) {
     assert.equal(activityOutcomes[0].status, 200);
     assert.equal(activityOutcomes[0].response.recorded, true);
     const deliveries = requests.filter(item => item.path === '/api/worker/workflow-tasks/poll' && item.response?.task);
+    if (spec.retire_killed_producer) {
+      const retired = requests.filter(item => item.method === 'DELETE' && item.path ===
+        '/api/worker/registrations/' + encodeURIComponent(workflowId + ':workflow:original'));
+      assert.equal(retired.length, 1);
+      assert.equal(retired[0].status, 200);
+      assert.deepEqual(retired[0].response, phases.original.actor.registration_retirement);
+      assert(requests.indexOf(retired[0]) < requests.indexOf(activityOutcomes[0]),
+        'Retire killed producer before original activity completion can wake its pending poll');
+    }
     assert.equal(deliveries.length, spec.replay_refusal ? 3 : 2, 'all actual public workflow deliveries');
     if (spec.replay_refusal) {
       const failures = requests.filter(item => item.method === 'POST' && /^\/api\/worker\/workflow-tasks\/[^/]+\/fail$/.test(item.path));

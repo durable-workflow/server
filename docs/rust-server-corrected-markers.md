@@ -119,9 +119,12 @@ Python 2.5.13 has an explicitly agreed
 PHP's per-command clock remains separate. The new Python service cases retain
 every physical marker/activity microclock while checking that public `now()`
 and UUIDv7 values use the same original start anchor across two cold processes.
-The historical clock-case producer receives explicit public registration
-retirement after its real SIGKILL and before activities resume. This is distinct
-from the unchanged unfenced-kill marker case. Embedded UUID APIs record side
+The historical clock and genuine differing-bound producers receive explicit
+public registration retirement after their real SIGKILL and before activities
+resume. The first hosted unfenced marker case failed because its forwarded
+poll claimed the later parent, requiring lease recovery and an extra repair
+event. The revised handoff retains the original deadlines and strict history;
+it does not qualify unfenced process-loss recovery. Embedded UUID APIs record side
 effects and need their own declared mode-specific qualification.
 
 The [genuine Python/Rust producer receipt](https://github.com/durable-workflow/sdk-python/issues/103#issuecomment-6138432726)

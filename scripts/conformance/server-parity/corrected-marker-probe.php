@@ -119,9 +119,9 @@ function correctedMarkerHttpObservation(array $fixture, array $options): array
                 json_encode($fixture['input'], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE));
             $actorResult = correctedMarkerPhase($command, $directory, $name, $phase,
                 min($deadline, microtime(true) + $spec['phase_budget_seconds']));
-            if ($phase === 'original' && ($spec['python_clock']['retire_killed_producer'] ?? false)) {
+            if ($phase === 'original' && ($spec['retire_killed_producer'] ?? $spec['python_clock']['retire_killed_producer'] ?? false)) {
                 if (($actorResult['author_exit_code'] ?? null) !== -9) {
-                    throw new RuntimeException('Clock producer retirement requires its actual SIGKILL receipt');
+                    throw new RuntimeException('Producer retirement requires its actual SIGKILL receipt');
                 }
                 $actorResult['registration_retirement'] = $client->deregisterWorkerRegistration($options['workflow-id'].':workflow:original');
             }
