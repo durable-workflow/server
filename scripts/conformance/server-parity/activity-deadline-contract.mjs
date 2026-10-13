@@ -34,6 +34,12 @@ export function checkActivityDeadlines(fixture, observation, workflowId) {
       backoff_seconds:spec.retry_backoff_seconds,non_retryable_error_types:[],
       start_to_close_timeout:null,schedule_to_start_timeout:null,schedule_to_close_timeout:null,heartbeat_timeout:null};
     policy[field] = spec.timeout_seconds;
+    assert.equal(step.command.type,'schedule_activity');
+    assert.equal(step.command.activity_type,'parity.v1.deadline_activity');
+    assert.equal(step.command.queue,`${id}-activity`);
+    assert.equal(step.command[field],spec.timeout_seconds);
+    assert.deepEqual(step.command.retry_policy,{max_attempts:spec.terminal_max_attempts,
+      backoff_seconds:spec.retry_backoff_seconds,non_retryable_error_types:[]});
     for (const snapshot of [step.scheduled,step.before_expiry,step.after_expiry]) {
       assert.equal(snapshot.workflow_id, id);
       assert.equal(snapshot.run_id, step.run_id);
@@ -54,6 +60,7 @@ export function checkActivityDeadlines(fixture, observation, workflowId) {
       if(index)assert(event.timestamp>=events[index-1].timestamp);
     }
     const scheduled = events[2];
+    assert.deepEqual(step.command.arguments,scheduled.payload.activity.arguments,'Original authored argument bytes');
     assert.deepEqual(scheduled.payload.activity.retry_policy,policy,'Entire original authored snapshot');
     assert.deepEqual(scheduled.typed_decoded.activity_arguments,{type:'list',value:[fixture.typed_value]});
     const terminal = events.at(-1).payload;
