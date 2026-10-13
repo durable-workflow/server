@@ -50,6 +50,14 @@ genuine duplicate history.
 
 ## Clock, retry and repair evidence
 
+The published Rust worker reports retry-policy replay refusal as
+`RustWorkflowTaskFailure`, with the exact reason and workflow sequence retained
+in its message. It does not send structured `reason` or `sequence` fields.
+Validate that actual format and the canonical backend replay-blocked state,
+unchanged history, selected-run repair and original task/lease relationships.
+Keep the first reader's structured-field assumption failure separate from any
+fresh confirming run; no SDK or Server correction is implied by that mismatch.
+
 Record whole public worker deliveries and raw histories before and after each
 boundary. Clock/UUID APIs must derive from the original durable events through
 normal installed workers; marker-prefix mock reads alone do not qualify full

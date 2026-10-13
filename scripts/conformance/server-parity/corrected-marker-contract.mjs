@@ -227,8 +227,11 @@ export function checkCorrectedMarkers(fixture, observation, workflowId) {
       assert.equal(phases.incompatible.debug_status, 200);
       assert.equal(phases.incompatible.debug.execution.liveness_state, 'workflow_replay_blocked');
       assert.equal(phases.incompatible.debug.latest_workflow_task_failure.replay_blocked, true);
-      assert.equal(phases.incompatible.debug.latest_workflow_task_failure.reason, spec.replay_refusal.failure_reason);
-      assert.equal(phases.incompatible.debug.latest_workflow_task_failure.sequence, spec.replay_refusal.failure_sequence);
+      const diagnostic = phases.incompatible.debug.latest_workflow_task_failure;
+      assert.equal(diagnostic.type, 'RustWorkflowTaskFailure');
+      assert.equal(diagnostic.message, `non-deterministic workflow replay (${spec.replay_refusal.failure_reason}) at sequence Some(${spec.replay_refusal.failure_sequence}): recorded activity retry policy differs from the current workflow command`);
+      assert.equal(Object.hasOwn(diagnostic, 'reason'), false, 'published Rust diagnostic has no structured reason');
+      assert.equal(Object.hasOwn(diagnostic, 'sequence'), false, 'published Rust diagnostic has no structured sequence');
     } else {
       const blocked = phases.incompatible.tasks.filter(task => task.payload?.replay_blocked === true);
       assert.equal(blocked.length, 1);
@@ -290,10 +293,18 @@ export function checkCorrectedMarkers(fixture, observation, workflowId) {
       assert.equal(failures[0].status, 200);
       assert.equal(failures[0].response.recorded, true);
       assert.equal(failures[0].response.next_task_id, null);
-      assert.equal(failures[0].request.failure.reason, spec.replay_refusal.failure_reason);
-      assert.equal(failures[0].request.failure.sequence, spec.replay_refusal.failure_sequence);
+      assert.equal(failures[0].request.workflow_task_attempt, 1);
+      assert.deepEqual(failures[0].request.failure, {
+        type: 'RustWorkflowTaskFailure',
+        message: `non-deterministic workflow replay (${spec.replay_refusal.failure_reason}) at sequence Some(${spec.replay_refusal.failure_sequence}): recorded activity retry policy differs from the current workflow command`,
+      }, 'exact published Rust failure format retains reason and sequence in its message');
       assert.equal(failures[0].path.split('/').at(-2), observation.events.at(-1).payload.task.id);
       assert.notEqual(failures[0].request.lease_owner, outcomes[1].request.lease_owner);
+      assert.equal(outcomes[1].request.workflow_task_attempt, 2);
+      const repairs = requests.filter(item => item.method === 'POST' && item.path.endsWith('/repair'));
+      assert.equal(repairs.length, 1);
+      assert.equal(repairs[0].path, `/api/workflows/${workflowId}/runs/${observation.run_id}/repair`);
+      assert.equal(repairs[0].status, 200);
     }
     const cold = deliveries[1].response.task.history_events;
     assert.deepEqual(cold.map(event => event.event_type), phases.activity.events.map(event => event.event_type));
@@ -301,6 +312,16 @@ export function checkCorrectedMarkers(fixture, observation, workflowId) {
       assert.equal(event.recorded_at, phases.activity.events[i].timestamp);
       assert.equal(event.sequence, phases.activity.events[i].sequence);
       assert.deepEqual(event.payload, phases.activity.events[i].payload, 'whole raw cold delivery prefix');
+    }
+    if (spec.replay_refusal) {
+      const restored = deliveries.at(-1).response.task.history_events;
+      const expected = observation.events.slice(0, -1);
+      assert.deepEqual(restored.map(event => event.event_type), expected.map(event => event.event_type));
+      for (const [i, event] of restored.entries()) {
+        assert.equal(event.recorded_at, expected[i].timestamp);
+        assert.equal(event.sequence, expected[i].sequence);
+        assert.deepEqual(event.payload, expected[i].payload, 'corrected cold replay includes original prefix and explicit repair');
+      }
     }
   }
   return {fixture_id: fixture.id, workflow_id: workflowId, run_id: '@run:1', workflow_type: fixture.workflow_type,
