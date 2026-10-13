@@ -48,9 +48,12 @@ for(const field of fixture.activity_deadline_authority.fields){
   if(field!=='schedule_to_start_timeout')Object.assign(controls,{
     'late completion accepted':value=>{if(original.mode==='embedded')step(value).late_outcomes[0].response.recorded=true;else step(value).late_outcomes[0].status=200;},
     'late failure accepted':value=>{if(original.mode==='embedded')step(value).late_outcomes[1].response.recorded=true;else step(value).late_outcomes[1].status=200;},
-    'expired heartbeat recorded':value=>{step(value).late_outcomes[2].status=200;step(value).late_outcomes[2].response.heartbeat_recorded=true;},
+    'expired heartbeat recorded':value=>{if(original.mode==='http')step(value).late_outcomes[2].status=200;step(value).late_outcomes[2].response.heartbeat_recorded=true;},
     'expired status grants authority':value=>{step(value).status_after_expiry.can_continue=true;},
     'wrong original attempt':value=>{step(value).activity_task.activity_attempt_id='other';},
+    'status from another run':value=>{step(value).status_after_expiry.workflow_run_id='other';},
+    'status from another attempt':value=>{step(value).status_after_expiry.activity_attempt_id='other';},
+    'status from another owner':value=>{step(value).status_before_expiry.lease_owner='other';},
     'missing actual late completion':value=>{value.activity_deadline_authority.requests=value.activity_deadline_authority.requests.filter(wire=>wire.path!==`/api/worker/activity-tasks/${step(value).activity_task.task_id}/complete`);},
   });
   if(original.mode==='embedded') {
@@ -60,6 +63,7 @@ for(const field of fixture.activity_deadline_authority.fields){
       'replaced original stored deadline':value=>{const activity=step(value).after_expiry.activities[0];for(const name of ['schedule_deadline_at','close_deadline_at','schedule_to_close_deadline_at','heartbeat_deadline_at'])if(activity[name]!==null)activity[name]='2100-01-01T00:00:00.000000Z';},
       'missing actual timeout enforcement':value=>{step(value).enforcement=false;},
       'wrong original parent row':value=>{step(value).after_expiry.tasks.find(task=>task.id===step(value).parent_delivery.task_id).workflow_run_id='other';},
+      'fabricated HTTP library outcome':value=>{step(value).late_outcomes[0].status=409;},
     });
   }
   for(const[name,mutate]of Object.entries(controls)){const value=structuredClone(original);mutate(value);assert.throws(()=>read(value),undefined,`${field}: ${name}`);}

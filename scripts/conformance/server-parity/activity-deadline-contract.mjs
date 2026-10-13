@@ -126,6 +126,15 @@ export function checkActivityDeadlines(fixture, observation, workflowId) {
       assert.equal(activity.activity_execution_id,scheduled.payload.activity_execution_id);
       assert.equal(activity.attempt_number,1);
       assert.deepEqual(activity.retry_policy,policy);
+      for (const status of [step.status_before_expiry,step.status_after_expiry]) {
+        assert.equal(status.workflow_instance_id,id,'Status belongs to the original workflow');
+        assert.equal(status.workflow_run_id,step.run_id,'Status belongs to the original run');
+        assert.equal(status.workflow_task_id,activity.task_id,'Status belongs to the original task');
+        assert.equal(status.activity_execution_id,activity.activity_execution_id);
+        assert.equal(status.activity_attempt_id,activity.activity_attempt_id);
+        assert.equal(status.attempt_number,1);
+        assert.equal(status.lease_owner,activity.lease_owner);
+      }
       assert.equal(step.status_before_expiry.can_continue,true);
       assert.equal(step.status_before_expiry.heartbeat_recorded,false);
       assert.equal(step.status_after_expiry.can_continue,false);
@@ -134,6 +143,7 @@ export function checkActivityDeadlines(fixture, observation, workflowId) {
       for(const receipt of step.late_outcomes.slice(0,2)) {
         if (http) assert.equal(receipt.status,409,'Elapsed authority never commits a late result/failure');
         else {
+          assert.equal(Object.hasOwn(receipt,'status'),false,'Library receipt does not fabricate HTTP status');
           assert.equal(receipt.response.recorded,false,'Elapsed embedded authority refuses outcome');
           assert.equal(receipt.response.next_task_id,null);
           assert.equal(receipt.response.reason,field);
@@ -141,6 +151,7 @@ export function checkActivityDeadlines(fixture, observation, workflowId) {
         }
       }
       const heartbeat = step.late_outcomes[2];
+      if (!http) assert.equal(Object.hasOwn(heartbeat,'status'),false,'Library heartbeat retains its own format');
       if (http) assert([200,409].includes(heartbeat.status),'Structured heartbeat refusal or fenced conflict');
       if(!http || heartbeat.status===200) {
         assert.equal(heartbeat.response.can_continue,false);
