@@ -229,7 +229,8 @@ export function checkCorrectedRange(fixture, observation, workflowId, instant) {
     assert.equal(delivery.request.worker_id, workflowId+':'+role);
     assert.equal(task.workflow_id, workflowId);
     assert.equal(task.run_id, observation.run_id);
-    assert.equal(task.sticky_replay_mode, 'cold_replay');
+    assert(['cold_replay', 'forced_cold_replay'].includes(task.sticky_replay_mode),
+      'Published full cold replay, including replacement of sticky ownership');
     assert.equal(task.next_history_page_token, null);
     assert.equal(task.total_history_events, count);
     assert.equal(task.history_events.length, count);

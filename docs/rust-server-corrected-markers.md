@@ -170,8 +170,17 @@ neighbors' repair counts. The published policy normally redispatches ready
 tasks after three seconds. The revised runner scopes maintenance to the four
 activity-deadline originals, so it cannot interfere with the selected-repair
 isolation check. Neighbor identities, histories, repair guards and scenario
-budgets remain strict. Fresh runtime confirmation is pending. MariaDB's
-separate cold-replay assertion and later pressure failure remain under review.
+budgets remain strict. At `c12e276b3`, fresh normally installed PHP SQLite
+passes all eight portable cases, both clock cases and four activity-expiry
+families with the scoped maintenance sweep.
+
+PostgreSQL 17's original PHP range transport also proves full exact prefixes
+of 2/6/7 events under published `cold_replay` and `forced_cold_replay` modes.
+Both represent full cold deliveries when workers change. The corrected reader
+accepts either diagnostic while preserving the complete unpaged history and
+original task/run identities. A separate actual-record mutation rejects
+`sticky_hit_expected`. The first strict-string failure remains failed.
+MariaDB's later pressure failure remains under review.
 
 Start with exact installed published identities and a real PHP/embedded
 reference. Add separate adapters/fixtures and a strict reader using the existing

@@ -77,6 +77,15 @@ for (const item of record.cases.filter(item => item.fixture.corrected_range)) {
     'terminal status missing': value => { value.status = 'waiting'; },
     'whole response bytes lost': value => { value.corrected_range.requests.find(row => row.status === 200).response_bytes_base64 = ''; },
     'canonical cold delivery missing': value => { value.corrected_range.requests = value.corrected_range.requests.filter(row => !row.path.endsWith('/workflow-tasks/poll')); },
+    'sticky cache delivery replaces cold history': value => {
+      const wire = value.corrected_range.requests.find(row => row.path.endsWith('/workflow-tasks/poll')
+        && JSON.parse(row.response_body)?.task);
+      const body = JSON.parse(wire.response_body);
+      body.task.sticky_replay_mode = 'sticky_hit_expected';
+      wire.response_body = JSON.stringify(body);
+      wire.response_encoding = 'identity';
+      wire.response_bytes_base64 = Buffer.from(wire.response_body).toString('base64');
+    },
     'committed failure cancelled': value => { value.corrected_range.requests.find(row => row.path.endsWith('/fail')).client_cancelled = true; },
     'loaded producer source changed': value => { value.corrected_range.phases.original.actor.sdk_php_source = '0'.repeat(40); },
     'loaded successor version changed': value => { value.corrected_range.phases.final.actor.sdk_version = 'durable-workflow-rust/0.0.0'; },
