@@ -306,6 +306,7 @@ impl Backend for MySql {
             || sql == Self::TIMER_TASK_SQL
             || sql == Self::RANGE_REPAIR_TASK_SQL
             || sql == Self::SELECTION_RESOLUTION_SQL
+            || sql == Self::ACTIVITY_OPEN_TASK_SQL
         {
             return Cow::Borrowed(sql);
         }
