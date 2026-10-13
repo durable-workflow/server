@@ -97,8 +97,21 @@ qualification must measure. The real native-factory regression passes with
 reset and fails `RowNotFound` without it; an actual committed row survives a
 lost COMMIT reply. The [correction contract](https://github.com/durable-workflow/server/pull/429#issuecomment-6133464483)
 precedes implementation. The injected mechanism is proven; its connection to
-the original native failure is unestablished. Next qualify reset disposal and
-all three MySQL-family configurations, then the full namespace matrix before
+the original native failure is unestablished.
+
+The first reset candidate passes SQLite/PostgreSQL but fails all three
+MySQL-family jobs at the TLS disposal check. Exact TLS 1.3 reproduction confirms
+that reset times out while the driver's hard-close path still awaits TLS I/O;
+flushing before the gate produces the same failure. A scoped
+[native driver patch](../rust/vendor/sqlx-mysql/DURABLE-PATCH.md)
+drops the owned transport on hard close, matching SQLx's immediate-close
+contract. Both unchanged TLS controls then pass with socket closure, freed
+capacity, a different replacement connection and preserved committed data.
+The official archive/VCS and licenses are retained; graceful close and TLS
+trust/hostname checks stay unchanged. The original CI/probe failures remain
+failed, and the [contract precedes adoption](https://github.com/durable-workflow/server/pull/429#issuecomment-6135933370).
+Next qualify the exact driver patch on all three MySQL-family configurations
+and the full namespace matrix before
 promotion. Earlier MariaDB/MySQL failure causes remain
 unestablished; the new lookup site does not retroactively establish them.
 Full namespace authorization, other families, consumers,

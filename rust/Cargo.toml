@@ -31,3 +31,6 @@ debug = 0
 
 [profile.test]
 debug = 0
+
+[patch.crates-io]
+sqlx-mysql = { path = "vendor/sqlx-mysql" }
