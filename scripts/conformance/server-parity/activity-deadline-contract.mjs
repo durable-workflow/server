@@ -97,7 +97,9 @@ export function checkActivityDeadlines(fixture, observation, workflowId) {
       if(heartbeat.status===200) {
         assert.equal(heartbeat.response.can_continue,false);
         assert.equal(heartbeat.response.heartbeat_recorded,false);
-        assert.equal(heartbeat.response.lease_expires_at,step.status_after_expiry.lease_expires_at,'Refused heartbeat never renews lease');
+        // A concurrent canonical timeout may clear the original lease.
+        // It must never replace it with fresh authority.
+        if(heartbeat.response.lease_expires_at!==null)assert.equal(heartbeat.response.lease_expires_at,step.status_after_expiry.lease_expires_at,'Refused heartbeat never renews lease');
         assert.equal(heartbeat.response.last_heartbeat_at,step.status_after_expiry.last_heartbeat_at,'Refused heartbeat never records progress');
       }
       const start = events.find(event=>event.event_type==='ActivityStarted');
