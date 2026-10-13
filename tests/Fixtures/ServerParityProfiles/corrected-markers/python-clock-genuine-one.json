@@ -17,6 +17,7 @@
     ],
     "python_clock": {
       "current_sdk": "2.5.13", "activity_count": 2,
+      "clock_contract": "fixed_workflow_start", "contract_receipt": "https://github.com/durable-workflow/sdk-python/issues/146#issuecomment-6139915817",
       "phase_order": ["original", "activity", "clock_wait", "second_activity", "replacement"],
       "marker_clock_positions": [1,2,2,2], "applicable_modes": ["http"]
     }

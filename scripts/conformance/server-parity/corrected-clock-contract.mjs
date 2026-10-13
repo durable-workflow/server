@@ -71,11 +71,13 @@ export function checkCorrectedClock(fixture, observation, workflowId) {
   }
   const first = phases.clock_wait.actor.clock_reads, second = phases.replacement.actor.clock_reads;
   assert.equal(first.length,1); assert.equal(second.length,1);
-  const expectedClocks = [all[1].timestamp,...clock.marker_clock_positions.map(position=>markers[position-1].timestamp),completed[0].timestamp];
+  assert.equal(clock.clock_contract, 'fixed_workflow_start');
+  assert.equal(clock.contract_receipt, 'https://github.com/durable-workflow/sdk-python/issues/146#issuecomment-6139915817');
+  const expectedClocks = Array(clock.marker_clock_positions.length+2).fill(all[1].timestamp);
   assert.deepEqual(first[0].decisions,spec.expected_decisions);
   assert.deepEqual(second[0].decisions,spec.expected_decisions);
-  assert.deepEqual(first[0].clocks,expectedClocks,'public Python clock uses original durable event positions');
-  assert.deepEqual(second[0].clocks,[...expectedClocks,completed[1].timestamp]);
+  assert.deepEqual(first[0].clocks,expectedClocks,'public Python clock uses its agreed original workflow-start anchor');
+  assert.deepEqual(second[0].clocks,[...expectedClocks,all[1].timestamp]);
   assert.equal(first[0].uuids.length,expectedClocks.length);
   assert.equal(second[0].uuids.length,expectedClocks.length+1);
   assert.deepEqual(second[0].uuids.slice(0,first[0].uuids.length),first[0].uuids,'same-original UUID prefix across actual cold workers');
@@ -122,6 +124,6 @@ export function checkCorrectedClock(fixture, observation, workflowId) {
   assert(!wire.some(row=>row.path.endsWith('/fail')));
   const finalTask=all.at(-1).payload.task; assert.equal(finalTask.attempt_count,1); assert.equal(finalTask.repair_count,0);
   return {fixture_id:fixture.id,workflow_id:workflowId,run_id:'@run:1',status:'completed',output,
-    markers:spec.markers,events:expectedEvents,activity_count:2,clock_positions:clock.marker_clock_positions,
+    markers:spec.markers,events:expectedEvents,activity_count:2,clock_contract:clock.clock_contract,clock_reads:expectedClocks.length,
     uuid7_same_original_prefix:true,cold_processes:5};
 }

@@ -12,9 +12,10 @@
     "markers": [{"sequence": 1, "version": 0, "min_supported": -7, "max_supported": 0}],
     "python_clock": {
       "current_sdk": "2.5.13", "activity_count": 2,
+      "clock_contract": "fixed_workflow_start", "contract_receipt": "https://github.com/durable-workflow/sdk-python/issues/146#issuecomment-6139915817",
       "phase_order": ["original", "activity", "clock_wait", "second_activity", "replacement"],
       "marker_clock_positions": [1,1,1,1,1], "applicable_modes": ["http"]
     }
   },
-  "contract": "A real PHP zero marker and pending activity survive two cold normally installed Python workers, separated by real independent activity completions. Public now and uuid7 calls match original durable event clocks; the UUID prefix is replay-stable on the same original run. Two genuine activities are declared for this new case. Embedded UUIDs have recorded side-effect semantics and require their own separate qualification; no embedded UUID result is inferred."
+  "contract": "A real PHP numeric-only zero marker and pending activity survive two cold normally installed Python workers, separated by real independent activity completions. Public now and uuid7 follow the previously agreed fixed workflow-start contract; all real marker/activity microclocks and the same-original UUID prefix survive. Two genuine activities are declared. Embedded UUIDs have recorded side-effect semantics and require separate qualification; no equivalent embedded UUID result is inferred. The initial contrary reader expectations remain failed originals."
 }
