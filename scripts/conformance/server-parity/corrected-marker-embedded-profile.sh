@@ -37,6 +37,7 @@ case "$backend" in
   sqlite)
     test ! -e "$state/embedded.sqlite"
     touch "$state/embedded.sqlite"
+    chmod 0666 "$state/embedded.sqlite"
     database=(-e DB_CONNECTION=sqlite -e DB_DATABASE=/state/embedded.sqlite -v "$PWD/$state:/state") ;;
   *) exit 2 ;;
 esac

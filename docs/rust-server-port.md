@@ -45,19 +45,32 @@ uses published PHP's 300-second ordinary activity lease. A new machine-owned
 recovery allocation allows at most 310 seconds, declared before preparation
 and frozen with its hash in every new receipt; missing or changed old receipts
 are refused. No existing run receives a new lease or deadline to fit the test.
-Original failed jobs remain failed. Confirmation of the new real process-kill
-recovery and matched fixture gates is pending. New #435 runtime jobs have a
-prospective 55-minute whole-job ceiling to include the real five-minute lease
+Original failed jobs remain failed. The later ordinary-corpus run confirms
+real process-kill recovery; expanded matched fixture gates remain pending.
+That runner has a prospective 55-minute whole-job ceiling to include the real five-minute lease
 wait; old 45-minute allocations and all individual scenario limits stay recorded
 unchanged. Runtime memory/CPU and compile limits are unchanged.
-All six original jobs in the separate `d36856486` run `38447782933` now pass;
-the original artifact audit remains pending. That run covers the existing
-corpus, rather than the expanded corrected marker cohort. The next runner
+All six original jobs in the separate `d36856486` run `38447782933` pass.
+Original archive identity, native execution/schema/TLS and process-loss audits
+confirm recovery after the persisted five-minute lease on every database.
+Complete per-profile HTTP sidecar audits were not claimed. That run covers the existing
+corpus, rather than the expanded corrected marker cohort. The expanded runner
 wires eight portable cases across three runtimes and two service clock cases
 across both HTTP runtimes into all six configurations, using one explicit
 2.5.16 embedded manifest. Its prospective whole-job ceiling is 75 minutes;
 all scenario, phase, lease-wait and resource limits remain unchanged. Existing
-45/55-minute records are preserved. The new shared fixture gate is pending.
+45/55-minute run allocations remain unchanged. The first expanded `a96d38ebd`
+run `38456291140` has a failed MariaDB corrected-cohort step and remains live
+while the original job finishes cleanup; diagnosis and the other configurations
+are pending. Its PHP feature and both public boundary gates pass.
+Completed local bulk recordings and archives have been deleted; code, fixtures
+and readable GitHub outcomes remain. Earlier local retention promises no longer
+apply. New scratch is removed after its immediate inspection.
+
+General's PHP-only dependency update #437 is merged at `158f4c6f2` and included
+in the current working branch. It leaves the pinned corrected and historical
+cohorts unchanged. The combined tree requires fresh candidate qualification
+before #435 promotion; no Server 2.6.3 image qualification is inferred.
 
 The separate actual elapsed-deadline HTTP profile passes fresh matched
 published PHP/native SQLite recordings at `67cfd7b95`: four original expiry
