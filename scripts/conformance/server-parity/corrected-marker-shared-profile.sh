@@ -25,41 +25,11 @@ case "$backend" in
   sqlite) database=(-e DB_CONNECTION=sqlite -e DB_DATABASE=/state/php.sqlite -v "$PWD/$state:/state") ;;
   *) exit 2 ;;
 esac
-cleanup() {
-  for role in php maintenance; do
-    if docker inspect "$resource-$role" >/dev/null 2>&1; then
-      docker stop --timeout 5 "$resource-$role" >/dev/null || true
-      docker logs "$resource-$role" > "$evidence/$role-server.log" 2>&1 || true
-      docker inspect --format '{{json .State}}' "$resource-$role" > "$evidence/$role-state.json" || true
-      docker rm -f "$resource-$role" >/dev/null || true
-    fi
-  done
-  case "$backend" in
-    mysql|pgsql)
-      for role in php embedded; do
-        test -f "$evidence/$role-database-owned.txt" || continue
-        test "$(cat "$evidence/$role-database-owned.txt")" = "$RESOURCE_SCOPE" || continue
-        db=corrected_php_ref
-        if test "$role" = embedded; then db=embedded_corrected_ref; fi
-        if test "$backend" = mysql; then
-          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint mysql "$MYSQL_IMAGE" -h parity-mysql -uroot -pparity-disposable-password -e "DROP DATABASE IF EXISTS $db" >> "$evidence/database-cleanup.txt" 2>&1 || true
-        else
-          docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" -e PGPASSWORD=parity-disposable-password --entrypoint dropdb "$POSTGRES_IMAGE" --if-exists -h parity-pg -U parity "$db" >> "$evidence/database-cleanup.txt" 2>&1 || true
-        fi
-      done ;;
-    sqlite) for db in php embedded; do if test -f "$state/$db.sqlite"; then cp "$state/$db.sqlite" "$evidence/$db-final.sqlite"; fi; done ;;
-  esac
-  if test -f "$evidence/php-database-owned.txt" && test "$(cat "$evidence/php-database-owned.txt")" = "$RESOURCE_SCOPE"; then
-    docker run --rm --user=1000:1000 --cpus=1 --memory=256m --memory-swap=256m --network none --entrypoint sh -v "$PWD/$state:/state" "$image" -c 'find /state -mindepth 1 -depth -delete' > "$evidence/state-cleanup.txt" 2>&1 || true
-  fi
-}
-if test "$native_url" = cleanup; then cleanup; exit; fi
 test -n "$native_url"
 test ! -e "$state/php.sqlite"
 test ! -e "$state/current/artisan"
 test ! -e "$state/original/artisan"
 test ! -e "$evidence/php-database-owned.txt"
-trap cleanup EXIT
 case "$backend" in
   mysql) docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint mysql "$MYSQL_IMAGE" -h parity-mysql -uroot -pparity-disposable-password -e 'CREATE DATABASE corrected_php_ref CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci' > "$evidence/database-create.txt" ;;
   pgsql) docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" -e PGPASSWORD=parity-disposable-password --entrypoint createdb "$POSTGRES_IMAGE" -h parity-pg -U parity corrected_php_ref > "$evidence/database-create.txt" ;;
@@ -78,6 +48,7 @@ for target in php rust; do
   bash scripts/conformance/server-parity/corrected-marker-http-profile.sh "$target" "$url" portable
   bash scripts/conformance/server-parity/corrected-marker-http-profile.sh "$target" "$url" clock
 done
+docker stop --time 5 "$RESOURCE_SCOPE-corrected-php" "$RESOURCE_SCOPE-corrected-maintenance"
 bash scripts/conformance/server-parity/corrected-marker-embedded-profile.sh "$backend" portable
 fixtures=()
 for id in fresh-numeric fresh-zero deprecation-first genuine-version-one php-full-retry php-full-retry-refusal rust-range-completed rust-range-timer-pending; do fixtures+=(--fixture "$profile/$id.json"); done

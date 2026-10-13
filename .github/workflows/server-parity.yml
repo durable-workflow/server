@@ -571,7 +571,7 @@ jobs:
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh mysql query
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh mysql update
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh mysql update-failure
-          bash scripts/conformance/server-parity/corrected-marker-shared-profile.sh mysql cleanup
+          bash scripts/conformance/server-parity/corrected-marker-cleanup.sh mysql
           docker inspect --format '{{json .State}}' "$RESOURCE_SCOPE-db" > parity-evidence/database-state.json 2>&1 || true
           docker inspect --format '{{json .HostConfig.Memory}}' "$RESOURCE_SCOPE-db" > parity-evidence/database-memory-limit.json 2>&1 || true
           for profile in fence pressure; do
@@ -1019,7 +1019,7 @@ jobs:
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh pgsql query
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh pgsql update
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh pgsql update-failure
-          bash scripts/conformance/server-parity/corrected-marker-shared-profile.sh pgsql cleanup
+          bash scripts/conformance/server-parity/corrected-marker-cleanup.sh pgsql
           docker inspect --format '{{json .State}}' "$RESOURCE_SCOPE-db" > parity-evidence/database-state.json 2>&1 || true
           docker inspect --format '{{json .HostConfig.Memory}}' "$RESOURCE_SCOPE-db" > parity-evidence/database-memory-limit.json 2>&1 || true
           for profile in fence pressure; do
@@ -1347,7 +1347,7 @@ jobs:
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh sqlite query
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh sqlite update
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh sqlite update-failure
-          bash scripts/conformance/server-parity/corrected-marker-shared-profile.sh sqlite cleanup
+          bash scripts/conformance/server-parity/corrected-marker-cleanup.sh sqlite
           for profile in fence pressure; do
             for target in php native; do
               docker logs "$RESOURCE_SCOPE-$profile-$target" > "parity-evidence/$profile-$target.log" 2>&1 || true

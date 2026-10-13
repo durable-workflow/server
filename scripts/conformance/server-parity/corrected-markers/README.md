@@ -71,7 +71,7 @@ separate published PHP and embedded databases, records the same eight portable
 cases in all three modes and the two clock cases on both HTTP targets, compares
 the complete originals, then runs the existing mutation readers on each record.
 Database cleanup requires a creation receipt for that resource scope; the
-native database remains owned by the caller. Use `BACKEND cleanup` in the
+native database remains owned by the caller. Use `corrected-marker-cleanup.sh BACKEND` in the
 workflow's always-run cleanup before removing its database server/network.
 All six database configurations run this wrapper. The expanded jobs declare
 a prospective 75-minute whole-job limit; every individual scenario and phase
