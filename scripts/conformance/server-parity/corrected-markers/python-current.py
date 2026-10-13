@@ -25,7 +25,7 @@ class ClockReader:
             uuids.append(str(ctx.uuid7()))
 
         capture()
-        if CASE == "zero":
+        if CASE in ("zero", "clock_zero"):
             first = yield ctx.get_version("corrected-zero", -7, 0)
             capture()
             patch = yield ctx.patched("corrected-zero")

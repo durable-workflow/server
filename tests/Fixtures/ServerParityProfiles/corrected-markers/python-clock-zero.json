@@ -6,9 +6,9 @@
     "optional": {"type": "null", "value": null}, "unicode": {"type": "string", "value": "range λ"}
   }},
   "corrected_markers": {
-    "case": "zero", "producer": "php", "retry_policy": "empty",
+    "case": "clock_zero", "producer": "php", "retry_policy": "empty",
     "phase_budget_seconds": 30, "overall_budget_seconds": 150,
-    "change_id": "corrected-zero", "expected_decisions": [0, false, null, 0, false],
+    "change_id": "corrected-zero", "original_expected_decisions": [0,0], "expected_decisions": [0, false, null, 0, false],
     "markers": [{"sequence": 1, "version": 0, "min_supported": -7, "max_supported": 0}],
     "python_clock": {
       "current_sdk": "2.5.13", "activity_count": 2,

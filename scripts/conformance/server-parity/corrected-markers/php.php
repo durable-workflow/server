@@ -67,6 +67,7 @@ if ($mode === 'activity') {
 
                 return [$first, $patch, null, $wider, $ctx->patched('corrected-zero')];
             })(),
+            'clock_zero' => [$ctx->getVersion('corrected-zero', -7, 0), $ctx->getVersion('corrected-zero', -7, 0)],
             'deprecated', 'genuine_one' => (static function () use ($ctx): array {
                 $ctx->deprecatePatch('corrected-one');
                 $patch = $ctx->patched('corrected-one');
