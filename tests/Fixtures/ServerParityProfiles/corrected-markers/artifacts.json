@@ -1,0 +1,57 @@
+{
+  "schema": "durable-workflow.server-port-artifacts/v1",
+  "server": {
+    "version": "2.6.2",
+    "source_commit": "ffd705e71392f62c81fea03e81414e0061d16d3d",
+    "index": "sha256:bb3a6f3074ceb93b23fca8a19426541b648f4824ed327bc1b6e09bc751c718de",
+    "workflow": "2.5.14",
+    "workflow_source_commit": "563675723522b2d453f950f593ab91473e91c831",
+    "workflow_installed_reference": "0d93c368f759c3c06d4d08214cd78dbe32b11347",
+    "workflow_composer_lock_sha256": "2f22f0df7140f996439265fa9bdd7637e3c1a83a77652a7615505926d65bdc35",
+    "workflow_loaded_sources": {
+      "src/V2/Support/VersionDecisions.php": "ffb22f79ffc08eceb2ffd7b96ecb2ad91c931f9fb5fac8bc4bdde75a57eff5e1",
+      "src/V2/Support/WorkflowExecutor.php": "9b85a1daf80fbe63d4f0ec3e23513c213e4971379f9a280495c0df6dc9655062",
+      "src/V2/Support/WorkflowFiberRunner.php": "7d7e81529870b06f737707a7880e0ca69c612d047079eabe100c8cd9aa46fb24",
+      "src/V2/Support/QueryStateReplayer.php": "19cbe47c37ceba07ac63d9f061711c28b6d7770ddff0cea822a8867dcde710e4"
+    },
+    "images": {
+      "linux/amd64": "durableworkflow/server@sha256:944c384c9875fd82637dd2bdea74dcb881cf983a57599ba0e492bec706296549",
+      "linux/arm64": "durableworkflow/server@sha256:da1c644f5f447106ddd3003b499d9e0619693cd03d44c6277d554a1ba7e6746a"
+    }
+  },
+  "workflow": "2.5.14",
+  "workflow_source_commit": "563675723522b2d453f950f593ab91473e91c831",
+  "sdk_php": "2.3.9",
+  "sdk_php_source_commit": "7decd1a9fc39704f48b10c9209a23db8668ae7f2",
+  "sdk_composer_lock_sha256": "42e814ee38813d3dafcf2e4cc371327d661536adda653e6cf1518a91a46087ca",
+  "sdk_python": "2.5.13",
+  "sdk_rust": "3.5.4",
+  "rust_consumer_cargo_lock_sha256": "047dd96c114ec56408bc9bce16570ab76cab799088803563e8a19e607eb1d9fd",
+  "published_sdk_artifacts": {
+    "php": {
+      "version": "2.3.9",
+      "source_commit": "7decd1a9fc39704f48b10c9209a23db8668ae7f2",
+      "loaded_sources": {
+        "src/Client.php": "ef55ebc0205169ddb2c3e024cbf635348a07a4a252ed9e9b6e4ff9602e7de7f6",
+        "src/Worker.php": "d2808d6a1e651ab4716e5e890fa068e8af30d1bfd9ad4ac65b64ee46a0b19caf",
+        "src/Worker/WorkflowContext.php": "4ab30945ed3803e200b824849d85de40b6a29226b7916d10f90729a713ec74a9"
+      }
+    },
+    "python": {
+      "version": "2.5.13",
+      "source_commit": "97119f337e8db123cee5301a36797f6f49f71d7a",
+      "archive_sha256": "8478bd7e5910d2a6afb963b70d42b079d4909a0d0e88cbf1e534370fa86cdcc2"
+    },
+    "rust": {
+      "version": "3.5.4",
+      "source_commit": "d80644039314bb223ad412be3bbdd421e4fe276b",
+      "archive_sha256": "1327ec765987c6b3dea91f158c0727f45c4b2b948714f77ef23aecd08de48a0e"
+    }
+  },
+  "historical_python_producer": {
+    "version": "2.5.0",
+    "source_commit": "04790ae42e8da0a83f65026f096572b547b7baa8",
+    "archive_sha256": "0f69fdb6e6103ab57ce6bc0f802504463b1498745e874a32ed9de58dabeb40be"
+  },
+  "performance_status": "not_measured"
+}

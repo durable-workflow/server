@@ -14,6 +14,7 @@ import {checkSdkChildDirectionArtifacts, checkSdkChildDirectionPackages} from '.
 import {checkSdkTimerAuthorArtifacts, checkSdkTimerAuthorPackages} from './server-parity/sdk-timer-author-contract.mjs';
 import {checkSdkSignalDirectionArtifacts, checkSdkSignalDirectionPackages} from './server-parity/sdk-signal-direction-contract.mjs';
 import {captureProbe} from './server-parity/probe-capture.mjs';
+import {checkCorrectedMarkerArtifacts, checkCorrectedMarkerPackages} from './server-parity/corrected-marker-contract.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const {values, positionals} = parseArgs({allowPositionals: true, options: {
@@ -81,6 +82,7 @@ try {
       const fixture = json(path);
       checkPublishedPatchArtifacts(fixture, record.artifacts);
       checkRangeArtifacts(fixture, record.artifacts);
+      checkCorrectedMarkerArtifacts(fixture, record.artifacts);
       checkSdkDirectionArtifacts(fixture, record.artifacts);
       checkSdkChildDirectionArtifacts(fixture, record.artifacts);
       checkSdkTimerAuthorArtifacts(fixture, record.artifacts);
@@ -91,7 +93,7 @@ try {
       for (const flag of ['url', 'application-root']) {
         if (values[flag]) arguments_.push(`--${flag}`, values[flag]);
       }
-      const probe = captureProbe('php', arguments_, {directory: dirname(resolve(values.output)), timeout: fixture.namespace_signal_pair || fixture.selected_run_signal_pair ? 75000 : 45000,
+      const probe = captureProbe('php', arguments_, {directory: dirname(resolve(values.output)), timeout: fixture.corrected_markers ? 95000 : fixture.namespace_signal_pair || fixture.selected_run_signal_pair ? 75000 : 45000,
         env: {...process.env, DW_PARITY_FAILURE_EVIDENCE_DIR: dirname(resolve(values.output))}});
       const item = {fixture_id: fixture.id, fixture, outcome: 'runner-blocked'};
       try {
@@ -107,6 +109,7 @@ try {
         if (fixture.patch_deployment?.legacy_marker_history) checkLegacyMarkerPackageObservation(fixture, item.observation, record.artifacts);
         else checkPatchPackageObservation(fixture, item.observation, record.artifacts);
         checkRangePackages(fixture, item.observation, record.artifacts);
+        checkCorrectedMarkerPackages(fixture, item.observation, record.artifacts);
         checkSdkDirectionPackages(fixture, item.observation, record.artifacts);
         checkSdkChildDirectionPackages(fixture, item.observation, record.artifacts);
         checkSdkTimerAuthorPackages(fixture, item.observation, record.artifacts);

@@ -4,8 +4,11 @@
 separate shared PHP/embedded/native cohort after delivered
 [#434](https://github.com/durable-workflow/server/pull/434#issuecomment-6143056720).
 The [reviewed next boundary](https://github.com/durable-workflow/server/issues/325#issuecomment-6141676028)
-records the supported producer inputs and their qualification limits. This is
-acceptance before implementation, not a fixture, installed-tuple or native pass.
+records the supported producer inputs and their qualification limits. The draft
+now has separate normal-install actors, five HTTP fixture definitions and a
+strict reader. Embedded replay, repair/refusal phases, the current Python clock
+reader and native/six-database qualification remain pending. Earlier killed
+author reader failures are retained separately from fresh confirming runs.
 
 ## Artifact and history boundary
 
