@@ -938,9 +938,13 @@ fn completion_refusal(
 async fn heartbeat_activity(
     Extension(runtime): Extension<Runtime>,
     Path(task_id): Path<String>,
+    headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
-    runtime.heartbeat_activity(&task_id, body).await.map(Json)
+    runtime
+        .heartbeat_activity(&task_id, body, request_protocol(&headers)?)
+        .await
+        .map(Json)
 }
 
 async fn activity_status(

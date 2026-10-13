@@ -208,10 +208,19 @@ async fn every_authored_deadline_fences_outcomes_and_resolves_once() {
                 .await;
                 assert_eq!(
                     status.0,
-                    StatusCode::CONFLICT,
+                    if outcome == "heartbeat" {
+                        StatusCode::OK
+                    } else {
+                        StatusCode::CONFLICT
+                    },
                     "{field}/{outcome}: {}",
                     status.1
                 );
+                if outcome == "heartbeat" {
+                    assert_eq!(status.1["can_continue"], false);
+                    assert_eq!(status.1["heartbeat_recorded"], false);
+                    assert_eq!(status.1["protocol_version"], "1.19");
+                }
             }
         }
         let history = resolution(&app, &started, "ActivityTimedOut").await;
@@ -420,7 +429,9 @@ async fn heartbeat_renews_only_progress_deadline_and_cannot_resurrect_elapsed_au
         .await;
     let expired = running_deadlines(&database).await;
     let refusal = request(&app, "POST", &heartbeat_path, base).await;
-    assert_eq!(refusal.0, StatusCode::CONFLICT);
+    assert_eq!(refusal.0, StatusCode::OK);
+    assert_eq!(refusal.1["can_continue"], false);
+    assert_eq!(refusal.1["heartbeat_recorded"], false);
     assert_eq!(
         running_deadlines(&database).await,
         expired,
