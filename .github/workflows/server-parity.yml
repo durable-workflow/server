@@ -140,7 +140,7 @@ jobs:
     needs: published-sdk-adapters
     runs-on: ubuntu-latest
     # Namespace and selected-run profiles expand the job; scenario budgets stay fixed.
-    timeout-minutes: 45
+    timeout-minutes: 55
     strategy:
       fail-fast: false
       matrix:
@@ -575,7 +575,7 @@ jobs:
     needs: published-sdk-adapters
     runs-on: ubuntu-latest
     # Namespace and selected-run profiles expand the job; scenario budgets stay fixed.
-    timeout-minutes: 45
+    timeout-minutes: 55
     strategy:
       fail-fast: false
       matrix:
@@ -1011,7 +1011,7 @@ jobs:
     needs: published-sdk-adapters
     runs-on: ubuntu-latest
     # Namespace and selected-run profiles expand the job; scenario budgets stay fixed.
-    timeout-minutes: 45
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Fetch this run's published SDK adapters

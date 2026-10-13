@@ -37,6 +37,18 @@ pending.
 Earlier killed-author, reader-expectation and
 poll-based repair failures remain separate from fresh confirming runs.
 
+The pending activity deadline HTTP recipe now has a real published PHP baseline:
+all four one-second expiry families pass with normally installed Client
+worker-protocol requests, 71 actual-record corruption controls and query-only
+SQL checks of original deadlines and non-early enforcement. The parent is
+retained as an actual timeout delivery; no workflow result is authored.
+Heartbeat's published structured refusal can return 200 with continuation and
+recording false, without renewed authority. The initial missing-maintenance
+fixture timeout remains a failed setup record. Later maintenance requeues the
+same unacknowledged parents after the observer; those are explicitly separate
+from the original delivery observations. Native/embedded and actual shared
+retry/duplicate/heartbeat-renewal deadline counterparts remain pending.
+
 ## Artifact and history boundary
 
 Keep existing frozen profiles, actors, prefixes, clocks and failed records

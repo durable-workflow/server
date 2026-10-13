@@ -39,6 +39,18 @@ pass. The [delivery receipt](https://github.com/durable-workflow/server/pull/429
 records exact artifacts and limits. Historical failures below remain failed;
 their causes are not established by this successful qualification.
 
+Current #435 ordinary run `38438905276` fails all six original jobs at the
+process-recovery harness's sub-40-second lease wait guard. The candidate now
+uses published PHP's 300-second ordinary activity lease. A new machine-owned
+recovery allocation allows at most 310 seconds, declared before preparation
+and frozen with its hash in every new receipt; missing or changed old receipts
+are refused. No existing run receives a new lease or deadline to fit the test.
+Original failed jobs remain failed. Confirmation of the new real process-kill
+recovery and matched fixture gates is pending. New #435 runtime jobs have a
+prospective 55-minute whole-job ceiling to include the real five-minute lease
+wait; old 45-minute allocations and all individual scenario limits stay recorded
+unchanged. Runtime memory/CPU and compile limits are unchanged.
+
 [#434](https://github.com/durable-workflow/server/pull/434) is delivered at
 `c6dc5e451bf9ba8651f1f84e386ed6c274f3992c`, preserving reviewed tree
 `a823f73d288be436994e1272e020f462991b1dd3`. All six final-head and automatic
