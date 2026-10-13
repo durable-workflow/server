@@ -426,9 +426,28 @@ async fn heartbeat_renews_only_progress_deadline_and_cannot_resurrect_elapsed_au
         expired,
         "Late heartbeat cannot restore authority"
     );
+    let after_refusal = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
     assert_eq!(
-        run_history(&app, &started["workflow_id"], &started["run_id"]).await,
-        prefix
+        &after_refusal.as_array().unwrap()[..prefix.as_array().unwrap().len()],
+        prefix.as_array().unwrap(),
+        "The original heartbeat history remains unchanged"
+    );
+    // The independent timeout sweep may already have appended its canonical
+    // expiry event. The refused request must never record another heartbeat.
+    assert!(after_refusal.as_array().unwrap().len() <= prefix.as_array().unwrap().len() + 1);
+    assert_eq!(
+        after_refusal
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["event_type"] == "ActivityHeartbeatRecorded")
+            .count(),
+        1
+    );
+    assert!(
+        after_refusal.as_array().unwrap()[prefix.as_array().unwrap().len()..]
+            .iter()
+            .all(|event| event["event_type"] == "ActivityTimedOut")
     );
     runtime.close().await;
     database.remove().await;
