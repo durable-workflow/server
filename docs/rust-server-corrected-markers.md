@@ -163,7 +163,8 @@ identities and the additional embedded run/execution identities without
 inventing fields or HTTP statuses. This adds reader qualification; it does not
 establish native or all-six acceptance.
 
-The SQLite original in run `38462894334` at `edfa4e09b` fails the
+Run `38462894334` at `edfa4e09b` is terminal failed on all six databases.
+The SQLite original fails the
 timer-range neighbor guard. Its selected original completes the exact eleven
 events, but the fixture's global PHP repair sweep increments both idle
 neighbors' repair counts. The published policy normally redispatches ready
@@ -180,7 +181,25 @@ Both represent full cold deliveries when workers change. The corrected reader
 accepts either diagnostic while preserving the complete unpaged history and
 original task/run identities. A separate actual-record mutation rejects
 `sticky_hit_expected`. The first strict-string failure remains failed.
-MariaDB's later pressure failure remains under review.
+MySQL 8.4 passes the PHP portable/clock stages, then the native adapter receives
+an empty reply from node A. Its retained state proves the preceding process-loss
+fixture deliberately killed A with exit 137 and no OOM, while node B remained
+running. The revised MySQL/PostgreSQL stage targets that surviving node B.
+MariaDB's later database state proves OOM/exit 137 at the 512 MiB fixture ceiling,
+before the pressure readiness failures. The new runner allocates 1 GiB to that
+expanded database fixture. These are explicit runner/resource changes, with
+fresh qualification still required and no historical cause or performance claim.
+
+The fresh PHP recordings at `c12e276b3` pass the revised readers at
+`6ee85285c`: 157 portable, 42 clock and 80 expiry corruption controls.
+Independent read-only SQLite checks confirm all four idle neighbors remain
+unclaimed with zero repairs, and four deadline originals retain 19 events and
+zero parent repairs. Database bytes remain unchanged. The failed PostgreSQL 17
+range original also passes the corrected full-cold reader without changing any
+recorded bytes or its original failed run status. All local application,
+database, installed actors, transport and archive resources were removed after
+inspection. Source syntax, 206 core reader tests and Docker isolation checks
+pass. Fresh native/all-six, final-head and main qualification remain required.
 
 Start with exact installed published identities and a real PHP/embedded
 reference. Add separate adapters/fixtures and a strict reader using the existing

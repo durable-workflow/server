@@ -167,7 +167,8 @@ jobs:
             memory: 2g
           - label: mariadb-10.11
             image: mirror.gcr.io/library/mariadb@sha256:7db29378d4fdab73f8123bbc2b48905c90d1a4b00cf848b028f1e81e623257f2
-            memory: 512m
+            # Both expanded originals exhausted the 512 MiB DB fixture ceiling.
+            memory: 1g
     env:
       RESOURCE_SCOPE: dw-mysql-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ matrix.label }}
       MYSQL_IMAGE: ${{ matrix.image }}
@@ -506,7 +507,8 @@ jobs:
         run: bash scripts/conformance/server-parity/role-profile.sh mysql
       - name: Compare corrected markers, ranges, clocks and activity expiry
         if: ${{ !cancelled() }}
-        run: bash scripts/conformance/server-parity/corrected-marker-shared-profile.sh mysql http://parity-native-a:8080
+        # The preceding process-loss case deliberately kills native-a.
+        run: bash scripts/conformance/server-parity/corrected-marker-shared-profile.sh mysql http://parity-native-b:8080
       - name: Retire corrected cohort resources
         if: always()
         run: bash scripts/conformance/server-parity/corrected-marker-cleanup.sh mysql
@@ -927,7 +929,8 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
-        run: bash scripts/conformance/server-parity/corrected-marker-shared-profile.sh pgsql http://parity-native-a:8080
+        # The preceding process-loss case deliberately kills native-a.
+        run: bash scripts/conformance/server-parity/corrected-marker-shared-profile.sh pgsql http://parity-native-b:8080
       - name: Retire corrected cohort resources
         if: always()
         env:
