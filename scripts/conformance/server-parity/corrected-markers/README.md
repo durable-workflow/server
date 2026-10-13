@@ -23,6 +23,10 @@ cleanup. This command does not change the frozen default corpus or qualify
 the embedded profile or database matrix by itself.
 An optional third argument selects `markers`, `range` or `clock` for a scoped
 diagnosis; leaving it absent runs all three families.
+Selecting `portable` records the eight marker/policy/range cases together,
+using the same selected manifest and prefix as the embedded launcher's
+`portable` mode. The two service-only Python clock cases remain in their own
+HTTP record. Existing family invocations retain their original case sets.
 Native-only edits can reuse the installed adapter bundle when every actor
 source hash still matches. The evidence keeps its original build revision and
 binary hash separately from the current recorder revision.

@@ -9,7 +9,7 @@ test -n "$RESOURCE_SCOPE"
 case "$target" in php|rust) ;; *) exit 2 ;; esac
 case "$family" in
   all) families=(markers range clock) ;;
-  markers|range|clock) families=("$family") ;;
+  markers|range|clock|portable) families=("$family") ;;
   *) exit 2 ;;
 esac
 profile=tests/Fixtures/ServerParityProfiles/corrected-markers
@@ -46,6 +46,7 @@ for family in "${families[@]}"; do
     markers) ids=(fresh-numeric fresh-zero deprecation-first genuine-version-one php-full-retry php-full-retry-refusal) ;;
     range) ids=(rust-range-completed rust-range-timer-pending) ;;
     clock) ids=(python-clock-zero python-clock-genuine-one) ;;
+    portable) ids=(fresh-numeric fresh-zero deprecation-first genuine-version-one php-full-retry php-full-retry-refusal rust-range-completed rust-range-timer-pending) ;;
   esac
   fixtures=()
   for id in "${ids[@]}"; do fixtures+=(--fixture "$profile/$id.json"); done

@@ -7,6 +7,7 @@ case "$family" in
   markers) ids=(fresh-numeric fresh-zero deprecation-first genuine-version-one php-full-retry) ;;
   policy) ids=(php-full-retry-refusal) ;;
   range) ids=(rust-range-completed rust-range-timer-pending) ;;
+  portable) ids=(fresh-numeric fresh-zero deprecation-first genuine-version-one php-full-retry php-full-retry-refusal rust-range-completed rust-range-timer-pending) ;;
   *) exit 2 ;;
 esac
 test -n "$RESOURCE_SCOPE"
