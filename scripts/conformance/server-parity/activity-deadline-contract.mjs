@@ -135,7 +135,7 @@ export function checkActivityDeadlines(fixture, observation, workflowId) {
     assert.equal(typeof wire.response_bytes_base64,'string');
     assert(wire.response_bytes_base64.length>0,'Full actual response bytes retained');
   }
-  return {fixture_id:fixture.id,fields:spec.fields,driver:state.driver,
+  return {fixture_id:fixture.id,workflow_id:workflowId,fields:spec.fields,driver:state.driver,
     timeout_kind:spec.fields.map(field=>field.replace(/_timeout$/,'')),parent_delivery:'original_timeout_history',
     workflow_result:'not_authored',late_outcomes:'refused',policy_backoff:spec.retry_backoff_seconds};
 }
