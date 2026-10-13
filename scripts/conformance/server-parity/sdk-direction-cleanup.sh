@@ -10,7 +10,7 @@ case "${2:-activity}" in
   child) tag=sdk-child-directions; cohort=published-sdk-child-directions ;;
   timer) tag=sdk-timers; cohort=published-sdk-timers ;;
   signal) tag=sdk-signals; cohort=published-sdk-signals ;;
-  namespace-signal) tag=sdk-namespace-signals; cohort=published-sdk-namespace-signals; fixture_base=tests/Fixtures/ServerParityPending ;;
+  namespace-signal) tag=sdk-namespace-signals; cohort=published-sdk-namespace-signals ;;
   query) tag=sdk-queries; cohort=published-sdk-queries ;;
   update) tag=sdk-updates; cohort=published-sdk-updates ;;
   update-failure) tag=sdk-update-failures; cohort=published-sdk-update-failures ;;
