@@ -26,6 +26,26 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+Original `871eec1ec` run `38477701278` passes SQLite, PostgreSQL 16/17,
+MariaDB 10.11 and MySQL 8.4. MySQL 8.0 passes its corrected portable, clock and
+activity-expiry comparisons, then its fixture database is OOM-killed during
+native pressure at the declared 1 GiB limit. The retained state records
+exit 137 / OOM true, followed by native storage refusal and lost database
+hostname. Its TLS step is unexecuted. The failed original stays failed.
+The prospective MySQL 8.0 allocation is now 2 GiB, matching the expanded
+MySQL 8.4 fixture. Native/actor limits, scenario deadlines and the 75-minute
+whole-job ceiling are unchanged. Fresh qualification is required before
+promotion. This does not establish the cause of historical 503s or qualify
+performance.
+
+Original SQLite artifact `11858815390` matches GitHub's published SHA-256.
+Its recorded CI merge `623d900a` has the same complete tree
+`a58061e1c335e0b01de55a14e6a26c8f2d4f2dd1` as the branch head.
+Canonical typed values and source fixture hashes remain the evidence for exact
+int64s. JavaScript numeric copies in diagnostic fixture inputs are rounded;
+they are not claimed as lossless payload evidence. Temporary ZIPs are deleted
+after their immediate inspection.
+
 [#429](https://github.com/durable-workflow/server/pull/429) is delivered at
 `6299289185caea472b2738a5d4442a617edf0b8a`, tree
 `62736363c1e03ceae091ea578d307fb4d2370054`, identical to the reviewed candidate.
