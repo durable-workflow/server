@@ -10,6 +10,8 @@ use durable_workflow::{
 };
 use serde_json::{json, Value};
 
+mod legacy_range;
+
 const WORKFLOW: &str = "parity.v1.corrected_markers";
 const ACTIVITY: &str = "parity.v1.echo_activity";
 
@@ -45,12 +47,21 @@ async fn main() -> Result<()> {
         .token(std::env::var("DW_PARITY_TOKEN").ok())
         .timeout(Duration::from_secs(10))
         .build()?;
-    let queue = format!("{}-workflow", args[2]);
-    let activity_queue = format!("{}-activity", args[2]);
+    let workflow_type = legacy_range::workflow_type(&args[4]).unwrap_or(WORKFLOW);
+    let queue = if legacy_range::workflow_type(&args[4]).is_some() {
+        "server-parity-v1".to_owned()
+    } else {
+        format!("{}-workflow", args[2])
+    };
+    let activity_queue = match args[4].as_str() {
+        "range_pending" => "server-parity-range-activity".to_owned(),
+        "range_completed" => queue.clone(),
+        _ => format!("{}-activity", args[2]),
+    };
     if args[1] == "start" {
         let handle = client
             .start_workflow_with_options(
-                WORKFLOW,
+                workflow_type,
                 &queue,
                 &args[2],
                 WorkflowStartOptions::new()
@@ -96,13 +107,25 @@ async fn main() -> Result<()> {
             Ok(input)
         });
     } else {
-        worker.register_typed_workflow(WORKFLOW, move |ctx, value: Value| {
+        worker.register_typed_workflow(workflow_type, move |ctx, value: Value| {
             let selected_case = selected_case.clone();
             let profile = profile.clone();
             let policy = policy.clone();
             let activity_queue = activity_queue.clone();
             let recorded = Arc::clone(&recorded);
             async move {
+                if legacy_range::workflow_type(&selected_case).is_some() {
+                    return legacy_range::execute(
+                        ctx,
+                        value,
+                        &selected_case,
+                        &profile,
+                        &activity_queue,
+                        &policy,
+                        recorded,
+                    )
+                    .await;
+                }
                 let projection = match selected_case.as_str() {
                     "numeric" | "activity_repair" | "timer_repair" | "full_retry" => {
                         let (first, second) = match profile.as_str() {
@@ -173,11 +196,12 @@ async fn main() -> Result<()> {
         loop {
             processed += worker.run_once().await?;
             let run = client.describe_workflow_run(&args[2], &args[3]).await?;
-            let finished = if args[1] == "activity" || args[5] != "wider" {
-                processed > 0
-            } else {
-                run.status.as_deref() == Some("completed")
-            };
+            let finished =
+                if args[1] == "activity" || !["wider", "restored"].contains(&args[5].as_str()) {
+                    processed > 0
+                } else {
+                    run.status.as_deref() == Some("completed")
+                };
             if finished {
                 return Ok(processed);
             }

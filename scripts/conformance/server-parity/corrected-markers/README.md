@@ -24,8 +24,18 @@ duplicate producer uses the historical package; other originals and every cold
 reader use the current package. Public clocks must match original marker
 positions and cached reuse, and original task/run relationships remain exact.
 
-Implementation is still a draft: shared embedded qualification, range-repair
-phases, retry-policy refusal, current Python clock consumers, native integration
-and the six-database source/final/main matrix remain pending. A metadata check
-or one PHP observation does not qualify those boundaries. The first killed
-author reader failures remain separate from fresh confirming runs.
+The additional Rust modes `range_completed` and `range_pending` register the
+original `parity.v1.range_repair` and `parity.v1.range_pending_repair` types and
+queues. Their retry-policy argument is the actual original snapshot JSON. They
+author every known field and interval explicitly, refuse unsupported input,
+restore range `1..1`, and exclude the recorded decision with `2..2`. Pending
+repair replays the original three-second timer winner and awaits its retained
+activity handle. This source has an MSRV build check; actual shared admission,
+refusal, original-task repair and runtime observations remain required.
+
+The five positive HTTP and embedded recordings are documented on the draft PR.
+The separate published embedded policy-refusal original remains failed; its
+coordinated package correction is Workflow #776. Current Python clock consumers,
+native integration and the new profile's six-database/final/main matrix remain
+pending. The first killed-author reader failures remain separate from fresh
+confirming runs. Frozen actors and earlier fixture definitions stay unchanged.

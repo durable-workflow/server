@@ -30,6 +30,6 @@ docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=
   --network=none --entrypoint node -v "$PWD:/source:ro" -v "$PWD/$output:/adapters" -w /source "$image" \
   "$adapter/identity.mjs" /adapters "$profile/artifacts.json"
 git rev-parse HEAD > "$output/runner-revision.txt"
-sha256sum "$adapter"/rust/{Cargo.toml,Cargo.lock,src/main.rs} "$adapter"/{php.php,python250.py,python250-requirements.txt} \
+sha256sum "$adapter"/rust/{Cargo.toml,Cargo.lock,src/main.rs,src/legacy_range.rs} "$adapter"/{php.php,python250.py,python250-requirements.txt} \
   > "$output/source-hashes.sha256"
 rm -r -- "$output/cargo" "$output/target"
