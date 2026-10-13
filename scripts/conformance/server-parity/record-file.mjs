@@ -4,7 +4,7 @@ import {appendFileSync, writeFileSync} from 'node:fs';
 // complete in-memory copy of the whole multi-case recording.
 export function writeRecord(path, record) {
   writeFileSync(path, '{\n');
-  const entries = Object.entries(record);
+  const entries = Object.entries(record).filter(([, value]) => value !== undefined);
   for (const [index, [key, value]] of entries.entries()) {
     appendFileSync(path, `${JSON.stringify(key)}: `);
     if (key === 'cases') {

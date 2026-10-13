@@ -94,6 +94,13 @@ it. These are runner changes, with unchanged native bytes, fixture semantics,
 actor resource limits and original deadlines. Fresh matched qualification is
 required before promotion. Immediate artifact inspections are disposable.
 
+The first incremental-writer revision `3a9370f7a` fails recording with an undefined
+optional database-resource field. Unlike whole-object JSON serialization, its
+first implementation tried to pass that value to the file API. The correction
+omits undefined optional properties and preserves explicit null, with actual
+empty, passing and failed record shapes in the encoder checks. These failed
+originals are not product regressions or successful matched comparisons.
+
 General's PHP-only dependency update #437 is merged at `158f4c6f2` and included
 in the current working branch. It leaves the pinned corrected and historical
 cohorts unchanged. The combined tree requires fresh candidate qualification

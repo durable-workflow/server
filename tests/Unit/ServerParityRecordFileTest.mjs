@@ -28,14 +28,16 @@ test('full wire recordings serialize within a bounded heap without dropping case
   } finally { rmSync(directory, {recursive: true}); }
 });
 
-test('empty and failed recordings keep their explicit disposition', () => {
+test('optional resource metadata, empty and failed recordings preserve JSON semantics', () => {
   const directory = mkdtempSync(join(tmpdir(), 'dw-parity-record-'));
   try {
-    for (const record of [{outcome: 'runner-blocked', cases: []},
-      {outcome: 'product-fail', cases: [{outcome: 'product-fail', error: 'original expired'}], finished_at: 'unchanged'}]) {
+    for (const record of [{outcome: 'runner-blocked', cases: [], database_resource_limits: undefined},
+      {outcome: 'pass', cases: [{outcome: 'pass'}], database_resource_limits: undefined},
+      {outcome: 'product-fail', cases: [{outcome: 'product-fail', error: 'original expired'}], finished_at: 'unchanged'},
+      {outcome: 'pass', cases: [], database_resource_limits: null}]) {
       const path = join(directory, 'record.json');
       writeRecord(path, record);
-      assert.deepEqual(JSON.parse(readFileSync(path)), record);
+      assert.deepEqual(JSON.parse(readFileSync(path)), JSON.parse(JSON.stringify(record)));
     }
   } finally { rmSync(directory, {recursive: true}); }
 });
