@@ -236,17 +236,6 @@ async fn every_authored_deadline_fences_outcomes_and_resolves_once() {
             field.trim_end_matches("_timeout")
         );
         assert_eq!(timed[0]["payload"]["failure_category"], "timeout");
-        if !activity.is_null() {
-            let diagnostic = request(
-                &app, "POST",
-                &format!("/api/worker/activity-tasks/{}/heartbeat", activity["task_id"].as_str().unwrap()),
-                json!({"lease_owner":activity["lease_owner"],"activity_attempt_id":activity["activity_attempt_id"]}),
-            ).await;
-            assert_eq!(diagnostic.0, StatusCode::OK);
-            assert_eq!(diagnostic.1["reason"], field);
-            assert_eq!(diagnostic.1["can_continue"], false);
-            assert_eq!(diagnostic.1["heartbeat_recorded"], false);
-        }
         assert_eq!(
             timed[0]["payload"]["exception_class"],
             specification()["activity_deadline_authority"]["exception_class"]

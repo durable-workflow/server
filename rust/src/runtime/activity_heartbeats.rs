@@ -195,21 +195,8 @@ where
             // Published PHP returns a structured refusal for ordinary expired
             // or closed authority. This read never records progress or renews
             // a lease; a concurrently closed attempt remains fenced.
-            // Preserve the original timeout diagnostic after its canonical
-            // sweep has closed the attempt. Do not infer it from deadlines
-            // which may since have elapsed on a successful activity.
-            let mut reason = observed["reason"].clone();
-            if let Some(event) = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_task_id=$1 AND event_type='ActivityTimedOut' ORDER BY sequence DESC LIMIT 1")
-                .bind(task_id).fetch_optional(&mut *tx).await? {
-                let payload = DB::document_row(&event, "payload")?;
-                if payload["activity_attempt_id"] == attempt_id {
-                    if let Some(kind @ ("schedule_to_start" | "schedule_to_close" | "start_to_close" | "heartbeat")) = payload["timeout_kind"].as_str() {
-                        reason = json!(super::activity_deadlines::timeout_reason(kind));
-                    }
-                }
-            }
             let response = json!({"task_id":task_id,"activity_attempt_id":attempt_id,"lease_owner":body["lease_owner"],
-                "cancel_requested":false,"can_continue":false,"reason":reason,
+                "cancel_requested":false,"can_continue":false,"reason":observed["reason"],
                 "run_closed_reason":observed["run_closed_reason"],"run_closed_at":observed["run_closed_at"],
                 "heartbeat_recorded":false,"lease_expires_at":observed["lease_expires_at"],
                 "last_heartbeat_at":observed["last_heartbeat_at"],"worker_session":observed["worker_session"],
