@@ -123,6 +123,11 @@ export function checkCorrectedRange(fixture, observation, workflowId, instant) {
   if (observation.mode === 'embedded') {
     assert.equal(observation.corrected_range.applicable, false);
     assert.equal(observation.corrected_range.reason, 'embedded_executes_original_php_definitions');
+    for (const phase of [observation.range_repair.incompatible, observation.range_repair.corrected]) {
+      for (const key of ['execution_deadline_at', 'run_deadline_at']) {
+        assert.equal(phase.execution[key], observation.range_repair.original.execution[key], 'original embedded durable deadline');
+      }
+    }
     const original = JSON.parse(readFileSync(new URL('../../../'+spec.original_fixture, import.meta.url)));
     checkRangeRepair(original, observation, workflowId, instant);
     return {workflow_id: workflowId, typed_output: fixture.typed_value,
