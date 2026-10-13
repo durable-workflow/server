@@ -39,21 +39,26 @@ pass. The [delivery receipt](https://github.com/durable-workflow/server/pull/429
 records exact artifacts and limits. Historical failures below remain failed;
 their causes are not established by this successful qualification.
 
-The next active slice is [selected-run signals](rust-server-selected-run-signals.md).
-It widens the separate shared fixture set to the six supported PHP/Rust client
-by PHP/Python/Rust author directions and canonical embedded behavior. The
-[isolated SQLite reference](https://github.com/durable-workflow/server/pull/434#issuecomment-6138791924)
-passes all six HTTP directions and canonical embedded counterparts at
-`e077ee4e60ceb9b3dfe6d2259fdc341f63ffbcec`: 24 original runs, 116 full sidecars,
-588 byte-checked exchanges and 300 real-record reader guards. Frozen Rust's
-optional variadic contract lacks an invalid-argument refusal gate; the separate
-PHP/Python-author gate omits its required argument. Native routing and durable
-rejections are implemented in the draft with passing focused storage/HTTP and
-local native regressions. The first real native pair completed but its strict
-record failed on the missing public command journal; the original is retained
-and the metadata projection is qualifying before a fresh cohort. Shared native
-and all-six candidate/fresh-main qualification remain pending. Published PHP remains the default; full runtime parity,
-migration, matched performance and release/cutover remain unqualified.
+[#434](https://github.com/durable-workflow/server/pull/434) is delivered at
+`c6dc5e451bf9ba8651f1f84e386ed6c274f3992c`, preserving reviewed tree
+`a823f73d288be436994e1272e020f462991b1dd3`. All six final-head and automatic
+main database jobs pass. Independent main original-artifact audits verify
+270 paired observations, 540 original runs, 3,300 HTTP sidecars and 11,803
+member hashes across the namespace and selected-run signal profiles. Each
+database passes 79 native execution cases, both 49-case comparators and 516
+actual-record reader checks, with applicable pool/reset and TLS gates. Main
+SDK identity, PHP/source and boundary gates pass. The
+[delivery receipt](https://github.com/durable-workflow/server/pull/434#issuecomment-6143056720)
+preserves earlier failed and cancelled originals and their separate limits.
+Frozen Rust's optional variadic signal contract still lacks an invalid-argument
+refusal gate; PHP/Python-author recipes omit a required argument.
+
+The next active slice is the separate
+[corrected marker/range cohort](rust-server-corrected-markers.md). It adds
+supported current readers and Rust authors to genuine numeric, duplicate-bound,
+clock, retry-policy and same-run repair cases. Existing frozen actors and
+histories remain unchanged. Published PHP remains the default; broader runtime
+parity, migration, matched performance and release/cutover remain unqualified.
 
 [#427](https://github.com/durable-workflow/server/pull/427) is merged and its
 [fresh-main qualification](https://github.com/durable-workflow/server/pull/427#issuecomment-6130548960)
@@ -1677,7 +1682,7 @@ full-matrix qualification remains required; earlier failed records stay held.
 | Workflow lifecycle, duplicate commands, typed history, continuation, child workflows, cancellation, cleanup replay | Workflow lifecycle, migration, child-workflow and replay runners; Feature cooperative cancellation, history, migration and repeated-signal tests | Bounded authored completion, activity retry/failure, direct children/cancellation and root cooperative cleanup; broader propagation, replay and continuation semantics pending |
 | Timers, schedules, signals, queries, updates, search attributes, memo, sagas | Corresponding runners in `scripts/conformance/`, manifests in `static/platform-conformance/`; Sample App polyglot experiments | Bounded durable sleep, repeated signals, state queries/updates and two UTC schedule cases; broader policies, search attributes, memo and sagas pending |
 | Local activities, cancellation scopes, worker sessions, streams, service catalog/Nexus, bridge adapters, standalone activities, debugging and repair | `routes/api.php`, `docs/contracts/`, worker/control-plane specifications, corresponding Feature tests and Nexus runner | Pending; not omitted from parity |
-| Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | Published SDK and canonical embedded directions: #401 nine workflow/activity, #408 nine parent/child, #411 timer authors, #415 nine signals, #422 nine queries, #424 nine successful updates and #427 nine failed updates. Current default query/update/signal families pass all six configurations on #427 main; the original frozen-PHP SQLite cancellation failure remains immutable. #429 paired named-namespace signals pass all six candidate configurations; promotion-head and fresh-main gates remain pending. CLI 2.2.0 list/describe/history has bounded coverage; broader SDK families, CLI commands, Waterline and Sample App remain pending |
+| Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | Published SDK and canonical embedded directions: #401 nine workflow/activity, #408 nine parent/child, #411 timer authors, #415 nine signals, #422 nine queries, #424 nine successful updates and #427 nine failed updates. Current default query/update/signal families pass all six configurations on #427 main; the original frozen-PHP SQLite cancellation failure remains immutable. #429 paired named-namespace and #434 selected-run signal profiles pass all six final-head and fresh-main configurations. A separate corrected marker/range cohort is next. CLI 2.2.0 list/describe/history has bounded coverage; broader SDK families, CLI commands, Waterline and Sample App remain pending |
 | SQL schema and stored representations | `database/migrations/`, Workflow package `src/migrations/`, model casts, `Workflow\\Serializers\\Serializer`, queue job payloads, exported history and credential digests | [Representation checkpoints](rust-server-storage-audit.md) recorded; complete mapping and executable migration tests pending |
 | Images, architecture, bootstrap, configuration, readiness, metrics and graceful shutdown | `Dockerfile`, `docker/`, `config/`, `docker-compose*.yml`, `k8s/helm/`, `docs/server-reference.md`, small-cluster/multi-region validation docs | Pending |
 | Backup and in-place upgrade | `docs/self-hosted-backup-and-restore.md`, external payload backup holds; last PHP image writes, all PHP roles stop, Rust takes over same DB sequentially | Pending on SQLite, MariaDB/MySQL, PostgreSQL |
