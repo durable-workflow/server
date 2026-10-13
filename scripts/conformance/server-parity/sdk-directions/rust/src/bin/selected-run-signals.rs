@@ -23,7 +23,7 @@ async fn main() -> Result<()> {
         "foreign-signal" => ("payload", json!([fixture["signal_value"]]), Some(404)),
         "mismatched-run" | "inactive-signal" => ("payload", json!([fixture["signal_value"]]), Some(409)),
         "unknown-signal" => ("undeclared", json!([fixture["signal_value"]]), Some(404)),
-        "invalid-signal" => ("payload", json!([17]), Some(422)),
+        "invalid-signal" => ("payload", json!([]), Some(422)),
         "signal-1" | "signal-2" => ("payload", json!([fixture["signal_value"]]), None),
         _ => return Err(Error::WorkerLoop("Unknown selected-run sender phase".into())),
     };

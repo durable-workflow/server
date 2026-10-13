@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 // Fixture-only, read-only inspection. Never inspect credentials or register a
 // product endpoint. Every row is anchored to these two original fixture runs.
-function selectedRunSignalStoredState(array $workflowIds, array $runIds): array
+function selectedRunSignalStoredState(array $workflowIds, array $runIds, Closure $decode): array
 {
     if (count($workflowIds) !== 2 || count($runIds) !== 2
         || count(array_unique($workflowIds)) !== 2 || count(array_unique($runIds)) !== 2) {
@@ -25,21 +25,21 @@ function selectedRunSignalStoredState(array $workflowIds, array $runIds): array
     if ($kind === 'sqlite') {
         $pdo->exec('PRAGMA query_only=ON');
         $pdo->beginTransaction();
-        $names = $pdo->query("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'workflow_%' ORDER BY name")->fetchAll(PDO::FETCH_COLUMN);
+        $names = $pdo->query("SELECT name FROM sqlite_master WHERE type='table' AND (name LIKE 'workflow_%' OR name IN ('activity_attempts','activity_executions')) ORDER BY name")->fetchAll(PDO::FETCH_COLUMN);
     } elseif ($kind === 'mysql') {
         $pdo->exec('SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ');
         $pdo->exec('START TRANSACTION READ ONLY');
-        $statement = $pdo->prepare("SELECT table_name FROM information_schema.tables WHERE table_schema=? AND table_name LIKE 'workflow_%' ORDER BY table_name");
+        $statement = $pdo->prepare("SELECT table_name FROM information_schema.tables WHERE table_schema=? AND (table_name LIKE 'workflow_%' OR table_name IN ('activity_attempts','activity_executions')) ORDER BY table_name");
         $statement->execute([$database]);
         $names = $statement->fetchAll(PDO::FETCH_COLUMN);
     } else {
         $pdo->exec('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
-        $names = $pdo->query("SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name LIKE 'workflow_%' ORDER BY table_name")->fetchAll(PDO::FETCH_COLUMN);
+        $names = $pdo->query("SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND (table_name LIKE 'workflow_%' OR table_name IN ('activity_attempts','activity_executions')) ORDER BY table_name")->fetchAll(PDO::FETCH_COLUMN);
     }
-    $tables = [];
+    $tables = $decoded = [];
     try {
         foreach ($names as $table) {
-            if (! preg_match('/^workflow_[a-z_]+$/D', $table)) {
+            if (! preg_match('/^(workflow_[a-z_]+|activity_attempts|activity_executions)$/D', $table)) {
                 throw new RuntimeException('Unexpected workflow table identifier.');
             }
             if ($kind === 'sqlite') {
@@ -68,6 +68,20 @@ function selectedRunSignalStoredState(array $workflowIds, array $runIds): array
             $statement = $pdo->prepare('SELECT * FROM '.$table.' WHERE '.implode(' OR ', $conditions).' ORDER BY '.(in_array('id', $columns, true) ? 'id' : $columns[0]));
             $statement->execute($bindings);
             $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
+            $payloadFields = match ($table) {
+                'workflow_runs' => ['arguments', 'output'],
+                'workflow_commands' => ['payload'],
+                'workflow_signal_records' => ['arguments'],
+                default => [],
+            };
+            foreach ($rows as $row) {
+                foreach ($payloadFields as $field) {
+                    if (is_string($row[$field] ?? null) && $row[$field] !== '') {
+                        $value = $decode(['codec' => 'avro', 'blob' => $row[$field]]);
+                        $decoded[$table][$row['id']][$field] = ['value' => $value, 'typed_value' => typedValue($value)];
+                    }
+                }
+            }
             foreach ($rows as &$row) {
                 foreach ($row as &$value) {
                     if (is_resource($value)) { $value = stream_get_contents($value); }
@@ -81,7 +95,8 @@ function selectedRunSignalStoredState(array $workflowIds, array $runIds): array
             $tables[$table] = ['columns' => $columns, 'rows' => $rows];
         }
         return ['schema' => 'durable-workflow.selected-run-signal-state/v1',
-            'read_only' => true, 'workflow_ids' => $workflowIds, 'run_ids' => $runIds, 'tables' => $tables];
+            'read_only' => true, 'workflow_ids' => $workflowIds, 'run_ids' => $runIds,
+            'tables' => $tables, 'decoded_values' => $decoded];
     } finally {
         $pdo->exec('ROLLBACK');
     }

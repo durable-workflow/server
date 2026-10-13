@@ -20,7 +20,7 @@ if (! is_string($namespace) || $namespace === '' || trim($namespace) !== $namesp
 [$name, $arguments, $expectedStatus] = match ($phase) {
     'foreign-signal', 'mismatched-run', 'inactive-signal' => ['payload', [$fixture['signal_value']], $phase === 'foreign-signal' ? 404 : 409],
     'unknown-signal' => ['undeclared', [$fixture['signal_value']], 404],
-    'invalid-signal' => ['payload', [17], 422],
+    'invalid-signal' => ['payload', [], 422],
     'signal-1', 'signal-2' => ['payload', [$fixture['signal_value']], null],
     default => throw new InvalidArgumentException('Unknown selected-run sender phase.'),
 };

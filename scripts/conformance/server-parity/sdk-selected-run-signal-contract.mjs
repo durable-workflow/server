@@ -3,7 +3,12 @@ import {readFileSync} from 'node:fs';
 import {checkSdkSignalDirectionPackages} from './sdk-signal-direction-contract.mjs';
 
 const artifacts = JSON.parse(readFileSync(new URL('../../../tests/Fixtures/ServerParityProfiles/published-sdk-selected-run-signals/artifacts.json', import.meta.url), 'utf8'));
-const required = ['workflow_instances', 'workflow_runs', 'workflow_commands', 'workflow_signal_records', 'workflow_history_events', 'workflow_tasks'];
+const required = ['activity_attempts', 'activity_executions', 'workflow_child_calls', 'workflow_child_projection_repairs',
+  'workflow_commands', 'workflow_durable_stream_items', 'workflow_durable_streams', 'workflow_failures', 'workflow_history_events',
+  'workflow_inbound_stream_items', 'workflow_inbound_streams', 'workflow_instances', 'workflow_links', 'workflow_memos',
+  'workflow_messages', 'workflow_run_lineage_entries', 'workflow_run_summaries', 'workflow_run_timeline_entries',
+  'workflow_run_timer_entries', 'workflow_run_timers', 'workflow_run_waits', 'workflow_runs', 'workflow_schedule_history_events',
+  'workflow_search_attributes', 'workflow_signal_records', 'workflow_tasks', 'workflow_update_validation_tasks', 'workflow_updates'];
 const rows = (state, table) => state.tables[table].rows;
 const nonempty = value => assert(typeof value === 'string' && value.length > 0);
 const frame = value => typeof value === 'string' ? value : (assert.equal(value?.codec, 'avro'), value.blob);
@@ -21,7 +26,7 @@ function checkState(state, ids, runs) {
   assert.deepEqual(state.workflow_ids, ids); assert.deepEqual(state.run_ids, runs);
   required.forEach(table => assert(state.tables[table], 'required persisted table ' + table));
   for (const [table, value] of Object.entries(state.tables)) {
-    assert(/^workflow_[a-z_]+$/.test(table)); assert(Array.isArray(value.columns) && value.columns.length > 0);
+    assert(/^(workflow_[a-z_]+|activity_attempts|activity_executions)$/.test(table)); assert(Array.isArray(value.columns) && value.columns.length > 0);
     assert.equal(new Set(value.columns).size, value.columns.length);
     for (const row of value.rows) assert.deepEqual(Object.keys(row), value.columns, 'complete raw row columns');
     if (value.columns.includes('id')) assert.equal(new Set(value.rows.map(row => row.id)).size, value.rows.length, 'unique persisted row identity');
@@ -171,6 +176,7 @@ export function checkSelectedRunSignalPair(fixture, observation, workflowId, che
     }
   }
   checkState(pair.final_stored, ids, runs);
+  for (const table of ['activity_attempts', 'activity_executions']) assert.deepEqual(rows(pair.final_stored, table), [], 'signal-only recipe admits no activities');
   assert.equal(rows(pair.final_stored, 'workflow_commands').length, 12);
   assert.equal(rows(pair.final_stored, 'workflow_signal_records').length, 10);
   assert.equal(rows(pair.final_stored, 'workflow_history_events').length, observation.mode === 'embedded' ? 22 : 26);
@@ -192,7 +198,11 @@ export function checkSelectedRunSignalPair(fixture, observation, workflowId, che
     for (const signal of signals) {
       const command = commands.find(row => row.id === signal.workflow_command_id); assert(command);
       for (const key of ['workflow_run_id', 'workflow_instance_id', 'command_sequence', 'outcome', 'target_scope', 'requested_workflow_run_id', 'resolved_workflow_run_id']) assert.equal(signal[key], command[key]);
+      const expectedArguments = command.command_sequence === 3 ? {type: 'list', value: []}
+        : {type: 'list', value: [fixtures[index].typed_signal_value]};
+      assert.deepEqual(pair.final_stored.decoded_values.workflow_signal_records[signal.id].arguments.typed_value, expectedArguments, 'durable signal keeps exact original argument types');
     }
+    assert.deepEqual(pair.final_stored.decoded_values.workflow_runs[runId].output.typed_value, fixtures[index].typed_signal_value, 'durable output exact int64/null/Unicode');
     for (const [number, delivery] of observations[index].signal_deliveries.entries()) {
       const command = commands[number + 3]; assert.equal(delivery.response.command_id, command.id);
       assert.equal(delivery.response.command_sequence, number + 4);

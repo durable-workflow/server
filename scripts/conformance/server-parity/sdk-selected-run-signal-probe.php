@@ -100,7 +100,7 @@ function selectedRunSignalHttpObservation(array $fixture, array $options): array
         }
         $runs = array_column($state['initial'], 'run_id');
         $snapshots = static fn (): array => array_map(static fn (int $index): array => sdkDirectionSnapshot($clients[$index], $ids[$index], $runs[$index]), [0, 1]);
-        $stored = static fn (): array => selectedRunSignalStoredState($ids, $runs);
+        $stored = static fn (): array => selectedRunSignalStoredState($ids, $runs, $clients[0]->payloadCodec()->decodeEnvelope(...));
         $control = static function (string $phase, int $index, int $scope, string $selected) use (&$state,
             $ids, $fixture, $paths, $url, $snapshots, $stored, $journal, $base, $checkpoint): void {
             $checkpoint($phase.'_'.$index);
@@ -212,7 +212,8 @@ function selectedRunSignalEmbeddedObservation(array $fixture, string $workflowId
     };
     $work();
     $snapshots = static fn (): array => array_map(namespaceEmbeddedRun(...), $runs);
-    $stored = static fn (): array => selectedRunSignalStoredState($ids, $runs);
+    $stored = static fn (): array => selectedRunSignalStoredState($ids, $runs,
+        static fn (array $frame): mixed => \Workflow\Serializer::unserializeWithCodec($frame['codec'], $frame['blob']));
     $state['initial'] = $snapshots();
     foreach ($state['initial'] as $initial) {
         if ($initial['status'] !== 'waiting') { throw new RuntimeException('Both embedded originals must wait before signals.'); }
@@ -224,7 +225,7 @@ function selectedRunSignalEmbeddedObservation(array $fixture, string $workflowId
         try {
             $selection = WorkflowStub::loadSelection($ids[$index], $selected, $fixtures[$scope]['namespace']);
             $command = $selection->attemptSignalWithArguments($phase === 'unknown-signal' ? 'undeclared' : 'payload',
-                $phase === 'invalid-signal' ? [17] : [$fixtures[$index]['signal_value']]);
+                $phase === 'invalid-signal' ? [] : [$fixtures[$index]['signal_value']]);
             $result = ['refused' => $command->rejected(), 'command' => selectedRunSignalEmbeddedReceipt($command)];
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $error) {
             $result = ['refused' => true, 'typed_error' => ['class' => $error::class]];

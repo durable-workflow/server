@@ -30,9 +30,15 @@ must not rebase a deadline or replace a failed original with a new run.
 | Select the neighboring run from the wrong namespace | `404/instance_not_found` | Both complete persisted snapshots remain unchanged. |
 | Select a different run for the original instance | `409/historical_run_command_rejected`, `target_scope=run` | Both complete persisted snapshots remain unchanged. |
 | Unknown signal on the selected current run | Named `404` refusal | Persist a rejected command and signal; advance command/message sequence without workflow history. |
-| Invalid typed input on the selected current run | Named `422` refusal | Persist a rejected command and signal; preserve typed diagnostics and original workflow history. |
+| Omit the required signal argument on the selected current run | Named `422` refusal | Persist a rejected command and signal; preserve validation diagnostics and original workflow history. |
 | Two valid selected-current-run signals | Accepted | Preserve instance-scoped commands with null requested run and the exact resolved original run; finish once through cold authors. |
 | Signal the selected run after completion | Named `409` refusal | Persist a rejected command and signal without new workflow history or task repair. |
+
+The shared invalid-input case omits the required argument. Frozen Python 2.5.4
+declares its signal parameter without a type and legitimately admits integer
+`17`; the initial HTTP recording preserves that admission and stops. The earlier
+PHP/PHP typed mismatch remains a distinct reference case. Do not infer a typed
+Python declaration or alter its frozen author to obtain a refusal.
 
 The successful HTTP selected-current-run guard does not convert an accepted
 command to run scope. Embedded uses the public selected `WorkflowStub` directly;
