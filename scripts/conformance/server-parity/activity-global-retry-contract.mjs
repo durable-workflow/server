@@ -67,7 +67,9 @@ export function checkActivityGlobalRetry(fixture, observation, workflowId, insta
     assert.equal(row.payload.activity_execution_id, first.activity_execution_id);
     assert.deepEqual(row.payload.activity.retry_policy, policy);
   }
-  assert.deepEqual(events[2].typed_decoded.arguments, {type: 'list', value: [fixture.typed_value]});
+  for (const row of events.slice(2)) {
+    assert.deepEqual(row.typed_decoded.activity_arguments, {type: 'list', value: [fixture.typed_value]});
+  }
   const retry = events[4], started = events[5], timeout = events[6];
   assert.equal(retry.payload.timeout_kind, 'start_to_close');
   assert.equal(retry.payload.retry_after_attempt_id, first.activity_attempt_id);
