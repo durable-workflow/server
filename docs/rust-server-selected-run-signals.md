@@ -81,3 +81,22 @@ attempt-one tasks, with the same complete history inventory for its mode.
 Older-run continuation races, broader authentication, external payloads and
 current-release consumers remain separate gates. Passing this slice does not
 establish migration, matched performance, full parity or release readiness.
+
+The six frozen PHP HTTP directions and six canonical embedded counterparts
+passed on isolated SQLite at `e077ee4e`. Their original records pass 300
+corruption guards and an independent byte audit of 116 full sidecars and 588
+wire exchanges, covering 24 original runs. The
+[reference receipt](https://github.com/durable-workflow/server/pull/434#issuecomment-6138791924)
+preserves earlier failed records and their narrower conclusions.
+
+The next native candidate enables named-namespace selected-run signals and
+commits unknown, invalid and inactive rejections atomically with their original
+Avro arguments and diagnostics. Refusals advance only command/message counters;
+they add no history, task, wait reservation or wake notification. Encoding uses
+the existing bounded official-codec worker. Wrong namespaces and mismatched
+selected runs remain zero-mutation guards. A real HTTP/physical-storage test
+fails on the previous native runtime, then passes after the correction. Local
+locked tests pass 33 unit cases and 79 execution cases; the 18 existing
+backend-dependent unit cases remain explicitly reserved for the hosted database
+jobs. Shared native recordings, all six exact candidate jobs and fresh main
+qualification are pending.

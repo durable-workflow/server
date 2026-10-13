@@ -270,17 +270,38 @@ impl Runtime {
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
-                    .signal(workflow_id, run_id, name, body, prepared)
+                    .signal(
+                        workflow_id,
+                        run_id,
+                        name,
+                        body,
+                        prepared,
+                        self.signal_codec.clone(),
+                    )
                     .await
             }
             Storage::Postgres(store) => {
                 store
-                    .signal(workflow_id, run_id, name, body, prepared)
+                    .signal(
+                        workflow_id,
+                        run_id,
+                        name,
+                        body,
+                        prepared,
+                        self.signal_codec.clone(),
+                    )
                     .await
             }
             Storage::MySql(store) => {
                 store
-                    .signal(workflow_id, run_id, name, body, prepared)
+                    .signal(
+                        workflow_id,
+                        run_id,
+                        name,
+                        body,
+                        prepared,
+                        self.signal_codec.clone(),
+                    )
                     .await
             }
         }

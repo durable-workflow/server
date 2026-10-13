@@ -35,6 +35,21 @@ impl Operation<'_> {
                 } else { "Workflow not found." },"workflow_id":workflow_id}),
                 )
             }
+            super::RuntimeError::Refused { status, reason }
+                if matches!(self, Self::Signal(_))
+                    && reason == "historical_run_command_rejected" =>
+            {
+                (
+                    status,
+                    json!({"reason":reason,"workflow_id":workflow_id,"target_scope":"run",
+                    "message":"Commands cannot target historical runs. Use the instance-level endpoint to command the current run, or omit the run ID."}),
+                )
+            }
+            super::RuntimeError::Protocol { status, response }
+                if matches!(self, Self::Signal(_)) =>
+            {
+                (status, response)
+            }
             super::RuntimeError::Protocol { status, response }
                 if matches!(self, Self::Start)
                     && response["reason"] == "workflow_id_reserved_in_namespace" =>
@@ -200,6 +215,11 @@ impl Operation<'_> {
                 "resolved_run_id",
                 "requested_run_id",
                 "signal_name",
+                "command_contract_source",
+                "command_contract_backfill_needed",
+                "command_contract_backfill_available",
+                "declared_signals",
+                "signal_admission",
             ] {
                 if let Some(value) = body.get(field) {
                     metadata[field] = value.clone();

@@ -200,7 +200,7 @@ async fn named_signal_waits_keep_both_original_runs_and_foreign_polls_isolated()
         assert_eq!(described.1["status"], "completed");
         assert_eq!(described.1["run_id"], starts[index]["run_id"]);
         assert_eq!(described.1["namespace"], namespaces[index]);
-        let unqualified = scoped(
+        let inactive = scoped(
             &app,
             namespaces[index],
             "POST",
@@ -212,11 +212,8 @@ async fn named_signal_waits_keep_both_original_runs_and_foreign_polls_isolated()
             json!({"input":envelope(Payload::Array(vec![Payload::Long(1)]))}),
         )
         .await;
-        assert_eq!(unqualified.0, StatusCode::UNPROCESSABLE_ENTITY);
-        assert_eq!(
-            unqualified.1["reason"],
-            "development_namespace_operation_unqualified"
-        );
+        assert_eq!(inactive.0, StatusCode::CONFLICT);
+        assert_eq!(inactive.1["reason"], "run_not_active");
     }
     runtime.close().await;
     database.remove().await;
@@ -296,7 +293,7 @@ async fn named_idle_query_poll_preserves_same_id_default_namespace_claim() {
     database.remove().await;
 }
 
-async fn scoped(
+pub(super) async fn scoped(
     app: &Router,
     namespace: &str,
     method: &str,
@@ -318,7 +315,7 @@ async fn scoped(
     (status, body)
 }
 
-async fn create(app: &Router, name: &str) {
+pub(super) async fn create(app: &Router, name: &str) {
     let (status, body) = scoped(
         app,
         "does-not-exist",
@@ -333,7 +330,7 @@ async fn create(app: &Router, name: &str) {
     assert_eq!(body["retention_days"], 30);
 }
 
-async fn start_scoped(app: &Router, namespace: &str, workflow: &str) -> Value {
+pub(super) async fn start_scoped(app: &Router, namespace: &str, workflow: &str) -> Value {
     let (status, body) = scoped(
         app,
         namespace,
