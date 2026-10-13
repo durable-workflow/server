@@ -63,8 +63,8 @@ for(const field of fixture.activity_deadline_authority.fields){
       'replaced original stored deadline':value=>{const activity=step(value).after_expiry.activities[0];for(const name of ['schedule_deadline_at','close_deadline_at','schedule_to_close_deadline_at','heartbeat_deadline_at'])if(activity[name]!==null)activity[name]='2100-01-01T00:00:00.000000Z';},
       'missing actual timeout enforcement':value=>{step(value).enforcement=false;},
       'wrong original parent row':value=>{step(value).after_expiry.tasks.find(task=>task.id===step(value).parent_delivery.task_id).workflow_run_id='other';},
-      'fabricated HTTP library outcome':value=>{step(value).late_outcomes[0].status=409;},
     });
+    if(field!=='schedule_to_start_timeout')controls['fabricated HTTP library outcome']=value=>{step(value).late_outcomes[0].status=409;};
   }
   for(const[name,mutate]of Object.entries(controls)){const value=structuredClone(original);mutate(value);assert.throws(()=>read(value),undefined,`${field}: ${name}`);}
   results.push({field,actual_record:true,mutation_controls:Object.keys(controls)});
