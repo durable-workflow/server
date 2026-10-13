@@ -56,6 +56,14 @@ export function checkActivityDeadlineReceipts(fixture, observation, workflowId, 
     assert.equal(state.enforcement.enforced, true);
     assert.equal(state.first_refusal.recorded, false);
     assert.equal(state.first_refusal.reason, 'start_to_close_timeout');
+    const claims = state.claim_observations.filter(row => row.claimed);
+    assert.equal(claims.length, 2);
+    assert.equal(claims[0].activity_attempt_id, state.first_attempt.activity_attempt_id);
+    assert.equal(claims[1].activity_attempt_id, state.second_attempt.activity_attempt_id);
+    for (const row of state.claim_observations.filter(row => !row.claimed)) {
+      assert.equal(row.reason, 'task_not_due');
+      assert(row.retry_after_seconds > 0);
+    }
   }
   const first = state.first_attempt, second = state.second_attempt;
   for (const [index, task] of [first, second].entries()) {

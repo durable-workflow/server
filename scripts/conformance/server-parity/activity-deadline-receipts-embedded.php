@@ -88,11 +88,16 @@ function activityDeadlineReceiptsEmbeddedObservation(array $fixture, array $opti
     };
     $activityBridge = $app->make(\Workflow\V2\Support\DefaultActivityTaskBridge::class);
     $workflowBridge = $app->make(\Workflow\V2\Support\DefaultWorkflowTaskBridge::class);
-    $claim = static function () use ($activityBridge, $id): ?array {
+    $claimObservations = [];
+    $claim = static function () use ($activityBridge, $id, &$claimObservations): ?array {
         $tasks = $activityBridge->poll('database', $id.'-activity', 1, namespace: 'default');
         if ($tasks === []) return null;
         $claim = $activityBridge->claimStatus($tasks[0]['task_id'], $id.'-activity-worker');
-        if (! $claim['claimed']) throw new RuntimeException('Original embedded activity claim refused');
+        $claimObservations[] = $claim;
+        // Poll may expose a future retry within its documented availability
+        // tolerance. Claim remains authoritative and never skips the backoff.
+        if (! $claim['claimed'] && $claim['reason'] === 'task_not_due') return null;
+        if (! $claim['claimed']) throw new RuntimeException('Original embedded activity claim refused: '.$claim['reason']);
 
         return [...$claim, 'workflow_id' => $claim['workflow_instance_id'], 'run_id' => $claim['workflow_run_id']];
     };
@@ -161,5 +166,6 @@ function activityDeadlineReceiptsEmbeddedObservation(array $fixture, array $opti
             'committed' => $committed, 'duplicate' => $duplicate, 'conflict' => $conflict,
             'active_before_expiry' => $activeBefore, 'active_before_expiry_elapsed_seconds' => $activeBeforeElapsed,
             'active_after_expiry' => $activeAfter, 'workflow_duplicate' => $workflowDuplicate,
-            'requests' => [], 'bridge_calls' => $calls, 'definition_sha256' => hash_file('sha256', __FILE__)]];
+            'requests' => [], 'bridge_calls' => $calls, 'claim_observations' => $claimObservations,
+            'definition_sha256' => hash_file('sha256', __FILE__)]];
 }
