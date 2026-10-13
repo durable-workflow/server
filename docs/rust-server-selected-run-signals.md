@@ -133,3 +133,23 @@ The expanded runtime jobs now have a 45-minute ceiling to include setup,
 all profiles, cleanup and original artifact retention. Per-run, paired and outer
 fixture deadlines, runtime caps, frozen tuples and original outcomes are unchanged.
 A new exact candidate and fresh main remain required before promotion.
+
+At the next exact candidate, `ff380ee02`, PostgreSQL 16/17, MySQL 8.0 and
+MariaDB 10.11 complete successfully. SQLite fails before this profile in the
+unchanged frozen PHP 2.5.14 manual-schedule trigger, returning HTTP 500 with
+SQLite error 5 during workflow-instance insertion and failure recording. The
+[original failure receipt](https://github.com/durable-workflow/server/pull/434#issuecomment-6140080207)
+retains the failed admission and unresolved current-release applicability.
+
+MySQL 8.4 completes the main comparison and pressure checks, then its trusted
+TLS schema check fails. Retained Docker state records `OOMKilled=true`, exit
+137 and a 1,073,741,824-byte database cap at that failed connection. This
+qualifies the database memory exhaustion observation, not TLS behavior. The
+next qualification assigns this database 2 GiB with no swap; each PHP, embedded
+and native record retains the same effective database limits for strict
+comparison. MySQL 8.0 remains at 1 GiB and MariaDB at 512 MiB. Actor/runtime caps,
+fixture deadlines, frozen packages, native code and original outcomes are
+unchanged. No minimum production allocation or memory-performance conclusion
+is inferred. This new runner revision supersedes the planned same-SHA SQLite
+repeat; its fresh SQLite observation will have the new exact runner identity.
+All six new candidate originals and fresh main remain required.
