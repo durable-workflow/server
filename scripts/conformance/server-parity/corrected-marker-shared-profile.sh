@@ -47,17 +47,21 @@ for target in php rust; do
   if test "$target" = php; then url=http://parity-corrected-php:8080; fi
   bash scripts/conformance/server-parity/corrected-marker-http-profile.sh "$target" "$url" portable
   bash scripts/conformance/server-parity/corrected-marker-http-profile.sh "$target" "$url" clock
+  bash scripts/conformance/server-parity/corrected-marker-http-profile.sh "$target" "$url" deadlines
 done
 docker stop --time 5 "$RESOURCE_SCOPE-corrected-php" "$RESOURCE_SCOPE-corrected-maintenance"
 bash scripts/conformance/server-parity/corrected-marker-embedded-profile.sh "$backend" portable
+bash scripts/conformance/server-parity/corrected-marker-embedded-profile.sh "$backend" deadlines
 fixtures=()
 for id in fresh-numeric fresh-zero deprecation-first genuine-version-one php-full-retry php-full-retry-refusal rust-range-completed rust-range-timer-pending; do fixtures+=(--fixture "$profile/$id.json"); done
 shared=(-v "$PWD:/source:ro" -v "$PWD/$evidence:/evidence" -w /source)
 docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --network none --entrypoint node "${shared[@]}" "$image" scripts/conformance/server-parity.mjs compare /evidence/php/portable-record.json /evidence/rust/portable-record.json /evidence/embedded/record.json --artifacts "$artifacts" "${fixtures[@]}" > "$evidence/portable-comparison.json"
 docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --network none --entrypoint node "${shared[@]}" "$image" scripts/conformance/server-parity.mjs compare /evidence/php/clock-record.json /evidence/rust/clock-record.json --artifacts "$artifacts" --fixture "$profile/python-clock-zero.json" --fixture "$profile/python-clock-genuine-one.json" > "$evidence/clock-comparison.json"
+docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --network none --entrypoint node "${shared[@]}" "$image" scripts/conformance/server-parity.mjs compare /evidence/php/deadlines-record.json /evidence/rust/deadlines-record.json /evidence/embedded/deadlines-record.json --artifacts "$artifacts" --fixture tests/Fixtures/ServerParityPending/activity-deadline-authority.json > "$evidence/deadlines-comparison.json"
 for target in php rust embedded; do
   record="/evidence/$target/portable-record.json"
   if test "$target" = embedded; then record=/evidence/embedded/record.json; fi
   docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --network none --entrypoint node "${shared[@]}" "$image" scripts/conformance/server-parity/corrected-markers/record-readers.mjs "$record" "/evidence/$target/reader-inputs" portable > "$evidence/$target/reader-controls.json"
   if test "$target" != embedded; then docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --network none --entrypoint node "${shared[@]}" "$image" scripts/conformance/server-parity/corrected-markers/record-readers.mjs "/evidence/$target/clock-record.json" "/evidence/$target/clock-reader-inputs" clock > "$evidence/$target/clock-reader-controls.json"; fi
+  docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --network none --entrypoint node "${shared[@]}" "$image" scripts/conformance/server-parity/activity-deadline-readers.mjs "/evidence/$target/deadlines-record.json" > "$evidence/$target/deadlines-reader-controls.json"
 done

@@ -9,7 +9,7 @@ test -n "$RESOURCE_SCOPE"
 case "$target" in php|rust) ;; *) exit 2 ;; esac
 case "$family" in
   all) families=(markers range clock) ;;
-  markers|range|clock|portable) families=("$family") ;;
+  markers|range|clock|portable|deadlines) families=("$family") ;;
   *) exit 2 ;;
 esac
 profile=tests/Fixtures/ServerParityProfiles/corrected-markers
@@ -48,9 +48,14 @@ for family in "${families[@]}"; do
     range) ids=(rust-range-completed rust-range-timer-pending) ;;
     clock) ids=(python-clock-zero python-clock-genuine-one) ;;
     portable) ids=(fresh-numeric fresh-zero deprecation-first genuine-version-one php-full-retry php-full-retry-refusal rust-range-completed rust-range-timer-pending) ;;
+    deadlines) ids=(activity-deadline-authority) ;;
   esac
   fixtures=()
-  for id in "${ids[@]}"; do fixtures+=(--fixture "$profile/$id.json"); done
+  for id in "${ids[@]}"; do
+    path="$profile/$id.json"
+    if test "$family" = deadlines; then path="tests/Fixtures/ServerParityPending/$id.json"; fi
+    fixtures+=(--fixture "$path")
+  done
   status=0
   docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
     --network "$RESOURCE_SCOPE" --entrypoint node "${shared[@]}" "$image" \

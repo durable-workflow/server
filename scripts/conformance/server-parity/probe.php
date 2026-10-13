@@ -861,10 +861,14 @@ try {
         }
     } elseif (isset($fixture['activity_deadline_authority'])) {
         require __DIR__.'/activity-deadline-probe.php';
-        if ($mode !== 'http') {
-            throw new InvalidArgumentException('The pending activity deadline HTTP recipe needs a separately qualified embedded counterpart.');
+        if ($mode === 'embedded') {
+            require __DIR__.'/activity-deadline-embedded.php';
+            $observation = activityDeadlineEmbeddedObservation($fixture, $options);
+        } elseif ($mode === 'http') {
+            $observation = activityDeadlineHttpObservation($fixture, $options);
+        } else {
+            throw new InvalidArgumentException('Mode must be http or embedded.');
         }
-        $observation = activityDeadlineHttpObservation($fixture, $options);
     } elseif (isset($fixture['corrected_range'])) {
         require __DIR__.'/corrected-range-probe.php';
         $observation = match ($mode) {

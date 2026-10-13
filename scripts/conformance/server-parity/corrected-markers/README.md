@@ -1,5 +1,16 @@
 # Corrected marker actors
 
+The optional `deadlines` family uses the existing pending
+`activity-deadline-authority.json` fixture with its unchanged 35-second observer
+and original one-second authored boundaries. It records all four independent
+originals through HTTP or the embedded queue/public worker bridges. The shared
+profile compares their timeout histories, full policies and denied late
+authority, then runs actual-record mutation checks. Adapter receipt formats
+remain explicit. These calls retain the parent timeout delivery rather than
+authoring a workflow result; retry, committed-duplicate and live-renewal
+follow-through remain separate gates. Completed local bulk is removed after
+inspection rather than archived.
+
 This is a separate installed cohort. Existing frozen actors and manifests stay
 unchanged. The machine-owned manifest is
 `tests/Fixtures/ServerParityProfiles/corrected-markers/artifacts.json`.

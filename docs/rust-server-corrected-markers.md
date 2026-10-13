@@ -143,6 +143,17 @@ and wrong-run repair must each receive an independent negative control.
 
 ## Delivery gate
 
+The same separately pinned profile exercises four original one-second activity
+deadlines in real wall time. HTTP uses installed SDK worker-protocol calls;
+embedded mode authors through a real database queue job, then uses the published
+activity/workflow bridges. Both retain the actual timeout parent delivery
+without authoring its workflow result. The reader requires the full retry
+snapshot, original attempt/task/run bounds, one terminal timeout and refusal of
+late completion, failure and heartbeat. Embedded receipts retain their library
+format and exact stored deadlines; they do not invent HTTP statuses. Adapter
+provenance is checked separately from the common semantic comparison. This
+new shared wiring remains pending actual matched qualification.
+
 Start with exact installed published identities and a real PHP/embedded
 reference. Add separate adapters/fixtures and a strict reader using the existing
 recorder interfaces. Qualify actual supported PHP/embedded/native cases on

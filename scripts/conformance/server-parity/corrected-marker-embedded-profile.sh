@@ -8,6 +8,7 @@ case "$family" in
   policy) ids=(php-full-retry-refusal) ;;
   range) ids=(rust-range-completed rust-range-timer-pending) ;;
   portable) ids=(fresh-numeric fresh-zero deprecation-first genuine-version-one php-full-retry php-full-retry-refusal rust-range-completed rust-range-timer-pending) ;;
+  deadlines) ids=(activity-deadline-authority) ;;
   *) exit 2 ;;
 esac
 test -n "$RESOURCE_SCOPE"
@@ -44,7 +45,11 @@ esac
 if test -n "${DW_PARITY_CORRECTED_OWNERSHIP_DIR:-}"; then
   printf '%s\n' "$RESOURCE_SCOPE" > "$DW_PARITY_CORRECTED_OWNERSHIP_DIR/embedded-database-owned.txt"
 fi
-for role in original current; do
+roles=(original current)
+record=record.json
+bootstrap_root=/original-runtime
+if test "$family" = deadlines; then roles=(current); record=deadlines-record.json; bootstrap_root=/runtime; fi
+for role in "${roles[@]}"; do
   package_checks=()
   if test "$role" = original; then
     inputs="$profile/embedded-original"
@@ -67,11 +72,13 @@ done
 runtime=(-v "$PWD/$state/current:/runtime" -v "$PWD/$state/original:/original-runtime"
   -e DW_PARITY_CORRECTED_ORIGINAL_EMBEDDED_ROOT=/original-runtime "${engine[@]}" "${database[@]}")
 docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
-  --network "$RESOURCE_SCOPE" --entrypoint php "${runtime[@]}" -w /original-runtime "$image" \
+  --network "$RESOURCE_SCOPE" --entrypoint php "${runtime[@]}" -w "$bootstrap_root" "$image" \
   artisan server:bootstrap --force > "$evidence/embedded-bootstrap.txt" 2>&1
 fixtures=()
 for id in "${ids[@]}"; do
-  fixtures+=(--fixture "$profile/$id.json")
+  path="$profile/$id.json"
+  if test "$family" = deadlines; then path="tests/Fixtures/ServerParityPending/$id.json"; fi
+  fixtures+=(--fixture "$path")
 done
 docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
   --network "$RESOURCE_SCOPE" --entrypoint node -v "$PWD:/source:ro" -v "$PWD/$evidence:/evidence" \
@@ -79,7 +86,7 @@ docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
   -e DW_PARITY_SDK_AUTOLOAD=/sdk-php/vendor/autoload.php -e DW_PARITY_RUNNER_REVISION="$(git rev-parse HEAD)" \
   "${runtime[@]}" -w /source "$image" scripts/conformance/server-parity.mjs record \
   --mode embedded --application-root /runtime --target embedded --prefix "$prefix" \
-  --artifacts "$artifacts" "${fixtures[@]}" --output /evidence/embedded/record.json
+  --artifacts "$artifacts" "${fixtures[@]}" --output "/evidence/embedded/$record"
 # Evidence survives any failed actor; job cleanup owns incomplete resources.
 case "$backend" in
   mysql)
@@ -89,10 +96,12 @@ case "$backend" in
     docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" -e PGPASSWORD=parity-disposable-password \
       --entrypoint dropdb "$POSTGRES_IMAGE" -h parity-pg -U parity embedded_corrected_ref ;;
   sqlite)
-    cp "$state/embedded.sqlite" "$evidence/embedded/original.sqlite"
+    snapshot=original.sqlite
+    if test "$family" = deadlines; then snapshot=deadlines-original.sqlite; fi
+    cp "$state/embedded.sqlite" "$evidence/embedded/$snapshot"
     rm -- "$state/embedded.sqlite" ;;
 esac
-for role in current original; do
+for role in "${roles[@]}"; do
   docker run --rm --user=1000:1000 --network=none --entrypoint sh \
     -v "$PWD/$state/$role:/runtime" "$image" \
     -c 'find /runtime -mindepth 1 -maxdepth 1 -exec rm -r -- {} +'
