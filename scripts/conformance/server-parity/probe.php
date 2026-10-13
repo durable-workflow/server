@@ -859,6 +859,12 @@ try {
         } else {
             throw new InvalidArgumentException('Mode must be http or embedded.');
         }
+    } elseif (isset($fixture['activity_deadline_authority'])) {
+        require __DIR__.'/activity-deadline-probe.php';
+        if ($mode !== 'http') {
+            throw new InvalidArgumentException('The pending activity deadline HTTP recipe needs a separately qualified embedded counterpart.');
+        }
+        $observation = activityDeadlineHttpObservation($fixture, $options);
     } elseif (isset($fixture['corrected_range'])) {
         require __DIR__.'/corrected-range-probe.php';
         $observation = match ($mode) {

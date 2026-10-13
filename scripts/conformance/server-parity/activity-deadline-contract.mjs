@@ -1,0 +1,124 @@
+import assert from 'node:assert/strict';
+import {gunzipSync,inflateSync,brotliDecompressSync} from 'node:zlib';
+
+export function checkActivityDeadlines(fixture, observation, workflowId) {
+  const spec = fixture.activity_deadline_authority;
+  assert.equal(observation.mode, 'http', 'Separate actual HTTP deadline recipe');
+  assert.equal(observation.workflow_id, workflowId);
+  assert.equal(observation.workflow_type, fixture.workflow_type);
+  assert.equal(observation.namespace, 'default');
+  assert.equal(observation.status, 'deadline_observed');
+  const state = observation.activity_deadline_authority;
+  assert.equal(state.driver, 'installed_sdk_worker_protocol');
+  assert.equal(state.overall_budget_seconds, spec.overall_budget_seconds);
+  const requests = state.requests.map(wire=> {
+    assert.equal(wire.transport_error,null);
+    assert.equal(wire.client_cancelled,false,'No cancelled request counts as a receipt');
+    const decoders = {identity:value=>value,gzip:gunzipSync,deflate:inflateSync,br:brotliDecompressSync};
+    assert(decoders[wire.response_encoding],'Known actual response encoding');
+    assert.equal(decoders[wire.response_encoding](Buffer.from(wire.response_bytes_base64,'base64')).toString('utf8'),wire.response_body,'Complete original response bytes');
+    return {...wire,request:wire.request_body?JSON.parse(wire.request_body):null,response:wire.response_body?JSON.parse(wire.response_body):null};
+  });
+  assert.deepEqual(Object.keys(state.steps), spec.fields);
+  const identities = [];
+  for (const field of spec.fields) {
+    const step = state.steps[field];
+    const id = `${workflowId}-${field}`;
+    assert.equal(step.field, field);
+    assert.equal(step.workflow_id, id);
+    assert.equal(step.workflow_task.workflow_id, id);
+    assert.equal(step.workflow_task.run_id, step.run_id);
+    identities.push(step.run_id);
+    assert.equal(step.admission.recorded, true);
+    const policy = {snapshot_version:1,max_attempts:spec.terminal_max_attempts,
+      backoff_seconds:spec.retry_backoff_seconds,non_retryable_error_types:[],
+      start_to_close_timeout:null,schedule_to_start_timeout:null,schedule_to_close_timeout:null,heartbeat_timeout:null};
+    policy[field] = spec.timeout_seconds;
+    for (const snapshot of [step.scheduled,step.before_expiry,step.after_expiry]) {
+      assert.equal(snapshot.workflow_id, id);
+      assert.equal(snapshot.run_id, step.run_id);
+      assert.equal(snapshot.workflow_type, fixture.workflow_type);
+      assert.deepEqual(snapshot.typed_input, {type:'list',value:[fixture.typed_value]});
+      for (const name of ['execution_deadline_at','run_deadline_at']) {
+        assert.equal(snapshot.execution[name],step.scheduled.execution[name], 'Original run bounds');
+      }
+      assert.deepEqual(step.after_expiry.events.slice(0,snapshot.events.length),snapshot.events,'Exact original history prefix');
+    }
+    const claimed = field !== 'schedule_to_start_timeout';
+    const types = ['StartAccepted','WorkflowStarted','ActivityScheduled',...(claimed?['ActivityStarted']:[]),'ActivityTimedOut'];
+    const events = step.after_expiry.events;
+    assert.deepEqual(events.map(event=>event.event_type),types,'One terminal timeout, no late outcome/progress/retry');
+    for(const[index,event]of events.entries()) {
+      assert.equal(event.sequence,index+1);
+      assert.match(event.timestamp,/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/,'Original microsecond history');
+      if(index)assert(event.timestamp>=events[index-1].timestamp);
+    }
+    const scheduled = events[2];
+    assert.deepEqual(scheduled.payload.activity.retry_policy,policy,'Entire original authored snapshot');
+    assert.deepEqual(scheduled.typed_decoded.activity_arguments,{type:'list',value:[fixture.typed_value]});
+    const terminal = events.at(-1).payload;
+    assert.equal(terminal.activity_execution_id,scheduled.payload.activity_execution_id);
+    assert.equal(terminal.timeout_kind,field.replace(/_timeout$/,''));
+    assert.equal(terminal.failure_category,spec.failure_category);
+    assert.equal(terminal.exception_class,spec.exception_class);
+    assert.equal(terminal.attempt_number,1);
+    assert.equal(terminal.activity.status,'failed');
+    assert.deepEqual(terminal.activity.retry_policy,policy);
+    assert.equal(typeof terminal.failure_id,'string');
+    assert(terminal.failure_id.length>0);
+    const parent = step.parent_delivery;
+    assert.equal(parent.workflow_id,id);
+    assert.equal(parent.run_id,step.run_id);
+    assert.notEqual(parent.task_id,step.workflow_task.task_id,'One actual parent wakeup');
+    assert.equal(parent.workflow_task_attempt,1);
+    assert.equal(step.extra_parent_poll,null);
+    assert.equal(step.post_expiry_activity_poll,null);
+    assert.deepEqual(parent.history_events.map(event=>event.event_type),types);
+    for(const[index,event]of parent.history_events.entries()) {
+      assert.equal(event.sequence,events[index].sequence);
+      assert.equal(event.recorded_at,events[index].timestamp);
+      assert.deepEqual(event.payload,events[index].payload,'Whole actual parent timeout delivery');
+    }
+    if(claimed) {
+      const activity = step.activity_task;
+      assert.equal(activity.workflow_id,id);
+      assert.equal(activity.run_id,step.run_id);
+      assert.equal(activity.activity_execution_id,scheduled.payload.activity_execution_id);
+      assert.equal(activity.attempt_number,1);
+      assert.deepEqual(activity.retry_policy,policy);
+      assert.equal(step.status_before_expiry.can_continue,true);
+      assert.equal(step.status_before_expiry.heartbeat_recorded,false);
+      assert.equal(step.status_after_expiry.can_continue,false);
+      assert.equal(step.status_after_expiry.heartbeat_recorded,false);
+      assert.deepEqual(step.late_outcomes.map(receipt=>receipt.id),['complete','fail','heartbeat']);
+      for(const receipt of step.late_outcomes)assert.equal(receipt.status,409,'Elapsed authority never commits a late outcome');
+      const start = events.find(event=>event.event_type==='ActivityStarted');
+      assert.equal(start.payload.activity_attempt_id,activity.activity_attempt_id);
+      assert.equal(terminal.activity_attempt_id,activity.activity_attempt_id);
+      const lease = Date.parse(activity.lease_expires_at)-Date.parse(start.timestamp);
+      assert(lease>=(spec.ordinary_lease_seconds-1)*1000 && lease<=spec.ordinary_lease_seconds*1000,'Original ordinary activity lease');
+    } else assert.equal(step.activity_task,null,'Schedule-to-start expires before any claim');
+    const wires = requests.filter(wire=>wire.path.includes(step.workflow_task.task_id)||claimed&&wire.path.includes(step.activity_task.task_id));
+    const admission = wires.filter(wire=>wire.method==='POST'&&wire.path===`/api/worker/workflow-tasks/${step.workflow_task.task_id}/complete`);
+    assert.equal(admission.length,1);
+    assert.equal(admission[0].status,200);
+    assert.deepEqual(admission[0].request.commands,[step.command]);
+    assert.deepEqual(admission[0].response,step.admission);
+    if(claimed)for(const kind of ['complete','fail','heartbeat']) {
+      const outcomes = wires.filter(wire=>wire.method==='POST'&&wire.path===`/api/worker/activity-tasks/${step.activity_task.task_id}/${kind}`);
+      assert.equal(outcomes.length,1,'One actual late request per outcome');
+      assert.equal(outcomes[0].status,409);
+      assert.equal(outcomes[0].request.activity_attempt_id,step.activity_task.activity_attempt_id);
+      assert.equal(outcomes[0].request.lease_owner,step.activity_task.lease_owner);
+    }
+  }
+  assert.equal(new Set(identities).size,spec.fields.length,'Four genuinely independent originals');
+  for(const wire of state.requests) {
+    assert.equal(wire.client_cancelled,false,'No cancelled request is counted as a receipt');
+    assert.equal(typeof wire.response_bytes_base64,'string');
+    assert(wire.response_bytes_base64.length>0,'Full actual response bytes retained');
+  }
+  return {fixture_id:fixture.id,fields:spec.fields,driver:state.driver,
+    timeout_kind:spec.fields.map(field=>field.replace(/_timeout$/,'')),parent_delivery:'original_timeout_history',
+    workflow_result:'not_authored',late_outcomes:'refused',policy_backoff:spec.retry_backoff_seconds};
+}
