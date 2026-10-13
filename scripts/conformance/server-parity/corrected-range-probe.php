@@ -69,8 +69,8 @@ function correctedRangeHttpObservation(array $fixture, array $options): array
             throw new RuntimeException('Original range producer did not schedule exactly one activity');
         }
         $policy = $scheduled[0]['payload']['activity']['retry_policy'] ?? $scheduled[0]['payload']['retry_policy'] ?? null;
-        if (! is_array($policy)) {
-            throw new RuntimeException('Original recorded retry snapshot is unavailable');
+        if ($policy !== null && ! is_array($policy)) {
+            throw new RuntimeException('Original recorded retry snapshot has an unsupported representation');
         }
         file_put_contents($directory.'/'.$name.'-original-snapshot.json', json_encode($phases['original'], JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)."\n");
         $order = $spec['pending_activity']

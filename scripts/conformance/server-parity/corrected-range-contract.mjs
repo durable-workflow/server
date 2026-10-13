@@ -98,7 +98,7 @@ export function checkCorrectedRange(fixture, observation, workflowId, instant) {
     assert.equal(after.run_id, before.run_id);
     assert.equal(before.task_queue, before.workflow_id+'-queue');
     assert.equal(after.status, before.status);
-    assert.deepEqual(before.events.map(row => row.event_type), ['WorkflowStarted']);
+    assert.deepEqual(before.events.map(row => row.event_type), ['StartAccepted', 'WorkflowStarted']);
     assert.deepEqual(after.events, before.events, 'neighbor history survives original-task repair');
     assert.deepEqual(after.typed_input, before.typed_input);
     for (const field of ['execution_deadline_at', 'run_deadline_at']) assert.equal(after.execution[field], before.execution[field]);
@@ -157,10 +157,15 @@ export function checkCorrectedRange(fixture, observation, workflowId, instant) {
   assert.equal(marker.payload.max_supported, 1);
   const scheduled = event('ActivityScheduled');
   const activityId = scheduled.payload.activity_execution_id;
-  assert.deepEqual(scheduled.payload.activity.retry_policy, policy);
-  assert.equal(policy.snapshot_version, 1);
-  assert.equal(policy.max_attempts, 1);
-  assert.deepEqual(policy.backoff_seconds, [1,2,5,10,15,30,60,120]);
+  if (policy === null) {
+    assert.equal(Object.hasOwn(scheduled.payload.activity, 'retry_policy'), false,
+      'genuine legacy policy absence is preserved without invented fields');
+  } else {
+    assert.deepEqual(scheduled.payload.activity.retry_policy, policy);
+    assert.equal(policy.snapshot_version, 1);
+    assert.equal(policy.max_attempts, 1);
+    assert.deepEqual(policy.backoff_seconds, [1,2,5,10,15,30,60,120]);
+  }
   assert.deepEqual(scheduled.typed_decoded.activity_arguments, {type: 'list', value: [fixture.typed_value]});
   for (const name of ['ActivityStarted', 'ActivityCompleted']) assert.equal(event(name).payload.activity_execution_id, activityId);
   assert.deepEqual(event('ActivityCompleted').typed_decoded.result, fixture.typed_value);

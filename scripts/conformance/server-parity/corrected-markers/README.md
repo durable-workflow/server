@@ -38,7 +38,9 @@ direction to the original PHP 2.2.7 recipes. They preserve the original fixture
 definitions, typed values and whole 35-second scenario budget. A normal PHP
 2.3.9 observer performs the one explicit repair; separate Rust processes reject
 the incompatible range, restore the original bounds and finish the original
-run. Two separately queued real neighboring runs must retain their original
+run. A genuine legacy absent retry snapshot remains absent; no current class
+defaults supply missing fields. Every present snapshot still preserves all
+known fields and the full list. Two separately queued real neighboring runs must retain their original
 histories and tasks. The embedded adapter executes the original PHP definitions
 and declares the Rust author direction inapplicable; it still checks the same
 durable refusal and repair boundary. Actual recordings remain required before

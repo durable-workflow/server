@@ -22,6 +22,11 @@ fn invalid(field: &str) -> Error {
 }
 
 fn original_options(queue: &str, snapshot: &Value) -> Result<ActivityOptions> {
+    // Genuine legacy PHP range producers omitted this entire snapshot. Preserve
+    // that absence rather than deriving a policy from current class defaults.
+    if snapshot.is_null() {
+        return Ok(ActivityOptions::new().task_queue(queue));
+    }
     if snapshot["snapshot_version"].as_u64() != Some(1) {
         return Err(invalid("snapshot_version"));
     }
