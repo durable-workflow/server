@@ -26,6 +26,18 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+Separate [retry and terminal-response controls](../scripts/conformance/server-parity/ACTIVITY-RETRY-RECEIPTS.md)
+pass fresh published PHP/embedded SQLite comparison at `b6d5faef2`. Four originals
+each retain two actual attempts, eight events, four tasks with zero repairs,
+the entire retry snapshot and exact int64/null/Unicode results. Active-parent
+duplicates before and after expiry and closed-parent duplicates preserve the
+original result. Actual HTTP and embedded refusals remain explicit. Common
+comparison, 86 corruption checks and stopped read-only original deadline
+verification pass. These controls remain outside #435/default fixtures, pending
+native, other databases, global-timeout-before-exhaustion and live-renewal
+qualification. They do not establish a stronger content-verified receipt
+contract. Earlier harness failures and unqualified observations remain recorded.
+
 [#429](https://github.com/durable-workflow/server/pull/429) is delivered at
 `6299289185caea472b2738a5d4442a617edf0b8a`, tree
 `62736363c1e03ceae091ea578d307fb4d2370054`, identical to the reviewed candidate.
