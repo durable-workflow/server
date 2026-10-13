@@ -7,6 +7,7 @@ use App\Models\WorkerSessionLease;
 use App\Models\WorkflowNamespace;
 use App\Support\BackendLockPressureException;
 use App\Support\CooperativeCancellationPolicy;
+use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -146,6 +147,88 @@ class ActivityAttemptStatusTest extends TestCase
             ->assertJsonPath('reason', 'lease_expired')->assertJsonPath('heartbeat_recorded', false);
         $this->assertSame($before, $this->snapshot($task));
         $this->assertSame(TaskStatus::Leased, WorkflowTask::query()->findOrFail($task['task_id'])->status);
+    }
+
+    public static function expiredOutcomeProvider(): array
+    {
+        return [
+            ['complete', '1.19'], ['complete', '1.20'],
+            ['fail', '1.19'], ['fail', '1.20'],
+        ];
+    }
+
+    #[DataProvider('expiredOutcomeProvider')]
+    public function test_expired_outcome_is_refused_before_payload_resolution(string $action, string $protocol): void
+    {
+        $task = $this->lease(protocolVersion: $protocol);
+        $this->travelTo(WorkflowTask::query()->findOrFail($task['task_id'])->lease_expires_at);
+        $before = $this->snapshot($task);
+        $this->mock(NamespaceExternalPayloadStorage::class, static function (MockInterface $mock): void {
+            $mock->shouldNotReceive('driverFor');
+        });
+        $this->flushControllers();
+        $payload = $action === 'complete' ? ['result' => null] : ['failure' => ['message' => 'late failure']];
+
+        $this->withHeaders(array_replace($this->headers(), [WorkerProtocol::HEADER => $protocol]))
+            ->postJson($this->path($task, $action), $this->fence($task) + $payload)
+            ->assertStatus(409)->assertJsonPath('recorded', false)->assertJsonPath('reason', 'lease_expired');
+
+        $this->assertSame($before, $this->snapshot($task));
+    }
+
+    #[DataProvider('deadlineProvider')]
+    public function test_execution_deadline_refuses_outcome_before_payload_resolution(string $field, string $reason): void
+    {
+        $task = $this->lease();
+        ActivityExecution::query()->findOrFail($task['activity_execution_id'])
+            ->forceFill([$field => now()])->save();
+        $before = $this->snapshot($task);
+        $this->mock(NamespaceExternalPayloadStorage::class, static function (MockInterface $mock): void {
+            $mock->shouldNotReceive('driverFor');
+        });
+        $this->flushControllers();
+
+        foreach (['complete' => ['result' => null], 'fail' => ['failure' => ['message' => 'late failure']]] as $action => $payload) {
+            $this->withHeaders($this->headers())->postJson($this->path($task, $action), $this->fence($task) + $payload)
+                ->assertStatus(409)->assertJsonPath('recorded', false)->assertJsonPath('reason', $reason);
+        }
+
+        $this->assertSame($before, $this->snapshot($task));
+    }
+
+    public function test_live_outcome_still_resolves_payload_and_records(): void
+    {
+        $task = $this->lease();
+        $this->mock(NamespaceExternalPayloadStorage::class, static function (MockInterface $mock): void {
+            $mock->shouldReceive('driverFor')->atLeast()->once()->andReturn(null);
+        });
+        $this->flushControllers();
+
+        $this->withHeaders($this->headers())->postJson($this->path($task, 'complete'), $this->fence($task) + ['result' => null])
+            ->assertOk()->assertJsonPath('recorded', true);
+    }
+
+    #[DataProvider('expiredOutcomeProvider')]
+    public function test_outcome_crossing_expiry_during_payload_resolution_cannot_record(string $action, string $protocol): void
+    {
+        $task = $this->lease(protocolVersion: $protocol);
+        $expiresAt = WorkflowTask::query()->findOrFail($task['task_id'])->lease_expires_at;
+        $before = $this->snapshot($task);
+        $this->mock(NamespaceExternalPayloadStorage::class, function (MockInterface $mock) use ($expiresAt): void {
+            $mock->shouldReceive('driverFor')->once()->andReturnUsing(function () use ($expiresAt): mixed {
+                $this->travelTo($expiresAt);
+
+                return null;
+            });
+        });
+        $this->flushControllers();
+        $payload = $action === 'complete' ? ['result' => null] : ['failure' => ['message' => 'late failure']];
+
+        $this->withHeaders(array_replace($this->headers(), [WorkerProtocol::HEADER => $protocol]))
+            ->postJson($this->path($task, $action), $this->fence($task) + $payload)
+            ->assertStatus(409)->assertJsonPath('recorded', false)->assertJsonPath('reason', 'lease_expired');
+
+        $this->assertSame($before, $this->snapshot($task));
     }
 
     public static function deadlineProvider(): array
@@ -470,6 +553,13 @@ class ActivityAttemptStatusTest extends TestCase
     {
         return $this->withHeaders($this->headers())->postJson($this->path($task, 'acknowledge-cancellation'),
             array_replace($this->fence($task) + ['request_id' => $requestId], $overrides));
+    }
+
+    private function flushControllers(): void
+    {
+        foreach ($this->app['router']->getRoutes() as $route) {
+            $route->flushController();
+        }
     }
 
     private function lease(string $suffix = 'one', bool $capable = false, string $protocolVersion = '1.20'): array
