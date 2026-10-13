@@ -106,7 +106,7 @@ async fn main() -> Result<()> {
                 let projection = match selected_case.as_str() {
                     "numeric" | "activity_repair" | "timer_repair" | "full_retry" => {
                         let (first, second) = match profile.as_str() {
-                            "original" => ((-3, 7), (-3, 7)),
+                            "original" | "policy-refusal" => ((-3, 7), (-3, 7)),
                             "wider" => ((-10, 10), (5, 20)),
                             "excluding" => ((0, 6), (-3, 7)),
                             _ => return Err(Error::WorkerLoop("Unknown numeric profile".into())),

@@ -46,7 +46,8 @@ function correctedMarkerEmbeddedObservation(array $fixture, array $options): arr
     $deadline = microtime(true) + $spec['overall_budget_seconds'];
     $runId = '';
     $phases = [];
-    foreach (['original', 'activity', 'replacement'] as $phase) {
+    $order = $spec['replay_refusal']['phase_order'] ?? ['original', 'activity', 'replacement'];
+    foreach ($order as $phase) {
         $root = $phase === 'original' && $spec['case'] === 'genuine_one'
             ? getenv('DW_PARITY_CORRECTED_ORIGINAL_EMBEDDED_ROOT') : $options['application-root'];
         if (! is_string($root) || ! is_file($root.'/vendor/autoload.php')) {
@@ -97,7 +98,10 @@ function correctedMarkerHttpObservation(array $fixture, array $options): array
             $options['workflow-id'].'-workflow', [$fixture['input']],
             executionTimeoutSeconds: 1200, runTimeoutSeconds: 1200);
         $runId = $handle->selectedRunId;
-        foreach (['original', 'activity', 'replacement'] as $phase) {
+        $order = isset($spec['replay_refusal']) ? ['original', 'activity', 'incompatible', 'replacement'] : ['original', 'activity', 'replacement'];
+        foreach ($order as $phase) {
+            $repair = $phase === 'replacement' && isset($spec['replay_refusal'])
+                ? $client->repairWorkflow($options['workflow-id'], $runId) : null;
             $language = $phase === 'original' ? $spec['producer'] : 'rust';
             $command = match ($language) {
                 'php' => [PHP_BINARY, __DIR__.'/corrected-markers/php.php'],
@@ -107,13 +111,24 @@ function correctedMarkerHttpObservation(array $fixture, array $options): array
             };
             array_push($command, $url, $phase === 'activity' ? 'activity' : 'workflow',
                 $options['workflow-id'], $runId, $spec['case'],
-                $phase === 'replacement' ? 'wider' : 'original', $spec['retry_policy'],
+                $phase === 'replacement' ? 'wider' : ($phase === 'incompatible' ? 'policy-refusal' : 'original'),
+                $phase === 'incompatible' ? 'different' : $spec['retry_policy'],
                 json_encode($fixture['input'], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE));
             $actorResult = correctedMarkerPhase($command, $directory, $name, $phase,
                 min($deadline, microtime(true) + $spec['phase_budget_seconds']));
             $run = $client->describeWorkflow($options['workflow-id'], $runId);
             $snapshot = ['actor' => $actorResult, 'status' => $run->status, 'execution' => $run->raw,
                 'events' => decodeHistory(httpHistory($client, $options['workflow-id'], $runId), $client->payloadCodec()->decodeEnvelope(...))];
+            if (isset($spec['replay_refusal'])) {
+                $debug = (new \GuzzleHttp\Client(['http_errors' => false]))->get($url.'/api/workflows/'
+                    .rawurlencode($options['workflow-id']).'/runs/'.rawurlencode($runId).'/debug', [
+                        'headers' => ['Authorization' => 'Bearer '.(getenv('DW_PARITY_TOKEN') ?: ''),
+                            'X-Namespace' => 'default', 'X-Durable-Workflow-Control-Plane-Version' => '2'],
+                    ]);
+                $snapshot['debug_status'] = $debug->getStatusCode();
+                $snapshot['debug'] = json_decode((string) $debug->getBody(), true, flags: JSON_THROW_ON_ERROR);
+                $snapshot['repair'] = $repair;
+            }
             file_put_contents($directory.'/'.$name.'-'.$phase.'-snapshot.json', json_encode($snapshot, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)."\n");
             $phases[$phase] = $snapshot;
             if ($phase === 'original' && ! in_array('ActivityScheduled', array_column($snapshot['events'], 'event_type'), true)) {

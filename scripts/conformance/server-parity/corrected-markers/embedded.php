@@ -19,7 +19,7 @@ $app->make(\Illuminate\Contracts\Console\Kernel::class)->bootstrap();
 if (config('server.mode') !== 'embedded') {
     throw new RuntimeException('This actor requires a separately installed embedded application');
 }
-if (! in_array($phase, ['original', 'activity', 'replacement'], true)) {
+if (! in_array($phase, ['original', 'activity', 'incompatible', 'replacement'], true)) {
     throw new InvalidArgumentException('Unknown embedded marker phase');
 }
 
@@ -71,7 +71,8 @@ final class CorrectedEmbeddedWorkflow extends \Workflow\V2\Workflow
             $clock();
             $projection = [$first, $second];
         } elseif (in_array($spec['case'], ['numeric', 'full_retry'], true)) {
-            [$firstBounds, $secondBounds] = $original ? [[-3, 7], [-3, 7]] : [[-10, 10], [5, 20]];
+            [$firstBounds, $secondBounds] = $original || CorrectedEmbeddedState::$phase === 'incompatible'
+                ? [[-3, 7], [-3, 7]] : [[-10, 10], [5, 20]];
             $first = self::getVersion('corrected-numeric', ...$firstBounds);
             $clock();
             $second = self::getVersion('corrected-numeric', ...$secondBounds);
@@ -104,8 +105,12 @@ final class CorrectedEmbeddedWorkflow extends \Workflow\V2\Workflow
         }
         CorrectedEmbeddedState::$decisions[] = $projection;
         CorrectedEmbeddedState::$clocks[] = $clocks;
+        $backoff = $spec['retry_policy'] === 'php_full' ? [1, 2, 5, 10, 15, 30, 60, 120] : [];
+        if (CorrectedEmbeddedState::$phase === 'incompatible') {
+            $backoff[7] = $spec['replay_refusal']['changed_last_interval'];
+        }
         $options = new ActivityOptions(queue: CorrectedEmbeddedState::$activityQueue,
-            maxAttempts: 1, backoff: $spec['retry_policy'] === 'php_full' ? [1, 2, 5, 10, 15, 30, 60, 120] : [],
+            maxAttempts: 1, backoff: $backoff,
             startToCloseTimeout: 120, scheduleToCloseTimeout: 600);
 
         return ['projection' => $projection, 'typed' => \Workflow\V2\activity(CorrectedEmbeddedActivity::class, $options, $value)];
@@ -127,6 +132,7 @@ if ($phase === 'original') {
 } else {
     $stub = WorkflowStub::loadSelection($workflowId, $runId, 'default');
 }
+$repair = $phase === 'replacement' && isset($fixture['corrected_markers']['replay_refusal']) ? $stub->attemptRepair() : null;
 $workerOutput = [];
 do {
     Artisan::call('queue:work', ['connection' => 'database',
@@ -140,6 +146,8 @@ do {
     $done = match ($phase) {
         'original' => in_array('ActivityScheduled', array_column($events, 'event_type'), true),
         'activity' => in_array('ActivityCompleted', array_column($events, 'event_type'), true),
+        'incompatible' => $run->status->isTerminal() || $run->tasks()->get()->contains(
+            static fn ($task): bool => ($task->payload['replay_blocked'] ?? false) === true),
         'replacement' => $run->status->isTerminal(),
     };
     if (! $done && microtime(true) >= $deadline) {
@@ -166,9 +174,11 @@ echo json_encode(['phase' => $phase, 'pid' => getmypid(), 'workflow_id' => $work
     'workflow_source' => InstalledVersions::getReference('durable-workflow/workflow'),
     'embedded_composer_lock_sha256' => hash_file('sha256', $root.'/composer.lock'),
     'workflow_loaded_sources' => $loaded,
+    'repair' => $repair === null ? null : ['accepted' => $repair->accepted(), 'outcome' => $repair->outcome(),
+        'run_id' => $repair->runId(), 'resolved_run_id' => $repair->resolvedRunId(), 'command_id' => $repair->commandId()],
     'actor' => ['pid' => getmypid(), 'workflow_id' => $workflowId, 'run_id' => $runId,
         'mode' => $phase === 'activity' ? 'activity' : 'workflow', 'case' => $fixture['corrected_markers']['case'],
-        'range_profile' => $phase === 'replacement' ? 'wider' : 'original',
-        'retry_policy' => $fixture['corrected_markers']['retry_policy'],
+        'range_profile' => $phase === 'replacement' ? 'wider' : ($phase === 'incompatible' ? 'policy-refusal' : 'original'),
+        'retry_policy' => $phase === 'incompatible' ? 'different' : $fixture['corrected_markers']['retry_policy'],
         'decisions' => CorrectedEmbeddedState::$decisions, 'worker_finished' => true]],
     JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)."\n";

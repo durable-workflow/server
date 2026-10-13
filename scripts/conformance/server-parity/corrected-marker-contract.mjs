@@ -36,7 +36,12 @@ export function checkCorrectedMarkerArtifacts(fixture, artifacts) {
   }
   const spec = fixture.corrected_markers;
   assert.equal(spec.phase_budget_seconds, 30);
-  assert.equal(spec.overall_budget_seconds, 90);
+  assert.equal(spec.overall_budget_seconds, spec.replay_refusal ? 120 : 90);
+  if (spec.replay_refusal) assert.deepEqual(spec.replay_refusal, {
+    kind: 'retry_policy', changed_last_interval: 121,
+    failure_reason: 'activity_retry_policy_mismatch', failure_sequence: 2,
+    phase_order: ['original', 'activity', 'incompatible', 'replacement'], repair: 'same_selected_original_run',
+  });
   assert(['php', 'rust', 'python'].includes(spec.producer));
   assert(['empty', 'php_full'].includes(spec.retry_policy));
   for (const marker of spec.markers) {
@@ -125,16 +130,17 @@ export function checkCorrectedMarkers(fixture, observation, workflowId) {
     projection: {type: 'list', value: spec.expected_decisions.map(typed)}, typed: fixture.typed_value,
   }};
   assert.deepEqual(observation.typed_output, output, 'exact public decoded result types');
-  assert.deepEqual(Object.keys(phases), ['original', 'activity', 'replacement']);
-  assert.equal(new Set(Object.values(phases).map(phase => phase.actor.pid)).size, 3, 'three independent public worker processes');
+  const order = spec.replay_refusal?.phase_order ?? ['original', 'activity', 'replacement'];
+  assert.deepEqual(Object.keys(phases), order);
+  assert.equal(new Set(Object.values(phases).map(phase => phase.actor.pid)).size, order.length, 'independent public worker processes');
   for (const [name, phase] of Object.entries(phases)) {
     assert(Number.isSafeInteger(phase.actor.pid) && phase.actor.pid > 0);
     assert.equal(phase.actor.workflow_id, workflowId);
     assert.equal(phase.actor.run_id, observation.run_id);
     assert.equal(phase.actor.mode, name === 'activity' ? 'activity' : 'workflow');
     assert.equal(phase.actor.case, spec.case);
-    assert.equal(phase.actor.retry_policy, spec.retry_policy);
-    assert.equal(phase.actor.range_profile, name === 'replacement' ? 'wider' : 'original');
+    assert.equal(phase.actor.retry_policy, name === 'incompatible' ? 'different' : spec.retry_policy);
+    assert.equal(phase.actor.range_profile, name === 'replacement' ? 'wider' : name === 'incompatible' ? 'policy-refusal' : 'original');
     if (name !== 'activity') assert.deepEqual(phase.actor.decisions,
       [name === 'original' ? spec.original_expected_decisions ?? spec.expected_decisions : spec.expected_decisions]);
     else assert.deepEqual(phase.actor.decisions, []);
@@ -155,10 +161,10 @@ export function checkCorrectedMarkers(fixture, observation, workflowId) {
     assert.notEqual(phases.original.actor.pid, phases.original.actor.observer_pid);
   }
   const expectedTypes = ['StartAccepted', 'WorkflowStarted', ...spec.markers.map(() => 'VersionMarkerRecorded'),
-    'ActivityScheduled', 'ActivityStarted', 'ActivityCompleted', 'WorkflowCompleted'];
+    'ActivityScheduled', 'ActivityStarted', 'ActivityCompleted', ...(spec.replay_refusal ? ['RepairRequested'] : []), 'WorkflowCompleted'];
   assert.deepEqual(observation.events.map(event => event.event_type), expectedTypes, 'complete event inventory');
   assert.deepEqual(phases.original.events.map(event => event.event_type), expectedTypes.slice(0, 3 + spec.markers.length));
-  assert.deepEqual(phases.activity.events.map(event => event.event_type), expectedTypes.slice(0, -1));
+  assert.deepEqual(phases.activity.events.map(event => event.event_type), expectedTypes.slice(0, spec.replay_refusal ? -2 : -1));
   const start = observation.events[1].payload;
   const accepted = observation.events[0].payload;
   for (const payload of [accepted, start]) {
@@ -203,6 +209,37 @@ export function checkCorrectedMarkers(fixture, observation, workflowId) {
   const completed = observation.events.find(event => event.event_type === 'ActivityCompleted');
   assert.deepEqual(completed.typed_decoded.result, fixture.typed_value);
   assert.deepEqual(observation.events.at(-1).typed_decoded.output, output);
+  if (spec.replay_refusal) {
+    assert.equal(phases.incompatible.status, 'waiting');
+    assert.deepEqual(phases.incompatible.events, phases.activity.events, 'refusal changes no history');
+    const repaired = observation.events.find(event => event.event_type === 'RepairRequested').payload;
+    assert.equal(repaired.task_type, 'workflow');
+    assert.equal(repaired.task.status, 'ready');
+    assert.equal(repaired.task.repair_count, 1);
+    assert.equal(repaired.task_id, repaired.task.id);
+    assert.equal(repaired.command.type, 'repair');
+    assert.equal(repaired.command.resolved_run_id, observation.run_id);
+    const completion = observation.events.at(-1).payload.task;
+    assert.equal(completion.id, repaired.task_id, 'complete the same repaired logical task');
+    assert.equal(completion.attempt_count, 2);
+    assert.equal(completion.repair_count, 1);
+    if (observation.mode === 'http') {
+      assert.equal(phases.incompatible.debug_status, 200);
+      assert.equal(phases.incompatible.debug.execution.liveness_state, 'workflow_replay_blocked');
+      assert.equal(phases.incompatible.debug.latest_workflow_task_failure.replay_blocked, true);
+      assert.equal(phases.incompatible.debug.latest_workflow_task_failure.reason, spec.replay_refusal.failure_reason);
+      assert.equal(phases.incompatible.debug.latest_workflow_task_failure.sequence, spec.replay_refusal.failure_sequence);
+    } else {
+      const blocked = phases.incompatible.tasks.filter(task => task.payload?.replay_blocked === true);
+      assert.equal(blocked.length, 1);
+      assert.equal(blocked[0].status, 'failed');
+      assert.equal(blocked[0].lease_expires_at, null);
+      assert.equal(blocked[0].payload.replay_blocked_reason, spec.replay_refusal.failure_reason);
+      assert.equal(blocked[0].id, repaired.task_id);
+      assert.equal(phases.replacement.repair.accepted, true);
+      assert.equal(phases.replacement.repair.resolved_run_id, observation.run_id);
+    }
+  }
   if (observation.mode === 'embedded') {
     assert.deepEqual(observation.corrected_markers.requests, [], 'embedded has no simulated HTTP exchanges');
     const positions = spec.embedded_clock_positions;
@@ -221,7 +258,7 @@ export function checkCorrectedMarkers(fixture, observation, workflowId) {
     for (const task of tasks) {
       assert.equal(task.workflow_run_id, observation.run_id);
       assert.equal(task.status, 'completed');
-      assert.equal(task.repair_count, 0);
+      assert.equal(task.repair_count, spec.replay_refusal && task.id === observation.events.at(-1).payload.task.id ? 1 : 0);
     }
   }
   if (observation.mode === 'http') {
@@ -246,7 +283,18 @@ export function checkCorrectedMarkers(fixture, observation, workflowId) {
     assert.equal(activityOutcomes[0].status, 200);
     assert.equal(activityOutcomes[0].response.recorded, true);
     const deliveries = requests.filter(item => item.path === '/api/worker/workflow-tasks/poll' && item.response?.task);
-    assert.equal(deliveries.length, 2, 'two actual public workflow deliveries');
+    assert.equal(deliveries.length, spec.replay_refusal ? 3 : 2, 'all actual public workflow deliveries');
+    if (spec.replay_refusal) {
+      const failures = requests.filter(item => item.method === 'POST' && /^\/api\/worker\/workflow-tasks\/[^/]+\/fail$/.test(item.path));
+      assert.equal(failures.length, 1);
+      assert.equal(failures[0].status, 200);
+      assert.equal(failures[0].response.recorded, true);
+      assert.equal(failures[0].response.next_task_id, null);
+      assert.equal(failures[0].request.failure.reason, spec.replay_refusal.failure_reason);
+      assert.equal(failures[0].request.failure.sequence, spec.replay_refusal.failure_sequence);
+      assert.equal(failures[0].path.split('/').at(-2), observation.events.at(-1).payload.task.id);
+      assert.notEqual(failures[0].request.lease_owner, outcomes[1].request.lease_owner);
+    }
     const cold = deliveries[1].response.task.history_events;
     assert.deepEqual(cold.map(event => event.event_type), phases.activity.events.map(event => event.event_type));
     for (const [i, event] of cold.entries()) {
@@ -258,5 +306,6 @@ export function checkCorrectedMarkers(fixture, observation, workflowId) {
   return {fixture_id: fixture.id, workflow_id: workflowId, run_id: '@run:1', workflow_type: fixture.workflow_type,
     namespace: 'default', status: 'completed', input: observation.typed_input, output,
     markers: spec.markers, retry_policy: retry, events: expectedTypes,
-    cold_processes: 3, original_pending_activity: true};
+    cold_processes: order.length, original_pending_activity: true,
+    ...(spec.replay_refusal ? {replay_refusal: spec.replay_refusal} : {})};
 }
