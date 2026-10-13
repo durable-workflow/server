@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+require_once __DIR__.'/activity-heartbeat-renewal-probe.php';
+
 function activityDeadlineReceiptsEmbeddedObservation(array $fixture, array $options): array
 {
     $root = $options['application-root'];
@@ -40,7 +42,8 @@ function activityDeadlineReceiptsEmbeddedObservation(array $fixture, array $opti
             $activity = new \Workflow\V2\Support\ActivityOptions(queue: ParityReceiptState::$queue,
                 maxAttempts: $spec['max_attempts'], backoff: $spec['backoff_seconds'],
                 startToCloseTimeout: $spec['start_to_close_timeout'],
-                scheduleToCloseTimeout: $spec['schedule_to_close_timeout']);
+                scheduleToCloseTimeout: $spec['schedule_to_close_timeout'],
+                heartbeatTimeout: $spec['heartbeat_timeout'] ?? null);
             ParityReceiptState::$authoredOptions[] = $activity->toSnapshot();
 
             return \Workflow\V2\activity(ParityReceiptActivity::class, $activity, $value);
@@ -116,6 +119,37 @@ function activityDeadlineReceiptsEmbeddedObservation(array $fixture, array $opti
 
         return $response;
     };
+    if ($spec['heartbeat_control'] ?? false) {
+        $observed = activityHeartbeatRenewalObservation($fixture, [
+            'driver' => 'real_queue_then_public_embedded_bridges',
+            'workflow_task' => [...$original[0], 'workflow_id' => $id, 'run_id' => $runId,
+                'task_id' => $original[0]['id'], 'workflow_task_attempt' => $original[0]['attempt_count']],
+            'first_attempt' => $first, 'before_expiry' => $before,
+            'authored_options' => ParityReceiptState::$authoredOptions[0], 'worker_output' => $workerOutput,
+            'activity_invocations' => ParityReceiptState::$activityInvocations,
+            'definition_sha256' => hash_file('sha256', __FILE__),
+        ], $admittedAt, $snapshot, $budget, [
+            'heartbeat' => static fn (array $progress): array => $activityBridge->heartbeat($first['activity_attempt_id'], $progress),
+            'status' => static fn (): array => $activityBridge->status($first['activity_attempt_id']),
+            'complete' => static fn (): array => $complete($first['activity_attempt_id'], $fixture['input']),
+            'finish' => static function () use ($workflowBridge, $id, $runId, $fixture): array {
+                $parents = $workflowBridge->poll('database', $id.'-workflow', 1, namespace: 'default');
+                if (count($parents) !== 1) throw new RuntimeException('Renewed embedded parent missing');
+                $parent = $workflowBridge->claimStatus($parents[0]['task_id'], $id.'-parent-worker');
+                if (! $parent['claimed']) throw new RuntimeException('Renewed embedded parent refused');
+                $row = \Workflow\V2\Models\WorkflowTask::query()->findOrFail($parent['task_id']);
+                $parent = [...$parent, 'workflow_id' => $id, 'run_id' => $runId, 'workflow_task_attempt' => $row->attempt_count];
+                $response = $workflowBridge->complete($parent['task_id'], [['type' => 'complete_workflow', 'payload_codec' => 'avro',
+                    'result' => \Workflow\Serializers\Serializer::serializeWithCodec('avro', $fixture['input'])]]);
+
+                return [$parent, $response];
+            },
+            'extra_activity_poll' => static fn (): array => $activityBridge->poll('database', $id.'-activity', 1, namespace: 'default'),
+        ], static fn (): array => []);
+
+        return [...$observed, 'workflow_source' => \Composer\InstalledVersions::getReference('durable-workflow/workflow'),
+            'embedded_composer_lock_sha256' => hash_file('sha256', $root.'/composer.lock')];
+    }
     usleep($spec['start_to_close_timeout'] * 1000000 + 250000);
     $budget();
     $refused = $complete($first['activity_attempt_id'], $fixture['input']);

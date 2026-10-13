@@ -3,6 +3,7 @@ import {gunzipSync, inflateSync, brotliDecompressSync} from 'node:zlib';
 import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 import {checkActivityGlobalRetry} from './activity-global-retry-contract.mjs';
+import {checkActivityHeartbeatRenewal} from './activity-heartbeat-renewal-contract.mjs';
 
 export function checkActivityDeadlineReceiptPackages(fixture, observation, artifacts) {
   if (!fixture.activity_deadline_receipts) return;
@@ -21,6 +22,7 @@ export function checkActivityDeadlineReceiptPackages(fixture, observation, artif
 
 export function checkActivityDeadlineReceipts(fixture, observation, workflowId, instant) {
   const spec = fixture.activity_deadline_receipts, state = observation.activity_deadline_receipts;
+  if (spec.heartbeat_control) return checkActivityHeartbeatRenewal(fixture, observation, workflowId, instant);
   if (spec.global_timeout_control) return checkActivityGlobalRetry(fixture, observation, workflowId, instant);
   assert(['http', 'embedded'].includes(observation.mode));
   const http = observation.mode === 'http';

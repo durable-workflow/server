@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 require_once __DIR__.'/namespace-probe.php';
+require_once __DIR__.'/activity-heartbeat-renewal-probe.php';
 
 // Actual installed worker-protocol receipts, without backdating stored state.
 function activityDeadlineReceiptsHttpObservation(array $fixture, array $options): array
@@ -55,6 +56,7 @@ function activityDeadlineReceiptsHttpObservation(array $fixture, array $options)
             'schedule_to_close_timeout' => $spec['schedule_to_close_timeout'],
             'retry_policy' => ['max_attempts' => $spec['max_attempts'],
                 'backoff_seconds' => $spec['backoff_seconds'], 'non_retryable_error_types' => []]];
+        if (isset($spec['heartbeat_timeout'])) $command['heartbeat_timeout'] = $spec['heartbeat_timeout'];
         $admission = $client->completeWorkflowTask($workflow['task_id'], $workflow['lease_owner'],
             $workflow['workflow_task_attempt'], [$command]);
         $admittedAt = microtime(true);
@@ -63,6 +65,27 @@ function activityDeadlineReceiptsHttpObservation(array $fixture, array $options)
             throw new RuntimeException('Original activity claim is missing');
         }
         $before = $snapshot();
+        if ($spec['heartbeat_control'] ?? false) {
+            return activityHeartbeatRenewalObservation($fixture, [
+                'driver' => 'installed_sdk_worker_protocol', 'workflow_task' => $workflow,
+                'command' => $command, 'admission' => $admission, 'first_attempt' => $first,
+                'before_expiry' => $before], $admittedAt, $snapshot, $budget, [
+                'heartbeat' => static fn (array $progress): array => namespaceReceipt('heartbeat',
+                    static fn (): array => $client->heartbeatActivityTask($first['task_id'], $first['activity_attempt_id'], $first['lease_owner'], $progress)),
+                'status' => static fn (): array => $client->activityTaskStatus($first['task_id'], $first['activity_attempt_id'], $first['lease_owner']),
+                'complete' => static fn (): array => $client->completeActivityTask($first['task_id'], $first['activity_attempt_id'], $first['lease_owner'], $fixture['input']),
+                'finish' => static function () use ($client, $workflowWorker, $workflowQueue, $fixture): array {
+                    $parent = $client->pollWorkflowTask($workflowWorker, $workflowQueue, 0);
+                    if ($parent === null) throw new RuntimeException('Renewed activity parent is missing');
+                    $response = $client->completeWorkflowTask($parent['task_id'], $parent['lease_owner'],
+                        $parent['workflow_task_attempt'], [['type' => 'complete_workflow', 'result' => $client->payloadCodec()->envelope($fixture['input'])]]);
+
+                    return [$parent, $response];
+                },
+                'extra_activity_poll' => static fn (): ?array => $client->pollActivityTask($activityWorker, $activityQueue, 0),
+            ], static fn (): array => array_map(static fn (string $line): array => json_decode($line, true, flags: JSON_THROW_ON_ERROR),
+                file($journal, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)));
+        }
         usleep(($spec['start_to_close_timeout'] * 1000000) + 250000);
         $budget();
         $refused = namespaceReceipt('expired-first-completion', static fn (): array => $client->completeActivityTask(

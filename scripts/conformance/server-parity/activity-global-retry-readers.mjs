@@ -5,8 +5,9 @@ import {checkActivityDeadlineReceiptPackages} from './activity-deadline-receipts
 
 const record = JSON.parse(readFileSync(process.argv[2]));
 assert.equal(record.outcome, 'pass');
-assert.equal(record.cases.length, 1);
-const item = record.cases[0], original = item.observation;
+const item = record.cases.find(row => row.fixture_id === 'activity-global-deadline-retry');
+assert(item, 'Actual global-deadline case is required');
+const original = item.observation;
 assert.equal(item.fixture.activity_deadline_receipts.global_timeout_control, true);
 const state = value => value.activity_deadline_receipts;
 const http = original.mode === 'http';
