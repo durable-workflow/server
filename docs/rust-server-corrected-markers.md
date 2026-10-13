@@ -5,12 +5,15 @@ separate shared PHP/embedded/native cohort after delivered
 [#434](https://github.com/durable-workflow/server/pull/434#issuecomment-6143056720).
 The [reviewed next boundary](https://github.com/durable-workflow/server/issues/325#issuecomment-6141676028)
 records the supported producer inputs and their qualification limits. The draft
-now has separate normal-install actors, five HTTP fixture definitions and a
-strict reader. The embedded actor now uses separately installed historical and
-current roles, real activity/cold processes and marker-clock readback. Full
-shared embedded recording, repair/refusal phases, the current Python clock
-reader and native/six-database qualification remain pending. Earlier killed
-author reader failures are retained separately from fresh confirming runs.
+now has separate normal-install actors and strict readers. Five positive marker
+cases and the two original range families pass independent PHP-reference and
+embedded recordings. Current Python service-mode clock/UUID cases also pass the
+PHP reference under their agreed fixed workflow-start contract, with two real
+activity/cold-worker boundaries. The embedded explicit-policy refusal remains
+failed until the separate qualified Workflow correction is published/adopted.
+Embedded UUID side effects, native integration and new six-database/final/main
+qualification remain pending. Earlier killed-author, reader-expectation and
+poll-based repair failures remain separate from fresh confirming runs.
 
 ## Artifact and history boundary
 
@@ -63,6 +66,16 @@ boundary. Clock/UUID APIs must derive from the original durable events through
 normal installed workers; marker-prefix mock reads alone do not qualify full
 clock/history replay or backend admission. Preserve original absolute clocks
 inside each run and meaningful ordering and deadlines across comparison.
+
+Python 2.5.13 has an explicitly agreed
+[fixed workflow-start clock](https://github.com/durable-workflow/sdk-python/issues/146#issuecomment-6139915817).
+PHP's per-command clock remains separate. The new Python service cases retain
+every physical marker/activity microclock while checking that public `now()`
+and UUIDv7 values use the same original start anchor across two cold processes.
+The historical clock-case producer receives explicit public registration
+retirement after its real SIGKILL and before activities resume. This is distinct
+from the unchanged unfenced-kill marker case. Embedded UUID APIs record side
+effects and need their own declared mode-specific qualification.
 
 The [genuine Python/Rust producer receipt](https://github.com/durable-workflow/sdk-python/issues/103#issuecomment-6138432726)
 supplies a real two-marker input. Its first 30-second terminal observer expired

@@ -51,8 +51,19 @@ observations precede a matched native/six-database cohort; their recorded source
 revisions, manifests and original failures remain distinct.
 
 The five positive HTTP and embedded recordings are documented on the draft PR.
+The service-only `python-clock-zero.json` and `python-clock-genuine-one.json`
+use the agreed Python 2.5.13 fixed workflow-start clock, public UUIDv7 calls and
+two genuine activity/cold-worker boundaries. The historical producer is really
+killed, then its uniquely named registration is retired through the public API
+before activities resume; the unfenced-kill case above stays separate. Exact
+raw marker/activity clocks, source hashes, prefixes, typed values and UUID
+prefixes pass the PHP reference, with 42 actual-record controls. Initial wrong
+clock-anchor and delivery-mode expectations and actual poll-based repair
+records remain failed originals. Embedded UUID side effects and native clock
+qualification remain ahead.
+
 The separate published embedded policy-refusal original remains failed; its
-coordinated package correction is Workflow #776. Current Python clock consumers,
-native integration and the new profile's six-database/final/main matrix remain
+coordinated package correction is Workflow #776. Native integration and the
+new profile's six-database/final/main matrix remain
 pending. The first killed-author reader failures remain separate from fresh
 confirming runs. Frozen actors and earlier fixture definitions stay unchanged.
