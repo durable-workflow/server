@@ -18,7 +18,11 @@ image=$(jq -r '.server.images["linux/amd64"]' "$profile/artifacts.json")
 evidence=${DW_PARITY_CORRECTED_EVIDENCE:-parity-evidence/corrected-marker}
 prefix=${DW_PARITY_CORRECTED_PREFIX:-corrected-markers-v1}
 mkdir -p "$evidence/$target"
-test "$(cat "$adapters/runner-revision.txt")" = "$(git rev-parse HEAD)"
+test "$(cat "$adapters/runner-revision.txt")" != ''
+# A native-only correction may reuse the unchanged installed actors. Preserve
+# their build revision separately; every compiled actor source must still match.
+cp "$adapters/runner-revision.txt" "$evidence/$target/adapter-build-revision.txt"
+cp "$adapters/identity.json" "$evidence/$target/adapter-identity.json"
 sha256sum -c "$adapters/source-hashes.sha256" > "$evidence/$target/actor-integrity.txt"
 printf '%s  %s\n' "$(jq -r '.binary_sha256' "$adapters/identity.json")" "$adapters/bin/rust-worker" \
   | sha256sum -c >> "$evidence/$target/actor-integrity.txt"

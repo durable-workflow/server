@@ -19,6 +19,9 @@ cleanup. This command does not change the frozen default corpus or qualify
 the embedded profile or database matrix by itself.
 An optional third argument selects `markers`, `range` or `clock` for a scoped
 diagnosis; leaving it absent runs all three families.
+Native-only edits can reuse the installed adapter bundle when every actor
+source hash still matches. The evidence keeps its original build revision and
+binary hash separately from the current recorder revision.
 
 The HTTP recorder executes a producer, a separate activity process and a cold
 Rust successor. Each phase has an original 30-second observation timeout inside
