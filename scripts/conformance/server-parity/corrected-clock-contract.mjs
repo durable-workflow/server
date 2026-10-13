@@ -43,6 +43,12 @@ export function checkCorrectedClock(fixture, observation, workflowId) {
   }
   assert.equal(new Set(pids).size,pids.length,'five actual independent actor processes');
   assert.deepEqual(phases.original.actor.decisions,[spec.original_expected_decisions ?? spec.expected_decisions]);
+  if (clock.retire_killed_producer) {
+    assert.equal(phases.original.actor.author_exit_code,-9);
+    assert.equal(phases.original.actor.registration_retirement.worker_id,workflowId+':workflow:original');
+    assert.equal(phases.original.actor.registration_retirement.outcome,'deregistered');
+    assert(Number.isSafeInteger(phases.original.actor.registration_retirement.recovered_workflow_task_count));
+  }
   assert.deepEqual(phases.activity.actor.decisions,[]); assert.deepEqual(phases.second_activity.actor.decisions,[]);
   const markers = all.filter(row=>row.event_type==='VersionMarkerRecorded');
   assert.equal(markers.length,spec.markers.length);
@@ -116,6 +122,11 @@ export function checkCorrectedClock(fixture, observation, workflowId) {
       all.slice(0,count).map(({sequence,event_type,timestamp,payload})=>({sequence,event_type,timestamp,payload})));
   }
   const outcomes=wire.filter(row=>row.method==='POST'&&/^\/api\/worker\/workflow-tasks\/[^/]+\/complete$/.test(row.path));
+  if (clock.retire_killed_producer) {
+    const retired=wire.filter(row=>row.method==='DELETE'&&row.path==='/api/worker/registrations/'+encodeURIComponent(workflowId+':workflow:original'));
+    assert.equal(retired.length,1); assert.equal(retired[0].status,200);
+    assert.deepEqual(retired[0].response,phases.original.actor.registration_retirement);
+  }
   assert.equal(outcomes.length,3);
   for (const row of outcomes) {assert.equal(row.status,200);assert.equal(row.response.recorded,true);}
   const activityOutcomes=wire.filter(row=>row.method==='POST'&&/^\/api\/worker\/activity-tasks\/[^/]+\/complete$/.test(row.path));
