@@ -208,6 +208,29 @@ class ActivityAttemptStatusTest extends TestCase
             ->assertOk()->assertJsonPath('recorded', true);
     }
 
+    #[DataProvider('expiredOutcomeProvider')]
+    public function test_outcome_crossing_expiry_during_payload_resolution_cannot_record(string $action, string $protocol): void
+    {
+        $task = $this->lease(protocolVersion: $protocol);
+        $expiresAt = WorkflowTask::query()->findOrFail($task['task_id'])->lease_expires_at;
+        $before = $this->snapshot($task);
+        $this->mock(NamespaceExternalPayloadStorage::class, function (MockInterface $mock) use ($expiresAt): void {
+            $mock->shouldReceive('driverFor')->once()->andReturnUsing(function () use ($expiresAt): mixed {
+                $this->travelTo($expiresAt);
+
+                return null;
+            });
+        });
+        $this->flushControllers();
+        $payload = $action === 'complete' ? ['result' => null] : ['failure' => ['message' => 'late failure']];
+
+        $this->withHeaders(array_replace($this->headers(), [WorkerProtocol::HEADER => $protocol]))
+            ->postJson($this->path($task, $action), $this->fence($task) + $payload)
+            ->assertStatus(409)->assertJsonPath('recorded', false)->assertJsonPath('reason', 'lease_expired');
+
+        $this->assertSame($before, $this->snapshot($task));
+    }
+
     public static function deadlineProvider(): array
     {
         return [
