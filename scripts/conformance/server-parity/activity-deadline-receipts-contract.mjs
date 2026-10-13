@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import {gunzipSync, inflateSync, brotliDecompressSync} from 'node:zlib';
+import {createHash} from 'node:crypto';
+import {readFileSync} from 'node:fs';
 
 export function checkActivityDeadlineReceiptPackages(fixture, observation, artifacts) {
   if (!fixture.activity_deadline_receipts) return;
@@ -7,12 +9,20 @@ export function checkActivityDeadlineReceiptPackages(fixture, observation, artif
   assert.equal(observation.sdk_php_source, artifacts.sdk_php_source_commit);
   assert.equal(observation.sdk_composer_lock_sha256, artifacts.sdk_composer_lock_sha256);
   assert.deepEqual(observation.sdk_loaded_sources, artifacts.published_sdk_artifacts.php.loaded_sources);
+  if (observation.mode === 'embedded') {
+    assert.equal(observation.workflow_package, artifacts.workflow);
+    assert.equal(observation.workflow_source, artifacts.workflow_source_commit);
+    assert.equal(observation.embedded_composer_lock_sha256, artifacts.embedded_composer_lock_sha256);
+    assert.equal(observation.activity_deadline_receipts.definition_sha256,
+      createHash('sha256').update(readFileSync(new URL('./activity-deadline-receipts-embedded.php', import.meta.url))).digest('hex'));
+  }
 }
 
 export function checkActivityDeadlineReceipts(fixture, observation, workflowId, instant) {
   const spec = fixture.activity_deadline_receipts, state = observation.activity_deadline_receipts;
-  assert.equal(observation.mode, 'http', 'Embedded counterpart remains an explicit required follow-through');
-  assert.equal(state.driver, 'installed_sdk_worker_protocol');
+  assert(['http', 'embedded'].includes(observation.mode));
+  const http = observation.mode === 'http';
+  assert.equal(state.driver, http ? 'installed_sdk_worker_protocol' : 'real_queue_then_public_embedded_bridges');
   assert.equal(observation.workflow_id, workflowId);
   assert.equal(observation.workflow_type, fixture.workflow_type);
   assert.equal(observation.namespace, 'default');
@@ -27,12 +37,26 @@ export function checkActivityDeadlineReceipts(fixture, observation, workflowId, 
     start_to_close_timeout: spec.start_to_close_timeout,
     schedule_to_start_timeout: null, schedule_to_close_timeout: spec.schedule_to_close_timeout,
     heartbeat_timeout: null};
-  assert.deepEqual(state.command.retry_policy, {max_attempts: spec.max_attempts,
-    backoff_seconds: spec.backoff_seconds, non_retryable_error_types: []});
-  assert.equal(state.command.start_to_close_timeout, spec.start_to_close_timeout);
-  assert.equal(state.command.schedule_to_close_timeout, spec.schedule_to_close_timeout);
-  assert.equal(state.admission.recorded, true);
-  assert.equal(state.first_refusal.status, 409);
+  if (http) {
+    assert.deepEqual(state.command.retry_policy, {max_attempts: spec.max_attempts,
+      backoff_seconds: spec.backoff_seconds, non_retryable_error_types: []});
+    assert.equal(state.command.start_to_close_timeout, spec.start_to_close_timeout);
+    assert.equal(state.command.schedule_to_close_timeout, spec.schedule_to_close_timeout);
+    assert.equal(state.admission.recorded, true);
+    assert.equal(state.first_refusal.status, 409);
+  } else {
+    for (const key of ['max_attempts', 'start_to_close_timeout', 'schedule_to_close_timeout']) {
+      assert.equal(state.authored_options[key], spec[key]);
+    }
+    assert.deepEqual(state.authored_options.backoff, spec.backoff_seconds);
+    assert.deepEqual(state.authored_options.non_retryable_error_types, []);
+    assert.match(state.worker_output, /RunWorkflowTask.*RUNNING/);
+    assert.match(state.worker_output, /RunWorkflowTask.*DONE/);
+    assert.equal(state.activity_invocations, 0, 'Public bridge calls, without a simulated activity callback');
+    assert.equal(state.enforcement.enforced, true);
+    assert.equal(state.first_refusal.recorded, false);
+    assert.equal(state.first_refusal.reason, 'start_to_close_timeout');
+  }
   const first = state.first_attempt, second = state.second_attempt;
   for (const [index, task] of [first, second].entries()) {
     assert.equal(task.workflow_id, workflowId);
@@ -44,21 +68,33 @@ export function checkActivityDeadlineReceipts(fixture, observation, workflowId, 
   assert.notEqual(second.task_id, first.task_id);
   assert.notEqual(second.activity_attempt_id, first.activity_attempt_id);
   assert.equal(state.activity_completion.recorded, true);
-  assert.equal(state.workflow_completion.recorded, true);
+  assert.equal(state.workflow_completion[http ? 'recorded' : 'completed'], true);
   const activityReceipt = receipt => {
+    if (!http) {
+      assert.equal(receipt.recorded, false);
+      assert.equal(receipt.reason, 'stale_attempt');
+      assert.equal(receipt.task_id, second.activity_attempt_id, 'Embedded response identifies its attempt');
+      return;
+    }
     assert([200, 409].includes(receipt.status), 'Retained receipt or permitted closed-attempt response');
     assert.equal(receipt.response.recorded, false);
     assert.equal(receipt.response.outcome, 'completed');
     if (receipt.status === 409) assert.equal(receipt.response.reason, 'stale_attempt');
   };
   activityReceipt(state.duplicate);
-  assert.equal(state.conflict.status, 409);
-  assert([200, 409].includes(state.workflow_duplicate.status));
-  if (state.workflow_duplicate.status === 409) {
-    assert.equal(state.workflow_duplicate.response.reason, 'run_closed');
-    if ('recorded' in state.workflow_duplicate.response) assert.equal(state.workflow_duplicate.response.recorded, false);
+  if (http) {
+    assert.equal(state.conflict.status, 409);
+    assert([200, 409].includes(state.workflow_duplicate.status));
+    if (state.workflow_duplicate.status === 409) {
+      assert.equal(state.workflow_duplicate.response.reason, 'run_closed');
+      if ('recorded' in state.workflow_duplicate.response) assert.equal(state.workflow_duplicate.response.recorded, false);
+    } else assert.equal(state.workflow_duplicate.response.recorded, false);
+  } else {
+    activityReceipt(state.conflict);
+    assert.equal(state.workflow_duplicate.completed, false);
+    assert(['task_not_leased', 'run_already_closed'].includes(state.workflow_duplicate.reason));
+    assert.equal(state.workflow_duplicate.task_id, state.parent_delivery.task_id);
   }
-  else assert.equal(state.workflow_duplicate.response.recorded, false);
   assert.equal(state.parent_delivery.workflow_id, workflowId);
   assert.equal(state.parent_delivery.run_id, observation.run_id);
   assert.notEqual(state.parent_delivery.task_id, state.workflow_task.task_id);
@@ -107,6 +143,21 @@ export function checkActivityDeadlineReceipts(fixture, observation, workflowId, 
   assert(instant(completed.timestamp) < instant(restarted.timestamp) + BigInt(spec.start_to_close_timeout) * 1_000_000_000n);
   assert.deepEqual(completed.typed_decoded.result, fixture.typed_value);
   assert.deepEqual(events[7].typed_decoded.output, fixture.typed_value);
+  if (!http) {
+    assert.deepEqual(state.requests, [], 'Embedded responses never acquire fabricated HTTP statuses');
+    const calls = state.bridge_calls;
+    assert.equal(calls.length, spec.active_receipt_control ? 5 : 4);
+    assert.equal(calls[0].activity_attempt_id, first.activity_attempt_id);
+    assert.deepEqual(calls[0].response, state.first_refusal);
+    assert.deepEqual(calls[1].response, state.activity_completion);
+    for (const call of calls.slice(1)) assert.equal(call.activity_attempt_id, second.activity_attempt_id);
+    for (const call of calls.slice(0, -1)) assert.deepEqual(call.typed_value, fixture.typed_value);
+    assert.deepEqual(calls.at(-1).typed_value, {type: 'map', value: {different: {type: 'boolean', value: true}}});
+    assert.deepEqual(calls.at(-1).response, state.conflict);
+    assert.deepEqual(calls.at(-2).response, state.duplicate);
+    if (spec.active_receipt_control) assert.deepEqual(calls[2].response, state.active_before_expiry);
+    for (const call of calls) assert.equal(call.operation, 'complete_activity');
+  } else {
   const wire = state.requests.map(row => {
     assert.equal(row.transport_error, null);
     assert.equal(row.client_cancelled, false);
@@ -140,6 +191,7 @@ export function checkActivityDeadlineReceipts(fixture, observation, workflowId, 
   assert.equal(workflow[2].status, state.workflow_duplicate.status);
   assert.equal(workflow[1].request_body, workflow[2].request_body);
   assert.deepEqual(workflow[2].response, state.workflow_duplicate.response);
+  }
   return {fixture_id: fixture.id, workflow_id: workflowId, status: 'completed',
     attempts: 2, retry_events: 1, activity_completions: 1, workflow_completions: 1,
     elapsed_identical_receipts: 'one_original_commit_without_mutation',

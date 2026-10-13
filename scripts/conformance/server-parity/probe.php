@@ -861,10 +861,12 @@ try {
         }
     } elseif (isset($fixture['activity_deadline_receipts'])) {
         require __DIR__.'/activity-deadline-receipts-probe.php';
-        if ($mode !== 'http') {
-            throw new RuntimeException('Embedded deadline receipt counterpart is not implemented');
-        }
-        $observation = activityDeadlineReceiptsHttpObservation($fixture, $options);
+        if ($mode === 'embedded') {
+            require __DIR__.'/activity-deadline-receipts-embedded.php';
+            $observation = activityDeadlineReceiptsEmbeddedObservation($fixture, $options);
+        } elseif ($mode === 'http') {
+            $observation = activityDeadlineReceiptsHttpObservation($fixture, $options);
+        } else throw new InvalidArgumentException('Mode must be http or embedded.');
     } elseif (isset($fixture['activity_deadline_authority'])) {
         require __DIR__.'/activity-deadline-probe.php';
         if ($mode === 'embedded') {
