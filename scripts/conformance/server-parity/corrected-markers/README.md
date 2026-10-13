@@ -45,7 +45,9 @@ author every known field and interval explicitly, refuse unsupported input,
 restore range `1..1`, and exclude the recorded decision with `2..2`. Pending
 repair replays the original three-second timer winner and awaits its retained
 activity handle. The separate published PHP-reference directions pass actual
-admission, refusal and original-task repair; native admission remains required.
+admission, refusal and original-task repair. Both native SQLite range cases now
+also pass at `4f5d813a8`, with 56 actual-record controls and independent SQL.
+The matched cohort and all six databases remain required.
 
 `rust-range-completed.json` and `rust-range-timer-pending.json` add that Rust
 direction to the original PHP 2.2.7 recipes. They preserve the original fixture

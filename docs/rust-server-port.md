@@ -65,11 +65,19 @@ and the [embedded counterparts](https://github.com/durable-workflow/server/pull/
 pass the unchanged PHP definitions. Those separate local recordings preserve
 35-second scenario budgets, original task repair, full prefixes/microclocks,
 typed values and neighboring runs; 100 actual-record negative controls pass.
-They do not qualify a matched native/database cohort. The embedded explicit
+Both range families now also pass separate native SQLite recordings at
+`4f5d813a8`, with 56 actual-record controls and independent database readback.
+Native retains unstructured Rust replay failures and original-task repair,
+six-digit history timestamps and genuine legacy policy omission. All 81 native
+execution tests and 33 unit tests pass locally, with 18 database tests ignored.
+Earlier native admission, timestamp and policy-presence failures remain failed.
+These observations do not qualify a matched native/database cohort. The embedded explicit
 retry-policy mismatch remains a retained failure; its coordinated
 [Workflow source correction](https://github.com/durable-workflow/workflow/pull/776)
-is delivered, with stable publication/adoption separate. Current Python clocks,
-native integration and new all-six/final/main qualification remain ahead.
+is delivered, with stable publication/adoption separate. Current Python's
+fixed-start clock/UUID cases pass the PHP reference. Native marker/clock
+admission still needs activity timeout/policy support; embedded UUID semantics
+and new matched all-six/final/main qualification remain ahead.
 Published PHP remains the default; broader runtime
 parity, migration, matched performance and release/cutover remain unqualified.
 

@@ -11,8 +11,17 @@ embedded recordings. Current Python service-mode clock/UUID cases also pass the
 PHP reference under their agreed fixed workflow-start contract, with two real
 activity/cold-worker boundaries. The embedded explicit-policy refusal remains
 failed until the separate qualified Workflow correction is published/adopted.
-Embedded UUID side effects, native integration and new six-database/final/main
-qualification remain pending. Earlier killed-author, reader-expectation and
+Both range families also pass separate native SQLite recordings at
+`4f5d813a8`, with 56 actual-record corruption controls and independent SQL
+readback. Native preserves published Rust replay failures without inventing
+structured fields, repairs the original task, emits six-digit history clocks
+and keeps genuine legacy policy absence. Its 81 execution and 33 unit cases
+pass locally; 18 database unit cases are explicitly ignored there.
+Embedded UUID side effects, native marker/clock admission and new matched
+six-database/final/main qualification remain pending. Native still refuses the
+activity timeout fields required by these new marker/clock actors; accepting
+them requires their real deadline behavior as well as policy preservation.
+Earlier killed-author, reader-expectation and
 poll-based repair failures remain separate from fresh confirming runs.
 
 ## Artifact and history boundary
