@@ -80,7 +80,10 @@ function activityDeadlineReceiptsHttpObservation(array $fixture, array $options)
             throw new RuntimeException('Actual successful retry parent delivery is missing');
         }
         $finish = [['type' => 'complete_workflow', 'result' => $client->payloadCodec()->envelope($fixture['input'])]];
-        $workflowCompletion = $client->completeWorkflowTask($parent['task_id'], $parent['lease_owner'],
+        $activeControl = (bool) ($spec['active_receipt_control'] ?? false);
+        $activeBefore = $activeControl ? namespaceReceipt('active-before-expiry', static fn (): array => $client->completeActivityTask(
+            $second['task_id'], $second['activity_attempt_id'], $second['lease_owner'], $fixture['input'])) : null;
+        $workflowCompletion = $activeControl ? null : $client->completeWorkflowTask($parent['task_id'], $parent['lease_owner'],
             $parent['workflow_task_attempt'], $finish);
         $committed = $snapshot();
         // Admission is acknowledged after the server snapshots the original
@@ -95,6 +98,11 @@ function activityDeadlineReceiptsHttpObservation(array $fixture, array $options)
             $second['task_id'], $second['activity_attempt_id'], $second['lease_owner'], $fixture['input']));
         $conflict = namespaceReceipt('conflicting-activity', static fn (): array => $client->completeActivityTask(
             $second['task_id'], $second['activity_attempt_id'], $second['lease_owner'], ['different' => true]));
+        $activeAfter = $activeControl ? $snapshot() : null;
+        if ($activeControl) {
+            $workflowCompletion = $client->completeWorkflowTask($parent['task_id'], $parent['lease_owner'],
+                $parent['workflow_task_attempt'], $finish);
+        }
         $workflowDuplicate = namespaceReceipt('identical-workflow', static fn (): array => $client->completeWorkflowTask(
             $parent['task_id'], $parent['lease_owner'], $parent['workflow_task_attempt'], $finish));
         $after = $snapshot();
@@ -106,6 +114,7 @@ function activityDeadlineReceiptsHttpObservation(array $fixture, array $options)
             'second_attempt' => $second, 'after_retry' => $retried, 'activity_completion' => $completion,
             'parent_delivery' => $parent, 'workflow_command' => $finish, 'workflow_completion' => $workflowCompletion,
             'committed' => $committed, 'duplicate' => $duplicate, 'conflict' => $conflict,
+            'active_before_expiry' => $activeBefore, 'active_after_expiry' => $activeAfter,
             'workflow_duplicate' => $workflowDuplicate,
             'requests' => array_map(static fn (string $line): array => json_decode($line, true, flags: JSON_THROW_ON_ERROR),
                 file($journal, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES))]];
