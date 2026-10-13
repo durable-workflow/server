@@ -156,7 +156,8 @@ class RuntimePayloadCompletionUploadsTest extends TestCase
         $context['attempt'] = 1;
         $context['slot'] = ['commands', 0, 'result'];
         $this->observeStoragePressure('draining');
-        $this->upload('bytes', $context)->assertStatus(409);
+        $this->upload('bytes', $context)->assertStatus(409)
+            ->assertJsonPath('reason', 'external_payload_completion_lease_rejected');
         $this->assertDatabaseCount('runtime_payload_completion_budgets', 0);
     }
 
@@ -309,7 +310,26 @@ class RuntimePayloadCompletionUploadsTest extends TestCase
         $this->assertDatabaseCount('runtime_external_payloads', 0);
     }
 
-    public function test_cleanup_does_not_reset_an_expired_but_renewable_activity_budget(): void
+    public function test_cleanup_preserves_spent_upload_budget_while_activity_authority_is_live(): void
+    {
+        $context = $this->activity();
+        $this->observeStoragePressure('draining');
+        $this->upload('bytes', $context)->assertCreated();
+        $spent = RuntimePayloadCompletionBudget::query()->firstOrFail()
+            ->only(['id', 'namespace', 'context', 'slots', 'objects']);
+        $this->observeStoragePressure('normal');
+        RuntimePayloadCompletionBudget::query()->update(['expires_at' => now()->subHour()]);
+        app(RuntimeExternalPayloadCleanup::class)->runPass();
+        $this->assertDatabaseCount('runtime_payload_completion_budgets', 1);
+        $this->assertSame($spent, RuntimePayloadCompletionBudget::query()->firstOrFail()
+            ->only(['id', 'namespace', 'context', 'slots', 'objects']));
+        WorkflowTask::query()->whereKey($context['task_id'])->update(['status' => 'completed']);
+        RuntimePayloadCompletionBudget::query()->update(['expires_at' => now()->subHour()]);
+        app(RuntimeExternalPayloadCleanup::class)->runPass();
+        $this->assertDatabaseCount('runtime_payload_completion_budgets', 0);
+    }
+
+    public function test_expired_activity_authority_cannot_regain_upload_budget_after_cleanup(): void
     {
         $context = $this->activity();
         $this->observeStoragePressure('draining');
@@ -317,12 +337,16 @@ class RuntimePayloadCompletionUploadsTest extends TestCase
         $this->observeStoragePressure('normal');
         RuntimePayloadCompletionBudget::query()->update(['expires_at' => now()->subHour()]);
         WorkflowTask::query()->whereKey($context['task_id'])->update(['lease_expires_at' => now()->subMinute()]);
+        $before = WorkflowTask::query()->findOrFail($context['task_id'])->getAttributes();
+
         app(RuntimeExternalPayloadCleanup::class)->runPass();
-        $this->assertDatabaseCount('runtime_payload_completion_budgets', 1);
-        WorkflowTask::query()->whereKey($context['task_id'])->update(['status' => 'completed']);
-        RuntimePayloadCompletionBudget::query()->update(['expires_at' => now()->subHour()]);
-        app(RuntimeExternalPayloadCleanup::class)->runPass();
+
         $this->assertDatabaseCount('runtime_payload_completion_budgets', 0);
+        $this->observeStoragePressure('draining');
+        $this->upload('bytes', $context)->assertStatus(409);
+        $this->assertDatabaseCount('runtime_payload_completion_budgets', 0);
+        $this->assertDatabaseCount('runtime_external_payloads', 1);
+        $this->assertSame($before, WorkflowTask::query()->findOrFail($context['task_id'])->getAttributes());
     }
 
     public static function completionRosterStates(): array
