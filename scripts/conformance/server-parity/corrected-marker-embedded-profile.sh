@@ -38,15 +38,19 @@ case "$backend" in
   *) exit 2 ;;
 esac
 for role in original current; do
+  package_checks=()
   if test "$role" = original; then
     inputs="$profile/embedded-original"
     lock=$(jq -r '.embedded_original.composer_lock_sha256' "$artifacts")
   else
     inputs=$(jq -r --arg fallback "$profile/embedded" '.embedded_current_profile // $fallback' "$artifacts")
     lock=$(jq -r '.embedded_composer_lock_sha256' "$artifacts")
+    if test -n "${DW_PARITY_EMBEDDED_RUNTIME_HASHES:-}"; then
+      package_checks=(-e DW_PARITY_EMBEDDED_RUNTIME_HASHES="$DW_PARITY_EMBEDDED_RUNTIME_HASHES")
+    fi
   fi
   docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --entrypoint sh \
-    -v "$PWD:/source:ro" -v "$PWD/$state/$role:/runtime" "${engine[@]}" \
+    -v "$PWD:/source:ro" -v "$PWD/$state/$role:/runtime" "${engine[@]}" "${package_checks[@]}" \
     -w /runtime -e COMPOSER_HOME=/tmp/composer -e DW_PARITY_EMBEDDED_PROFILE="/source/$inputs" \
     -e DW_PARITY_EMBEDDED_LOCK_SHA256="$lock" "$image" \
     /source/scripts/conformance/server-parity/corrected-marker-embedded-install.sh \
