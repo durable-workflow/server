@@ -51,6 +51,18 @@ prospective 55-minute whole-job ceiling to include the real five-minute lease
 wait; old 45-minute allocations and all individual scenario limits stay recorded
 unchanged. Runtime memory/CPU and compile limits are unchanged.
 
+The separate actual elapsed-deadline HTTP profile passes fresh matched
+published PHP/native SQLite recordings at `67cfd7b95`: four original expiry
+families, 142 corruption controls, and independent SQL verification of 19
+events per target and unchanged database bytes. Native now returns the ordinary
+structured heartbeat refusal atomically, while preserving cooperative
+stale-attempt conflicts. All 85 native execution and 35 unit cases pass;
+18 database unit cases are explicitly ignored locally. The final restored Rust
+tree is byte-identical. Timeout versus closed-attempt diagnostics describe the
+actual retained lifecycle state. This profile keeps the parent timeout delivery
+without authoring its result; embedded, retry/duplicate/renewal and matched
+six-database gates remain pending. Existing frozen profiles remain unchanged.
+
 [#434](https://github.com/durable-workflow/server/pull/434) is delivered at
 `c6dc5e451bf9ba8651f1f84e386ed6c274f3992c`, preserving reviewed tree
 `a823f73d288be436994e1272e020f462991b1dd3`. All six final-head and automatic

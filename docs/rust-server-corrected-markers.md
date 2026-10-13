@@ -31,7 +31,8 @@ pass with normally installed actors, 194 actual-record corruption controls and
 independent SQL verification of 84 original events and 12 activities. The four
 deadline regressions separately pass MySQL 8.4. Earlier snapshot-field and
 MySQL JSON-path failures remain failed records. The pending elapsed-deadline
-contract still requires actual shared PHP/native/embedded recordings. Embedded
+contract still requires its embedded counterpart and complete retry/duplicate
+and heartbeat-renewal recordings. Embedded
 UUID side effects and new matched six-database/final/main qualification remain
 pending.
 Earlier killed-author, reader-expectation and
@@ -46,8 +47,20 @@ Heartbeat's published structured refusal can return 200 with continuation and
 recording false, without renewed authority. The initial missing-maintenance
 fixture timeout remains a failed setup record. Later maintenance requeues the
 same unacknowledged parents after the observer; those are explicitly separate
-from the original delivery observations. Native/embedded and actual shared
-retry/duplicate/heartbeat-renewal deadline counterparts remain pending.
+from the original delivery observations. Fresh matched PHP/native SQLite
+recordings at `67cfd7b95` now pass all four expiry families, 142 actual-record
+controls and independent SQL checks of 19 original events per target, with
+unchanged database bytes and zero parent repairs at readback. Native's ordinary
+expired heartbeat returns 200 with continuation and recording false in the
+same transaction that checks authority. Its cooperative stale-attempt refusal
+remains 409; the first regression is retained. All 85 execution and 35 unit
+cases pass at that source. The final restored runtime tree is byte-identical.
+Published PHP reports the timeout while the attempt is still running; native
+can report `attempt_closed` after its canonical sweep. These retained lifecycle
+states explain the diagnostic difference without changing historical receipts.
+The four-case recorder retains an actual parent delivery, rather than an
+authored parent workflow result. Embedded and actual shared retry/duplicate/
+heartbeat-renewal deadline counterparts remain pending.
 
 ## Artifact and history boundary
 
