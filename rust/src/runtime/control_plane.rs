@@ -3,7 +3,7 @@ use axum::extract::{FromRequestParts, Path, Request};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 
-pub(super) enum Operation {
+pub(super) enum Operation<'a> {
     Start,
     List,
     Describe,
@@ -13,9 +13,10 @@ pub(super) enum Operation {
     Repair,
     Debug,
     Update,
+    Signal(&'a str),
 }
 
-impl Operation {
+impl Operation<'_> {
     pub(super) fn refusal(
         self,
         error: super::RuntimeError,
@@ -63,6 +64,11 @@ impl Operation {
             Self::Debug => ("debug", &["workflow_id"], &[]),
             Self::Update => (
                 "update",
+                &["workflow_id", "operation_name", "operation_name_field"],
+                &["outcome"],
+            ),
+            Self::Signal(_) => (
+                "signal",
                 &["workflow_id", "operation_name", "operation_name_field"],
                 &["outcome"],
             ),
@@ -150,6 +156,54 @@ impl Operation {
                 "wait_timeout_seconds",
             ] {
                 metadata[field] = body[field].clone();
+            }
+        }
+        if let Self::Signal(name) = self {
+            metadata["operation_name"] = json!(name);
+            metadata["operation_name_field"] = json!("signal_name");
+            metadata["contract"]["rejection_fields"] = json!([
+                "workflow_id",
+                "run_id",
+                "signal_name",
+                "command_status",
+                "command_source",
+                "target_scope",
+                "outcome",
+                "reason",
+                "rejection_reason",
+                "rejection_category",
+                "message",
+                "command_contract_source",
+                "command_contract_backfill_needed",
+                "command_contract_backfill_available",
+                "declared_signals",
+                "signal_admission",
+                "retryable",
+                "error_id"
+            ]);
+            metadata["contract"]["rejection_reasons"] = json!([
+                "instance_not_found",
+                "historical_run_command_rejected",
+                "unknown_signal",
+                "invalid_signal_arguments",
+                "run_not_active",
+                "instance_not_started",
+                "selected_run_not_current",
+                "configured_workflow_type_invalid",
+                "v1_projection_read_only",
+                "backend_lock_pressure",
+                "control_plane_internal_error"
+            ]);
+            for field in [
+                "command_id",
+                "target_scope",
+                "resolved_run_id",
+                "requested_run_id",
+                "signal_name",
+            ] {
+                if let Some(value) = body.get(field) {
+                    metadata[field] = value.clone();
+                }
             }
         }
         // Copy scalar read identities/state, never input/output/event payloads.

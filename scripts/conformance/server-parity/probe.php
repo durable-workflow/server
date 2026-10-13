@@ -812,7 +812,13 @@ try {
     require __DIR__.'/child-cancellation-probe.php';
     require __DIR__.'/cancellation-probe.php';
     require __DIR__.'/cooperative-probe.php';
-    if (isset($fixture['sdk_update_direction'])) {
+    if (isset($fixture['namespace_signal_pair'])) {
+        require __DIR__.'/sdk-direction-probe.php';
+        require __DIR__.'/sdk-namespace-signal-probe.php';
+        $observation = $mode === 'http'
+            ? namespaceSignalHttpObservation($fixture, $options)
+            : namespaceSignalEmbeddedObservation($fixture, $workflowId, $options['application-root']);
+    } elseif (isset($fixture['sdk_update_direction'])) {
         require __DIR__.'/sdk-direction-probe.php';
         require __DIR__.'/sdk-query-direction-probe.php';
         require __DIR__.'/sdk-update-direction-probe.php';
@@ -908,6 +914,15 @@ try {
     }
     if (isset($fixture['sdk_update_direction']) || isset($fixture['sdk_query_direction']) || isset($fixture['sdk_direction']) || isset($fixture['sdk_child_direction']) || isset($fixture['sdk_timer_author']) || isset($fixture['sdk_signal_direction'])) {
         sdkDirectionPackageObservation($observation, $sdkAutoload, $mode === 'embedded' ? $options['application-root'] : null);
+    }
+    if (isset($fixture['namespace_signal_pair'])) {
+        $peer = &$observation['namespace_signal_pair']['peer'];
+        $peer['mode'] = $mode;
+        foreach (['sdk_php', 'sdk_php_source', 'php_version', 'workflow_package'] as $field) {
+            if (array_key_exists($field, $observation)) { $peer[$field] = $observation[$field]; }
+        }
+        sdkDirectionPackageObservation($peer, $sdkAutoload, $mode === 'embedded' ? $options['application-root'] : null);
+        unset($peer);
     }
     if ($mode === 'embedded' && isset($fixture['patch_deployment']['embedded_clock_probe']) && ! isset($observation['workflow_source'])) {
         $observation['workflow_source'] = InstalledVersions::getReference('durable-workflow/workflow');

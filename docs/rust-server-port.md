@@ -26,6 +26,150 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+[#427](https://github.com/durable-workflow/server/pull/427) is merged and its
+[fresh-main qualification](https://github.com/durable-workflow/server/pull/427#issuecomment-6130548960)
+is complete at `3afb6bb41bd4dd5cc75234bacf0ae5e28df1164e`, tree
+`6483bca52bf8e2a22b160acb6d9286c5f47e199d`, identical to the reviewed candidate.
+All six database configurations, PHP/source and boundary checks pass. Original
+artifact review verifies nine failed-update SDK directions and their embedded
+counterparts: 162 observations and 1,188 full HTTP sidecars. Update, query and
+signal regressions also pass. The earlier MariaDB storage 503s remain unresolved;
+the clean qualification does not establish a repair. Published PHP remains the
+default, with no Rust release, takeover or performance claim.
+
+The [next reviewed boundary](https://github.com/durable-workflow/server/issues/325#issuecomment-6130197979)
+is [paired named-namespace SDK signals](../tests/Fixtures/ServerParityProfiles/published-sdk-namespace-signals/README.md).
+Nine client/author definitions cover distinct original runs with the
+same type and queue, wrong-namespace signal refusal, an empty foreign-Worker
+poll and cold completion with exact independent Avro values. The ordinary
+fixture actors accept an explicit namespace through the unchanged SDK API.
+The paired recorder and strict reader are implemented. All nine published
+client/author directions and canonical embedded counterparts pass the SQLite
+reference baseline, with 36 original runs, complete transport and persisted
+relationships checked. All 4,755 reader guards and the SDK-dependent forced
+setup-loss regression pass with the locked PHP SDK. The initial path/typed-error
+reader failures remain unchanged. Native current-run signals, canonical refusal
+metadata and untimed condition waits are implemented and the new profile runs
+in all six database jobs. Candidate qualification and promotion are recorded below. Expanded jobs
+have a 35-minute ceiling; original run budgets and runtime caps stay fixed.
+
+Exact `6bac8f677` [run 38304548447](https://github.com/durable-workflow/server/actions/runs/38304548447)
+passes five jobs and fails MariaDB. Independent original artifact review across
+SQLite, PostgreSQL 16/17 and MySQL 8.0/8.4 verifies 135 paired observations,
+270 original runs, 1,530 full HTTP sidecars, 9,585 wire exchanges and all 8,352
+original member hashes. Each also passes 78 native execution tests.
+MariaDB passes all PHP/embedded counterparts, but native's first failing update
+in the Python-author/PHP-client direction returns an opaque storage 503. Its
+fixed diagnostic identifies the post-commit update receipt lookup; the reason
+that lookup found no row remains unknown. The first native namespace setup
+separately exhausts its 75-second outer recorder ceiling without a phase sidecar.
+Those [original failures remain unchanged](https://github.com/durable-workflow/server/pull/429#issuecomment-6132750228).
+
+The recorder now preserves setup checkpoints and HTTP/arrival journals through
+forced child loss, consolidating them only after a final control receipt.
+The real locked-SDK regression passes and fails on the prior recorder source.
+Always-run native state/limit receipts retain process-loss evidence. This changes
+evidence retention, not SQL, HTTP semantics, retries or deadlines.
+
+The subsequent original SQLite job fails in frozen PHP patch replay, before
+namespace execution. Its original PHP Worker recovers a documented SQLite
+workflow-poll pressure response and the cold replacement completes the same
+run. The [reviewed reader correction](https://github.com/durable-workflow/server/pull/429#issuecomment-6133295115)
+extends the existing strict PHP pressure check to that original PHP phase,
+excluding language SDK producers. Exact response shape, original registration,
+bounded retry hint, diagnostic, authority and successful same-phase recovery
+remain required. Generic storage failures remain refused; Python/Rust retain
+their distinct same-request retry contract. The unchanged observation passes
+the corrected reader and still fails the original reader. All 4,817 pure-reader
+guards pass; the unchanged SDK-dependent retention regression retains its
+separate real-runtime qualification. No tuple or original deadline changes.
+The original job and record remain failed.
+
+An isolated exact SQLx 0.9.0/Tokio 1.53.2 MariaDB check now reproduces a pooled
+stale read after an ordinary BEGIN reply is delayed and its future is dropped.
+The returned session has a physical transaction but no logical transaction;
+it misses an independently committed row that a fresh connection sees.
+Rollback clears that stale view. The native pool now resets sessions before
+return, with a five-second reset budget and disposal on failure. Pool size,
+isolation, acquisition/lock budgets and public receipt/retry contracts stay
+fixed. This adds a return-time database statement that later performance
+qualification must measure. The real native-factory regression passes with
+reset and fails `RowNotFound` without it; an actual committed row survives a
+lost COMMIT reply. The [correction contract](https://github.com/durable-workflow/server/pull/429#issuecomment-6133464483)
+precedes implementation. The injected mechanism is proven; its connection to
+the original native failure is unestablished.
+
+The first reset candidate passes SQLite/PostgreSQL but fails all three
+MySQL-family jobs at the TLS disposal check. Exact TLS 1.3 reproduction confirms
+that reset times out while the driver's hard-close path still awaits TLS I/O;
+flushing before the gate produces the same failure. A scoped
+[native driver patch](../rust/vendor/sqlx-mysql/DURABLE-PATCH.md)
+drops the owned transport on hard close, matching SQLx's immediate-close
+contract. Both unchanged TLS controls then pass with socket closure, freed
+capacity, a different replacement connection and preserved committed data.
+The official archive/VCS and licenses are retained; graceful close and TLS
+trust/hostname checks stay unchanged. The original CI/probe failures remain
+failed, and the [contract precedes adoption](https://github.com/durable-workflow/server/pull/429#issuecomment-6135933370).
+Exact `64ca245e7` [run 38331809158](https://github.com/durable-workflow/server/actions/runs/38331809158)
+passes all six original database jobs without retries. Independent original
+artifact review verifies 162 paired namespace observations, 324 original runs,
+1,836 complete HTTP sidecars, 11,421 wire exchanges and all 10,053 member hashes.
+Every configuration passes 78 native execution tests; all three MySQL families
+pass nine schema/pool qualifications including the unchanged TLS disposal case.
+Pressure, role/fencing, real node recovery, PHP takeover refusal and TLS
+trust/hostname gates pass. PHP/source passes 2,744 tests / 61,718 assertions,
+with six existing deprecations and one skip. All three original SDK adapter
+artifacts retain their frozen installed/source/archive identities and hashes.
+The [candidate receipt](https://github.com/durable-workflow/server/pull/429#issuecomment-6136523527)
+qualifies these cases; promotion-head, review/merge and fresh-main checks remain
+separate gates. Fixture bytes and all original budgets remain unchanged.
+The subsequent promotion head's PostgreSQL 17 job fails before namespace
+execution in the forced setup-loss regression. Its proxy arrival journal is
+visible before the held-request server callback necessarily runs; the test had
+assumed those observations were simultaneous. The
+[synchronization correction](https://github.com/durable-workflow/server/pull/429#issuecomment-6137161279)
+waits for both observations before forced loss, preserving the original
+10-second observation and 15-second test ceilings and every retained-stage,
+request, deadline, credential and absent-response assertion. A controlled
+250-ms forwarding delay reproduces the prior assertion failure and passes the
+corrected guard; three ordinary locked-SDK runs pass all 49 selected tests
+without skips. This changes only the test barrier, with no recorder, native
+runtime, fixture, tuple or retry change. The failed original remains failed;
+the new exact-head and fresh-main matrix are still required.
+
+The [next proposed boundary](https://github.com/durable-workflow/server/issues/325#issuecomment-6136891726)
+is run-targeted signals. One
+[published PHP/PHP reference pair](https://github.com/durable-workflow/server/issues/325#issuecomment-6137058011)
+preserves two original completions, six cold authors, 127 wire exchanges and
+zero task repairs. Accepted selected-current-run calls retain instance-scoped
+commands; unknown, invalid and inactive signals persist rejected commands and
+advance sequences without workflow history. Wrong-namespace and mismatched-run
+guards mutate neither original run. A separate shared profile must check these
+relationships, not just HTTP statuses. Six supported PHP/Rust client by
+PHP/Python/Rust author directions, canonical embedded behavior and native/all
+database qualification remain pending; Python 2.5.4 has no run-targeted signal
+client method and remains an ordinary author in applicable directions.
+
+[Workflow 2.5.13](https://github.com/durable-workflow/workflow/issues/744#issuecomment-6137098532)
+is a qualified published marker-bound correction at `19ba333a6fcae3447d35e499d8e1fb4969b96e48`.
+The unchanged Server image still bundles 2.5.12; its dependency/rebuild and
+consumer follow-through belong to the PHP maintainer. Any corrected shared
+marker profile uses a separately qualified exact cohort, preserving frozen
+marker/range histories and failures. The
+[Rust SDK #80 coordination](https://github.com/durable-workflow/server/issues/325#issuecomment-6137088853)
+requires the SDK owner's qualified published author tuple after the pending
+compatible 3.5.2 release: repeated `get_version` in `[-3,7]` with one decision
+through a pending activity/cold replacement, version-1 deprecated aliases with
+valid differing bounds, and a second range-repair author for existing pending
+activity/timer-winner checkpoints. No shared adapter, SDK or native dependency
+adoption is implied by these package/source receipts. Implement these separate
+profiles after the #429 checkpoint and record their exact identities here.
+
+Earlier MariaDB/MySQL failure causes remain
+unestablished; the new lookup site does not retroactively establish them.
+Full namespace authorization, other families, consumers,
+migration, multi-node acceptance and matched performance remain open.
+
 [#422](https://github.com/durable-workflow/server/pull/422) is merged and its
 [fresh-main verification](https://github.com/durable-workflow/server/issues/325#issuecomment-6119269193)
 is complete at e3ae32999d1e14813bf84498a716ad62cddf9813. Candidate and main share
@@ -73,8 +217,8 @@ publishes the implemented stages and checks discovery in its existing update
 lifecycle/fencing regression. The failed original remains separate from the
 completed candidate and main qualification.
 
-The [next reviewed boundary](https://github.com/durable-workflow/server/issues/325#issuecomment-6121730771)
-is failed update handlers with continued parent execution. The
+The [failed-update boundary](https://github.com/durable-workflow/server/issues/325#issuecomment-6121730771)
+preserves continued parent execution and is qualified in #427. The
 [cohort contract](../tests/Fixtures/ServerParityProfiles/published-sdk-update-failures/README.md)
 requires ordinary frozen SDK clients and authors, original accepted failure
 identities, pending and completed duplicates, cold replay, and a later successful
@@ -1485,7 +1629,7 @@ full-matrix qualification remains required; earlier failed records stay held.
 | Workflow lifecycle, duplicate commands, typed history, continuation, child workflows, cancellation, cleanup replay | Workflow lifecycle, migration, child-workflow and replay runners; Feature cooperative cancellation, history, migration and repeated-signal tests | Bounded authored completion, activity retry/failure, direct children/cancellation and root cooperative cleanup; broader propagation, replay and continuation semantics pending |
 | Timers, schedules, signals, queries, updates, search attributes, memo, sagas | Corresponding runners in `scripts/conformance/`, manifests in `static/platform-conformance/`; Sample App polyglot experiments | Bounded durable sleep, repeated signals, state queries/updates and two UTC schedule cases; broader policies, search attributes, memo and sagas pending |
 | Local activities, cancellation scopes, worker sessions, streams, service catalog/Nexus, bridge adapters, standalone activities, debugging and repair | `routes/api.php`, `docs/contracts/`, worker/control-plane specifications, corresponding Feature tests and Nexus runner | Pending; not omitted from parity |
-| Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | Published PHP SDK and embedded directions for 29 default fixtures plus a separate role profile; #401 qualifies nine PHP/Python/Rust workflow/activity directions, #408 nine parent/child directions, #411 normal timer authors and #415 nine post-start signal client/author directions, with cold replay and canonical embedded counterparts; #415 candidate all-six passes, fresh main retains a frozen-PHP SQLite cancellation failure; unchanged CLI 2.2.0 list/describe/history; nine query client/author directions prepared with runtime qualification pending; broader SDK families, CLI commands, Waterline and Sample App pending |
+| Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | Published SDK and canonical embedded directions: #401 nine workflow/activity, #408 nine parent/child, #411 timer authors, #415 nine signals, #422 nine queries, #424 nine successful updates and #427 nine failed updates. Current default query/update/signal families pass all six configurations on #427 main; the original frozen-PHP SQLite cancellation failure remains immutable. #429 paired named-namespace signals pass all six candidate configurations; promotion-head and fresh-main gates remain pending. CLI 2.2.0 list/describe/history has bounded coverage; broader SDK families, CLI commands, Waterline and Sample App remain pending |
 | SQL schema and stored representations | `database/migrations/`, Workflow package `src/migrations/`, model casts, `Workflow\\Serializers\\Serializer`, queue job payloads, exported history and credential digests | [Representation checkpoints](rust-server-storage-audit.md) recorded; complete mapping and executable migration tests pending |
 | Images, architecture, bootstrap, configuration, readiness, metrics and graceful shutdown | `Dockerfile`, `docker/`, `config/`, `docker-compose*.yml`, `k8s/helm/`, `docs/server-reference.md`, small-cluster/multi-region validation docs | Pending |
 | Backup and in-place upgrade | `docs/self-hosted-backup-and-restore.md`, external payload backup holds; last PHP image writes, all PHP roles stop, Rust takes over same DB sequentially | Pending on SQLite, MariaDB/MySQL, PostgreSQL |

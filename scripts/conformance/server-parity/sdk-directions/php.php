@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Composer\InstalledVersions;
 use DurableWorkflow\Client;
+use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Transport\Psr18Transport;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\ActivityContext;
@@ -27,7 +28,7 @@ if (isset($fixture['sdk_query_direction'])) {
 $childDirection = isset($fixture['sdk_child_direction']);
 $timerAuthor = isset($fixture['sdk_timer_author']);
 $signalDirection = isset($fixture['sdk_signal_direction']);
-if (! in_array($phase, $signalDirection ? ['original', 'signal-1', 'resumed', 'signal-2', 'replacement'] : ($timerAuthor ? ['original', 'replacement'] : ($childDirection ? ['original', 'child', 'replacement'] : ['original', 'activity', 'replacement'])), true)) {
+if (! in_array($phase, $signalDirection ? ['original', 'signal-1', 'resumed', 'signal-2', 'replacement', 'foreign-signal', 'foreign-poll'] : ($timerAuthor ? ['original', 'replacement'] : ($childDirection ? ['original', 'child', 'replacement'] : ['original', 'activity', 'replacement'])), true)) {
     throw new InvalidArgumentException('Unknown SDK direction phase');
 }
 $deadline = microtime(true) + (float) $remaining;
@@ -36,6 +37,14 @@ $stack = HandlerStack::create();
 $stack->push(static function (callable $handler) use (&$worker, $phase): callable {
     return static function (RequestInterface $request, array $options) use ($handler, &$worker, $phase) {
         return $handler($request, $options)->then(static function (ResponseInterface $response) use ($request, &$worker, $phase): ResponseInterface {
+            if ($phase === 'foreign-poll' && $response->getStatusCode() === 200
+                && $request->getUri()->getPath() === '/api/worker/workflow-tasks/poll') {
+                $body = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+                if (! array_key_exists('task', $body) || $body['task'] !== null) {
+                    throw new RuntimeException('Foreign namespace Worker claimed a task; original receipt retained.');
+                }
+                $worker?->requestShutdown();
+            }
             $kind = $phase === 'activity' ? 'activity' : 'workflow';
             if ($response->getStatusCode() === 200 && $request->getMethod() === 'POST'
                 && preg_match('#^/api/worker/'.$kind.'-tasks/[^/]+/complete$#', $request->getUri()->getPath())) {
@@ -48,8 +57,30 @@ $stack->push(static function (callable $handler) use (&$worker, $phase): callabl
         });
     };
 });
-$client = new Client($url, namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null,
+$namespace = array_key_exists('namespace', $fixture) ? $fixture['namespace'] : 'default';
+if (! is_string($namespace) || $namespace === '' || trim($namespace) !== $namespace) {
+    throw new InvalidArgumentException('Invalid fixture namespace');
+}
+$client = new Client($url, namespace: $namespace, token: getenv('DW_PARITY_TOKEN') ?: null,
     transport: new Psr18Transport(client: new GuzzleClient(['http_errors' => false, 'handler' => $stack])));
+if ($signalDirection && $phase === 'foreign-signal') {
+    try {
+        $client->signalWorkflow($workflowId, 'payload', [$fixture['signal_value']]);
+        throw new RuntimeException('Foreign namespace signal was admitted.');
+    } catch (ServerException $error) {
+        if ($error->status !== 404) {
+            throw $error;
+        }
+        echo json_encode(['pid' => getmypid(), 'language' => 'php',
+            'sdk_version' => ltrim(InstalledVersions::getPrettyVersion('durable-workflow/sdk'), 'v'),
+            'phase' => $phase, 'workflow_id' => $workflowId, 'run_id' => $runId,
+            'signal_sent' => false, 'sender_finished' => true,
+            'typed_error' => ['class' => $error::class, 'status' => $error->status,
+                'reason' => $error->reason, 'details' => $error->details]],
+            JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)."\n";
+        exit(0);
+    }
+}
 if ($signalDirection && in_array($phase, ['signal-1', 'signal-2'], true)) {
     $result = $client->signalWorkflow($workflowId, 'payload', [$fixture['signal_value']]);
     echo json_encode(['pid' => getmypid(), 'language' => 'php',

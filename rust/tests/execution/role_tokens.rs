@@ -43,7 +43,12 @@ async fn configured_roles_precede_protocol_namespace_and_preserve_original_peer(
     let history_path = format!("{path}/history");
     let before = request(&legacy, "GET", &history_path, Value::Null).await.1;
     let app = router(configured(runtime.clone()));
-    for token in ["worker-token", "operator-token", "admin-token", "test-token"] {
+    for token in [
+        "worker-token",
+        "operator-token",
+        "admin-token",
+        "test-token",
+    ] {
         let (status, cluster) = call(&app, token, "GET", "/api/cluster/info", Value::Null).await;
         assert_eq!(status, StatusCode::OK, "{cluster}");
         let manifest = &cluster["auth_composition_contract"];
