@@ -55,14 +55,13 @@ done
 # Reuse the published package enforcer in one bounded process. It cannot repair
 # a retained parent task or touch a marker/range neighbor's original workflow.
 docker stop --time 5 "$resource-maintenance"
-docker rm "$resource-maintenance"
-docker run -d --name "$resource-maintenance" --user=1000:1000 --cpus=0.25 --memory=256m --memory-swap=256m --network "$RESOURCE_SCOPE" --entrypoint php "${database[@]}" "${engine[@]}" -e DW_PARITY_CORRECTED_PREFIX -v "$PWD:/source:ro" "$image" /source/scripts/conformance/server-parity/activity-retries-maintenance.php > "$evidence/retries-maintenance-container.txt"
+docker run -d --name "$resource-retries-maintenance" --user=1000:1000 --cpus=0.25 --memory=256m --memory-swap=256m --network "$RESOURCE_SCOPE" --entrypoint php "${database[@]}" "${engine[@]}" -e DW_PARITY_CORRECTED_PREFIX -v "$PWD:/source:ro" "$image" /source/scripts/conformance/server-parity/activity-retries-maintenance.php > "$evidence/retries-maintenance-container.txt"
 for target in php rust; do
   url="$native_url"
   if test "$target" = php; then url=http://parity-corrected-php:8080; fi
   bash scripts/conformance/server-parity/corrected-marker-http-profile.sh "$target" "$url" retries
 done
-docker stop --time 5 "$RESOURCE_SCOPE-corrected-php" "$RESOURCE_SCOPE-corrected-maintenance"
+docker stop --time 5 "$RESOURCE_SCOPE-corrected-php" "$RESOURCE_SCOPE-corrected-retries-maintenance"
 bash scripts/conformance/server-parity/corrected-marker-embedded-profile.sh "$backend" portable
 bash scripts/conformance/server-parity/corrected-marker-embedded-profile.sh "$backend" deadlines
 bash scripts/conformance/server-parity/corrected-marker-embedded-profile.sh "$backend" retries
