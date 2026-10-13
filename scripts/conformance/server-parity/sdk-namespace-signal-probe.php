@@ -99,7 +99,18 @@ function namespaceSignalControlPhase(string $phase, string $language, string $ur
         throw new RuntimeException('Actual namespace signal control failed; original sidecar retained.');
     }
 
-    return json_decode($stdout, true, flags: JSON_THROW_ON_ERROR) + ['requests' => namespaceSignalRequests($lines)];
+    $requests = namespaceSignalRequests($lines);
+    if ($selectedRun) {
+        // Preserve full bytes in the sidecar above. Repeated discovery schemas
+        // are not selected-run observations and must not fill the parent heap.
+        foreach ($requests as &$request) {
+            if ($request['method'] !== 'POST' || ! preg_match('#^/api/workflows/[^/]+/runs/[^/]+/signal/[^/]+$#', $request['path'])) {
+                $request['response'] = sdkDirectionResponseSummary($request['response']);
+            }
+        }
+        unset($request);
+    }
+    return json_decode($stdout, true, flags: JSON_THROW_ON_ERROR) + ['requests' => $requests];
 }
 
 function namespaceSignalHttpObservation(array $fixture, array $options): array

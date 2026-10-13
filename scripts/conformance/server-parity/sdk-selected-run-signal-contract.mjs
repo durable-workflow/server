@@ -13,6 +13,14 @@ const rows = (state, table) => state.tables[table].rows;
 const nonempty = value => assert(typeof value === 'string' && value.length > 0);
 const frame = value => typeof value === 'string' ? value : (assert.equal(value?.codec, 'avro'), value.blob);
 const without = (row, fields) => Object.fromEntries(Object.entries(row).filter(([key]) => !fields.includes(key)));
+const storedPayload = value => {
+  if (Array.isArray(value)) return value.map(storedPayload);
+  if (value && typeof value === 'object') {
+    if (value.codec === 'avro' && typeof value.blob === 'string') return value.blob;
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, storedPayload(child)]));
+  }
+  return value;
+};
 
 export function selectedRunSignalFixture(fixture, peer = false) {
   const {selected_run_signal_pair: pair, ...run} = fixture;
@@ -108,6 +116,7 @@ export function checkSelectedRunSignalPair(fixture, observation, workflowId, che
     const initial = pair.initial[index], budget = pair.run_budgets[index];
     for (const field of ['workflow_id', 'run_id', 'workflow_type', 'namespace', 'task_queue']) assert.equal(initial[field], run[field]);
     assert.equal(initial.status, 'waiting'); assert.deepEqual(initial.events, run.events.slice(0, 3));
+    assert.deepEqual(initial.typed_input, run.typed_input); assert.deepEqual(initial.typed_output, {type: 'null', value: null});
     for (const key of ['started_at_unix', 'deadline_at_unix', 'finished_at_unix']) assert(Number.isFinite(budget[key]));
     assert(Math.abs(budget.deadline_at_unix - budget.started_at_unix - 35) < 0.000001);
     assert(budget.started_at_unix >= pair.pair_started_at_unix && budget.finished_at_unix <= pair.pair_finished_at_unix);
@@ -126,6 +135,11 @@ export function checkSelectedRunSignalPair(fixture, observation, workflowId, che
     assert.equal(control.before.length, 2); assert.equal(control.after.length, 2);
     for (const [scope, before] of control.before.entries()) {
       const after = control.after[scope];
+      for (const value of [before, after]) {
+        for (const field of ['workflow_id', 'run_id', 'workflow_type', 'namespace', 'task_queue']) assert.equal(value[field], observations[scope][field]);
+        assert.deepEqual(value.events, observations[scope].events.slice(0, value.events.length), 'complete original prefix at every control');
+        assert.equal(value.status, control.phase === 'inactive-signal' ? 'completed' : 'waiting');
+      }
       if (guard || scope !== index) { assert.deepEqual(after, before, 'guard and neighbor execution/history unchanged'); continue; }
       assert.deepEqual(without(after, ['execution']), without(before, ['execution']), 'durable rejection preserves history and typed result');
       if (observation.mode === 'embedded') {
@@ -217,6 +231,16 @@ export function checkSelectedRunSignalPair(fixture, observation, workflowId, che
       assert.equal(delivery.response.requested_run_id, command.requested_workflow_run_id);
     }
     const run = rows(pair.final_stored, 'workflow_runs').find(row => row.id === runId);
+    const history = rows(pair.final_stored, 'workflow_history_events').filter(row => row.workflow_run_id === runId).sort((a, b) => a.sequence - b.sequence);
+    assert.equal(history.length, observations[index].events.length);
+    for (const [position, row] of history.entries()) {
+      const event = observations[index].events[position];
+      assert.equal(row.sequence, event.sequence); assert.equal(row.event_type, event.event_type);
+      assert.deepEqual(JSON.parse(row.payload), storedPayload(event.payload), 'persisted complete event payload matches its public original');
+    }
+    const runTasks = tasks.filter(task => task.workflow_run_id === runId); assert.equal(runTasks.length, 3);
+    runTasks.forEach(task => assert.equal(task.namespace, fixtures[index].namespace));
+    if (observation.mode !== 'embedded') assert.deepEqual(runTasks.map(task => task.id).sort(), observations[index].workflow_polls.map(task => task.task_id).sort());
     assert.equal(run.last_command_sequence, terminalSequence); assert.equal(run.message_cursor_position, terminalSequence - 2);
     assert.equal(rows(pair.final_stored, 'workflow_instances').find(row => row.id === ids[index]).last_message_sequence, terminalSequence - 1);
   }
