@@ -5,8 +5,11 @@ import {checkActivityDeadlineReceiptPackages} from './activity-deadline-receipts
 
 const record = JSON.parse(readFileSync(process.argv[2]));
 assert.equal(record.outcome, 'pass', 'Actual completed retry/receipt reference');
-assert.equal(record.cases.length, 1);
-const item = record.cases[0], original = item.observation;
+const selected = process.argv[3];
+if (selected === undefined) assert.equal(record.cases.length, 1, 'Select one fixture from a multi-case record');
+const item = selected === undefined ? record.cases[0] : record.cases.find(row => row.fixture_id === selected);
+assert(item, 'Selected actual fixture exists');
+const original = item.observation;
 const read = value => {
   checkActivityDeadlineReceiptPackages(item.fixture, value, record.artifacts);
   return checkObservation(item.fixture, value, original.workflow_id);
