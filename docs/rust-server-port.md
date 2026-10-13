@@ -65,6 +65,17 @@ int64s. JavaScript numeric copies in diagnostic fixture inputs are rounded;
 they are not claimed as lossless payload evidence. Temporary ZIPs are deleted
 after their immediate inspection.
 
+The separate #438 recorder correction now copies validated original fixture
+and probe JSON into each saved case, preserving numeric literals without another
+complete serialization of the wire bodies. At `6a79f7b9c`, nine focused recorder
+controls and all 4,821 shared reader checks pass, with one explicit skip. A fresh
+normally installed SDK 2.2.6 workflow on the unchanged published PHP 2.5.14
+baseline completes with `9007199254740993` preserved in source input, saved
+fixture, decoded history and output. Temporary probe files are absent after
+writing, and the local runtime and recordings are removed after verification.
+Earlier rounded diagnostics remain unchanged. Final-head matrix qualification
+of this recorder revision is still required.
+
 [#429](https://github.com/durable-workflow/server/pull/429) is delivered at
 `6299289185caea472b2738a5d4442a617edf0b8a`, tree
 `62736363c1e03ceae091ea578d307fb4d2370054`, identical to the reviewed candidate.
