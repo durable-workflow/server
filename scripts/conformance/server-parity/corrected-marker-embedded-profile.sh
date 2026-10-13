@@ -40,7 +40,7 @@ for role in original current; do
     -v "$PWD:/source:ro" -v "$PWD/$state/$role:/runtime" "${engine[@]}" \
     -w /runtime -e COMPOSER_HOME=/tmp/composer -e DW_PARITY_EMBEDDED_PROFILE="/source/$profile/$inputs" \
     -e DW_PARITY_EMBEDDED_LOCK_SHA256="$lock" "$image" \
-    /source/scripts/conformance/server-parity/repeated-patch-install.sh \
+    /source/scripts/conformance/server-parity/corrected-marker-embedded-install.sh \
     > "$evidence/embedded-$role-install.txt" 2>&1
   cp "$state/$role/composer.lock" "$evidence/embedded-$role-composer.lock"
 done
