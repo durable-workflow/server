@@ -163,6 +163,16 @@ identities and the additional embedded run/execution identities without
 inventing fields or HTTP statuses. This adds reader qualification; it does not
 establish native or all-six acceptance.
 
+The SQLite original in run `38462894334` at `edfa4e09b` fails the
+timer-range neighbor guard. Its selected original completes the exact eleven
+events, but the fixture's global PHP repair sweep increments both idle
+neighbors' repair counts. The published policy normally redispatches ready
+tasks after three seconds. The revised runner scopes maintenance to the four
+activity-deadline originals, so it cannot interfere with the selected-repair
+isolation check. Neighbor identities, histories, repair guards and scenario
+budgets remain strict. Fresh runtime confirmation is pending. MariaDB's
+separate cold-replay assertion and later pressure failure remain under review.
+
 Start with exact installed published identities and a real PHP/embedded
 reference. Add separate adapters/fixtures and a strict reader using the existing
 recorder interfaces. Qualify actual supported PHP/embedded/native cases on

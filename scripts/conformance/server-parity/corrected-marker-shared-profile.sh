@@ -41,7 +41,10 @@ engine=(-e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity
 docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --network "$RESOURCE_SCOPE" --entrypoint php "${database[@]}" "${engine[@]}" "$image" artisan server:bootstrap --force > "$evidence/php-bootstrap.txt"
 docker run -d --name "$resource-php" --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --network "$RESOURCE_SCOPE" --network-alias parity-corrected-php "${database[@]}" "${engine[@]}" "$image" > "$evidence/php-container.txt"
 docker exec "$resource-php" sh -c 'for attempt in $(seq 1 30); do if curl -fsS http://127.0.0.1:8080/api/ready; then exit 0; fi; sleep 1; done; exit 1' > "$evidence/php-ready.json" 2> "$evidence/php-ready.stderr"
-docker run -d --name "$resource-maintenance" --user=1000:1000 --cpus=0.25 --memory=256m --memory-swap=256m --network "$RESOURCE_SCOPE" --entrypoint sh "${database[@]}" "${engine[@]}" "$image" -c 'while :; do php artisan workflow:v2:repair-pass --json; php artisan schedule:evaluate --limit=100 --json; sleep 1; done' > "$evidence/maintenance-container.txt"
+# Only the four deadline originals need the package expiry sweep. A global
+# redispatch sweep would independently repair the deliberately idle neighbors
+# used to prove that selected-run replay repair has no cross-run effect.
+docker run -d --name "$resource-maintenance" --user=1000:1000 --cpus=0.25 --memory=256m --memory-swap=256m --network "$RESOURCE_SCOPE" --entrypoint sh "${database[@]}" "${engine[@]}" -e DW_PARITY_CORRECTED_PREFIX "$image" -c 'while :; do for field in start_to_close_timeout schedule_to_start_timeout schedule_to_close_timeout heartbeat_timeout; do php artisan workflow:v2:repair-pass --instance-id="$DW_PARITY_CORRECTED_PREFIX-activity-deadline-authority-$field" --json; done; sleep 1; done' > "$evidence/maintenance-container.txt"
 for target in php rust; do
   url="$native_url"
   if test "$target" = php; then url=http://parity-corrected-php:8080; fi
