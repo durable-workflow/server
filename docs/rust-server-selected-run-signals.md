@@ -34,8 +34,10 @@ must not rebase a deadline or replace a failed original with a new run.
 | Two valid selected-current-run signals | Accepted | Preserve instance-scoped commands with null requested run and the exact resolved original run; finish once through cold authors. |
 | Signal the selected run after completion | Named `409` refusal | Persist a rejected command and signal without new workflow history or task repair. |
 
-The successful selected-current-run guard does not convert an accepted command
-to run scope. HTTP refusals alone are insufficient: the reader must check durable
+The successful HTTP selected-current-run guard does not convert an accepted
+command to run scope. Embedded uses the public selected `WorkflowStub` directly;
+its canonical run-scoped command metadata must be retained and qualified
+separately. HTTP refusals alone are insufficient: the reader must check durable
 commands, signals, sequence counters, events, tasks and unchanged neighboring
 state. Rejected operations may advance their documented counters; they must not
 be normalized into no-op snapshots or contaminate unrelated runs.

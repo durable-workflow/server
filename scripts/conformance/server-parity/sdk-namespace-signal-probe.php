@@ -44,12 +44,14 @@ function namespaceSignalRequests(array $lines): array
 }
 
 function namespaceSignalControlPhase(string $phase, string $language, string $url, string $id, string $runId,
-    string $fixturePath, float $deadline, string $journal, string $evidence): array
+    string $fixturePath, float $deadline, string $journal, string $evidence, bool $selectedRun = false): array
 {
     $arguments = match ($language) {
-        'php' => [PHP_BINARY, __DIR__.'/sdk-directions/php.php'],
+        'php' => [PHP_BINARY, __DIR__.'/sdk-directions/'.($selectedRun ? 'selected-run-signals.php' : 'php.php')],
         'python' => ['python3', __DIR__.'/sdk-directions/python.py'],
-        'rust' => [getenv('DW_PARITY_RUST_DIRECTION_WORKER') ?: '/sdk-directions/rust-worker'],
+        'rust' => [$selectedRun
+            ? (getenv('DW_PARITY_RUST_SELECTED_RUN_SENDER') ?: '/sdk-directions/rust-selected-run-sender')
+            : (getenv('DW_PARITY_RUST_DIRECTION_WORKER') ?: '/sdk-directions/rust-worker')],
         default => throw new RuntimeException('Unknown namespace signal SDK language.'),
     };
     $remaining = $deadline - microtime(true);

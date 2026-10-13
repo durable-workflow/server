@@ -22,6 +22,7 @@ import {checkSdkSignalDirection, checkSdkSignalDirectionPackages} from './sdk-si
 import {checkSdkQueryDirection, checkSdkQueryDirectionPackages} from './sdk-query-direction-contract.mjs';
 import {checkSdkUpdateDirection, checkSdkUpdateDirectionPackages} from './sdk-update-direction-contract.mjs';
 import {checkNamespaceSignalPair} from './sdk-namespace-signal-contract.mjs';
+import {checkSelectedRunSignalPair} from './sdk-selected-run-signal-contract.mjs';
 
 export function instantNanoseconds(value) {
   const shape = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.(\d{1,9}))?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
@@ -36,6 +37,7 @@ export function instantNanoseconds(value) {
 // Only this fixture's declared semantics are projected. The full observation
 // remains in the recording, including implementation metadata and timestamps.
 export function checkObservation(fixture, observation, workflowId) {
+  if (fixture.selected_run_signal_pair) return checkSelectedRunSignalPair(fixture, observation, workflowId, checkObservation);
   if (fixture.namespace_signal_pair) return checkNamespaceSignalPair(fixture, observation, workflowId, checkObservation);
   const equal = (actual, expected, label) => assert.deepStrictEqual(actual, expected, label);
   const nonempty = (value, label) => assert.ok(typeof value === 'string' && value.length > 0, label);
@@ -357,11 +359,14 @@ export function checkObservation(fixture, observation, workflowId) {
       equal(satisfied.payload.signal_wait_id, received.payload.signal_wait_id, 'condition resolution signal wait relationship');
       nonempty(received.payload.signal_wait_id, 'signal routing wait identity');
       equal(cursor.payload.stream_key, `instance:${workflowId}`, 'message cursor stream');
-      equal(cursor.payload.previous_position, index + updateCount, 'message cursor previous position');
-      equal(cursor.payload.new_position, index + updateCount + 1, 'message cursor advances once per signal');
+      const rejectedOffset = fixture.selected_run_signal_run ? 2 : 0;
+      const previousPosition = index === 0 ? updateCount : index + updateCount + rejectedOffset;
+      const newPosition = index + updateCount + rejectedOffset + 1;
+      equal(cursor.payload.previous_position, previousPosition, 'message cursor previous position');
+      equal(cursor.payload.new_position, newPosition, 'message cursor skips rejected positions and consumes the accepted signal');
       equal(received.payload.command.id, commandId, 'recorded signal command identity');
-      equal(received.payload.command.sequence, index + updateCount + 2, 'control command sequence is separate from authored wait sequence');
-      equal(received.payload.command.message_sequence, index + updateCount + 1, 'ordered signal message sequence');
+      equal(received.payload.command.sequence, index + updateCount + rejectedOffset + 2, 'control command sequence is separate from authored wait sequence');
+      equal(received.payload.command.message_sequence, newPosition, 'ordered signal message sequence');
       for (const key of ['workflow_command_id', 'signal_id', 'signal_name', 'signal_wait_id']) {
         equal(applied.payload[key], received.payload[key], `applied signal retains ${key}`);
       }
@@ -370,7 +375,7 @@ export function checkObservation(fixture, observation, workflowId) {
       commonEvents.push(
         {event_type: 'PayloadWaitOpened', wait_id: `@wait:${index + 1}`, command_sequence: index + 1},
         {event_type: 'SignalReceived', signal_id: `@signal:${index + 1}`, command_id: `@signal-command:${index + 1}`, signal_name: 'payload', arguments: {type: 'list', value: [fixture.typed_signal_value]}},
-        {event_type: 'MessageCursorAdvanced', previous_position: index + updateCount, new_position: index + updateCount + 1},
+        {event_type: 'MessageCursorAdvanced', previous_position: previousPosition, new_position: newPosition},
         {event_type: 'SignalApplied', signal_id: `@signal:${index + 1}`, command_id: `@signal-command:${index + 1}`, value: fixture.typed_signal_value},
         {event_type: 'PayloadWaitResolved', wait_id: `@wait:${index + 1}`, signal_id: `@signal:${index + 1}`, command_sequence: index + 1},
       );
