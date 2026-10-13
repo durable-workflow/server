@@ -21,7 +21,7 @@ test('forced namespace setup loss preserves its unanswered request and stage', {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const probe = process.env.DW_PARITY_RETENTION_TEST_PROBE
     ?? new URL('../../scripts/conformance/server-parity/sdk-namespace-signal-probe.php', import.meta.url).pathname;
-  const fixture = new URL('../Fixtures/ServerParityPending/published-sdk-namespace-signals/signal-namespace-sdk-php-php.json', import.meta.url).pathname;
+  const fixture = new URL('../Fixtures/ServerParityProfiles/published-sdk-namespace-signals/signal-namespace-sdk-php-php.json', import.meta.url).pathname;
   const program = 'require getenv("DW_PARITY_SDK_AUTOLOAD"); require getenv("RETENTION_TEST_PROBE"); '
     + '$fixture=json_decode(file_get_contents(getenv("RETENTION_TEST_FIXTURE")),true,flags:JSON_THROW_ON_ERROR); '
     + 'namespaceSignalHttpObservation($fixture,["workflow-id"=>"namespace-retention-original","url"=>getenv("RETENTION_TEST_URL")]);';

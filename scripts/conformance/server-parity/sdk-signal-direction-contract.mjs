@@ -3,7 +3,7 @@ import {readFileSync} from 'node:fs';
 import {checkPublishedSdkPackages} from './sdk-direction-contract.mjs';
 
 const artifacts = JSON.parse(readFileSync(new URL('../../../tests/Fixtures/ServerParityProfiles/published-sdk-signals/artifacts.json', import.meta.url), 'utf8'));
-const namespaceArtifacts = JSON.parse(readFileSync(new URL('../../../tests/Fixtures/ServerParityPending/published-sdk-namespace-signals/artifacts.json', import.meta.url), 'utf8'));
+const namespaceArtifacts = JSON.parse(readFileSync(new URL('../../../tests/Fixtures/ServerParityProfiles/published-sdk-namespace-signals/artifacts.json', import.meta.url), 'utf8'));
 const languages = ['php', 'python', 'rust'];
 const phases = ['original', 'signal-1', 'resumed', 'signal-2', 'replacement'];
 const checkpointLengths = [3, 4, 8, 9, 13];

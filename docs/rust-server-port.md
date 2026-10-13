@@ -38,8 +38,8 @@ the clean qualification does not establish a repair. Published PHP remains the
 default, with no Rust release, takeover or performance claim.
 
 The [next reviewed boundary](https://github.com/durable-workflow/server/issues/325#issuecomment-6130197979)
-is [paired named-namespace SDK signals](../tests/Fixtures/ServerParityPending/published-sdk-namespace-signals/README.md).
-Nine pending client/author definitions cover distinct original runs with the
+is [paired named-namespace SDK signals](../tests/Fixtures/ServerParityProfiles/published-sdk-namespace-signals/README.md).
+Nine client/author definitions cover distinct original runs with the
 same type and queue, wrong-namespace signal refusal, an empty foreign-Worker
 poll and cold completion with exact independent Avro values. The ordinary
 fixture actors accept an explicit namespace through the unchanged SDK API.
@@ -50,7 +50,7 @@ relationships checked. All 4,755 reader guards and the SDK-dependent forced
 setup-loss regression pass with the locked PHP SDK. The initial path/typed-error
 reader failures remain unchanged. Native current-run signals, canonical refusal
 metadata and untimed condition waits are implemented and the new profile runs
-in all six database jobs. The fixture directory remains pending. Expanded jobs
+in all six database jobs. Candidate qualification and promotion are recorded below. Expanded jobs
 have a 35-minute ceiling; original run budgets and runtime caps stay fixed.
 
 Exact `6bac8f677` [run 38304548447](https://github.com/durable-workflow/server/actions/runs/38304548447)
@@ -110,9 +110,20 @@ capacity, a different replacement connection and preserved committed data.
 The official archive/VCS and licenses are retained; graceful close and TLS
 trust/hostname checks stay unchanged. The original CI/probe failures remain
 failed, and the [contract precedes adoption](https://github.com/durable-workflow/server/pull/429#issuecomment-6135933370).
-Next qualify the exact driver patch on all three MySQL-family configurations
-and the full namespace matrix before
-promotion. Earlier MariaDB/MySQL failure causes remain
+Exact `64ca245e7` [run 38331809158](https://github.com/durable-workflow/server/actions/runs/38331809158)
+passes all six original database jobs without retries. Independent original
+artifact review verifies 162 paired namespace observations, 324 original runs,
+1,836 complete HTTP sidecars, 11,421 wire exchanges and all 10,053 member hashes.
+Every configuration passes 78 native execution tests; all three MySQL families
+pass nine schema/pool qualifications including the unchanged TLS disposal case.
+Pressure, role/fencing, real node recovery, PHP takeover refusal and TLS
+trust/hostname gates pass. PHP/source passes 2,744 tests / 61,718 assertions,
+with six existing deprecations and one skip. All three original SDK adapter
+artifacts retain their frozen installed/source/archive identities and hashes.
+The [candidate receipt](https://github.com/durable-workflow/server/pull/429#issuecomment-6136523527)
+qualifies these cases; promotion-head, review/merge and fresh-main checks remain
+separate gates. Fixture bytes and all original budgets remain unchanged.
+Earlier MariaDB/MySQL failure causes remain
 unestablished; the new lookup site does not retroactively establish them.
 Full namespace authorization, other families, consumers,
 migration, multi-node acceptance and matched performance remain open.
@@ -1576,7 +1587,7 @@ full-matrix qualification remains required; earlier failed records stay held.
 | Workflow lifecycle, duplicate commands, typed history, continuation, child workflows, cancellation, cleanup replay | Workflow lifecycle, migration, child-workflow and replay runners; Feature cooperative cancellation, history, migration and repeated-signal tests | Bounded authored completion, activity retry/failure, direct children/cancellation and root cooperative cleanup; broader propagation, replay and continuation semantics pending |
 | Timers, schedules, signals, queries, updates, search attributes, memo, sagas | Corresponding runners in `scripts/conformance/`, manifests in `static/platform-conformance/`; Sample App polyglot experiments | Bounded durable sleep, repeated signals, state queries/updates and two UTC schedule cases; broader policies, search attributes, memo and sagas pending |
 | Local activities, cancellation scopes, worker sessions, streams, service catalog/Nexus, bridge adapters, standalone activities, debugging and repair | `routes/api.php`, `docs/contracts/`, worker/control-plane specifications, corresponding Feature tests and Nexus runner | Pending; not omitted from parity |
-| Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | Published SDK and canonical embedded directions: #401 nine workflow/activity, #408 nine parent/child, #411 timer authors, #415 nine signals, #422 nine queries, #424 nine successful updates and #427 nine failed updates. Current default query/update/signal families pass all six configurations on #427 main; the original frozen-PHP SQLite cancellation failure remains immutable. Paired named-namespace signals are pending. CLI 2.2.0 list/describe/history has bounded coverage; broader SDK families, CLI commands, Waterline and Sample App remain pending |
+| Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | Published SDK and canonical embedded directions: #401 nine workflow/activity, #408 nine parent/child, #411 timer authors, #415 nine signals, #422 nine queries, #424 nine successful updates and #427 nine failed updates. Current default query/update/signal families pass all six configurations on #427 main; the original frozen-PHP SQLite cancellation failure remains immutable. #429 paired named-namespace signals pass all six candidate configurations; promotion-head and fresh-main gates remain pending. CLI 2.2.0 list/describe/history has bounded coverage; broader SDK families, CLI commands, Waterline and Sample App remain pending |
 | SQL schema and stored representations | `database/migrations/`, Workflow package `src/migrations/`, model casts, `Workflow\\Serializers\\Serializer`, queue job payloads, exported history and credential digests | [Representation checkpoints](rust-server-storage-audit.md) recorded; complete mapping and executable migration tests pending |
 | Images, architecture, bootstrap, configuration, readiness, metrics and graceful shutdown | `Dockerfile`, `docker/`, `config/`, `docker-compose*.yml`, `k8s/helm/`, `docs/server-reference.md`, small-cluster/multi-region validation docs | Pending |
 | Backup and in-place upgrade | `docs/self-hosted-backup-and-restore.md`, external payload backup holds; last PHP image writes, all PHP roles stop, Rust takes over same DB sequentially | Pending on SQLite, MariaDB/MySQL, PostgreSQL |

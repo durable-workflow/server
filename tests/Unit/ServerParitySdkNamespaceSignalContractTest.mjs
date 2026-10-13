@@ -5,7 +5,7 @@ import {observed} from '../Fixtures/ServerParityReaders/sdk-signals.mjs';
 import {checkObservation, compareRecords} from '../../scripts/conformance/server-parity/contract.mjs';
 import {namespaceSignalRunFixture} from '../../scripts/conformance/server-parity/sdk-namespace-signal-contract.mjs';
 
-const directory = new URL('../Fixtures/ServerParityPending/published-sdk-namespace-signals/', import.meta.url);
+const directory = new URL('../Fixtures/ServerParityProfiles/published-sdk-namespace-signals/', import.meta.url);
 const fixtureFor = (author, client) => JSON.parse(readFileSync(new URL(`signal-namespace-sdk-${author}-${client}.json`, directory), 'utf8'));
 const workflowId = 'namespace-original';
 const copy = value => structuredClone(value);

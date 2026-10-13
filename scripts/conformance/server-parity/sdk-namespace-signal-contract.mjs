@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {checkSdkSignalDirectionPackages} from './sdk-signal-direction-contract.mjs';
 
-const artifacts = JSON.parse(readFileSync(new URL('../../../tests/Fixtures/ServerParityPending/published-sdk-namespace-signals/artifacts.json', import.meta.url), 'utf8'));
+const artifacts = JSON.parse(readFileSync(new URL('../../../tests/Fixtures/ServerParityProfiles/published-sdk-namespace-signals/artifacts.json', import.meta.url), 'utf8'));
 
 export function namespaceSignalRunFixture(fixture, peer = false) {
   const {namespace_signal_pair: pair, ...run} = fixture;
