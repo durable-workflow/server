@@ -9,6 +9,15 @@ historical Python producer and the locked Rust public worker. Rust builds use
 one CPU, 1536 MiB RAM, no swap, debug=0 and no incremental artifacts. The build
 cache and target are retired after copying the runnable adapter and lock.
 
+After installing the adapters, `corrected-marker-http-profile.sh TARGET URL`
+runs the six marker/policy cases, both original-range repairs and both Python
+clock cases against one already bootstrapped isolated HTTP server. Set
+`RESOURCE_SCOPE` to its Docker network and `DW_PARITY_TOKEN` to the fixture
+credential. Each family retains its record and exit status independently; any
+failure makes the command fail. The caller owns bootstrap, readiness and
+cleanup. This command does not change the frozen default corpus or qualify
+the embedded profile or database matrix by itself.
+
 The HTTP recorder executes a producer, a separate activity process and a cold
 Rust successor. Each phase has an original 30-second observation timeout inside
 a 90-second scenario budget; durable execution/run bounds are 1200 seconds.

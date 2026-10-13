@@ -29,6 +29,7 @@ shared=(-v "$PWD:/source:ro" -v "$PWD/$evidence:/evidence" -w /source
   -e DW_PARITY_CORRECTED_RUST_LOCK=/sdk-adapters/Cargo.lock
   -e DW_PARITY_TOKEN -e DW_PARITY_RUNNER_REVISION="$(git rev-parse HEAD)")
 # Separate records preserve completed families when a later boundary fails.
+failed=0
 for family in markers range clock; do
   case "$family" in
     markers) ids=(fresh-numeric fresh-zero deprecation-first genuine-version-one php-full-retry php-full-retry-refusal) ;;
@@ -37,9 +38,13 @@ for family in markers range clock; do
   esac
   fixtures=()
   for id in "${ids[@]}"; do fixtures+=(--fixture "$profile/$id.json"); done
+  status=0
   docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
     --network "$RESOURCE_SCOPE" --entrypoint node "${shared[@]}" "$image" \
     scripts/conformance/server-parity.mjs record --mode http --url "$url" --target "$target" \
     --prefix "$prefix" --artifacts "$profile/artifacts.json" "${fixtures[@]}" \
-    --output "/evidence/$target/$family-record.json"
+    --output "/evidence/$target/$family-record.json" || status=$?
+  printf '%s\n' "$status" > "$evidence/$target/$family-status.txt"
+  if test "$status" != 0; then failed=1; fi
 done
+exit "$failed"
