@@ -74,7 +74,14 @@ Earlier native admission, timestamp and policy-presence failures remain failed.
 These observations do not qualify a matched native/database cohort. The embedded explicit
 retry-policy mismatch remains a retained failure; its coordinated
 [Workflow source correction](https://github.com/durable-workflow/workflow/pull/776)
-is delivered, with stable publication/adoption separate. Current Python's
+is delivered and normally published as 2.5.16. A separately named 2.5.16
+embedded input now passes all eight applicable marker/policy/range cases at
+`a4c43d26c`, including strict policy refusal, exact restoration and selected
+repair on the same original. All 931 installed runtime/resource bytes match the
+published tag; 176 actual-record controls and independent SQL checks pass.
+The original 2.5.14 profile and its failed run remain unchanged. These backend
+handler cases fake framework queue dispatch and do not qualify queue-worker
+draining. Current Python's
 fixed-start clock/UUID cases pass the PHP reference. Native marker/clock
 admission now has a candidate authored activity deadline implementation. It
 snapshots all four timeout options, fences elapsed completion/failure/heartbeat,

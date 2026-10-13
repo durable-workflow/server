@@ -49,8 +49,10 @@ manifest for this explicit embedded cohort, with separate
 (the original five positive cases), `policy` (strict full-policy refusal and
 same-run restoration), or `range` (both original-definition repairs) as its
 second argument. It retains the completed SQLite database before retiring the
-runtime. The new lock and manifest are prepared inputs; actual installation,
-replay and independent readback qualify their use. Embedded actors execute PHP
+runtime. Separate SQLite recordings at `a4c43d26c` pass all eight applicable
+marker/policy/range cases, with 176 actual-record controls and independent SQL
+readback. All 931 installed runtime/resource files match the published tag.
+Embedded actors execute PHP
 backend handlers; they do not claim a Rust SDK consumer or a real queue-worker
 drain test.
 
@@ -97,7 +99,7 @@ controls and independent SQL readback. Embedded UUID side effects remain ahead.
 
 The separate published embedded policy-refusal original remains failed; its
 coordinated package correction is Workflow #776, now normally published as
-2.5.16 and declared in the separate prepared manifest. Actual embedded adoption
-and the new profile's six-database/final/main matrix remain
+2.5.16 and qualified in the separate SQLite embedded cohort. The new profile's
+matched six-database/final/main matrix remains
 pending. The first killed-author reader failures remain separate from fresh
 confirming runs. Frozen actors and earlier fixture definitions stay unchanged.
