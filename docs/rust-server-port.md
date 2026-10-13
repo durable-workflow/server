@@ -60,9 +60,17 @@ across both HTTP runtimes into all six configurations, using one explicit
 2.5.16 embedded manifest. Its prospective whole-job ceiling is 75 minutes;
 all scenario, phase, lease-wait and resource limits remain unchanged. Existing
 45/55-minute run allocations remain unchanged. The first expanded `a96d38ebd`
-run `38456291140` has a failed MariaDB corrected-cohort step and remains live
-while the original job finishes cleanup; diagnosis and the other configurations
-are pending. Its PHP feature and both public boundary gates pass.
+run `38456291140` fails all six corrected-cohort stages; its PHP feature and
+both public boundary gates pass. The original PHP case contains an extra repair
+after a killed historical producer's forwarded poll blocks the later parent.
+The prospective fixture now retires that registration before the activity
+resumes, preserving strict history and existing deadlines. A fresh published
+PHP run passes all six marker cases and 99 reader controls, including that
+handoff without a repair event. Expanded matched confirmation remains pending.
+MariaDB also records a fixture DB OOM under its unchanged 512 MiB cap during
+the later pressure stage; TLS is skipped. This does not explain historical
+503s. The runner now retires its corrected cohort resources immediately after
+that stage, including failure, before subsequent independent pressure checks.
 Completed local bulk recordings and archives have been deleted; code, fixtures
 and readable GitHub outcomes remain. Earlier local retention promises no longer
 apply. New scratch is removed after its immediate inspection.
