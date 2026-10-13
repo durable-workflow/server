@@ -88,10 +88,13 @@ function sdkDirectionHttpObservation(array $fixture, array $options, ?Closure $a
                 : $spec[$phase === 'activity' ? 'activity' : 'workflow']));
             $actorWorkflowId = $phase === 'child' ? $childWorkflowId : $options['workflow-id'];
             $actorRunId = $phase === 'child' ? $childRunId : $runId;
+            $selectedSender = isset($fixture['selected_run_signal_run']) && in_array($phase, ['signal-1', 'signal-2'], true);
             $arguments = match ($language) {
-                'php' => [PHP_BINARY, __DIR__.'/sdk-directions/php.php'],
+                'php' => [PHP_BINARY, __DIR__.'/sdk-directions/'.($selectedSender ? 'selected-run-signals.php' : 'php.php')],
                 'python' => ['python3', __DIR__.'/sdk-directions/python.py'],
-                'rust' => [getenv('DW_PARITY_RUST_DIRECTION_WORKER') ?: '/sdk-directions/rust-worker'],
+                'rust' => [$selectedSender
+                    ? (getenv('DW_PARITY_RUST_SELECTED_RUN_SENDER') ?: '/sdk-directions/rust-selected-run-sender')
+                    : (getenv('DW_PARITY_RUST_DIRECTION_WORKER') ?: '/sdk-directions/rust-worker')],
                 default => throw new RuntimeException('Unknown published SDK direction language.'),
             };
             array_push($arguments, $phase, $url, $actorWorkflowId, $actorRunId, $options['fixture'],
@@ -179,7 +182,7 @@ function sdkDirectionHttpObservation(array $fixture, array $options, ?Closure $a
                 // Exact request/response bytes remain in the retained sidecar.
                 unset($item['request_body'], $item['response_body'], $item['response_bytes_base64']);
                 $signalReceipt = $signalDirection && $item['method'] === 'POST'
-                    && preg_match('#^/api/workflows/[^/]+/signal/payload$#', $item['path']);
+                    && preg_match('#^/api/workflows/[^/]+(?:/runs/[^/]+)?/signal/payload$#', $item['path']);
                 if (! $signalReceipt) {
                     $item['response'] = sdkDirectionResponseSummary($item['response'], $childDirection || $timerAuthor || $signalDirection);
                 }
@@ -240,7 +243,9 @@ function sdkDirectionHttpObservation(array $fixture, array $options, ?Closure $a
                     continue;
                 }
                 foreach ($phase['requests'] as &$request) {
-                    if ($request['method'] === 'POST' && rawurldecode($request['path']) === '/api/workflows/'.$options['workflow-id'].'/signal/payload') {
+                    $signalPath = '/api/workflows/'.$options['workflow-id']
+                        .(isset($fixture['selected_run_signal_run']) ? '/runs/'.$runId : '').'/signal/payload';
+                    if ($request['method'] === 'POST' && rawurldecode($request['path']) === $signalPath) {
                         $request['decoded_input'] = $client->payloadCodec()->decodeEnvelope($request['request']['input']);
                         $request['typed_decoded_input'] = typedValue($request['decoded_input']);
                         $observation['signal_deliveries'][] = ['before' => $phases[$index - 1]['snapshot']['execution'],

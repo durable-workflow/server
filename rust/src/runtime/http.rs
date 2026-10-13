@@ -344,7 +344,10 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
     }
     if let Some(path) = path.strip_prefix("/api/workflows/") {
         let parts: Vec<_> = path.split('/').collect();
-        if matches!(parts.as_slice(), [_, "signal", _]) {
+        if matches!(
+            parts.as_slice(),
+            [_, "signal", _] | [_, "runs", _, "signal", _]
+        ) {
             return method == "POST";
         }
         return matches!(
@@ -659,13 +662,19 @@ async fn signal_run(
     Path((workflow_id, run_id, name)): Path<(String, String, String)>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
+    let response = runtime
+        .signal(&workflow_id, Some(&run_id), &name, body)
+        .await
+        .map_err(|error| {
+            super::control_plane::Operation::Signal(&name).refusal(
+                error,
+                &workflow_id,
+                Some(&run_id),
+            )
+        })?;
     Ok((
         StatusCode::ACCEPTED,
-        Json(
-            runtime
-                .signal(&workflow_id, Some(&run_id), &name, body)
-                .await?,
-        ),
+        Json(super::control_plane::Operation::Signal(&name).response(response)),
     ))
 }
 

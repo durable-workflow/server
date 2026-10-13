@@ -240,9 +240,34 @@ where
             status.as_str(),
             "completed" | "failed" | "cancelled" | "terminated"
         );
+        // Describe's public journal comes from committed rows, including
+        // refused signals which intentionally have no workflow history event.
+        // Select metadata only: large customer payloads are never decoded or
+        // copied merely to display the command's target and admission result.
+        let command_rows = Self::query("SELECT c.id,c.command_sequence,c.command_type,c.target_scope,c.requested_workflow_run_id,c.resolved_workflow_run_id,c.source,c.status,c.outcome,c.rejection_reason,c.workflow_type,c.workflow_class,c.accepted_at,c.applied_at,c.rejected_at,s.signal_name FROM workflow_commands c LEFT JOIN workflow_signal_records s ON s.workflow_command_id=c.id WHERE c.workflow_run_id=$1 AND c.workflow_instance_id=$2 ORDER BY c.command_sequence,c.created_at,c.id")
+            .bind(DB::string(&row, "id")?).bind(workflow_id).fetch_all(&self.pool).await?;
+        let mut commands = Vec::with_capacity(command_rows.len());
+        for command in command_rows {
+            let mut public = json!({"id":DB::string(&command,"id")?,"sequence":DB::optional_number(&command,"command_sequence")?,
+                "type":DB::string(&command,"command_type")?,"target_scope":DB::string(&command,"target_scope")?,
+                "requested_run_id":DB::optional_string(&command,"requested_workflow_run_id")?,
+                "resolved_run_id":DB::optional_string(&command,"resolved_workflow_run_id")?,
+                "target_name":DB::optional_string(&command,"signal_name")?,"source":DB::string(&command,"source")?,
+                "status":DB::string(&command,"status")?,"outcome":DB::optional_string(&command,"outcome")?,
+                "reason":DB::optional_string(&command,"rejection_reason")?,"rejection_reason":DB::optional_string(&command,"rejection_reason")?,
+                "workflow_type":DB::optional_string(&command,"workflow_type")?,"workflow_class":DB::optional_string(&command,"workflow_class")?,
+                "accepted_at":DB::optional_instant(&command,"accepted_at")?,"applied_at":DB::optional_instant(&command,"applied_at")?,
+                "rejected_at":DB::optional_instant(&command,"rejected_at")?});
+            public
+                .as_object_mut()
+                .expect("command object")
+                .retain(|_, value| !value.is_null());
+            commands.push(public);
+        }
         Ok(
             json!({"workflow_id": workflow_id, "run_id": DB::string(&row,"id")?, "workflow_type": DB::string(&row,"workflow_type")?,
             "namespace": self.namespace.as_ref(), "task_queue": DB::string(&row,"queue")?, "status": status,
+            "commands_scope":"selected_run","commands":commands,
             "status_bucket": super::visibility::status_bucket(&status)?,
             "is_current_run": DB::optional_string(&row,"current_run_id")?.as_deref() == Some(DB::string(&row,"id")?.as_str()),
             "run_count": DB::number(&row,"run_count")?,
@@ -284,7 +309,8 @@ where
         run_id: Option<&str>,
         name: &str,
         body: Value,
-        prepared: PreparedControlArguments,
+        mut prepared: PreparedControlArguments,
+        signal_codec: Arc<Semaphore>,
     ) -> Result<Value> {
         reject_fields(&body, &["input", "request_id"])?;
         if name.trim().is_empty() || name.len() > 255 {
@@ -311,17 +337,55 @@ where
                 "historical_run_command_rejected",
             ));
         }
-        let run = Self::active_run(&mut tx, &current_run).await?;
+        let run = Self::query("SELECT * FROM workflow_runs WHERE id=$1")
+            .bind(&current_run)
+            .fetch_one(&mut *tx)
+            .await?;
+        let active = matches!(
+            DB::string(&run, "status")?.as_str(),
+            "pending" | "running" | "waiting"
+        );
+        // Retain the existing deadline fences for live runs. Terminal signals
+        // instead commit PHP's durable rejection without reopening execution.
+        if active {
+            Self::active_run(&mut tx, &current_run).await?;
+        }
         let started = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowStarted' ORDER BY sequence LIMIT 1")
             .bind(&current_run).fetch_one(&mut *tx).await?;
         let contract = DB::document_row(&started, "payload")?;
-        if !contract["declared_signals"]
+        let declared = contract["declared_signals"]
             .as_array()
-            .is_some_and(|names| names.iter().any(|value| value == name))
-        {
-            return Err(refuse(StatusCode::NOT_FOUND, "unknown_signal"));
-        }
-        validate_signal_arguments(&contract, name, &prepared.values)?;
+            .is_some_and(|names| names.iter().any(|value| value == name));
+        let mut validation_errors = json!([]);
+        let rejection = if !active {
+            Some((
+                StatusCode::CONFLICT,
+                "run_not_active",
+                "rejected_not_active",
+            ))
+        } else if !declared {
+            Some((
+                StatusCode::NOT_FOUND,
+                "unknown_signal",
+                "rejected_unknown_signal",
+            ))
+        } else {
+            match validate_signal_arguments(&contract, name, &prepared.values) {
+                Ok(()) => None,
+                Err(super::RuntimeError::Refused {
+                    reason: "invalid_signal_arguments",
+                    ..
+                }) => {
+                    validation_errors = signal_argument_errors(&contract, name, &prepared.values);
+                    Some((
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "invalid_signal_arguments",
+                        "rejected_invalid_arguments",
+                    ))
+                }
+                Err(error) => return Err(error),
+            }
+        };
         let command_id = id();
         let signal_id = id();
         let command_sequence = DB::number(&run, "last_command_sequence")?
@@ -330,6 +394,65 @@ where
         let message_sequence = DB::number(&instance, "last_message_sequence")?
             .checked_add(1)
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "message_sequence_exhausted"))?;
+        if let Some((status, reason, outcome)) = rejection {
+            let workflow_type = DB::string(&run, "workflow_type")?;
+            let mut diagnostics = json!({});
+            if reason == "unknown_signal" {
+                let names = contract["declared_signals"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                let labels = names
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                diagnostics = json!({"command_contract_source":"durable_history",
+                    "command_contract_backfill_needed":false,"command_contract_backfill_available":false,
+                    "declared_signals":names,"signal_admission":"handler_not_declared","reason":reason,
+                    "message":format!("Workflow signal [{name}] is unknown for workflow type [{workflow_type}]: the durable command contract does not declare that handler. Command contract source [durable_history], declared signals [{labels}].")});
+            }
+            prepared.command = prepare_rejected_signal_command(
+                signal_codec,
+                name.to_owned(),
+                prepared.values.clone(),
+                validation_errors.clone(),
+                diagnostics.clone(),
+            )
+            .await?;
+            let rejected_at = now();
+            Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,command_type,source,status,outcome,workflow_type,payload_codec,payload,rejection_reason,command_sequence,message_sequence,rejected_at,context) VALUES ($1,$2,$3,$4,'signal','control_plane','rejected',$5,$6,'avro',$7,$8,$9,$10,$11,$12)")
+                .bind(&command_id).bind(workflow_id).bind(&current_run).bind(&current_run).bind(outcome).bind(&workflow_type)
+                .bind(&prepared.command).bind(reason).bind(command_sequence).bind(message_sequence).bind(DB::bind_time(rejected_at))
+                .bind(DB::document(&json!({"request":{"request_id":body["request_id"]},"signal_name":name}))).execute(&mut *tx).await?;
+            Self::query("INSERT INTO workflow_signal_records(id,workflow_command_id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,signal_name,status,outcome,command_sequence,payload_codec,arguments,validation_errors,rejection_reason,rejected_at,closed_at) VALUES ($1,$2,$3,$4,$5,$6,'rejected',$7,$8,'avro',$9,$10,$11,$12,$13)")
+                .bind(&signal_id).bind(&command_id).bind(workflow_id).bind(&current_run).bind(&current_run).bind(name)
+                .bind(outcome).bind(command_sequence).bind(&prepared.arguments).bind(DB::document(&validation_errors)).bind(reason)
+                .bind(DB::bind_time(rejected_at)).bind(DB::bind_time(rejected_at)).execute(&mut *tx).await?;
+            Self::query("UPDATE workflow_runs SET last_command_sequence=$1 WHERE id=$2")
+                .bind(command_sequence)
+                .bind(&current_run)
+                .execute(&mut *tx)
+                .await?;
+            Self::query("UPDATE workflow_instances SET last_message_sequence=$1 WHERE id=$2")
+                .bind(message_sequence)
+                .bind(workflow_id)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            let mut response = json!({"workflow_id":workflow_id,"run_id":current_run,"resolved_run_id":current_run,
+                "requested_run_id":null,"signal_name":name,"command_id":command_id,"command_sequence":command_sequence,
+                "workflow_type":workflow_type,"command_status":"rejected","command_source":"control_plane",
+                "target_scope":"instance","outcome":outcome,"reason":reason,"rejection_reason":reason,
+                "validation_errors":validation_errors,"accepted":false});
+            response
+                .as_object_mut()
+                .expect("response object")
+                .extend(diagnostics.as_object().expect("diagnostics object").clone());
+            // A refusal records admission, not execution: no history, task,
+            // signal wait reservation or notification is added here.
+            return Err(super::RuntimeError::Protocol { status, response });
+        }
         let wait = Self::open_wait(&mut tx, &current_run).await?;
         let mut wait_id = format!("signal-command:{command_id}");
         if let Some(wait) = wait.as_ref().filter(|wait| wait["signal_name"] == name) {
@@ -2032,6 +2155,110 @@ pub(super) async fn prepare_control_arguments(
     })
     .await
     .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "signal_codec_unavailable"))?
+}
+
+async fn prepare_rejected_signal_command(
+    semaphore: Arc<Semaphore>,
+    name: String,
+    values: Vec<crate::codec::Value>,
+    validation_errors: Value,
+    diagnostics: Value,
+) -> Result<String> {
+    let permit = semaphore
+        .acquire_owned()
+        .await
+        .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "signal_codec_unavailable"))?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        use crate::codec::Value as Payload;
+        // Only small server-authored diagnostics cross this conversion.
+        // Original customer arguments remain official decoded Values, so a
+        // JSON projection cannot round an int64 or turn bytes into strings.
+        fn diagnostic(value: Value) -> Result<Payload> {
+            Ok(match value {
+                Value::Null => Payload::Null,
+                Value::Bool(value) => Payload::Boolean(value),
+                Value::String(value) => Payload::String(value),
+                Value::Array(values) => {
+                    Payload::Array(values.into_iter().map(diagnostic).collect::<Result<_>>()?)
+                }
+                Value::Object(values) => Payload::Map(
+                    values
+                        .into_iter()
+                        .map(|(key, value)| Ok((key, diagnostic(value)?)))
+                        .collect::<Result<_>>()?,
+                ),
+                Value::Number(_) => {
+                    return Err(refuse(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "signal_codec_unavailable",
+                    ));
+                }
+            })
+        }
+        let Payload::Map(mut command) = diagnostic(diagnostics)? else {
+            return Err(refuse(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "signal_codec_unavailable",
+            ));
+        };
+        command.insert("name".into(), Payload::String(name));
+        command.insert("arguments".into(), Payload::Array(values));
+        command.insert("validation_errors".into(), diagnostic(validation_errors)?);
+        crate::codec::ValueCodec::new()
+            .and_then(|codec| codec.encode(&Payload::Map(command)))
+            .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "signal_codec_unavailable"))
+    })
+    .await
+    .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "signal_codec_unavailable"))?
+}
+
+fn signal_argument_errors(contract: &Value, name: &str, values: &[crate::codec::Value]) -> Value {
+    let parameters = contract["declared_signal_contracts"]
+        .as_array()
+        .and_then(|contracts| contracts.iter().find(|contract| contract["name"] == name))
+        .and_then(|contract| contract["parameters"].as_array())
+        .expect("validated signal contract");
+    let mut errors = serde_json::Map::new();
+    for (index, parameter) in parameters.iter().enumerate() {
+        let label = parameter["name"].as_str().unwrap_or("arguments");
+        let Some(value) = values.get(index) else {
+            if parameter["required"] == true {
+                errors.insert(
+                    label.into(),
+                    json!([format!("The {label} argument is required.")]),
+                );
+            }
+            continue;
+        };
+        use crate::codec::Value as Payload;
+        let valid = if matches!(value, Payload::Null) {
+            parameter["allows_null"]
+                .as_bool()
+                .unwrap_or(parameter["type"].is_null() || parameter["type"] == "")
+        } else {
+            match parameter["type"].as_str() {
+                None | Some("mixed") => true,
+                Some("array") => matches!(value, Payload::Array(_) | Payload::Map(_)),
+                Some("int") => matches!(value, Payload::Long(_)),
+                Some("float") => matches!(value, Payload::Long(_) | Payload::Double(_)),
+                Some("bool") => matches!(value, Payload::Boolean(_)),
+                Some("string") => matches!(value, Payload::String(_)),
+                _ => false,
+            }
+        };
+        if !valid {
+            let kind = parameter["type"].as_str().unwrap_or("mixed");
+            errors.insert(
+                label.into(),
+                json!([format!("The {label} argument must be of type {kind}.")]),
+            );
+        }
+    }
+    if errors.is_empty() {
+        errors.insert("arguments".into(), json!(["Unexpected signal arguments."]));
+    }
+    Value::Object(errors)
 }
 
 fn validate_signal_arguments(

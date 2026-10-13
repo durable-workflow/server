@@ -1,0 +1,138 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "signal-selected-run-sdk-rust-rust",
+  "namespace": "parity-signals-left",
+  "workflow_type": "parity.v1.sdk_signals",
+  "input": {
+    "message": "namespace signal workflow λ"
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "namespace signal workflow λ"
+      }
+    }
+  },
+  "signal_value": {
+    "message": "left scope signal λ",
+    "count": 9007199254740993,
+    "ready": true,
+    "optional": null
+  },
+  "typed_signal_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "left scope signal λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "ready": {
+        "type": "boolean",
+        "value": true
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "signal_count": 2,
+  "sdk_signal_direction": {
+    "workflow": "rust",
+    "client": "rust",
+    "phase_order": [
+      "original",
+      "signal-1",
+      "resumed",
+      "signal-2",
+      "replacement"
+    ],
+    "task_queue": "server-parity-sdk-signals",
+    "signal_name": "payload",
+    "target": "selected-current-run",
+    "start_after_worker_registration": true,
+    "first_poll_after_start_receipt": true,
+    "start_client": "php-observer",
+    "identical_repeated_payload": true
+  },
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "ConditionWaitOpened",
+    "SignalReceived",
+    "MessageCursorAdvanced",
+    "SignalApplied",
+    "ConditionWaitSatisfied",
+    "ConditionWaitOpened",
+    "SignalReceived",
+    "MessageCursorAdvanced",
+    "SignalApplied",
+    "ConditionWaitSatisfied",
+    "WorkflowCompleted"
+  ],
+  "embedded_expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "SignalWaitOpened",
+    "SignalReceived",
+    "MessageCursorAdvanced",
+    "SignalApplied",
+    "SignalWaitOpened",
+    "SignalReceived",
+    "MessageCursorAdvanced",
+    "SignalApplied",
+    "WorkflowCompleted"
+  ],
+  "contract": "Pending separate selected-run signal qualification. Two original named-namespace runs retain their identities, waits and exact values. Actual PHP/Rust SDK selected-run methods refuse wrong namespace and mismatched run without persisted mutation, persist unknown/invalid/inactive rejected commands and signals with ordered sequences, accept two signals per run through cold authors, and preserve strict whole history and task relationships. Original 35-second run/70-second pair/75-second outer ceilings and runtime caps remain fixed. Python 2.5.4 is an author only. No older-run continuation race, full auth, external-payload, current-release, migration or performance claim.",
+  "selected_run_signal_pair": {
+    "invalid_arguments": {
+      "applicable": false,
+      "reason": "published_rust_signal_contract_is_optional_variadic_untyped"
+    },
+    "peer_namespace": "parity-signals-right",
+    "pair_budget_seconds": 70,
+    "run_budget_seconds": 35,
+    "same_workflow_type_and_queue": true,
+    "both_original_runs_wait_before_delivery": true,
+    "foreign_signal_target": "selected_original_workflow_run_id",
+    "foreign_signal_expected_status": 404,
+    "peer_signal_value": {
+      "message": "right scope signal λ",
+      "count": 9007199254740995,
+      "ready": false,
+      "optional": null
+    },
+    "typed_peer_signal_value": {
+      "type": "map",
+      "value": {
+        "message": {
+          "type": "string",
+          "value": "right scope signal λ"
+        },
+        "count": {
+          "type": "int64",
+          "value": "9007199254740995"
+        },
+        "ready": {
+          "type": "boolean",
+          "value": false
+        },
+        "optional": {
+          "type": "null",
+          "value": null
+        }
+      }
+    },
+    "mismatched_run_expected_status": 409,
+    "unknown_signal_expected_status": 404,
+    "invalid_signal_expected_status": 422,
+    "inactive_signal_expected_status": 409
+  }
+}

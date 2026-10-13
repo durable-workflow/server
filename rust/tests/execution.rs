@@ -31,6 +31,9 @@ mod role_tokens;
 #[path = "execution/namespaces.rs"]
 mod namespaces;
 
+#[path = "execution/selected_run_signals.rs"]
+mod selected_run_signals;
+
 #[path = "execution/worker_incarnations.rs"]
 mod worker_incarnations;
 

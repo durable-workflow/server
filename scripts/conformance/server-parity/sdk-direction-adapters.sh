@@ -10,8 +10,9 @@ docker run --rm --user="$(id -u):$(id -g)" --cpus=2 --memory=2g --memory-swap=2g
   -v "$PWD:/source:ro" -v "$PWD/sdk-cargo:/cargo" -v "$PWD/sdk-target:/target" \
   -w "/source/$adapter/rust" \
   mirror.gcr.io/library/rust@sha256:300ec56abce8cc9448ddea2172747d048ed902a3090e6b57babb2bf19f754081 \
-  cargo build --locked > sdk-direction-adapters/rust-sdk-build.txt 2>&1
+  cargo build --locked --bins > sdk-direction-adapters/rust-sdk-build.txt 2>&1
 cp sdk-target/debug/server-parity-sdk-directions sdk-direction-adapters/rust-worker
+cp sdk-target/debug/selected-run-signals sdk-direction-adapters/rust-selected-run-sender
 cp "$adapter/rust/Cargo.lock" sdk-direction-adapters/Cargo.lock
 sdk_version=$(jq -r '.sdk_rust' "$profile/artifacts.json")
 mapfile -t vcs_sources < <(find sdk-cargo/registry/src -path "*/durable-workflow-$sdk_version/.cargo_vcs_info.json")
@@ -28,7 +29,7 @@ docker run --rm --user="$(id -u):$(id -g)" --network=none --entrypoint node \
   -v "$PWD:/source:ro" -v "$PWD/sdk-direction-adapters:/adapters" -w /source "$image" \
   "$adapter/identity.mjs" /adapters "$profile/artifacts.json"
 git rev-parse HEAD > sdk-direction-adapters/runner-revision.txt
-sha256sum "$adapter"/rust/{Cargo.toml,Cargo.lock,src/main.rs,src/queries.rs,src/updates.rs} "$adapter"/{python.py,php.php,queries.py,queries.php,updates.py,updates.php,requirements.txt,identity.mjs} \
+sha256sum "$adapter"/rust/{Cargo.toml,Cargo.lock,src/main.rs,src/queries.rs,src/updates.rs,src/bin/selected-run-signals.rs} "$adapter"/{python.py,php.php,queries.py,queries.php,updates.py,updates.php,selected-run-signals.php,requirements.txt,identity.mjs} \
   > sdk-direction-adapters/source-hashes.sha256
 cd sdk-direction-adapters
 find . -type f ! -path ./SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS

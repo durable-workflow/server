@@ -812,7 +812,14 @@ try {
     require __DIR__.'/child-cancellation-probe.php';
     require __DIR__.'/cancellation-probe.php';
     require __DIR__.'/cooperative-probe.php';
-    if (isset($fixture['namespace_signal_pair'])) {
+    if (isset($fixture['selected_run_signal_pair'])) {
+        require __DIR__.'/sdk-direction-probe.php';
+        require __DIR__.'/sdk-namespace-signal-probe.php';
+        require __DIR__.'/sdk-selected-run-signal-probe.php';
+        $observation = $mode === 'http'
+            ? selectedRunSignalHttpObservation($fixture, $options)
+            : selectedRunSignalEmbeddedObservation($fixture, $workflowId, $options['application-root']);
+    } elseif (isset($fixture['namespace_signal_pair'])) {
         require __DIR__.'/sdk-direction-probe.php';
         require __DIR__.'/sdk-namespace-signal-probe.php';
         $observation = $mode === 'http'
@@ -915,8 +922,9 @@ try {
     if (isset($fixture['sdk_update_direction']) || isset($fixture['sdk_query_direction']) || isset($fixture['sdk_direction']) || isset($fixture['sdk_child_direction']) || isset($fixture['sdk_timer_author']) || isset($fixture['sdk_signal_direction'])) {
         sdkDirectionPackageObservation($observation, $sdkAutoload, $mode === 'embedded' ? $options['application-root'] : null);
     }
-    if (isset($fixture['namespace_signal_pair'])) {
-        $peer = &$observation['namespace_signal_pair']['peer'];
+    if (isset($fixture['namespace_signal_pair']) || isset($fixture['selected_run_signal_pair'])) {
+        $pairKey = isset($fixture['selected_run_signal_pair']) ? 'selected_run_signal_pair' : 'namespace_signal_pair';
+        $peer = &$observation[$pairKey]['peer'];
         $peer['mode'] = $mode;
         foreach (['sdk_php', 'sdk_php_source', 'php_version', 'workflow_package'] as $field) {
             if (array_key_exists($field, $observation)) { $peer[$field] = $observation[$field]; }

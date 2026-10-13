@@ -26,6 +26,35 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+[#429](https://github.com/durable-workflow/server/pull/429) is delivered at
+`6299289185caea472b2738a5d4442a617edf0b8a`, tree
+`62736363c1e03ceae091ea578d307fb4d2370054`, identical to the reviewed candidate.
+All six original candidate and automatic main database jobs pass without reruns.
+Independent main artifact audits verify 162 paired namespace observations,
+324 original runs, 1,836 full HTTP sidecars, 11,567 byte-checked exchanges and
+10,053 member hashes. Each database passes 78 native execution tests and 49
+namespace reader/retention tests. Main SDK identity, PHP/source (2,744 tests /
+61,718 assertions, six existing deprecations and one skip) and boundary checks
+pass. The [delivery receipt](https://github.com/durable-workflow/server/pull/429#issuecomment-6138216847)
+records exact artifacts and limits. Historical failures below remain failed;
+their causes are not established by this successful qualification.
+
+The next active slice is [selected-run signals](rust-server-selected-run-signals.md).
+It widens the separate shared fixture set to the six supported PHP/Rust client
+by PHP/Python/Rust author directions and canonical embedded behavior. The
+[isolated SQLite reference](https://github.com/durable-workflow/server/pull/434#issuecomment-6138791924)
+passes all six HTTP directions and canonical embedded counterparts at
+`e077ee4e60ceb9b3dfe6d2259fdc341f63ffbcec`: 24 original runs, 116 full sidecars,
+588 byte-checked exchanges and 300 real-record reader guards. Frozen Rust's
+optional variadic contract lacks an invalid-argument refusal gate; the separate
+PHP/Python-author gate omits its required argument. Native routing and durable
+rejections are implemented in the draft with passing focused storage/HTTP and
+local native regressions. The first real native pair completed but its strict
+record failed on the missing public command journal; the original is retained
+and the metadata projection is qualifying before a fresh cohort. Shared native
+and all-six candidate/fresh-main qualification remain pending. Published PHP remains the default; full runtime parity,
+migration, matched performance and release/cutover remain unqualified.
+
 [#427](https://github.com/durable-workflow/server/pull/427) is merged and its
 [fresh-main qualification](https://github.com/durable-workflow/server/pull/427#issuecomment-6130548960)
 is complete at `3afb6bb41bd4dd5cc75234bacf0ae5e28df1164e`, tree
@@ -51,7 +80,10 @@ setup-loss regression pass with the locked PHP SDK. The initial path/typed-error
 reader failures remain unchanged. Native current-run signals, canonical refusal
 metadata and untimed condition waits are implemented and the new profile runs
 in all six database jobs. Candidate qualification and promotion are recorded below. Expanded jobs
-have a 35-minute ceiling; original run budgets and runtime caps stay fixed.
+have a 45-minute ceiling after the selected-run profile expanded their work;
+original run budgets and runtime caps stay fixed. The earlier 35-minute
+MySQL cancellations remain cancelled records, as detailed in the
+[selected-run qualification](rust-server-selected-run-signals.md).
 
 Exact `6bac8f677` [run 38304548447](https://github.com/durable-workflow/server/actions/runs/38304548447)
 passes five jobs and fails MariaDB. Independent original artifact review across
@@ -134,8 +166,9 @@ request, deadline, credential and absent-response assertion. A controlled
 250-ms forwarding delay reproduces the prior assertion failure and passes the
 corrected guard; three ordinary locked-SDK runs pass all 49 selected tests
 without skips. This changes only the test barrier, with no recorder, native
-runtime, fixture, tuple or retry change. The failed original remains failed;
-the new exact-head and fresh-main matrix are still required.
+runtime, fixture, tuple or retry change. The failed original remains failed.
+The subsequent exact-head and fresh-main matrices pass, as recorded in the
+#429 delivery receipt above.
 
 The [next proposed boundary](https://github.com/durable-workflow/server/issues/325#issuecomment-6136891726)
 is run-targeted signals. One
@@ -156,14 +189,29 @@ The unchanged Server image still bundles 2.5.12; its dependency/rebuild and
 consumer follow-through belong to the PHP maintainer. Any corrected shared
 marker profile uses a separately qualified exact cohort, preserving frozen
 marker/range histories and failures. The
-[Rust SDK #80 coordination](https://github.com/durable-workflow/server/issues/325#issuecomment-6137088853)
-requires the SDK owner's qualified published author tuple after the pending
-compatible 3.5.2 release: repeated `get_version` in `[-3,7]` with one decision
-through a pending activity/cold replacement, version-1 deprecated aliases with
-valid differing bounds, and a second range-repair author for existing pending
-activity/timer-winner checkpoints. No shared adapter, SDK or native dependency
-adoption is implied by these package/source receipts. Implement these separate
-profiles after the #429 checkpoint and record their exact identities here.
+[Rust SDK #80 published tuple](https://github.com/durable-workflow/sdk-rust/issues/80#issuecomment-6137962597)
+is now qualified: 3.5.2 / `b9a82ddfd4589351ff64b33685464ac201ce40c4`,
+registry archive `e9df4b3e10aada0d7f459a5fc5c8d58b4ec6829422bfc7edb5088047ad5b63b9`.
+Six actual published-Server originals cover repeated `get_version` in `[-3,7]`
+with one decision, fresh zero/deprecation-first helpers, and explicit same-run
+range repair after completed-activity or timer-winner checkpoints. Constructed
+version-1 differing-bound aliases are reader controls, not a genuine producer.
+The [bridge-prefix receipt](https://github.com/durable-workflow/sdk-rust/issues/80#issuecomment-6138080982)
+adds two cold mock-delivery reads of each unchanged marker prefix; full history,
+clock, backend admission and takeover remain separate gates.
+The [retry-snapshot agreement](https://github.com/durable-workflow/workflow/issues/744#issuecomment-6138245641)
+preserves all eight PHP backoff entries with `max_attempts=1`, requiring exact
+explicit Rust authoring and strict stored-policy comparison. The SDK owner
+retains implementation and qualification; captures cannot be trimmed or compared
+by prefix. Corrected shared integration still requires the exact qualified PHP
+Server consumer cohort. Frozen actors, dependencies and failures stay unchanged.
+
+The [query-authority proposal](https://github.com/durable-workflow/server/issues/433#issuecomment-6138263790)
+and [native/shared acknowledgment](https://github.com/durable-workflow/server/issues/433#issuecomment-6138337171)
+agree on immutable original timing, six-digit UTC fields, inclusive authority
+expiry, non-renewing protocol-1.20 observation and committed-receipt ordering.
+Native implementation and separate shared qualification remain pending; current
+internal timing does not establish compliance with the proposed wire contract.
 
 Earlier MariaDB/MySQL failure causes remain
 unestablished; the new lookup site does not retroactively establish them.
