@@ -59,5 +59,22 @@ The separate global deadline comparison also passes on published PHP and
 embedded SQLite: seven events, two of three attempts and a retained parent
 delivery, with actual timeout between the original global and second-attempt
 close deadlines. Native, other databases and live heartbeat/lease renewal
-remain pending. These fixtures do not enlarge the
-default corpus or establish release or migration readiness.
+were pending at that checkpoint. [Three actual native originals](https://github.com/durable-workflow/server/issues/325#issuecomment-6156982520)
+now pass the same retry/global contracts and 63 corruption controls.
+
+`activity-heartbeat-renewal.json` uses two timely heartbeats to keep the original
+attempt alive beyond its initial heartbeat deadline. Status reads must preserve
+the lease, progress and history. One typed completion stays within the original
+close/global bounds; later progress is refused. The same owning outcome records
+fresh matched PHP/native/embedded SQLite comparison, 60 corruption controls
+and WAL-aware stopped database checks. It does not claim surviving the complete
+300-second ordinary lease.
+
+Select this fourth fixture with the same recorder arguments and run
+`activity-heartbeat-renewal-readers.mjs RECORD`. The corrected shared profile's
+`retries` family now selects all four cases and their readers. Its published PHP
+reference uses the package's timeout enforcer scoped to those original instance
+IDs and active activities. It cannot repair the retained parent task or touch
+neighboring marker workflows. Resource limits and individual budgets remain
+unchanged. Other-database, final-head and default integration remain pending.
+These controls do not establish release or migration readiness.

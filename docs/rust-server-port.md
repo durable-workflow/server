@@ -33,9 +33,16 @@ the entire retry snapshot and exact int64/null/Unicode results. Active-parent
 duplicates before and after expiry and closed-parent duplicates preserve the
 original result. Actual HTTP and embedded refusals remain explicit. Common
 comparison, 86 corruption checks and stopped read-only original deadline
-verification pass. These controls remain outside #435/default fixtures, pending
-native, other databases, global-timeout-before-exhaustion and live-renewal
-qualification. They do not establish a stronger content-verified receipt
+verification pass. Separate [global deadline originals](https://github.com/durable-workflow/server/issues/325#issuecomment-6156799442)
+pass on PHP and embedded mode while an unused third attempt and the second
+attempt's close budget remain. All three [native SQLite cases and a matched
+live-heartbeat case](https://github.com/durable-workflow/server/issues/325#issuecomment-6156982520)
+also pass. Two heartbeats preserve one original attempt past its initial
+heartbeat deadline; status reads do not renew, and later progress is refused.
+The new `retries` profile family selects the four fixtures across three runtimes
+and runs their actual-record corruption checks. Other-database and final-head
+qualification remain pending. These controls remain outside #435 and the
+default corpus. They do not establish a stronger content-verified receipt
 contract. Earlier harness failures and unqualified observations remain recorded.
 
 [#429](https://github.com/durable-workflow/server/pull/429) is delivered at
@@ -87,7 +94,7 @@ Completed local bulk recordings and archives have been deleted; code, fixtures
 and readable GitHub outcomes remain. Earlier local retention promises no longer
 apply. New scratch is removed after its immediate inspection.
 
-The expanded `718ea3608` run `38469976743` passes both PostgreSQL jobs.
+The expanded `718ea3608` run `38469976743` passes both PostgreSQL jobs and MySQL 8.4.
 SQLite passes the published PHP eight portable, two clock and four activity
 expiry cases, then fails native discovery because the new stage addressed the
 process intentionally killed by the preceding recovery test. The replacement
@@ -96,7 +103,7 @@ MariaDB exit their PHP recorder with 137 while writing incomplete JSON after
 the final case snapshots complete. The recorder was automatically removed, so
 its OOM state is unavailable. Their database and PHP service states are healthy;
 later pressure controls pass. No product or historical failure cause is inferred.
-MySQL 8.4 remains pending. Originals keep their recorded dispositions.
+Originals keep their recorded dispositions.
 
 The recorder now writes one case at a time to avoid creating another complete
 serialization of all retained HTTP bytes. A bounded 48 MiB heap control preserves
