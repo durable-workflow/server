@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\ActivityController;
+use App\Http\Controllers\Api\ActivityResultController;
 use App\Http\Controllers\Api\ActivityTaskController;
 use App\Http\Controllers\Api\BridgeAdapterController;
 use App\Http\Controllers\Api\CancellationScopeController;
@@ -182,6 +183,7 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
         // History
         Route::get('/{workflowId}/runs/{runId}/history', [HistoryController::class, 'show']);
         Route::get('/{workflowId}/runs/{runId}/activities', [HistoryController::class, 'activities']);
+        Route::get('/{workflowId}/runs/{runId}/activities/{activityId}/result', [ActivityResultController::class, 'show']);
         Route::get('/{workflowId}/runs/{runId}/history/export', [HistoryController::class, 'export']);
 
         // Caller-side Nexus operations: every cross-namespace service call this
