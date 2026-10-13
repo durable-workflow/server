@@ -92,8 +92,9 @@ embedded input now passes all eight applicable marker/policy/range cases at
 repair on the same original. All 931 installed runtime/resource bytes match the
 published tag; 176 actual-record controls and independent SQL checks pass.
 The original 2.5.14 profile and its failed run remain unchanged. These backend
-handler cases fake framework queue dispatch and do not qualify queue-worker
-draining. Current Python's
+handler cases run real independent `queue:work --once` database workers, as
+confirmed by the retained RUNNING/DONE receipts. They do not qualify sustained
+queue-worker draining. Current Python's
 fixed-start clock/UUID cases pass the PHP reference. Native marker/clock
 admission now has a candidate authored activity deadline implementation. It
 snapshots all four timeout options, fences elapsed completion/failure/heartbeat,

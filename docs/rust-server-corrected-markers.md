@@ -14,8 +14,8 @@ failed. The separate normally installed Workflow 2.5.16 correction now passes
 all eight applicable embedded marker/policy/range cases at `a4c43d26c`, with
 176 actual-record controls, independent SQL checks, and all 931 installed
 runtime/resource bytes matching the published tag. The earlier manifest and
-failed original remain unchanged. These cases execute backend handlers with
-framework dispatch faked; they make no queue-worker drain claim.
+failed original remain unchanged. These cases execute real independent
+`queue:work --once` database workers; they make no sustained drain claim.
 Both range families also pass separate native SQLite recordings at
 `4f5d813a8`, with 56 actual-record corruption controls and independent SQL
 readback. Native preserves published Rust replay failures without inventing

@@ -53,8 +53,8 @@ runtime. Separate SQLite recordings at `a4c43d26c` pass all eight applicable
 marker/policy/range cases, with 176 actual-record controls and independent SQL
 readback. All 931 installed runtime/resource files match the published tag.
 Embedded actors execute PHP
-backend handlers; they do not claim a Rust SDK consumer or a real queue-worker
-drain test.
+backend handlers through real independent `queue:work --once` database workers;
+they do not claim a Rust SDK consumer or sustained queue-worker drain test.
 
 The additional Rust modes `range_completed` and `range_pending` register the
 original `parity.v1.range_repair` and `parity.v1.range_pending_repair` types and
