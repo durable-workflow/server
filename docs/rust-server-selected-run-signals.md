@@ -106,3 +106,12 @@ without reading customer payloads and adds an actual HTTP assertion. A fresh
 shared native cohort, all six exact candidate jobs and fresh main qualification
 remain pending. Full command attribution, payload previews and broader
 visibility remain separate gates.
+
+The second native original also completed its pair but remains failed: the
+reader initially expected PHP's bare stored Avro frame where native retains the
+two-field `codec`/`blob` envelope. The reader now compares the exact frame bytes
+on both sides and accepts only that precise wrapper, preserving complete raw
+rows and every other event field. Added real-record corruptions reject extra
+wrapper fields, a different codec and changed bytes. All 336 checks pass against
+the untouched six PHP and six embedded originals. This representation check
+does not convert a failed recording into a runtime pass or establish migration.

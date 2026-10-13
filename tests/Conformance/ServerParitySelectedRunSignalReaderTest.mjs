@@ -14,6 +14,15 @@ for (const record of records) {
 }
 const control = value => value.selected_run_signal_pair.controls[0];
 const state = value => value.selected_run_signal_pair.final_stored;
+const mutateStoredFrame = (value, mutate) => {
+  const row = state(value).tables.workflow_history_events.rows.find(row => row.event_type === 'SignalReceived');
+  assert(row, 'actual original signal history required');
+  const payload = JSON.parse(row.payload);
+  const blob = typeof payload.arguments === 'string' ? payload.arguments : payload.arguments.blob;
+  assert(typeof blob === 'string' && blob.length > 0);
+  payload.arguments = mutate({codec: 'avro', blob});
+  row.payload = JSON.stringify(payload);
+};
 const mutations = {
   'same original run': value => { value.selected_run_signal_pair.peer.run_id = value.run_id; },
   'peer result rounded': value => { value.selected_run_signal_pair.peer.typed_output.value.count.value = '9007199254740996'; },
@@ -34,6 +43,9 @@ const mutations = {
   'stored argument altered': value => { const first = Object.values(state(value).decoded_values.workflow_signal_records)[0]; first.arguments.typed_value = {type: 'null', value: null}; },
   'stored output rounded': value => { state(value).decoded_values.workflow_runs[value.run_id].output.typed_value.value.count.value = '9007199254740992'; },
   'stored history rewritten': value => { state(value).tables.workflow_history_events.rows[0].payload = '{}'; },
+  'stored frame extra field': value => mutateStoredFrame(value, frame => ({...frame, extra: true})),
+  'stored frame codec changed': value => mutateStoredFrame(value, frame => ({...frame, codec: 'json'})),
+  'stored frame bytes changed': value => mutateStoredFrame(value, frame => ({...frame, blob: frame.blob + 'changed'})),
   'task repaired': value => { state(value).tables.workflow_tasks.rows[0].repair_count += 1; },
   'task replay attempt': value => { state(value).tables.workflow_tasks.rows[0].attempt_count += 1; },
   'task namespace leaked': value => { state(value).tables.workflow_tasks.rows[0].namespace = 'foreign'; },

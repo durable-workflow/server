@@ -16,7 +16,10 @@ const without = (row, fields) => Object.fromEntries(Object.entries(row).filter((
 const storedPayload = value => {
   if (Array.isArray(value)) return value.map(storedPayload);
   if (value && typeof value === 'object') {
-    if (value.codec === 'avro' && typeof value.blob === 'string') return value.blob;
+    if (value.codec === 'avro' && typeof value.blob === 'string') {
+      assert.deepEqual(Object.keys(value).sort(), ['blob', 'codec'], 'only the exact Avro frame wrapper may be projected');
+      return value.blob;
+    }
     return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, storedPayload(child)]));
   }
   return value;
@@ -236,7 +239,7 @@ export function checkSelectedRunSignalPair(fixture, observation, workflowId, che
     for (const [position, row] of history.entries()) {
       const event = observations[index].events[position];
       assert.equal(row.sequence, event.sequence); assert.equal(row.event_type, event.event_type);
-      assert.deepEqual(JSON.parse(row.payload), storedPayload(event.payload), 'persisted complete event payload matches its public original');
+      assert.deepEqual(storedPayload(JSON.parse(row.payload)), storedPayload(event.payload), 'persisted complete event payload matches its public original');
     }
     const runTasks = tasks.filter(task => task.workflow_run_id === runId); assert.equal(runTasks.length, 3);
     runTasks.forEach(task => assert.equal(task.namespace, fixtures[index].namespace));
