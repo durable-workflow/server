@@ -123,6 +123,48 @@ artifacts retain their frozen installed/source/archive identities and hashes.
 The [candidate receipt](https://github.com/durable-workflow/server/pull/429#issuecomment-6136523527)
 qualifies these cases; promotion-head, review/merge and fresh-main checks remain
 separate gates. Fixture bytes and all original budgets remain unchanged.
+The subsequent promotion head's PostgreSQL 17 job fails before namespace
+execution in the forced setup-loss regression. Its proxy arrival journal is
+visible before the held-request server callback necessarily runs; the test had
+assumed those observations were simultaneous. The
+[synchronization correction](https://github.com/durable-workflow/server/pull/429#issuecomment-6137161279)
+waits for both observations before forced loss, preserving the original
+10-second observation and 15-second test ceilings and every retained-stage,
+request, deadline, credential and absent-response assertion. A controlled
+250-ms forwarding delay reproduces the prior assertion failure and passes the
+corrected guard; three ordinary locked-SDK runs pass all 49 selected tests
+without skips. This changes only the test barrier, with no recorder, native
+runtime, fixture, tuple or retry change. The failed original remains failed;
+the new exact-head and fresh-main matrix are still required.
+
+The [next proposed boundary](https://github.com/durable-workflow/server/issues/325#issuecomment-6136891726)
+is run-targeted signals. One
+[published PHP/PHP reference pair](https://github.com/durable-workflow/server/issues/325#issuecomment-6137058011)
+preserves two original completions, six cold authors, 127 wire exchanges and
+zero task repairs. Accepted selected-current-run calls retain instance-scoped
+commands; unknown, invalid and inactive signals persist rejected commands and
+advance sequences without workflow history. Wrong-namespace and mismatched-run
+guards mutate neither original run. A separate shared profile must check these
+relationships, not just HTTP statuses. Six supported PHP/Rust client by
+PHP/Python/Rust author directions, canonical embedded behavior and native/all
+database qualification remain pending; Python 2.5.4 has no run-targeted signal
+client method and remains an ordinary author in applicable directions.
+
+[Workflow 2.5.13](https://github.com/durable-workflow/workflow/issues/744#issuecomment-6137098532)
+is a qualified published marker-bound correction at `19ba333a6fcae3447d35e499d8e1fb4969b96e48`.
+The unchanged Server image still bundles 2.5.12; its dependency/rebuild and
+consumer follow-through belong to the PHP maintainer. Any corrected shared
+marker profile uses a separately qualified exact cohort, preserving frozen
+marker/range histories and failures. The
+[Rust SDK #80 coordination](https://github.com/durable-workflow/server/issues/325#issuecomment-6137088853)
+requires the SDK owner's qualified published author tuple after the pending
+compatible 3.5.2 release: repeated `get_version` in `[-3,7]` with one decision
+through a pending activity/cold replacement, version-1 deprecated aliases with
+valid differing bounds, and a second range-repair author for existing pending
+activity/timer-winner checkpoints. No shared adapter, SDK or native dependency
+adoption is implied by these package/source receipts. Implement these separate
+profiles after the #429 checkpoint and record their exact identities here.
+
 Earlier MariaDB/MySQL failure causes remain
 unestablished; the new lookup site does not retroactively establish them.
 Full namespace authorization, other families, consumers,

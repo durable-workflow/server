@@ -37,10 +37,17 @@ test('forced namespace setup loss preserves its unanswered request and stage', {
   const stop = () => { try { process.kill(-child.pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; } };
   try {
     const deadline = Date.now() + 10000;
+    const originalRequestArrived = () => requests.some(request => request.method === 'GET'
+      && request.path === '/api/namespaces/parity-signals-left');
+    // The proxy journals after enqueueing delivery. Wait for the receiver
+    // as well before forcing loss; journal visibility alone is not arrival.
     while ((!existsSync(base + '-arrivals.jsonl') || readFileSync(base + '-arrivals.jsonl').length === 0)
-      && !exited && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+      || !originalRequestArrived()) {
+      if (exited || Date.now() >= deadline) break;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
     assert.equal(exited, false, output);
-    assert(requests.some(request => request.method === 'GET' && request.path === '/api/namespaces/parity-signals-left'), output);
+    assert(originalRequestArrived(), output);
     stop(); await exit;
     const progress = JSON.parse(readFileSync(base + '-progress.json'));
     assert.equal(progress.stage, 'namespace_describe');
