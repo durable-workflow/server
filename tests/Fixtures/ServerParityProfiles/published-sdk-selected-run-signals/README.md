@@ -12,6 +12,11 @@ real HTTP phase sidecars and read-only original-run database snapshots. The
 reader checks commands, signals, counters, history, neighboring state and task
 fences rather than relying on response status alone.
 
-Reference, reader regression, native implementation and all-six exact candidate
-and fresh-main qualification are pending. This profile is explicitly selected;
+The [isolated reference](https://github.com/durable-workflow/server/pull/434#issuecomment-6138791924)
+passes six supported HTTP directions and canonical embedded counterparts on
+SQLite: 24 original runs, 116 full HTTP sidecars and 588 byte-checked exchanges.
+All 300 real-record corruption guards pass. PHP/Python-author required-argument
+refusal and Rust's explicit optional-variadic limitation are recorded separately.
+Native implementation, profile integration and all-six exact candidate/fresh-main
+qualification remain pending. This profile is explicitly selected;
 it does not enlarge the default qualified corpus or relax frozen evidence.
