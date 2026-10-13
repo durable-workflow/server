@@ -57,11 +57,13 @@ for family in "${families[@]}"; do
     fixtures+=(--fixture "$path")
   done
   status=0
-  docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
+  recorder="$RESOURCE_SCOPE-corrected-$target-$family-recorder"
+  docker run --name "$recorder" --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
     --network "$RESOURCE_SCOPE" --entrypoint node "${shared[@]}" "$image" \
     scripts/conformance/server-parity.mjs record --mode http --url "$url" --target "$target" \
     --prefix "$prefix" --artifacts "$artifacts" "${fixtures[@]}" \
     --output "/evidence/$target/$family-record.json" || status=$?
+  docker inspect --format '{{json .State}}' "$recorder" > "$evidence/$target/$family-recorder-state.json"
   printf '%s\n' "$status" > "$evidence/$target/$family-status.txt"
   if test "$status" != 0; then failed=1; fi
 done

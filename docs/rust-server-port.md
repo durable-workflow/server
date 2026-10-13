@@ -75,6 +75,32 @@ Completed local bulk recordings and archives have been deleted; code, fixtures
 and readable GitHub outcomes remain. Earlier local retention promises no longer
 apply. New scratch is removed after its immediate inspection.
 
+The expanded `718ea3608` run `38469976743` passes both PostgreSQL jobs.
+SQLite passes the published PHP eight portable, two clock and four activity
+expiry cases, then fails native discovery because the new stage addressed the
+process intentionally killed by the preceding recovery test. The replacement
+process is running and the prospective runner now addresses it. MySQL 8.0 and
+MariaDB exit their PHP recorder with 137 while writing incomplete JSON after
+the final case snapshots complete. The recorder was automatically removed, so
+its OOM state is unavailable. Their database and PHP service states are healthy;
+later pressure controls pass. No product or historical failure cause is inferred.
+MySQL 8.4 remains pending. Originals keep their recorded dispositions.
+
+The recorder now writes one case at a time to avoid creating another complete
+serialization of all retained HTTP bytes. A bounded 48 MiB heap control preserves
+32 MiB of request bodies, typed int64, null and Unicode, and failed/empty records.
+The corrected HTTP profile retains the recorder's exit/OOM state before removing
+it. These are runner changes, with unchanged native bytes, fixture semantics,
+actor resource limits and original deadlines. Fresh matched qualification is
+required before promotion. Immediate artifact inspections are disposable.
+
+The first incremental-writer revision `3a9370f7a` fails recording with an undefined
+optional database-resource field. Unlike whole-object JSON serialization, its
+first implementation tried to pass that value to the file API. The correction
+omits undefined optional properties and preserves explicit null, with actual
+empty, passing and failed record shapes in the encoder checks. These failed
+originals are not product regressions or successful matched comparisons.
+
 General's PHP-only dependency update #437 is merged at `158f4c6f2` and included
 in the current working branch. It leaves the pinned corrected and historical
 cohorts unchanged. The combined tree requires fresh candidate qualification

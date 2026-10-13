@@ -8,6 +8,17 @@ state=${DW_PARITY_CORRECTED_STATE:-parity-corrected-state}
 evidence=${DW_PARITY_CORRECTED_EVIDENCE:-parity-evidence/corrected-marker}
 image=$(jq -r '.server.images["linux/amd64"]' "$artifacts")
 mkdir -p "$evidence"
+for target in php rust; do
+  for family in markers range clock portable deadlines; do
+    recorder="$RESOURCE_SCOPE-corrected-$target-$family-recorder"
+    if docker inspect "$recorder" >/dev/null 2>&1; then
+      mkdir -p "$evidence/$target"
+      docker inspect --format '{{json .State}}' "$recorder" > "$evidence/$target/$family-recorder-state.json"
+      docker stop --time 5 "$recorder" >/dev/null 2>&1 || true
+      docker rm "$recorder" >/dev/null 2>&1 || true
+    fi
+  done
+done
 docker stop --time 5 "$RESOURCE_SCOPE-corrected-php" "$RESOURCE_SCOPE-corrected-maintenance" >/dev/null 2>&1 || true
 for role in php maintenance; do
   if docker inspect "$RESOURCE_SCOPE-corrected-$role" >/dev/null 2>&1; then

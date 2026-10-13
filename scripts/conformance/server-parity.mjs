@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import {readFileSync, writeFileSync, readdirSync} from 'node:fs';
+import {readFileSync, readdirSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {basename, dirname, resolve} from 'node:path';
@@ -14,6 +14,7 @@ import {checkSdkChildDirectionArtifacts, checkSdkChildDirectionPackages} from '.
 import {checkSdkTimerAuthorArtifacts, checkSdkTimerAuthorPackages} from './server-parity/sdk-timer-author-contract.mjs';
 import {checkSdkSignalDirectionArtifacts, checkSdkSignalDirectionPackages} from './server-parity/sdk-signal-direction-contract.mjs';
 import {captureProbe} from './server-parity/probe-capture.mjs';
+import {writeRecord} from './server-parity/record-file.mjs';
 import {checkCorrectedMarkerArtifacts, checkCorrectedMarkerPackages} from './server-parity/corrected-marker-contract.mjs';
 import {checkCorrectedRangeArtifacts, checkCorrectedRangePackages} from './server-parity/corrected-range-contract.mjs';
 import {checkActivityDeadlinePackages} from './server-parity/activity-deadline-contract.mjs';
@@ -129,7 +130,7 @@ try {
         record.cases.push(item);
         record.outcome = item.outcome;
         record.finished_at = new Date().toISOString();
-        writeFileSync(values.output, JSON.stringify(record, null, 2) + '\n');
+        writeRecord(values.output, record);
         throw error;
       }
       record.cases.push(item);
@@ -137,7 +138,7 @@ try {
     if (record.cases.length === 0) throw new Error('No fixtures found');
     record.outcome = 'pass';
     record.finished_at = new Date().toISOString();
-    writeFileSync(values.output, JSON.stringify(record, null, 2) + '\n');
+    writeRecord(values.output, record);
     console.log(JSON.stringify({outcome: record.outcome, target: record.target, cases: record.cases.map(c => c.fixture_id)}));
   } else {
     throw new Error('Expected record or compare; see --help');
