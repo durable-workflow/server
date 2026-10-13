@@ -234,7 +234,8 @@ $old = $receipt['activity'];
 // old worker to imitate process-loss recovery.
 $waitUntil = max(strtotime($old['lease_expires_at']), strtotime($receipt['child']['task']['lease_expires_at']),
     strtotime($receipt['cancelled']['pending_timer']['history'][2]['payload']['fire_at'])) + 1;
-assertRestart($waitUntil - time() < 40, 'Unexpected unbounded lease wait.');
+$restartContract = json_decode(file_get_contents(__DIR__.'/../../../tests/Fixtures/ServerParityProfiles/current-activity-restart.json'), true, flags: JSON_THROW_ON_ERROR);
+assertRestart($waitUntil - time() < $restartContract['maximum_original_lease_wait_seconds'], 'Unexpected unbounded lease wait.');
 while (time() < $waitUntil) {
     usleep(100_000);
 }

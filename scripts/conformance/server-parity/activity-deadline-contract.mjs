@@ -91,7 +91,15 @@ export function checkActivityDeadlines(fixture, observation, workflowId) {
       assert.equal(step.status_after_expiry.can_continue,false);
       assert.equal(step.status_after_expiry.heartbeat_recorded,false);
       assert.deepEqual(step.late_outcomes.map(receipt=>receipt.id),['complete','fail','heartbeat']);
-      for(const receipt of step.late_outcomes)assert.equal(receipt.status,409,'Elapsed authority never commits a late outcome');
+      for(const receipt of step.late_outcomes.slice(0,2))assert.equal(receipt.status,409,'Elapsed authority never commits a late result/failure');
+      const heartbeat = step.late_outcomes[2];
+      assert([200,409].includes(heartbeat.status),'Structured heartbeat refusal or fenced conflict');
+      if(heartbeat.status===200) {
+        assert.equal(heartbeat.response.can_continue,false);
+        assert.equal(heartbeat.response.heartbeat_recorded,false);
+        assert.equal(heartbeat.response.lease_expires_at,step.status_after_expiry.lease_expires_at,'Refused heartbeat never renews lease');
+        assert.equal(heartbeat.response.last_heartbeat_at,step.status_after_expiry.last_heartbeat_at,'Refused heartbeat never records progress');
+      }
       const start = events.find(event=>event.event_type==='ActivityStarted');
       assert.equal(start.payload.activity_attempt_id,activity.activity_attempt_id);
       assert.equal(terminal.activity_attempt_id,activity.activity_attempt_id);
@@ -107,7 +115,7 @@ export function checkActivityDeadlines(fixture, observation, workflowId) {
     if(claimed)for(const kind of ['complete','fail','heartbeat']) {
       const outcomes = wires.filter(wire=>wire.method==='POST'&&wire.path===`/api/worker/activity-tasks/${step.activity_task.task_id}/${kind}`);
       assert.equal(outcomes.length,1,'One actual late request per outcome');
-      assert.equal(outcomes[0].status,409);
+      assert.equal(outcomes[0].status,step.late_outcomes.find(receipt=>receipt.id===kind).status);
       assert.equal(outcomes[0].request.activity_attempt_id,step.activity_task.activity_attempt_id);
       assert.equal(outcomes[0].request.lease_owner,step.activity_task.lease_owner);
     }
