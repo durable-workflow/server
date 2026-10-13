@@ -156,8 +156,7 @@ class RuntimePayloadCompletionUploadsTest extends TestCase
         $context['attempt'] = 1;
         $context['slot'] = ['commands', 0, 'result'];
         $this->observeStoragePressure('draining');
-        $this->upload('bytes', $context)->assertStatus(409)
-            ->assertJsonPath('reason', 'external_payload_completion_lease_rejected');
+        $this->upload('bytes', $context)->assertStatus(409);
         $this->assertDatabaseCount('runtime_payload_completion_budgets', 0);
     }
 
@@ -343,7 +342,8 @@ class RuntimePayloadCompletionUploadsTest extends TestCase
 
         $this->assertDatabaseCount('runtime_payload_completion_budgets', 0);
         $this->observeStoragePressure('draining');
-        $this->upload('bytes', $context)->assertStatus(409);
+        $this->upload('bytes', $context)->assertStatus(409)
+            ->assertJsonPath('reason', 'external_payload_completion_lease_rejected');
         $this->assertDatabaseCount('runtime_payload_completion_budgets', 0);
         $this->assertDatabaseCount('runtime_external_payloads', 1);
         $this->assertSame($before, WorkflowTask::query()->findOrFail($context['task_id'])->getAttributes());
