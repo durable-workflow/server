@@ -157,6 +157,11 @@ new wiring passes fresh published PHP/embedded SQLite observations at
 readback of four originals/19 events per target, zero task repairs and unchanged
 database bytes. Native and matched all-six confirmation remain pending. The
 complete local recordings and application resources were removed after audit.
+The subsequent `360963908` reader check also passes fresh PHP/embedded
+recordings and 181 controls. It binds the published HTTP task/attempt/owner
+identities and the additional embedded run/execution identities without
+inventing fields or HTTP statuses. This adds reader qualification; it does not
+establish native or all-six acceptance.
 
 Start with exact installed published identities and a real PHP/embedded
 reference. Add separate adapters/fixtures and a strict reader using the existing
