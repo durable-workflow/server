@@ -21,9 +21,13 @@ Native's candidate deadline slice snapshots all four authored timeout fields,
 fences expired outcomes and heartbeat renewal, preserves the global deadline
 across same-execution retry, and uses PHP's ordinary 300-second activity lease.
 Local SQLite passes 85 execution and 35 unit cases, with 18 database unit cases
-explicitly ignored. The pending deadline contract still requires actual shared
-PHP/native/embedded recordings. Embedded UUID side effects, native marker/clock
-SDK recordings and new matched six-database/final/main qualification remain
+explicitly ignored. At `dbe6ff3a3`, all ten corrected native SQLite HTTP cases
+pass with normally installed actors, 194 actual-record corruption controls and
+independent SQL verification of 84 original events and 12 activities. The four
+deadline regressions separately pass MySQL 8.4. Earlier snapshot-field and
+MySQL JSON-path failures remain failed records. The pending elapsed-deadline
+contract still requires actual shared PHP/native/embedded recordings. Embedded
+UUID side effects and new matched six-database/final/main qualification remain
 pending.
 Earlier killed-author, reader-expectation and
 poll-based repair failures remain separate from fresh confirming runs.

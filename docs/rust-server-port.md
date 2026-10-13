@@ -83,9 +83,14 @@ heartbeat deadline with progress. Ordinary activity leases follow PHP's
 300-second contract. Local SQLite passes 85 execution cases and 35 unit cases,
 with 18 database tests explicitly ignored. Four deadline cases cover terminal
 expiry, full-policy retry across reopened storage, heartbeat renewal and
-committed receipt ordering. The pending deadline fixture still needs actual
-shared PHP/native/embedded recordings; these local controls do not qualify
-that cohort. Embedded UUID semantics
+committed receipt ordering. All ten corrected native SQLite HTTP marker, policy,
+range and Python clock cases now pass at `dbe6ff3a3`, with 194 actual-record
+corruption controls and independent query-only readback of all 84 events and
+12 original activities. Four authored-deadline regressions also pass on isolated
+MySQL 8.4. Earlier missing-snapshot and new MySQL JSON-path conversion failures
+remain failed; the latter is corrected without changing historical diagnoses.
+The pending elapsed-deadline fixture still needs actual shared PHP/native/embedded
+recordings; these local controls do not qualify that cohort. Embedded UUID semantics
 and new matched all-six/final/main qualification remain ahead.
 Published PHP remains the default; broader runtime
 parity, migration, matched performance and release/cutover remain unqualified.
