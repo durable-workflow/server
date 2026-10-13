@@ -51,7 +51,7 @@ for(const field of fixture.activity_deadline_authority.fields){
     'expired heartbeat recorded':value=>{if(original.mode==='http')step(value).late_outcomes[2].status=200;step(value).late_outcomes[2].response.heartbeat_recorded=true;},
     'expired status grants authority':value=>{step(value).status_after_expiry.can_continue=true;},
     'wrong original attempt':value=>{step(value).activity_task.activity_attempt_id='other';},
-    'status from another run':value=>{step(value).status_after_expiry.workflow_run_id='other';},
+    'status from another task':value=>{if(original.mode==='http')step(value).status_after_expiry.task_id='other';else step(value).status_after_expiry.workflow_task_id='other';},
     'status from another attempt':value=>{step(value).status_after_expiry.activity_attempt_id='other';},
     'status from another owner':value=>{step(value).status_before_expiry.lease_owner='other';},
     'missing actual late completion':value=>{value.activity_deadline_authority.requests=value.activity_deadline_authority.requests.filter(wire=>wire.path!==`/api/worker/activity-tasks/${step(value).activity_task.task_id}/complete`);},
@@ -65,6 +65,7 @@ for(const field of fixture.activity_deadline_authority.fields){
       'wrong original parent row':value=>{step(value).after_expiry.tasks.find(task=>task.id===step(value).parent_delivery.task_id).workflow_run_id='other';},
     });
     if(field!=='schedule_to_start_timeout')controls['fabricated HTTP library outcome']=value=>{step(value).late_outcomes[0].status=409;};
+    if(field!=='schedule_to_start_timeout')controls['status from another run']=value=>{step(value).status_after_expiry.workflow_run_id='other';};
   }
   for(const[name,mutate]of Object.entries(controls)){const value=structuredClone(original);mutate(value);assert.throws(()=>read(value),undefined,`${field}: ${name}`);}
   results.push({field,actual_record:true,mutation_controls:Object.keys(controls)});

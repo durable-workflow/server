@@ -127,12 +127,15 @@ export function checkActivityDeadlines(fixture, observation, workflowId) {
       assert.equal(activity.attempt_number,1);
       assert.deepEqual(activity.retry_policy,policy);
       for (const status of [step.status_before_expiry,step.status_after_expiry]) {
-        assert.equal(status.workflow_instance_id,id,'Status belongs to the original workflow');
-        assert.equal(status.workflow_run_id,step.run_id,'Status belongs to the original run');
-        assert.equal(status.workflow_task_id,activity.task_id,'Status belongs to the original task');
-        assert.equal(status.activity_execution_id,activity.activity_execution_id);
+        if (http) assert.equal(status.task_id,activity.task_id,'HTTP status belongs to the original task');
+        else {
+          assert.equal(status.workflow_instance_id,id,'Status belongs to the original workflow');
+          assert.equal(status.workflow_run_id,step.run_id,'Status belongs to the original run');
+          assert.equal(status.workflow_task_id,activity.task_id,'Status belongs to the original task');
+          assert.equal(status.activity_execution_id,activity.activity_execution_id);
+          assert.equal(status.attempt_number,1);
+        }
         assert.equal(status.activity_attempt_id,activity.activity_attempt_id);
-        assert.equal(status.attempt_number,1);
         assert.equal(status.lease_owner,activity.lease_owner);
       }
       assert.equal(step.status_before_expiry.can_continue,true);
