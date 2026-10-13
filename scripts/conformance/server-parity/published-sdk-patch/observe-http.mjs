@@ -10,6 +10,7 @@ if (gateMode !== undefined && (gateMode !== '--workflow-poll-after-start' || !ga
 const upstream = new URL(target);
 if (upstream.protocol !== 'http:') throw new Error('Isolated fixture target must use HTTP');
 const arrivalJournal = process.env.DW_PARITY_HTTP_REQUEST_ARRIVALS;
+const captureNamespace = process.env.DW_PARITY_HTTP_CAPTURE_NAMESPACE === '1';
 if (arrivalJournal !== undefined && (!arrivalJournal || observationMode !== '--forwarding-state')) {
   throw new Error('Request-arrival capture requires a journal and forwarding-state mode');
 }
@@ -27,6 +28,7 @@ const server = http.createServer((request, response) => {
     if (recorded) return;
     recorded = true;
     appendFileSync(journal, JSON.stringify({method: request.method, path: new URL(request.url, upstream).pathname,
+      ...(captureNamespace ? {namespace: request.headers['x-namespace'] ?? null} : {}),
       request_body: Buffer.concat(chunks).toString('utf8'), status: 0, response_encoding: 'identity',
       response_retry_after: null, response_bytes_base64: '', response_body: '', client_cancelled: false,
       transport_error: null, ...(observationMode === '--forwarding-state' ? {

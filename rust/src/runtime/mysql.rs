@@ -280,6 +280,35 @@ async fn preflight(connection: &mut MySqlConnection, flavor: Flavor) -> Result<(
 pub struct MySqlStorage {
     pool: MySqlPool,
 }
+
+fn runtime_pool_options() -> MySqlPoolOptions {
+    MySqlPoolOptions::new()
+        .max_connections(4)
+        .acquire_timeout(Duration::from_secs(5))
+        .after_connect(|connection, _| {
+            Box::pin(async move {
+                sqlx::query("SET lock_wait_timeout=5,innodb_lock_wait_timeout=5")
+                    .execute(connection)
+                    .await?;
+                Ok(())
+            })
+        })
+        .after_release(|connection, _| {
+            Box::pin(async move {
+                // A cancelled BEGIN can leave a physical transaction open
+                // before SQLx increments its logical transaction depth. Drain
+                // pending replies and reset the session before pool reuse.
+                // SQLx closes the connection if this hook fails.
+                tokio::time::timeout(Duration::from_secs(5), connection.execute("ROLLBACK"))
+                    .await
+                    .map_err(|_| {
+                        sqlx::Error::Protocol("native MySQL pool reset deadline exceeded".into())
+                    })??;
+                Ok(true)
+            })
+        })
+}
+
 impl MySqlStorage {
     pub(super) fn into_pool(self) -> MySqlPool {
         self.pool
@@ -332,19 +361,7 @@ impl MySqlStorage {
         // Named locks are session scoped, including on errors/process death.
         connection.close().await?;
         result?;
-        let pool = MySqlPoolOptions::new()
-            .max_connections(4)
-            .acquire_timeout(Duration::from_secs(5))
-            .after_connect(|connection, _| {
-                Box::pin(async move {
-                    sqlx::query("SET lock_wait_timeout=5,innodb_lock_wait_timeout=5")
-                        .execute(connection)
-                        .await?;
-                    Ok(())
-                })
-            })
-            .connect_with(connect_options)
-            .await?;
+        let pool = runtime_pool_options().connect_with(connect_options).await?;
         Ok(Self { pool })
     }
     pub async fn check(connect_options: MySqlConnectOptions) -> Result<()> {
@@ -365,6 +382,10 @@ impl MySqlStorage {
         self.pool.close().await;
     }
 }
+
+#[cfg(test)]
+#[path = "mysql_pool_tests.rs"]
+mod pool_tests;
 
 #[cfg(test)]
 mod tests {

@@ -34,6 +34,13 @@ case "${3:-activity}" in
     fixture_pattern=signal-sdk-*.json
     reader_tests=(tests/Unit/ServerParitySdkSignalDirectionContractTest.mjs)
     ;;
+  namespace-signal)
+    tag=sdk-namespace-signals
+    prefix=sdk-namespace-signals-v1
+    cohort=published-sdk-namespace-signals
+    fixture_pattern=signal-namespace-sdk-*.json
+    reader_tests=(tests/Unit/ServerParitySdkNamespaceSignalContractTest.mjs tests/Unit/ServerParitySdkNamespaceControlRetentionTest.mjs)
+    ;;
   query)
     tag=sdk-queries
     prefix=sdk-queries-v1
@@ -55,7 +62,7 @@ case "${3:-activity}" in
     fixture_pattern=update-failure-sdk-*.json
     reader_tests=(tests/Unit/ServerParitySdkUpdateDirectionContractTest.mjs)
     ;;
-  *) echo 'Choose activity, child, timer, signal, query, update or update-failure SDK directions' >&2; exit 2 ;;
+  *) echo 'Choose activity, child, timer, signal, namespace-signal, query, update or update-failure SDK directions' >&2; exit 2 ;;
 esac
 profile="$fixture_base/$cohort"
 manifest="$profile/artifacts.json"

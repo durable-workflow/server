@@ -302,8 +302,8 @@ where
             ));
         }
         let mut tx = self.begin().await?;
-        let instance = Self::query("SELECT current_run_id,last_message_sequence FROM workflow_instances WHERE id=$1 AND namespace='default'")
-            .bind(workflow_id).fetch_optional(&mut *tx).await?.ok_or_else(|| refuse(StatusCode::NOT_FOUND, "instance_not_found"))?;
+        let instance = Self::query("SELECT current_run_id,last_message_sequence FROM workflow_instances WHERE id=$1 AND namespace=$2")
+            .bind(workflow_id).bind(self.namespace.as_ref()).fetch_optional(&mut *tx).await?.ok_or_else(|| refuse(StatusCode::NOT_FOUND, "instance_not_found"))?;
         let current_run = DB::string(&instance, "current_run_id")?;
         if run_id.is_some_and(|selected| selected != current_run) {
             return Err(refuse(
@@ -1199,6 +1199,7 @@ where
                     text(command, "type")?,
                     "complete_workflow" | "schedule_activity"
                 )
+                && !(text(command, "type")? == "open_condition_wait" && commands.len() == 1)
             {
                 return Err(refuse(
                     StatusCode::UNPROCESSABLE_ENTITY,
