@@ -36,7 +36,16 @@ export function checkCorrectedMarkerArtifacts(fixture, artifacts) {
   }
   const spec = fixture.corrected_markers;
   assert.equal(spec.phase_budget_seconds, 30);
-  assert.equal(spec.overall_budget_seconds, spec.replay_refusal ? 120 : 90);
+  assert.equal(spec.overall_budget_seconds, spec.python_clock ? 150 : spec.replay_refusal ? 120 : 90);
+  if (spec.python_clock) {
+    assert.equal(spec.python_clock.current_sdk, '2.5.13');
+    assert.deepEqual(spec.python_clock.phase_order, ['original', 'activity', 'clock_wait', 'second_activity', 'replacement']);
+    assert.equal(spec.python_clock.activity_count, 2);
+    assert.equal(artifacts.published_sdk_artifacts.python.version, spec.python_clock.current_sdk);
+    assert.match(artifacts.published_sdk_artifacts.python.source_commit, commit);
+    assert.match(artifacts.published_sdk_artifacts.python.archive_sha256, sha);
+    for (const hash of Object.values(artifacts.published_sdk_artifacts.python.loaded_sources)) assert.match(hash, sha);
+  }
   if (spec.replay_refusal) assert.deepEqual(spec.replay_refusal, {
     kind: 'retry_policy', changed_last_interval: 121,
     failure_reason: 'activity_retry_policy_mismatch', failure_sequence: 2,
@@ -75,10 +84,12 @@ export function checkCorrectedMarkerPackages(fixture, observation, artifacts) {
     return;
   }
   for (const [name, phase] of Object.entries(observation.corrected_markers.phases)) {
-    const producer = name === 'original' ? fixture.corrected_markers.producer : 'rust';
+    const producer = name === 'original' ? fixture.corrected_markers.producer
+      : fixture.corrected_markers.python_clock ? (['activity', 'second_activity'].includes(name) ? 'php' : 'python_current') : 'rust';
     const expected = producer === 'php' ? artifacts.sdk_php : producer === 'python'
-      ? artifacts.historical_python_producer.version : `durable-workflow-rust/${artifacts.sdk_rust}`;
+      ? artifacts.historical_python_producer.version : producer === 'python_current' ? artifacts.sdk_python : `durable-workflow-rust/${artifacts.sdk_rust}`;
     assert.equal(phase.actor.sdk_version, expected);
+    if (producer === 'python_current') assert.deepEqual(phase.actor.loaded_sources, artifacts.published_sdk_artifacts.python.loaded_sources);
   }
 }
 

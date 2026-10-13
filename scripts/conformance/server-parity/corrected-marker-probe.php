@@ -98,20 +98,23 @@ function correctedMarkerHttpObservation(array $fixture, array $options): array
             $options['workflow-id'].'-workflow', [$fixture['input']],
             executionTimeoutSeconds: 1200, runTimeoutSeconds: 1200);
         $runId = $handle->selectedRunId;
-        $order = isset($spec['replay_refusal']) ? ['original', 'activity', 'incompatible', 'replacement'] : ['original', 'activity', 'replacement'];
+        $order = $spec['python_clock']['phase_order'] ?? (isset($spec['replay_refusal']) ? ['original', 'activity', 'incompatible', 'replacement'] : ['original', 'activity', 'replacement']);
         foreach ($order as $phase) {
             $repair = $phase === 'replacement' && isset($spec['replay_refusal'])
                 ? $client->repairWorkflow($options['workflow-id'], $runId) : null;
-            $language = $phase === 'original' ? $spec['producer'] : 'rust';
+            $language = $phase === 'original' ? $spec['producer'] : (isset($spec['python_clock'])
+                ? (in_array($phase, ['activity', 'second_activity'], true) ? 'php' : 'python_current') : 'rust');
             $command = match ($language) {
                 'php' => [PHP_BINARY, __DIR__.'/corrected-markers/php.php'],
                 'rust' => [getenv('DW_PARITY_CORRECTED_RUST_WORKER') ?: '/sdk-adapters/rust-worker'],
                 'python' => ['python3', __DIR__.'/corrected-markers/python250.py'],
+                'python_current' => ['env', 'PYTHONPATH='.(getenv('DW_PARITY_CORRECTED_PYTHON_CURRENT_ROOT') ?: '/sdk-python-current'),
+                    'python3', __DIR__.'/corrected-markers/python-current.py'],
                 default => throw new InvalidArgumentException('Unsupported producer language'),
             };
-            array_push($command, $url, $phase === 'activity' ? 'activity' : 'workflow',
+            array_push($command, $url, in_array($phase, ['activity', 'second_activity'], true) ? 'activity' : 'workflow',
                 $options['workflow-id'], $runId, $spec['case'],
-                $phase === 'replacement' ? 'wider' : ($phase === 'incompatible' ? 'policy-refusal' : 'original'),
+                $phase === 'replacement' ? 'wider' : ($phase === 'clock_wait' ? 'clock-wait' : ($phase === 'incompatible' ? 'policy-refusal' : 'original')),
                 $phase === 'incompatible' ? 'different' : $spec['retry_policy'],
                 json_encode($fixture['input'], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE));
             $actorResult = correctedMarkerPhase($command, $directory, $name, $phase,

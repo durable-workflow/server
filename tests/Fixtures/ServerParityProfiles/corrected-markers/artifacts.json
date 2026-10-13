@@ -59,7 +59,12 @@
     "python": {
       "version": "2.5.13",
       "source_commit": "97119f337e8db123cee5301a36797f6f49f71d7a",
-      "archive_sha256": "8478bd7e5910d2a6afb963b70d42b079d4909a0d0e88cbf1e534370fa86cdcc2"
+      "archive_sha256": "8478bd7e5910d2a6afb963b70d42b079d4909a0d0e88cbf1e534370fa86cdcc2",
+      "loaded_sources": {
+        "workflow.py": "c60db124c13a16602fa606150934f5d96f4a44b416f27412fb5ca24aa809c572",
+        "worker.py": "0c240f2d6dc5276427aa5de2b25ad97d8793ce3a118f2dfa36856f74f1c5a0bf",
+        "client.py": "b7c588f3b90099904db8a160cf0f70bbe0fec84a3f597eef8b1e35aa4d1cdc1a"
+      }
     },
     "rust": {
       "version": "3.5.4",

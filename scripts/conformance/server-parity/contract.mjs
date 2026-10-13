@@ -25,6 +25,7 @@ import {checkNamespaceSignalPair} from './sdk-namespace-signal-contract.mjs';
 import {checkSelectedRunSignalPair} from './sdk-selected-run-signal-contract.mjs';
 import {checkCorrectedMarkers, checkCorrectedMarkerPackages} from './corrected-marker-contract.mjs';
 import {checkCorrectedRange, checkCorrectedRangePackages} from './corrected-range-contract.mjs';
+import {checkCorrectedClock} from './corrected-clock-contract.mjs';
 
 export function instantNanoseconds(value) {
   const shape = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.(\d{1,9}))?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
@@ -40,6 +41,7 @@ export function instantNanoseconds(value) {
 // remains in the recording, including implementation metadata and timestamps.
 export function checkObservation(fixture, observation, workflowId) {
   if (fixture.corrected_range) return checkCorrectedRange(fixture, observation, workflowId, instantNanoseconds);
+  if (fixture.corrected_markers?.python_clock) return checkCorrectedClock(fixture, observation, workflowId);
   if (fixture.corrected_markers) return checkCorrectedMarkers(fixture, observation, workflowId);
   if (fixture.selected_run_signal_pair) return checkSelectedRunSignalPair(fixture, observation, workflowId, checkObservation);
   if (fixture.namespace_signal_pair) return checkNamespaceSignalPair(fixture, observation, workflowId, checkObservation);

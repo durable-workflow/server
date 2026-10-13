@@ -44,8 +44,17 @@ const python = report.install.find(item => item.metadata.name === 'durable-workf
 assert.equal(python.metadata.version, artifacts.historical_python_producer.version);
 assert.equal(python.download_info.archive_info.hashes.sha256, artifacts.historical_python_producer.archive_sha256);
 assert.equal(python.is_direct, false);
+const currentReport = JSON.parse(readFileSync(resolve(directory, 'python-current-install-report.json')));
+const current = currentReport.install.find(item => item.metadata.name === 'durable-workflow');
+assert.equal(current.metadata.version, artifacts.sdk_python);
+assert.equal(current.download_info.archive_info.hashes.sha256, artifacts.published_sdk_artifacts.python.archive_sha256);
+assert.equal(current.is_direct, false);
+for (const [path, expected] of Object.entries(artifacts.published_sdk_artifacts.python.loaded_sources)) {
+  assert.equal(sha(resolve(directory, 'python-current/durable_workflow', path)), expected);
+}
 writeFileSync(resolve(directory, 'identity.json'), JSON.stringify({outcome: 'pass',
   php: artifacts.published_sdk_artifacts.php, rust: artifacts.published_sdk_artifacts.rust,
   historical_python: artifacts.historical_python_producer,
+  current_python: artifacts.published_sdk_artifacts.python,
   historical_php_range: artifacts.historical_php_range_producer,
   binary_sha256: sha(resolve(directory, 'bin/rust-worker'))}, null, 2)+'\n');
