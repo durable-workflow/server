@@ -38,6 +38,22 @@ duplicate producer uses the historical package; other originals and every cold
 reader use the current package. Public clocks must match original marker
 positions and cached reuse, and original task/run relationships remain exact.
 
+The separately named `artifacts-workflow-2.5.16.json` selects the normally
+resolved policy correction in `embedded-workflow-2.5.16/`. Only Workflow changes
+in that complete Composer lock. The earlier 2.5.14 manifest, locks and failed
+policy recording remain unchanged; the published Server reference still carries
+its own declared 2.5.14 package. Set `DW_PARITY_CORRECTED_ARTIFACTS` to the new
+manifest for this explicit embedded cohort, with separate
+`DW_PARITY_CORRECTED_STATE`, `DW_PARITY_CORRECTED_EVIDENCE` and
+`DW_PARITY_CORRECTED_PREFIX` values. The embedded launcher accepts `markers`
+(the original five positive cases), `policy` (strict full-policy refusal and
+same-run restoration), or `range` (both original-definition repairs) as its
+second argument. It retains the completed SQLite database before retiring the
+runtime. The new lock and manifest are prepared inputs; actual installation,
+replay and independent readback qualify their use. Embedded actors execute PHP
+backend handlers; they do not claim a Rust SDK consumer or a real queue-worker
+drain test.
+
 The additional Rust modes `range_completed` and `range_pending` register the
 original `parity.v1.range_repair` and `parity.v1.range_pending_repair` types and
 queues. Their retry-policy argument is the actual original snapshot JSON. They
@@ -75,11 +91,13 @@ before activities resume; the unfenced-kill case above stays separate. Exact
 raw marker/activity clocks, source hashes, prefixes, typed values and UUID
 prefixes pass the PHP reference, with 42 actual-record controls. Initial wrong
 clock-anchor and delivery-mode expectations and actual poll-based repair
-records remain failed originals. Embedded UUID side effects and native clock
-qualification remain ahead.
+records remain failed originals. Native SQLite now passes all ten corrected
+HTTP cases at `dbe6ff3a3`, including both clock cases, with 194 actual-record
+controls and independent SQL readback. Embedded UUID side effects remain ahead.
 
 The separate published embedded policy-refusal original remains failed; its
-coordinated package correction is Workflow #776. Native integration and the
-new profile's six-database/final/main matrix remain
+coordinated package correction is Workflow #776, now normally published as
+2.5.16 and declared in the separate prepared manifest. Actual embedded adoption
+and the new profile's six-database/final/main matrix remain
 pending. The first killed-author reader failures remain separate from fresh
 confirming runs. Frozen actors and earlier fixture definitions stay unchanged.

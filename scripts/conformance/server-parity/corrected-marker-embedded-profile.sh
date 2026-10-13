@@ -2,12 +2,21 @@
 # Separately installed current and genuine historical embedded actors.
 set -euo pipefail
 backend="$1"
+family=${2:-markers}
+case "$family" in
+  markers) ids=(fresh-numeric fresh-zero deprecation-first genuine-version-one php-full-retry) ;;
+  policy) ids=(php-full-retry-refusal) ;;
+  range) ids=(rust-range-completed rust-range-timer-pending) ;;
+  *) exit 2 ;;
+esac
 test -n "$RESOURCE_SCOPE"
 profile=tests/Fixtures/ServerParityProfiles/corrected-markers
+artifacts=${DW_PARITY_CORRECTED_ARTIFACTS:-$profile/artifacts.json}
 adapters=${DW_PARITY_CORRECTED_ADAPTERS:-corrected-marker-adapters}
-image=$(jq -r '.server.images["linux/amd64"]' "$profile/artifacts.json")
-state=parity-corrected-state
-evidence=parity-evidence/corrected-marker
+image=$(jq -r '.server.images["linux/amd64"]' "$artifacts")
+state=${DW_PARITY_CORRECTED_STATE:-parity-corrected-state}
+evidence=${DW_PARITY_CORRECTED_EVIDENCE:-parity-evidence/corrected-marker}
+prefix=${DW_PARITY_CORRECTED_PREFIX:-corrected-markers-v1}
 mkdir -p "$state"/{current,original} "$evidence/embedded"
 engine=(-e DW_MODE=embedded -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e LOG_CHANNEL=stderr
   -e DW_SERVER_KEY=base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=)
@@ -30,15 +39,15 @@ case "$backend" in
 esac
 for role in original current; do
   if test "$role" = original; then
-    inputs=embedded-original
-    lock=$(jq -r '.embedded_original.composer_lock_sha256' "$profile/artifacts.json")
+    inputs="$profile/embedded-original"
+    lock=$(jq -r '.embedded_original.composer_lock_sha256' "$artifacts")
   else
-    inputs=embedded
-    lock=$(jq -r '.embedded_composer_lock_sha256' "$profile/artifacts.json")
+    inputs=$(jq -r --arg fallback "$profile/embedded" '.embedded_current_profile // $fallback' "$artifacts")
+    lock=$(jq -r '.embedded_composer_lock_sha256' "$artifacts")
   fi
   docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --entrypoint sh \
     -v "$PWD:/source:ro" -v "$PWD/$state/$role:/runtime" "${engine[@]}" \
-    -w /runtime -e COMPOSER_HOME=/tmp/composer -e DW_PARITY_EMBEDDED_PROFILE="/source/$profile/$inputs" \
+    -w /runtime -e COMPOSER_HOME=/tmp/composer -e DW_PARITY_EMBEDDED_PROFILE="/source/$inputs" \
     -e DW_PARITY_EMBEDDED_LOCK_SHA256="$lock" "$image" \
     /source/scripts/conformance/server-parity/corrected-marker-embedded-install.sh \
     > "$evidence/embedded-$role-install.txt" 2>&1
@@ -50,16 +59,16 @@ docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
   --network "$RESOURCE_SCOPE" --entrypoint php "${runtime[@]}" -w /original-runtime "$image" \
   artisan server:bootstrap --force > "$evidence/embedded-bootstrap.txt" 2>&1
 fixtures=()
-for id in fresh-numeric fresh-zero deprecation-first genuine-version-one php-full-retry; do
+for id in "${ids[@]}"; do
   fixtures+=(--fixture "$profile/$id.json")
 done
 docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
-  --network "$RESOURCE_SCOPE" --entrypoint node -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" \
+  --network "$RESOURCE_SCOPE" --entrypoint node -v "$PWD:/source:ro" -v "$PWD/$evidence:/evidence" \
   -v "$PWD/$adapters/php:/sdk-php:ro" -v "$PWD/$adapters/bin:/sdk-adapters:ro" \
   -e DW_PARITY_SDK_AUTOLOAD=/sdk-php/vendor/autoload.php -e DW_PARITY_RUNNER_REVISION="$(git rev-parse HEAD)" \
   "${runtime[@]}" -w /source "$image" scripts/conformance/server-parity.mjs record \
-  --mode embedded --application-root /runtime --target embedded --prefix corrected-markers-v1 \
-  --artifacts "$profile/artifacts.json" "${fixtures[@]}" --output /evidence/corrected-marker/embedded/record.json
+  --mode embedded --application-root /runtime --target embedded --prefix "$prefix" \
+  --artifacts "$artifacts" "${fixtures[@]}" --output /evidence/embedded/record.json
 # Evidence survives any failed actor; job cleanup owns incomplete resources.
 case "$backend" in
   mysql)
@@ -68,7 +77,9 @@ case "$backend" in
   pgsql)
     docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" -e PGPASSWORD=parity-disposable-password \
       --entrypoint dropdb "$POSTGRES_IMAGE" -h parity-pg -U parity embedded_corrected_ref ;;
-  sqlite) rm -- "$state/embedded.sqlite" ;;
+  sqlite)
+    cp "$state/embedded.sqlite" "$evidence/embedded/original.sqlite"
+    rm -- "$state/embedded.sqlite" ;;
 esac
 for role in current original; do
   docker run --rm --user=1000:1000 --network=none --entrypoint sh \
