@@ -17,10 +17,14 @@ readback. Native preserves published Rust replay failures without inventing
 structured fields, repairs the original task, emits six-digit history clocks
 and keeps genuine legacy policy absence. Its 81 execution and 33 unit cases
 pass locally; 18 database unit cases are explicitly ignored there.
-Embedded UUID side effects, native marker/clock admission and new matched
-six-database/final/main qualification remain pending. Native still refuses the
-activity timeout fields required by these new marker/clock actors; accepting
-them requires their real deadline behavior as well as policy preservation.
+Native's candidate deadline slice snapshots all four authored timeout fields,
+fences expired outcomes and heartbeat renewal, preserves the global deadline
+across same-execution retry, and uses PHP's ordinary 300-second activity lease.
+Local SQLite passes 85 execution and 35 unit cases, with 18 database unit cases
+explicitly ignored. The pending deadline contract still requires actual shared
+PHP/native/embedded recordings. Embedded UUID side effects, native marker/clock
+SDK recordings and new matched six-database/final/main qualification remain
+pending.
 Earlier killed-author, reader-expectation and
 poll-based repair failures remain separate from fresh confirming runs.
 

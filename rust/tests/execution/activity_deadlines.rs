@@ -375,7 +375,9 @@ async fn heartbeat_renews_only_progress_deadline_and_cannot_resurrect_elapsed_au
         activity["task_id"].as_str().unwrap()
     );
     assert_eq!(
-        request_protocol(&app, "POST", &status_path, base.clone(), "1.20").await.1["can_continue"],
+        request_protocol(&app, "POST", &status_path, base.clone(), "1.20")
+            .await
+            .1["can_continue"],
         true
     );
     assert_eq!(

@@ -76,7 +76,16 @@ retry-policy mismatch remains a retained failure; its coordinated
 [Workflow source correction](https://github.com/durable-workflow/workflow/pull/776)
 is delivered, with stable publication/adoption separate. Current Python's
 fixed-start clock/UUID cases pass the PHP reference. Native marker/clock
-admission still needs activity timeout/policy support; embedded UUID semantics
+admission now has a candidate authored activity deadline implementation. It
+snapshots all four timeout options, fences elapsed completion/failure/heartbeat,
+retains the global deadline through same-execution retries, and renews only the
+heartbeat deadline with progress. Ordinary activity leases follow PHP's
+300-second contract. Local SQLite passes 85 execution cases and 35 unit cases,
+with 18 database tests explicitly ignored. Four deadline cases cover terminal
+expiry, full-policy retry across reopened storage, heartbeat renewal and
+committed receipt ordering. The pending deadline fixture still needs actual
+shared PHP/native/embedded recordings; these local controls do not qualify
+that cohort. Embedded UUID semantics
 and new matched all-six/final/main qualification remain ahead.
 Published PHP remains the default; broader runtime
 parity, migration, matched performance and release/cutover remain unqualified.
