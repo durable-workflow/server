@@ -195,16 +195,12 @@ where
                 .await?;
         let open = Self::query("SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status IN ('ready','leased') ORDER BY id LIMIT 2")
             .bind(&run_id).fetch_all(&mut *tx).await?;
-        let selection_checkpoint = Self::range_selection_history(&mut tx, &run_id).await?;
+        Self::range_selection_history(&mut tx, &run_id).await?;
         if unsupported != 0
             || failures != 0
             || signals != 0
             || updates != 0
             || open.len() > 1
-            || (!open.is_empty() && !selection_checkpoint)
-            || open
-                .iter()
-                .any(|task| DB::number(task, "repair_count").is_ok_and(|count| count == 0))
             || Self::cancellation_request(&run)?.is_some()
         {
             return Err(refuse(
@@ -218,9 +214,7 @@ where
         let mut blocked_message = None;
         if let Some(task) = failed {
             let payload = DB::document_row(&task, "payload")?;
-            if payload["replay_blocked"] != true
-                || payload["failure_reason"] != "version_marker_incompatible_range"
-            {
+            if payload["replay_blocked"] != true {
                 return Err(refuse(
                     StatusCode::UNPROCESSABLE_ENTITY,
                     "development_range_diagnostics_failure_unqualified",
@@ -289,6 +283,11 @@ where
                     "Activity task {} is ready to run.",
                     DB::string(&task, "id")?
                 ),
+            )
+        } else if let Some(task) = open.first() {
+            (
+                "workflow_task_ready",
+                format!("Workflow task {} is ready to run.", DB::string(task, "id")?),
             )
         } else {
             return Err(refuse(

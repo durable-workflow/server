@@ -4,8 +4,14 @@
 set -euo pipefail
 target="$1"
 url="$2"
+family=${3:-all}
 test -n "$RESOURCE_SCOPE"
 case "$target" in php|rust) ;; *) exit 2 ;; esac
+case "$family" in
+  all) families=(markers range clock) ;;
+  markers|range|clock) families=("$family") ;;
+  *) exit 2 ;;
+esac
 profile=tests/Fixtures/ServerParityProfiles/corrected-markers
 adapters=${DW_PARITY_CORRECTED_ADAPTERS:-corrected-marker-adapters}
 image=$(jq -r '.server.images["linux/amd64"]' "$profile/artifacts.json")
@@ -30,7 +36,7 @@ shared=(-v "$PWD:/source:ro" -v "$PWD/$evidence:/evidence" -w /source
   -e DW_PARITY_TOKEN -e DW_PARITY_RUNNER_REVISION="$(git rev-parse HEAD)")
 # Separate records preserve completed families when a later boundary fails.
 failed=0
-for family in markers range clock; do
+for family in "${families[@]}"; do
   case "$family" in
     markers) ids=(fresh-numeric fresh-zero deprecation-first genuine-version-one php-full-retry php-full-retry-refusal) ;;
     range) ids=(rust-range-completed rust-range-timer-pending) ;;

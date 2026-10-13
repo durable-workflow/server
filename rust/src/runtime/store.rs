@@ -1154,11 +1154,15 @@ where
                 .to_ascii_lowercase()
                 .contains("workflow task waiting for scheduled history");
         let range_blocked = !waiting
-            && failure
+            && (failure
                 .get("reason")
                 .and_then(Value::as_str)
                 .map(super::task_failures::php_trim)
-                == Some("version_marker_incompatible_range");
+                .is_some_and(|reason| matches!(reason, "version_marker_incompatible_range" | "activity_retry_policy_mismatch"))
+                // Published Rust Workers report their replay error in the
+                // message, without synthesizing PHP reason/sequence fields.
+                || (kind == "RustWorkflowTaskFailure"
+                    && super::task_failures::blocks_replay(&body["failure"])));
         if !waiting && !range_blocked && super::task_failures::blocks_replay(&body["failure"]) {
             return Err(refuse(
                 StatusCode::UNPROCESSABLE_ENTITY,

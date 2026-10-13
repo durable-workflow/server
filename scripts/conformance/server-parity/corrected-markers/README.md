@@ -17,6 +17,8 @@ credential. Each family retains its record and exit status independently; any
 failure makes the command fail. The caller owns bootstrap, readiness and
 cleanup. This command does not change the frozen default corpus or qualify
 the embedded profile or database matrix by itself.
+An optional third argument selects `markers`, `range` or `clock` for a scoped
+diagnosis; leaving it absent runs all three families.
 
 The HTTP recorder executes a producer, a separate activity process and a cold
 Rust successor. Each phase has an original 30-second observation timeout inside
