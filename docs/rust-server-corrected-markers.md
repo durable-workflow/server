@@ -152,7 +152,11 @@ snapshot, original attempt/task/run bounds, one terminal timeout and refusal of
 late completion, failure and heartbeat. Embedded receipts retain their library
 format and exact stored deadlines; they do not invent HTTP statuses. Adapter
 provenance is checked separately from the common semantic comparison. This
-new shared wiring remains pending actual matched qualification.
+new wiring passes fresh published PHP/embedded SQLite observations at
+`54c0a3e90`, with 157 actual-record mutation controls and independent SQL
+readback of four originals/19 events per target, zero task repairs and unchanged
+database bytes. Native and matched all-six confirmation remain pending. The
+complete local recordings and application resources were removed after audit.
 
 Start with exact installed published identities and a real PHP/embedded
 reference. Add separate adapters/fixtures and a strict reader using the existing

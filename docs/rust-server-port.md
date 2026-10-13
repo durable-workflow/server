@@ -89,8 +89,12 @@ stale-attempt conflicts. All 85 native execution and 35 unit cases pass;
 18 database unit cases are explicitly ignored locally. The final restored Rust
 tree is byte-identical. Timeout versus closed-attempt diagnostics describe the
 actual retained lifecycle state. This profile keeps the parent timeout delivery
-without authoring its result; embedded, retry/duplicate/renewal and matched
-six-database gates remain pending. Existing frozen profiles remain unchanged.
+without authoring its result. The reusable embedded counterpart now passes
+fresh PHP/embedded SQLite comparison at `54c0a3e90`, with 157 reader controls
+and independent readback of four originals/19 events per target and zero
+repairs. It authors through a real queue job and uses public worker bridges.
+New shared three-mode/all-six wiring, retry/duplicate/renewal and final/main
+gates remain pending. Existing frozen profiles remain unchanged.
 
 [#434](https://github.com/durable-workflow/server/pull/434) is delivered at
 `c6dc5e451bf9ba8651f1f84e386ed6c274f3992c`, preserving reviewed tree
