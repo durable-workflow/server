@@ -240,12 +240,17 @@ class ActivityTaskController
             'result' => ['nullable'],
         ]);
 
+        $attemptStatus = null;
         if ($response = $this->guardAttemptOwnership(
             $namespace,
             $taskId,
             $validated['activity_attempt_id'],
             $validated['lease_owner'],
+            $attemptStatus,
         )) {
+            return $response;
+        }
+        if ($response = $this->guardOutcomeAuthority($taskId, $validated['activity_attempt_id'], $attemptStatus)) {
             return $response;
         }
 
@@ -355,12 +360,17 @@ class ActivityTaskController
             'failure.runtime_diagnostics' => ['nullable', 'array'],
         ]);
 
+        $attemptStatus = null;
         if ($response = $this->guardAttemptOwnership(
             $namespace,
             $taskId,
             $validated['activity_attempt_id'],
             $validated['lease_owner'],
+            $attemptStatus,
         )) {
+            return $response;
+        }
+        if ($response = $this->guardOutcomeAuthority($taskId, $validated['activity_attempt_id'], $attemptStatus)) {
             return $response;
         }
 
@@ -1002,6 +1012,46 @@ class ActivityTaskController
         }
 
         return null;
+    }
+
+    /**
+     * Refuse expired authority before resolving or retaining an external outcome.
+     * The package must check again under its mutation locks after resolution.
+     *
+     * @param  array<string, mixed>  $status
+     */
+    private function guardOutcomeAuthority(string $taskId, string $attemptId, array $status): ?JsonResponse
+    {
+        $reason = $status['reason'] ?? null;
+        if (($status['can_continue'] ?? false) === true) {
+            $expiresAt = $status['lease_expires_at'] ?? null;
+            if (! is_string($expiresAt) || ! CarbonImmutable::parse($expiresAt)->isAfter(now())) {
+                $reason = 'lease_expired';
+            } else {
+                $deadlines = $this->executionDeadlines($status['activity_execution_id'] ?? null) ?? [];
+                foreach (['heartbeat', 'start_to_close', 'schedule_to_close'] as $kind) {
+                    if (isset($deadlines[$kind]) && ! CarbonImmutable::parse($deadlines[$kind])->isAfter(now())) {
+                        $reason = $kind.'_timeout';
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Closed, cancelled and reclaimed attempts retain their existing handling,
+        // including the committed completion receipt and cancellation diagnostics.
+        if (! in_array($reason, ['lease_expired', 'heartbeat_timeout', 'start_to_close_timeout', 'schedule_to_close_timeout'], true)) {
+            return null;
+        }
+
+        return WorkerProtocol::json([
+            'task_id' => $taskId,
+            'activity_attempt_id' => $attemptId,
+            'recorded' => false,
+            'can_continue' => false,
+            'reason' => $reason,
+            'error' => 'Activity attempt authority has expired.',
+        ], 409);
     }
 
     private function outcomeStatus(?string $reason): int
