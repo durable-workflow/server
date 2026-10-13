@@ -2063,6 +2063,8 @@ where
         let mut payload = json!({"activity_execution_id": DB::string(activity,"id")?, "activity_type": DB::string(activity,"activity_type")?,
         "activity_class": DB::string(activity,"activity_class")?, "sequence": DB::number(activity,"sequence")?,
         "activity": {"id":DB::string(activity,"id")?,"idempotency_key":DB::string(activity,"id")?,
+            "sequence":DB::number(activity,"sequence")?,"type":DB::string(activity,"activity_type")?,
+            "class":DB::string(activity,"activity_class")?,"local_activity":false,
             "activity_type": DB::string(activity,"activity_type")?, "arguments": wire(&DB::string(activity,"arguments")?),
             "retry_policy":DB::optional_document_row(activity,"retry_policy")?,
             "status":DB::string(activity,"status")?,"attempt_count":DB::number(activity,"attempt_count")?,

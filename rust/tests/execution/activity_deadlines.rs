@@ -145,6 +145,17 @@ async fn every_authored_deadline_fences_outcomes_and_resolves_once() {
                 .0,
             StatusCode::OK
         );
+        let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+        let snapshot = &history
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|event| event["event_type"] == "ActivityScheduled")
+            .unwrap()["payload"]["activity"];
+        assert_eq!(snapshot["sequence"], 1);
+        assert_eq!(snapshot["type"], "deadline_activity");
+        assert_eq!(snapshot["class"], "deadline_activity");
+        assert_eq!(snapshot["local_activity"], false);
         let activity = if field == "schedule_to_start_timeout" {
             Value::Null
         } else {
