@@ -1,12 +1,16 @@
 // Mutation controls operate on actual recorder output, never producer inputs.
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {checkCorrectedMarkers} from '../corrected-marker-contract.mjs';
+import {checkCorrectedMarkers, checkCorrectedMarkerPackages} from '../corrected-marker-contract.mjs';
 
-const [fixturePath, observationPath] = process.argv.slice(2);
+const [fixturePath, observationPath, artifactsPath] = process.argv.slice(2);
 const fixture = JSON.parse(readFileSync(fixturePath));
 const original = JSON.parse(readFileSync(observationPath));
-const read = value => checkCorrectedMarkers(fixture, value, original.workflow_id);
+const artifacts = artifactsPath ? JSON.parse(readFileSync(artifactsPath)) : null;
+const read = value => {
+  if (artifacts) checkCorrectedMarkerPackages(fixture, value, artifacts);
+  return checkCorrectedMarkers(fixture, value, original.workflow_id);
+};
 read(original);
 const mutations = {
   'missing marker bounds': value => { delete value.events[2].payload.min_supported; },
@@ -35,6 +39,23 @@ const mutations = {
     request.client_cancelled = true;
   },
 };
+if (original.mode === 'embedded') {
+  delete mutations['corrupted whole response bytes'];
+  delete mutations['cancelled committed outcome'];
+  Object.assign(mutations, {
+    'missing public clock': value => { delete value.corrected_markers.phases.replacement.clocks; },
+    'changed original clock': value => { value.corrected_markers.phases.original.clocks[0][0] = '2000-01-01T00:00:00.000000Z'; },
+    'changed cached helper clock': value => {
+      value.corrected_markers.phases.replacement.clocks[0][fixture.corrected_markers.embedded_clock_positions.replacement.length - 1] = '2000-01-01T00:00:00.000000Z'; },
+    'activity ran in cold workflow process': value => { value.corrected_markers.phases.replacement.activity_invocations = 1; },
+    'changed original task run': value => { value.corrected_markers.phases.replacement.tasks[0].workflow_run_id = 'different'; },
+  });
+  if (artifacts) Object.assign(mutations, {
+    'changed original package': value => { value.corrected_markers.phases.original.workflow_package = '0.0.0'; },
+    'changed current loaded source': value => { value.corrected_markers.phases.replacement.workflow_loaded_sources['src/V2/Support/WorkflowExecutor.php'] = '0'.repeat(64); },
+    'changed role dependency lock': value => { value.corrected_markers.phases.activity.embedded_composer_lock_sha256 = '0'.repeat(64); },
+  });
+}
 for (const [name, mutate] of Object.entries(mutations)) {
   const corrupted = structuredClone(original);
   mutate(corrupted);

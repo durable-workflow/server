@@ -6,7 +6,9 @@ separate shared PHP/embedded/native cohort after delivered
 The [reviewed next boundary](https://github.com/durable-workflow/server/issues/325#issuecomment-6141676028)
 records the supported producer inputs and their qualification limits. The draft
 now has separate normal-install actors, five HTTP fixture definitions and a
-strict reader. Embedded replay, repair/refusal phases, the current Python clock
+strict reader. The embedded actor now uses separately installed historical and
+current roles, real activity/cold processes and marker-clock readback. Full
+shared embedded recording, repair/refusal phases, the current Python clock
 reader and native/six-database qualification remain pending. Earlier killed
 author reader failures are retained separately from fresh confirming runs.
 

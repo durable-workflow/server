@@ -11,6 +11,7 @@
     "case": "zero", "producer": "rust", "retry_policy": "empty",
     "phase_budget_seconds": 30, "overall_budget_seconds": 90,
     "change_id": "corrected-zero", "expected_decisions": [0, false, null, 0, false],
+    "embedded_clock_positions": {"original": [1, 1, 1, 1, 1], "replacement": [1, 1, 1, 1, 1]},
     "markers": [{"sequence": 1, "version": 0, "min_supported": -7, "max_supported": 0}]
   }
 }

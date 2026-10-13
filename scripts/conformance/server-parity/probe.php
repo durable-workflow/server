@@ -861,10 +861,11 @@ try {
         }
     } elseif (isset($fixture['corrected_markers'])) {
         require __DIR__.'/corrected-marker-probe.php';
-        if ($mode !== 'http') {
-            throw new RuntimeException('Corrected embedded marker adapter is not implemented yet');
-        }
-        $observation = correctedMarkerHttpObservation($fixture, $options);
+        $observation = match ($mode) {
+            'http' => correctedMarkerHttpObservation($fixture, $options),
+            'embedded' => correctedMarkerEmbeddedObservation($fixture, $options),
+            default => throw new InvalidArgumentException('Mode must be http or embedded.'),
+        };
     } elseif (isset($fixture['range_repair'])) {
         require __DIR__.'/range-repair-probe.php';
         RangeRepairState::$changeId = $fixture['range_repair']['change_id'];

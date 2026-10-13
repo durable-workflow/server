@@ -19,7 +19,12 @@ values remain in recorder sidecars. `check-readers.mjs` rejects mutated copies
 of actual observations, including missing bounds, rewritten prefixes, truncated
 retry lists and false completion.
 
-Implementation is still a draft: embedded producers/readers, range-repair
+The embedded profile uses distinct normal Composer role locks. Only the genuine
+duplicate producer uses the historical package; other originals and every cold
+reader use the current package. Public clocks must match original marker
+positions and cached reuse, and original task/run relationships remain exact.
+
+Implementation is still a draft: shared embedded qualification, range-repair
 phases, retry-policy refusal, current Python clock consumers, native integration
 and the six-database source/final/main matrix remain pending. A metadata check
 or one PHP observation does not qualify those boundaries. The first killed

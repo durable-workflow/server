@@ -11,6 +11,7 @@
     "case": "deprecated", "producer": "rust", "retry_policy": "empty",
     "phase_budget_seconds": 30, "overall_budget_seconds": 90,
     "change_id": "corrected-one", "expected_decisions": [null, true, 1, null],
+    "embedded_clock_positions": {"original": [1, 1, 1, 1], "replacement": [1, 1, 1, 1]},
     "markers": [{"sequence": 1, "version": 1, "min_supported": -1, "max_supported": 1}]
   }
 }

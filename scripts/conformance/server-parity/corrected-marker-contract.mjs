@@ -25,6 +25,15 @@ export function checkCorrectedMarkerArtifacts(fixture, artifacts) {
   assert.match(rust.source_commit, commit);
   assert.match(rust.archive_sha256, sha);
   assert.match(artifacts.rust_consumer_cargo_lock_sha256, sha);
+  assert.match(artifacts.embedded_composer_lock_sha256, sha);
+  assert.match(artifacts.workflow_source_commit, commit);
+  assert.match(artifacts.embedded_original.source_commit, commit);
+  assert.match(artifacts.embedded_original.composer_lock_sha256, sha);
+  assert.equal(artifacts.embedded_original.shutdown, 'normal_cli_exit');
+  for (const sources of [artifacts.workflow_loaded_sources, artifacts.embedded_original.loaded_sources]) {
+    assert.equal(Object.keys(sources).length, 4);
+    for (const hash of Object.values(sources)) assert.match(hash, sha);
+  }
   const spec = fixture.corrected_markers;
   assert.equal(spec.phase_budget_seconds, 30);
   assert.equal(spec.overall_budget_seconds, 90);
@@ -43,6 +52,23 @@ export function checkCorrectedMarkerPackages(fixture, observation, artifacts) {
   assert.equal(observation.sdk_composer_lock_sha256, artifacts.sdk_composer_lock_sha256);
   assert.equal(observation.rust_consumer_cargo_lock_sha256, artifacts.rust_consumer_cargo_lock_sha256);
   assert.deepEqual(observation.sdk_loaded_sources, artifacts.published_sdk_artifacts.php.loaded_sources);
+  if (observation.mode === 'embedded') {
+    const current = {version: artifacts.workflow, source_commit: artifacts.workflow_source_commit,
+      composer_lock_sha256: artifacts.embedded_composer_lock_sha256, loaded_sources: artifacts.workflow_loaded_sources};
+    for (const [name, phase] of Object.entries(observation.corrected_markers.phases)) {
+      const expected = name === 'original' && fixture.corrected_markers.case === 'genuine_one'
+        ? artifacts.embedded_original : current;
+      assert.equal(phase.workflow_package, expected.version);
+      assert.equal(phase.workflow_source, expected.source_commit);
+      assert.equal(phase.embedded_composer_lock_sha256, expected.composer_lock_sha256);
+      assert.deepEqual(phase.workflow_loaded_sources, expected.loaded_sources);
+    }
+    assert.equal(observation.workflow_package, current.version);
+    assert.equal(observation.workflow_source, current.source_commit);
+    assert.equal(observation.embedded_composer_lock_sha256, current.composer_lock_sha256);
+    assert.deepEqual(observation.workflow_loaded_sources, current.loaded_sources);
+    return;
+  }
   for (const [name, phase] of Object.entries(observation.corrected_markers.phases)) {
     const producer = name === 'original' ? fixture.corrected_markers.producer : 'rust';
     const expected = producer === 'php' ? artifacts.sdk_php : producer === 'python'
@@ -124,7 +150,7 @@ export function checkCorrectedMarkers(fixture, observation, workflowId) {
   assert.equal(phases.original.status, 'waiting');
   assert.equal(phases.activity.status, 'waiting');
   assert.equal(phases.replacement.status, 'completed');
-  if (spec.producer === 'python') {
+  if (observation.mode === 'http' && spec.producer === 'python') {
     assert.equal(phases.original.actor.author_exit_code, -9, 'actual historical author SIGKILL');
     assert.notEqual(phases.original.actor.pid, phases.original.actor.observer_pid);
   }
@@ -134,6 +160,14 @@ export function checkCorrectedMarkers(fixture, observation, workflowId) {
   assert.deepEqual(phases.original.events.map(event => event.event_type), expectedTypes.slice(0, 3 + spec.markers.length));
   assert.deepEqual(phases.activity.events.map(event => event.event_type), expectedTypes.slice(0, -1));
   const start = observation.events[1].payload;
+  const accepted = observation.events[0].payload;
+  for (const payload of [accepted, start]) {
+    assert.equal(payload.workflow_instance_id, workflowId);
+    assert.equal(payload.workflow_run_id, observation.run_id);
+    assert.equal(payload.workflow_type, fixture.workflow_type);
+    assert(typeof payload.workflow_command_id === 'string' && payload.workflow_command_id.length > 0);
+  }
+  assert.equal(accepted.workflow_command_id, start.workflow_command_id);
   assert.equal(start.execution_timeout_seconds, 1200);
   assert.equal(start.run_timeout_seconds, 1200);
   for (const key of ['execution_deadline_at', 'run_deadline_at']) {
@@ -169,6 +203,27 @@ export function checkCorrectedMarkers(fixture, observation, workflowId) {
   const completed = observation.events.find(event => event.event_type === 'ActivityCompleted');
   assert.deepEqual(completed.typed_decoded.result, fixture.typed_value);
   assert.deepEqual(observation.events.at(-1).typed_decoded.output, output);
+  if (observation.mode === 'embedded') {
+    assert.deepEqual(observation.corrected_markers.requests, [], 'embedded has no simulated HTTP exchanges');
+    const positions = spec.embedded_clock_positions;
+    assert(positions, 'explicit original and replacement clock positions');
+    for (const name of ['original', 'replacement']) {
+      assert.deepEqual(phases[name].clocks, [positions[name].map(position => markers[position - 1].timestamp)],
+        'public embedded clock follows actual marker positions and cached reuse');
+    }
+    assert.deepEqual(phases.activity.clocks, []);
+    assert.equal(phases.original.activity_invocations, 0);
+    assert.equal(phases.activity.activity_invocations, 1);
+    assert.equal(phases.replacement.activity_invocations, 0);
+    const tasks = phases.replacement.tasks;
+    assert.deepEqual(tasks.map(task => task.task_type).sort(), ['activity', 'workflow', 'workflow']);
+    assert.equal(new Set(tasks.map(task => task.id)).size, 3);
+    for (const task of tasks) {
+      assert.equal(task.workflow_run_id, observation.run_id);
+      assert.equal(task.status, 'completed');
+      assert.equal(task.repair_count, 0);
+    }
+  }
   if (observation.mode === 'http') {
     const requests = wireRequests(fixture, observation, workflowId);
     const outcomes = requests.filter(item => item.method === 'POST' && /^\/api\/worker\/workflow-tasks\/[^/]+\/complete$/.test(item.path));

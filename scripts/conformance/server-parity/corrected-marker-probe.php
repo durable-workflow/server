@@ -2,6 +2,71 @@
 
 declare(strict_types=1);
 
+function correctedMarkerPhase(array $command, string $directory, string $name, string $phase, float $deadline): array
+{
+    $stdout = $directory.'/'.$name.'-'.$phase.'.stdout';
+    $stderr = $directory.'/'.$name.'-'.$phase.'.stderr';
+    $process = proc_open($command, [0 => ['pipe', 'r'], 1 => ['file', $stdout, 'w'],
+        2 => ['file', $stderr, 'w']], $pipes);
+    if (! is_resource($process)) {
+        throw new RuntimeException('Could not start an independent marker phase');
+    }
+    fclose($pipes[0]);
+    try {
+        do {
+            $state = proc_get_status($process);
+            if (! $state['running']) {
+                break;
+            }
+            if (microtime(true) >= $deadline) {
+                proc_terminate($process, 15);
+                throw new RuntimeException('Original fixed '.$phase.' observation expired');
+            }
+            usleep(10000);
+        } while (true);
+    } finally {
+        proc_close($process);
+    }
+    if ($state['exitcode'] !== 0) {
+        throw new RuntimeException($phase.' actor failed: '.trim(file_get_contents($stderr)));
+    }
+    $lines = array_values(array_filter(explode("\n", trim(file_get_contents($stdout)))));
+
+    return json_decode(end($lines), true, flags: JSON_THROW_ON_ERROR);
+}
+
+function correctedMarkerEmbeddedObservation(array $fixture, array $options): array
+{
+    $spec = $fixture['corrected_markers'];
+    $directory = getenv('DW_PARITY_FAILURE_EVIDENCE_DIR');
+    if (! is_string($directory) || ! is_dir($directory)) {
+        throw new RuntimeException('Corrected marker evidence directory is required');
+    }
+    $name = preg_replace('/[^A-Za-z0-9_.-]/', '_', $options['workflow-id']);
+    $deadline = microtime(true) + $spec['overall_budget_seconds'];
+    $runId = '';
+    $phases = [];
+    foreach (['original', 'activity', 'replacement'] as $phase) {
+        $root = $phase === 'original' && $spec['case'] === 'genuine_one'
+            ? getenv('DW_PARITY_CORRECTED_ORIGINAL_EMBEDDED_ROOT') : $options['application-root'];
+        if (! is_string($root) || ! is_file($root.'/vendor/autoload.php')) {
+            throw new RuntimeException('The selected normally installed embedded role is missing');
+        }
+        $snapshot = correctedMarkerPhase([PHP_BINARY, __DIR__.'/corrected-markers/embedded.php', $root,
+            $phase, $options['workflow-id'], $runId, $options['fixture']], $directory, $name, $phase,
+            min($deadline, microtime(true) + $spec['phase_budget_seconds']));
+        $runId = $snapshot['run_id'];
+        file_put_contents($directory.'/'.$name.'-'.$phase.'-snapshot.json', json_encode($snapshot,
+            JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)."\n");
+        $phases[$phase] = $snapshot;
+    }
+    $final = $phases['replacement'];
+    $final['corrected_markers'] = ['phases' => $phases, 'requests' => [],
+        'overall_budget_seconds' => $spec['overall_budget_seconds'], 'phase_budget_seconds' => $spec['phase_budget_seconds']];
+
+    return $final;
+}
+
 // The existing byte-preserving observer retains complete public deliveries.
 // Actors run in independent processes; no response or stored history is edited.
 function correctedMarkerHttpObservation(array $fixture, array $options): array
@@ -44,35 +109,8 @@ function correctedMarkerHttpObservation(array $fixture, array $options): array
                 $options['workflow-id'], $runId, $spec['case'],
                 $phase === 'replacement' ? 'wider' : 'original', $spec['retry_policy'],
                 json_encode($fixture['input'], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE));
-            $stdout = $directory.'/'.$name.'-'.$phase.'.stdout';
-            $stderr = $directory.'/'.$name.'-'.$phase.'.stderr';
-            $actor = proc_open($command, [0 => ['pipe', 'r'], 1 => ['file', $stdout, 'w'],
-                2 => ['file', $stderr, 'w']], $actorPipes);
-            if (! is_resource($actor)) {
-                throw new RuntimeException('Could not start a published actor');
-            }
-            fclose($actorPipes[0]);
-            $phaseDeadline = min($deadline, microtime(true) + $spec['phase_budget_seconds']);
-            try {
-                do {
-                    $state = proc_get_status($actor);
-                    if (! $state['running']) {
-                        break;
-                    }
-                    if (microtime(true) >= $phaseDeadline) {
-                        proc_terminate($actor, 15);
-                        throw new RuntimeException('Original fixed '.$phase.' observation expired');
-                    }
-                    usleep(10000);
-                } while (true);
-            } finally {
-                proc_close($actor);
-            }
-            if ($state['exitcode'] !== 0) {
-                throw new RuntimeException($phase.' actor failed: '.trim(file_get_contents($stderr)));
-            }
-            $lines = array_values(array_filter(explode("\n", trim(file_get_contents($stdout)))));
-            $actorResult = json_decode(end($lines), true, flags: JSON_THROW_ON_ERROR);
+            $actorResult = correctedMarkerPhase($command, $directory, $name, $phase,
+                min($deadline, microtime(true) + $spec['phase_budget_seconds']));
             $run = $client->describeWorkflow($options['workflow-id'], $runId);
             $snapshot = ['actor' => $actorResult, 'status' => $run->status, 'execution' => $run->raw,
                 'events' => decodeHistory(httpHistory($client, $options['workflow-id'], $runId), $client->payloadCodec()->decodeEnvelope(...))];

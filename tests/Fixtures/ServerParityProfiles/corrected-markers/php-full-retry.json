@@ -11,6 +11,7 @@
     "case": "full_retry", "producer": "php", "retry_policy": "php_full",
     "phase_budget_seconds": 30, "overall_budget_seconds": 90,
     "change_id": "corrected-numeric", "expected_decisions": [7, 7],
+    "embedded_clock_positions": {"original": [1, 1], "replacement": [1, 1]},
     "markers": [{"sequence": 1, "version": 7, "min_supported": -3, "max_supported": 7}]
   }
 }

@@ -14,6 +14,7 @@
     "phase_budget_seconds": 30,
     "overall_budget_seconds": 90,
     "change_id": "corrected-numeric",
+    "embedded_clock_positions": {"original": [1, 1], "replacement": [1, 1]},
     "expected_decisions": [7, 7],
     "markers": [{"sequence": 1, "version": 7, "min_supported": -3, "max_supported": 7}]
   }
