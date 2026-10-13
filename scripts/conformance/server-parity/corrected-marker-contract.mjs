@@ -41,6 +41,8 @@ export function checkCorrectedMarkerArtifacts(fixture, artifacts) {
     assert.equal(spec.python_clock.current_sdk, '2.5.13');
     assert.deepEqual(spec.python_clock.phase_order, ['original', 'activity', 'clock_wait', 'second_activity', 'replacement']);
     assert.equal(spec.python_clock.activity_count, 2);
+    assert.equal(spec.python_clock.clock_contract, 'fixed_workflow_start');
+    assert.equal(spec.python_clock.contract_receipt, 'https://github.com/durable-workflow/sdk-python/issues/146#issuecomment-6139915817');
     assert.equal(artifacts.published_sdk_artifacts.python.version, spec.python_clock.current_sdk);
     assert.match(artifacts.published_sdk_artifacts.python.source_commit, commit);
     assert.match(artifacts.published_sdk_artifacts.python.archive_sha256, sha);

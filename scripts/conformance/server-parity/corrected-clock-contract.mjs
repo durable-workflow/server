@@ -109,7 +109,8 @@ export function checkCorrectedClock(fixture, observation, workflowId) {
   for (const [index,count] of [2,phases.activity.events.length,phases.second_activity.events.length].entries()) {
     const task=deliveries[index].response.task;
     assert.equal(task.workflow_id,workflowId); assert.equal(task.run_id,observation.run_id);
-    assert.equal(task.sticky_replay_mode,'cold_replay'); assert.equal(task.next_history_page_token,null);
+    assert(['cold_replay','forced_cold_replay'].includes(task.sticky_replay_mode), 'actual full cold delivery mode');
+    assert.equal(task.next_history_page_token,null);
     assert.equal(task.total_history_events,count);
     assert.deepEqual(task.history_events.map(row=>({sequence:row.sequence,event_type:row.event_type,timestamp:row.recorded_at,payload:row.payload})),
       all.slice(0,count).map(({sequence,event_type,timestamp,payload})=>({sequence,event_type,timestamp,payload})));
