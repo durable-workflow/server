@@ -72,6 +72,11 @@
     "source_commit": "04790ae42e8da0a83f65026f096572b547b7baa8",
     "archive_sha256": "0f69fdb6e6103ab57ce6bc0f802504463b1498745e874a32ed9de58dabeb40be"
   },
+  "embedded_range_loaded_sources": {
+    "src/V2/Support/VersionResolver.php": "f36a956459a03cff8e25751c7cae577017e3f33c7b607d4d12e9088150d36626",
+    "src/V2/Support/WorkflowExecutor.php": "9b85a1daf80fbe63d4f0ec3e23513c213e4971379f9a280495c0df6dc9655062",
+    "src/V2/Support/TaskRepair.php": "744339f862de8302cbeddee74f4c1a31881582a1649e73f63f952c03ae2d0ecc"
+  },
   "historical_php_range_producer": {
     "version": "2.2.7",
     "source_commit": "7c40c7755789790ce4c0ce706a8e3a6462742956",

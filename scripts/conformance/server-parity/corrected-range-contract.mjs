@@ -29,6 +29,11 @@ export function checkCorrectedRangeArtifacts(fixture, artifacts) {
   }
   assert.equal(artifacts.historical_php_range_producer.version, '2.2.7');
   assert.equal(artifacts.published_sdk_artifacts.rust.version, artifacts.sdk_rust);
+  if (artifacts.embedded_range_loaded_sources) {
+    assert.deepEqual(Object.keys(artifacts.embedded_range_loaded_sources).sort(),
+      ['TaskRepair', 'VersionResolver', 'WorkflowExecutor'].map(name => 'src/V2/Support/'+name+'.php').sort());
+    for (const value of Object.values(artifacts.embedded_range_loaded_sources)) assert.match(value, sha);
+  }
 }
 
 export function checkCorrectedRangePackages(fixture, observation, artifacts) {
@@ -40,8 +45,18 @@ export function checkCorrectedRangePackages(fixture, observation, artifacts) {
   assert.equal(observation.rust_consumer_cargo_lock_sha256, artifacts.rust_consumer_cargo_lock_sha256);
   assert.deepEqual(observation.sdk_loaded_sources, artifacts.published_sdk_artifacts.php.loaded_sources);
   if (observation.mode === 'embedded') {
-    assert.equal(observation.workflow_package, artifacts.workflow);
-    assert.equal(observation.workflow_source, artifacts.workflow_source_commit);
+    const state = observation.range_repair;
+    for (const phase of [observation, state.original, state.incompatible, state.corrected]) {
+      assert.equal(phase.sdk_php, artifacts.sdk_php);
+      assert.equal(phase.sdk_php_source, artifacts.sdk_php_source_commit);
+      assert.equal(phase.sdk_composer_lock_sha256, artifacts.sdk_composer_lock_sha256);
+      assert.equal(phase.workflow_package, artifacts.workflow);
+      assert.equal(phase.workflow_source, artifacts.workflow_source_commit);
+      assert.equal(phase.embedded_composer_lock_sha256, artifacts.embedded_composer_lock_sha256);
+      assert.deepEqual(phase.workflow_loaded_sources, artifacts.embedded_range_loaded_sources);
+      if (phase.workflow_provenance !== null) assert.deepEqual(phase.workflow_provenance,
+        ['https://github.com/durable-workflow/workflow.git', artifacts.workflow, artifacts.workflow_source_commit]);
+    }
     return;
   }
   const original = observation.corrected_range.phases.original.actor;
@@ -85,16 +100,6 @@ export function checkCorrectedRange(fixture, observation, workflowId, instant) {
     instant(event.timestamp);
   }
   assert.equal(observation.corrected_range.overall_budget_seconds, 35);
-  if (observation.mode === 'embedded') {
-    assert.equal(observation.corrected_range.applicable, false);
-    assert.equal(observation.corrected_range.reason, 'embedded_executes_original_php_definitions');
-    const original = JSON.parse(readFileSync(new URL('../../../'+spec.original_fixture, import.meta.url)));
-    checkRangeRepair(original, observation, workflowId, instant);
-    return {workflow_id: workflowId, typed_output: fixture.typed_value,
-      events: fixture.expected_events, recorded_version: 1, replay_blocked: true,
-      original_policy_preserved: true, selected_original_repair: true, pending_activity: spec.pending_activity};
-  }
-  const {phases, recorded_policy: policy} = observation.corrected_range;
   assert.deepEqual(Object.keys(observation.corrected_range.neighbors), ['left', 'right']);
   for (const [side, {before, after}] of Object.entries(observation.corrected_range.neighbors)) {
     assert.equal(before.workflow_id, workflowId+'-neighbor-'+side);
@@ -106,13 +111,25 @@ export function checkCorrectedRange(fixture, observation, workflowId, instant) {
     assert.deepEqual(after.events, before.events, 'neighbor history survives original-task repair');
     assert.deepEqual(after.typed_input, before.typed_input);
     for (const field of ['execution_deadline_at', 'run_deadline_at']) assert.equal(after.execution[field], before.execution[field]);
-    const taskIdentity = row => Object.fromEntries(['task_id', 'task_type', 'status', 'queue',
+    const taskIdentity = row => Object.fromEntries(['id', 'task_id', 'task_type', 'status', 'queue',
       'attempt_count', 'repair_count', 'lease_owner', 'lease_expires_at', 'replay_blocked']
       .filter(key => Object.hasOwn(row, key)).map(key => [key, row[key]]));
-    assert.equal(before.debug.pending_workflow_tasks.length, 1);
-    assert.deepEqual(after.debug.pending_workflow_tasks.map(taskIdentity), before.debug.pending_workflow_tasks.map(taskIdentity),
+    const beforeTasks = observation.mode === 'embedded' ? before.tasks : before.debug.pending_workflow_tasks;
+    const afterTasks = observation.mode === 'embedded' ? after.tasks : after.debug.pending_workflow_tasks;
+    assert.equal(beforeTasks.length, 1);
+    assert.deepEqual(afterTasks.map(taskIdentity), beforeTasks.map(taskIdentity),
       'neighbor original task identity, attempts and repair count survive');
   }
+  if (observation.mode === 'embedded') {
+    assert.equal(observation.corrected_range.applicable, false);
+    assert.equal(observation.corrected_range.reason, 'embedded_executes_original_php_definitions');
+    const original = JSON.parse(readFileSync(new URL('../../../'+spec.original_fixture, import.meta.url)));
+    checkRangeRepair(original, observation, workflowId, instant);
+    return {workflow_id: workflowId, typed_output: fixture.typed_value,
+      events: fixture.expected_events, recorded_version: 1, replay_blocked: true,
+      original_policy_preserved: true, selected_original_repair: true, pending_activity: spec.pending_activity};
+  }
+  const {phases, recorded_policy: policy} = observation.corrected_range;
   const order = spec.pending_activity ? ['original', 'incompatible', 'repair', 'repaired-wait', 'activity', 'final']
     : ['original', 'activity', 'incompatible', 'repair', 'final'];
   assert.deepEqual(Object.keys(phases), order);

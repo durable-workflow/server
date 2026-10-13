@@ -121,8 +121,40 @@ function correctedRangeEmbeddedObservation(array $fixture, array $options): arra
     $legacyOptions = $options;
     $legacyOptions['fixture'] = dirname(__DIR__, 3).'/'.$fixture['corrected_range']['original_fixture'];
     $legacyFixture = json_decode(file_get_contents($legacyOptions['fixture']), true, flags: JSON_THROW_ON_ERROR);
-    $observation = rangeRepairObservation($legacyFixture, $legacyOptions);
+    $directory = getenv('DW_PARITY_FAILURE_EVIDENCE_DIR');
+    if (! is_string($directory) || ! is_dir($directory)) {
+        throw new RuntimeException('Actual embedded range phase evidence is required');
+    }
+    $name = preg_replace('/[^A-Za-z0-9_.-]/', '_', $options['workflow-id']);
+    $deadline = microtime(true) + $fixture['corrected_range']['overall_budget_seconds'];
+    $neighborCommand = [PHP_BINARY, __DIR__.'/corrected-markers/embedded-range-neighbors.php',
+        $options['application-root'], 'before', $options['workflow-id'], $options['fixture'], '{}'];
+    $before = correctedMarkerPhase($neighborCommand, $directory, $name, 'neighbors-before', $deadline);
+    $phases = [];
+    foreach (['original', 'incompatible', 'corrected-repair'] as $phase) {
+        $arguments = [PHP_BINARY, __DIR__.'/probe.php', '--mode', 'embedded',
+            '--application-root', $options['application-root'], '--fixture', $legacyOptions['fixture'],
+            '--workflow-id', $options['workflow-id'], '--range-phase', $phase, '--range-deadline', (string) $deadline];
+        if ($phase !== 'original') {
+            array_push($arguments, '--run-id', $phases['original']['run_id']);
+        }
+        $phases[$phase] = correctedMarkerPhase($arguments, $directory, $name, $phase, $deadline);
+        file_put_contents($directory.'/'.$name.'-'.$phase.'-snapshot.json', json_encode($phases[$phase],
+            JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)."\n");
+    }
+    $neighborCommand[3] = 'after';
+    $neighborCommand[6] = json_encode($before['neighbors'], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
+    $after = correctedMarkerPhase($neighborCommand, $directory, $name, 'neighbors-after', $deadline);
+    $neighbors = [];
+    foreach (['left', 'right'] as $side) {
+        $neighbors[$side] = ['before' => $before['neighbors'][$side], 'after' => $after['neighbors'][$side]];
+    }
+    $observation = $phases['corrected-repair'];
+    $observation['range_repair'] = ['checkpoint' => $legacyFixture['range_repair']['checkpoint'],
+        'change_id' => $legacyFixture['range_repair']['change_id'], 'original' => $phases['original'],
+        'incompatible' => $phases['incompatible'], 'corrected' => $phases['corrected-repair']];
     $observation['corrected_range'] = ['applicable' => false, 'reason' => 'embedded_executes_original_php_definitions',
+        'neighbors' => $neighbors,
         'overall_budget_seconds' => $fixture['corrected_range']['overall_budget_seconds']];
 
     return $observation;
