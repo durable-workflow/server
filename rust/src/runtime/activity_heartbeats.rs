@@ -41,7 +41,7 @@ where
     // the separately capability-gated non-renewing status endpoint.
     async fn observe_activity(&self, task_id: &str, body: Value, protocol: &str) -> Result<Value> {
         let mut tx = self.begin().await?;
-        let response = self
+        let (response, _) = self
             .activity_observation(&mut tx, task_id, body, protocol)
             .await?;
         tx.commit().await?;
@@ -54,7 +54,7 @@ where
         task_id: &str,
         body: Value,
         protocol: &str,
-    ) -> Result<Value> {
+    ) -> Result<(Value, bool)> {
         reject_fields(&body, &["activity_attempt_id", "lease_owner"])?;
         let attempt_id = text(&body, "activity_attempt_id")?;
         let owner = text(&body, "lease_owner")?;
@@ -133,7 +133,7 @@ where
             "run_status":run_status,"run_closed_reason":DB::optional_string(&run,"closed_reason")?,"run_closed_at":DB::optional_instant(&run,"closed_at")?,
             "activity_status":activity_status,"attempt_status":attempt_status,"task_status":task_status,
             "deadlines":null,"worker_session":null,"protocol_version":protocol,"server_capabilities":super::store::capabilities()});
-        Ok(response)
+        Ok((response, Self::cancellation_request(&run)?.is_none()))
     }
 
     pub(crate) async fn heartbeat_activity(
@@ -176,15 +176,22 @@ where
             }
         }
         let mut tx = self.begin().await?;
-        let observed = self
+        let (observed, ordinary) = self
             .activity_observation(
                 &mut tx,
                 task_id,
                 json!({"activity_attempt_id":attempt_id,"lease_owner":text(&body,"lease_owner")?}),
                 protocol,
             )
-            .await?;
-        if observed["can_continue"] == false && observed["cancel_requested"] == false {
+            .await
+            .map_err(|error| match error {
+                super::RuntimeError::Refused {
+                    reason: "attempt_not_found",
+                    ..
+                } => refuse(StatusCode::CONFLICT, "stale_attempt"),
+                other => other,
+            })?;
+        if ordinary && observed["can_continue"] == false && observed["cancel_requested"] == false {
             // Published PHP returns a structured refusal for ordinary expired
             // or closed authority. This read never records progress or renews
             // a lease; a concurrently closed attempt remains fenced.
