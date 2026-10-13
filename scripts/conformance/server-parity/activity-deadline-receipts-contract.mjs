@@ -54,7 +54,10 @@ export function checkActivityDeadlineReceipts(fixture, observation, workflowId, 
   activityReceipt(state.duplicate);
   assert.equal(state.conflict.status, 409);
   assert([200, 409].includes(state.workflow_duplicate.status));
-  if (state.workflow_duplicate.status === 409) assert.equal(state.workflow_duplicate.response.reason, 'run_closed');
+  if (state.workflow_duplicate.status === 409) {
+    assert.equal(state.workflow_duplicate.response.reason, 'run_closed');
+    if ('recorded' in state.workflow_duplicate.response) assert.equal(state.workflow_duplicate.response.recorded, false);
+  }
   else assert.equal(state.workflow_duplicate.response.recorded, false);
   assert.equal(state.parent_delivery.workflow_id, workflowId);
   assert.equal(state.parent_delivery.run_id, observation.run_id);
@@ -76,6 +79,8 @@ export function checkActivityDeadlineReceipts(fixture, observation, workflowId, 
   assert.equal(state.after_retry.events.length, 6);
   if (spec.active_receipt_control) {
     activityReceipt(state.active_before_expiry);
+    assert(state.active_before_expiry_elapsed_seconds >= 0);
+    assert(state.active_before_expiry_elapsed_seconds < spec.schedule_to_close_timeout);
     assert.equal(state.committed.status, 'waiting');
     assert.equal(state.active_after_expiry.status, 'waiting');
     assert.equal(state.committed.events.length, 7);
@@ -123,6 +128,11 @@ export function checkActivityDeadlineReceipts(fixture, observation, workflowId, 
     'Submitted duplicate bytes match the original; terminal metadata alone does not prove content verification');
   assert.notEqual(activity[1].request_body, activity.at(-1).request_body);
   assert.deepEqual(activity[duplicateIndex].response, state.duplicate.response);
+  assert.equal(activity[duplicateIndex].status, state.duplicate.status);
+  if (spec.active_receipt_control) {
+    assert.equal(activity[2].status, state.active_before_expiry.status);
+    assert.deepEqual(activity[2].response, state.active_before_expiry.response);
+  }
   assert.deepEqual(activity.at(-1).response, state.conflict.response);
   const workflow = wire.filter(row => row.method === 'POST' && /\/workflow-tasks\/[^/]+\/complete$/.test(row.path));
   assert.equal(workflow.length, 3);

@@ -81,6 +81,7 @@ function activityDeadlineReceiptsHttpObservation(array $fixture, array $options)
         }
         $finish = [['type' => 'complete_workflow', 'result' => $client->payloadCodec()->envelope($fixture['input'])]];
         $activeControl = (bool) ($spec['active_receipt_control'] ?? false);
+        $activeBeforeElapsed = $activeControl ? microtime(true) - $admittedAt : null;
         $activeBefore = $activeControl ? namespaceReceipt('active-before-expiry', static fn (): array => $client->completeActivityTask(
             $second['task_id'], $second['activity_attempt_id'], $second['lease_owner'], $fixture['input'])) : null;
         $workflowCompletion = $activeControl ? null : $client->completeWorkflowTask($parent['task_id'], $parent['lease_owner'],
@@ -114,7 +115,8 @@ function activityDeadlineReceiptsHttpObservation(array $fixture, array $options)
             'second_attempt' => $second, 'after_retry' => $retried, 'activity_completion' => $completion,
             'parent_delivery' => $parent, 'workflow_command' => $finish, 'workflow_completion' => $workflowCompletion,
             'committed' => $committed, 'duplicate' => $duplicate, 'conflict' => $conflict,
-            'active_before_expiry' => $activeBefore, 'active_after_expiry' => $activeAfter,
+            'active_before_expiry' => $activeBefore, 'active_before_expiry_elapsed_seconds' => $activeBeforeElapsed,
+            'active_after_expiry' => $activeAfter,
             'workflow_duplicate' => $workflowDuplicate,
             'requests' => array_map(static fn (string $line): array => json_decode($line, true, flags: JSON_THROW_ON_ERROR),
                 file($journal, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES))]];
