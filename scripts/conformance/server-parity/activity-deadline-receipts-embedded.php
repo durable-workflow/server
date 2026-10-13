@@ -126,6 +126,46 @@ function activityDeadlineReceiptsEmbeddedObservation(array $fixture, array $opti
         if ($second === null) usleep(25000);
     } while ($second === null);
     $retried = $snapshot();
+    if ($spec['global_timeout_control'] ?? false) {
+        $remaining = $admittedAt + $spec['schedule_to_close_timeout'] + 0.25 - microtime(true);
+        if ($remaining > 0) usleep((int) ceil($remaining * 1000000));
+        $budget();
+        $elapsed = microtime(true) - $admittedAt;
+        $status = $activityBridge->status($second['activity_attempt_id']);
+        $late = [
+            ['id' => 'complete', 'response' => $complete($second['activity_attempt_id'], $fixture['input'])],
+            ['id' => 'fail', 'response' => $activityBridge->fail($second['activity_attempt_id'], 'late global result')],
+            ['id' => 'heartbeat', 'response' => $activityBridge->heartbeat($second['activity_attempt_id'], ['message' => 'late global progress'])],
+        ];
+        $globalEnforcement = \Workflow\V2\Support\ActivityTimeoutEnforcer::enforce($second['activity_execution_id']);
+        $parents = $workflowBridge->poll('database', $id.'-workflow', 1, namespace: 'default');
+        if (count($parents) !== 1) throw new RuntimeException('Original global-timeout parent missing');
+        $parent = $workflowBridge->claimStatus($parents[0]['task_id'], $id.'-parent-worker');
+        if (! $parent['claimed']) throw new RuntimeException('Original global-timeout parent refused');
+        $delivery = $workflowBridge->historyPayload($parent['task_id']);
+        $parentRow = \Workflow\V2\Models\WorkflowTask::query()->findOrFail($parent['task_id']);
+        $parent = [...$parent, 'workflow_id' => $parent['workflow_instance_id'], 'run_id' => $parent['workflow_run_id'],
+            'workflow_task_attempt' => $parentRow->attempt_count, 'history_events' => $delivery['history_events']];
+        $after = $snapshot();
+
+        return [...$after, 'status' => 'global_deadline_observed',
+            'workflow_source' => \Composer\InstalledVersions::getReference('durable-workflow/workflow'),
+            'embedded_composer_lock_sha256' => hash_file('sha256', $root.'/composer.lock'),
+            'activity_deadline_receipts' => ['driver' => 'real_queue_then_public_embedded_bridges',
+                'overall_budget_seconds' => $spec['overall_budget_seconds'], 'global_elapsed_seconds' => $elapsed,
+                'workflow_task' => [...$original[0], 'workflow_id' => $id, 'run_id' => $runId,
+                    'task_id' => $original[0]['id'], 'workflow_task_attempt' => $original[0]['attempt_count']],
+                'authored_options' => ParityReceiptState::$authoredOptions[0], 'worker_output' => $workerOutput,
+                'activity_invocations' => ParityReceiptState::$activityInvocations,
+                'first_enforcement' => $enforcement, 'global_enforcement' => $globalEnforcement,
+                'first_attempt' => $first, 'before_expiry' => $before, 'first_refusal' => $refused,
+                'second_attempt' => $second, 'after_retry' => $retried, 'status_after_expiry' => $status,
+                'late_outcomes' => $late, 'parent_delivery' => $parent, 'requests' => [],
+                'post_expiry_activity_polls' => [$activityBridge->poll('database', $id.'-activity', 1, namespace: 'default')],
+                'extra_parent_poll' => $workflowBridge->poll('database', $id.'-workflow', 1, namespace: 'default'),
+                'bridge_calls' => $calls, 'claim_observations' => $claimObservations,
+                'definition_sha256' => hash_file('sha256', __FILE__)]];
+    }
     $completion = $complete($second['activity_attempt_id'], $fixture['input']);
     $parents = $workflowBridge->poll('database', $id.'-workflow', 1, namespace: 'default');
     if (count($parents) !== 1) throw new RuntimeException('Original successful retry parent missing');

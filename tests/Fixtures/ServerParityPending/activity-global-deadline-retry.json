@@ -1,0 +1,21 @@
+{
+  "id": "activity-global-deadline-retry",
+  "workflow_type": "parity.v1.activity_deadline_receipts",
+  "input": {"integer": 9007199254740993, "optional": null, "unicode": "global retry λ"},
+  "typed_value": {"type": "map", "value": {
+    "integer": {"type": "int64", "value": "9007199254740993"},
+    "optional": {"type": "null", "value": null},
+    "unicode": {"type": "string", "value": "global retry λ"}
+  }},
+  "activity_deadline_receipts": {
+    "start_to_close_timeout": 4,
+    "schedule_to_close_timeout": 8,
+    "max_attempts": 3,
+    "backoff_seconds": [1, 2, 5, 10, 15, 30, 60, 120],
+    "overall_budget_seconds": 35,
+    "ordinary_lease_seconds": 300,
+    "global_timeout_control": true
+  },
+  "expected_events": ["StartAccepted", "WorkflowStarted", "ActivityScheduled", "ActivityStarted", "ActivityRetryScheduled", "ActivityStarted", "ActivityTimedOut"],
+  "contract": "The first actual attempt crosses its four-second start-to-close boundary, then the same execution retries after its original one-second backoff. While its second attempt still has start-to-close time and a third attempt remains allowed, the original eight-second schedule-to-close bound expires. Exactly one schedule_to_close ActivityTimedOut must be recorded. Late completion, failure and heartbeat cannot publish an outcome or progress; no third activity delivery may appear. Retain the original parent timeout delivery without fabricating a workflow result. Preserve original run bounds, whole retry policy, task/attempt relationships, typed values and precise immutable history. Use real wall time with no database backdating or deadline extension."
+}

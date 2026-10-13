@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {gunzipSync, inflateSync, brotliDecompressSync} from 'node:zlib';
 import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
+import {checkActivityGlobalRetry} from './activity-global-retry-contract.mjs';
 
 export function checkActivityDeadlineReceiptPackages(fixture, observation, artifacts) {
   if (!fixture.activity_deadline_receipts) return;
@@ -20,6 +21,7 @@ export function checkActivityDeadlineReceiptPackages(fixture, observation, artif
 
 export function checkActivityDeadlineReceipts(fixture, observation, workflowId, instant) {
   const spec = fixture.activity_deadline_receipts, state = observation.activity_deadline_receipts;
+  if (spec.global_timeout_control) return checkActivityGlobalRetry(fixture, observation, workflowId, instant);
   assert(['http', 'embedded'].includes(observation.mode));
   const http = observation.mode === 'http';
   assert.equal(state.driver, http ? 'installed_sdk_worker_protocol' : 'real_queue_then_public_embedded_bridges');

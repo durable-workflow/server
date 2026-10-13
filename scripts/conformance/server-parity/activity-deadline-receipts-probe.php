@@ -76,6 +76,41 @@ function activityDeadlineReceiptsHttpObservation(array $fixture, array $options)
             }
         } while ($second === null);
         $retried = $snapshot();
+        if ($spec['global_timeout_control'] ?? false) {
+            $remaining = $admittedAt + $spec['schedule_to_close_timeout'] + 0.25 - microtime(true);
+            if ($remaining > 0) usleep((int) ceil($remaining * 1000000));
+            $budget();
+            $elapsed = microtime(true) - $admittedAt;
+            $status = $client->activityTaskStatus($second['task_id'], $second['activity_attempt_id'], $second['lease_owner']);
+            $late = [
+                namespaceReceipt('complete', static fn (): array => $client->completeActivityTask(
+                    $second['task_id'], $second['activity_attempt_id'], $second['lease_owner'], $fixture['input'])),
+                namespaceReceipt('fail', static fn (): array => $client->failActivityTask(
+                    $second['task_id'], $second['activity_attempt_id'], $second['lease_owner'], 'late global result')),
+                namespaceReceipt('heartbeat', static fn (): array => $client->heartbeatActivityTask(
+                    $second['task_id'], $second['activity_attempt_id'], $second['lease_owner'], ['message' => 'late global progress'])),
+            ];
+            $activityPolls = [];
+            do {
+                $budget();
+                $extraActivity = $client->pollActivityTask($activityWorker, $activityQueue, 0);
+                $activityPolls[] = $extraActivity;
+                $parent = $client->pollWorkflowTask($workflowWorker, $workflowQueue, 0);
+                if ($parent === null) usleep(25000);
+            } while ($parent === null);
+            $after = $snapshot();
+
+            return [...$after, 'status' => 'global_deadline_observed', 'activity_deadline_receipts' => [
+                'driver' => 'installed_sdk_worker_protocol', 'overall_budget_seconds' => $spec['overall_budget_seconds'],
+                'global_elapsed_seconds' => $elapsed, 'workflow_task' => $workflow, 'command' => $command,
+                'admission' => $admission, 'first_attempt' => $first, 'before_expiry' => $before,
+                'first_refusal' => $refused, 'second_attempt' => $second, 'after_retry' => $retried,
+                'status_after_expiry' => $status, 'late_outcomes' => $late, 'parent_delivery' => $parent,
+                'post_expiry_activity_polls' => $activityPolls,
+                'extra_parent_poll' => $client->pollWorkflowTask($workflowWorker, $workflowQueue, 0),
+                'requests' => array_map(static fn (string $line): array => json_decode($line, true, flags: JSON_THROW_ON_ERROR),
+                    file($journal, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES))]];
+        }
         $completion = $client->completeActivityTask($second['task_id'], $second['activity_attempt_id'],
             $second['lease_owner'], $fixture['input']);
         $parent = $client->pollWorkflowTask($workflowWorker, $workflowQueue, 0);
