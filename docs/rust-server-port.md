@@ -57,7 +57,20 @@ The next active slice is the separate
 [corrected marker/range cohort](rust-server-corrected-markers.md). It adds
 supported current readers and Rust authors to genuine numeric, duplicate-bound,
 clock, retry-policy and same-run repair cases. Existing frozen actors and
-histories remain unchanged. Published PHP remains the default; broader runtime
+histories remain unchanged. Five positive marker cases pass through the PHP
+reference and separately installed embedded roles. The additional published
+Rust completed-activity and timer-winner/pending-activity range directions
+pass the [original PHP recipes](https://github.com/durable-workflow/server/pull/435#issuecomment-6148196089),
+and the [embedded counterparts](https://github.com/durable-workflow/server/pull/435#issuecomment-6148451599)
+pass the unchanged PHP definitions. Those separate local recordings preserve
+35-second scenario budgets, original task repair, full prefixes/microclocks,
+typed values and neighboring runs; 100 actual-record negative controls pass.
+They do not qualify a matched native/database cohort. The embedded explicit
+retry-policy mismatch remains a retained failure; its coordinated
+[Workflow source correction](https://github.com/durable-workflow/workflow/pull/776)
+is delivered, with stable publication/adoption separate. Current Python clocks,
+native integration and new all-six/final/main qualification remain ahead.
+Published PHP remains the default; broader runtime
 parity, migration, matched performance and release/cutover remain unqualified.
 
 [#427](https://github.com/durable-workflow/server/pull/427) is merged and its
