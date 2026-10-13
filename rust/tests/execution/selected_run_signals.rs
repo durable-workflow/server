@@ -224,6 +224,22 @@ async fn selected_run_guards_and_durable_rejections_preserve_original_execution(
                 errors,
             )
             .await;
+        let described = scoped(
+            &app,
+            "alpha",
+            "GET",
+            &format!("/api/workflows/selected-original/runs/{run}"),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(described.0, StatusCode::OK, "{}", described.1);
+        assert_eq!(described.1["commands_scope"], "selected_run");
+        let journal = described.1["commands"].as_array().unwrap();
+        assert_eq!(journal.len(), index + 2);
+        assert_eq!(journal.last().unwrap()["id"], response.1["command_id"]);
+        assert_eq!(journal.last().unwrap()["status"], "rejected");
+        assert_eq!(journal.last().unwrap()["target_name"], name);
+        assert_eq!(journal.last().unwrap()["rejection_reason"], reason);
     }
     let accepted = scoped(&app, "alpha", "POST", &path, json!({"input":input})).await;
     assert_eq!(accepted.0, StatusCode::ACCEPTED, "{}", accepted.1);

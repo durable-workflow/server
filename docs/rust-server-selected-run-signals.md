@@ -98,5 +98,11 @@ selected runs remain zero-mutation guards. A real HTTP/physical-storage test
 fails on the previous native runtime, then passes after the correction. Local
 locked tests pass 33 unit cases and 79 execution cases; the 18 existing
 backend-dependent unit cases remain explicitly reserved for the hosted database
-jobs. Shared native recordings, all six exact candidate jobs and fresh main
-qualification are pending.
+jobs. The first real native recording completed its original PHP/PHP pair and
+stored 12 commands, but the strict reader failed on native describe's missing
+public command journal. The original remains failed with its sidecars and
+stopped database. The following correction projects committed command metadata
+without reading customer payloads and adds an actual HTTP assertion. A fresh
+shared native cohort, all six exact candidate jobs and fresh main qualification
+remain pending. Full command attribution, payload previews and broader
+visibility remain separate gates.

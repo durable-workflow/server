@@ -240,9 +240,34 @@ where
             status.as_str(),
             "completed" | "failed" | "cancelled" | "terminated"
         );
+        // Describe's public journal comes from committed rows, including
+        // refused signals which intentionally have no workflow history event.
+        // Select metadata only: large customer payloads are never decoded or
+        // copied merely to display the command's target and admission result.
+        let command_rows = Self::query("SELECT c.id,c.command_sequence,c.command_type,c.target_scope,c.requested_workflow_run_id,c.resolved_workflow_run_id,c.source,c.status,c.outcome,c.rejection_reason,c.workflow_type,c.workflow_class,c.accepted_at,c.applied_at,c.rejected_at,s.signal_name FROM workflow_commands c LEFT JOIN workflow_signal_records s ON s.workflow_command_id=c.id WHERE c.workflow_run_id=$1 AND c.workflow_instance_id=$2 ORDER BY c.command_sequence,c.created_at,c.id")
+            .bind(DB::string(&row, "id")?).bind(workflow_id).fetch_all(&self.pool).await?;
+        let mut commands = Vec::with_capacity(command_rows.len());
+        for command in command_rows {
+            let mut public = json!({"id":DB::string(&command,"id")?,"sequence":DB::optional_number(&command,"command_sequence")?,
+                "type":DB::string(&command,"command_type")?,"target_scope":DB::string(&command,"target_scope")?,
+                "requested_run_id":DB::optional_string(&command,"requested_workflow_run_id")?,
+                "resolved_run_id":DB::optional_string(&command,"resolved_workflow_run_id")?,
+                "target_name":DB::optional_string(&command,"signal_name")?,"source":DB::string(&command,"source")?,
+                "status":DB::string(&command,"status")?,"outcome":DB::optional_string(&command,"outcome")?,
+                "reason":DB::optional_string(&command,"rejection_reason")?,"rejection_reason":DB::optional_string(&command,"rejection_reason")?,
+                "workflow_type":DB::optional_string(&command,"workflow_type")?,"workflow_class":DB::optional_string(&command,"workflow_class")?,
+                "accepted_at":DB::optional_instant(&command,"accepted_at")?,"applied_at":DB::optional_instant(&command,"applied_at")?,
+                "rejected_at":DB::optional_instant(&command,"rejected_at")?});
+            public
+                .as_object_mut()
+                .expect("command object")
+                .retain(|_, value| !value.is_null());
+            commands.push(public);
+        }
         Ok(
             json!({"workflow_id": workflow_id, "run_id": DB::string(&row,"id")?, "workflow_type": DB::string(&row,"workflow_type")?,
             "namespace": self.namespace.as_ref(), "task_queue": DB::string(&row,"queue")?, "status": status,
+            "commands_scope":"selected_run","commands":commands,
             "status_bucket": super::visibility::status_bucket(&status)?,
             "is_current_run": DB::optional_string(&row,"current_run_id")?.as_deref() == Some(DB::string(&row,"id")?.as_str()),
             "run_count": DB::number(&row,"run_count")?,

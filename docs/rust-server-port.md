@@ -47,8 +47,12 @@ passes all six HTTP directions and canonical embedded counterparts at
 `e077ee4e60ceb9b3dfe6d2259fdc341f63ffbcec`: 24 original runs, 116 full sidecars,
 588 byte-checked exchanges and 300 real-record reader guards. Frozen Rust's
 optional variadic contract lacks an invalid-argument refusal gate; the separate
-PHP/Python-author gate omits its required argument. Native implementation and
-all-six candidate/fresh-main qualification remain pending. Published PHP remains the default; full runtime parity,
+PHP/Python-author gate omits its required argument. Native routing and durable
+rejections are implemented in the draft with passing focused storage/HTTP and
+local native regressions. The first real native pair completed but its strict
+record failed on the missing public command journal; the original is retained
+and the metadata projection is qualifying before a fresh cohort. Shared native
+and all-six candidate/fresh-main qualification remain pending. Published PHP remains the default; full runtime parity,
 migration, matched performance and release/cutover remain unqualified.
 
 [#427](https://github.com/durable-workflow/server/pull/427) is merged and its
