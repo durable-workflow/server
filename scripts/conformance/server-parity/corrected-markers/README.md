@@ -30,8 +30,8 @@ queues. Their retry-policy argument is the actual original snapshot JSON. They
 author every known field and interval explicitly, refuse unsupported input,
 restore range `1..1`, and exclude the recorded decision with `2..2`. Pending
 repair replays the original three-second timer winner and awaits its retained
-activity handle. This source has an MSRV build check; actual shared admission,
-refusal, original-task repair and runtime observations remain required.
+activity handle. The separate published PHP-reference directions pass actual
+admission, refusal and original-task repair; native admission remains required.
 
 `rust-range-completed.json` and `rust-range-timer-pending.json` add that Rust
 direction to the original PHP 2.2.7 recipes. They preserve the original fixture
@@ -44,7 +44,11 @@ known fields and the full list. Two separately queued real neighboring runs must
 histories and tasks. The embedded adapter executes the original PHP definitions
 and declares the Rust author direction inapplicable; it still checks the same
 durable refusal and repair boundary. Actual recordings remain required before
-either fixture is qualified.
+the whole corrected cohort is qualified. The two PHP-reference recordings and
+the original-definition embedded counterparts pass with independent database
+readback and 100 actual-record negative controls. Those independent local
+observations precede a matched native/six-database cohort; their recorded source
+revisions, manifests and original failures remain distinct.
 
 The five positive HTTP and embedded recordings are documented on the draft PR.
 The separate published embedded policy-refusal original remains failed; its
