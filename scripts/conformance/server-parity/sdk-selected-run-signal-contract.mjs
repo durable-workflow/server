@@ -17,6 +17,7 @@ const without = (row, fields) => Object.fromEntries(Object.entries(row).filter((
 export function selectedRunSignalFixture(fixture, peer = false) {
   const {selected_run_signal_pair: pair, ...run} = fixture;
   return {...run, selected_run_signal_run: peer ? 'peer' : 'primary', namespace_signal_run: peer ? 'peer' : 'primary',
+    selected_run_signal_validation: pair.invalid_arguments,
     ...(peer ? {namespace: pair.peer_namespace, signal_value: pair.peer_signal_value, typed_signal_value: pair.typed_peer_signal_value} : {})};
 }
 
@@ -81,6 +82,10 @@ function checkRejectionMutation(control, ids, runs, receipt, reason, outcome, co
 
 export function checkSelectedRunSignalPair(fixture, observation, workflowId, checkRun) {
   const spec = fixture.selected_run_signal_pair, pair = observation.selected_run_signal_pair;
+  const validatesArguments = fixture.sdk_signal_direction.workflow !== 'rust';
+  const terminalSequence = validatesArguments ? 6 : 5;
+  assert.deepEqual(spec.invalid_arguments, validatesArguments ? {applicable: true, strategy: 'omit_required_argument'}
+    : {applicable: false, reason: 'published_rust_signal_contract_is_optional_variadic_untyped'});
   assert.equal(fixture.namespace, 'parity-signals-left'); assert.equal(spec.peer_namespace, 'parity-signals-right');
   assert.equal(spec.run_budget_seconds, 35); assert.equal(spec.pair_budget_seconds, 70);
   assert.equal(spec.same_workflow_type_and_queue, true); assert.equal(spec.both_original_runs_wait_before_delivery, true);
@@ -110,7 +115,8 @@ export function checkSelectedRunSignalPair(fixture, observation, workflowId, che
   }
   assert.deepEqual(pair.controls.map(control => [control.phase, control.target_run]), [
     ['foreign-signal', 0], ['mismatched-run', 0], ['foreign-signal', 1], ['mismatched-run', 1],
-    ['unknown-signal', 0], ['invalid-signal', 0], ['unknown-signal', 1], ['invalid-signal', 1], ['inactive-signal', 0], ['inactive-signal', 1]]);
+    ['unknown-signal', 0], ...(validatesArguments ? [['invalid-signal', 0]] : []),
+    ['unknown-signal', 1], ...(validatesArguments ? [['invalid-signal', 1]] : []), ['inactive-signal', 0], ['inactive-signal', 1]]);
   const pids = [];
   for (const control of pair.controls) {
     const index = control.target_run, guard = ['foreign-signal', 'mismatched-run'].includes(control.phase);
@@ -170,23 +176,24 @@ export function checkSelectedRunSignalPair(fixture, observation, workflowId, che
     else {
       const [reason, outcome, sequence] = control.phase === 'unknown-signal' ? ['unknown_signal', 'rejected_unknown_signal', 2]
         : control.phase === 'invalid-signal' ? ['invalid_signal_arguments', 'rejected_invalid_arguments', 3]
-        : ['run_not_active', 'rejected_not_active', 6];
+        : ['run_not_active', 'rejected_not_active', terminalSequence];
       assert.equal(receipt.reason, reason); assert.equal(receipt.outcome, outcome);
       checkRejectionMutation(control, ids, runs, receipt, reason, outcome, sequence);
     }
   }
   checkState(pair.final_stored, ids, runs);
   for (const table of ['activity_attempts', 'activity_executions']) assert.deepEqual(rows(pair.final_stored, table), [], 'signal-only recipe admits no activities');
-  assert.equal(rows(pair.final_stored, 'workflow_commands').length, 12);
-  assert.equal(rows(pair.final_stored, 'workflow_signal_records').length, 10);
+  assert.equal(rows(pair.final_stored, 'workflow_commands').length, terminalSequence * 2);
+  assert.equal(rows(pair.final_stored, 'workflow_signal_records').length, (terminalSequence - 1) * 2);
   assert.equal(rows(pair.final_stored, 'workflow_history_events').length, observation.mode === 'embedded' ? 22 : 26);
   const tasks = rows(pair.final_stored, 'workflow_tasks'); assert.equal(tasks.length, 6);
   for (const task of tasks) { assert.equal(task.status, 'completed'); assert.equal(task.attempt_count, 1); assert.equal(task.repair_count, 0); }
   for (const [index, runId] of runs.entries()) {
     const commands = rows(pair.final_stored, 'workflow_commands').filter(row => row.workflow_run_id === runId).sort((a, b) => a.command_sequence - b.command_sequence);
-    assert.deepEqual(commands.map(row => row.command_sequence), [1, 2, 3, 4, 5, 6]);
-    assert.deepEqual(commands.map(row => row.message_sequence), [null, 1, 2, 3, 4, 5]);
-    assert.deepEqual(commands.map(row => row.outcome), ['started_new', 'rejected_unknown_signal', 'rejected_invalid_arguments', 'signal_received', 'signal_received', 'rejected_not_active']);
+    assert.deepEqual(commands.map(row => row.command_sequence), Array.from({length: terminalSequence}, (_, index) => index + 1));
+    assert.deepEqual(commands.map(row => row.message_sequence), [null, ...Array.from({length: terminalSequence - 1}, (_, index) => index + 1)]);
+    assert.deepEqual(commands.map(row => row.outcome), ['started_new', 'rejected_unknown_signal',
+      ...(validatesArguments ? ['rejected_invalid_arguments'] : []), 'signal_received', 'signal_received', 'rejected_not_active']);
     for (const command of commands) {
       assert.equal(command.workflow_instance_id, ids[index]); assert.equal(command.resolved_workflow_run_id, runId);
       const runScoped = observation.mode === 'embedded' && command.command_type === 'signal';
@@ -194,30 +201,40 @@ export function checkSelectedRunSignalPair(fixture, observation, workflowId, che
       assert.equal(command.requested_workflow_run_id, runScoped ? runId : null);
     }
     const signals = rows(pair.final_stored, 'workflow_signal_records').filter(row => row.workflow_run_id === runId);
-    assert.equal(signals.length, 5); assert.equal(signals.filter(row => row.status === 'applied').length, 2);
+    assert.equal(signals.length, terminalSequence - 1); assert.equal(signals.filter(row => row.status === 'applied').length, 2);
     for (const signal of signals) {
       const command = commands.find(row => row.id === signal.workflow_command_id); assert(command);
       for (const key of ['workflow_run_id', 'workflow_instance_id', 'command_sequence', 'outcome', 'target_scope', 'requested_workflow_run_id', 'resolved_workflow_run_id']) assert.equal(signal[key], command[key]);
-      const expectedArguments = command.command_sequence === 3 ? {type: 'list', value: []}
+      const expectedArguments = command.rejection_reason === 'invalid_signal_arguments' ? {type: 'list', value: []}
         : {type: 'list', value: [fixtures[index].typed_signal_value]};
       assert.deepEqual(pair.final_stored.decoded_values.workflow_signal_records[signal.id].arguments.typed_value, expectedArguments, 'durable signal keeps exact original argument types');
     }
     assert.deepEqual(pair.final_stored.decoded_values.workflow_runs[runId].output.typed_value, fixtures[index].typed_signal_value, 'durable output exact int64/null/Unicode');
     for (const [number, delivery] of observations[index].signal_deliveries.entries()) {
-      const command = commands[number + 3]; assert.equal(delivery.response.command_id, command.id);
-      assert.equal(delivery.response.command_sequence, number + 4);
+      const command = commands[number + (validatesArguments ? 3 : 2)]; assert.equal(delivery.response.command_id, command.id);
+      assert.equal(delivery.response.command_sequence, number + (validatesArguments ? 4 : 3));
       assert.equal(delivery.response.target_scope, command.target_scope);
       assert.equal(delivery.response.requested_run_id, command.requested_workflow_run_id);
     }
     const run = rows(pair.final_stored, 'workflow_runs').find(row => row.id === runId);
-    assert.equal(run.last_command_sequence, 6); assert.equal(run.message_cursor_position, 4);
-    assert.equal(rows(pair.final_stored, 'workflow_instances').find(row => row.id === ids[index]).last_message_sequence, 5);
+    assert.equal(run.last_command_sequence, terminalSequence); assert.equal(run.message_cursor_position, terminalSequence - 2);
+    assert.equal(rows(pair.final_stored, 'workflow_instances').find(row => row.id === ids[index]).last_message_sequence, terminalSequence - 1);
   }
   if (observation.mode !== 'embedded') {
+    for (const run of observations) {
+      const registration = run.sdk_signal_direction.phases[0].requests.find(wire => wire.path === '/api/worker/register');
+      const declarations = registration.request.workflow_command_contracts[fixture.workflow_type].signal_contracts;
+      const signal = declarations.find(value => value.name === 'payload'); assert(signal);
+      assert.equal(signal.parameters.length, 1);
+      const parameter = signal.parameters[0];
+      assert.equal(parameter.required, validatesArguments); assert.equal(parameter.variadic, !validatesArguments);
+      assert.equal(parameter.type, fixture.sdk_signal_direction.workflow === 'php' ? 'array' : null);
+    }
     const authors = observations.flatMap(run => run.sdk_signal_direction.phases.map(phase => phase.pid));
     assert.equal(new Set([...authors, ...pids]).size, authors.length + pids.length, 'every author/sender/control uses a distinct real process');
   }
   return {workflow_id: workflowId, primary: projections[0], peer: projections[1], selected_run_signals: {
-    supported_originals: 2, accepted_signals: 4, persisted_rejected_signals: 6, zero_mutation_guards: 4,
+    supported_originals: 2, accepted_signals: 4, persisted_rejected_signals: validatesArguments ? 6 : 4,
+    invalid_arguments_validation: spec.invalid_arguments, zero_mutation_guards: 4,
     exact_original_sequences: true, unchanged_original_budgets: true}};
 }

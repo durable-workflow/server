@@ -34,11 +34,17 @@ must not rebase a deadline or replace a failed original with a new run.
 | Two valid selected-current-run signals | Accepted | Preserve instance-scoped commands with null requested run and the exact resolved original run; finish once through cold authors. |
 | Signal the selected run after completion | Named `409` refusal | Persist a rejected command and signal without new workflow history or task repair. |
 
-The shared invalid-input case omits the required argument. Frozen Python 2.5.4
+The PHP/Python-author invalid-input case omits the required argument. Frozen Python 2.5.4
 declares its signal parameter without a type and legitimately admits integer
 `17`; the initial HTTP recording preserves that admission and stops. The earlier
 PHP/PHP typed mismatch remains a distinct reference case. Do not infer a typed
 Python declaration or alter its frozen author to obtain a refusal.
+Frozen Rust 3.4.4 declares an optional, variadic, untyped argument vector. Its two
+directions explicitly lack an invalid-argument refusal gate; their embedded
+counterparts use the same selected recipe without that extra command. All six
+still check unknown/inactive durable rejections and zero-mutation scope guards.
+Typed Rust signal admission needs a separately qualified author contract; it is
+not inferred from these fixtures.
 
 The successful HTTP selected-current-run guard does not convert an accepted
 command to run scope. Embedded uses the public selected `WorkflowStub` directly;
@@ -54,6 +60,10 @@ start has none. The published PHP/PHP reference pair has 12 commands, 10 signals
 (four applied / six rejected), 26 events, six completed tasks at attempt one and
 zero repairs. These are proving expectations for that recipe, not fabricated
 results for other directions.
+The Rust-author recipe omits invalid `3`: accepted commands use `3` and `4`,
+inactive uses `5`, and message positions are `1` through `4`. Its pair must have
+10 commands, eight signals (four applied / four rejected) and six completed
+attempt-one tasks, with the same complete history inventory for its mode.
 
 ## Qualification gates
 

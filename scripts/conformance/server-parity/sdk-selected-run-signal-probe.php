@@ -18,6 +18,7 @@ function selectedRunSignalFixture(array $fixture, bool $peer): array
     $pair = $fixture['selected_run_signal_pair'];
     unset($fixture['selected_run_signal_pair']);
     $fixture['selected_run_signal_run'] = $peer ? 'peer' : 'primary';
+    $fixture['selected_run_signal_validation'] = $pair['invalid_arguments'];
     // The existing author and transport recorder already support explicit
     // namespace headers. This marker selects capture, not an API rewrite.
     $fixture['namespace_signal_run'] = $peer ? 'peer' : 'primary';
@@ -119,7 +120,9 @@ function selectedRunSignalHttpObservation(array $fixture, array $options): array
         }
         foreach ([0, 1] as $index) {
             $control('unknown-signal', $index, $index, $runs[$index]);
-            $control('invalid-signal', $index, $index, $runs[$index]);
+            if ($fixture['selected_run_signal_pair']['invalid_arguments']['applicable']) {
+                $control('invalid-signal', $index, $index, $runs[$index]);
+            }
         }
         foreach (['signal-1' => 'resumed', 'signal-2' => 'replacement'] as $signal => $author) {
             foreach ([0, 1] as $index) {
@@ -213,7 +216,7 @@ function selectedRunSignalEmbeddedObservation(array $fixture, string $workflowId
     $work();
     $snapshots = static fn (): array => array_map(namespaceEmbeddedRun(...), $runs);
     $stored = static fn (): array => selectedRunSignalStoredState($ids, $runs,
-        static fn (array $frame): mixed => \Workflow\Serializer::unserializeWithCodec($frame['codec'], $frame['blob']));
+        static fn (array $frame): mixed => \Workflow\Serializers\Serializer::unserializeWithCodec($frame['codec'], $frame['blob']));
     $state['initial'] = $snapshots();
     foreach ($state['initial'] as $initial) {
         if ($initial['status'] !== 'waiting') { throw new RuntimeException('Both embedded originals must wait before signals.'); }
@@ -240,7 +243,9 @@ function selectedRunSignalEmbeddedObservation(array $fixture, string $workflowId
     }
     foreach ([0, 1] as $index) {
         $control('unknown-signal', $index, $index, $runs[$index]);
-        $control('invalid-signal', $index, $index, $runs[$index]);
+        if ($fixture['selected_run_signal_pair']['invalid_arguments']['applicable']) {
+            $control('invalid-signal', $index, $index, $runs[$index]);
+        }
     }
     for ($signal = 0; $signal < 2; ++$signal) {
         foreach ([0, 1] as $index) {

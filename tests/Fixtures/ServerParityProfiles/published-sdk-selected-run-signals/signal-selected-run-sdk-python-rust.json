@@ -92,6 +92,10 @@
   ],
   "contract": "Pending separate selected-run signal qualification. Two original named-namespace runs retain their identities, waits and exact values. Actual PHP/Rust SDK selected-run methods refuse wrong namespace and mismatched run without persisted mutation, persist unknown/invalid/inactive rejected commands and signals with ordered sequences, accept two signals per run through cold authors, and preserve strict whole history and task relationships. Original 35-second run/70-second pair/75-second outer ceilings and runtime caps remain fixed. Python 2.5.4 is an author only. No older-run continuation race, full auth, external-payload, current-release, migration or performance claim.",
   "selected_run_signal_pair": {
+    "invalid_arguments": {
+      "applicable": true,
+      "strategy": "omit_required_argument"
+    },
     "peer_namespace": "parity-signals-right",
     "pair_budget_seconds": 70,
     "run_budget_seconds": 35,

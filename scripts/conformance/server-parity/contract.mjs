@@ -359,7 +359,7 @@ export function checkObservation(fixture, observation, workflowId) {
       equal(satisfied.payload.signal_wait_id, received.payload.signal_wait_id, 'condition resolution signal wait relationship');
       nonempty(received.payload.signal_wait_id, 'signal routing wait identity');
       equal(cursor.payload.stream_key, `instance:${workflowId}`, 'message cursor stream');
-      const rejectedOffset = fixture.selected_run_signal_run ? 2 : 0;
+      const rejectedOffset = fixture.selected_run_signal_run ? (fixture.selected_run_signal_validation.applicable ? 2 : 1) : 0;
       const previousPosition = index === 0 ? updateCount : index + updateCount + rejectedOffset;
       const newPosition = index + updateCount + rejectedOffset + 1;
       equal(cursor.payload.previous_position, previousPosition, 'message cursor previous position');
