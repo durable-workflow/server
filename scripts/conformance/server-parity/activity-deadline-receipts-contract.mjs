@@ -45,11 +45,17 @@ export function checkActivityDeadlineReceipts(fixture, observation, workflowId, 
   assert.notEqual(second.activity_attempt_id, first.activity_attempt_id);
   assert.equal(state.activity_completion.recorded, true);
   assert.equal(state.workflow_completion.recorded, true);
-  assert.equal(state.duplicate.status, 200);
-  assert.equal(state.duplicate.response.recorded, false);
+  const activityReceipt = receipt => {
+    assert([200, 409].includes(receipt.status), 'Retained receipt or permitted closed-attempt response');
+    assert.equal(receipt.response.recorded, false);
+    assert.equal(receipt.response.outcome, 'completed');
+    if (receipt.status === 409) assert.equal(receipt.response.reason, 'stale_attempt');
+  };
+  activityReceipt(state.duplicate);
   assert.equal(state.conflict.status, 409);
-  assert.equal(state.workflow_duplicate.status, 200);
-  assert.equal(state.workflow_duplicate.response.recorded, false);
+  assert([200, 409].includes(state.workflow_duplicate.status));
+  if (state.workflow_duplicate.status === 409) assert.equal(state.workflow_duplicate.response.reason, 'run_closed');
+  else assert.equal(state.workflow_duplicate.response.recorded, false);
   assert.equal(state.parent_delivery.workflow_id, workflowId);
   assert.equal(state.parent_delivery.run_id, observation.run_id);
   assert.notEqual(state.parent_delivery.task_id, state.workflow_task.task_id);
@@ -68,7 +74,15 @@ export function checkActivityDeadlineReceipts(fixture, observation, workflowId, 
   }
   assert.equal(state.before_expiry.events.length, 4);
   assert.equal(state.after_retry.events.length, 6);
-  assert.deepEqual(state.committed.events, events, 'Elapsed duplicates/conflict leave every original event unchanged');
+  if (spec.active_receipt_control) {
+    activityReceipt(state.active_before_expiry);
+    assert.equal(state.committed.status, 'waiting');
+    assert.equal(state.active_after_expiry.status, 'waiting');
+    assert.equal(state.committed.events.length, 7);
+    assert.deepEqual(state.committed.events, state.active_after_expiry.events,
+      'Before/after expiry duplicates leave the active parent and entire committed prefix unchanged');
+    assert.deepEqual(events.slice(0, 7), state.committed.events);
+  } else assert.deepEqual(state.committed.events, events, 'Elapsed duplicates/conflict leave every original event unchanged');
   const scheduled = events[2], started = events[3], retry = events[4], restarted = events[5], completed = events[6];
   for (const event of [scheduled, started, retry, restarted, completed]) {
     assert.equal(event.payload.activity_execution_id, first.activity_execution_id);
@@ -98,20 +112,26 @@ export function checkActivityDeadlineReceipts(fixture, observation, workflowId, 
       response: row.response_body ? JSON.parse(row.response_body) : null};
   });
   const activity = wire.filter(row => row.method === 'POST' && /\/activity-tasks\/[^/]+\/complete$/.test(row.path));
-  assert.equal(activity.length, 4);
-  assert.deepEqual(activity.map(row => row.status), [409, 200, 200, 409]);
+  assert.equal(activity.length, spec.active_receipt_control ? 5 : 4);
+  const duplicateIndex = spec.active_receipt_control ? 3 : 2;
+  assert.equal(activity[0].status, 409);
+  assert.equal(activity[1].status, 200);
+  assert.equal(activity.at(-1).status, 409);
   assert.equal(activity[0].request.activity_attempt_id, first.activity_attempt_id);
   assert.equal(activity[1].request.activity_attempt_id, second.activity_attempt_id);
-  assert.equal(activity[1].request_body, activity[2].request_body, 'Identical original committed receipt bytes');
-  assert.notEqual(activity[1].request_body, activity[3].request_body);
-  assert.deepEqual(activity[2].response, state.duplicate.response);
-  assert.deepEqual(activity[3].response, state.conflict.response);
+  for (const receipt of activity.slice(2, -1)) assert.equal(activity[1].request_body, receipt.request_body,
+    'Submitted duplicate bytes match the original; terminal metadata alone does not prove content verification');
+  assert.notEqual(activity[1].request_body, activity.at(-1).request_body);
+  assert.deepEqual(activity[duplicateIndex].response, state.duplicate.response);
+  assert.deepEqual(activity.at(-1).response, state.conflict.response);
   const workflow = wire.filter(row => row.method === 'POST' && /\/workflow-tasks\/[^/]+\/complete$/.test(row.path));
   assert.equal(workflow.length, 3);
-  assert.deepEqual(workflow.map(row => row.status), [200, 200, 200]);
+  assert.deepEqual(workflow.slice(0, 2).map(row => row.status), [200, 200]);
+  assert.equal(workflow[2].status, state.workflow_duplicate.status);
   assert.equal(workflow[1].request_body, workflow[2].request_body);
   assert.deepEqual(workflow[2].response, state.workflow_duplicate.response);
   return {fixture_id: fixture.id, workflow_id: workflowId, status: 'completed',
     attempts: 2, retry_events: 1, activity_completions: 1, workflow_completions: 1,
-    elapsed_identical_receipts: 'readable_without_mutation', conflicting_outcome: 'refused', policy};
+    elapsed_identical_receipts: 'one_original_commit_without_mutation',
+    content_equality_from_terminal_metadata: 'not_inferred', conflicting_outcome: 'refused', policy};
 }
