@@ -80,7 +80,10 @@ setup-loss regression pass with the locked PHP SDK. The initial path/typed-error
 reader failures remain unchanged. Native current-run signals, canonical refusal
 metadata and untimed condition waits are implemented and the new profile runs
 in all six database jobs. Candidate qualification and promotion are recorded below. Expanded jobs
-have a 35-minute ceiling; original run budgets and runtime caps stay fixed.
+have a 45-minute ceiling after the selected-run profile expanded their work;
+original run budgets and runtime caps stay fixed. The earlier 35-minute
+MySQL cancellations remain cancelled records, as detailed in the
+[selected-run qualification](rust-server-selected-run-signals.md).
 
 Exact `6bac8f677` [run 38304548447](https://github.com/durable-workflow/server/actions/runs/38304548447)
 passes five jobs and fails MariaDB. Independent original artifact review across

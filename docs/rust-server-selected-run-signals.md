@@ -20,7 +20,7 @@ Each observation retains two independently admitted original runs in distinct
 namespaces with the same workflow type and queue. Preserve their instance/run
 identities, prefixes, cold author replacements and exact Avro int64 values.
 Use the existing 35-second per-run, 70-second pair and 75-second outer ceilings,
-one CPU / 512 MiB runtime caps and 35-minute expanded job ceiling. Qualification
+one CPU / 512 MiB runtime caps and 45-minute expanded job ceiling. Qualification
 must not rebase a deadline or replace a failed original with a new run.
 
 ## HTTP and persisted state
@@ -115,3 +115,21 @@ rows and every other event field. Added real-record corruptions reject extra
 wrapper fields, a different codec and changed bytes. All 336 checks pass against
 the untouched six PHP and six embedded originals. This representation check
 does not convert a failed recording into a runtime pass or establish migration.
+
+Fresh matched SQLite records at `53cbd98d` pass all six PHP, embedded and native
+directions, with 18 paired observations, 36 original runs and 516 real-record
+reader checks. The [local receipt](https://github.com/durable-workflow/server/pull/434#issuecomment-6139324020)
+retains both native failures rather than relabeling them.
+
+Candidate [run 38353201135](https://github.com/durable-workflow/server/actions/runs/38353201135)
+passes SQLite, PostgreSQL 16/17 and MariaDB 10.11. Their original archives,
+upload digests, exact runner and both signal profiles are independently audited.
+MySQL 8.0/8.4 remain cancelled: GitHub records that each exceeded the original
+35-minute whole-job ceiling. MySQL 8.4 completed checks and cleanup but crossed
+the ceiling during artifact retention; MySQL 8.0 was cancelled during the later
+database-pressure cohort and skipped TLS verification. Both main comparison
+steps passed before cancellation, which does not qualify either complete job.
+The expanded runtime jobs now have a 45-minute ceiling to include setup,
+all profiles, cleanup and original artifact retention. Per-run, paired and outer
+fixture deadlines, runtime caps, frozen tuples and original outcomes are unchanged.
+A new exact candidate and fresh main remain required before promotion.
