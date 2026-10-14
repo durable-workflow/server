@@ -6,25 +6,45 @@ The unpublished Rust crate has an Avro foundation and an opt-in SQLite/PostgreSQ
 execution slice. Full runtime parity, migration, performance improvement and
 cutover remain unqualified.
 
-Query slice #341 adds a shared state query before signals, after one delivery,
-and after completion. The [hosted matrix](https://github.com/durable-workflow/server/actions/runs/37981215484)
-on [06499eb7](https://github.com/durable-workflow/server/commit/06499eb7)
-passes all eight PHP/Rust/embedded fixtures on SQLite, PostgreSQL 16/17,
-MySQL 8.0/8.4 and MariaDB 10.11. It also passes native query lease/limit tests,
-complete schema qualification and actual process-kill recovery of pending
-timers/signals and leased activities. This qualifies these representative cases;
-full query semantics, #325, takeover and performance remain open.
-Native admission uses immutable quiescent snapshots,
-original query contracts and leased transient tasks in a separate native
-`dw_query_cache` table. The frozen PHP schema has no Laravel cache table;
-development schema version 3 adds only native bookkeeping and refuses older
-native development databases. PHP-owned relations remain unchanged.
-Arguments/results use the official codec outside Tokio executor threads.
-Bounded pending/result inventory, expiry, independent-pool completion and stale
-fences have dedicated tests. Busy workflow/query routing and query poll-request
-receipts remain unqualified; the latter capability is advertised as false.
+The latest delivered main foundation is [#444](https://github.com/durable-workflow/server/pull/444),
+including initial portable memo and the earlier corrected marker/clock/retry
+profiles. Its exact merged main passes [all 13 shared jobs across six databases](https://github.com/durable-workflow/server/actions/runs/38599251632)
+and normal source/boundary checks. Frozen published PHP, embedded and SDK tuples
+remain separate from current PHP release work. Representative timer, signal,
+query, update, activity, cancellation, namespace and recovery checks do not
+establish complete parity for those families. The original failed records remain
+failed; later qualifying runs are separate observations.
 
 ## Work order and current status
+
+The active integration order is:
+
+- [#445](https://github.com/durable-workflow/server/pull/445): canonical memo
+  transaction foundation, with public updates still disabled. Its current-main
+  combined [qualification](https://github.com/durable-workflow/server/actions/runs/38608723068)
+  is pending; the older source's pass is separate.
+- [#446](https://github.com/durable-workflow/server/pull/446): cold continue-as-new
+  after a genuine activity. Prior candidate qualification passes; exact current-main
+  integration, promotion and fresh-main acceptance remain ahead.
+- [#448](https://github.com/durable-workflow/server/pull/448): actual SDK memo
+  authoring and continuation inheritance. Its candidate passes all 13 shared
+  jobs across six databases; promotion and external-memo policy remain pending.
+- [#450](https://github.com/durable-workflow/server/pull/450): verified local
+  external input, workflow/activity results and activity arguments. Installed
+  PHP/native originals complete, and two-reference atomic rollback/cold delivery
+  controls pass. Latest-source hosted qualification is pending. The older
+  byte-only source passes its own full matrix. One local 100 ms transfer control
+  failed; three isolated controls and an unchanged full repeat pass, with the
+  original cause still unknown.
+
+Full transport discovery stays unadvertised. Complete batch workflow semantics,
+memo/query reference ingress, upload allowances, automatic result policy, S3,
+cleanup/backup/restart and full database/consumer qualification remain open.
+Broader runtime/operational parity, safe sequential PHP database takeover,
+matched performance measurements and release/cutover preparation remain #325
+requirements. No native release or deployment is qualified.
+
+### Earlier external input and byte milestones
 
 External workflow inputs now retain their verified opaque reference in the same
 native transaction as start admission. Failed starts roll that retention back.
