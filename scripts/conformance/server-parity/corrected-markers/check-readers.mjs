@@ -62,6 +62,17 @@ if (original.mode === 'http' && fixture.corrected_markers.retire_killed_producer
     'retired wrong worker': value => { value.corrected_markers.phases.original.actor.registration_retirement.worker_id = 'different'; },
     'missing actual retirement request': value => { value.corrected_markers.requests = value.corrected_markers.requests.filter(item => item.method !== 'DELETE'); },
   });
+  if (original.corrected_markers.requests.some(item=>item.client_cancelled&&!item.upstream_request_started)) {
+    const unsent=value=>value.corrected_markers.requests.find(item=>item.client_cancelled&&!item.upstream_request_started);
+    Object.assign(mutations, {
+      'unsent cancellation claims received body':value=>{unsent(value).request_body_complete=true;},
+      'unsent cancellation invents request authority':value=>{unsent(value).request_body='{}';},
+      'unsent cancellation invents forwarding':value=>{unsent(value).upstream_request_started=true;},
+      'unsent cancellation invents response':value=>{unsent(value).status=200;},
+      'unsent cancellation lacks original registration':value=>{value.corrected_markers.requests=value.corrected_markers.requests.filter(item=>
+        item.path!=='/api/worker/register'||JSON.parse(item.request_body).worker_id!==value.workflow_id+':workflow:original');},
+    });
+  }
 }
 for (const [name, mutate] of Object.entries(mutations)) {
   const corrupted = structuredClone(original);
