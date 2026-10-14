@@ -181,7 +181,7 @@ mod tests {
         let input = json!({"codec":"avro", "blob":ValueCodec::new().unwrap().encode(&Payload::Array(vec![])).unwrap()});
         let mut runs = Vec::new();
         for id in ["ordering-a", "ordering-b"] {
-            let started = store.start(json!({"workflow_id":id,"workflow_type":"echo","task_queue":"test","input":input})).await.unwrap();
+            let started = store.start(json!({"workflow_id":id,"workflow_type":"echo","task_queue":"test","input":input}), Default::default()).await.unwrap();
             runs.push(started["run_id"].as_str().unwrap().to_owned());
         }
         // Storage representation regression only: these rows are not shared

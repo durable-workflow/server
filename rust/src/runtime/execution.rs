@@ -231,7 +231,15 @@ impl Runtime {
     delegate!(describe_namespace(name: &str) -> Result<Value>);
     delegate!(create_namespace(body: Value) -> Result<Value>);
     delegate!(database_live() -> bool);
-    delegate!(start(body: Value) -> Result<Value>);
+    pub(crate) async fn start(&self, body: Value) -> Result<Value> {
+        let memo =
+            super::memos::prepare_initial(self.signal_codec.clone(), body["memo"].clone()).await?;
+        match &*self.storage {
+            Storage::Sqlite(store) => store.start(body, memo).await,
+            Storage::Postgres(store) => store.start(body, memo).await,
+            Storage::MySql(store) => store.start(body, memo).await,
+        }
+    }
     pub(crate) async fn create_schedule(&self, body: Value, context: Value) -> Result<Value> {
         let definition = super::schedules::definition(&body, super::store::now())?;
         let arguments = super::envelope(&definition.action, "input")?;

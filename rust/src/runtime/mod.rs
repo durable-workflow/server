@@ -12,6 +12,8 @@ mod control_plane;
 mod cooperative;
 mod execution;
 mod http;
+mod memo_json;
+mod memos;
 pub mod mysql;
 mod namespaces;
 pub mod postgres;

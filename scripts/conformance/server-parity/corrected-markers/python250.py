@@ -8,6 +8,7 @@ import sys
 import tempfile
 
 from durable_workflow import ActivityRetryPolicy, Client, Worker, workflow
+from admission_receipt import admission_acknowledged
 
 URL, MODE, WORKFLOW_ID, RUN_ID, CASE, PROFILE, POLICY, INPUT = sys.argv[1:9]
 VALUE = json.loads(INPUT)
@@ -38,8 +39,9 @@ async def author():
 async def checkpoint():
     assert importlib.metadata.version("durable-workflow") == "2.5.0"
     assert (MODE, CASE, PROFILE, POLICY) == ("workflow", "genuine_one", "original", "empty")
-    # The author is killed only after a real committed ActivityScheduled event.
-    # Its distinct PID and -SIGKILL receipt survive in the phase observation.
+    journal_path = os.environ["DW_PARITY_HTTP_JOURNAL"]
+    # This fixture requires both durable admission and its observed response.
+    # Killing on history alone can cancel the still-returning completion.
     with tempfile.TemporaryFile(mode="w+t") as trace:
         child = subprocess.Popen([sys.executable, __file__, *sys.argv[1:9], "author"], stdout=trace)
         try:
@@ -48,11 +50,16 @@ async def checkpoint():
                     while True:
                         page = await client.get_history(WORKFLOW_ID, RUN_ID, page_size=1000)
                         events = page["events"]
-                        if any(event["event_type"] == "ActivityScheduled" for event in events):
+                        scheduled = next((event for event in events
+                                          if event["event_type"] == "ActivityScheduled"), None)
+                        if scheduled is not None:
                             markers = [event for event in events if event["event_type"] == "VersionMarkerRecorded"]
                             assert [event["payload"]["version"] for event in markers] == [1, 1]
                             assert [(event["payload"]["min_supported"], event["payload"]["max_supported"]) for event in markers] == [(0, 1), (1, 1)]
-                            break
+                            with open(journal_path) as journal:
+                                if admission_acknowledged(journal, scheduled["payload"]["task"],
+                                                          WORKFLOW_ID + ":workflow:original"):
+                                    break
                         if child.poll() is not None:
                             raise RuntimeError("Historical author exited before the committed checkpoint")
                         await asyncio.sleep(.025)

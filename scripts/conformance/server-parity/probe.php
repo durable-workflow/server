@@ -867,6 +867,9 @@ try {
         } elseif ($mode === 'http') {
             $observation = activityDeadlineReceiptsHttpObservation($fixture, $options);
         } else throw new InvalidArgumentException('Mode must be http or embedded.');
+    } elseif (isset($fixture['memo_replay'])) {
+        require __DIR__.'/memo-probe.php';
+        $observation = memoObservation($fixture, $options);
     } elseif (isset($fixture['activity_deadline_authority'])) {
         require __DIR__.'/activity-deadline-probe.php';
         if ($mode === 'embedded') {

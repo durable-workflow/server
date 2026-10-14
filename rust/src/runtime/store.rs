@@ -21,6 +21,7 @@ pub(super) struct Store<DB: Backend> {
     pub(super) pool: Pool<DB>,
     pub(super) wake: Arc<Notify>,
     pub(super) namespace: Arc<str>,
+    pub(super) memo_codec: Arc<Semaphore>,
 }
 pub(super) fn id() -> String {
     Ulid::new().to_string()
@@ -59,6 +60,7 @@ where
             pool,
             wake: Arc::new(Notify::new()),
             namespace: "default".into(),
+            memo_codec: Arc::new(Semaphore::new(1)),
         }
     }
     pub(super) fn in_namespace(&self, namespace: &str) -> Self {
@@ -66,6 +68,7 @@ where
             pool: self.pool.clone(),
             wake: self.wake.clone(),
             namespace: namespace.into(),
+            memo_codec: self.memo_codec.clone(),
         }
     }
     pub(super) async fn database_live(&self) -> bool {
@@ -109,9 +112,13 @@ where
     pub(super) async fn begin(&self) -> Result<Transaction<'static, DB>> {
         DB::begin(&self.pool).await
     }
-    pub(crate) async fn start(&self, body: Value) -> Result<Value> {
+    pub(crate) async fn start(
+        &self,
+        body: Value,
+        memo: super::memos::PreparedMemo,
+    ) -> Result<Value> {
         let mut tx = self.begin().await?;
-        let started = Self::start_in(&mut tx, &body, &self.namespace).await?;
+        let started = Self::start_in(&mut tx, &body, &self.namespace, Some(&memo)).await?;
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok(started)
@@ -123,6 +130,7 @@ where
         tx: &mut Transaction<'_, DB>,
         body: &Value,
         namespace: &str,
+        memo: Option<&super::memos::PreparedMemo>,
     ) -> Result<Value> {
         let workflow_id = text(&body, "workflow_id")?;
         if workflow_id.len() > 128
@@ -150,8 +158,15 @@ where
                 "execution_timeout_seconds",
                 "run_timeout_seconds",
                 "duplicate_policy",
+                "memo",
             ],
         )?;
+        if memo.is_none() && body.get("memo").is_some_and(|value| !value.is_null()) {
+            return Err(refuse(
+                StatusCode::CONFLICT,
+                "workflow_memo_updates_unavailable",
+            ));
+        }
         if body
             .get("duplicate_policy")
             .is_some_and(|v| v != "fail" && v != "use-existing")
@@ -181,13 +196,33 @@ where
         let started_at = now();
         let execution_deadline = after(execution_timeout);
         let run_deadline = after(run_timeout.min(execution_timeout));
-        Self::query("INSERT INTO workflow_instances(id,workflow_type,workflow_class,current_run_id,run_count,execution_timeout_seconds,created_at,updated_at,started_at,namespace) VALUES ($1,$2,$3,$4,1,$5,$6,$7,$8,$9)")
+        let authored_memo = body
+            .get("memo")
+            .filter(|memo| memo.as_object().is_some_and(|entries| !entries.is_empty()))
+            .cloned()
+            .unwrap_or(Value::Null);
+        Self::query("INSERT INTO workflow_instances(id,workflow_type,workflow_class,current_run_id,run_count,execution_timeout_seconds,created_at,updated_at,started_at,namespace,memo) VALUES ($1,$2,$3,$4,1,$5,$6,$7,$8,$9,$10)")
             .bind(workflow_id).bind(workflow_type).bind(workflow_type).bind(&run_id).bind(execution_timeout)
-            .bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(namespace).execute(&mut **tx).await?;
+            .bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(namespace)
+            .bind(DB::optional_document(&authored_memo)).execute(&mut **tx).await?;
         Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,run_timeout_seconds,execution_deadline_at,run_deadline_at,started_at,created_at,updated_at,namespace) VALUES ($1,$2,$3,$4,1,'pending','avro',$5,$6,$7,$8,$9,$10,$11,$12,$13)")
             .bind(&run_id).bind(workflow_id).bind(workflow_type).bind(workflow_type).bind(&arguments)
             .bind(queue).bind(run_timeout).bind(DB::bind_time(execution_deadline)).bind(DB::bind_time(run_deadline))
             .bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(namespace).execute(&mut **tx).await?;
+        if let Some(memo) = memo {
+            for (key, value) in memo {
+                Self::query(DB::MEMO_INITIAL_INSERT)
+                    .bind(&run_id)
+                    .bind(workflow_id)
+                    .bind(key)
+                    .bind(DB::document(&value.projection))
+                    .bind(DB::bind_time(started_at))
+                    .bind(DB::bind_time(started_at))
+                    .bind(DB::document(&value.envelope))
+                    .execute(&mut **tx)
+                    .await?;
+            }
+        }
         Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,command_type,source,status,outcome,workflow_type,payload_codec,payload,command_sequence,accepted_at,applied_at) VALUES ($1,$2,$3,$4,'start','control_plane','accepted','started_new',$5,'avro',$6,1,$7,$8)")
             .bind(&command_id).bind(workflow_id).bind(&run_id).bind(&run_id).bind(workflow_type).bind(&arguments).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut **tx).await?;
         Self::query("UPDATE workflow_runs SET last_command_sequence=1 WHERE id=$1")
@@ -195,7 +230,8 @@ where
             .execute(&mut **tx)
             .await?;
         let identity = json!({"workflow_instance_id": workflow_id, "workflow_run_id": run_id,
-            "workflow_type": workflow_type, "workflow_class": workflow_type, "workflow_command_id": command_id});
+            "workflow_type": workflow_type, "workflow_class": workflow_type, "workflow_command_id": command_id,
+            "memo":authored_memo});
         let mut accepted = identity.clone();
         accepted["outcome"] = json!("started_new");
         Self::append(
@@ -235,6 +271,27 @@ where
             .bind(workflow_id).bind(run_id).bind(self.namespace.as_ref()).fetch_optional(&self.pool).await?
             .ok_or_else(|| refuse(StatusCode::NOT_FOUND, if run_id.is_some() {"run_not_found"} else {"instance_not_found"}))?;
         let output = DB::optional_string(&row, "output")?;
+        let memo_rows = Self::query(DB::MEMO_READ)
+            .bind(DB::string(&row, "id")?)
+            .fetch_all(&self.pool)
+            .await?;
+        let mut stored = Vec::with_capacity(memo_rows.len());
+        for memo in memo_rows {
+            let portable = if DB::optional_number(&memo, "portable_value_sequence")?
+                == Some(DB::number(&memo, "upserted_at_sequence")?)
+            {
+                DB::optional_document_row(&memo, "portable_value")?
+                    .filter(|value| value.is_object() || value.is_array())
+            } else {
+                None
+            };
+            stored.push((
+                DB::string(&memo, "key")?,
+                DB::document_row(&memo, "value")?,
+                portable,
+            ));
+        }
+        let memo = super::memos::read_stored(self.memo_codec.clone(), stored).await?;
         let status = DB::string(&row, "status")?;
         let terminal = matches!(
             status.as_str(),
@@ -272,7 +329,7 @@ where
             "is_current_run": DB::optional_string(&row,"current_run_id")?.as_deref() == Some(DB::string(&row,"id")?.as_str()),
             "run_count": DB::number(&row,"run_count")?,
             "is_terminal": terminal, "closed_reason": DB::optional_string(&row,"closed_reason")?, "run_number": DB::number(&row,"run_number")?,
-            "payload_codec": "avro", "input": null, "output": null,
+            "payload_codec": "avro", "input": null, "output": null, "memo": memo,
             "input_envelope": wire(&DB::string(&row,"arguments")?), "output_envelope": output.as_deref().map(wire),
             "started_at": DB::instant(&row,"started_at")?, "closed_at": DB::optional_instant(&row,"closed_at")?,
             "execution_timeout_seconds": DB::optional_number(&row,"execution_timeout_seconds")?,
@@ -1017,15 +1074,17 @@ where
                 payload["activity_attempt_id"] = json!(attempt_id);
                 payload["attempt_number"] = json!(attempt);
                 payload["task"] = json!({"id":task_id,"type":"activity","status":"leased",
+                    "repair_count":DB::number(&task,"repair_count")?,
                     "available_at":DB::optional_instant(&task,"available_at")?,"leased_at":leased_at,
                     "lease_owner":worker_id,"lease_expires_at":expires,"attempt_count":attempt,"queue":queue});
-                Self::append(
+                Self::append_at(
                     &mut tx,
                     &run_id,
                     "ActivityStarted",
                     payload,
                     Some(&task_id),
                     None,
+                    Some(started_at),
                 )
                 .await?;
                 claim["activity_execution_id"] = json!(activity_id);
@@ -1789,6 +1848,7 @@ where
         payload["attempt_number"] = json!(DB::number(&attempt, "attempt_number")?);
         payload["result"] = wire(&result);
         payload["task"] = json!({"id":task_id,"type":"activity","status":"leased",
+            "repair_count":DB::number(&task,"repair_count")?,
             "available_at":DB::optional_instant(&task,"available_at")?,"leased_at":DB::optional_instant(&task,"leased_at")?,
             "lease_owner":DB::optional_string(&task,"lease_owner")?,"attempt_count":DB::number(&task,"attempt_count")?});
         Self::append(
@@ -2040,6 +2100,18 @@ where
         task_id: Option<&str>,
         command_id: Option<&str>,
     ) -> Result<()> {
+        Self::append_at(tx, run_id, event_type, payload, task_id, command_id, None).await
+    }
+
+    async fn append_at(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        event_type: &str,
+        payload: Value,
+        task_id: Option<&str>,
+        command_id: Option<&str>,
+        recorded_at: Option<DateTime<Utc>>,
+    ) -> Result<()> {
         // The backend transition lock protects this read and write together.
         // MySQL has no UPDATE RETURNING; all adapters use this same allocation.
         let row = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
@@ -2055,7 +2127,7 @@ where
             .execute(&mut **tx)
             .await?;
         Self::query("INSERT INTO workflow_history_events(id,workflow_run_id,sequence,event_type,payload,workflow_task_id,workflow_command_id,recorded_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
-        .bind(id()).bind(run_id).bind(sequence).bind(event_type).bind(DB::document(&payload)).bind(task_id).bind(command_id).bind(DB::bind_time(now())).execute(&mut **tx).await?;
+        .bind(id()).bind(run_id).bind(sequence).bind(event_type).bind(DB::document(&payload)).bind(task_id).bind(command_id).bind(DB::bind_time(recorded_at.unwrap_or_else(now))).execute(&mut **tx).await?;
         Ok(())
     }
 

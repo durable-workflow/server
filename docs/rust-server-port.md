@@ -26,20 +26,112 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
-#443 candidate `4acb7a38` passes all 13 original jobs in `38508287656`: six
-CPU/deadline-health cells, six ordinary database cells and the SDK/build job.
-Source and boundary gates pass. The CI merge `edf48865` has the same complete
-tree `2c7ca0cd`; native `f8ca2ece`, optimized binary `a6bc79cf` and specification
-`377d5887` are exact. This verifies original activity expiry, timers, live lease
-renewal and canonical cleanup under the declared load. It does not establish a
-matched PHP/Rust performance result. The source now includes merged #438;
-fresh combined qualification and promotion remain pending.
+The #444 original MySQL 8.4 matrix on `95cd4efa` exposed a native activity
+clock disagreement: a retry was recorded 101 ms before its durable
+`ActivityStarted` timestamp plus the unchanged two-second start-to-close
+timeout. The attempt and deadline already use one original clock; history
+used a later publication clock after database writes. The correction records
+that original attempt-start instant in history, preserving the stored deadline
+and strict reader. A real MySQL control delays attempt insertion by 25 ms;
+the prior source fails with a 35 ms event/deadline disagreement. The corrected
+source passes that control and all four actual MySQL deadline/receipt/restart
+tests, plus 41 library and 89 SQLite HTTP tests (18 explicit external-database
+and subprocess ignores). The original hosted failure remains failed. This
+changes only new native activity-start events, with no PHP correction or
+rewriting of historical records.
+
+The pending [memo fixture](../scripts/conformance/server-parity/MEMOS.md)
+widens metadata coverage before native implementation. Normal installed PHP
+SDK 2.3.9 against the frozen Server 2.6.2 and embedded Workflow 2.5.16 complete
+the same original memo/activity/cold-replay recipe in three independent
+processes. The typed merge, two memo command sequences, exact original prefixes
+and one activity result agree. The PHP completed-task duplicate returns
+409 `task_not_leased` with completed status and no second effect. The first
+reader incorrectly required HTTP 200; this was a reader error, not a product
+defect or a stronger receipt contract. Full native parity, protocol/capability
+and limit refusals, inheritance and external payload gates remain ahead. Existing
+frozen profiles and default fixture discovery remain unchanged.
+The draft native foundation now persists initial JSON-like memos as both the
+PHP host's legacy projection and a sequence-bound Avro envelope. Reads preserve
+the current envelope's types and follow the published legacy fallback when the
+portable sequence is stale or its value is null. Official codec work runs on a
+bounded blocking worker. Focused codec and cold-storage controls pass locally;
+full SQLite regressions pass. Initial-memo three-runtime/all-database acceptance
+and the authored-upsert gate remain pending. Memo updates are still advertised
+as unsupported; no native release or same-database takeover is qualified.
+The existing corrected cohort now selects the separate initial-only memo case
+for all six cells. It checks original start-history metadata and genuine
+activity/cold replay across PHP, native and embedded targets without claiming
+upsert support. A source review corrected initial null entries to deletion and
+preserved authored metadata in both start events and the instance row. Fresh
+native and matched qualification of that revision is required. All 4,845 shared
+reader checks pass, with one explicit skip.
+
+Four further raw published admissions establish the JSON number boundary.
+Signed int64 maximum remains an Avro long; numbers immediately outside signed
+int64 and unsigned int64 maximum become doubles with the recorded exact bits.
+The [published storage observation](https://github.com/durable-workflow/server/pull/444#issuecomment-6164763709)
+corrects the draft's unsigned overflow refusal in memo JSON and legacy
+projections, including start-history metadata. Typed Avro long handling stays
+unchanged. These are admission/storage controls, not completed workflows.
+Revised native and matched qualification remains required.
+
+Final number-boundary matrix `38540906439` has twelve original passes and one
+MySQL 8.0 failure: the historical producer is killed after its commands commit
+but before the proxy observes the completion response. The strict reader
+correctly refuses that cancelled completion. Separate upsert-preparation matrix
+`38541216269` encounters the same checkpoint race in the Python-clock case on
+MySQL 8.4. Both failed originals remain unsuccessful. The producer checkpoint
+now requires the actual original admission receipt as well as durable history
+within its unchanged 30-second limit. It changes no SDK, reader, clock, receipt
+or frozen package contract. Four focused tests, fourteen refusal controls and
+both actual failed captures confirm that unacknowledged admission cannot trigger
+the kill. The actor helper is included in adapter source integrity checks.
+The next matched revision exposed a separate fixture limit: a legitimate
+4,955,564-byte PHP HTTP journal was rejected before its matching acknowledged
+admission could be read. MySQL 8.4 in `38549329699` and all three MySQL/MariaDB
+cells in `38549468335` remain failed. The observer now streams complete lines
+instead of imposing a total-file limit. Five tests retain all fourteen refusal
+controls and cover large journals without a receipt, a partial receipt and a
+complete matching receipt. The actual MariaDB journal passes the same unchanged
+identity checks. Fresh exact-source qualification is required before promotion.
+
+Seven actual raw JSON admissions on the frozen PHP image exposed an additional
+initial-memo boundary in #444. Empty objects and contiguous numeric-key objects
+become lists; sparse or mixed canonical numeric keys refuse; leading-zero
+string keys stay maps. Start history keeps PHP's decoded JSON shape, including
+an empty list and a reversed numeric-key object, while portable memo storage
+canonicalizes the latter to a list. The native correction uses a memo-specific
+serde visitor and separate storage conversion. It preserves unrelated request
+fields, top-level null metadata and typed Avro memo maps. The baseline native
+control reproduces the empty-object mismatch. Fresh exact-head shared checks
+are required; no memo-update capability is enabled.
 
 #438 is merged at `50ce8f42967bc14c0169fc31b16fbbbd5827528f`, complete tree
-`1065360b83f0dbf531a67a7af8edbece19b97fec` identical to reviewed `97e63c01`
-and CI merge `e8f4fc49`. All six original final candidate cells and applicable
-source/boundary gates pass. Exact fresh-main `38511209412` remains pending.
-Conditional cancellation/prepared-local checks remain explicitly skipped.
+`1065360b83f0dbf531a67a7af8edbece19b97fec`, identical to reviewed `97e63c01`
+and its CI merge `e8f4fc49`. All six original final combined jobs in
+`38506521977` and applicable source/boundary gates pass. Exact fresh-main
+`38511209412` passes all six original jobs without retries. Independent
+completed logs confirm the four retry/heartbeat families across PHP, Rust and
+embedded mode. The [delivery receipt](https://github.com/durable-workflow/server/pull/438#issuecomment-6161666925)
+records source and boundary success. Conditional cancellation and
+prepared-local qualification remain explicitly skipped. Earlier failed
+originals and frozen tuples retain their existing dispositions.
+
+#443 is merged at `5bd0bb4dcc3ec43b3186589a8d1f16d2c8972bcf`, complete tree
+`b7716f947d979513877d540555e0b622e9435c09`, identical to reviewed `1061491df`
+and CI merge `7c77b91b`. All 13 original combined jobs in `38513528725` pass:
+six CPU/deadline cells, six ordinary database cells and the SDK/build job.
+Source and boundary gates pass. Independent CPU logs confirm the declared
+activity, timer, renewal and canonical cleanup observations under load, plus
+stopped read-only history and task audits with zero repairs. Exact fresh-main
+`38520403960` failed at the killed-producer poll checkpoint, as documented in
+#447. That correction is merged at `07015a65`; fresh-main `38544906272` passes
+all thirteen original jobs, with applicable source and boundary gates also
+passing. [Final delivery](https://github.com/durable-workflow/server/pull/447#issuecomment-6166892004)
+preserves both failed originals and the conditional skips. Native and frozen
+packages are unchanged. This does not establish matched PHP/Rust performance,
+takeover or rewrite release readiness.
 
 #438 candidate `c99b1130090b8e29db0bcab7d1bdfa6fd34a0dbf` qualifies all six
 database configurations in run `38492234181`, after two unchanged-head/limits

@@ -451,8 +451,9 @@ async fn cluster() -> Json<Value> {
 
 async fn start(
     Extension(runtime): Extension<Runtime>,
-    Json(body): Json<Value>,
+    Json(body): Json<super::memo_json::StartBody>,
 ) -> Result<(StatusCode, Json<Value>)> {
+    let body = body.0;
     let workflow_id = body["workflow_id"].as_str().unwrap_or("").to_owned();
     let result = runtime.start(body).await.map_err(|error| {
         super::control_plane::Operation::Start.refusal(error, &workflow_id, None)

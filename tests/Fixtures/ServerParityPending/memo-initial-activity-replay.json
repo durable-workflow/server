@@ -1,0 +1,31 @@
+{
+  "id": "memo-initial-activity-replay",
+  "workflow_type": "parity.v1.memo_activity",
+  "input": {"integer": 9007199254740993, "optional": null, "unicode": "memo λ"},
+  "typed_value": {"type": "map", "value": {
+    "integer": {"type": "int64", "value": "9007199254740993"},
+    "optional": {"type": "null", "value": null},
+    "unicode": {"type": "string", "value": "memo λ"}
+  }},
+  "memo_replay": {
+    "initial_only": true,
+    "phase_budget_seconds": 30,
+    "overall_budget_seconds": 90,
+    "initial": {
+      "keep": {"integer": 9007199254740993, "optional": null, "unicode": "memo λ"},
+      "replace": "initial",
+      "delete": "present",
+      "deleted_at_start": null,
+      "empty": []
+    },
+    "updates": [],
+    "activity_options": {
+      "retry_policy": {"max_attempts": 1, "backoff_seconds": [], "non_retryable_error_types": []},
+      "start_to_close_timeout": 120,
+      "schedule_to_close_timeout": 600
+    },
+    "phase_order": ["original", "activity", "replacement"],
+    "author_shutdown": "normal_cli_exit",
+    "duplicate": "identical_first_workflow_completion_while_parent_waiting"
+  }
+}

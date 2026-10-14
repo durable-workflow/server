@@ -22,6 +22,9 @@ mod schedules;
 #[path = "execution/visibility.rs"]
 mod visibility;
 
+#[path = "execution/memos.rs"]
+mod memos;
+
 #[path = "execution/admission.rs"]
 mod admission;
 
@@ -4672,7 +4675,7 @@ async fn authentication_precedes_protocol_and_namespace_checks() {
         .unwrap();
     assert_eq!(namespace.status(), StatusCode::NOT_FOUND);
     let unsupported = request(&app,"POST","/api/workflows",json!({"workflow_id":"unsupported","workflow_type":"echo",
-        "task_queue":"test","input":envelope(Payload::Null),"memo":{"ignored":"must not be accepted"}})).await;
+        "task_queue":"test","input":envelope(Payload::Null),"search_attributes":{"ignored":"must not be accepted"}})).await;
     assert_eq!(unsupported.0, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(
         request(&app, "GET", "/api/workflows/unsupported", Value::Null)
