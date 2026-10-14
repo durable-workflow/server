@@ -5,6 +5,8 @@ for one day. Full raw records, HTTP journals, databases, sidecars and payload
 objects remain temporary inputs to the unchanged assertions and comparisons;
 they are not uploaded as bulk archives. GitHub job logs and the owning PR's
 readable outcome remain the delivery record.
+Temporary adapter and native-binary artifacts used between jobs also expire
+after one day rather than remaining as long-term build archives.
 
 The `artifact-summary.mjs RAW_DIRECTORY SUMMARY_DIRECTORY` utility reads the raw
 directory without changing it and requires a fresh, separate output directory.

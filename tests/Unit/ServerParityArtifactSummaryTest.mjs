@@ -19,6 +19,7 @@ test('successful summaries preserve exact reports and omit journals, DBs, payloa
   const comparison = '{"outcome":"pass","value":9007199254740993,"text":"rangeλ"}\n';
   writeFileSync(join(source, 'comparison.json'), comparison);
   writeFileSync(join(source, 'rust-tests.txt'), 'test result: ok. 105 passed\n');
+  writeFileSync(join(source, 'artifact-summary-tests.txt'), 'tests 3\npass 3\n');
   writeFileSync(join(source, 'php-record.json'), 'x'.repeat(4 * 1024 * 1024));
   writeFileSync(join(source, 'workflow.sqlite'), 'database');
   writeFileSync(join(source, 'php-server.log'), 'unneeded successful HTTP log');
@@ -29,7 +30,7 @@ test('successful summaries preserve exact reports and omit journals, DBs, payloa
   const summary = summarizeEvidence(source, output, {outcome: 'success', revision: 'qualified-source'});
   assert.equal(readFileSync(join(output, 'comparison.json'), 'utf8'), comparison);
   assert.equal(readFileSync(join(source, 'comparison.json'), 'utf8'), comparison);
-  assert.deepEqual(summary.retained.map(file => file.path), ['rust-tests.txt', 'comparison.json']);
+  assert.deepEqual(summary.retained.map(file => file.path), ['artifact-summary-tests.txt', 'rust-tests.txt', 'comparison.json']);
   for (const name of ['php-record.json', 'workflow.sqlite', 'php-server.log', 'objects', 'identity.json']) {
     assert.equal(existsSync(join(output, name)), false, name);
   }
