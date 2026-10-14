@@ -82,7 +82,13 @@ impl<'de> Deserialize<'de> for MemoJson {
                 Ok(MemoJson(value.into()))
             }
             fn visit_u64<E: Error>(self, value: u64) -> Result<MemoJson, E> {
-                Ok(MemoJson(value.into()))
+                // PHP's JSON decoder selects a double outside signed int64.
+                // This boundary does not change typed Avro long handling.
+                if value > i64::MAX as u64 {
+                    self.visit_f64(value as f64)
+                } else {
+                    Ok(MemoJson(value.into()))
+                }
             }
             fn visit_f64<E: Error>(self, value: f64) -> Result<MemoJson, E> {
                 Number::from_f64(value)
