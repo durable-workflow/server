@@ -277,17 +277,26 @@ on all six database cells; full matched qualification remains next. This does
 not enable memo upserts or establish full continuation, migration or release
 readiness. Disposable runtime, compiler and raw records were removed after audit.
 
-The earlier #444/#445 completed
-task retry omitted captured `sticky_cache`, so native correctly refused a
+An earlier #444/#445 memo comparison failed because its completed-task retry
+omitted captured `sticky_cache`, so native correctly refused a
 changed body as `conflicting_completion`. The [probe correction](https://github.com/durable-workflow/server/pull/444#issuecomment-6163205713)
 preserves all original completion metadata and checks a separate conflicting
 payload refusal. Earlier failed records remain failed; no stronger PHP receipt
 contract or runtime receipt change follows. #445 and #446's prior candidates
-passed all 13 matched jobs. #444's original activity-clock correction also passed
-all 13 jobs. Exact PHP #449 integration has a fresh #444 comparison
-pending before promotion; earlier results do not qualify the combined tree.
-The broader authoring candidate remains separate from those disabled memo
-foundations and unpublished.
+passed all 13 matched jobs. The delivered #444 foundation and qualified PHP
+#451 source are now integrated for fresh combined qualification. Earlier
+results do not qualify this combined tree. The broader authoring candidate
+remains separate from the disabled memo foundation and unpublished.
+
+The [first matched development observations](../benchmarks/server-port/v2/observations-2026-10-14.md)
+complete 737 workflows per implementation, including setup and warmup, with
+exact outputs and zero task repairs. They do not qualify a performance gain:
+PHP has two idle API timeouts and a forced scheduler shutdown, while native
+workflow tails vary. The original idle reader also rejects protocol-permitted
+`timeout` replies. Separate reader and scheduler controls pass, with original
+failures preserved. Next diagnose native tails with a bounded published-worker
+control, then repeat the corrected matched profile before a gain claim.
+
 The #444 original MySQL 8.4 matrix on `95cd4efa` exposed a native activity
 clock disagreement: a retry was recorded 101 ms before its durable
 `ActivityStarted` timestamp plus the unchanged two-second start-to-close
