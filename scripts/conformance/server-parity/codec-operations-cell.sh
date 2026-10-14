@@ -101,7 +101,7 @@ SELECT 'history',workflow_run_id,event_type,COUNT(*) FROM workflow_history_event
 SELECT 'task',workflow_run_id,task_type,attempt_count,repair_count FROM workflow_tasks ORDER BY workflow_run_id,task_type;
 SQL
 if test "$connection" = sqlite; then
-  find "$output/state" -type f ! -name '*-shm' -print0 | sort -z | xargs -0 sha256sum > "$output/sqlite-state-before.sha256"
+  find "$output/state" -type f ! -name '*-shm' ! -empty -print0 | sort -z | xargs -0 sha256sum > "$output/sqlite-state-before.sha256"
   docker run --rm --user="$(id -u):$(id -g)" --network=none --entrypoint php \
     -v "$output:/evidence" "$observer_image" -r '
       $db=new PDO("sqlite:/evidence/state/native.sqlite",null,null,
@@ -113,8 +113,9 @@ if test "$connection" = sqlite; then
       }$db->rollBack();' > "$output/database-audit.tsv"
   # WAL readers may create/update their disposable shared-memory lock file.
   # PRAGMA query_only forbids SQL mutation; the main DB and WAL bytes must also
-  # remain exact. Never use immutable mode to bypass an uncheckpointed WAL.
-  find "$output/state" -type f ! -name '*-shm' -print0 | sort -z | xargs -0 sha256sum > "$output/sqlite-state-after.sha256"
+  # remain exact. A new zero-byte WAL contains no database bytes. Never use
+  # immutable mode to bypass an uncheckpointed WAL or ignore a nonempty WAL.
+  find "$output/state" -type f ! -name '*-shm' ! -empty -print0 | sort -z | xargs -0 sha256sum > "$output/sqlite-state-after.sha256"
   cmp "$output/sqlite-state-before.sha256" "$output/sqlite-state-after.sha256"
 elif test "$connection" = pgsql; then
   { printf 'BEGIN READ ONLY;\n'; cat "$output/audit.sql"; printf 'COMMIT;\n'; } \
