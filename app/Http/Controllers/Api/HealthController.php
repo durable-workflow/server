@@ -149,6 +149,7 @@ class HealthController
             'payload_codec_envelope' => true,
             'payload_codec_envelope_responses' => true,
             'runtime_external_payload_transport' => true,
+            'workflow_activity_result_inspection' => true,
             'bridge_adapter_outcome_contract' => true,
             'external_executor_config_contract' => true,
             'invocable_carrier_contract' => true,
