@@ -26,6 +26,23 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+External memo references require the existing authenticated runtime transport,
+not provider URIs in clients. The next foundation validates the five-field
+opaque reference against 46 published PHP controls, including exact integer
+sizes, strict unknown-field refusal, digest canonicalization and the published
+present-null/empty codec fallback. The published validator and codec-contract
+source hashes match this PHP tree. A reference's permitted identifier alphabet
+does not assert that an object exists or that its bytes have passed integrity.
+Native storage lookup must separately bind namespace, ready state, metadata and
+expiry before byte verification. The primitive is preparatory and not called
+by HTTP ingress yet. It changes no transport capability or frozen actor tuple.
+The full transport slice remains upload/fetch and normal installed SDK use,
+bounded streaming, durable content-addressed admission, integrity and quota
+controls, current-lease completion upload fences, runtime-owned resolution and
+claim retention, restart/recovery, cleanup/backup holds, three database families
+and local/S3 provider compatibility. Memo history/read and continuation tests
+must consume those real references before full memo support can be qualified.
+
 The next authored-memo slice follows #445's disabled preparation. Its full
 acceptance includes configured structural limits, actual SDK replay, protocol
 and capability fences, external envelopes, continuation inheritance and
