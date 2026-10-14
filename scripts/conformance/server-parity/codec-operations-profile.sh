@@ -37,7 +37,7 @@ curl --silent --show-error --no-buffer --max-time 170 --unix-socket /var/run/doc
   > "$output/docker-stats.jsonl" 2>"$output/stats-error.txt" &
 stats_pid=$!
 set +e
-docker run --rm --name "$observer" --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
+docker run --rm --name "$observer" --user="$(id -u):$(id -g)" --cpus=1 --memory=512m --memory-swap=512m \
   --network "$network" --entrypoint node -e DW_PARITY_TOKEN \
   -e DW_PARITY_RUNNER_REVISION="$revision" -e DW_PARITY_SDK_AUTOLOAD=/sdk/vendor/autoload.php \
   -v "$source_root:/source:ro" -v "$sdk:/sdk:ro" -v "$output:/evidence" -w /source "$image" \
@@ -61,7 +61,7 @@ docker inspect "$server" --format '{{json .State}}' | jq \
 if test "$status" != 0; then cat "$output/profile.txt" >&2; exit "$status"; fi
 jq -e --arg revision "$revision" '.runner_revision==$revision' "$output/record.json" >/dev/null
 for checker in codec-operations-contract codec-operations-controls codec-deadline-controls; do
-  docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --network none \
+  docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=512m --memory-swap=512m --network none \
     --entrypoint node -v "$source_root:/source:ro" -v "$output:/evidence:ro" -w /source "$image" \
     "scripts/conformance/server-parity/$checker.mjs" /evidence/record.json "$spec" /evidence/cpu.json \
     > "$output/$checker.txt"
