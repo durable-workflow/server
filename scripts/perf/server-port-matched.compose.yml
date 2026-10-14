@@ -111,7 +111,7 @@ services:
     image: *php_image
     platform: linux/amd64
     user: "1000:1000"
-    command: [sh, -c, "while true; do php artisan schedule:evaluate --limit=100 --json; php artisan activity:timeout-enforce --limit=100; php artisan external-payloads:cleanup --limit=100 --json; php artisan history:prune --limit=100; sleep 10; done"]
+    command: [sh, -c, "trap 'exit 0' TERM INT; while true; do php artisan schedule:evaluate --limit=100 --json; php artisan activity:timeout-enforce --limit=100; php artisan external-payloads:cleanup --limit=100 --json; php artisan history:prune --limit=100; sleep 10; done"]
     environment:
       <<: *php_environment
       DW_SERVER_PROCESS_CLASS: scheduler_node
