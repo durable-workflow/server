@@ -36,6 +36,16 @@ shared candidate now runs PHP, Python and Rust author families separately and
 compares each with the embedded PHP counterpart; full hosted acceptance remains
 pending, along with external envelopes and continuation inheritance.
 
+The authoring candidate integrates #446's continuation transition. A separate
+`continue-upserted-memo-activity-replay` recipe upserts after one actual activity,
+then continues in the same completion. It checks replacement with false,
+deletion, an empty list and untouched int64/null/Unicode values before the cold
+successor claims work. `DW_PARITY_CONTINUE_MEMO_UPSERTS=1` adds this case while
+keeping the original initial-memo continuation case. The native batch accepts
+validated memo commands before a terminal continuation; other transfer and
+routing boundaries retain their explicit refusals. Actual three-runtime
+acceptance of the new recipe is pending.
+
 The separate `memo-initial-activity-replay` case proves the initial storage/read
 foundation without issuing an upsert. It runs the same original through one
 actual activity and a cold workflow process, checking the authored start-history

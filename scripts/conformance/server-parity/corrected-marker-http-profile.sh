@@ -11,7 +11,7 @@ test -n "$RESOURCE_SCOPE"
 case "$target" in php|rust) ;; *) exit 2 ;; esac
 case "$family" in
   all) families=(markers range clock) ;;
-  markers|range|clock|portable|deadlines|retries|memos) families=("$family") ;;
+  markers|range|clock|portable|deadlines|retries|memos|continuations) families=("$family") ;;
   *) exit 2 ;;
 esac
 profile=tests/Fixtures/ServerParityProfiles/corrected-markers
@@ -55,11 +55,15 @@ for family in "${families[@]}"; do
     deadlines) ids=(activity-deadline-authority) ;;
     retries) ids=(activity-deadline-active-receipts activity-deadline-receipts activity-global-deadline-retry activity-heartbeat-renewal) ;;
     memos) ids=("$memo_fixture") ;;
+    continuations)
+      ids=(continue-initial-memo-activity-replay)
+      if test "${DW_PARITY_CONTINUE_MEMO_UPSERTS:-0}" = 1; then ids+=(continue-upserted-memo-activity-replay); fi
+      ;;
   esac
   fixtures=()
   for id in "${ids[@]}"; do
     path="$profile/$id.json"
-    if test "$family" = deadlines || test "$family" = retries || test "$family" = memos; then path="tests/Fixtures/ServerParityPending/$id.json"; fi
+    if test "$family" = deadlines || test "$family" = retries || test "$family" = memos || test "$family" = continuations; then path="tests/Fixtures/ServerParityPending/$id.json"; fi
     fixtures+=(--fixture "$path")
   done
   status=0

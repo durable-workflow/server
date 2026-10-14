@@ -1,0 +1,41 @@
+{
+  "id": "continue-upserted-memo-activity-replay",
+  "workflow_type": "parity.v1.continue_initial_memo",
+  "input": {"integer":9007199254740993,"optional":null,"unicode":"continue λ"},
+  "typed_value": {"type":"map","value":{
+    "integer":{"type":"int64","value":"9007199254740993"},
+    "optional":{"type":"null","value":null},
+    "unicode":{"type":"string","value":"continue λ"}
+  }},
+  "continuation": {
+    "phase_budget_seconds":30,
+    "overall_budget_seconds":120,
+    "execution_timeout_seconds":1200,
+    "run_timeout_seconds":600,
+    "phase_order":["original","activity","continuation","successor"],
+    "initial_memo":{"keep":{"integer":9007199254740993,"optional":null,"unicode":"continue λ"},"empty":[],"deleted_at_start":null,"remove":"old","replace":1},
+    "memo_before_continuation":{"added":[],"remove":null,"replace":false},
+    "activity_options":{
+      "retry_policy":{"max_attempts":1,"backoff_seconds":[],"non_retryable_error_types":[]},
+      "start_to_close_timeout":120,"schedule_to_close_timeout":600
+    },
+    "author_shutdown":"normal_cli_exit",
+    "duplicate":"identical_predecessor_continuation_completion",
+    "duplicate_modes":{"http":"identical_captured_completion_request","embedded":"real_queue_redelivery_of_same_completed_task"},
+    "successor_event_order":{"http":["WorkflowStarted","WorkflowCompleted"],"embedded":["StartAccepted","WorkflowStarted","WorkflowCompleted"]},
+    "run_count":2,
+    "activity_count":1,
+    "required_observations":[
+      "genuine_original_pending_activity",
+      "cold_predecessor_consumes_original_activity_result",
+      "authored_replace_delete_and_empty_list_before_continuation",
+      "one_continuation_event_and_link",
+      "distinct_successor_same_workflow_and_namespace",
+      "merged_memo_inherited_before_successor_claim",
+      "immutable_execution_deadline_and_new_run_deadline",
+      "duplicate_does_not_create_another_successor_or_memo_event",
+      "cold_successor_completes_exact_typed_result",
+      "unchanged_predecessor_prefix_and_one_activity_completion"
+    ]
+  }
+}

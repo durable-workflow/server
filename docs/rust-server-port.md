@@ -70,6 +70,21 @@ exact published crate/source/lock identity. Its reported SDK constant remains
 candidate selects all three SDK author families in separate prefixes/output
 directories. External envelopes, inheritance, complete discovery and
 all-database acceptance remain incomplete; no published capability is claimed.
+The combined authoring candidate now integrates exact PHP main #449 and #446's
+continuation foundation. A focused control exposed the sole-command guard's
+refusal of a memo upsert followed by continuation. The correction permits only
+validated memo commands before the terminal continuation, retains unsupported
+transfer/routing refusal and proves rollback of the preceding memo when routing
+refuses. A separate cold-routing control preserves the fenced old claim when
+registration changes and delivers memo history only to a capable successor.
+The new shared `continue-upserted-memo-activity-replay` case completes actual
+frozen PHP and native SQLite originals with one activity, one memo event and one
+successor, preserving the merged memo before successor admission. Each passes
+35 strict reader corruptions. Its first business originals completed but the
+reader failed because the continuation observer omitted typed memo-envelope
+decoding. The corrected observer uses the normal codec on fresh originals;
+no history clock or stored bytes are rewritten. Embedded and full matched
+acceptance of this combined source remain pending.
 Frozen references and independent #444/#445/#446 gates are unchanged. The
 broader [draft #448](https://github.com/durable-workflow/server/pull/448) retains
 those incomplete acceptance requirements.
@@ -85,6 +100,43 @@ disabled. Protocol-floor refusal leaves the original task usable. Configuration
 limits, external references, inheritance, routing/replay boundaries and actual
 installed SDK acceptance remain required before enabling this capability.
 
+[Continuation #446](https://github.com/durable-workflow/server/pull/446)
+adds the first atomic native continue-as-new transition after one genuine
+activity. Four normally installed PHP SDK 2.3.9 workers complete an actual
+native SQLite original and its single successor, preserving typed
+int64/null/Unicode results, history prefixes, the original execution deadline
+and inherited memo authority. The full captured completion retry includes
+sticky metadata and returns `recorded=false` without another successor.
+The [actual receipt](https://github.com/durable-workflow/server/pull/446#issuecomment-6163706919)
+records 30 corruption controls and stopped read-only SQL showing one canonical
+link, four completed first-attempt tasks and zero repairs. Library, execution
+and recorder controls pass locally. Published PHP and normal installed embedded
+baselines are separate; embedded successor `StartAccepted` remains explicit.
+The earlier native request-shape originals stay failed: normal SDK serialization
+supplies its default queue, and null-only routing acceptance was insufficient.
+Changed routing and related/pending transfer families remain refused and
+unqualified. Review also found that the pending-query guard could miss a
+predecessor entry beyond its 65-row cache prefix. The draft now checks the
+complete native-owned predecessor scope in SQL without loading cached history
+snapshots onto the executor. A constructed database boundary control covers
+pending/leased refusal, unchanged history and successor count, then same-original
+continuation after the query becomes terminal. Exact revised qualification
+remains required. The corrected cohort now selects this separate pending fixture
+on all six database cells; full matched qualification remains next. This does
+not enable memo upserts or establish full continuation, migration or release
+readiness. Disposable runtime, compiler and raw records were removed after audit.
+
+The earlier #444/#445 completed
+task retry omitted captured `sticky_cache`, so native correctly refused a
+changed body as `conflicting_completion`. The [probe correction](https://github.com/durable-workflow/server/pull/444#issuecomment-6163205713)
+preserves all original completion metadata and checks a separate conflicting
+payload refusal. Earlier failed records remain failed; no stronger PHP receipt
+contract or runtime receipt change follows. #445 and #446's prior candidates
+passed all 13 matched jobs. #444's original activity-clock correction still has
+its MariaDB job active. Exact PHP #449 integration has a fresh #444 comparison
+pending before promotion; earlier results do not qualify the combined tree.
+The broader authoring candidate remains separate from those disabled memo
+foundations and unpublished.
 The #444 original MySQL 8.4 matrix on `95cd4efa` exposed a native activity
 clock disagreement: a retry was recorded 101 ms before its durable
 `ActivityStarted` timestamp plus the unchanged two-second start-to-close
@@ -134,6 +186,15 @@ corrects the draft's unsigned overflow refusal in memo JSON and legacy
 projections, including start-history metadata. Typed Avro long handling stays
 unchanged. These are admission/storage controls, not completed workflows.
 Revised native and matched qualification remains required.
+
+Continuation's first revised MySQL/MariaDB gates expose a native query-template
+error: literal JSON paths reached the ordered placeholder converter. The draft
+now follows the existing driver-owned `?` template path without weakening
+shared placeholder checks. MySQL test setup also uses text protocol for
+`CREATE TRIGGER`, which binary prepared statements refuse. The [failed original
+disposition](https://github.com/durable-workflow/server/pull/446#issuecomment-6165414784)
+remains distinct from frozen PHP lock failures. Corrected real database controls
+and a new exact-source matrix are required before promotion.
 
 Final number-boundary matrix `38540906439` has twelve original passes and one
 MySQL 8.0 failure: the historical producer is killed after its commands commit

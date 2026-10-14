@@ -53,6 +53,7 @@ pub fn router(runtime: Runtime) -> Router {
             post(super::schedule_http::trigger),
         )
         .route("/api/workflows/{workflow_id}", get(describe_current))
+        .route("/api/workflows/{workflow_id}/runs", get(list_runs))
         .route("/api/workflows/{workflow_id}/cancel", post(cancel_current))
         .route("/api/workflows/{workflow_id}/repair", post(repair_current))
         .route(
@@ -486,6 +487,13 @@ async fn describe_current(
     Ok(Json(
         super::control_plane::Operation::Describe.response(body),
     ))
+}
+
+async fn list_runs(
+    Extension(runtime): Extension<Runtime>,
+    Path(workflow): Path<String>,
+) -> Result<Json<Value>> {
+    Ok(Json(runtime.list_runs(&workflow).await?))
 }
 
 async fn cancel_current(

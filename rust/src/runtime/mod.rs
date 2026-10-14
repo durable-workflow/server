@@ -8,6 +8,7 @@ mod activity_heartbeats;
 mod backend;
 mod cancellation;
 mod children;
+mod continuations;
 mod control_plane;
 mod cooperative;
 mod execution;
