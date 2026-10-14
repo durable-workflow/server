@@ -49,6 +49,7 @@ export function checkCodecOperationsRecord(record,specBytes,cpu) {
       assert.equal(o.parent.run_id,o.run_id);assert.equal(o.parent.workflow_task_attempt,1);
       assert.equal(o.after.status,'completed');assert.deepEqual(o.after.typed_output,spec.typed_row);
       assert.equal(o.workflow_completion.recorded,true);
+      assert.equal(o.timer_admission.recorded,true);
     } else if(role==='renewal') {
       events(o.before,['StartAccepted','WorkflowStarted','ActivityScheduled','ActivityStarted']);
       events(o.after,['StartAccepted','WorkflowStarted','ActivityScheduled','ActivityStarted',
@@ -66,6 +67,8 @@ export function checkCodecOperationsRecord(record,specBytes,cpu) {
       assert.equal(o.status_first.lease_expires_at,o.status_before.lease_expires_at);
       assert.equal(o.status_second.lease_expires_at,o.heartbeat_first.lease_expires_at);
       assert.equal(o.status_after.lease_expires_at,o.heartbeat_second.lease_expires_at);
+      assert.equal(o.status_second.last_heartbeat_at,o.heartbeat_first.last_heartbeat_at);
+      assert.equal(o.status_after.last_heartbeat_at,o.heartbeat_second.last_heartbeat_at);
       assert.deepEqual(o.after_status.events,o.after_second.events,'Non-renewing status adds no history');
       for(const[name,index]of [['first',4],['second',5]]) {
         const heartbeat=o['heartbeat_'+name],call=o.calls.find(call=>call.name==='heartbeat_'+name),event=o.after.events[index];
@@ -79,6 +82,8 @@ export function checkCodecOperationsRecord(record,specBytes,cpu) {
       }
       assert(instant(o.heartbeat_first.lease_expires_at)>instant(o.status_before.lease_expires_at));
       assert(instant(o.heartbeat_second.lease_expires_at)>instant(o.heartbeat_first.lease_expires_at));
+      assert(instant(o.heartbeat_first.last_heartbeat_at)<instant(o.before.events[3].timestamp)+policy.heartbeat_timeout_seconds);
+      assert(instant(o.heartbeat_second.last_heartbeat_at)<instant(o.heartbeat_first.last_heartbeat_at)+policy.heartbeat_timeout_seconds);
       const second=o.calls.find(call=>call.name==='heartbeat_second');
       assert(second.submitted_at>=instant(o.before.events[3].timestamp)+policy.heartbeat_timeout_seconds,
         'The same attempt survives its original heartbeat boundary');
@@ -110,6 +115,8 @@ export function checkCodecOperationsRecord(record,specBytes,cpu) {
       assert.deepEqual(context.lineage,[{request_id:context.request_id,workflow_instance_id:o.workflow_id,workflow_run_id:o.run_id}]);
       assert.deepEqual(delivered.payload.cancellation,context);assert.equal(delivered.payload.sequence,1);assert.equal(delivered.payload.call_kind,'timer');
       assert.equal(o.delivery.delivered,true);assert.equal(o.delivery_claim.run_id,o.run_id);
+      assert.equal(o.accepted.accepted,true);assert.equal(o.timer_admission.recorded,true);
+      assert.equal(o.cleanup_admission.recorded,true);
       assert.equal(o.delivery_claim.workflow_task_attempt,1);assert.equal(o.accepted.duplicate,false);
       for(const receipt of [o.accepted,o.duplicate,o.terminal_duplicate,o.renewal]) {
         assert.equal(receipt.cancellation_request.request_id,context.request_id);
