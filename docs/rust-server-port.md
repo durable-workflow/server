@@ -26,6 +26,18 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+The pending [memo fixture](../scripts/conformance/server-parity/MEMOS.md)
+widens metadata coverage before native implementation. Normal installed PHP
+SDK 2.3.9 against the frozen Server 2.6.2 and embedded Workflow 2.5.16 complete
+the same original memo/activity/cold-replay recipe in three independent
+processes. The typed merge, two memo command sequences, exact original prefixes
+and one activity result agree. The PHP completed-task duplicate returns
+409 `task_not_leased` with completed status and no second effect. The first
+reader incorrectly required HTTP 200; this was a reader error, not a product
+defect or a stronger receipt contract. Full native parity, protocol/capability
+and limit refusals, inheritance and external payload gates remain ahead. Existing
+frozen profiles and default fixture discovery remain unchanged.
+
 [#435](https://github.com/durable-workflow/server/pull/435) is delivered at
 `7b53fc26db4e69a8013b6f1ad991fd1d98266833`, complete tree
 `b9f7e9bd652586e23a4e80aa58433c79c1e51ea6` identical to the reviewed candidate.
