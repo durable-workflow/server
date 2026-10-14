@@ -73,6 +73,19 @@ projections, including start-history metadata. Typed Avro long handling stays
 unchanged. These are admission/storage controls, not completed workflows.
 Revised native and matched qualification remains required.
 
+Final number-boundary matrix `38540906439` has twelve original passes and one
+MySQL 8.0 failure: the historical producer is killed after its commands commit
+but before the proxy observes the completion response. The strict reader
+correctly refuses that cancelled completion. Separate upsert-preparation matrix
+`38541216269` encounters the same checkpoint race in the Python-clock case on
+MySQL 8.4. Both failed originals remain unsuccessful. The producer checkpoint
+now requires the actual original admission receipt as well as durable history
+within its unchanged 30-second limit. It changes no SDK, reader, clock, receipt
+or frozen package contract. Four focused tests, fourteen refusal controls and
+both actual failed captures confirm that unacknowledged admission cannot trigger
+the kill. The actor helper is included in adapter source integrity checks.
+Fresh exact-source qualification is required before promotion.
+
 Seven actual raw JSON admissions on the frozen PHP image exposed an additional
 initial-memo boundary in #444. Empty objects and contiguous numeric-key objects
 become lists; sparse or mixed canonical numeric keys refuse; leading-zero

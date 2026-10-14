@@ -19,6 +19,10 @@ docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=
   -e DW_PARITY_SDK_AUTOLOAD=/sdk/vendor/autoload.php -w /source "$image" \
   --test tests/Conformance/ServerParityDeadlinePollTest.mjs tests/Unit/ServerParityDeadlinePollContractTest.mjs \
   > "$output/deadline-poll-controls.txt" 2>&1
+docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=128m --memory-swap=128m \
+  --network=none --entrypoint python3 -e PYTHONDONTWRITEBYTECODE=1 \
+  -v "$PWD:/source:ro" -w /source "$image" \
+  "$adapter/check-admission-receipt.py" > "$output/admission-receipt-controls.txt" 2>&1
 cp tests/Fixtures/ServerParityProfiles/version-range-repair/sdk/{composer.json,composer.lock} "$output/php-range/"
 docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=512m --memory-swap=512m --entrypoint composer \
   -e COMPOSER_HOME=/tmp/composer -v "$PWD/$output/php-range:/consumer" -w /consumer "$image" \
@@ -50,7 +54,7 @@ docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=
   -v "$PWD/$cargo:/cargo:ro" -w /source "$image" \
   "$adapter/identity.mjs" /adapters "$artifacts" /cargo/registry/src
 git rev-parse HEAD > "$output/runner-revision.txt"
-sha256sum "$adapter"/rust/{Cargo.toml,Cargo.lock,src/main.rs,src/legacy_range.rs} "$adapter"/{php.php,python250.py,python250-requirements.txt,python-current.py,python-current-requirements.txt} \
+sha256sum "$adapter"/rust/{Cargo.toml,Cargo.lock,src/main.rs,src/legacy_range.rs} "$adapter"/{php.php,python250.py,admission_receipt.py,python250-requirements.txt,python-current.py,python-current-requirements.txt} \
   > "$output/source-hashes.sha256"
 if test "$cargo" = "$output/cargo"; then find "$cargo" -depth -delete; fi
 if test "$target" = "$output/target"; then find "$target" -depth -delete; fi

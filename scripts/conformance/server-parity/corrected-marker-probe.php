@@ -107,7 +107,8 @@ function correctedMarkerHttpObservation(array $fixture, array $options): array
             $command = match ($language) {
                 'php' => [PHP_BINARY, __DIR__.'/corrected-markers/php.php'],
                 'rust' => [getenv('DW_PARITY_CORRECTED_RUST_WORKER') ?: '/sdk-adapters/rust-worker'],
-                'python' => ['python3', __DIR__.'/corrected-markers/python250.py'],
+                'python' => ['env', 'DW_PARITY_HTTP_JOURNAL='.$journal,
+                    'python3', __DIR__.'/corrected-markers/python250.py'],
                 'python_current' => ['env', 'PYTHONPATH='.(getenv('DW_PARITY_CORRECTED_PYTHON_CURRENT_ROOT') ?: '/sdk-python-current'),
                     'python3', __DIR__.'/corrected-markers/python-current.py'],
                 default => throw new InvalidArgumentException('Unsupported producer language'),
