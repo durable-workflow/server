@@ -47,7 +47,14 @@ try {
         if (microtime(true)>=$deadline) throw new RuntimeException('Original CPU operation budget expired');
     };
     $submit = static function (string $name, Closure $call) use (&$state, $budget): array {
-        $budget(); $at = microtime(true); $result = $call(); $budget();
+        $budget(); $at = microtime(true);
+        try {
+            $result = $call(); $budget();
+        } catch (Throwable $error) {
+            $state['failed_call'] = ['name'=>$name, 'submitted_at'=>$at,
+                'observed_at'=>microtime(true), 'type'=>$error::class, 'message'=>$error->getMessage()];
+            throw $error;
+        }
         $state['calls'][] = ['name'=>$name, 'submitted_at'=>$at, 'observed_at'=>microtime(true), 'response'=>$result];
         return $result;
     };
