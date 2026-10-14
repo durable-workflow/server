@@ -20,6 +20,7 @@ $snapshot = static function (string $runId) use ($client, $workflowId): array {
 
     return $run;
 };
+$runs = static fn (): array => array_map(static fn ($run): array => $run->raw, $client->listWorkflowRuns($workflowId));
 try {
     $handle = $client->startWorkflow($fixture['workflow_type'], $workflowId, $workflowId.'-workflow',
         [['generation' => 0, 'value' => $fixture['input']]],
@@ -41,6 +42,7 @@ try {
                 throw new RuntimeException('The original continuation did not produce a distinct successor');
             }
             $state['inherited'] = $snapshot($state['successor_run_id']);
+            $state['runs_before_duplicate'] = $runs();
             $receipt = array_values(array_filter($actor['receipts'], static fn (array $receipt): bool =>
                 preg_match('#^/api/worker/workflow-tasks/[^/]+/complete$#', $receipt['path'])
                 && in_array('continue_as_new', array_column($receipt['request']['commands'] ?? [], 'type'), true)))[0] ?? null;
@@ -54,11 +56,13 @@ try {
                     $client->completeWorkflowTask($match[1], $body['lease_owner'], $body['workflow_task_attempt'], $body['commands'])),
                 'after' => [$snapshot($state['predecessor_run_id']), $snapshot($state['successor_run_id'])],
                 'current_after' => $client->describeWorkflow($workflowId)->raw];
+            $state['runs_after_duplicate'] = $runs();
         }
         file_put_contents($output, json_encode($state, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)."\n");
     }
     $state['predecessor_final'] = $snapshot($state['predecessor_run_id']);
     $state['current_final'] = $client->describeWorkflow($workflowId)->raw;
+    $state['runs_final'] = $runs();
     $state['outcome'] = 'observed';
 } catch (Throwable $error) {
     $state['outcome'] = 'failed';

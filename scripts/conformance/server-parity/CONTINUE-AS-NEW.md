@@ -26,3 +26,16 @@ continued children, cancellation races, external envelopes, namespace routing
 or full lifecycle parity. Those remain required under #325. The native runtime
 currently refuses continue-as-new; published baseline actors and contract
 checks precede its implementation.
+
+The first normal published PHP original completes the four phases with one
+activity invocation, six predecessor events, two successor events and a 409
+`run_closed` duplicate that leaves exactly two runs. The strict reader and
+actual-record corruption controls pass. A stopped, read-only SQLite audit
+confirms both completed runs, one continuation link, four completed first-
+attempt tasks with zero repairs, and inherited memo sequence authority at 1.
+Both exact stored run deadlines retain their microseconds, and the original
+execution deadline remains byte-identical. The HTTP describe deadline uses
+whole seconds; the reader checks its displayed precision and the SQL audit
+checks the full stored precision. This is a PHP baseline; embedded and native
+acceptance remain pending. Temporary runtime and raw evidence are removed
+after the immediate audit.
