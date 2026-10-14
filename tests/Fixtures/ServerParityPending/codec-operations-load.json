@@ -1,0 +1,30 @@
+{
+  "schema": "durable-workflow.server-port-codec-operations/v1",
+  "control_plane_protocol": "2",
+  "rows": 8192,
+  "row": {"integer": 9007199254740993, "optional": null, "unicode": "original codec deadline λ", "sequence": 7},
+  "typed_row": {"type":"map","value":{"integer":{"type":"int64","value":"9007199254740993"},"optional":{"type":"null","value":null},"unicode":{"type":"string","value":"original codec deadline λ"},"sequence":{"type":"int64","value":"7"}}},
+  "maximum_envelope_bytes": 1572864,
+  "maximum_response_bytes": 8388608,
+  "readers": 8,
+  "wave_seconds": 9,
+  "request_timeout_seconds": 2,
+  "health_interval_milliseconds": 200,
+  "activity_schedule_to_close_seconds": 4,
+  "late_outcome_delay_seconds": 4.25,
+  "maximum_handoff_delay_seconds": 1,
+  "observer_budget_seconds": 35,
+  "preparation_budget_seconds": 120,
+  "server_cpu_limit": 1,
+  "server_memory_bytes": 536870912,
+  "minimum_busy_cpu_percent": 70,
+  "minimum_busy_cpu_samples": 3,
+  "minimum_dense_response_bytes": 65536,
+  "swap_enabled": false,
+  "operations": {
+    "timer": {"delay_seconds": 3, "maximum_lateness_seconds": 1},
+    "renewal": {"heartbeat_timeout_seconds": 2, "first_heartbeat_delay_seconds": 1, "second_heartbeat_delay_seconds": 2.25, "schedule_to_close_seconds": 15, "start_to_close_seconds": 10},
+    "cancellation": {"cleanup_timeout_seconds": 5, "original_delay_seconds": 60, "cleanup_delay_seconds": 60, "maximum_lateness_seconds": 1, "reason": "CPU cleanup cancellation λ"}
+  },
+  "contract": "Run the unchanged dense-read/original-activity-expiry profile, plus three independent installed SDK observers. Each prepares only a leased original workflow claim before the load barrier. During the actual wave, the timer observer admits a three-second timer and completes its original typed run after one canonical firing. The renewal observer admits and claims one ordinary activity, records two timely heartbeats across its original heartbeat boundary, extends the same lease without status-read renewal, then completes activity and workflow once inside their original bounds. The cancellation observer schedules an original long timer, requests cooperative cancellation, delivers at original sequence one, schedules a separate shielded cleanup timer and lets the original five-second cleanup deadline expire. Canonical timer firing/cleanup closure must be no more than one second late while CPU is busy. Original identities, full prefixes, precise clocks, retry policies and budgets remain fixed. Failed PHP headroom observations remain failures. No database backdating, direct runtime writes, parent repair, SDK patch, frozen actor change or performance claim. All database families and published qualification remain required."
+}
