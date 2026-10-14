@@ -5,6 +5,13 @@ The pending `memo-activity-replay` fixture exercises the existing
 It has not passed the three-runtime acceptance gate and is excluded from the
 default fixture set.
 
+The separate `memo-initial-activity-replay` case proves the initial storage/read
+foundation without issuing an upsert. It runs the same original through one
+actual activity and a cold workflow process, checking the authored start-history
+memo separately from its visible run values. It is selected by the existing
+corrected cohort's `memos` family on all six database cells. Passing it does not
+qualify authored upserts or change the memo-update capability.
+
 The first case starts with an initial memo, then executes two authored upserts
 around one real activity. Separate normal installed SDK worker processes author
 the pending checkpoint, execute the activity and replay the original workflow.

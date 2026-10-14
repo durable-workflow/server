@@ -8,18 +8,20 @@ const list = value => ({type: 'list', value});
 // producer's raw JSON remains untouched so its int64 literals are not rounded.
 export function checkMemoRecord(record, fixture, artifacts, mode = 'http') {
   const spec = fixture.memo_replay;
+  const initialOnly = spec.initial_only === true;
   const input = fixture.typed_value;
   const initial = map({delete: scalar('string', 'present'), empty: list([]), keep: input,
     replace: scalar('string', 'initial')});
   const added = list([input.value.integer, input.value.optional, input.value.unicode]);
-  const waiting = map({added, empty: list([]), keep: input, replace: scalar('boolean', false)});
-  const completed = map({counter: scalar('int64', '7'), empty: list([]), keep: input,
+  const waiting = initialOnly ? initial : map({added, empty: list([]), keep: input, replace: scalar('boolean', false)});
+  const completed = initialOnly ? initial : map({counter: scalar('int64', '7'), empty: list([]), keep: input,
     replace: scalar('string', 'final')});
   const entries = [map({added, delete: scalar('null', null), replace: scalar('boolean', false)}),
     map({added: scalar('null', null), counter: scalar('int64', '7'), replace: scalar('string', 'final')})];
   assert.equal(record.outcome, 'observed', 'all original phases finish');
   assert.equal(spec.phase_budget_seconds, 30);
   assert.equal(spec.overall_budget_seconds, 90);
+  assert.equal(spec.updates.length, initialOnly ? 0 : 2);
   assert.deepEqual(Object.keys(record.phases), ['original', 'activity', 'replacement']);
   const phases = record.phases;
   const original = phases.original;
@@ -61,16 +63,21 @@ export function checkMemoRecord(record, fixture, artifacts, mode = 'http') {
   }
   assert.equal(new Set(pids).size, 3, 'three independent cold processes');
   assert.deepEqual(final.typed_output, input, 'one exact typed activity result');
+  for (const event of original.events.slice(0, 2)) {
+    assert.deepEqual(event.typed_decoded.initial_memo, initial, 'original authored memo in durable start history');
+  }
   assert.deepEqual(phases.activity.events.slice(0, original.events.length), original.events,
     'original pending history prefix');
   assert.deepEqual(final.events.slice(0, phases.activity.events.length), phases.activity.events,
     'original completed activity prefix');
   const memoEvents = final.events.filter(event => event.event_type === 'MemoUpserted');
-  assert.deepEqual(final.events.map(event => event.event_type), ['StartAccepted', 'WorkflowStarted',
-    'MemoUpserted', 'ActivityScheduled', 'ActivityStarted', 'ActivityCompleted', 'MemoUpserted', 'WorkflowCompleted'],
+  const eventTypes = initialOnly
+    ? ['StartAccepted', 'WorkflowStarted', 'ActivityScheduled', 'ActivityStarted', 'ActivityCompleted', 'WorkflowCompleted']
+    : ['StartAccepted', 'WorkflowStarted', 'MemoUpserted', 'ActivityScheduled', 'ActivityStarted', 'ActivityCompleted', 'MemoUpserted', 'WorkflowCompleted'];
+  assert.deepEqual(final.events.map(event => event.event_type), eventTypes,
     'exact durable event ordering');
-  assert.deepEqual(final.events.map(event => event.sequence), [1, 2, 3, 4, 5, 6, 7, 8], 'contiguous original history');
-  assert.equal(memoEvents.length, 2, 'replay creates no duplicate memo event');
+  assert.deepEqual(final.events.map(event => event.sequence), eventTypes.map((_, i) => i + 1), 'contiguous original history');
+  assert.equal(memoEvents.length, initialOnly ? 0 : 2, 'only authored memo commands create memo events');
   for (const [index, event] of memoEvents.entries()) {
     assert.equal(event.payload.sequence, index === 0 ? 1 : 3, 'original command sequence');
     assert.deepEqual(event.typed_decoded.entries, entries[index], 'canonical typed entries');
@@ -86,7 +93,7 @@ export function checkMemoRecord(record, fixture, artifacts, mode = 'http') {
   assert.equal(typeof scheduled.payload.activity_execution_id, 'string');
   assert(scheduled.payload.activity_execution_id.length > 0);
   for (const event of [scheduled, started, finished]) {
-    assert.equal(event.payload.sequence, 2, 'original activity command');
+    assert.equal(event.payload.sequence, initialOnly ? 1 : 2, 'original activity command');
     assert.equal(event.payload.activity_execution_id, scheduled.payload.activity_execution_id, 'one original activity identity');
     assert.equal(event.payload.activity_type, 'parity.v1.memo_echo');
     assert.equal(event.payload.task.repair_count, 0, 'no manual activity repair');
@@ -104,8 +111,10 @@ export function checkMemoRecord(record, fixture, artifacts, mode = 'http') {
     assert.equal(event.payload.task.attempt_count, 1, 'first memo task attempt');
   }
   if (mode === 'http') {
-    assert.equal(record.discovery.workflow_memo_updates.supported, true, 'runtime explicitly discovers support');
-    assert(record.discovery.supported_workflow_task_commands.includes('upsert_memo'));
+    if (!initialOnly) {
+      assert.equal(record.discovery.workflow_memo_updates.supported, true, 'runtime explicitly discovers support');
+      assert(record.discovery.supported_workflow_task_commands.includes('upsert_memo'));
+    }
     const duplicate = record.duplicate.receipt;
     // Memo idempotency promises no second application. A completed-task fence
     // does not promise content-verified receipt reconciliation or HTTP 200.
@@ -119,8 +128,8 @@ export function checkMemoRecord(record, fixture, artifacts, mode = 'http') {
     const registration = original.actor.receipts.find(receipt => receipt.path === '/api/worker/register');
     assert(registration?.request.capabilities.includes('memo_upserts'), 'actual author advertises memo capability');
   }
-  return {workflow_type: fixture.workflow_type, typed_input: input, waiting_memo: waiting,
+  return {workflow_id: original.workflow_id, namespace: 'default', workflow_type: fixture.workflow_type, typed_input: input, waiting_memo: waiting,
     completed_memo: completed, typed_output: final.typed_output,
     memo_sequences: memoEvents.map(event => event.payload.sequence),
-    activity_count: 1, memo_event_count: 2, cold_processes: 3};
+    activity_count: 1, memo_event_count: initialOnly ? 0 : 2, cold_processes: 3};
 }

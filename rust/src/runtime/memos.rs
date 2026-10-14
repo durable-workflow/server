@@ -108,12 +108,13 @@ fn initial(value: Value) -> Result<PreparedMemo> {
         Value::Object(values) => values,
         _ => return Err(invalid()),
     };
-    if entries.len() > MAX_ENTRIES {
+    if entries.keys().any(|key| !valid_key(key)) {
         return Err(invalid());
     }
     encode(
         entries
             .into_iter()
+            .filter(|(_, value)| !value.is_null())
             .map(|(key, value)| Ok((key, from_json(value)?)))
             .collect::<Result<_>>()?,
     )
@@ -214,7 +215,7 @@ mod tests {
             values["literal"].projection,
             json!({"codec":"avro", "blob":"literal"})
         );
-        assert_eq!(values["optional"].projection, Value::Null);
+        assert!(!values.contains_key("optional"));
         assert_eq!(values["false"].projection, json!(false));
     }
 
@@ -228,6 +229,10 @@ mod tests {
         let many: serde_json::Map<_, _> =
             (0..101).map(|n| (format!("key-{n}"), json!(1))).collect();
         assert!(initial(Value::Object(many)).is_err());
+        let deletions: serde_json::Map<_, _> = (0..101)
+            .map(|n| (format!("key-{n}"), Value::Null))
+            .collect();
+        assert!(initial(Value::Object(deletions)).unwrap().is_empty());
         let large: serde_json::Map<_, _> = (0..7)
             .map(|n| (format!("key-{n}"), json!("x".repeat(10_000))))
             .collect();

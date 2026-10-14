@@ -69,10 +69,14 @@ if ($phase === 'activity') {
 } else {
     $worker->registerWorkflow($fixture['workflow_type'], static function (WorkflowContext $ctx, mixed $input) use ($fixture, $workflowId): mixed {
         $spec = $fixture['memo_replay'];
-        $ctx->upsertMemo($spec['updates'][0]);
+        if (isset($spec['updates'][0])) {
+            $ctx->upsertMemo($spec['updates'][0]);
+        }
         $value = $ctx->activity('parity.v1.memo_echo', [$input],
             $spec['activity_options'] + ['queue' => $workflowId.'-activity']);
-        $ctx->upsertMemo($spec['updates'][1]);
+        if (isset($spec['updates'][1])) {
+            $ctx->upsertMemo($spec['updates'][1]);
+        }
 
         return $value;
     });

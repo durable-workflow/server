@@ -27,4 +27,5 @@ try {
 } finally {
     file_put_contents($output, json_encode($state, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)."\n");
 }
+echo file_get_contents($output);
 exit($state['outcome'] === 'observed' ? 0 : 1);

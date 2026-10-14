@@ -13,7 +13,7 @@ async fn initial_memo_survives_cold_open_and_uses_the_same_sequence_portable_val
         "/api/workflows",
         json!({
             "workflow_id":"memo-initial", "workflow_type":"echo", "task_queue":"test",
-            "input":envelope(Payload::Array(vec![])), "memo":{"metadata":value}
+        "input":envelope(Payload::Array(vec![])), "memo":{"metadata":value, "deleted":null}
         }),
     )
     .await;
@@ -34,6 +34,14 @@ async fn initial_memo_survives_cold_open_and_uses_the_same_sequence_portable_val
         Some(9007199254740993)
     );
     assert!(original["memo"]["metadata"]["double"].as_i64().is_none());
+    let (status, history) = request(&app, "GET", &format!("{path}/history"), Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{history}");
+    for event in history["events"].as_array().unwrap().iter().take(2) {
+        assert_eq!(
+            event["payload"]["memo"],
+            json!({"metadata":value, "deleted":null})
+        );
+    }
 
     // Reproduce an older writer advancing the logical value without updating
     // the host's portable sequence. Stale Avro bytes must not win authority.

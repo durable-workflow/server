@@ -49,11 +49,15 @@ final class MemoEmbeddedWorkflow extends \Workflow\V2\Workflow
     public function handle(mixed $value): mixed
     {
         $spec = MemoEmbeddedState::$spec;
-        self::upsertMemo($spec['updates'][0]);
+        if (isset($spec['updates'][0])) {
+            self::upsertMemo($spec['updates'][0]);
+        }
         $result = \Workflow\V2\activity(MemoEmbeddedActivity::class,
             new ActivityOptions(queue: MemoEmbeddedState::$activityQueue, maxAttempts: 1, backoff: [],
                 startToCloseTimeout: 120, scheduleToCloseTimeout: 600), $value);
-        self::upsertMemo($spec['updates'][1]);
+        if (isset($spec['updates'][1])) {
+            self::upsertMemo($spec['updates'][1]);
+        }
 
         return $result;
     }
@@ -98,6 +102,9 @@ do {
 $events = decodeHistory($events, static fn ($envelope) => \Workflow\Serializers\Serializer::unserializeWithCodec(
     'avro', is_array($envelope) ? $envelope['blob'] : $envelope));
 foreach ($events as &$event) {
+    if (in_array($event['event_type'], ['StartAccepted', 'WorkflowStarted'], true)) {
+        $event['typed_decoded']['initial_memo'] = typedValue($event['payload']['memo']);
+    }
     if ($event['event_type'] === 'MemoUpserted') {
         foreach (['entries', 'merged'] as $field) {
             $event['typed_decoded'][$field] = typedValue(\Workflow\V2\Support\MemoPayload::decodeEntries($event['payload'][$field]));
@@ -114,6 +121,7 @@ foreach (['VersionDecisions', 'WorkflowExecutor', 'WorkflowFiberRunner', 'QueryS
 echo json_encode(['phase' => $phase, 'pid' => getmypid(), 'workflow_id' => $workflowId, 'run_id' => $runId,
     'workflow_type' => $run->workflow_type, 'namespace' => $run->namespace, 'status' => $run->status->value,
     'task_queue' => $run->queue, 'payload_codec' => $run->payload_codec, 'execution' => $run->toArray(),
+    'input' => $run->workflowArguments(), 'output' => $run->workflowOutput(),
     'typed_input' => typedValue($run->workflowArguments()), 'typed_output' => typedValue($run->workflowOutput()),
     'typed_memo' => typedValue($memo), 'typed_initial_memo' => isset($initial) ? typedValue($initial) : null,
     'events' => $events, 'worker_output' => $workerOutput, 'activity_invocations' => MemoEmbeddedState::$activityInvocations,

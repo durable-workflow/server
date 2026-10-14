@@ -45,6 +45,13 @@ bounded blocking worker. Focused codec and cold-storage controls pass locally;
 full SQLite regressions pass. Initial-memo three-runtime/all-database acceptance
 and the authored-upsert gate remain pending. Memo updates are still advertised
 as unsupported; no native release or same-database takeover is qualified.
+The existing corrected cohort now selects the separate initial-only memo case
+for all six cells. It checks original start-history metadata and genuine
+activity/cold replay across PHP, native and embedded targets without claiming
+upsert support. A source review corrected initial null entries to deletion and
+preserved authored metadata in both start events and the instance row. Fresh
+native and matched qualification of that revision is required. All 4,845 shared
+reader checks pass, with one explicit skip.
 
 #438 is merged at `50ce8f42967bc14c0169fc31b16fbbbd5827528f`, complete tree
 `1065360b83f0dbf531a67a7af8edbece19b97fec`, identical to reviewed `97e63c01`

@@ -27,6 +27,7 @@ import {checkCorrectedMarkers, checkCorrectedMarkerPackages} from './corrected-m
 import {checkCorrectedRange, checkCorrectedRangePackages} from './corrected-range-contract.mjs';
 import {checkCorrectedClock} from './corrected-clock-contract.mjs';
 import {checkActivityDeadlines,checkActivityDeadlinePackages} from './activity-deadline-contract.mjs';
+import {checkMemoRecord} from './memo-contract.mjs';
 import {checkActivityDeadlineReceipts, checkActivityDeadlineReceiptPackages} from './activity-deadline-receipts-contract.mjs';
 
 export function instantNanoseconds(value) {
@@ -41,7 +42,11 @@ export function instantNanoseconds(value) {
 
 // Only this fixture's declared semantics are projected. The full observation
 // remains in the recording, including implementation metadata and timestamps.
-export function checkObservation(fixture, observation, workflowId) {
+export function checkObservation(fixture, observation, workflowId, artifacts) {
+  if (fixture.memo_replay) {
+    assert.equal(observation.workflow_id, workflowId);
+    return checkMemoRecord(observation.memo_replay, fixture, artifacts, observation.mode);
+  }
   if (fixture.activity_deadline_receipts) return checkActivityDeadlineReceipts(fixture, observation, workflowId, instantNanoseconds);
   if (fixture.activity_deadline_authority) return checkActivityDeadlines(fixture, observation, workflowId);
   if (fixture.corrected_range) return checkCorrectedRange(fixture, observation, workflowId, instantNanoseconds);
@@ -687,7 +692,7 @@ export function compareRecords(records, expectedFixtureHashes, expectedFixtures,
       const baseline = reference.cases[index];
       assert.equal(item.fixture_id, item.fixture.id, 'case identity matches fixture');
       assert.deepStrictEqual(item.fixture, expectedFixtures[`${item.fixture_id}.json`], 'case expectations match the current reviewed source fixture');
-      if (item.fixture.signal_count || item.fixture.schedule || item.fixture.visibility || item.fixture.admission || item.fixture.patch_deployment || item.fixture.range_repair || item.fixture.sdk_direction || item.fixture.sdk_child_direction || item.fixture.sdk_timer_author || item.fixture.activity_deadline_authority || item.fixture.activity_deadline_receipts) assert.equal(item.observation.mode, record.mode, 'observation uses its recording adapter');
+      if (item.fixture.signal_count || item.fixture.schedule || item.fixture.visibility || item.fixture.admission || item.fixture.patch_deployment || item.fixture.range_repair || item.fixture.sdk_direction || item.fixture.sdk_child_direction || item.fixture.sdk_timer_author || item.fixture.activity_deadline_authority || item.fixture.activity_deadline_receipts || item.fixture.memo_replay) assert.equal(item.observation.mode, record.mode, 'observation uses its recording adapter');
       assert.equal(item.observation.sdk_php, record.artifacts.sdk_php, 'installed SDK matches tuple');
       checkPublishedPatchArtifacts(item.fixture, record.artifacts);
       checkRangeArtifacts(item.fixture, record.artifacts);
@@ -709,7 +714,7 @@ export function compareRecords(records, expectedFixtureHashes, expectedFixtures,
       if (record.artifacts.sdk_php_source_commit) assert.equal(item.observation.sdk_php_source, record.artifacts.sdk_php_source_commit, 'installed exact source SDK matches tuple');
       if (record.mode === 'embedded') assert.equal(item.observation.workflow_package, record.artifacts.workflow, 'installed Workflow matches tuple');
       assert.deepStrictEqual(item.fixture, baseline.fixture, 'same fixture expectations');
-      const checked = checkObservation(item.fixture, item.observation, item.projection.workflow_id);
+      const checked = checkObservation(item.fixture, item.observation, item.projection.workflow_id, record.artifacts);
       assert.deepStrictEqual(item.projection, checked, 'projection matches raw observation');
       assert.deepStrictEqual(checked, baseline.projection, `${record.target}: ${item.fixture_id}`);
     }
