@@ -37,6 +37,15 @@ disabled. Protocol-floor refusal leaves the original task usable. Configuration
 limits, external references, inheritance, routing/replay boundaries and actual
 installed SDK acceptance remain required before enabling this capability.
 
+The [first matched development observations](../benchmarks/server-port/v2/observations-2026-10-14.md)
+complete 737 workflows per implementation, including setup and warmup, with
+exact outputs and zero task repairs. They do not qualify a performance gain:
+PHP has two idle API timeouts and a forced scheduler shutdown, while native
+workflow tails vary. The original idle reader also rejects protocol-permitted
+`timeout` replies. Separate reader and scheduler controls pass, with original
+failures preserved. Next diagnose native tails with a bounded published-worker
+control, then repeat the corrected matched profile before a gain claim.
+
 The #444 original MySQL 8.4 matrix on `95cd4efa` exposed a native activity
 clock disagreement: a retry was recorded 101 ms before its durable
 `ActivityStarted` timestamp plus the unchanged two-second start-to-close

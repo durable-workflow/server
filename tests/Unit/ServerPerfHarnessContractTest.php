@@ -9,6 +9,27 @@ use Symfony\Component\Yaml\Yaml;
 
 class ServerPerfHarnessContractTest extends TestCase
 {
+    public function test_idle_poll_reader_accepts_both_protocol_empty_statuses_and_rejects_malformed_replies(): void
+    {
+        require_once dirname(__DIR__, 2).'/scripts/perf/idle-poll-outcome.php';
+
+        foreach (['empty', 'timeout'] as $status) {
+            self::assertSame('empty', \idlePollOutcome(['task' => null, 'poll_status' => $status]));
+        }
+
+        foreach ([
+            [],
+            ['task' => null],
+            ['poll_status' => 'empty'],
+            ['task' => null, 'poll_status' => 'unknown'],
+            ['task' => 'invalid', 'poll_status' => 'empty'],
+        ] as $response) {
+            self::assertSame('unexpected', \idlePollOutcome($response));
+        }
+
+        self::assertSame('task', \idlePollOutcome(['task' => ['id' => 'actual-task'], 'poll_status' => 'leased']));
+    }
+
     public function test_time_bounded_queue_worker_is_supervised_between_recycles(): void
     {
         $compose = Yaml::parseFile(dirname(__DIR__, 2).'/docker-compose.yml');
