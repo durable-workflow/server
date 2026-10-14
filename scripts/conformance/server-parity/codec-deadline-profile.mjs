@@ -43,10 +43,15 @@ try {
   const [authorCode]=await author.closed;if(authorCode!==0)throw new Error('Original deadline author failed');
   const inputs={original:JSON.parse(readFileSync(`${directory}/original.json`)),
     load:JSON.parse(readFileSync(`${directory}/load.json`)),health:JSON.parse(readFileSync(`${directory}/health.json`))};
-  writeFileSync(`${directory}/record.json`,JSON.stringify({schema:spec.schema,
+  const header={schema:spec.schema,
     runner_revision:process.env.DW_PARITY_RUNNER_REVISION,
     specification_sha256:createHash('sha256').update(readFileSync(specPath)).digest('hex'),
-    artifacts:JSON.parse(readFileSync(artifactsPath)),...inputs})+'\n');
+    artifacts:JSON.parse(readFileSync(artifactsPath))};
+  // The original PHP JSON retains exact int64 literals. Validation above must
+  // not replace those bytes with JavaScript's rounded diagnostic number values.
+  const prefix=JSON.stringify(header).slice(0,-1);
+  writeFileSync(`${directory}/record.json`,prefix+',"original":'+readFileSync(`${directory}/original.json`,'utf8').trim()
+    +',"load":'+JSON.stringify(inputs.load)+',"health":'+JSON.stringify(inputs.health)+'}\n');
   complete=true;
 } finally {
   clearTimeout(timer);

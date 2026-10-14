@@ -31,7 +31,10 @@ Run application commands inside the existing repository runtime or an isolated
 container as its unprivileged owner. Prepare separate, already bootstrapped
 PHP and native databases with the exact declared image/source and resource
 limits. Install the corrected PHP actor normally from its unchanged lock.
-The application must run its ordinary expiry maintenance. These commands do
+The PHP reference uses `codec-deadline-maintenance.php` with the same fresh
+`DW_PARITY_CODEC_PREFIX`. It boots the published package once and calls its
+normal timeout enforcer only for this original's active activity. It never
+repairs the retained parent task. These commands do
 not bootstrap, patch, restart, backdate or repair a target.
 
 ```sh
@@ -59,7 +62,13 @@ node scripts/conformance/server-parity/codec-deadline-contract.mjs \
   tests/Fixtures/ServerParityPending/codec-deadline-load.json /evidence/cpu.json
 ```
 
-Actual published PHP/native originals and record corruption controls remain
-pending. Focused streaming/timeout/status controls run without a target Server. Keep failed
+Actual complete PHP/native qualification and record corruption controls remain
+pending. The first missing-header original fails. After the header correction,
+PHP reaches an OOM event and read/health timeouts at its declared 512 MiB limit.
+The native development build retains deadline fences and healthy responses but
+fails the dense-read timeout gate. An optimized native build is the next
+qualified-artifact candidate, with the same workload and limits. These
+observations do not qualify the complete case or establish a performance number.
+Focused streaming/timeout/status controls run without a target Server. Keep failed
 originals readable in GitHub, then remove task-owned applications, dependency
 trees, raw recordings and temporary load resources after the immediate audit.
