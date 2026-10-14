@@ -2780,3 +2780,29 @@ that summary inline because automatic upload discovery remains unadvertised.
 This measured difference is not full automatic externalization parity. No
 graceful shutdown is claimed from the stopped 137/no-OOM containers. Activity
 arguments and the remaining external transport gates stay open under #450.
+
+Activity arguments now accept verified local references too. A completion batch
+prepares at most the existing 100 commands under one original deadline and one
+shared transfer slot; every verified snapshot retains that slot until the last
+consumer finishes. Two distinct 4 MiB references pass one batch without waiting
+on their own admission limit. A later terminal completion with pending work
+rolls back both schedules, history and retention claims. The same original then
+accepts the matching schedules, and both opaque argument deliveries survive a
+cold open. This control does not claim a completed two-activity workflow.
+
+The separate installed-worker recipe `external-arguments-worker.php` completes
+one real large-argument activity and its original parent through three cold
+processes. Frozen PHP and native SQLite preserve 4,194,356 encoded bytes/hash,
+the exact 3 MiB string, integer 9007199254740993, null and Unicode, six events,
+three first-attempt completed tasks and zero repairs. PHP's automatic summary
+upload and native's inline summary remain the earlier explicit policy difference.
+The first PHP fixture handler omitted required ActivityContext and never claimed
+its activity; only the separate corrected original qualifies.
+
+67 library cases and nine focused external HTTP cases pass. The first full
+105-case run has 104 passes and one failure: the existing 100 ms stalled-upload
+control's next valid upload returns 503 instead of 201. Three isolated identical
+controls and one unchanged full 105-case repeat pass. The original remains
+failed, its cause unestablished, with no timeout/source change or claimed fix.
+Exact source and hosted qualification remain in #450. No automatic upload,
+complete batch-workflow, S3, cleanup/backup, migration or release claim follows.
