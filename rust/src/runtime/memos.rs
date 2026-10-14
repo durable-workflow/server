@@ -42,10 +42,7 @@ fn from_json(value: Value) -> Result<Payload> {
         Value::Number(value) if value.is_i64() => {
             Payload::Long(value.as_i64().ok_or_else(invalid)?)
         }
-        Value::Number(value) if value.is_f64() => {
-            Payload::Double(value.as_f64().ok_or_else(invalid)?)
-        }
-        Value::Number(_) => return Err(invalid()),
+        Value::Number(value) => Payload::Double(value.as_f64().ok_or_else(invalid)?),
         Value::Array(values) => {
             Payload::Array(values.into_iter().map(from_json).collect::<Result<_>>()?)
         }
@@ -229,7 +226,7 @@ mod tests {
         .unwrap();
         for case in fixture["cases"].as_array().unwrap() {
             let value: Value = serde_json::from_str(case["json"].as_str().unwrap()).unwrap();
-            let prepared = initial(json!({"metadata":value}));
+            let prepared = initial(json!({"metadata":value.clone()}));
             if case["accepted"] == false {
                 assert!(prepared.is_err(), "{} must refuse", case["id"]);
             } else {
@@ -239,6 +236,17 @@ mod tests {
                     "{}",
                     case["id"]
                 );
+            }
+            if let Some(bits) = case["expected_avro_double_bits"].as_str() {
+                let prepared = initial(json!({"metadata":value})).unwrap();
+                let decoded = ValueCodec::new()
+                    .unwrap()
+                    .decode(prepared["metadata"].envelope["blob"].as_str().unwrap())
+                    .unwrap();
+                let Payload::Double(number) = decoded else {
+                    panic!("{} must retain the published double branch", case["id"]);
+                };
+                assert_eq!(format!("{:016x}", number.to_bits().swap_bytes()), bits);
             }
         }
     }
@@ -295,7 +303,10 @@ mod tests {
             .map(|n| (format!("key-{n}"), json!("x".repeat(10_000))))
             .collect();
         assert!(initial(Value::Object(large)).is_err());
-        assert!(initial(json!({"overflow":u64::MAX})).is_err());
+        assert_eq!(
+            initial(json!({"outside_int64":u64::MAX})).unwrap()["outside_int64"].projection,
+            json!(u64::MAX as f64)
+        );
     }
 
     #[tokio::test]

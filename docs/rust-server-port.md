@@ -53,6 +53,15 @@ preserved authored metadata in both start events and the instance row. Fresh
 native and matched qualification of that revision is required. All 4,845 shared
 reader checks pass, with one explicit skip.
 
+Four further raw published admissions establish the JSON number boundary.
+Signed int64 maximum remains an Avro long; numbers immediately outside signed
+int64 and unsigned int64 maximum become doubles with the recorded exact bits.
+The [published storage observation](https://github.com/durable-workflow/server/pull/444#issuecomment-6164763709)
+corrects the draft's unsigned overflow refusal in memo JSON and legacy
+projections, including start-history metadata. Typed Avro long handling stays
+unchanged. These are admission/storage controls, not completed workflows.
+Revised native and matched qualification remains required.
+
 Seven actual raw JSON admissions on the frozen PHP image exposed an additional
 initial-memo boundary in #444. Empty objects and contiguous numeric-key objects
 become lists; sparse or mixed canonical numeric keys refuse; leading-zero
