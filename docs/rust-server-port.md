@@ -26,6 +26,34 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+[Continuation #446](https://github.com/durable-workflow/server/pull/446)
+adds the first atomic native continue-as-new transition after one genuine
+activity. Four normally installed PHP SDK 2.3.9 workers complete an actual
+native SQLite original and its single successor, preserving typed
+int64/null/Unicode results, history prefixes, the original execution deadline
+and inherited memo authority. The full captured completion retry includes
+sticky metadata and returns `recorded=false` without another successor.
+The [actual receipt](https://github.com/durable-workflow/server/pull/446#issuecomment-6163706919)
+records 30 corruption controls and stopped read-only SQL showing one canonical
+link, four completed first-attempt tasks and zero repairs. Library, execution
+and recorder controls pass locally. Published PHP and normal installed embedded
+baselines are separate; embedded successor `StartAccepted` remains explicit.
+The earlier native request-shape originals stay failed: normal SDK serialization
+supplies its default queue, and null-only routing acceptance was insufficient.
+Changed routing and related/pending transfer families remain refused and
+unqualified. The corrected cohort now selects this separate pending fixture
+on all six database cells; full matched qualification remains next. This does
+not enable memo upserts or establish full continuation, migration or release
+readiness. Disposable runtime, compiler and raw records were removed after audit.
+
+The current #444/#445 memo cohorts remain unqualified. Their earlier completed
+task retry omitted captured `sticky_cache`, so native correctly refused a
+changed body as `conflicting_completion`. The [probe correction](https://github.com/durable-workflow/server/pull/444#issuecomment-6163205713)
+preserves all original completion metadata and checks a separate conflicting
+payload refusal. Earlier failed records remain failed; no stronger PHP receipt
+contract or runtime receipt change follows. Full matched checks of the corrected
+probe remain pending, and authored memo updates remain disabled.
+
 The pending [memo fixture](../scripts/conformance/server-parity/MEMOS.md)
 widens metadata coverage before native implementation. Normal installed PHP
 SDK 2.3.9 against the frozen Server 2.6.2 and embedded Workflow 2.5.16 complete
@@ -82,8 +110,19 @@ six CPU/deadline cells, six ordinary database cells and the SDK/build job.
 Source and boundary gates pass. Independent CPU logs confirm the declared
 activity, timer, renewal and canonical cleanup observations under load, plus
 stopped read-only history and task audits with zero repairs. Exact fresh-main
-`38520403960` remains pending before final delivery. Native and frozen packages
-are unchanged. This does not establish matched PHP/Rust performance, takeover
+`38520403960` passes all six CPU cells and five ordinary cells, but its original
+MySQL 8.0 comparison remains failed on a killed producer's unsent poll record.
+[Runner correction #447](https://github.com/durable-workflow/server/pull/447)
+validates that no-result cancellation without inventing request authority or
+a committed receipt. Actual failed-record replay and 24 corruption controls
+pass; new full qualification remains required. The new runner's original
+SQLite job independently fails at frozen PHP worker deregistration with 503
+database lock pressure. Its later corrected native comparison is dependent
+runner failure because the earlier step never created the recovered server.
+The [original-artifact disposition](https://github.com/durable-workflow/server/pull/447#issuecomment-6163784635)
+preserves both failures and establishes no current-release, physical or shared
+historical cause. Final delivery stays held. Native and frozen packages are
+unchanged. This does not establish matched PHP/Rust performance, takeover
 or rewrite release readiness.
 
 #438 candidate `c99b1130090b8e29db0bcab7d1bdfa6fd34a0dbf` qualifies all six
