@@ -75,7 +75,27 @@ lateness. Raw prefixes and clock strings stay unchanged. Fresh other-database
 execution must use this stronger reader; its small boundary controls do not
 constitute another producer or requalify an old record.
 
-All-database CPU execution, published consumers and promotion remain pending.
+The existing shared-fixture Action builds one locked optimized native binary
+with one CPU, 2 GiB, one Cargo job and no swap. It deletes compiler caches and
+shares only the binary and provenance manifest across six isolated cells. Each
+cell uses the fixed database image/resource declaration in
+`tests/Fixtures/ServerParityPending/codec-operations-databases.json`, verifies
+startup before admitting an original, and runs the unchanged workload/readers.
+After the strict readers and 58 corruption controls pass, it stops the service
+and compares canonical histories and task attempts through a read-only database
+transaction. Cleanup retires only that cell's containers, network and database.
+The Action keeps small outcomes/diagnostics for seven days, without DB dumps or
+full typed sidecars. The local equivalent is:
+
+```sh
+bash scripts/conformance/server-parity/codec-operations-build.sh /fresh/native-bin
+bash scripts/conformance/server-parity/codec-operations-cell.sh postgres-17 \
+  unique-lowercase-scope /fresh/native-bin /normally-installed/php-sdk /fresh/result
+```
+
+Local source originals pass SQLite, PostgreSQL 17, MySQL 8.0 and MariaDB 10.11.
+The other local cells, complete hosted matrix, published consumers and promotion
+remain pending.
 Passing the earlier activity-only original does not pass these families.
 This is deadline health, with no matched
 throughput/capacity, embedded CPU, migration or release claim.

@@ -129,6 +129,18 @@ jobs:
           path: corrected-marker-adapters
           retention-days: 90
           if-no-files-found: error
+      - name: Build one bounded optimized native artifact for deadline health
+        run: bash scripts/conformance/server-parity/codec-operations-build.sh codec-native-build
+      - name: Share the optimized binary without compiler caches
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: codec-native-build
+          path: |
+            codec-native-build/server
+            codec-native-build/build.json
+            codec-native-build/SHA256SUMS
+          retention-days: 7
+          if-no-files-found: error
       - name: Share thin published SDK direction adapters
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -165,8 +177,72 @@ jobs:
             sdk-direction-adapters/*-install.txt
             corrected-marker-adapters/*-build.txt
             corrected-marker-adapters/*-install.txt
+            codec-native-build/build.txt
           retention-days: 7
           if-no-files-found: ignore
+
+  codec-deadline-health:
+    needs: published-sdk-adapters
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [sqlite, postgres-16, postgres-17, mysql-8.0, mysql-8.4, mariadb-10.11]
+    env:
+      CODEC_SCOPE: dw-codec-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Fetch this run's optimized native binary
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: codec-native-build
+          path: codec-native-build
+          digest-mismatch: error
+      - name: Fetch this run's normally installed corrected PHP SDK
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: corrected-marker-adapters
+          path: corrected-marker-adapters
+          digest-mismatch: error
+      - name: Check exact binary provenance and execute one fresh original per family
+        run: |
+          set -euo pipefail
+          (cd codec-native-build; sha256sum -c SHA256SUMS)
+          chmod +x codec-native-build/server
+          revision=$(git rev-parse HEAD)
+          jq -e --arg revision "$revision" '.source_revision==$revision' codec-native-build/build.json >/dev/null
+          scope="$CODEC_SCOPE-$(printf '%s' '${{ matrix.database }}' | tr '.' '-')"
+          bash scripts/conformance/server-parity/codec-operations-cell.sh \
+            '${{ matrix.database }}' "$scope" codec-native-build corrected-marker-adapters/php codec-evidence
+      - name: Publish the bounded outcome
+        if: always()
+        run: |
+          if test -f codec-evidence/database-audit.json; then
+            printf 'Database: %s\n\n' '${{ matrix.database }}' >> "$GITHUB_STEP_SUMMARY"
+            cat codec-evidence/database-audit.json >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf 'CPU/deadline original did not qualify. See this job diagnostics.\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Keep small outcomes and failure diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: codec-deadline-health-${{ matrix.database }}
+          path: |
+            codec-evidence/build.json
+            codec-evidence/database*.json
+            codec-evidence/database-version.txt
+            codec-evidence/codec-*-contract.txt
+            codec-evidence/codec-*-controls.txt
+            codec-evidence/limits.json
+            codec-evidence/*state.json
+            codec-evidence/server-log.txt
+            codec-evidence/server-ready-errors.txt
+            codec-evidence/profile.txt
+            codec-evidence/failed.json
+          retention-days: 7
+          if-no-files-found: warn
 
   mysql-execution:
     needs: published-sdk-adapters
