@@ -66,6 +66,83 @@ async fn memo_floor_and_unavailable_runtime_refuse_without_mutating_the_original
 }
 
 #[tokio::test]
+async fn activity_history_snapshots_preserve_the_persisted_repair_counter() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(
+        &app,
+        "memo-history-worker",
+        json!(["echo"]),
+        json!(["echo"]),
+    )
+    .await;
+    for repair_count in [0, 17] {
+        let id = format!("memo-history-{repair_count}");
+        let original = start(&app, &id).await;
+        let workflow = poll(&app, "memo-history-worker", "workflow").await;
+        let (status, _) = request(&app, "POST", &format!("/api/worker/workflow-tasks/{}/complete", workflow["task_id"].as_str().unwrap()), completion(&workflow, json!([
+            {"type":"schedule_activity","activity_type":"echo","arguments":envelope(Payload::Long(7))}
+        ]))).await;
+        assert_eq!(status, StatusCode::OK);
+        // The nonzero control proves history reads the stored value. It does
+        // not claim an activity repair API or a manually repaired SDK run.
+        database.execute(if repair_count == 0 {
+            "UPDATE workflow_tasks SET repair_count=0 WHERE task_type='activity' AND status='ready'"
+        } else {
+            "UPDATE workflow_tasks SET repair_count=17 WHERE task_type='activity' AND status='ready'"
+        }).await;
+        let activity = poll(&app, "memo-history-worker", "activity").await;
+        let (status, _) = request(&app, "POST", &format!("/api/worker/activity-tasks/{}/complete", activity["task_id"].as_str().unwrap()),
+            json!({"lease_owner":activity["lease_owner"],"activity_attempt_id":activity["activity_attempt_id"],"result":envelope(Payload::Long(7))})).await;
+        assert_eq!(status, StatusCode::OK);
+        let parent = poll(&app, "memo-history-worker", "workflow").await;
+        assert_eq!(
+            request(
+                &app,
+                "POST",
+                &format!(
+                    "/api/worker/workflow-tasks/{}/complete",
+                    parent["task_id"].as_str().unwrap()
+                ),
+                completion(
+                    &parent,
+                    json!([{"type":"complete_workflow","result":envelope(Payload::Long(7))}])
+                )
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        let (status, history) = request(
+            &app,
+            "GET",
+            &format!(
+                "/api/workflows/{id}/runs/{}/history",
+                original["run_id"].as_str().unwrap()
+            ),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        for event in history["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| {
+                ["ActivityStarted", "ActivityCompleted"]
+                    .contains(&event["event_type"].as_str().unwrap())
+            })
+        {
+            assert_eq!(event["payload"]["task"]["repair_count"], repair_count);
+            assert_eq!(event["payload"]["task"]["id"], activity["task_id"]);
+        }
+    }
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
 async fn initial_json_boundary_matches_frozen_admission_and_survives_cold_open() {
     let fixture: Value =
         serde_json::from_str(include_str!("../fixtures/memo-initial-json-v1.json")).unwrap();

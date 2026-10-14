@@ -1087,6 +1087,7 @@ where
                 payload["activity_attempt_id"] = json!(attempt_id);
                 payload["attempt_number"] = json!(attempt);
                 payload["task"] = json!({"id":task_id,"type":"activity","status":"leased",
+                    "repair_count":DB::number(&task,"repair_count")?,
                     "available_at":DB::optional_instant(&task,"available_at")?,"leased_at":leased_at,
                     "lease_owner":worker_id,"lease_expires_at":expires,"attempt_count":attempt,"queue":queue});
                 Self::append(
@@ -1970,6 +1971,7 @@ where
         payload["attempt_number"] = json!(DB::number(&attempt, "attempt_number")?);
         payload["result"] = wire(&result);
         payload["task"] = json!({"id":task_id,"type":"activity","status":"leased",
+            "repair_count":DB::number(&task,"repair_count")?,
             "available_at":DB::optional_instant(&task,"available_at")?,"leased_at":DB::optional_instant(&task,"leased_at")?,
             "lease_owner":DB::optional_string(&task,"lease_owner")?,"attempt_count":DB::number(&task,"attempt_count")?});
         Self::append(
