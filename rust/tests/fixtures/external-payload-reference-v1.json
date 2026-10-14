@@ -1,0 +1,503 @@
+{
+  "schema": "durable-workflow.runtime-external-reference-cases/v1",
+  "scope": "reference_validation_only",
+  "source_contract": "RuntimeExternalPayloadReference::validate",
+  "cases": [
+    {
+      "id": "empty-bytes-metadata",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "avro",
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "expected": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "avro",
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "present-null-codec",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": null,
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "expected": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "avro",
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "present-empty-codec",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "",
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "expected": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "avro",
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "uppercase-digest",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "avro",
+        "size_bytes": 0,
+        "sha256": "ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB"
+      },
+      "expected": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "avro",
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "signed-int64-maximum",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "avro",
+        "size_bytes": 9223372036854775807,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "expected": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "avro",
+        "size_bytes": 9223372036854775807,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "published-regex-non-ulid-identity",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_ZZZZZZZZZZZZZZZZZZZZZZZZZZ",
+        "codec": "avro",
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "expected": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_ZZZZZZZZZZZZZZZZZZZZZZZZZZ",
+        "codec": "avro",
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "missing-schema",
+      "input": {
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "avro",
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "missing-reference_id",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "codec": "avro",
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "missing-codec",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "missing-size_bytes",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "avro",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "missing-sha256",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "avro",
+        "size_bytes": 0
+      }
+    },
+    {
+      "id": "unknown-uri",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "avro",
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab",
+        "uri": "unexpected"
+      }
+    },
+    {
+      "id": "unknown-namespace",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "avro",
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab",
+        "namespace": "unexpected"
+      }
+    },
+    {
+      "id": "unknown-provider",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "avro",
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab",
+        "provider": "unexpected"
+      }
+    },
+    {
+      "id": "unknown-blob",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "avro",
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab",
+        "blob": "unexpected"
+      }
+    },
+    {
+      "id": "unsupported-schema",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v2",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "avro",
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "unsupported-codec-16",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "json",
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "unsupported-codec-17",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "AVRO",
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "unsupported-codec-18",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": " avro ",
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "unsupported-codec-19",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": false,
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "unsupported-codec-20",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": 0,
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "unsupported-codec-21",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": {},
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "unsupported-codec-22",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": [],
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "invalid-size-23",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "avro",
+        "size_bytes": -1,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "invalid-size-24",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "avro",
+        "size_bytes": true,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "invalid-size-25",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "avro",
+        "size_bytes": "0",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "invalid-size-26",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "avro",
+        "size_bytes": 1.5,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "invalid-size-27",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "avro",
+        "size_bytes": null,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "invalid-size-28",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "avro",
+        "size_bytes": {},
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "invalid-size-29",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "avro",
+        "size_bytes": [],
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "invalid-size-30",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "avro",
+        "size_bytes": 9223372036854775808,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "invalid-size-31",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "avro",
+        "size_bytes": 1.0,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "invalid-identity-32",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "codec": "avro",
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "invalid-identity-33",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_IIIIIIIIIIIIIIIIIIIIIIIIII",
+        "codec": "avro",
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "invalid-identity-34",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_OOOOOOOOOOOOOOOOOOOOOOOOOO",
+        "codec": "avro",
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "invalid-identity-35",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_UUUUUUUUUUUUUUUUUUUUUUUUUU",
+        "codec": "avro",
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "invalid-identity-36",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_0000000000000000000000000",
+        "codec": "avro",
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "invalid-identity-37",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_000000000000000000000000000",
+        "codec": "avro",
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "invalid-identity-38",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_0000000000000000000000000\n",
+        "codec": "avro",
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "invalid-identity-39",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "file:///tmp/payload",
+        "codec": "avro",
+        "size_bytes": 0,
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      }
+    },
+    {
+      "id": "invalid-digest-40",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "avro",
+        "size_bytes": 0,
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "id": "invalid-digest-41",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "avro",
+        "size_bytes": 0,
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "id": "invalid-digest-42",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "avro",
+        "size_bytes": 0,
+        "sha256": "agagagagagagagagagagagagagagagagagagagagagagagagagagagagagagagag"
+      }
+    },
+    {
+      "id": "invalid-digest-43",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "avro",
+        "size_bytes": 0,
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+      }
+    },
+    {
+      "id": "invalid-digest-44",
+      "input": {
+        "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+        "reference_id": "ep_01J00000000000000000000000",
+        "codec": "avro",
+        "size_bytes": 0,
+        "sha256": null
+      }
+    },
+    {
+      "id": "non-object",
+      "input": []
+    }
+  ]
+}
+

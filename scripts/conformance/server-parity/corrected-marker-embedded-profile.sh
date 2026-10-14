@@ -3,6 +3,8 @@
 set -euo pipefail
 backend="$1"
 family=${2:-markers}
+memo_fixture=${DW_PARITY_MEMO_FIXTURE_ID:-memo-initial-activity-replay}
+case "$memo_fixture" in memo-initial-activity-replay|memo-activity-replay) ;; *) exit 2 ;; esac
 case "$family" in
   markers) ids=(fresh-numeric fresh-zero deprecation-first genuine-version-one php-full-retry) ;;
   policy) ids=(php-full-retry-refusal) ;;
@@ -10,7 +12,11 @@ case "$family" in
   portable) ids=(fresh-numeric fresh-zero deprecation-first genuine-version-one php-full-retry php-full-retry-refusal rust-range-completed rust-range-timer-pending) ;;
   deadlines) ids=(activity-deadline-authority) ;;
   retries) ids=(activity-deadline-active-receipts activity-deadline-receipts activity-global-deadline-retry activity-heartbeat-renewal) ;;
-  memos) ids=(memo-initial-activity-replay) ;;
+  memos) ids=("$memo_fixture") ;;
+  continuations)
+    ids=(continue-initial-memo-activity-replay)
+    if test "${DW_PARITY_CONTINUE_MEMO_UPSERTS:-0}" = 1; then ids+=(continue-upserted-memo-activity-replay); fi
+    ;;
   *) exit 2 ;;
 esac
 test -n "$RESOURCE_SCOPE"
@@ -53,6 +59,7 @@ bootstrap_root=/original-runtime
 if test "$family" = deadlines; then roles=(current); record=deadlines-record.json; bootstrap_root=/runtime; fi
 if test "$family" = retries; then roles=(current); record=retries-record.json; bootstrap_root=/runtime; fi
 if test "$family" = memos; then roles=(current); record=memos-record.json; bootstrap_root=/runtime; fi
+if test "$family" = continuations; then roles=(current); record=continuations-record.json; bootstrap_root=/runtime; fi
 for role in "${roles[@]}"; do
   package_checks=()
   if test "$role" = original; then
@@ -81,7 +88,7 @@ docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
 fixtures=()
 for id in "${ids[@]}"; do
   path="$profile/$id.json"
-  if test "$family" = deadlines || test "$family" = retries || test "$family" = memos; then path="tests/Fixtures/ServerParityPending/$id.json"; fi
+  if test "$family" = deadlines || test "$family" = retries || test "$family" = memos || test "$family" = continuations; then path="tests/Fixtures/ServerParityPending/$id.json"; fi
   fixtures+=(--fixture "$path")
 done
 docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
@@ -103,6 +110,7 @@ case "$backend" in
     snapshot=original.sqlite
     if test "$family" = deadlines; then snapshot=deadlines-original.sqlite; fi
     if test "$family" = memos; then snapshot=memos-original.sqlite; fi
+    if test "$family" = continuations; then snapshot=continuations-original.sqlite; fi
     cp "$state/embedded.sqlite" "$evidence/embedded/$snapshot"
     rm -- "$state/embedded.sqlite" ;;
 esac

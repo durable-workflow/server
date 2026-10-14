@@ -25,6 +25,9 @@ mod visibility;
 #[path = "execution/memos.rs"]
 mod memos;
 
+#[path = "execution/continuations.rs"]
+mod continuations;
+
 #[path = "execution/admission.rs"]
 mod admission;
 
@@ -66,6 +69,9 @@ mod condition_occurrences;
 
 #[path = "execution/query_arguments.rs"]
 mod query_arguments;
+
+#[path = "execution/external_payloads.rs"]
+mod external_payloads;
 
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
@@ -333,7 +339,7 @@ impl TestDatabase {
         }
     }
 
-    async fn execute(&self, statement: &'static str) {
+    async fn execute(&self, statement: impl sqlx::SqlSafeStr) {
         match self {
             Self::Sqlite(dir) => {
                 let pool = sqlx::SqlitePool::connect(&format!(
@@ -358,7 +364,9 @@ impl TestDatabase {
                     .connect_with(options.as_ref().clone())
                     .await
                     .unwrap();
-                sqlx::query(statement).execute(&pool).await.unwrap();
+                // MySQL excludes CREATE TRIGGER from binary prepared
+                // statements. Test setup has no bindings and uses text SQL.
+                sqlx::raw_sql(statement).execute(&pool).await.unwrap();
                 pool.close().await;
             }
         }

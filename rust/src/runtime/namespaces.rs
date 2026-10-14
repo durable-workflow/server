@@ -88,6 +88,24 @@ where
         Self::namespace_metadata(&row)
     }
 
+    pub(super) async fn set_external_policy(&self, name: &str, body: Value) -> Result<Value> {
+        let policy = super::external_transport::local_policy(body)?;
+        let name = name.to_ascii_lowercase();
+        let mut tx = self.begin().await?;
+        if Self::scalar("SELECT COUNT(*) FROM workflow_namespaces WHERE name=$1")
+            .bind(&name)
+            .fetch_one(&mut *tx)
+            .await?
+            == 0
+        {
+            return Err(refuse(StatusCode::NOT_FOUND, "namespace_not_found"));
+        }
+        Self::query("UPDATE workflow_namespaces SET external_payload_storage=$1,updated_at=$2 WHERE name=$3")
+            .bind(DB::document(&policy)).bind(DB::bind_time(now())).bind(&name).execute(&mut *tx).await?;
+        tx.commit().await?;
+        self.describe_namespace(&name).await
+    }
+
     pub(super) async fn create_namespace(&self, body: Value) -> Result<Value> {
         let name = text(&body, "name")?;
         let description = body.get("description").filter(|v| !v.is_null());

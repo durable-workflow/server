@@ -5,6 +5,53 @@ The pending `memo-activity-replay` fixture exercises the existing
 It has not passed the three-runtime acceptance gate and is excluded from the
 default fixture set.
 
+The authored candidate explicitly selects it with
+`DW_PARITY_MEMO_FIXTURE_ID=memo-activity-replay` in its shared matrix. The
+runner defaults to the initial-only case and accepts only those two committed
+fixture IDs. HTTP and embedded producers, comparison and corruption controls
+use the same selection without changing any frozen package identity. Local
+native SQLite author/activity/cold-successor acceptance passes; the new
+all-database comparison remains pending.
+
+`DW_PARITY_MEMO_PYTHON=1` adds a separate Python 2.5.13 author and cold
+successor around the normal PHP activity worker. It uses the same committed
+recipe, an independent workflow ID prefix and output directory, the existing
+byte-preserving HTTP recorder, exact package source hashes and all completion
+metadata. The embedded counterpart remains the published PHP recipe. Local
+PHP and native SQLite originals pass all 23 corruption controls and have one
+activity, two memo events, three first-attempt completed tasks and zero repairs.
+Python omits sticky metadata in these actual completions; the omission control
+removes a present captured field, preserving the strict complete-body equality
+check and the existing PHP sticky-metadata control. Frozen tuples are unchanged.
+
+`DW_PARITY_MEMO_RUST=1` adds the normal locked Rust 3.5.4 author and cold
+reader around the same PHP activity. The observer verifies the compiled binary
+against the normal build identity before each worker executes, then records
+the exact registry archive/source identity and lock hash. Its public
+`SDK_VERSION` constant is the exact string `durable-workflow-rust/3.5.4`.
+Actual PHP and native SQLite originals pass the same eight-event recipe,
+all 23 corruption controls and stopped SQL task/memo guards. This uses a new
+test adapter module, with no SDK code/version or native-source change. The
+shared candidate now runs PHP, Python and Rust author families separately and
+compares each with the embedded PHP counterpart; full hosted acceptance remains
+pending, along with external envelopes and broader continuation inheritance.
+
+The authoring candidate integrates #446's continuation transition. A separate
+`continue-upserted-memo-activity-replay` recipe upserts after one actual activity,
+then continues in the same completion. It checks replacement with false,
+deletion, an empty list and untouched int64/null/Unicode values before the cold
+successor claims work. `DW_PARITY_CONTINUE_MEMO_UPSERTS=1` adds this case while
+keeping the original initial-memo continuation case. The native batch accepts
+validated memo commands before a terminal continuation; other transfer and
+routing boundaries retain their explicit refusals. Actual PHP and native SQLite
+originals pass 35 reader corruption controls each; the normally installed
+embedded 2.5.16 original passes 34. Each has one actual activity, one memo event,
+one continuation link, four first-attempt completed tasks and zero repairs.
+The [receipt](https://github.com/durable-workflow/server/pull/448#issuecomment-6170709164)
+preserves the failed initial observer comparisons and the pending full matrix,
+external-reference and discovery gates. Completed runtime and raw audit data
+were deleted after verification.
+
 The separate `memo-initial-activity-replay` case proves the initial storage/read
 foundation without issuing an upsert. It runs the same original through one
 actual activity and a cold workflow process, checking the authored start-history
