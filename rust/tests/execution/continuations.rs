@@ -174,7 +174,7 @@ async fn continuation_commits_one_successor_and_preserves_original_receipts_afte
     );
     let mut body = completion(
         &task,
-        json!([{"type":"continue_as_new","arguments":envelope(Payload::Array(vec![Payload::Long(7)]))}]),
+        json!([{"type":"continue_as_new","arguments":envelope(Payload::Array(vec![Payload::Long(7)])),"workflow_type":null,"queue":null}]),
     );
     body["sticky_cache"] = json!({"worker_id":"continuation-worker","ttl_seconds":300});
     let committed = request(&app, "POST", &path, body.clone()).await;

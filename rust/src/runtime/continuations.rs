@@ -11,7 +11,16 @@ use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Transaction, Type};
 
 pub(super) fn validate(command: &Value) -> Result<()> {
-    reject_fields(command, &["type", "arguments"])?;
+    reject_fields(command, &["type", "arguments", "workflow_type", "queue"])?;
+    if ["workflow_type", "queue"]
+        .iter()
+        .any(|field| command.get(*field).is_some_and(|value| !value.is_null()))
+    {
+        return Err(refuse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "continue_as_new_routing_unqualified",
+        ));
+    }
     if command
         .get("arguments")
         .is_some_and(|value| !value.is_null())
