@@ -4,7 +4,7 @@
   "profile_id": "server-port-development-matched-amd64-v2",
   "evidence_class": "development_comparison",
   "publishable_capacity_claim": false,
-  "status": "cleanup_recipe_correction_unqualified",
+  "status": "local_corrections_verified_comparison_pending",
   "artifacts": {
     "php_server": "durableworkflow/server@sha256:944c384c9875fd82637dd2bdea74dcb881cf983a57599ba0e492bec706296549",
     "php_server_version": "2.6.2",
@@ -75,7 +75,9 @@
   },
   "idle": {
     "command": "scripts/perf/idle-poll-probe.php",
-    "command_sha256": "aebfe06e9976d16a613a1ff51b3e264fe04bcd2251bbe8845cf25155e2d8f595",
+    "command_sha256": "e25704097dcd2138914b2dde9b81ea50ec47baa19764c2930823699f709f16cc",
+    "outcome_classifier": "scripts/perf/idle-poll-outcome.php",
+    "outcome_classifier_sha256": "df85f993c7fcec89b40986dd7643094b87da2b444f740368198b295bea1d9338",
     "kind": "mixed",
     "counts": [6, 12, 24],
     "requested_timeout_seconds": 10,
