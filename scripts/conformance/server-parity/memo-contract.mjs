@@ -66,6 +66,10 @@ export function checkMemoRecord(record, fixture, artifacts, mode = 'http') {
   assert.deepEqual(final.events.slice(0, phases.activity.events.length), phases.activity.events,
     'original completed activity prefix');
   const memoEvents = final.events.filter(event => event.event_type === 'MemoUpserted');
+  assert.deepEqual(final.events.map(event => event.event_type), ['StartAccepted', 'WorkflowStarted',
+    'MemoUpserted', 'ActivityScheduled', 'ActivityStarted', 'ActivityCompleted', 'MemoUpserted', 'WorkflowCompleted'],
+    'exact durable event ordering');
+  assert.deepEqual(final.events.map(event => event.sequence), [1, 2, 3, 4, 5, 6, 7, 8], 'contiguous original history');
   assert.equal(memoEvents.length, 2, 'replay creates no duplicate memo event');
   for (const [index, event] of memoEvents.entries()) {
     assert.equal(event.payload.sequence, index === 0 ? 1 : 3, 'original command sequence');
@@ -76,6 +80,28 @@ export function checkMemoRecord(record, fixture, artifacts, mode = 'http') {
   }
   for (const type of ['ActivityScheduled', 'ActivityStarted', 'ActivityCompleted', 'WorkflowCompleted']) {
     assert.equal(final.events.filter(event => event.event_type === type).length, 1, 'one durable ' + type);
+  }
+  const [scheduled, started, finished] = ['ActivityScheduled', 'ActivityStarted', 'ActivityCompleted']
+    .map(type => final.events.find(event => event.event_type === type));
+  assert.equal(typeof scheduled.payload.activity_execution_id, 'string');
+  assert(scheduled.payload.activity_execution_id.length > 0);
+  for (const event of [scheduled, started, finished]) {
+    assert.equal(event.payload.sequence, 2, 'original activity command');
+    assert.equal(event.payload.activity_execution_id, scheduled.payload.activity_execution_id, 'one original activity identity');
+    assert.equal(event.payload.activity_type, 'parity.v1.memo_echo');
+    assert.equal(event.payload.task.repair_count, 0, 'no manual activity repair');
+    assert.deepEqual(event.payload.activity.retry_policy, {snapshot_version: 1, max_attempts: 1, backoff_seconds: [],
+      start_to_close_timeout: 120, schedule_to_start_timeout: null, schedule_to_close_timeout: 600,
+      heartbeat_timeout: null, non_retryable_error_types: []}, 'complete frozen retry snapshot');
+  }
+  assert.equal(started.payload.attempt_number, 1);
+  assert.equal(finished.payload.attempt_number, 1);
+  assert.equal(finished.payload.activity_attempt_id, started.payload.activity_attempt_id, 'same original activity attempt');
+  assert.equal(finished.payload.task.id, started.payload.task.id, 'same original activity task');
+  assert.deepEqual(finished.typed_decoded.result, input, 'canonical typed activity result');
+  for (const event of memoEvents) {
+    assert.equal(event.payload.task.repair_count, 0, 'no manual memo task repair');
+    assert.equal(event.payload.task.attempt_count, 1, 'first memo task attempt');
   }
   if (mode === 'http') {
     assert.equal(record.discovery.workflow_memo_updates.supported, true, 'runtime explicitly discovers support');

@@ -22,6 +22,11 @@ const controls = [
   ['second activity invocation', r => {(mode === 'http' ? r.phases.activity.actor : r.phases.activity).activity_invocations++;}],
   ['different actor source', r => {const a = mode === 'http' ? r.phases.original.actor : r.phases.original;
     a[mode === 'http' ? 'sdk_source' : 'workflow_source'] = '0'.repeat(40);}],
+  ['event reorder', r => {const e = r.phases.replacement.events;[e[6],e[7]] = [e[7],e[6]];}],
+  ['different activity identity', r => {r.phases.replacement.events[5].payload.activity_execution_id = 'different';}],
+  ['different attempt identity', r => {r.phases.replacement.events[5].payload.activity_attempt_id = 'different';}],
+  ['retry snapshot changed', r => {r.phases.replacement.events[5].payload.activity.retry_policy.backoff_seconds = [1];}],
+  ['manual repair', r => {r.phases.replacement.events[6].payload.task.repair_count = 1;}],
 ];
 if (mode === 'http') controls.push(
   ['missing capability', r => {r.discovery.workflow_memo_updates.supported = false;}],
