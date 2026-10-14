@@ -43,6 +43,12 @@ class NamespaceResolver
             return ControlPlaneProtocol::jsonForRequest($request, $payload, 404);
         }
 
+        // Authentication, role and namespace checks precede receipt lookup.
+        // A committed duplicate must not fetch or claim its external payload again.
+        if ($response = $this->externalPayloadTransport->queryCompletionResponse($request)) {
+            return $response;
+        }
+
         return $this->storageAdmission->handle($request, function (Request $request) use ($next): Response {
             $this->externalPayloadTransport->resolveIncoming($request);
 

@@ -6,14 +6,14 @@ The unpublished Rust crate has an Avro foundation and an opt-in SQLite/PostgreSQ
 execution slice. Full runtime parity, migration, performance improvement and
 cutover remain unqualified.
 
-The latest merged foundation is [#445](https://github.com/durable-workflow/server/pull/445),
-at `bb199cb71`, with its public memo-update gate still disabled. Its exact
-candidate passes all 13 shared jobs across six databases; separate
-[fresh-main qualification](https://github.com/durable-workflow/server/actions/runs/38645794230)
-is running. It includes the delivered initial-memo/clock foundation from #444,
-the #454 measurement report/reader controls and exact #452 bounded artifact
-exporter. Frozen published PHP, embedded and SDK tuples remain separate from
-current PHP release work. Representative timer, signal,
+The latest merged foundation is [#450](https://github.com/durable-workflow/server/pull/450),
+at `e603a245e`, following #445's memo transaction preparation, #446's bounded
+continuation and #448's SDK memo authoring. Each exact candidate tree passes
+its own 13-job shared suite across six databases. Separate fresh-main
+qualification is recorded below; no result is carried across changed trees.
+The merged native development runtime enables memo upserts, while full external
+transport discovery stays unadvertised. Frozen published PHP, embedded and SDK tuples
+remain separate from current PHP release work. Representative timer, signal,
 query, update, activity, cancellation, namespace and recovery checks do not
 establish complete parity for those families. The original failed records remain
 failed; later qualifying runs are separate observations.
@@ -23,29 +23,44 @@ failed; later qualifying runs are separate observations.
 The active integration order is:
 
 - [#445](https://github.com/durable-workflow/server/pull/445): canonical memo
-  transaction foundation merged; fresh-main qualification is pending.
+  transaction foundation merged `bb199cb71`; its separate fresh-main 13-job
+  qualification passes in 38645794230, with every database log audited.
+  This preparation kept the memo-update gate disabled.
 - [#446](https://github.com/durable-workflow/server/pull/446): cold continue-as-new
-  after a genuine activity. Current `b58d8332` passes five database cells; the
-  original MariaDB job lost its hosted runner before comparisons. One unchanged
-  retry is running. Promotion and fresh-main acceptance remain ahead.
+  after a genuine activity, merged `dff9e846`. Its identical whole tree passes
+  all 13 candidate jobs after one unchanged MariaDB retry. The original hosted
+  runner loss remains failed without an established cause. Fresh main's MySQL
+  8.4 comparison failed in 38650678703; its cause is under inspection.
 - [#448](https://github.com/durable-workflow/server/pull/448): actual SDK memo
-  authoring and continuation inheritance. Earlier candidates pass all 13 shared
-  jobs; current `dd0fb1e9` combined-tree qualification and promotion remain
-  pending, along with external-memo policy.
+  authoring and continuation inheritance, merged `284f5b822`. Its exact whole
+  tree passes all 13 candidate jobs and required source checks. Fresh main and
+  external-memo policy remain pending.
 - [#450](https://github.com/durable-workflow/server/pull/450): verified local
   external input, workflow/activity results and activity arguments. Installed
   PHP/native originals, including a two-activity batch and cold parent, complete.
-  Two-reference atomic rollback/cold delivery controls pass. Latest-source hosted
-  qualification is pending. The older byte-only and input-only sources pass
-  their own full matrices. One local 100 ms transfer control
+  Two-reference atomic rollback/cold delivery controls pass. Its exact whole
+  tree is merged as `e603a245e` after all 13 candidate jobs and required source
+  checks pass. Fresh main is pending. Those regression jobs do not imply new
+  external-consumer execution on every database. One local 100 ms transfer control
   failed; three isolated controls and an unchanged full repeat pass, with the
   original cause still unknown.
-- [#455](https://github.com/durable-workflow/server/pull/455): existing opt-in,
-  namespace/queue-scoped null-task poll wake. Local native HTTP groups and
-  installed-worker controls pass on an earlier component tree. The candidate
-  now stacks on #450 so its final matrix tests the combined runtime; it must
-  not promote before the preceding slices qualify. Old passes do not qualify
-  this new combined tree. Idle/query cost and matched performance remain open.
+- [#455](https://github.com/durable-workflow/server/pull/455): opt-in,
+  namespace/queue-scoped null-task poll wake. Candidate `29d461bae` passes all
+  13 jobs in 38647001027, with all six logs independently audited. The next
+  combined tree includes #457 and exact PHP #456, preserves both query middleware
+  additions and combines the current OpenAPI at revision 55. Its qualification
+  remains pending. An earlier component's SQLite PHP target failed after an activity
+  completion response when the Rust actor's registration DELETE returned
+  lock-pressure 503; later refusal/repair phases were not reached. That original
+  stays failed. Idle/query cost and matched performance remain open.
+- [#457](https://github.com/durable-workflow/server/pull/457): extend the actual
+  installed external consumers to separate PHP/native databases in all six
+  configurations. Local SQLite, MySQL 8.4 and PostgreSQL 17 each complete five
+  originals per target with exact typed cold reads. Initial boundary checks
+  rejected EXIT-trap cleanup; scoped always-steps correct the placement, with
+  ownership/partial/repeated cleanup controls passing. Final-head hosted
+  qualification and promotion remain pending. This does not
+  qualify automatic policy, S3 or completion-upload authority.
 
 Full transport discovery stays unadvertised. Complete batch workflow semantics,
 memo/query reference ingress, upload allowances, automatic result policy, S3,
@@ -53,6 +68,11 @@ cleanup/backup/restart and full database/consumer qualification remain open.
 Broader runtime/operational parity, safe sequential PHP database takeover,
 matched performance measurements and release/cutover preparation remain #325
 requirements. No native release or deployment is qualified.
+
+Completed local raw archives, transport journals and databases have been deleted.
+Historical retention descriptions below do not guarantee that those bytes are
+still available. Code, readable owning outcomes and bounded temporary job
+summaries are the current evidence surfaces.
 
 ### Earlier external input and byte milestones
 

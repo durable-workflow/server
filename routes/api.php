@@ -260,6 +260,7 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
 
         // Query tasks (ephemeral worker-routed workflow queries)
         Route::post('/query-tasks/poll', [WorkerController::class, 'pollQueryTasks']);
+        Route::get('/query-tasks/{queryTaskId}/status', [WorkerController::class, 'queryTaskStatus']);
         Route::post('/query-tasks/{queryTaskId}/complete', [WorkerController::class, 'completeQueryTask']);
         Route::post('/query-tasks/{queryTaskId}/fail', [WorkerController::class, 'failQueryTask']);
 
