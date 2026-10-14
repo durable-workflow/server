@@ -37,6 +37,9 @@ Set absolute `DW_PORT_SOURCE_ROOT`, `DW_PORT_SDK_ROOT` and
 `scripts/perf/server-port-matched.compose.yml`:
 
 ```sh
+matched_compose=scripts/perf/server-port-matched.compose.yml
+php_project="dw-port-php-$(date -u +%Y%m%dT%H%M%S)"
+native_project="dw-port-native-$(date -u +%Y%m%dT%H%M%S)"
 mkdir -p "$DW_PORT_SOURCE_ROOT/benchmarks/capacity/v1/bindings/php/vendor"
 export DW_PORT_RUNTIME_URL=http://php-server:8080
 docker compose -p "$php_project" -f "$matched_compose" --profile php \
