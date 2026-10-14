@@ -704,13 +704,25 @@ jobs:
           done
           docker rm -f "$RESOURCE_SCOPE-php" "$RESOURCE_SCOPE-php-maintenance" "$RESOURCE_SCOPE-native-a" "$RESOURCE_SCOPE-native-b" "$RESOURCE_SCOPE-recovered" "$RESOURCE_SCOPE-db" || true
           docker network rm "$RESOURCE_SCOPE" || true
-      - name: Retain MySQL execution evidence
+      - name: Summarize MySQL execution evidence
+        if: always()
+        env:
+          PARITY_JOB_OUTCOME: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          mkdir -p parity-evidence parity-summary
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
+          docker run --rm --user="$(id -u):$(id -g)" --network=none --cpus=1 --memory=256m --memory-swap=256m \
+            --entrypoint node -e PARITY_JOB_OUTCOME -e GITHUB_SHA \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence:ro" -v "$PWD/parity-summary:/summary" \
+            "$image" /source/scripts/conformance/server-parity/artifact-summary.mjs /evidence /summary
+      - name: Retain MySQL execution summary
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: mysql-execution-${{ matrix.label }}
-          path: parity-evidence
-          retention-days: 90
+          path: parity-summary
+          retention-days: 1
 
   postgres-storage:
     needs: published-sdk-adapters
@@ -1158,13 +1170,25 @@ jobs:
           done
           docker rm -f "$RESOURCE_SCOPE-php" "$RESOURCE_SCOPE-php-maintenance" "$RESOURCE_SCOPE-native-a" "$RESOURCE_SCOPE-native-b" "$RESOURCE_SCOPE-recovered" "$RESOURCE_SCOPE-db" || true
           docker network rm "$RESOURCE_SCOPE" || true
-      - name: Retain PostgreSQL storage evidence
+      - name: Summarize PostgreSQL storage evidence
+        if: always()
+        env:
+          PARITY_JOB_OUTCOME: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          mkdir -p parity-evidence parity-summary
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
+          docker run --rm --user="$(id -u):$(id -g)" --network=none --cpus=1 --memory=256m --memory-swap=256m \
+            --entrypoint node -e PARITY_JOB_OUTCOME -e GITHUB_SHA \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence:ro" -v "$PWD/parity-summary:/summary" \
+            "$image" /source/scripts/conformance/server-parity/artifact-summary.mjs /evidence /summary
+      - name: Retain PostgreSQL storage summary
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: postgres-storage-${{ matrix.label }}
-          path: parity-evidence
-          retention-days: 90
+          path: parity-summary
+          retention-days: 1
 
   execution-and-codec:
     needs: published-sdk-adapters
@@ -1495,11 +1519,23 @@ jobs:
           docker rm -f "$RESOURCE_SCOPE-rust" || true
           docker rm -f "$RESOURCE_SCOPE-recovered" || true
           docker network rm "$RESOURCE_SCOPE" || true
-      - name: Retain fixture evidence
+      - name: Summarize fixture evidence
+        if: always()
+        env:
+          PARITY_JOB_OUTCOME: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          mkdir -p parity-evidence parity-summary
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
+          docker run --rm --user="$(id -u):$(id -g)" --network=none --cpus=1 --memory=256m --memory-swap=256m \
+            --entrypoint node -e PARITY_JOB_OUTCOME -e GITHUB_SHA \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence:ro" -v "$PWD/parity-summary:/summary" \
+            "$image" /source/scripts/conformance/server-parity/artifact-summary.mjs /evidence /summary
+      - name: Retain fixture summary
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: shared-server-fixtures
-          path: parity-evidence
-          retention-days: 90
+          path: parity-summary
+          retention-days: 1
           if-no-files-found: error

@@ -1,5 +1,22 @@
 # Shared Server fixtures
 
+Hosted jobs retain small test/comparison reports and bounded failure-log tails
+for one day. Full raw records, HTTP journals, databases, sidecars and payload
+objects remain temporary inputs to the unchanged assertions and comparisons;
+they are not uploaded as bulk archives. GitHub job logs and the owning PR's
+readable outcome remain the delivery record.
+
+The `artifact-summary.mjs RAW_DIRECTORY SUMMARY_DIRECTORY` utility reads the raw
+directory without changing it and requires a fresh, separate output directory.
+Its index states which files were retained or omitted and whether a text file
+contains only its tail. JSON reports are copied byte-for-byte or omitted whole,
+so stored int64 values are never reserialized and oversized reports never look
+like complete JSON. Retained content is bounded to 128 files, 64 KiB per file
+and 2 MiB in total, plus the small index. The exporter does not rerun or qualify
+assertions. Reproduce a failed scenario with its original profile and limits
+when omitted raw details are needed, and keep only the useful failure trace in
+its owning issue.
+
 Native cluster discovery publishes the same carrier auth-composition v1
 contract as the frozen PHP reference. Published workers validate this manifest
 before registration; it declares client setting precedence and secret redaction,
