@@ -96,6 +96,15 @@ projections, including start-history metadata. Typed Avro long handling stays
 unchanged. These are admission/storage controls, not completed workflows.
 Revised native and matched qualification remains required.
 
+Continuation's first revised MySQL/MariaDB gates expose a native query-template
+error: literal JSON paths reached the ordered placeholder converter. The draft
+now follows the existing driver-owned `?` template path without weakening
+shared placeholder checks. MySQL test setup also uses text protocol for
+`CREATE TRIGGER`, which binary prepared statements refuse. The [failed original
+disposition](https://github.com/durable-workflow/server/pull/446#issuecomment-6165414784)
+remains distinct from frozen PHP lock failures. Corrected real database controls
+and a new exact-source matrix are required before promotion.
+
 Seven actual raw JSON admissions on the frozen PHP image exposed an additional
 initial-memo boundary in #444. Empty objects and contiguous numeric-key objects
 become lists; sparse or mixed canonical numeric keys refuse; leading-zero

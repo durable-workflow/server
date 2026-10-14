@@ -294,7 +294,7 @@ impl Backend for MySql {
     type EncodedOptionalTime = Option<DateTime<Utc>>;
     type EncodedDocument = Json<Value>;
     const QUERY_CACHE_SCAN: &'static str = "SELECT `key`,value,expiration FROM dw_query_cache WHERE `key` LIKE 'dw-native-query:%' ORDER BY `key` LIMIT 65";
-    const QUERY_CACHE_PENDING_FOR_RUN: &'static str = "SELECT COUNT(*) FROM dw_query_cache WHERE `key` LIKE 'dw-native-query:%' AND JSON_UNQUOTE(JSON_EXTRACT(value,'$.run_id'))=$1 AND expiration>$2 AND JSON_UNQUOTE(JSON_EXTRACT(value,'$.status')) IN ('pending','leased')";
+    const QUERY_CACHE_PENDING_FOR_RUN: &'static str = "SELECT COUNT(*) FROM dw_query_cache WHERE `key` LIKE 'dw-native-query:%' AND JSON_UNQUOTE(JSON_EXTRACT(value,'$.run_id'))=? AND expiration>? AND JSON_UNQUOTE(JSON_EXTRACT(value,'$.status')) IN ('pending','leased')";
     const QUERY_CACHE_GET: &'static str =
         "SELECT value,expiration FROM dw_query_cache WHERE `key`=$1";
     const QUERY_CACHE_INSERT: &'static str =
@@ -316,6 +316,7 @@ impl Backend for MySql {
             || sql == Self::RANGE_REPAIR_TASK_SQL
             || sql == Self::SELECTION_RESOLUTION_SQL
             || sql == Self::ACTIVITY_OPEN_TASK_SQL
+            || sql == Self::QUERY_CACHE_PENDING_FOR_RUN
         {
             return Cow::Borrowed(sql);
         }
@@ -415,6 +416,16 @@ mod timestamp_tests {
     use super::*;
     use chrono::SecondsFormat;
     use serde_json::json;
+
+    #[test]
+    fn mysql_pending_query_guard_keeps_json_paths_and_positional_bindings() {
+        let sql = MySql::QUERY_CACHE_PENDING_FOR_RUN;
+        assert_eq!(MySql::statement(sql), sql);
+        assert_eq!(sql.matches('?').count(), 2);
+        assert!(sql.contains("JSON_EXTRACT(value,'$.run_id')"));
+        assert!(sql.contains("JSON_EXTRACT(value,'$.status')"));
+        assert!(!sql.contains("$1") && !sql.contains("$2"));
+    }
 
     #[tokio::test]
     async fn sqlite_php_and_native_deadlines_keep_microsecond_claim_and_receipt_fences() {

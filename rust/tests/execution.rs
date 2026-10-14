@@ -361,7 +361,9 @@ impl TestDatabase {
                     .connect_with(options.as_ref().clone())
                     .await
                     .unwrap();
-                sqlx::query(statement).execute(&pool).await.unwrap();
+                // MySQL excludes CREATE TRIGGER from binary prepared
+                // statements. Test setup has no bindings and uses text SQL.
+                sqlx::raw_sql(statement).execute(&pool).await.unwrap();
                 pool.close().await;
             }
         }
