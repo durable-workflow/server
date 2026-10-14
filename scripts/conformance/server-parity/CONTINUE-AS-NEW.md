@@ -37,9 +37,14 @@ original observation.
 
 This first case does not qualify pending signal/update/stream transfer,
 continued children, cancellation races, external envelopes, namespace routing
-or full lifecycle parity. Those remain required under #325. The native runtime
-currently refuses continue-as-new; published baseline actors and contract
-checks precede its implementation.
+or full lifecycle parity. Those remain required under #325. The native draft
+now implements one default-namespace terminal continuation with retained
+arguments or a typed replacement, inherited initial memo and a single
+successor. Changed workflow type/queue, nonterminal commands in the same
+completion, linked children, pending updates/signals/queries/waits and
+stream/search-attribute transfer refuse explicitly. The unpublished transition
+still needs actual differential and full database qualification. The wider
+continuation gates remain open under #325.
 
 The first normal published PHP original completes the four phases with one
 activity invocation, six predecessor events, two successor events and a 409

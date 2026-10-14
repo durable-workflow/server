@@ -30,6 +30,7 @@ pub(super) trait Backend: Database {
         "UPDATE dw_query_cache SET value=$1,expiration=$2 WHERE \"key\"=$3";
     const QUERY_CACHE_DELETE: &'static str = "DELETE FROM dw_query_cache WHERE \"key\"=$1";
     const MEMO_INITIAL_INSERT: &'static str = "INSERT INTO workflow_memos(workflow_run_id,workflow_instance_id,\"key\",value,upserted_at_sequence,inherited_from_parent,created_at,updated_at,portable_value,portable_value_sequence) VALUES ($1,$2,$3,$4,0,false,$5,$6,$7,0)";
+    const MEMO_INHERIT_INSERT: &'static str = "INSERT INTO workflow_memos(workflow_run_id,workflow_instance_id,\"key\",value,upserted_at_sequence,inherited_from_parent,created_at,updated_at,portable_value,portable_value_sequence) VALUES ($1,$2,$3,$4,1,true,$5,$6,$7,1)";
     const MEMO_READ: &'static str = "SELECT \"key\",value,portable_value,portable_value_sequence,upserted_at_sequence FROM workflow_memos WHERE workflow_run_id=$1 ORDER BY \"key\",id LIMIT 101";
     fn statement(sql: &'static str) -> Cow<'static, str> {
         Cow::Borrowed(sql)
@@ -281,6 +282,7 @@ impl Backend for Postgres {
 
 impl Backend for MySql {
     const MEMO_INITIAL_INSERT: &'static str = "INSERT INTO workflow_memos(workflow_run_id,workflow_instance_id,`key`,value,upserted_at_sequence,inherited_from_parent,created_at,updated_at,portable_value,portable_value_sequence) VALUES ($1,$2,$3,$4,0,false,$5,$6,$7,0)";
+    const MEMO_INHERIT_INSERT: &'static str = "INSERT INTO workflow_memos(workflow_run_id,workflow_instance_id,`key`,value,upserted_at_sequence,inherited_from_parent,created_at,updated_at,portable_value,portable_value_sequence) VALUES ($1,$2,$3,$4,1,true,$5,$6,$7,1)";
     const MEMO_READ: &'static str = "SELECT `key`,value,portable_value,portable_value_sequence,upserted_at_sequence FROM workflow_memos WHERE workflow_run_id=$1 ORDER BY `key`,id LIMIT 101";
     const SELECTION_RESOLUTION_SQL: &'static str = "SELECT id,payload FROM workflow_history_events WHERE workflow_run_id=? AND event_type='SelectionResolved' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.selection_group_id'))=? ORDER BY sequence LIMIT 1";
     const REPAIR_COUNTER_MAX: i64 = u32::MAX as i64;

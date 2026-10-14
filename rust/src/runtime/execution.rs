@@ -377,6 +377,13 @@ impl Runtime {
         };
         super::previews::describe(self.signal_codec.clone(), description).await
     }
+    pub(crate) async fn list_runs(&self, workflow: &str) -> Result<Value> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.list_runs(workflow).await,
+            Storage::Postgres(store) => store.list_runs(workflow).await,
+            Storage::MySql(store) => store.list_runs(workflow).await,
+        }
+    }
     pub(super) async fn list_workflows(
         &self,
         filter: super::visibility::VisibilityFilter,
@@ -520,6 +527,23 @@ impl Runtime {
     delegate!(fail_workflow_task(task_id: &str, body: Value) -> Result<Value>);
     pub(crate) async fn complete_workflow(&self, task_id: &str, body: Value) -> Result<Value> {
         if let Some(commands) = body["commands"].as_array() {
+            for command in commands
+                .iter()
+                .filter(|command| command["type"] == "continue_as_new")
+            {
+                if command
+                    .get("arguments")
+                    .is_some_and(|value| !value.is_null())
+                {
+                    super::queries::decode(
+                        self.signal_codec.clone(),
+                        super::envelope(command, "arguments")?,
+                        true,
+                        "invalid_continue_as_new_arguments",
+                    )
+                    .await?;
+                }
+            }
             for command in commands
                 .iter()
                 .filter(|command| command["type"] == "complete_update")

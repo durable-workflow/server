@@ -25,6 +25,9 @@ mod visibility;
 #[path = "execution/memos.rs"]
 mod memos;
 
+#[path = "execution/continuations.rs"]
+mod continuations;
+
 #[path = "execution/admission.rs"]
 mod admission;
 
