@@ -86,6 +86,16 @@ both actual failed captures confirm that unacknowledged admission cannot trigger
 the kill. The actor helper is included in adapter source integrity checks.
 Fresh exact-source qualification is required before promotion.
 
+The next upsert-preparation matrix has a distinct MySQL 8.4 CPU-cell setup
+failure before native startup or original admission. A successful socket query
+is followed by a missing-socket version query. The CPU-cell readiness and SQL
+checks now require TCP, which does not accept the image's socket-only temporary
+initialization server. Setup remains bounded at 120 seconds; database limits
+and workload budgets are unchanged. This original is an unsuccessful setup,
+not native deadline evidence. The affected cell will use the exact hosted
+optimized binary and native-tree/hash provenance for local qualification;
+broader corrected-source checks remain required.
+
 Seven actual raw JSON admissions on the frozen PHP image exposed an additional
 initial-memo boundary in #444. Empty objects and contiguous numeric-key objects
 become lists; sparse or mixed canonical numeric keys refuse; leading-zero
