@@ -3,6 +3,8 @@
 set -euo pipefail
 backend="$1"
 family=${2:-markers}
+memo_fixture=${DW_PARITY_MEMO_FIXTURE_ID:-memo-initial-activity-replay}
+case "$memo_fixture" in memo-initial-activity-replay|memo-activity-replay) ;; *) exit 2 ;; esac
 case "$family" in
   markers) ids=(fresh-numeric fresh-zero deprecation-first genuine-version-one php-full-retry) ;;
   policy) ids=(php-full-retry-refusal) ;;
@@ -10,7 +12,7 @@ case "$family" in
   portable) ids=(fresh-numeric fresh-zero deprecation-first genuine-version-one php-full-retry php-full-retry-refusal rust-range-completed rust-range-timer-pending) ;;
   deadlines) ids=(activity-deadline-authority) ;;
   retries) ids=(activity-deadline-active-receipts activity-deadline-receipts activity-global-deadline-retry activity-heartbeat-renewal) ;;
-  memos) ids=(memo-initial-activity-replay) ;;
+  memos) ids=("$memo_fixture") ;;
   *) exit 2 ;;
 esac
 test -n "$RESOURCE_SCOPE"

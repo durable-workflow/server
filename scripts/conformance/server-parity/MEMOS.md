@@ -5,6 +5,14 @@ The pending `memo-activity-replay` fixture exercises the existing
 It has not passed the three-runtime acceptance gate and is excluded from the
 default fixture set.
 
+The authored candidate explicitly selects it with
+`DW_PARITY_MEMO_FIXTURE_ID=memo-activity-replay` in its shared matrix. The
+runner defaults to the initial-only case and accepts only those two committed
+fixture IDs. HTTP and embedded producers, comparison and corruption controls
+use the same selection without changing any frozen package identity. Local
+native SQLite author/activity/cold-successor acceptance passes; the new
+all-database comparison remains pending.
+
 The separate `memo-initial-activity-replay` case proves the initial storage/read
 foundation without issuing an upsert. It runs the same original through one
 actual activity and a cold workflow process, checking the authored start-history

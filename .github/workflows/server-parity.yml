@@ -75,6 +75,9 @@ on:
 permissions:
   contents: read
 
+env:
+  DW_PARITY_MEMO_FIXTURE_ID: memo-activity-replay
+
 jobs:
   published-sdk-adapters:
     runs-on: ubuntu-latest
