@@ -129,3 +129,8 @@ docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=
   scripts/conformance/server-parity/codec-operations-database-audit.mjs /evidence \
   > "$output/database-audit.json"
 cat "$output/database-audit.json"
+docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m --network=none \
+  --entrypoint node -v "$source_root:/source:ro" -v "$output:/evidence:ro" -w /source "$observer_image" \
+  scripts/conformance/server-parity/codec-operations-database-controls.mjs /evidence \
+  > "$output/database-controls.json"
+cat "$output/database-controls.json"

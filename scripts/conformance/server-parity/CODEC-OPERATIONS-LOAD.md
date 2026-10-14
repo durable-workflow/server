@@ -83,7 +83,9 @@ cell uses the fixed database image/resource declaration in
 startup before admitting an original, and runs the unchanged workload/readers.
 After the strict readers and 58 corruption controls pass, it stops the service
 and compares canonical histories and task attempts through a read-only database
-transaction. Cleanup retires only that cell's containers, network and database.
+transaction. Three controls refuse altered duplicate completion, manual repair
+and conflicting status rows from that same actual SQL observation. Cleanup
+retires only that cell's containers, network and database.
 The Action keeps small outcomes/diagnostics for seven days, without DB dumps or
 full typed sidecars. The local equivalent is:
 
@@ -93,9 +95,9 @@ bash scripts/conformance/server-parity/codec-operations-cell.sh postgres-17 \
   unique-lowercase-scope /fresh/native-bin /normally-installed/php-sdk /fresh/result
 ```
 
-Local source originals pass SQLite, PostgreSQL 17, MySQL 8.0 and MariaDB 10.11.
-The other local cells, complete hosted matrix, published consumers and promotion
-remain pending.
+Local source originals pass all six database configurations at their recorded
+source revisions with the same native subtree and binary. The complete final
+hosted matrix, published consumers and promotion remain pending.
 Passing the earlier activity-only original does not pass these families.
 This is deadline health, with no matched
 throughput/capacity, embedded CPU, migration or release claim.
