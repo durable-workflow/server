@@ -7,7 +7,7 @@ const map=value=>({type:'map',value});
 const list=value=>({type:'list',value});
 const integer=value=>({type:'int64',value:String(value)});
 
-export function checkContinueRecord(record,fixture,artifacts) {
+export function checkContinueRecord(record,fixture,artifacts,mode='http') {
   const spec=fixture.continuation;
   assert.equal(record.outcome,'observed');
   assert.equal(spec.phase_budget_seconds,30);
@@ -21,7 +21,9 @@ export function checkContinueRecord(record,fixture,artifacts) {
   assert(old.length>0&&next.length>0&&old!==next,'distinct original successor');
   const memo=map({empty:list([]),keep:fixture.typed_value});
   const pids=[];
-  const definition=createHash('sha256').update(readFileSync(new URL('./continue-worker.php',import.meta.url))).digest('hex');
+  assert(['http','embedded'].includes(mode));
+  const definition=createHash('sha256').update(readFileSync(new URL(
+    mode==='http'?'./continue-worker.php':'./continue-embedded.php',import.meta.url))).digest('hex');
   for(const [phase,observation] of Object.entries(record.phases)) {
     assert.equal(observation.workflow_id,original.workflow_id);
     assert.equal(observation.workflow_type,fixture.workflow_type);
@@ -38,11 +40,19 @@ export function checkContinueRecord(record,fixture,artifacts) {
     assert.equal(actor.run_id,observation.run_id);
     assert.equal(actor.workflow_id,original.workflow_id);
     assert.equal(actor.activity_invocations,phase==='activity'?1:0);
-    assert.equal(actor.sdk_version,artifacts.sdk_php);
-    assert.equal(actor.sdk_source,artifacts.sdk_php_source_commit);
-    assert.equal(actor.sdk_composer_lock_sha256,artifacts.sdk_composer_lock_sha256);
-    assert.deepEqual(actor.sdk_loaded_sources,artifacts.published_sdk_artifacts.php.loaded_sources);
+    if(mode==='http') {
+      assert.equal(actor.sdk_version,artifacts.sdk_php);
+      assert.equal(actor.sdk_source,artifacts.sdk_php_source_commit);
+      assert.equal(actor.sdk_composer_lock_sha256,artifacts.sdk_composer_lock_sha256);
+      assert.deepEqual(actor.sdk_loaded_sources,artifacts.published_sdk_artifacts.php.loaded_sources);
+    } else {
+      assert.equal(actor.workflow_package,artifacts.workflow);
+      assert.equal(actor.workflow_source,artifacts.workflow_source_commit);
+      assert.equal(actor.embedded_composer_lock_sha256,artifacts.embedded_composer_lock_sha256);
+      assert.deepEqual(actor.workflow_loaded_sources,artifacts.workflow_loaded_sources);
+    }
     assert.equal(actor.definition_sha256,definition);
+    if(mode==='http') {
     const kind=phase==='activity'?'activity':'workflow';
     const claim=actor.receipts.find(receipt=>receipt.path===`/api/worker/${kind}-tasks/poll`&&receipt.response.task)?.response.task;
     assert(claim,'actual normal SDK poll delivery');
@@ -57,6 +67,7 @@ export function checkContinueRecord(record,fixture,artifacts) {
       assert.deepEqual(completion.request.commands.map(command=>command.type),[
         {original:'schedule_activity',continuation:'continue_as_new',successor:'complete_workflow'}[phase]]);
     } else assert.equal(completion.request.activity_attempt_id,claim.activity_attempt_id);
+    }
     assert.equal(observation.execution.execution_deadline_at,record.initial.execution.execution_deadline_at);
     if(phase!=='successor')assert.equal(observation.execution.run_deadline_at,record.initial.execution.run_deadline_at);
   }
@@ -67,8 +78,9 @@ export function checkContinueRecord(record,fixture,artifacts) {
   assert.deepEqual(continuation.events.map(event=>event.event_type),[
     'StartAccepted','WorkflowStarted','ActivityScheduled','ActivityStarted','ActivityCompleted','WorkflowContinuedAsNew']);
   assert.deepEqual(continuation.events.map(event=>event.sequence),[1,2,3,4,5,6]);
-  assert.deepEqual(successor.events.map(event=>event.event_type),['WorkflowStarted','WorkflowCompleted']);
-  assert.deepEqual(successor.events.map(event=>event.sequence),[1,2]);
+  const successorOrder=spec.successor_event_order[mode];
+  assert.deepEqual(successor.events.map(event=>event.event_type),successorOrder);
+  assert.deepEqual(successor.events.map(event=>event.sequence),successorOrder.map((_,index)=>index+1));
   assert.deepEqual(successor.typed_output,fixture.typed_value);
   assert.equal(continuation.execution.closed_reason,'continued');
   assert.equal(continuation.execution.run_number,1);
@@ -76,9 +88,10 @@ export function checkContinueRecord(record,fixture,artifacts) {
   assert.equal(record.inherited.run_id,next);
   assert.equal(record.inherited.status,'pending');
   assert.deepEqual(record.inherited.typed_memo,memo,'inherited before successor claim');
-  assert.equal(record.inherited.events.length,1);
+  assert.equal(record.inherited.events.length,successorOrder.length-1);
+  assert.deepEqual(successor.events.slice(0,record.inherited.events.length),record.inherited.events);
   const continued=continuation.events.at(-1).payload;
-  const started=successor.events[0].payload;
+  const started=successor.events.find(event=>event.event_type==='WorkflowStarted').payload;
   assert.equal(continued.sequence,2);
   assert.equal(continued.closed_reason,'continued');
   assert.equal(continued.continued_to_run_id,next);
@@ -89,7 +102,7 @@ export function checkContinueRecord(record,fixture,artifacts) {
   assert.equal(started.continued_from_run_id,old);
   assert.equal(started.workflow_run_id,next);
   assert.equal(started.workflow_instance_id,original.workflow_id);
-  assert.equal(successor.execution.continued_from_run_id,old);
+  if(mode==='http')assert.equal(successor.execution.continued_from_run_id,old);
   const scheduled=continuation.events[2].payload;
   for(const event of continuation.events.slice(2,5)) {
     assert.equal(event.payload.sequence,1);
@@ -108,12 +121,18 @@ export function checkContinueRecord(record,fixture,artifacts) {
   assert.deepEqual(record.duplicate.before.map(run=>run.typed_memo),record.duplicate.after.map(run=>run.typed_memo));
   assert.equal(record.duplicate.current_after.run_id,next);
   const duplicate=record.duplicate.receipt;
+  if(mode==='embedded') {
+    assert.equal(record.duplicate.delivery,'real_database_queue');
+    assert.equal(record.duplicate.task_id,continued.task.id);
+    assert(record.duplicate.worker_output.includes('RunWorkflowTask'));
+  } else {
   if(duplicate.status===409) {
     assert(['run_closed','task_not_leased'].includes(duplicate.response.reason));
     assert.equal(duplicate.response.task_status,'completed');
   } else {
     assert.equal(duplicate.status,200);
     assert.equal(duplicate.response.recorded,false);
+  }
   }
   for(const runs of [record.runs_before_duplicate,record.runs_after_duplicate,record.runs_final]) {
     assert.equal(runs.length,2,'exactly two original runs');
@@ -130,10 +149,10 @@ export function checkContinueRecord(record,fixture,artifacts) {
   const expected=startedAt+BigInt(spec.run_timeout_seconds)*1_000_000_000n;
   assert(deadline<=expected&&expected-deadline<quantum,'published new-run deadline at its displayed precision');
   return {outcome:'pass',workflow_id:original.workflow_id,predecessor_run_id:old,successor_run_id:next,
-    phases:4,activity_invocations:1,predecessor_events:6,successor_events:2,duplicate_status:duplicate.status};
+    phases:4,activity_invocations:1,predecessor_events:6,successor_events:successorOrder.length,duplicate_status:duplicate?.status??null,mode};
 }
 
 if(process.argv[1]===new URL(import.meta.url).pathname) {
-  const [record,fixture,artifacts]=process.argv.slice(2).map(file=>JSON.parse(readFileSync(file)));
-  console.log(JSON.stringify(checkContinueRecord(record,fixture,artifacts)));
+  const [record,fixture,artifacts]=process.argv.slice(2,5).map(file=>JSON.parse(readFileSync(file)));
+  console.log(JSON.stringify(checkContinueRecord(record,fixture,artifacts,process.argv[5]??'http')));
 }

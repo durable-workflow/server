@@ -20,6 +20,8 @@
     },
     "author_shutdown":"normal_cli_exit",
     "duplicate":"identical_predecessor_continuation_completion",
+    "duplicate_modes":{"http":"identical_captured_completion_request","embedded":"real_queue_redelivery_of_same_completed_task"},
+    "successor_event_order":{"http":["WorkflowStarted","WorkflowCompleted"],"embedded":["StartAccepted","WorkflowStarted","WorkflowCompleted"]},
     "run_count":2,
     "activity_count":1,
     "required_observations":[
