@@ -67,16 +67,21 @@ for family in "${families[@]}"; do
     fixtures+=(--fixture "$path")
   done
   status=0
-  recorder="$RESOURCE_SCOPE-corrected-$target-$family-recorder"
+  actor_suffix=''
+  if test "$family" = memos; then
+    case "${DW_PARITY_MEMO_WORKFLOW_LANGUAGE:-php}" in
+      php) ;;
+      python|rust) actor_suffix="-${DW_PARITY_MEMO_WORKFLOW_LANGUAGE}" ;;
+      *) exit 2 ;;
+    esac
+  fi
+  recorder="$RESOURCE_SCOPE-corrected-$target-$family$actor_suffix-recorder"
   docker run --name "$recorder" --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
     --network "$RESOURCE_SCOPE" --entrypoint node "${shared[@]}" "$image" \
     scripts/conformance/server-parity.mjs record --mode http --url "$url" --target "$target" \
     --prefix "$prefix" --artifacts "$artifacts" "${fixtures[@]}" \
     --output "/evidence/$target/$family-record.json" || status=$?
   docker inspect --format '{{json .State}}' "$recorder" > "$evidence/$target/$family-recorder-state.json"
-  # Each language keeps its state in its own evidence directory. Retire the
-  # stopped recorder before the next language reuses this owned family name.
-  docker rm "$recorder" >/dev/null
   printf '%s\n' "$status" > "$evidence/$target/$family-status.txt"
   if test "$status" != 0; then failed=1; fi
 done
