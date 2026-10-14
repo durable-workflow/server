@@ -78,3 +78,16 @@ test('artifact contents and entry count remain bounded and omitted data stays ex
   assert.equal(second.omitted_files, 12);
   assert.throws(() => summarizeEvidence(source, join(source, 'nested')), /outside raw evidence/);
 });
+
+test('empty actor diagnostics cannot hide failed profile status or the actual error', t => {
+  const {source, output} = fixture(t);
+  for (let index = 0; index < 200; index++) writeFileSync(join(source, `actor-${index}.stderr`), '');
+  writeFileSync(join(source, 'sdk-profile.status'), '1\n');
+  writeFileSync(join(source, 'z-final-actor.stderr'), 'HTTP 503 backend_lock_pressure during destroy\n');
+  const summary = summarizeEvidence(source, output, {outcome: 'failure'});
+  assert.equal(readFileSync(join(output, 'sdk-profile.status'), 'utf8'), '1\n');
+  assert.equal(readFileSync(join(output, 'z-final-actor.stderr'), 'utf8'), 'HTTP 503 backend_lock_pressure during destroy\n');
+  assert.equal(summary.retained.length, 2);
+  assert.equal(summary.omitted_files, 200);
+  assert.equal(summary.retained[0].path, 'sdk-profile.status');
+});

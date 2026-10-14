@@ -8,6 +8,7 @@ const ENTRY_LIMIT = 128;
 
 function priority(path, failed) {
   const name = basename(path);
+  if (/\.status$/.test(name) || /-status\.txt$/.test(name)) return -1;
   if (/^(rust|mysql|postgres|comparator|codec-load|artifact-summary)(-execution)?-tests\.txt$/.test(name)) return 0;
   if (/^(comparison|compare)([-.].*)?\.json$/.test(name) || /-comparison\.json$/.test(name)) return 1;
   if (failed && (/\.stderr$/.test(name) || /(?:stderr|error|failure|bootstrap|install|build).*(?:\.log|\.txt)$/.test(name)
@@ -40,7 +41,7 @@ export function summarizeEvidence(source, destination, {outcome = 'unknown', rev
   mkdirSync(destination, {recursive: true});
   const files = inventory(source);
   const selected = files.map(file => ({...file, priority: priority(file.path, outcome !== 'success')}))
-    .filter(file => file.priority !== null)
+    .filter(file => file.priority !== null && file.source_bytes > 0)
     .sort((a, b) => a.priority - b.priority || a.path.localeCompare(b.path));
   const retained = [];
   let bytes = 0;
