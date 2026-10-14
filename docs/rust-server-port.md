@@ -87,6 +87,17 @@ records final source and boundary success. Conditional cancellation and
 prepared-local qualification remain explicitly skipped. Earlier failed
 originals and frozen tuples retain their existing dispositions.
 
+#443 is merged at `5bd0bb4dcc3ec43b3186589a8d1f16d2c8972bcf`, complete tree
+`b7716f947d979513877d540555e0b622e9435c09`, identical to reviewed `1061491df`
+and CI merge `7c77b91b`. All 13 original combined jobs in `38513528725` pass:
+six CPU/deadline cells, six ordinary database cells and the SDK/build job.
+Source and boundary gates pass. Independent CPU logs confirm the declared
+activity, timer, renewal and canonical cleanup observations under load, plus
+stopped read-only history and task audits with zero repairs. Exact fresh-main
+`38520403960` remains pending before final delivery. Native and frozen packages
+are unchanged. This does not establish matched PHP/Rust performance, takeover
+or rewrite release readiness.
+
 #438 candidate `c99b1130090b8e29db0bcab7d1bdfa6fd34a0dbf` qualifies all six
 database configurations in run `38492234181`, after two unchanged-head/limits
 single-job retries for upstream Composer HTTP 500 responses. Its complete tree
@@ -164,6 +175,17 @@ timer/lease-renewal/cancellation health under load. Other databases and the
 complete CPU/deadline qualification remain ahead.
 It leaves the default corpus, native source, dependencies and frozen actors
 unchanged.
+
+The separate [timer/renewal/cleanup CPU profile](../scripts/conformance/server-parity/CODEC-OPERATIONS-LOAD.md)
+adds three independent installed SDK observers to the same workload. Its fresh
+native SQLite original preserves one timer firing/completion, two timely
+same-attempt heartbeat/lease renewals and original cooperative cleanup expiry
+under measured busy CPU. All 85 dense reads and 88 health/readiness reads succeed,
+and the stopped read-only audit finds zero repairs. The failed barrier race,
+delayed-description observation, incorrect source identity and PHP OOM/lock
+reference remain separate outcomes. The reader preserves fractional deadline
+precision. Other database families, published consumers and the full CPU gate
+remain pending. This is not matched performance or cutover qualification.
 
 Original `871eec1ec` run `38477701278` passes SQLite, PostgreSQL 16/17,
 MariaDB 10.11 and MySQL 8.4. MySQL 8.0 passes its corrected portable, clock and

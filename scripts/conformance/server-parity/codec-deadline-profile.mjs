@@ -10,9 +10,9 @@ const spec=JSON.parse(readFileSync(specPath));
 mkdirSync(directory,{recursive:true});
 const children=[];
 const childStates=[];
-function child(executable,args) {
+function child(executable,args,role=executable) {
   const process=spawn(executable,args,{stdio:['pipe','pipe','inherit']});children.push(process);
-  const state={executable,code:null,signal:null};childStates.push(state);
+  const state={executable,role,code:null,signal:null};childStates.push(state);
   const queued=[],waiters=[];
   createInterface({input:process.stdout}).on('line',line=>{
     const value=JSON.parse(line);if(waiters.length)waiters.shift().resolve(value);else queued.push(value);
@@ -27,6 +27,9 @@ let timer=setTimeout(()=>{for(const process of children)process.kill('SIGKILL');
 let complete=false;
 try {
   if(!(await health.next()).ready)throw new Error('Independent health observer failed preparation');
+  const operations=Object.keys(spec.operations??{}).map(role=>({role,...child('php',[
+    'scripts/conformance/server-parity/codec-operations-author.php',role,url,prefix,specPath,artifactsPath,`${directory}/${role}.json`],role)}));
+  for(const observer of operations)if(!(await observer.next()).ready)throw new Error(`${observer.role} preparation failed`);
   const author=child('php',['scripts/conformance/server-parity/codec-deadline-author.php',url,prefix,specPath,artifactsPath,`${directory}/original.json`]);
   const ready=await author.next();if(!ready.ready)throw new Error('Original activity preparation failed');
   const denseUrl=new URL(`/api/workflows/${encodeURIComponent(ready.dense_workflow_id)}/runs/${encodeURIComponent(ready.dense_run_id)}`,url);
@@ -34,13 +37,18 @@ try {
   if(!(await load.next()).ready)throw new Error('Description readers failed preparation');
   clearTimeout(timer);
   timer=setTimeout(()=>{for(const process of children)process.kill('SIGKILL');},spec.observer_budget_seconds*1000);
-  process.stdout.write(JSON.stringify({phase:'load_started',observed_at:new Date().toISOString()})+'\n');
-  load.process.stdin.end('start\n');health.process.stdin.end('start\n');author.process.stdin.write('start\n');
+  load.process.stdin.end('start\n');health.process.stdin.end('start\n');
+  const [loadStart,healthStart]=await Promise.all([load.next(),health.next()]);
+  if(!loadStart.started||!healthStart.started)throw new Error('Actual read wave handoff was not acknowledged');
+  process.stdout.write(JSON.stringify({phase:'load_started',observed_at:loadStart.started_at})+'\n');
+  author.process.stdin.write('start\n');
+  for(const observer of operations)observer.process.stdin.end('start\n');
   if(!(await author.next()).deadline_observed)throw new Error('Original deadline observation failed');
   const [[loadCode],[healthCode]]=await Promise.all([load.closed,health.closed]);
   if(loadCode!==0||healthCode!==0)throw new Error('Independent load reader failed');
   author.process.stdin.end('finish\n');
   const [authorCode]=await author.closed;if(authorCode!==0)throw new Error('Original deadline author failed');
+  for(const observer of operations){const[code]=await observer.closed;if(code!==0)throw new Error(`${observer.role} observer failed`);}
   const inputs={original:JSON.parse(readFileSync(`${directory}/original.json`)),
     load:JSON.parse(readFileSync(`${directory}/load.json`)),health:JSON.parse(readFileSync(`${directory}/health.json`))};
   const header={schema:spec.schema,
@@ -50,8 +58,10 @@ try {
   // The original PHP JSON retains exact int64 literals. Validation above must
   // not replace those bytes with JavaScript's rounded diagnostic number values.
   const recordHeader=JSON.stringify(header).slice(0,-1);
+  const originalOperations=operations.map(({role})=>JSON.stringify(role)+':'+readFileSync(`${directory}/${role}.json`,'utf8').trim());
   writeFileSync(`${directory}/record.json`,recordHeader+',"original":'+readFileSync(`${directory}/original.json`,'utf8').trim()
-    +',"load":'+JSON.stringify(inputs.load)+',"health":'+JSON.stringify(inputs.health)+'}\n');
+    +',"load":'+JSON.stringify(inputs.load)+',"health":'+JSON.stringify(inputs.health)
+    +(operations.length?',"operations":{'+originalOperations.join(',')+'}':'')+'}\n');
   complete=true;
 } finally {
   clearTimeout(timer);
