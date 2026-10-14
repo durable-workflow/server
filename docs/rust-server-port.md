@@ -31,9 +31,10 @@ The active integration order is:
   jobs across six databases; promotion and external-memo policy remain pending.
 - [#450](https://github.com/durable-workflow/server/pull/450): verified local
   external input, workflow/activity results and activity arguments. Installed
-  PHP/native originals complete, and two-reference atomic rollback/cold delivery
-  controls pass. Latest-source hosted qualification is pending. The older
-  byte-only source passes its own full matrix. One local 100 ms transfer control
+  PHP/native originals, including a two-activity batch and cold parent, complete.
+  Two-reference atomic rollback/cold delivery controls pass. Latest-source hosted
+  qualification is pending. The older byte-only and input-only sources pass
+  their own full matrices. One local 100 ms transfer control
   failed; three isolated controls and an unchanged full repeat pass, with the
   original cause still unknown.
 
