@@ -45,6 +45,8 @@ test('failed summaries keep bounded diagnostic tails without truncating JSON int
   const diagnostic = `${'x'.repeat(128 * 1024)}\nHTTP 500 while installing pinned dependency\n`;
   writeFileSync(join(source, 'embedded-original-install.txt'), diagnostic);
   writeFileSync(join(source, 'php-server.log'), 'SQL lock refusal at original deadline\n');
+  writeFileSync(join(source, 'final-actor.stderr'), 'HTTP 503 backend_lock_pressure during destroy\n');
+  writeFileSync(join(source, 'sdk-profile.status'), '1\n');
   writeFileSync(join(source, 'comparison.json'), JSON.stringify({large: 'x'.repeat(128 * 1024)}));
   const summary = summarizeEvidence(source, output, {outcome: 'failure'});
   const tail = readFileSync(join(output, 'embedded-original-install.txt'));
@@ -52,6 +54,8 @@ test('failed summaries keep bounded diagnostic tails without truncating JSON int
   assert.equal(tail.toString().endsWith('HTTP 500 while installing pinned dependency\n'), true);
   assert.equal(summary.retained.find(file => file.path.endsWith('install.txt')).tail_only, true);
   assert.equal(existsSync(join(output, 'php-server.log')), true);
+  assert.equal(readFileSync(join(output, 'final-actor.stderr'), 'utf8'), 'HTTP 503 backend_lock_pressure during destroy\n');
+  assert.equal(readFileSync(join(output, 'sdk-profile.status'), 'utf8'), '1\n');
   assert.equal(existsSync(join(output, 'comparison.json')), false);
   assert.equal(readFileSync(join(source, 'embedded-original-install.txt'), 'utf8'), diagnostic);
 });
