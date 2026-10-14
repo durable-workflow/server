@@ -74,6 +74,9 @@ for family in "${families[@]}"; do
     --prefix "$prefix" --artifacts "$artifacts" "${fixtures[@]}" \
     --output "/evidence/$target/$family-record.json" || status=$?
   docker inspect --format '{{json .State}}' "$recorder" > "$evidence/$target/$family-recorder-state.json"
+  # Each language keeps its state in its own evidence directory. Retire the
+  # stopped recorder before the next language reuses this owned family name.
+  docker rm "$recorder" >/dev/null
   printf '%s\n' "$status" > "$evidence/$target/$family-status.txt"
   if test "$status" != 0; then failed=1; fi
 done
