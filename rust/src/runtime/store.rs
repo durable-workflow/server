@@ -1873,13 +1873,26 @@ where
                 portable,
             ));
         }
+        let task_id = DB::string(task, "id")?;
+        let task_attempt = DB::number(task, "attempt_count")?;
         let prepared = super::memos::prepare_update(
             self.memo_codec.clone(),
             stored,
             envelope(command, "entries")?,
             self.memo_size_limit,
         )
-        .await?;
+        .await
+        .map_err(|error| match error {
+            super::RuntimeError::Protocol {
+                status,
+                mut response,
+            } if response["reason"] == "structural_limit_exceeded" => {
+                response["task_id"] = json!(task_id);
+                response["workflow_task_attempt"] = json!(task_attempt);
+                super::RuntimeError::Protocol { status, response }
+            }
+            error => error,
+        })?;
         let written_at = now();
         for (key, value) in prepared.changes {
             if let Some(value) = value {

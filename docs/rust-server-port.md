@@ -36,9 +36,17 @@ configuration controls were observed on the published PHP package. Zero and
 negative values disable this structural limit; fixed memo count/value/total
 limits still apply. The new actual SQLite control refuses before changing the
 original memo/history and restores at the inclusive whole-map boundary.
-Native source checks are running; the remaining authored/external/inheritance
-work is incomplete and memo updates remain unadvertised. Frozen references
-and the independent #444/#445/#446 gates are unchanged.
+The configured rejection preserves PHP's 422 task/attempt and measured-limit
+diagnostic. Twelve focused controls and the restored full source suite pass:
+48 library tests and 90 SQLite HTTP tests, with 18 explicit external-database
+and subprocess ignores. Reverting only the transaction's configured limit to
+`None` makes the new actual refusal control fail by accepting that upsert.
+The correction restores the inclusive whole-map boundary and preserves the
+separate actual history-write rollback test. The remaining
+authored/external/inheritance work is incomplete and memo updates remain
+unadvertised. Frozen references and independent #444/#445/#446 gates are
+unchanged. The broader [draft #448](https://github.com/durable-workflow/server/pull/448)
+retains those incomplete acceptance requirements.
 
 [#445](https://github.com/durable-workflow/server/pull/445) prepares authored
 memo transactions on top of #444. Apache Avro's schema-aware serde writer
