@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import {readFileSync, writeFileSync, readdirSync} from 'node:fs';
+import {readFileSync, readdirSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {basename, dirname, resolve} from 'node:path';
@@ -14,6 +14,10 @@ import {checkSdkChildDirectionArtifacts, checkSdkChildDirectionPackages} from '.
 import {checkSdkTimerAuthorArtifacts, checkSdkTimerAuthorPackages} from './server-parity/sdk-timer-author-contract.mjs';
 import {checkSdkSignalDirectionArtifacts, checkSdkSignalDirectionPackages} from './server-parity/sdk-signal-direction-contract.mjs';
 import {captureProbe} from './server-parity/probe-capture.mjs';
+import {writeRecord} from './server-parity/record-file.mjs';
+import {checkCorrectedMarkerArtifacts, checkCorrectedMarkerPackages} from './server-parity/corrected-marker-contract.mjs';
+import {checkCorrectedRangeArtifacts, checkCorrectedRangePackages} from './server-parity/corrected-range-contract.mjs';
+import {checkActivityDeadlinePackages} from './server-parity/activity-deadline-contract.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const {values, positionals} = parseArgs({allowPositionals: true, options: {
@@ -81,6 +85,8 @@ try {
       const fixture = json(path);
       checkPublishedPatchArtifacts(fixture, record.artifacts);
       checkRangeArtifacts(fixture, record.artifacts);
+      checkCorrectedMarkerArtifacts(fixture, record.artifacts);
+      checkCorrectedRangeArtifacts(fixture, record.artifacts);
       checkSdkDirectionArtifacts(fixture, record.artifacts);
       checkSdkChildDirectionArtifacts(fixture, record.artifacts);
       checkSdkTimerAuthorArtifacts(fixture, record.artifacts);
@@ -91,7 +97,7 @@ try {
       for (const flag of ['url', 'application-root']) {
         if (values[flag]) arguments_.push(`--${flag}`, values[flag]);
       }
-      const probe = captureProbe('php', arguments_, {directory: dirname(resolve(values.output)), timeout: fixture.namespace_signal_pair || fixture.selected_run_signal_pair ? 75000 : 45000,
+      const probe = captureProbe('php', arguments_, {directory: dirname(resolve(values.output)), timeout: fixture.corrected_markers ? fixture.corrected_markers.overall_budget_seconds * 1000 + 5000 : fixture.namespace_signal_pair || fixture.selected_run_signal_pair ? 75000 : 45000,
         env: {...process.env, DW_PARITY_FAILURE_EVIDENCE_DIR: dirname(resolve(values.output))}});
       const item = {fixture_id: fixture.id, fixture, outcome: 'runner-blocked'};
       try {
@@ -107,6 +113,9 @@ try {
         if (fixture.patch_deployment?.legacy_marker_history) checkLegacyMarkerPackageObservation(fixture, item.observation, record.artifacts);
         else checkPatchPackageObservation(fixture, item.observation, record.artifacts);
         checkRangePackages(fixture, item.observation, record.artifacts);
+        checkCorrectedMarkerPackages(fixture, item.observation, record.artifacts);
+        checkCorrectedRangePackages(fixture, item.observation, record.artifacts);
+        checkActivityDeadlinePackages(fixture, item.observation, record.artifacts);
         checkSdkDirectionPackages(fixture, item.observation, record.artifacts);
         checkSdkChildDirectionPackages(fixture, item.observation, record.artifacts);
         checkSdkTimerAuthorPackages(fixture, item.observation, record.artifacts);
@@ -119,7 +128,7 @@ try {
         record.cases.push(item);
         record.outcome = item.outcome;
         record.finished_at = new Date().toISOString();
-        writeFileSync(values.output, JSON.stringify(record, null, 2) + '\n');
+        writeRecord(values.output, record);
         throw error;
       }
       record.cases.push(item);
@@ -127,7 +136,7 @@ try {
     if (record.cases.length === 0) throw new Error('No fixtures found');
     record.outcome = 'pass';
     record.finished_at = new Date().toISOString();
-    writeFileSync(values.output, JSON.stringify(record, null, 2) + '\n');
+    writeRecord(values.output, record);
     console.log(JSON.stringify({outcome: record.outcome, target: record.target, cases: record.cases.map(c => c.fixture_id)}));
   } else {
     throw new Error('Expected record or compare; see --help');

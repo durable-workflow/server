@@ -943,6 +943,17 @@ where
             } else {
                 None
             };
+            if let Some(activity) = activity.as_ref() {
+                if !matches!(
+                    DB::string(activity, "status")?.as_str(),
+                    "pending" | "running"
+                ) || super::activity_deadlines::expired_kind::<DB>(activity, now())?.is_some()
+                {
+                    // The timeout sweep owns this original deadline. A claim
+                    // cannot erase it by starting another attempt.
+                    continue;
+                }
+            }
             let type_name = activity.as_ref().map_or_else(
                 || DB::string(&task, "workflow_type"),
                 |a| DB::string(a, "activity_type"),
@@ -957,7 +968,11 @@ where
             let attempt = DB::number(&task, "attempt_count")?
                 .checked_add(1)
                 .ok_or_else(|| refuse(StatusCode::CONFLICT, "task_attempt_exhausted"))?;
-            let expires = Self::cancellation_lease_expiry(&run)?;
+            let expires = if kind == "activity" && Self::cancellation_request(&run)?.is_none() {
+                now() + chrono::Duration::seconds(300)
+            } else {
+                Self::cancellation_lease_expiry(&run)?
+            };
             let leased_at = now();
             if kind == "workflow" {
                 task_payload[super::cooperative::CLAIM_KEY] = json!({"registration_id":DB::number(&worker,"id")?,
@@ -978,6 +993,9 @@ where
                 "queue": queue, "task_queue": queue, "lease_owner": worker_id, "lease_expires_at": expires});
             if let Some(activity) = activity {
                 let activity_id = DB::string(&activity, "id")?;
+                let policy =
+                    DB::optional_document_row(&activity, "retry_policy")?.unwrap_or(Value::Null);
+                super::activity_deadlines::validate_policy(&policy)?;
                 let attempt_id = id();
                 let started_at = now();
                 Self::query("UPDATE activity_attempts SET status='expired',closed_at=$1 WHERE activity_execution_id=$2 AND status='running'")
@@ -985,8 +1003,10 @@ where
                 Self::query("INSERT INTO activity_attempts(id,activity_execution_id,workflow_run_id,workflow_task_id,attempt_number,status,lease_owner,lease_expires_at,started_at) VALUES ($1,$2,$3,$4,$5,'running',$6,$7,$8)")
                     .bind(&attempt_id).bind(&activity_id).bind(&run_id).bind(&task_id).bind(attempt)
                     .bind(worker_id).bind(DB::bind_time(expires)).bind(DB::bind_time(started_at)).execute(&mut *tx).await?;
-                Self::query("UPDATE activity_executions SET status='running',attempt_count=$1,current_attempt_id=$2,started_at=$3,last_heartbeat_at=NULL WHERE id=$4")
-                    .bind(attempt).bind(&attempt_id).bind(DB::bind_time(started_at)).bind(&activity_id)
+                Self::query("UPDATE activity_executions SET status='running',attempt_count=$1,current_attempt_id=$2,started_at=$3,last_heartbeat_at=NULL,close_deadline_at=$4,heartbeat_deadline_at=$5 WHERE id=$6")
+                    .bind(attempt).bind(&attempt_id).bind(DB::bind_time(started_at))
+                    .bind(DB::optional_time(super::activity_deadlines::deadline(&policy, "start_to_close_timeout", started_at)?))
+                    .bind(DB::optional_time(super::activity_deadlines::deadline(&policy, "heartbeat_timeout", started_at)?)).bind(&activity_id)
                     .execute(&mut *tx)
                     .await?;
                 let activity = Self::query("SELECT * FROM activity_executions WHERE id=$1")
@@ -1154,11 +1174,15 @@ where
                 .to_ascii_lowercase()
                 .contains("workflow task waiting for scheduled history");
         let range_blocked = !waiting
-            && failure
+            && (failure
                 .get("reason")
                 .and_then(Value::as_str)
                 .map(super::task_failures::php_trim)
-                == Some("version_marker_incompatible_range");
+                .is_some_and(|reason| matches!(reason, "version_marker_incompatible_range" | "activity_retry_policy_mismatch"))
+                // Published Rust Workers report their replay error in the
+                // message, without synthesizing PHP reason/sequence fields.
+                || (kind == "RustWorkflowTaskFailure"
+                    && super::task_failures::blocks_replay(&body["failure"])));
         if !waiting && !range_blocked && super::task_failures::blocks_replay(&body["failure"]) {
             return Err(refuse(
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -1343,6 +1367,10 @@ where
                             "arguments",
                             "queue",
                             "retry_policy",
+                            "start_to_close_timeout",
+                            "schedule_to_start_timeout",
+                            "schedule_to_close_timeout",
+                            "heartbeat_timeout",
                         ],
                     )?;
                     text(command, "activity_type")?;
@@ -1506,13 +1534,25 @@ where
                 let activity_type = text(command, "activity_type")?;
                 let arguments = envelope(command, "arguments")?;
                 let policy = super::activity_failures::retry_policy(command)?;
+                let scheduled_at = now();
+                let schedule_deadline = super::activity_deadlines::deadline(
+                    policy.as_ref().unwrap_or(&Value::Null),
+                    "schedule_to_start_timeout",
+                    scheduled_at,
+                )?;
+                let lifecycle_deadline = super::activity_deadlines::deadline(
+                    policy.as_ref().unwrap_or(&Value::Null),
+                    "schedule_to_close_timeout",
+                    scheduled_at,
+                )?;
                 // The preserved SQL schema defaults this counter to one.
                 // Published authored scheduling explicitly starts at zero;
                 // only the original worker claim consumes its first attempt.
-                Self::query("INSERT INTO activity_executions(id,workflow_run_id,sequence,activity_type,activity_class,status,attempt_count,payload_codec,arguments,queue,retry_policy,parallel_group_path) VALUES ($1,$2,$3,$4,$5,'pending',0,'avro',$6,$7,$8,$9)")
+                Self::query("INSERT INTO activity_executions(id,workflow_run_id,sequence,activity_type,activity_class,status,attempt_count,payload_codec,arguments,queue,retry_policy,parallel_group_path,schedule_deadline_at,schedule_to_close_deadline_at) VALUES ($1,$2,$3,$4,$5,'pending',0,'avro',$6,$7,$8,$9,$10,$11)")
                     .bind(&activity_id).bind(&run_id).bind(sequence).bind(activity_type).bind(activity_type)
                     .bind(&arguments).bind(&queue).bind(policy.as_ref().map(DB::document))
-                    .bind(DB::optional_document(&metadata["parallel_group_path"])).execute(&mut *tx).await?;
+                    .bind(DB::optional_document(&metadata["parallel_group_path"]))
+                    .bind(DB::optional_time(schedule_deadline)).bind(DB::optional_time(lifecycle_deadline)).execute(&mut *tx).await?;
                 let activity = Self::query("SELECT * FROM activity_executions WHERE id=$1")
                     .bind(&activity_id)
                     .fetch_one(&mut *tx)
@@ -1733,6 +1773,7 @@ where
         {
             return Err(refuse(StatusCode::CONFLICT, "stale_attempt"));
         }
+        super::activity_deadlines::fence::<DB>(&activity)?;
         Self::query("UPDATE activity_executions SET status='completed',result=$1,exception=NULL,closed_at=$2 WHERE id=$3")
             .bind(&result).bind(DB::bind_time(now())).bind(&activity_id).execute(&mut *tx).await?;
         let activity = Self::query("SELECT * FROM activity_executions WHERE id=$1")
@@ -1795,6 +1836,7 @@ where
     pub(crate) async fn fire_due_timers(&self) -> Result<()> {
         // Expired root authority wins before any ordinary due timer fires.
         self.expire_cooperative_deadlines().await?;
+        self.expire_activity_deadlines().await?;
         // New timers use the canonical PHP timestamp shape on SQLite and typed
         // UTC values elsewhere. Existing PHP data still cannot be adopted.
         // The read probe avoids acquiring the transition lock when idle.
@@ -2021,6 +2063,8 @@ where
         let mut payload = json!({"activity_execution_id": DB::string(activity,"id")?, "activity_type": DB::string(activity,"activity_type")?,
         "activity_class": DB::string(activity,"activity_class")?, "sequence": DB::number(activity,"sequence")?,
         "activity": {"id":DB::string(activity,"id")?,"idempotency_key":DB::string(activity,"id")?,
+            "sequence":DB::number(activity,"sequence")?,"type":DB::string(activity,"activity_type")?,
+            "class":DB::string(activity,"activity_class")?,"local_activity":false,
             "activity_type": DB::string(activity,"activity_type")?, "arguments": wire(&DB::string(activity,"arguments")?),
             "retry_policy":DB::optional_document_row(activity,"retry_policy")?,
             "status":DB::string(activity,"status")?,"attempt_count":DB::number(activity,"attempt_count")?,
@@ -2033,13 +2077,22 @@ where
             "parallel_group_path",
         )?)?;
         super::selections::merge(&mut payload, &metadata);
+        if payload["activity"]["retry_policy"].is_null() {
+            // A legacy absent snapshot stays absent in its durable history.
+            // The activity claim may still advertise a nullable policy.
+            payload["activity"]
+                .as_object_mut()
+                .unwrap()
+                .remove("retry_policy");
+        }
         Ok(payload)
     }
 
     fn event(row: DB::Row) -> Result<Value> {
         Ok(
             json!({"id": DB::string(&row,"id")?, "sequence": DB::number(&row,"sequence")?, "event_type": DB::string(&row,"event_type")?,
-        "payload": DB::document_row(&row,"payload")?, "recorded_at": DB::instant(&row,"recorded_at")?,
+        "payload": DB::document_row(&row,"payload")?,
+        "recorded_at": DB::instant(&row,"recorded_at")?.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
         "workflow_task_id": DB::optional_string(&row,"workflow_task_id")?, "workflow_command_id": DB::optional_string(&row,"workflow_command_id")?}),
         )
     }

@@ -8,7 +8,7 @@ use super::{
 };
 use axum::http::StatusCode;
 use serde_json::{Value, json};
-use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
+use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Transaction, Type};
 
 impl<DB: Backend> Store<DB>
 where
@@ -34,16 +34,36 @@ where
                 response: json!({"reason":"activity_attempt_status_unavailable","minimum_protocol_version":"1.20"}),
             });
         }
+        self.observe_activity(task_id, body, protocol).await
+    }
+
+    // Heartbeat can report lost authority on legacy protocols without granting
+    // the separately capability-gated non-renewing status endpoint.
+    async fn observe_activity(&self, task_id: &str, body: Value, protocol: &str) -> Result<Value> {
+        let mut tx = self.begin().await?;
+        let (response, _) = self
+            .activity_observation(&mut tx, task_id, body, protocol)
+            .await?;
+        tx.commit().await?;
+        Ok(response)
+    }
+
+    async fn activity_observation(
+        &self,
+        tx: &mut Transaction<'_, DB>,
+        task_id: &str,
+        body: Value,
+        protocol: &str,
+    ) -> Result<(Value, bool)> {
         reject_fields(&body, &["activity_attempt_id", "lease_owner"])?;
         let attempt_id = text(&body, "activity_attempt_id")?;
         let owner = text(&body, "lease_owner")?;
-        let mut tx = self.begin().await?;
-        let task = self.task_row(&mut tx, task_id).await?;
+        let task = self.task_row(tx, task_id).await?;
         if DB::string(&task, "task_type")? != "activity" {
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
         }
         let attempt = Self::query("SELECT a.* FROM activity_attempts a JOIN workflow_tasks t ON t.id=a.workflow_task_id WHERE a.id=$1 AND t.namespace=$2")
-            .bind(attempt_id).bind(self.namespace.as_ref()).fetch_optional(&mut *tx).await?
+            .bind(attempt_id).bind(self.namespace.as_ref()).fetch_optional(&mut **tx).await?
             .ok_or_else(|| refuse(StatusCode::NOT_FOUND,"attempt_not_found"))?;
         if DB::string(&attempt, "workflow_task_id")? != task_id {
             return Err(refuse(StatusCode::CONFLICT, "task_mismatch"));
@@ -54,13 +74,13 @@ where
         let run_id = DB::string(&task, "workflow_run_id")?;
         let run = Self::query("SELECT * FROM workflow_runs WHERE id=$1")
             .bind(&run_id)
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut **tx)
             .await?;
         let activity =
             Self::query("SELECT * FROM activity_executions WHERE id=$1 AND workflow_run_id=$2")
                 .bind(DB::string(&attempt, "activity_execution_id")?)
                 .bind(&run_id)
-                .fetch_one(&mut *tx)
+                .fetch_one(&mut **tx)
                 .await?;
         let run_status = DB::string(&run, "status")?;
         let activity_status = DB::string(&activity, "status")?;
@@ -68,6 +88,7 @@ where
         let task_status = DB::string(&task, "status")?;
         let expires = DB::optional_instant(&attempt, "lease_expires_at")?
             .or(DB::optional_instant(&task, "lease_expires_at")?);
+        let activity_expiry = super::activity_deadlines::expired_kind::<DB>(&activity, now())?;
         let (can_continue, cancel_requested, reason) = if run_status == "cancelled" {
             (false, true, Some("run_cancelled"))
         } else if run_status == "terminated" {
@@ -96,6 +117,12 @@ where
                 .is_none_or(|expires| expires <= now())
         {
             (false, false, Some("lease_expired"))
+        } else if let Some(kind) = activity_expiry {
+            (
+                false,
+                false,
+                Some(super::activity_deadlines::timeout_reason(kind)),
+            )
         } else {
             (true, false, None)
         };
@@ -106,11 +133,15 @@ where
             "run_status":run_status,"run_closed_reason":DB::optional_string(&run,"closed_reason")?,"run_closed_at":DB::optional_instant(&run,"closed_at")?,
             "activity_status":activity_status,"attempt_status":attempt_status,"task_status":task_status,
             "deadlines":null,"worker_session":null,"protocol_version":protocol,"server_capabilities":super::store::capabilities()});
-        tx.commit().await?;
-        Ok(response)
+        Ok((response, Self::cancellation_request(&run)?.is_none()))
     }
 
-    pub(crate) async fn heartbeat_activity(&self, task_id: &str, body: Value) -> Result<Value> {
+    pub(crate) async fn heartbeat_activity(
+        &self,
+        task_id: &str,
+        body: Value,
+        protocol: &str,
+    ) -> Result<Value> {
         reject_fields(
             &body,
             &[
@@ -145,6 +176,34 @@ where
             }
         }
         let mut tx = self.begin().await?;
+        let (observed, ordinary) = self
+            .activity_observation(
+                &mut tx,
+                task_id,
+                json!({"activity_attempt_id":attempt_id,"lease_owner":text(&body,"lease_owner")?}),
+                protocol,
+            )
+            .await
+            .map_err(|error| match error {
+                super::RuntimeError::Refused {
+                    reason: "attempt_not_found",
+                    ..
+                } => refuse(StatusCode::CONFLICT, "stale_attempt"),
+                other => other,
+            })?;
+        if ordinary && observed["can_continue"] == false && observed["cancel_requested"] == false {
+            // Published PHP returns a structured refusal for ordinary expired
+            // or closed authority. This read never records progress or renews
+            // a lease; a concurrently closed attempt remains fenced.
+            let response = json!({"task_id":task_id,"activity_attempt_id":attempt_id,"lease_owner":body["lease_owner"],
+                "cancel_requested":false,"can_continue":false,"reason":observed["reason"],
+                "run_closed_reason":observed["run_closed_reason"],"run_closed_at":observed["run_closed_at"],
+                "heartbeat_recorded":false,"lease_expires_at":observed["lease_expires_at"],
+                "last_heartbeat_at":observed["last_heartbeat_at"],"worker_session":observed["worker_session"],
+                "protocol_version":protocol,"server_capabilities":super::store::capabilities()});
+            tx.commit().await?;
+            return Ok(response);
+        }
         let task = self.task_row(&mut tx, task_id).await?;
         if DB::string(&task, "task_type")? != "activity" {
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
@@ -177,8 +236,17 @@ where
         {
             return Err(refuse(StatusCode::CONFLICT, "stale_attempt"));
         }
+        super::activity_deadlines::fence::<DB>(&activity)?;
         let at = now();
-        let expires = Self::cancellation_lease_expiry(&run)?;
+        let expires = if Self::cancellation_request(&run)?.is_none() {
+            at + chrono::Duration::seconds(300)
+        } else {
+            Self::cancellation_lease_expiry(&run)?
+        };
+        let policy = DB::optional_document_row(&activity, "retry_policy")?.unwrap_or(Value::Null);
+        super::activity_deadlines::validate_policy(&policy)?;
+        let heartbeat_deadline =
+            super::activity_deadlines::deadline(&policy, "heartbeat_timeout", at)?;
         Self::query(
             "UPDATE activity_attempts SET last_heartbeat_at=$1,lease_expires_at=$2 WHERE id=$3",
         )
@@ -187,8 +255,9 @@ where
         .bind(attempt_id)
         .execute(&mut *tx)
         .await?;
-        Self::query("UPDATE activity_executions SET last_heartbeat_at=$1 WHERE id=$2")
+        Self::query("UPDATE activity_executions SET last_heartbeat_at=$1,heartbeat_deadline_at=$2 WHERE id=$3")
             .bind(DB::bind_time(at))
+            .bind(DB::optional_time(heartbeat_deadline))
             .bind(&activity_id)
             .execute(&mut *tx)
             .await?;

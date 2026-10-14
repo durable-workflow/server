@@ -46,6 +46,9 @@ mod worker_pressure;
 #[path = "execution/version_markers.rs"]
 mod version_markers;
 
+#[path = "execution/activity_deadlines.rs"]
+mod activity_deadlines;
+
 #[path = "execution/waiting_history.rs"]
 mod waiting_history;
 

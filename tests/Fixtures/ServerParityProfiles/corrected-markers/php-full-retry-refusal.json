@@ -1,0 +1,24 @@
+{
+  "id": "php-full-retry-refusal",
+  "workflow_type": "parity.v1.corrected_markers",
+  "input": {"integer": 9007199254740993, "optional": null, "unicode": "range λ"},
+  "typed_value": {"type": "map", "value": {
+    "integer": {"type": "int64", "value": "9007199254740993"},
+    "optional": {"type": "null", "value": null},
+    "unicode": {"type": "string", "value": "range λ"}
+  }},
+  "corrected_markers": {
+    "case": "full_retry", "producer": "php", "retry_policy": "php_full",
+    "phase_budget_seconds": 30, "overall_budget_seconds": 120,
+    "change_id": "corrected-numeric", "expected_decisions": [7, 7],
+    "embedded_clock_positions": {"original": [1, 1], "replacement": [1, 1]},
+    "markers": [{"sequence": 1, "version": 7, "min_supported": -3, "max_supported": 7}],
+    "replay_refusal": {
+      "kind": "retry_policy", "changed_last_interval": 121,
+      "failure_reason": "activity_retry_policy_mismatch", "failure_sequence": 2,
+      "phase_order": ["original", "activity", "incompatible", "replacement"],
+      "repair": "same_selected_original_run"
+    }
+  },
+  "contract": "A real PHP author records its entire eight-entry one-attempt retry policy. An independent Rust activity completes once before a cold Rust reader changes only the final unused interval from 120 to 121. Replay must refuse that inequality without closing the run, inserting another marker, changing its existing history or admitting another activity. An explicit operator repair of the same selected original run and a new cold reader with the exact original policy must complete the same logical workflow task. This new four-phase case declares 30-second phases and an original 120-second scenario before admission; it does not extend another fixture's observer or reduce a valid stored snapshot to an equivalent prefix."
+}

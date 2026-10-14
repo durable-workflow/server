@@ -26,6 +26,26 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+Original `871eec1ec` run `38477701278` passes SQLite, PostgreSQL 16/17,
+MariaDB 10.11 and MySQL 8.4. MySQL 8.0 passes its corrected portable, clock and
+activity-expiry comparisons, then its fixture database is OOM-killed during
+native pressure at the declared 1 GiB limit. The retained state records
+exit 137 / OOM true, followed by native storage refusal and lost database
+hostname. Its TLS step is unexecuted. The failed original stays failed.
+The prospective MySQL 8.0 allocation is now 2 GiB, matching the expanded
+MySQL 8.4 fixture. Native/actor limits, scenario deadlines and the 75-minute
+whole-job ceiling are unchanged. Fresh qualification is required before
+promotion. This does not establish the cause of historical 503s or qualify
+performance.
+
+Original SQLite artifact `11858815390` matches GitHub's published SHA-256.
+Its recorded CI merge `623d900a` has the same complete tree
+`a58061e1c335e0b01de55a14e6a26c8f2d4f2dd1` as the branch head.
+Canonical typed values and source fixture hashes remain the evidence for exact
+int64s. JavaScript numeric copies in diagnostic fixture inputs are rounded;
+they are not claimed as lossless payload evidence. Temporary ZIPs are deleted
+after their immediate inspection.
+
 [#429](https://github.com/durable-workflow/server/pull/429) is delivered at
 `6299289185caea472b2738a5d4442a617edf0b8a`, tree
 `62736363c1e03ceae091ea578d307fb4d2370054`, identical to the reviewed candidate.
@@ -39,21 +59,152 @@ pass. The [delivery receipt](https://github.com/durable-workflow/server/pull/429
 records exact artifacts and limits. Historical failures below remain failed;
 their causes are not established by this successful qualification.
 
-The next active slice is [selected-run signals](rust-server-selected-run-signals.md).
-It widens the separate shared fixture set to the six supported PHP/Rust client
-by PHP/Python/Rust author directions and canonical embedded behavior. The
-[isolated SQLite reference](https://github.com/durable-workflow/server/pull/434#issuecomment-6138791924)
-passes all six HTTP directions and canonical embedded counterparts at
-`e077ee4e60ceb9b3dfe6d2259fdc341f63ffbcec`: 24 original runs, 116 full sidecars,
-588 byte-checked exchanges and 300 real-record reader guards. Frozen Rust's
-optional variadic contract lacks an invalid-argument refusal gate; the separate
-PHP/Python-author gate omits its required argument. Native routing and durable
-rejections are implemented in the draft with passing focused storage/HTTP and
-local native regressions. The first real native pair completed but its strict
-record failed on the missing public command journal; the original is retained
-and the metadata projection is qualifying before a fresh cohort. Shared native
-and all-six candidate/fresh-main qualification remain pending. Published PHP remains the default; full runtime parity,
-migration, matched performance and release/cutover remain unqualified.
+Current #435 ordinary run `38438905276` fails all six original jobs at the
+process-recovery harness's sub-40-second lease wait guard. The candidate now
+uses published PHP's 300-second ordinary activity lease. A new machine-owned
+recovery allocation allows at most 310 seconds, declared before preparation
+and frozen with its hash in every new receipt; missing or changed old receipts
+are refused. No existing run receives a new lease or deadline to fit the test.
+Original failed jobs remain failed. The later ordinary-corpus run confirms
+real process-kill recovery; expanded matched fixture gates remain pending.
+That runner has a prospective 55-minute whole-job ceiling to include the real five-minute lease
+wait; old 45-minute allocations and all individual scenario limits stay recorded
+unchanged. Runtime memory/CPU and compile limits are unchanged.
+All six original jobs in the separate `d36856486` run `38447782933` pass.
+Original archive identity, native execution/schema/TLS and process-loss audits
+confirm recovery after the persisted five-minute lease on every database.
+Complete per-profile HTTP sidecar audits were not claimed. That run covers the existing
+corpus, rather than the expanded corrected marker cohort. The expanded runner
+wires eight portable cases across three runtimes and two service clock cases
+across both HTTP runtimes into all six configurations, using one explicit
+2.5.16 embedded manifest. Its prospective whole-job ceiling is 75 minutes;
+all scenario, phase, lease-wait and resource limits remain unchanged. Existing
+45/55-minute run allocations remain unchanged. The first expanded `a96d38ebd`
+run `38456291140` fails all six corrected-cohort stages; its PHP feature and
+both public boundary gates pass. The original PHP case contains an extra repair
+after a killed historical producer's forwarded poll blocks the later parent.
+The prospective fixture now retires that registration before the activity
+resumes, preserving strict history and existing deadlines. A fresh published
+PHP run passes all six marker cases and 99 reader controls, including that
+handoff without a repair event. Expanded matched confirmation remains pending.
+MariaDB also records a fixture DB OOM under its unchanged 512 MiB cap during
+the later pressure stage; TLS is skipped. This does not explain historical
+503s. The runner now retires its corrected cohort resources immediately after
+that stage, including failure, before subsequent independent pressure checks.
+Completed local bulk recordings and archives have been deleted; code, fixtures
+and readable GitHub outcomes remain. Earlier local retention promises no longer
+apply. New scratch is removed after its immediate inspection.
+
+The expanded `718ea3608` run `38469976743` passes both PostgreSQL jobs.
+SQLite passes the published PHP eight portable, two clock and four activity
+expiry cases, then fails native discovery because the new stage addressed the
+process intentionally killed by the preceding recovery test. The replacement
+process is running and the prospective runner now addresses it. MySQL 8.0 and
+MariaDB exit their PHP recorder with 137 while writing incomplete JSON after
+the final case snapshots complete. The recorder was automatically removed, so
+its OOM state is unavailable. Their database and PHP service states are healthy;
+later pressure controls pass. No product or historical failure cause is inferred.
+MySQL 8.4 remains pending. Originals keep their recorded dispositions.
+
+The recorder now writes one case at a time to avoid creating another complete
+serialization of all retained HTTP bytes. A bounded 48 MiB heap control preserves
+32 MiB of request bodies, typed int64, null and Unicode, and failed/empty records.
+The corrected HTTP profile retains the recorder's exit/OOM state before removing
+it. These are runner changes, with unchanged native bytes, fixture semantics,
+actor resource limits and original deadlines. Fresh matched qualification is
+required before promotion. Immediate artifact inspections are disposable.
+
+The first incremental-writer revision `3a9370f7a` fails recording with an undefined
+optional database-resource field. Unlike whole-object JSON serialization, its
+first implementation tried to pass that value to the file API. The correction
+omits undefined optional properties and preserves explicit null, with actual
+empty, passing and failed record shapes in the encoder checks. These failed
+originals are not product regressions or successful matched comparisons.
+
+General's PHP-only dependency update #437 is merged at `158f4c6f2` and included
+in the current working branch. It leaves the pinned corrected and historical
+cohorts unchanged. The combined tree requires fresh candidate qualification
+before #435 promotion; no Server 2.6.3 image qualification is inferred.
+
+The separate actual elapsed-deadline HTTP profile passes fresh matched
+published PHP/native SQLite recordings at `67cfd7b95`: four original expiry
+families, 142 corruption controls, and independent SQL verification of 19
+events per target and unchanged database bytes. Native now returns the ordinary
+structured heartbeat refusal atomically, while preserving cooperative
+stale-attempt conflicts. All 85 native execution and 35 unit cases pass;
+18 database unit cases are explicitly ignored locally. The final restored Rust
+tree is byte-identical. Timeout versus closed-attempt diagnostics describe the
+actual retained lifecycle state. This profile keeps the parent timeout delivery
+without authoring its result. The reusable embedded counterpart now passes
+fresh PHP/embedded SQLite comparison at `54c0a3e90`, with 157 reader controls
+and independent readback of four originals/19 events per target and zero
+repairs. It authors through a real queue job and uses public worker bridges.
+New shared three-mode/all-six wiring, retry/duplicate/renewal and final/main
+gates remain pending. Existing frozen profiles remain unchanged.
+
+[#434](https://github.com/durable-workflow/server/pull/434) is delivered at
+`c6dc5e451bf9ba8651f1f84e386ed6c274f3992c`, preserving reviewed tree
+`a823f73d288be436994e1272e020f462991b1dd3`. All six final-head and automatic
+main database jobs pass. Independent main original-artifact audits verify
+270 paired observations, 540 original runs, 3,300 HTTP sidecars and 11,803
+member hashes across the namespace and selected-run signal profiles. Each
+database passes 79 native execution cases, both 49-case comparators and 516
+actual-record reader checks, with applicable pool/reset and TLS gates. Main
+SDK identity, PHP/source and boundary gates pass. The
+[delivery receipt](https://github.com/durable-workflow/server/pull/434#issuecomment-6143056720)
+preserves earlier failed and cancelled originals and their separate limits.
+Frozen Rust's optional variadic signal contract still lacks an invalid-argument
+refusal gate; PHP/Python-author recipes omit a required argument.
+
+The next active slice is the separate
+[corrected marker/range cohort](rust-server-corrected-markers.md). It adds
+supported current readers and Rust authors to genuine numeric, duplicate-bound,
+clock, retry-policy and same-run repair cases. Existing frozen actors and
+histories remain unchanged. Five positive marker cases pass through the PHP
+reference and separately installed embedded roles. The additional published
+Rust completed-activity and timer-winner/pending-activity range directions
+pass the [original PHP recipes](https://github.com/durable-workflow/server/pull/435#issuecomment-6148196089),
+and the [embedded counterparts](https://github.com/durable-workflow/server/pull/435#issuecomment-6148451599)
+pass the unchanged PHP definitions. Those separate local recordings preserve
+35-second scenario budgets, original task repair, full prefixes/microclocks,
+typed values and neighboring runs; 100 actual-record negative controls pass.
+Both range families now also pass separate native SQLite recordings at
+`4f5d813a8`, with 56 actual-record controls and independent database readback.
+Native retains unstructured Rust replay failures and original-task repair,
+six-digit history timestamps and genuine legacy policy omission. All 81 native
+execution tests and 33 unit tests pass locally, with 18 database tests ignored.
+Earlier native admission, timestamp and policy-presence failures remain failed.
+These observations do not qualify a matched native/database cohort. The embedded explicit
+retry-policy mismatch remains a retained failure; its coordinated
+[Workflow source correction](https://github.com/durable-workflow/workflow/pull/776)
+is delivered and normally published as 2.5.16. A separately named 2.5.16
+embedded input now passes all eight applicable marker/policy/range cases at
+`a4c43d26c`, including strict policy refusal, exact restoration and selected
+repair on the same original. All 931 installed runtime/resource bytes match the
+published tag; 176 actual-record controls and independent SQL checks pass.
+The original 2.5.14 profile and its failed run remain unchanged. These backend
+handler cases run real independent `queue:work --once` database workers, as
+confirmed by the retained RUNNING/DONE receipts. They do not qualify sustained
+queue-worker draining. Current Python's
+fixed-start clock/UUID cases pass the PHP reference. Native marker/clock
+admission now has a candidate authored activity deadline implementation. It
+snapshots all four timeout options, fences elapsed completion/failure/heartbeat,
+retains the global deadline through same-execution retries, and renews only the
+heartbeat deadline with progress. Ordinary activity leases follow PHP's
+300-second contract. Local SQLite passes 85 execution cases and 35 unit cases,
+with 18 database tests explicitly ignored. Four deadline cases cover terminal
+expiry, full-policy retry across reopened storage, heartbeat renewal and
+committed receipt ordering. All ten corrected native SQLite HTTP marker, policy,
+range and Python clock cases now pass at `dbe6ff3a3`, with 194 actual-record
+corruption controls and independent query-only readback of all 84 events and
+12 original activities. Four authored-deadline regressions also pass on isolated
+MySQL 8.4. Earlier missing-snapshot and new MySQL JSON-path conversion failures
+remain failed; the latter is corrected without changing historical diagnoses.
+The pending elapsed-deadline fixture still needs actual shared PHP/native/embedded
+recordings; these local controls do not qualify that cohort. Embedded UUID semantics
+and new matched all-six/final/main qualification remain ahead.
+Published PHP remains the default; broader runtime
+parity, migration, matched performance and release/cutover remain unqualified.
 
 [#427](https://github.com/durable-workflow/server/pull/427) is merged and its
 [fresh-main qualification](https://github.com/durable-workflow/server/pull/427#issuecomment-6130548960)
@@ -1677,7 +1828,7 @@ full-matrix qualification remains required; earlier failed records stay held.
 | Workflow lifecycle, duplicate commands, typed history, continuation, child workflows, cancellation, cleanup replay | Workflow lifecycle, migration, child-workflow and replay runners; Feature cooperative cancellation, history, migration and repeated-signal tests | Bounded authored completion, activity retry/failure, direct children/cancellation and root cooperative cleanup; broader propagation, replay and continuation semantics pending |
 | Timers, schedules, signals, queries, updates, search attributes, memo, sagas | Corresponding runners in `scripts/conformance/`, manifests in `static/platform-conformance/`; Sample App polyglot experiments | Bounded durable sleep, repeated signals, state queries/updates and two UTC schedule cases; broader policies, search attributes, memo and sagas pending |
 | Local activities, cancellation scopes, worker sessions, streams, service catalog/Nexus, bridge adapters, standalone activities, debugging and repair | `routes/api.php`, `docs/contracts/`, worker/control-plane specifications, corresponding Feature tests and Nexus runner | Pending; not omitted from parity |
-| Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | Published SDK and canonical embedded directions: #401 nine workflow/activity, #408 nine parent/child, #411 timer authors, #415 nine signals, #422 nine queries, #424 nine successful updates and #427 nine failed updates. Current default query/update/signal families pass all six configurations on #427 main; the original frozen-PHP SQLite cancellation failure remains immutable. #429 paired named-namespace signals pass all six candidate configurations; promotion-head and fresh-main gates remain pending. CLI 2.2.0 list/describe/history has bounded coverage; broader SDK families, CLI commands, Waterline and Sample App remain pending |
+| Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | Published SDK and canonical embedded directions: #401 nine workflow/activity, #408 nine parent/child, #411 timer authors, #415 nine signals, #422 nine queries, #424 nine successful updates and #427 nine failed updates. Current default query/update/signal families pass all six configurations on #427 main; the original frozen-PHP SQLite cancellation failure remains immutable. #429 paired named-namespace and #434 selected-run signal profiles pass all six final-head and fresh-main configurations. A separate corrected marker/range cohort is next. CLI 2.2.0 list/describe/history has bounded coverage; broader SDK families, CLI commands, Waterline and Sample App remain pending |
 | SQL schema and stored representations | `database/migrations/`, Workflow package `src/migrations/`, model casts, `Workflow\\Serializers\\Serializer`, queue job payloads, exported history and credential digests | [Representation checkpoints](rust-server-storage-audit.md) recorded; complete mapping and executable migration tests pending |
 | Images, architecture, bootstrap, configuration, readiness, metrics and graceful shutdown | `Dockerfile`, `docker/`, `config/`, `docker-compose*.yml`, `k8s/helm/`, `docs/server-reference.md`, small-cluster/multi-region validation docs | Pending |
 | Backup and in-place upgrade | `docs/self-hosted-backup-and-restore.md`, external payload backup holds; last PHP image writes, all PHP roles stop, Rust takes over same DB sequentially | Pending on SQLite, MariaDB/MySQL, PostgreSQL |
