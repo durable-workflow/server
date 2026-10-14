@@ -26,7 +26,14 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
-Final-head #438 run `38486080308` retains two failed originals. SQLite
+#438 candidate `c99b1130090b8e29db0bcab7d1bdfa6fd34a0dbf` qualifies all six
+database configurations in run `38492234181`, after two unchanged-head/limits
+single-job retries for upstream Composer HTTP 500 responses. Its complete tree
+`6eda44f2aadffb046e0c0f018b126ccd1a4be0e3` matches recorded CI merge `6604a3b2`.
+Current-main integration includes #442 and reviewed PHP metadata; fresh combined
+qualification is required before promotion. Native and frozen tuples stay exact.
+
+Earlier #438 run `38486080308` retains two failed originals. SQLite
 stops at the published PHP activity-expiry parent poll's documented
 `503/backend_lock_pressure`. Read-only SQL confirms one original timeout and
 an unclaimed, ready parent task with zero repairs. PostgreSQL 17 passes both
@@ -46,8 +53,8 @@ original deadlines survive. All four parent tasks are claimed once with zero
 repairs. Fifteen installed-Client controls and seventeen reader controls pass.
 The complete shared reader suite passes 4,838 cases, with one explicit skip.
 An initial local observer setup error occurred before any workflow admission
-and is not counted as a workload. Fresh final-head hosted qualification is
-required. The combined source also includes General's reviewed PHP #440
+and is not counted as a workload. Candidate qualification is complete; fresh
+combined-main qualification remains pending. The source includes reviewed PHP #440
 merge `11261ef7`; frozen images and native capabilities remain unchanged.
 
 Separate [retry and terminal-response controls](../scripts/conformance/server-parity/ACTIVITY-RETRY-RECEIPTS.md)
@@ -64,10 +71,38 @@ live-heartbeat case](https://github.com/durable-workflow/server/issues/325#issue
 also pass. Two heartbeats preserve one original attempt past its initial
 heartbeat deadline; status reads do not renew, and later progress is refused.
 The new `retries` profile family selects the four fixtures across three runtimes
-and runs their actual-record corruption checks. Other-database and final-head
-qualification remain pending. These controls remain outside #435 and the
+and runs their actual-record corruption checks. All six candidate database
+configurations pass; current-main qualification remains pending. These controls remain outside #435 and the
 default corpus. They do not establish a stronger content-verified receipt
 contract. Earlier harness failures and unqualified observations remain recorded.
+[#435](https://github.com/durable-workflow/server/pull/435) is delivered at
+`7b53fc26db4e69a8013b6f1ad991fd1d98266833`, complete tree
+`b9f7e9bd652586e23a4e80aa58433c79c1e51ea6` identical to the reviewed candidate.
+All six original final-head and fresh-main jobs pass on SQLite, PostgreSQL
+16/17, MariaDB 10.11 and MySQL 8.0/8.4. Fresh main
+[`38489133816`](https://github.com/durable-workflow/server/actions/runs/38489133816)
+passes corrected portable markers, genuine differing-bound version-1 producer,
+strict complete retry-policy refusal/restoration, both selected range-repair
+checkpoints, fixed Python clocks and all four activity expiry families. It also
+passes the existing ordinary corpus, real process recovery, worker fencing,
+database pressure and applicable TLS controls. PHP/source/repository and public
+boundary checks pass; conditional cancellation/prepared-local qualification is
+explicitly skipped. Historical failed originals remain failed. Their causes,
+new #438 retry/renewal cases, performance and takeover remain separate.
+
+The separate pending [CPU-load case](../scripts/conformance/server-parity/CODEC-DEADLINE-LOAD.md)
+declares real dense Avro reads, independent health observations and a retained
+activity's original global deadline. Seven streaming/timeout/status controls and
+29 actual-record corruption controls pass. An optimized native SQLite original
+passes all 91 dense reads and 88 independent health/readiness reads under measured
+busy CPU at one CPU, 512 MiB and no swap. It preserves the original activity
+deadline, history prefix, parent delivery and late-outcome fences. The debug
+native read-timeout original and PHP OOM/read-timeout originals remain failed.
+This does not establish matched performance, embedded CPU behavior or full
+timer/lease-renewal/cancellation health under load. Other databases and the
+complete CPU/deadline qualification remain ahead.
+It leaves the default corpus, native source, dependencies and frozen actors
+unchanged.
 
 Original `871eec1ec` run `38477701278` passes SQLite, PostgreSQL 16/17,
 MariaDB 10.11 and MySQL 8.4. MySQL 8.0 passes its corrected portable, clock and
