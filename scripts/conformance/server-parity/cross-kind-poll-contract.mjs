@@ -48,6 +48,7 @@ export function checkCrossKindPollWake(record, profile) {
   assert.equal(sweep.task_is_null, false);
   assert.equal(typeof sweep.task_id, 'string');
   assert(sweep.task_id.length > 0, 'the ordinary poll separately grants a task');
+  assert.equal(sweep.workflow_task_attempt, 1, 'the hint did not consume an earlier claim');
   for (const poll of [held, sweep]) {
     assert(Number.isFinite(poll.started_at) && Number.isFinite(poll.responded_at));
     assert(poll.responded_at >= poll.started_at);

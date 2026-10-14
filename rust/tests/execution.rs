@@ -67,6 +67,9 @@ mod condition_occurrences;
 #[path = "execution/query_arguments.rs"]
 mod query_arguments;
 
+#[path = "execution/cross_kind_poll.rs"]
+mod cross_kind_poll;
+
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
     Postgres {

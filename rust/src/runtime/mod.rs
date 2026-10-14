@@ -10,6 +10,7 @@ mod cancellation;
 mod children;
 mod control_plane;
 mod cooperative;
+mod cross_kind_poll;
 mod execution;
 mod http;
 mod memo_json;

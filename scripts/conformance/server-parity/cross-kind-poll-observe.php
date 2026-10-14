@@ -149,6 +149,7 @@ foreach (['activity', 'query'] as $kind) {
                 'requested_seconds'=>$body['timeout_seconds']??null,'started_at'=>$record['request_started_at']??null,
                 'responded_at'=>$record['response_observed_at']??null,'http'=>$record['status'],
                 'poll_status'=>$reply['poll_status']??null,'task_id'=>$reply['task']['task_id']??null,
+                'workflow_task_attempt'=>$reply['task']['workflow_task_attempt']??null,
                 'task_is_null'=>is_array($reply)&&array_key_exists('task',$reply)&&$reply['task']===null,
                 'worker_id'=>$body['worker_id']??null,'task_queue'=>$body['task_queue']??null,
                 'namespace_header'=>$record['namespace']??null];

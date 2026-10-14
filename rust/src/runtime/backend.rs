@@ -14,6 +14,8 @@ pub(super) trait Backend: Database {
     const VISIBILITY_PAGE: &'static str = super::visibility::VISIBILITY_PAGE;
     const WORKER_REGISTRATION_SQL: &'static str = super::store::WORKER_REGISTRATION_SQL;
     const TASK_CANDIDATES_SQL: &'static str = super::store::TASK_CANDIDATES_SQL;
+    const POLL_WAKE_TASKS_SQL: &'static str = super::cross_kind_poll::TASKS_SQL;
+    const POLL_WAKE_QUERIES_SQL: &'static str = "SELECT \"key\" AS id FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' AND expiration>$1 AND CAST(value AS jsonb)->>'namespace'=$2 AND CAST(value AS jsonb)->>'task_queue'=$3 AND CAST(CAST(value AS jsonb)->>'deadline' AS BIGINT)>$4 AND (CAST(value AS jsonb)->>'status'='pending' OR (CAST(value AS jsonb)->>'status'='leased' AND CAST(CAST(value AS jsonb)->>'lease_until' AS BIGINT)<=$5)) ORDER BY \"key\" LIMIT 65";
     const POLL_RECEIPT_CLEANUP_SQL: &'static str = super::store::POLL_RECEIPT_CLEANUP_SQL;
     const TIMER_TASK_SQL: &'static str;
     const SELECTION_RESOLUTION_SQL: &'static str = "SELECT id,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SelectionResolved' AND payload->>'selection_group_id'=$2 ORDER BY sequence LIMIT 1";
@@ -78,6 +80,25 @@ fn sqlite_instant(value: String) -> Result<DateTime<Utc>> {
 }
 
 impl Backend for Sqlite {
+    const POLL_WAKE_QUERIES_SQL: &'static str = "SELECT \"key\" AS id FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' AND expiration>$1 AND json_extract(value,'$.namespace')=$2 AND json_extract(value,'$.task_queue')=$3 AND json_extract(value,'$.deadline')>$4 AND (json_extract(value,'$.status')='pending' OR (json_extract(value,'$.status')='leased' AND json_extract(value,'$.lease_until')<=$5)) ORDER BY \"key\" LIMIT 65";
+    const POLL_WAKE_TASKS_SQL: &'static str = r#"
+WITH utc_tasks AS (
+    SELECT t.id,t.namespace,t.queue,t.workflow_run_id,t.status,t.available_at,
+        replace(replace(replace(t.available_at,'T',' '),'Z',''),'+00:00','') AS available_utc,
+        replace(replace(replace(t.lease_expires_at,'T',' '),'Z',''),'+00:00','') AS lease_utc
+    FROM workflow_tasks t WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type!=$3 AND t.task_type IN ('workflow','activity')
+), ordered_tasks AS (
+    SELECT *,
+        rtrim(rtrim(CASE WHEN length(available_utc)=19 THEN available_utc||'.0' ELSE available_utc END,'0'),'.') AS available_order,
+        rtrim(rtrim(CASE WHEN length(lease_utc)=19 THEN lease_utc||'.0' ELSE lease_utc END,'0'),'.') AS lease_order
+    FROM utc_tasks
+)
+SELECT t.id,t.namespace,t.queue FROM ordered_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id
+WHERE r.status IN ('pending','running','waiting')
+    AND (t.status='ready' OR (t.status='leased' AND t.lease_order<=rtrim(rtrim($4,'0'),'.')))
+    AND (t.available_at IS NULL OR t.available_order<=rtrim(rtrim($5,'0'),'.'))
+ORDER BY t.available_order,t.id LIMIT 100
+"#;
     const SELECTION_RESOLUTION_SQL: &'static str = "SELECT id,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SelectionResolved' AND json_extract(payload,'$.selection_group_id')=$2 ORDER BY sequence LIMIT 1";
     const REPAIR_COUNTER_MAX: i64 = i64::MAX;
     const RANGE_REPAIR_TASK_SQL: &'static str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND namespace=$2 AND task_type='workflow' AND status='failed' AND json_extract(payload,'$.replay_blocked')=1 ORDER BY CASE WHEN available_at IS NULL THEN 1 ELSE 0 END,available_at,created_at,id LIMIT 1";
@@ -280,6 +301,7 @@ impl Backend for Postgres {
 }
 
 impl Backend for MySql {
+    const POLL_WAKE_QUERIES_SQL: &'static str = "SELECT `key` AS id FROM dw_query_cache WHERE `key` LIKE 'dw-native-query:%' AND expiration>? AND CAST(JSON_UNQUOTE(JSON_EXTRACT(value,'$.namespace')) AS BINARY)=CAST(? AS BINARY) AND CAST(JSON_UNQUOTE(JSON_EXTRACT(value,'$.task_queue')) AS BINARY)=CAST(? AS BINARY) AND CAST(JSON_UNQUOTE(JSON_EXTRACT(value,'$.deadline')) AS SIGNED)>? AND (JSON_UNQUOTE(JSON_EXTRACT(value,'$.status'))='pending' OR (JSON_UNQUOTE(JSON_EXTRACT(value,'$.status'))='leased' AND CAST(JSON_UNQUOTE(JSON_EXTRACT(value,'$.lease_until')) AS SIGNED)<=?)) ORDER BY `key` LIMIT 65";
     const MEMO_INITIAL_INSERT: &'static str = "INSERT INTO workflow_memos(workflow_run_id,workflow_instance_id,`key`,value,upserted_at_sequence,inherited_from_parent,created_at,updated_at,portable_value,portable_value_sequence) VALUES ($1,$2,$3,$4,0,false,$5,$6,$7,0)";
     const MEMO_READ: &'static str = "SELECT `key`,value,portable_value,portable_value_sequence,upserted_at_sequence FROM workflow_memos WHERE workflow_run_id=$1 ORDER BY `key`,id LIMIT 101";
     const SELECTION_RESOLUTION_SQL: &'static str = "SELECT id,payload FROM workflow_history_events WHERE workflow_run_id=? AND event_type='SelectionResolved' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.selection_group_id'))=? ORDER BY sequence LIMIT 1";
@@ -311,6 +333,7 @@ impl Backend for MySql {
             || sql == Self::RANGE_REPAIR_TASK_SQL
             || sql == Self::SELECTION_RESOLUTION_SQL
             || sql == Self::ACTIVITY_OPEN_TASK_SQL
+            || sql == Self::POLL_WAKE_QUERIES_SQL
         {
             return Cow::Borrowed(sql);
         }

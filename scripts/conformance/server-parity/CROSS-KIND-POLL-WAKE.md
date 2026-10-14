@@ -55,10 +55,33 @@ still need fresh real qualification. They are not selected in default fixtures.
 
 Native qualification must cover those two cases, opt-in refusal boundaries,
 namespace/queue isolation, ordinary same-kind claims and all database families.
-Other task-kind pairs and registration replacement remain explicit follow-up
-gates. Preserve raw statuses, request/response ordering, durable identities and
+Matched installed-worker controls for other task-kind pairs and registration
+replacement remain explicit follow-up gates. Preserve raw statuses, request/response ordering, durable identities and
 original deadlines. Completion alone does not prove the wake behavior. A reader
 must verify the actual null-task hint and the subsequent workflow poll.
+
+The native correction observes newly ready task/query IDs in the exact
+namespace and queue. It returns a hint only after the ordinary same-kind claim
+finds no task. Database probes cover independent nodes; the global in-process
+notification merely schedules another probe. Initial availability is the
+baseline, so preexisting work cannot create a busy loop of hints. Zero-timeout
+polls keep their original behavior. A changed registration incarnation or
+removed opt-in disables hints for that held request. No lease, task status,
+receipt, history or deadline is mutated by these observations.
+
+Task observations keep at most 100 IDs; query observations keep at most 65.
+The query projection reads metadata inside the database and does not transfer
+history snapshots to the HTTP executor. These are conservative availability
+hints. An admission already consumed by another worker need not interrupt the
+held poll. The hint never promises eligibility or a remaining claimable task.
+
+Five focused native HTTP test groups cover all six task-kind directions,
+same-kind claim precedence, default 1.19 and named-namespace 1.20 polls,
+independent pools, exact queue/namespace isolation, absent opt-in, replacement,
+preexisting work and zero timeout. They pass on SQLite. Against unchanged
+native tree `696130d7`, the three positive groups fail with ordinary timeouts;
+the two refusal/zero-timeout groups pass. Cross-database and installed-worker
+qualification of the new source remain pending.
 
 This is a service-mode worker HTTP contract. Embedded execution has no such
 worker HTTP wait and is inapplicable to this specific observation. It retains

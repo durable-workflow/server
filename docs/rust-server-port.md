@@ -32,8 +32,15 @@ exact outputs and zero task repairs. They do not qualify a performance gain:
 PHP has two idle API timeouts and a forced scheduler shutdown, while native
 workflow tails vary. The original idle reader also rejects protocol-permitted
 `timeout` replies. Separate reader and scheduler controls pass, with original
-failures preserved. Next diagnose native tails with a bounded published-worker
-control, then repeat the corrected matched profile before a gain claim.
+failures preserved. Separate installed-worker controls identify a native poll
+wake gap: published PHP interrupts an opted-in activity/query wait when new
+workflow work arrives, while the native baseline consumes the remaining waits.
+This does not establish the cause of every earlier tail. The
+[scoped correction in #455](../scripts/conformance/server-parity/CROSS-KIND-POLL-WAKE.md)
+keeps task/lease authority in ordinary claims. Its five focused SQLite HTTP
+tests pass; the unchanged native baseline fails all three positive test groups.
+Cross-database, installed-worker and full combined-tree qualification remain
+required before repeating the corrected matched profile or claiming a gain.
 
 The #444 original MySQL 8.4 matrix on `95cd4efa` exposed a native activity
 clock disagreement: a retry was recorded 101 ms before its durable

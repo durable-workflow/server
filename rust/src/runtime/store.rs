@@ -874,6 +874,11 @@ where
                 "invalid_page_size",
             ));
         }
+        let mut cross_kind = if timeout > 0 {
+            self.poll_wake_snapshot(&body, kind).await?
+        } else {
+            None
+        };
         loop {
             // Register the notification before probing; periodic probing also
             // observes work committed by an independent process.
@@ -886,6 +891,15 @@ where
             if tokio::time::Instant::now() >= deadline {
                 return Ok(
                     json!({"task": null, "poll_status": "timeout", "server_capabilities": capabilities()}),
+                );
+            }
+            if self
+                .poll_queue_changed(&body, kind, &mut cross_kind)
+                .await?
+                && tokio::time::Instant::now() < deadline
+            {
+                return Ok(
+                    json!({"task":null,"poll_status":"task_queue_changed","server_capabilities":capabilities()}),
                 );
             }
             tokio::select! { _ = wake => {}, _ = tokio::time::sleep(Duration::from_millis(50)) => {} }
