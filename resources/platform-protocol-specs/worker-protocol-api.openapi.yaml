@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "53"
+  version: "54"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -1025,9 +1025,35 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/PollRequest" }
       responses:
-        "200": { $ref: "#/components/responses/WorkerEnvelope" }
+        "200":
+          description: A query claim with immutable original timing, or no task.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QueryTaskPollResult" }
         "429": { $ref: "#/components/responses/WorkerPollBackpressure" }
         "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
+  /worker/query-tasks/{queryTaskId}/status:
+    get:
+      operationId: queryTaskStatus
+      tags: [query-tasks]
+      description: >
+        Non-renewing observation of one owned query attempt. Requires protocol
+        1.20. This read does not change the lease, registration, deadline or
+        receipt expiry and cannot reserve later execution or commit authority.
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - { name: queryTaskId, in: path, required: true, schema: { type: string, minLength: 1 } }
+        - { name: lease_owner, in: query, required: true, schema: { type: string, minLength: 1 } }
+        - { name: query_task_attempt, in: query, required: true, schema: { type: integer, minimum: 1 } }
+      responses:
+        "200":
+          description: Current canonical status and authority, without renewal.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QueryTaskAuthorityStatus" }
+        "404": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+        "422": { $ref: "#/components/responses/WorkerError" }
   /worker/query-tasks/{queryTaskId}/complete:
     post:
       operationId: completeQueryTask
@@ -1045,7 +1071,9 @@ paths:
             schema: { $ref: "#/components/schemas/QueryTaskCompleteRequest" }
       responses:
         "200": { $ref: "#/components/responses/WorkerEnvelope" }
+        "404": { $ref: "#/components/responses/WorkerError" }
         "409": { $ref: "#/components/responses/WorkerError" }
+        "422": { $ref: "#/components/responses/WorkerError" }
   /worker/query-tasks/{queryTaskId}/fail:
     post:
       operationId: failQueryTask
@@ -1060,7 +1088,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/TaskFailureRequest" }
+            schema: { $ref: "#/components/schemas/QueryTaskFailRequest" }
       responses:
         "200": { $ref: "#/components/responses/WorkerEnvelope" }
         "409": { $ref: "#/components/responses/WorkerError" }
@@ -1610,6 +1638,9 @@ components:
       additionalProperties: true
       required: [supported_workflow_task_commands, workflow_task_poll_request_idempotency, workflow_memo_updates, message_streams, typed_search_attributes, condition_wait_occurrence_identity, update_validation_tasks, synchronous_update_validation, local_activities, sticky_execution]
       properties:
+        query_task_authority:
+          type: boolean
+          description: Original query timing and atomic outcome fences with non-renewing protocol-1.20 query status. A 1.19 status request is explicitly unavailable.
         worker_deregistration_fencing:
           type: object
           required: [schema, supported, endpoint, receipt_retention_seconds]
@@ -3171,10 +3202,79 @@ components:
     QueryTaskCompleteRequest:
       type: object
       additionalProperties: true
-      required: [worker_id]
+      required: [lease_owner, query_task_attempt]
       properties:
-        worker_id: { type: string, minLength: 1 }
+        lease_owner: { type: string, minLength: 1 }
+        query_task_attempt: { type: integer, minimum: 1 }
         result: true
+        result_envelope: { type: [object, "null"] }
+    QueryTaskFailRequest:
+      type: object
+      required: [lease_owner, query_task_attempt, failure]
+      properties:
+        lease_owner: { type: string, minLength: 1 }
+        query_task_attempt: { type: integer, minimum: 1 }
+        failure:
+          type: object
+          required: [message]
+          properties:
+            message: { type: string }
+            reason: { type: [string, "null"] }
+            type: { type: [string, "null"] }
+            stack_trace: { type: [string, "null"] }
+            validation_errors: { type: [object, "null"] }
+    QueryAuthorityTimestamp:
+      type: string
+      format: date-time
+      pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$'
+    QueryTask:
+      type: object
+      required: [query_task_id, query_task_attempt, lease_owner, lease_expires_at, query_admitted_at, query_deadline_at, server_time]
+      description: >
+        Original admission/deadline timestamps are additive for protocols 1.19
+        and 1.20. Queueing, configuration drift, cached delivery and redelivery
+        cannot reset them. Lease expiry is capped at the original deadline.
+        At now greater than or equal to either bound, no new outcome is accepted.
+        A zero result duration is immediately expired. Server time is a fresh
+        observation, not a new budget or proof of future claim ownership.
+      properties:
+        query_task_id: { type: string, minLength: 1 }
+        query_task_attempt: { type: integer, minimum: 1 }
+        lease_owner: { type: string, minLength: 1 }
+        query_admitted_at: { $ref: "#/components/schemas/QueryAuthorityTimestamp" }
+        query_deadline_at: { $ref: "#/components/schemas/QueryAuthorityTimestamp" }
+        lease_expires_at: { $ref: "#/components/schemas/QueryAuthorityTimestamp" }
+        server_time: { $ref: "#/components/schemas/QueryAuthorityTimestamp" }
+    QueryTaskPollResult:
+      allOf:
+        - $ref: "#/components/schemas/WorkerEnvelope"
+        - type: object
+          required: [task, poll_status]
+          properties:
+            task:
+              oneOf:
+                - { type: "null" }
+                - { $ref: "#/components/schemas/QueryTask" }
+            poll_status: { type: string }
+    QueryTaskAuthorityStatus:
+      allOf:
+        - $ref: "#/components/schemas/WorkerEnvelope"
+        - type: object
+          required: [query_task_id, query_task_attempt, lease_owner, query_task_status, can_continue, reason, query_admitted_at, query_deadline_at, lease_expires_at, server_time]
+          properties:
+            query_task_id: { type: string, minLength: 1 }
+            query_task_attempt: { type: integer, minimum: 1 }
+            lease_owner: { type: string, minLength: 1 }
+            query_task_status: { type: string, enum: [pending, leased, completed, failed, timed_out] }
+            can_continue: { type: boolean }
+            reason: { type: [string, "null"] }
+            server_time: { $ref: "#/components/schemas/QueryAuthorityTimestamp" }
+            query_admitted_at:
+              oneOf: [{ type: "null" }, { $ref: "#/components/schemas/QueryAuthorityTimestamp" }]
+            query_deadline_at:
+              oneOf: [{ type: "null" }, { $ref: "#/components/schemas/QueryAuthorityTimestamp" }]
+            lease_expires_at:
+              oneOf: [{ type: "null" }, { $ref: "#/components/schemas/QueryAuthorityTimestamp" }]
     ActivityTaskCompleteRequest:
       type: object
       additionalProperties: true

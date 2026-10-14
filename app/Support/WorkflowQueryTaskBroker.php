@@ -192,6 +192,7 @@ final class WorkflowQueryTaskBroker
                 (int) ($result['http_status'] ?? 409),
                 $this->validationErrors($result['validation_errors'] ?? null),
                 array_filter([
+                    'query_task_id' => $task['query_task_id'],
                     'error_type' => $failureType,
                     'failure_type' => $failureType,
                     'service_error_type' => $failureType,
@@ -414,22 +415,16 @@ final class WorkflowQueryTaskBroker
     private function markTimedOut(string $queryTaskId): void
     {
         $task = $this->task($queryTaskId);
-
         if (! is_array($task)) {
             return;
         }
 
-        if (in_array($task['status'] ?? null, ['completed', 'failed'], true)) {
-            return;
-        }
-
-        $task['status'] = 'timed_out';
-        $task['timed_out_at'] = now()->toJSON();
-
-        $this->forgetLeasedTask($task);
-        $this->putTask($task);
-        $this->store()->forget($this->leaseKey($queryTaskId));
-        $this->signals->signalQueryTaskResult($queryTaskId);
+        $this->withQueueLock($task['namespace'], $task['task_queue'], function () use ($queryTaskId): void {
+            $current = $this->task($queryTaskId);
+            if (is_array($current)) {
+                $this->expireTask($current);
+            }
+        });
     }
 
     /**
@@ -466,7 +461,6 @@ final class WorkflowQueryTaskBroker
             'query_name' => $queryName,
             'query_arguments' => $queryArguments,
             'attempt_count' => 0,
-            'created_at' => now()->toJSON(),
             'history_observed_sequence' => $historyObservedSequence,
         ];
 
@@ -486,15 +480,7 @@ final class WorkflowQueryTaskBroker
             $task['principal'] = $principal;
         }
 
-        $this->putTask($task);
-
-        try {
-            $this->appendPendingTask($namespace, $taskQueue, $queryTaskId);
-        } catch (QueryTaskQueueFullException|QueryTaskQueueUnavailableException $exception) {
-            $this->store()->forget($this->taskKey($queryTaskId));
-
-            throw $exception;
-        }
+        $task = $this->admitTask($task);
 
         $this->signals->signalQueuedQueryTask($namespace, $taskQueue);
 
@@ -779,6 +765,10 @@ final class WorkflowQueryTaskBroker
         }
 
         if ($this->cachedTaskStillDeliverable($namespace, $taskQueue, $buildId, $leaseOwner, $cached['task'])) {
+            if (is_array($cached['task'])) {
+                $cached['task']['server_time'] = now()->toJSON();
+            }
+
             return $cached;
         }
 
@@ -825,7 +815,8 @@ final class WorkflowQueryTaskBroker
 
         $current = $this->task($queryTaskId);
 
-        if (! is_array($current) || ($current['status'] ?? null) !== 'leased') {
+        if (! is_array($current) || ($current['status'] ?? null) !== 'leased'
+            || $this->deadlineRefusal($current) !== null) {
             return false;
         }
 
@@ -968,30 +959,17 @@ final class WorkflowQueryTaskBroker
         int $queryTaskAttempt,
         mixed $result,
         ?array $resultEnvelope,
+        ?string $operationFingerprint = null,
     ): array {
-        $task = $this->task($queryTaskId);
-        $guard = $this->guardLease($task, $namespace, $queryTaskId, $leaseOwner, $queryTaskAttempt);
+        $operationFingerprint ??= self::operationFingerprint('complete', [
+            'result' => $result, 'result_envelope' => $resultEnvelope,
+        ]);
 
-        if ($guard !== null) {
-            return $guard;
-        }
-
-        $task['status'] = 'completed';
-        $task['result'] = $result;
-        $task['result_envelope'] = $resultEnvelope;
-        $task['completed_at'] = now()->toJSON();
-
-        $this->forgetLeasedTask($task);
-        $this->putTask($task);
-        $this->signals->signalQueryTaskResult($queryTaskId);
-
-        return [
-            'query_task_id' => $queryTaskId,
-            'query_task_attempt' => $queryTaskAttempt,
-            'outcome' => 'completed',
-            'reason' => null,
-            'status' => 200,
-        ];
+        return $this->commitOutcome($namespace, $queryTaskId, $leaseOwner, $queryTaskAttempt,
+            $operationFingerprint, [
+                'status' => 'completed', 'result' => $result, 'result_envelope' => $resultEnvelope,
+                'completed_at' => now()->toJSON(),
+            ], ['outcome' => 'completed', 'reason' => null]);
     }
 
     /**
@@ -1002,14 +980,52 @@ final class WorkflowQueryTaskBroker
         string $queryTaskId,
         string $leaseOwner,
         int $queryTaskAttempt,
+        ?string $operationFingerprint = null,
     ): ?array {
+        $task = $this->task($queryTaskId);
+        if ($operationFingerprint !== null) {
+            $receipt = $this->committedReceipt($task, $namespace, $leaseOwner, $queryTaskAttempt, $operationFingerprint);
+            if ($receipt !== null) {
+                return $receipt;
+            }
+        }
+
         return $this->guardLease(
-            $this->task($queryTaskId),
+            $task,
             $namespace,
             $queryTaskId,
             $leaseOwner,
             $queryTaskAttempt,
         );
+    }
+
+    /** Observe the current claim without renewing or changing cached state. */
+    public function status(string $namespace, string $queryTaskId, string $owner, int $attempt): array
+    {
+        $task = $this->task($queryTaskId);
+        $guard = $this->guardLease($task, $namespace, $queryTaskId, $owner, $attempt);
+        if ($task === null || ($task['namespace'] ?? null) !== $namespace) {
+            return $guard;
+        }
+        if (($task['lease_owner'] ?? null) !== $owner || (int) ($task['attempt_count'] ?? 0) !== $attempt) {
+            return ['query_task_id' => $queryTaskId, 'outcome' => 'rejected', 'status' => 409,
+                'reason' => ($task['lease_owner'] ?? null) !== $owner ? 'lease_owner_mismatch' : 'query_task_attempt_mismatch'];
+        }
+        $reason = $guard['reason'] ?? null;
+        $status = match ($reason) {
+            'query_task_timed_out' => 'timed_out',
+            'query_deadline_unavailable' => 'failed',
+            default => $task['status'],
+        };
+
+        return [
+            'query_task_id' => $queryTaskId, 'query_task_attempt' => $attempt,
+            'lease_owner' => $owner, 'query_admitted_at' => $task['query_admitted_at'] ?? null,
+            'query_deadline_at' => $task['query_deadline_at'] ?? null,
+            'lease_expires_at' => $task['lease_expires_at'] ?? null,
+            'server_time' => now()->toJSON(), 'query_task_status' => $status,
+            'can_continue' => $guard === null, 'reason' => $reason, 'status' => 200,
+        ];
     }
 
     /**
@@ -1022,40 +1038,26 @@ final class WorkflowQueryTaskBroker
         string $leaseOwner,
         int $queryTaskAttempt,
         array $failure,
+        ?string $operationFingerprint = null,
     ): array {
-        $task = $this->task($queryTaskId);
-        $guard = $this->guardLease($task, $namespace, $queryTaskId, $leaseOwner, $queryTaskAttempt);
-
-        if ($guard !== null) {
-            return $guard;
-        }
-
         $reason = $this->stringValue($failure['reason'] ?? null) ?? 'query_rejected';
         $validationErrors = $this->validationErrors($failure['validation_errors'] ?? null);
-        $task['status'] = 'failed';
-        $task['reason'] = $reason;
-        $task['message'] = $this->stringValue($failure['message'] ?? null) ?? 'Query failed on the worker.';
-        $task['failure_type'] = $this->stringValue($failure['type'] ?? null);
-        $task['validation_errors'] = $validationErrors;
-        $task['http_status'] = match ($reason) {
-            'rejected_unknown_query' => 404,
-            'invalid_query_arguments' => 422,
-            default => 409,
-        };
-        $task['failed_at'] = now()->toJSON();
+        $operationFingerprint ??= self::operationFingerprint('fail', $failure);
 
-        $this->forgetLeasedTask($task);
-        $this->putTask($task);
-        $this->signals->signalQueryTaskResult($queryTaskId);
-
-        return [
-            'query_task_id' => $queryTaskId,
-            'query_task_attempt' => $queryTaskAttempt,
-            'outcome' => 'failed',
-            'reason' => $reason,
-            'validation_errors' => $validationErrors === [] ? null : $validationErrors,
-            'status' => 200,
-        ];
+        return $this->commitOutcome($namespace, $queryTaskId, $leaseOwner, $queryTaskAttempt,
+            $operationFingerprint, [
+                'status' => 'failed', 'reason' => $reason,
+                'message' => $this->stringValue($failure['message'] ?? null) ?? 'Query failed on the worker.',
+                'failure_type' => $this->stringValue($failure['type'] ?? null),
+                'validation_errors' => $validationErrors,
+                'http_status' => match ($reason) {
+                    'rejected_unknown_query' => 404, 'invalid_query_arguments' => 422, default => 409,
+                },
+                'failed_at' => now()->toJSON(),
+            ], [
+                'outcome' => 'failed', 'reason' => $reason,
+                'validation_errors' => $validationErrors === [] ? null : $validationErrors,
+            ]);
     }
 
     /**
@@ -1073,17 +1075,27 @@ final class WorkflowQueryTaskBroker
      */
     public function waitForResult(string $queryTaskId): ?array
     {
-        return $this->longPoller->until(
+        $initial = $this->taskForResultWait($queryTaskId);
+        $deadline = is_array($initial) ? $this->originalDeadline($initial) : null;
+        if ($deadline === null || in_array($initial['status'] ?? null, ['completed', 'failed', 'timed_out'], true)) {
+            return $initial;
+        }
+        $remaining = max(0.0, (float) $deadline->format('U.u') - (float) now()->format('U.u'));
+
+        $result = $this->longPoller->until(
             fn (): ?array => $this->taskForResultWait($queryTaskId),
             static function (?array $task): bool {
                 $status = $task['status'] ?? null;
 
-                return $status === 'completed' || $status === 'failed';
+                return in_array($status, ['completed', 'failed', 'timed_out'], true);
             },
-            $this->queryTimeoutSeconds(),
+            (int) ceil($remaining),
             null,
             [$this->signals->queryTaskResultChannel($queryTaskId)],
+            nextProbeAt: static fn (): Carbon => $deadline,
         );
+
+        return $this->taskForResultWait($queryTaskId) ?? $result;
     }
 
     /**
@@ -1113,6 +1125,18 @@ final class WorkflowQueryTaskBroker
     private function taskForResultWait(string $queryTaskId): ?array
     {
         $task = $this->task($queryTaskId);
+
+        if (is_array($task) && ! in_array($task['status'] ?? null, ['completed', 'failed', 'timed_out'], true)
+            && $this->deadlineRefusal($task) !== null) {
+            return $this->withQueueLock($task['namespace'], $task['task_queue'], function () use ($queryTaskId): ?array {
+                $current = $this->task($queryTaskId);
+                if (is_array($current)) {
+                    $this->expireTask($current);
+                }
+
+                return $current;
+            });
+        }
 
         if (! is_array($task) || ($task['status'] ?? null) !== 'leased') {
             return $task;
@@ -1629,7 +1653,7 @@ final class WorkflowQueryTaskBroker
         $task = $this->withQueueLock(
             $namespace,
             $taskQueue,
-            fn (): ?array => $this->claimNextPendingTask(
+            fn (): ?array => DB::transaction(fn (): ?array => $this->claimNextPendingTask(
                 $namespace,
                 $taskQueue,
                 $leaseOwner,
@@ -1638,7 +1662,7 @@ final class WorkflowQueryTaskBroker
                 $buildId,
                 $pollRequestId,
                 $workerPollFence,
-            ),
+            )),
         );
 
         if (in_array($task['poll_status'] ?? null, ['superseded', 'stale_worker_registration'], true)) {
@@ -1684,7 +1708,8 @@ final class WorkflowQueryTaskBroker
 
             $leaseExpiresAt = $this->timestamp($task['lease_expires_at'] ?? null);
 
-            if (! $leaseExpiresAt instanceof Carbon || $leaseExpiresAt->lte(now())) {
+            if (! $leaseExpiresAt instanceof Carbon || $leaseExpiresAt->lte(now())
+                || $this->deadlineRefusal($task) !== null) {
                 continue;
             }
 
@@ -1737,6 +1762,10 @@ final class WorkflowQueryTaskBroker
                 continue;
             }
 
+            if ($this->expireTask($task)) {
+                continue;
+            }
+
             if (! $this->canClaimPendingTaskForPoller(
                 $task,
                 $supportedWorkflowTypes,
@@ -1756,11 +1785,17 @@ final class WorkflowQueryTaskBroker
                 return ['poll_status' => 'superseded'];
             }
 
-            if ($workerPollFence !== [] && ! WorkerPollFence::isCurrent($workerPollFence)) {
+            if ($workerPollFence !== [] && ! WorkerPollFence::isCurrentForUpdate($workerPollFence)) {
                 return ['poll_status' => 'stale_worker_registration'];
             }
 
-            if (! $this->store()->add($this->leaseKey($queryTaskId), $leaseOwner, now()->addSeconds($this->leaseTtlSeconds()))) {
+            if ($this->expireTask($task)) {
+                continue;
+            }
+
+            $deadline = $this->originalDeadline($task);
+            $leaseExpiresAt = now()->addSeconds($this->leaseTtlSeconds())->min($deadline);
+            if (! $this->store()->add($this->leaseKey($queryTaskId), $leaseOwner, $leaseExpiresAt)) {
                 $remaining[] = $queryTaskId;
 
                 continue;
@@ -1769,7 +1804,10 @@ final class WorkflowQueryTaskBroker
             $attempt = ((int) ($task['attempt_count'] ?? 0)) + 1;
             $task['status'] = 'leased';
             $task['lease_owner'] = $leaseOwner;
-            $task['lease_expires_at'] = now()->addSeconds($this->leaseTtlSeconds())->toJSON();
+            $task['lease_expires_at'] = $leaseExpiresAt->toJSON();
+            $worker = WorkerRegistration::query()->where('namespace', $namespace)->where('worker_id', $leaseOwner)->first();
+            $task['registration_incarnation'] = is_string($worker?->registration_token)
+                ? hash('sha256', $worker->registration_token) : null;
             $task['attempt_count'] = $attempt;
             $task['leased_at'] = now()->toJSON();
             $task['poll_request_id'] = $pollRequestId;
@@ -2161,6 +2199,9 @@ final class WorkflowQueryTaskBroker
             'task_queue' => $task['task_queue'],
             'lease_owner' => $task['lease_owner'] ?? null,
             'lease_expires_at' => $task['lease_expires_at'] ?? null,
+            'query_admitted_at' => $task['query_admitted_at'],
+            'query_deadline_at' => $task['query_deadline_at'],
+            'server_time' => now()->toJSON(),
         ];
 
         $compatibilityScope = $this->stringValue($task['compatibility_scope'] ?? null);
@@ -2445,16 +2486,170 @@ final class WorkflowQueryTaskBroker
         );
     }
 
-    /**
-     * @param  array<string, mixed>|null  $task
-     * @return array<string, mixed>|null
-     */
+    /** Hash the submitted operation before resolving external references. */
+    public static function operationFingerprint(string $operation, mixed $payload): string
+    {
+        return hash('sha256', json_encode([$operation, self::canonicalOperationValue($payload)],
+            JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION));
+    }
+
+    private static function canonicalOperationValue(mixed $value): mixed
+    {
+        if (is_object($value)) {
+            $properties = get_object_vars($value);
+            ksort($properties, SORT_STRING);
+
+            return (object) array_map(self::canonicalOperationValue(...), $properties);
+        }
+        if (! is_array($value)) {
+            return $value;
+        }
+        if (! array_is_list($value)) {
+            ksort($value, SORT_STRING);
+        }
+
+        return array_map(self::canonicalOperationValue(...), $value);
+    }
+
+    private function originalDeadline(array $task): ?Carbon
+    {
+        $admitted = $this->canonicalTimestamp($task['query_admitted_at'] ?? null);
+        $deadline = $this->canonicalTimestamp($task['query_deadline_at'] ?? null);
+
+        return $admitted !== null && $deadline !== null && $deadline->gte($admitted) ? $deadline : null;
+    }
+
+    private function canonicalTimestamp(mixed $value): ?Carbon
+    {
+        if (! is_string($value) || preg_match('/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z\z/', $value) !== 1) {
+            return null;
+        }
+        try {
+            $parsed = Carbon::createFromFormat('!Y-m-d\TH:i:s.u\Z', $value, 'UTC');
+
+            return $parsed !== false && $parsed->toJSON() === $value ? $parsed : null;
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    private function deadlineRefusal(array $task): ?array
+    {
+        if (in_array($task['status'] ?? null, ['completed', 'failed'], true)
+            && ($task['reason'] ?? null) !== 'query_deadline_unavailable') {
+            return null;
+        }
+        $deadline = $this->originalDeadline($task);
+        if ($deadline !== null && $deadline->isAfter(now())) {
+            return null;
+        }
+        $unavailable = $deadline === null;
+
+        return [
+            'query_task_id' => $task['query_task_id'], 'outcome' => 'rejected',
+            'reason' => $unavailable ? 'query_deadline_unavailable' : 'query_task_timed_out',
+            'error' => $unavailable ? 'The original query result deadline is unavailable. Submit a new query explicitly.'
+                : 'Query task timed out before completion.',
+            'status' => 409,
+        ];
+    }
+
+    /** Caller holds the query queue lock. This never grants a new execution budget. */
+    private function expireTask(array &$task): bool
+    {
+        if (in_array($task['status'] ?? null, ['completed', 'failed', 'timed_out'], true)) {
+            return false;
+        }
+        $refusal = $this->deadlineRefusal($task);
+        if ($refusal === null) {
+            return false;
+        }
+        if ($refusal['reason'] === 'query_deadline_unavailable') {
+            $task['status'] = 'failed';
+            $task['reason'] = $refusal['reason'];
+            $task['message'] = $refusal['error'];
+            $task['http_status'] = 409;
+            $task['failed_at'] = now()->toJSON();
+            // Old cache entries have no verifiable retention snapshot. Retain
+            // only this fixed refusal long enough to wake the original waiter.
+            $task['receipt_expires_at'] ??= now()->addSeconds(60)->toJSON();
+        } else {
+            $task['timed_out_from_status'] = $task['status'];
+            $task['status'] = 'timed_out';
+            $task['timed_out_at'] = now()->toJSON();
+        }
+        $this->putTask($task);
+        $this->forgetLeasedTask($task);
+        $this->store()->forget($this->leaseKey($task['query_task_id']));
+        $this->signals->signalQueryTaskResult($task['query_task_id']);
+
+        return true;
+    }
+
+    private function committedReceipt(?array $task, string $namespace, string $owner, int $attempt, string $fingerprint): ?array
+    {
+        if ($task === null || ($task['namespace'] ?? null) !== $namespace) {
+            return null;
+        }
+        $receipt = $task['terminal_receipt'] ?? null;
+        $expiresAt = $this->canonicalTimestamp($task['receipt_expires_at'] ?? null);
+        if (! is_array($receipt) || $expiresAt === null || ! $expiresAt->isAfter(now())
+            || ($receipt['lease_owner'] ?? null) !== $owner || ($receipt['attempt'] ?? null) !== $attempt) {
+            return null;
+        }
+        if (! hash_equals($receipt['fingerprint'], $fingerprint)) {
+            return ['query_task_id' => $task['query_task_id'], 'query_task_attempt' => $attempt,
+                'outcome' => 'rejected', 'reason' => 'query_completion_conflict',
+                'error' => 'A different query outcome is already committed for this claim.', 'status' => 409];
+        }
+
+        return array_replace($receipt['decision'], ['recorded' => false]);
+    }
+
+    private function commitOutcome(string $namespace, string $id, string $owner, int $attempt,
+        string $fingerprint, array $fields, array $decision): array
+    {
+        $task = $this->task($id);
+        if ($task === null || ($task['namespace'] ?? null) !== $namespace) {
+            return $this->guardLease(null, $namespace, $id, $owner, $attempt);
+        }
+
+        return $this->withQueueLock($namespace, $task['task_queue'], function () use (
+            $namespace, $id, $owner, $attempt, $fingerprint, $fields, $decision,
+        ): array {
+            return DB::transaction(function () use ($namespace, $id, $owner, $attempt, $fingerprint, $fields, $decision): array {
+                $current = $this->task($id);
+                if ($receipt = $this->committedReceipt($current, $namespace, $owner, $attempt, $fingerprint)) {
+                    return $receipt;
+                }
+                if (is_array($current)) {
+                    $this->expireTask($current);
+                }
+                if ($guard = $this->guardLease($current, $namespace, $id, $owner, $attempt, lockWorker: true)) {
+                    return $guard;
+                }
+                $outcome = ['query_task_id' => $id, 'query_task_attempt' => $attempt,
+                    'recorded' => true, 'status' => 200] + $decision;
+                $current = array_replace($current, $fields, ['terminal_receipt' => [
+                    'lease_owner' => $owner, 'attempt' => $attempt, 'fingerprint' => $fingerprint, 'decision' => $outcome,
+                ]]);
+                $this->putTask($current);
+                $this->forgetLeasedTask($current);
+                $this->store()->forget($this->leaseKey($id));
+                $this->signals->signalQueryTaskResult($id);
+
+                return $outcome;
+            });
+        });
+    }
+
     private function guardLease(
         ?array $task,
         string $namespace,
         string $queryTaskId,
         string $leaseOwner,
         int $queryTaskAttempt,
+        bool $lockWorker = false,
     ): ?array {
         if (! is_array($task) || ($task['namespace'] ?? null) !== $namespace) {
             return [
@@ -2464,6 +2659,10 @@ final class WorkflowQueryTaskBroker
                 'error' => 'Query task not found.',
                 'status' => 404,
             ];
+        }
+
+        if ($refusal = $this->deadlineRefusal($task)) {
+            return $refusal;
         }
 
         if (($task['status'] ?? null) === 'timed_out') {
@@ -2512,9 +2711,12 @@ final class WorkflowQueryTaskBroker
         $leaseWorker = WorkerRegistration::query()
             ->where('namespace', $namespace)
             ->where('worker_id', $leaseOwner)
+            ->when($lockWorker, static fn ($query) => $query->lockForUpdate())
             ->first();
 
-        if (! $leaseWorker instanceof WorkerRegistration || ! WorkerPollFence::isFresh($leaseWorker)) {
+        $incarnation = is_string($leaseWorker?->registration_token) ? hash('sha256', $leaseWorker->registration_token) : null;
+        if (! $leaseWorker instanceof WorkerRegistration || ! WorkerPollFence::isFresh($leaseWorker)
+            || (array_key_exists('registration_incarnation', $task) && $task['registration_incarnation'] !== $incarnation)) {
             return [
                 'query_task_id' => $queryTaskId,
                 'query_task_attempt' => $queryTaskAttempt,
@@ -2537,6 +2739,10 @@ final class WorkflowQueryTaskBroker
                 'lease_expires_at' => $leaseExpiresAt->toJSON(),
                 'status' => 409,
             ];
+        }
+
+        if ($refusal = $this->deadlineRefusal($task)) {
+            return $refusal;
         }
 
         return null;
@@ -2755,21 +2961,39 @@ final class WorkflowQueryTaskBroker
      */
     private function putTask(array $task): void
     {
-        $this->store()->put($this->taskKey((string) $task['query_task_id']), $task, now()->addSeconds($this->taskTtlSeconds()));
+        $expiresAt = $this->timestamp($task['receipt_expires_at'] ?? null);
+        $this->store()->put($this->taskKey((string) $task['query_task_id']), $task,
+            $expiresAt ?? now()->addSeconds($this->taskTtlSeconds()));
     }
 
-    private function appendPendingTask(string $namespace, string $taskQueue, string $queryTaskId): void
+    private function admitTask(array $task): array
     {
-        $this->withQueueLock($namespace, $taskQueue, function () use ($namespace, $taskQueue, $queryTaskId): void {
+        $namespace = $task['namespace'];
+        $taskQueue = $task['task_queue'];
+        $queryTaskId = $task['query_task_id'];
+
+        return $this->withQueueLock($namespace, $taskQueue, function () use ($namespace, $taskQueue, $queryTaskId, $task): array {
             $ids = $this->pendingTaskIds($namespace, $taskQueue);
 
             if (! in_array($queryTaskId, $ids, true) && count($ids) >= $this->maxPendingPerQueue()) {
                 throw new QueryTaskQueueFullException($namespace, $taskQueue, $this->maxPendingPerQueue());
             }
 
-            $ids[] = $queryTaskId;
+            $admittedAt = now();
+            $task['created_at'] = $task['query_admitted_at'] = $admittedAt->toJSON();
+            $task['query_deadline_at'] = $admittedAt->copy()->addSeconds($this->queryTimeoutSeconds())->toJSON();
+            $task['receipt_expires_at'] = $admittedAt->copy()->addSeconds($this->taskTtlSeconds())->toJSON();
+            $this->putTask($task);
+            try {
+                $ids[] = $queryTaskId;
+                $this->storePendingTaskIds($namespace, $taskQueue, array_values(array_unique($ids)));
+            } catch (\Throwable $exception) {
+                $this->store()->forget($this->taskKey($queryTaskId));
 
-            $this->storePendingTaskIds($namespace, $taskQueue, array_values(array_unique($ids)));
+                throw $exception;
+            }
+
+            return $task;
         });
     }
 
@@ -2924,6 +3148,10 @@ final class WorkflowQueryTaskBroker
     private function timeoutFailure(string $namespace, WorkflowRun $run, string $queryName, array $task): array
     {
         $status = $this->stringValue($task['status'] ?? null) ?? 'unknown';
+        if ($status === 'timed_out') {
+            $status = $this->stringValue($task['timed_out_from_status'] ?? null)
+                ?? ((int) ($task['attempt_count'] ?? 0) > 0 ? 'leased' : 'pending');
+        }
 
         if ($status === 'pending') {
             $route = $this->registeredQueryRoute($namespace, $run);
@@ -3071,14 +3299,7 @@ final class WorkflowQueryTaskBroker
 
     private function leaseTtlSeconds(): int
     {
-        $configured = max(1, (int) config('server.query_tasks.lease_timeout', config('server.lease.workflow_task_timeout', 60)));
-        $queryTimeout = $this->queryTimeoutSeconds();
-
-        if ($queryTimeout === 0) {
-            return $configured;
-        }
-
-        return max($configured, $queryTimeout + $this->leaseGraceSeconds());
+        return max(1, (int) config('server.query_tasks.lease_timeout', config('server.lease.workflow_task_timeout', 60)));
     }
 
     private function taskTtlSeconds(): int
