@@ -4,6 +4,8 @@ namespace App\Support;
 
 use App\Models\WorkerRegistration;
 use Closure;
+use Illuminate\Cache\Lock;
+use Illuminate\Contracts\Cache\Lock as LockContract;
 use Illuminate\Contracts\Cache\LockProvider;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Contracts\Cache\Repository as CacheRepository;
@@ -1162,7 +1164,7 @@ final class WorkflowQueryTaskBroker
         $recovered = $this->withQueueLock(
             $namespace,
             $taskQueue,
-            function () use ($namespace, $taskQueue, $leaseOwner, $queryTaskId, $task): bool {
+            function (LockContract $lock) use ($namespace, $taskQueue, $leaseOwner, $queryTaskId, $task): bool {
                 $current = $this->task($queryTaskId);
 
                 if (! is_array($current)
@@ -1186,6 +1188,7 @@ final class WorkflowQueryTaskBroker
                     $owner->forceFill(['status' => WorkerRegistration::STATUS_SUPERSEDED])->save();
                 }
 
+                $this->assertQueueLockOwned($namespace, $taskQueue, $lock);
                 $this->forgetLeasedTask($current);
                 $current['status'] = 'pending';
                 $current['abandoned_lease_owner'] = $leaseOwner;
@@ -1653,7 +1656,7 @@ final class WorkflowQueryTaskBroker
         $task = $this->withQueueLock(
             $namespace,
             $taskQueue,
-            fn (): ?array => DB::transaction(fn (): ?array => $this->claimNextPendingTask(
+            fn (LockContract $lock): ?array => DB::transaction(fn (): ?array => $this->claimNextPendingTask(
                 $namespace,
                 $taskQueue,
                 $leaseOwner,
@@ -1662,6 +1665,7 @@ final class WorkflowQueryTaskBroker
                 $buildId,
                 $pollRequestId,
                 $workerPollFence,
+                $lock,
             )),
         );
 
@@ -1751,6 +1755,7 @@ final class WorkflowQueryTaskBroker
         ?string $buildId = null,
         ?string $pollRequestId = null,
         array $workerPollFence = [],
+        ?LockContract $queueLock = null,
     ): ?array {
         $ids = $this->pendingTaskIds($namespace, $taskQueue);
         $remaining = [];
@@ -1794,6 +1799,7 @@ final class WorkflowQueryTaskBroker
             }
 
             $deadline = $this->originalDeadline($task);
+            $this->assertQueueLockOwned($namespace, $taskQueue, $queueLock);
             $leaseExpiresAt = now()->addSeconds($this->leaseTtlSeconds())->min($deadline);
             if (! $this->store()->add($this->leaseKey($queryTaskId), $leaseOwner, $leaseExpiresAt)) {
                 $remaining[] = $queryTaskId;
@@ -2613,11 +2619,14 @@ final class WorkflowQueryTaskBroker
         if ($task === null || ($task['namespace'] ?? null) !== $namespace) {
             return $this->guardLease(null, $namespace, $id, $owner, $attempt);
         }
+        if ($receipt = $this->committedReceipt($task, $namespace, $owner, $attempt, $fingerprint)) {
+            return $receipt;
+        }
 
-        return $this->withQueueLock($namespace, $task['task_queue'], function () use (
+        return $this->withQueueLock($namespace, $task['task_queue'], function (LockContract $lock) use (
             $namespace, $id, $owner, $attempt, $fingerprint, $fields, $decision,
         ): array {
-            return DB::transaction(function () use ($namespace, $id, $owner, $attempt, $fingerprint, $fields, $decision): array {
+            return DB::transaction(function () use ($namespace, $id, $owner, $attempt, $fingerprint, $fields, $decision, $lock): array {
                 $current = $this->task($id);
                 if ($receipt = $this->committedReceipt($current, $namespace, $owner, $attempt, $fingerprint)) {
                     return $receipt;
@@ -2628,6 +2637,7 @@ final class WorkflowQueryTaskBroker
                 if ($guard = $this->guardLease($current, $namespace, $id, $owner, $attempt, lockWorker: true)) {
                     return $guard;
                 }
+                $this->assertQueueLockOwned($namespace, $current['task_queue'], $lock);
                 $outcome = ['query_task_id' => $id, 'query_task_attempt' => $attempt,
                     'recorded' => true, 'status' => 200] + $decision;
                 $current = array_replace($current, $fields, ['terminal_receipt' => [
@@ -2728,6 +2738,10 @@ final class WorkflowQueryTaskBroker
             ];
         }
 
+        if ($refusal = $this->deadlineRefusal($task)) {
+            return $refusal;
+        }
+
         $leaseExpiresAt = $this->timestamp($task['lease_expires_at'] ?? null);
 
         if ($leaseExpiresAt instanceof Carbon && $leaseExpiresAt->lte(now())) {
@@ -2739,10 +2753,6 @@ final class WorkflowQueryTaskBroker
                 'lease_expires_at' => $leaseExpiresAt->toJSON(),
                 'status' => 409,
             ];
-        }
-
-        if ($refusal = $this->deadlineRefusal($task)) {
-            return $refusal;
         }
 
         return null;
@@ -3104,11 +3114,19 @@ final class WorkflowQueryTaskBroker
         }
 
         try {
-            return $store
-                ->lock($this->queueLockKey($namespace, $taskQueue), $this->queueLockTtlSeconds())
-                ->block($this->queueLockWaitSeconds(), $callback);
+            $lock = $store->lock($this->queueLockKey($namespace, $taskQueue), $this->queueLockTtlSeconds());
+
+            return $lock->block($this->queueLockWaitSeconds(), fn () => $callback($lock));
         } catch (LockTimeoutException $exception) {
             throw new QueryTaskQueueUnavailableException($namespace, $taskQueue, 'Timed out waiting for the query task queue lock.', $exception);
+        }
+    }
+
+    private function assertQueueLockOwned(string $namespace, string $taskQueue, ?LockContract $lock): void
+    {
+        if (! $lock instanceof Lock || ! $lock->isOwnedByCurrentProcess()) {
+            throw new QueryTaskQueueUnavailableException($namespace, $taskQueue,
+                'Query queue lock ownership was lost before the state change.');
         }
     }
 

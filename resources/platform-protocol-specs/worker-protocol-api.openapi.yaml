@@ -1074,6 +1074,7 @@ paths:
         "404": { $ref: "#/components/responses/WorkerError" }
         "409": { $ref: "#/components/responses/WorkerError" }
         "422": { $ref: "#/components/responses/WorkerError" }
+        "503": { $ref: "#/components/responses/QueryTaskOutcomeUnavailable" }
   /worker/query-tasks/{queryTaskId}/fail:
     post:
       operationId: failQueryTask
@@ -1092,6 +1093,7 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/WorkerEnvelope" }
         "409": { $ref: "#/components/responses/WorkerError" }
+        "503": { $ref: "#/components/responses/QueryTaskOutcomeUnavailable" }
   /worker/activity-tasks/poll:
     post:
       operationId: pollActivityTask
@@ -1293,6 +1295,33 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/WorkerError" }
+    QueryTaskOutcomeUnavailable:
+      description: >
+        The query queue lock could not be acquired or was lost before this
+        outcome changed task state. Retry the identical claim and operation
+        only within the remaining original query and lease budgets. This
+        response grants no new authority or deadline.
+      headers:
+        X-Durable-Workflow-Protocol-Version:
+          schema: { $ref: "#/components/schemas/AdvertisedWorkerProtocolVersion" }
+        Retry-After:
+          schema: { type: integer, const: 1 }
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/WorkerEnvelope"
+              - type: object
+                required: [query_task_id, query_task_attempt, lease_owner, outcome, recorded, reason, retryable, retry_after_seconds]
+                properties:
+                  query_task_id: { type: string, minLength: 1 }
+                  query_task_attempt: { type: integer, minimum: 1 }
+                  lease_owner: { type: string, minLength: 1 }
+                  outcome: { type: string, const: deferred }
+                  recorded: { type: boolean, const: false }
+                  reason: { type: string, const: query_task_queue_unavailable }
+                  retryable: { type: boolean, const: true }
+                  retry_after_seconds: { type: integer, const: 1 }
     WorkerServiceUnavailable:
       description: >
         Temporary database connection loss returns backend_unavailable with an

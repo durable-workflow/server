@@ -4471,6 +4471,8 @@ class WorkerController
                     $operationFingerprint,
                 ),
             );
+        } catch (QueryTaskQueueUnavailableException $exception) {
+            return $this->queryOutcomeQueueUnavailable($queryTaskId, $validated, $exception);
         } catch (\Throwable $exception) {
             if (! BackendLockPressure::is($exception)) {
                 throw $exception;
@@ -4521,6 +4523,8 @@ class WorkerController
                     $operationFingerprint,
                 ),
             );
+        } catch (QueryTaskQueueUnavailableException $exception) {
+            return $this->queryOutcomeQueueUnavailable($queryTaskId, $validated, $exception);
         } catch (\Throwable $exception) {
             if (! BackendLockPressure::is($exception)) {
                 throw $exception;
@@ -4533,6 +4537,19 @@ class WorkerController
             array_filter($outcome, static fn (mixed $value): bool => $value !== null),
             (int) ($outcome['status'] ?? 200),
         );
+    }
+
+    private function queryOutcomeQueueUnavailable(string $queryTaskId, array $validated, QueryTaskQueueUnavailableException $exception): JsonResponse
+    {
+        return WorkerProtocol::json([
+            'query_task_id' => $queryTaskId,
+            'query_task_attempt' => (int) $validated['query_task_attempt'],
+            'lease_owner' => $validated['lease_owner'],
+            'outcome' => 'deferred', 'recorded' => false,
+            'reason' => 'query_task_queue_unavailable',
+            'message' => $exception->getMessage(),
+            'retryable' => true, 'retry_after_seconds' => 1,
+        ], 503)->header('Retry-After', '1');
     }
 
     public function pollUpdateValidationTasks(Request $request): JsonResponse

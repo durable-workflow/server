@@ -42,6 +42,12 @@ write another outcome or send another wake. A different operation or payload
 returns `409/query_completion_conflict`. Object key order is insignificant.
 Typed values and list order remain significant.
 
+If a database wait outlives the query queue lock, a first claim or outcome is
+refused. `503/query_task_queue_unavailable` on an outcome includes its original
+claim identity, `outcome=deferred`, `recorded=false` and a one-second retry hint.
+Any retry uses the same operation and remaining original budget. It grants no
+new deadline. A committed receipt can still reconcile without that lock.
+
 Receipt expiry is fixed at admission, preserving the configured task TTL and
 at least 60 seconds after the original result deadline. Reads and duplicates
 do not extend it. Missing/expired cache state returns explicit absence and

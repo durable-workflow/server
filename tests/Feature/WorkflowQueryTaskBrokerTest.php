@@ -27,6 +27,7 @@ use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Contracts\Cache\Store as CacheStore;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
 use Symfony\Component\Process\Process;
@@ -435,6 +436,125 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             ->assertJsonPath('query_deadline_at', '2026-10-14T22:00:10.123456Z');
         $this->postJson($path, $body, $this->workerHeaders())->assertStatus(409)->assertJsonPath('reason', 'lease_expired');
         $this->assertArrayNotHasKey('terminal_receipt', $broker->task($task['query_task_id']));
+    }
+
+    public function test_query_outcome_lock_timeout_is_typed_and_does_not_record_an_outcome(): void
+    {
+        [$broker, $task, $body, $path] = $this->claimedAuthorityQuery();
+        $original = $broker->task($task['query_task_id']);
+        $this->bindPollingCacheStore(new WorkflowQueryTaskBrokerTestLockTimeoutStore);
+        $broker = app(WorkflowQueryTaskBroker::class);
+        (new \ReflectionMethod($broker, 'putTask'))->invoke($broker, $original);
+
+        foreach ([[$path, $body], [str_replace('/complete', '/fail', $path), [
+            'lease_owner' => $body['lease_owner'], 'query_task_attempt' => 1,
+            'failure' => ['message' => 'original failure', 'reason' => 'query_rejected'],
+        ]]] as [$endpoint, $submission]) {
+            $this->postJson($endpoint, $submission, $this->workerHeaders())->assertStatus(503)
+                ->assertHeader('Retry-After', '1')
+                ->assertJsonPath('reason', 'query_task_queue_unavailable')
+                ->assertJsonPath('query_task_id', $task['query_task_id'])
+                ->assertJsonPath('query_task_attempt', 1)
+                ->assertJsonPath('recorded', false)
+                ->assertJsonPath('retryable', true);
+            $this->assertSame($original, $broker->task($task['query_task_id']));
+        }
+    }
+
+    public function test_query_commit_rechecks_deadline_after_waiting_for_worker_row(): void
+    {
+        [$broker, $task, $body, $path] = $this->claimedAuthorityQuery();
+        $delayed = false;
+        DB::listen(function ($query) use (&$delayed): void {
+            if (! $delayed && DB::transactionLevel() > 1
+                && str_contains($query->sql, 'worker_registrations') && str_starts_with($query->sql, 'select')) {
+                $delayed = true;
+                $this->travel(10)->seconds();
+            }
+        });
+        $this->postJson($path, $body, $this->workerHeaders())->assertStatus(409)
+            ->assertJsonPath('reason', 'query_task_timed_out');
+        $this->assertTrue($delayed);
+        $this->assertArrayNotHasKey('terminal_receipt', $broker->task($task['query_task_id']));
+    }
+
+    public function test_legacy_refusal_retention_is_fixed_at_first_detection(): void
+    {
+        [$broker, $task, $body, $path] = $this->claimedAuthorityQuery();
+        $legacy = $broker->task($task['query_task_id']);
+        unset($legacy['query_admitted_at'], $legacy['query_deadline_at'], $legacy['receipt_expires_at']);
+        (new \ReflectionMethod($broker, 'putTask'))->invoke($broker, $legacy);
+        $first = $broker->waitForResult($task['query_task_id']);
+        $this->assertSame('2026-10-14T22:01:00.123456Z', $first['receipt_expires_at']);
+        $this->travel(20)->seconds();
+        $this->assertSame($first, $broker->waitForResult($task['query_task_id']));
+        $this->postJson($path, $body, $this->workerHeaders())->assertStatus(409)
+            ->assertJsonPath('reason', 'query_deadline_unavailable');
+        $this->assertSame($first, $broker->task($task['query_task_id']));
+        $this->travel(41)->seconds();
+        $this->postJson($path, $body, $this->workerHeaders())->assertNotFound()
+            ->assertJsonPath('reason', 'query_task_not_found');
+        $this->assertNull($broker->task($task['query_task_id']));
+    }
+
+    public function test_query_commit_refuses_when_its_queue_lock_was_lost_during_database_wait(): void
+    {
+        [$broker, $task, $body, $path] = $this->claimedAuthorityQuery();
+        $interrupted = false;
+        DB::listen(function ($query) use (&$interrupted, $broker, $task): void {
+            if (! $interrupted && DB::transactionLevel() > 1
+                && str_contains($query->sql, 'worker_registrations') && str_starts_with($query->sql, 'select')) {
+                $interrupted = true;
+                $key = (new \ReflectionMethod($broker, 'queueLockKey'))->invoke($broker, 'default', $task['task_queue']);
+                app(ServerPollingCache::class)->store()->getStore()->lock($key)->forceRelease();
+            }
+        });
+        $this->postJson($path, $body, $this->workerHeaders())->assertStatus(503)
+            ->assertJsonPath('reason', 'query_task_queue_unavailable')->assertJsonPath('recorded', false);
+        $this->assertTrue($interrupted);
+        $this->assertArrayNotHasKey('terminal_receipt', $broker->task($task['query_task_id']));
+    }
+
+    public function test_query_claim_refuses_when_its_queue_lock_was_lost_during_database_wait(): void
+    {
+        Queue::fake();
+        $run = $this->startRemoteWorkflow('wf-query-claim-lock-loss');
+        $this->registerPythonWorker('query-lock-loss-worker', 'python-queries', ['python.queryable']);
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $task = $broker->enqueue('default', $run, 'status', $this->queryArguments());
+        $interrupted = false;
+        DB::listen(function ($query) use (&$interrupted, $broker, $task): void {
+            if (! $interrupted && DB::transactionLevel() > 1
+                && str_contains($query->sql, 'worker_registrations') && str_starts_with($query->sql, 'select')) {
+                $interrupted = true;
+                $key = (new \ReflectionMethod($broker, 'queueLockKey'))->invoke($broker, 'default', $task['task_queue']);
+                app(ServerPollingCache::class)->store()->getStore()->lock($key)->forceRelease();
+            }
+        });
+        $this->postJson('/api/worker/query-tasks/poll', [
+            'worker_id' => 'query-lock-loss-worker', 'task_queue' => 'python-queries',
+        ], $this->workerHeaders())->assertStatus(503)->assertJsonPath('reason', 'query_task_queue_unavailable');
+        $this->assertTrue($interrupted);
+        $this->assertSame($task, $broker->task($task['query_task_id']));
+    }
+
+    public function test_committed_query_failure_reconciles_even_if_queue_lock_is_unavailable(): void
+    {
+        [$broker, $task, $body, $path] = $this->claimedAuthorityQuery();
+        $path = str_replace('/complete', '/fail', $path);
+        unset($body['result']);
+        $body['failure'] = ['message' => 'original failure', 'reason' => 'query_rejected'];
+        $this->postJson($path, $body, $this->workerHeaders())->assertOk()->assertJsonPath('recorded', true);
+        $committed = $broker->task($task['query_task_id']);
+        $this->bindPollingCacheStore(new WorkflowQueryTaskBrokerTestLockTimeoutStore);
+        $broker = app(WorkflowQueryTaskBroker::class);
+        (new \ReflectionMethod($broker, 'putTask'))->invoke($broker, $committed);
+        $this->postJson($path, $body, $this->workerHeaders())->assertOk()
+            ->assertJsonPath('recorded', false)->assertJsonPath('outcome', 'failed');
+        $body['failure']['message'] = 'different failure';
+        $this->postJson($path, $body, $this->workerHeaders())->assertStatus(409)
+            ->assertJsonPath('reason', 'query_completion_conflict');
+        $this->assertSame($committed, $broker->task($task['query_task_id']));
     }
 
     private function claimedAuthorityQuery(): array
