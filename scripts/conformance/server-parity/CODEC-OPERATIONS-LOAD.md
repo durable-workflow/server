@@ -16,6 +16,14 @@ cleanup closure allow at most one second of lateness under measured busy CPU.
 Control requests must finish within two seconds, and every timed boundary and
 request must occur during the actual read wave.
 
+Read processes acknowledge their actual start before timed observers are
+released. Cleanup closure is observed through the existing canonical history
+read, followed by a full typed snapshot and prefix check. A first original
+fails because one admission precedes the read process's start by 0.5 ms. Its
+stored cleanup closes 221 ms after the deadline, while repeated full descriptions
+observe it 1.6 seconds late. That failed original stays failed. The new observer
+does not change either deadline or timing limit.
+
 The machine-owned specification is
 `tests/Fixtures/ServerParityPending/codec-operations-load.json`. Use the existing
 normally installed corrected PHP actor and resource/CPU observation procedure

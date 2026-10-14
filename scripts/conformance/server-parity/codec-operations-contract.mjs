@@ -129,6 +129,8 @@ export function checkCodecOperationsRecord(record,specBytes,cpu) {
       assert.notEqual(o.after.events[2].payload.timer_id,o.after.events[6].payload.timer_id);
       for(const[scheduled,cancelled]of [[2,4],[6,7]])assert.equal(o.after.events[cancelled].payload.timer_id,o.after.events[scheduled].payload.timer_id);
       const cleanup=terminal.payload.cancellation_cleanup,closed=instant(cleanup.finished_at);
+      assert.equal(o.closure_event.event_type,'WorkflowCancelled');assert.equal(o.closure_event.sequence,terminal.sequence);
+      assert.deepEqual(o.closure_event.payload,terminal.payload,'Observed canonical closure is the final durable outcome');
       assert.equal(cleanup.request_id,context.request_id);assert.equal(cleanup.cleanup_deadline_at,context.cleanup_deadline_at);
       assert.equal(cleanup.outcome,'deadline_expired');assert.equal(cleanup.delivery_sequence,1);
       assert.equal(cleanup.finished_at,o.after.execution.closed_at);assert.equal(o.after.status,'cancelled');assert.equal(o.after.output,null);

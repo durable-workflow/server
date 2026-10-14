@@ -121,11 +121,17 @@ try {
                 [['type'=>'start_timer', 'delay_seconds'=>$policy['cleanup_delay_seconds']]]));
             $state['before_expiry'] = namespaceHttpRun($client, $id, $handle->selectedRunId);
             $checkpoint();
+            // Observe the canonical terminal event without repeatedly asking
+            // the loaded service to decode unrelated workflow input. Full
+            // state, typed input and exact prefix are checked after observation.
             do {
-                $budget(); $state['after'] = namespaceHttpRun($client, $id, $handle->selectedRunId);
-                if ($state['after']['status']!=='cancelled') usleep(25000);
-            } while ($state['after']['status']!=='cancelled');
+                $budget(); $history = httpHistory($client, $id, $handle->selectedRunId);
+                $closed = array_values(array_filter($history, static fn (array $event): bool => $event['event_type']==='WorkflowCancelled'));
+                if ($closed===[]) usleep(25000);
+            } while ($closed===[]);
             $state['closure_observed_at'] = microtime(true);
+            $check(count($closed)===1, 'Exactly one canonical cleanup closure is required');
+            $state['closure_event'] = $closed[0];
             $state['terminal_duplicate'] = $submit('terminal_duplicate', static fn (): array => $client->requestWorkflowCancellation($id, 'terminal replacement', 300, $handle->selectedRunId));
         }
     }
