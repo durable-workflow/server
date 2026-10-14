@@ -11,6 +11,7 @@
     "change_id": "corrected-one", "original_expected_decisions": [1,1],
     "expected_decisions": [null,true,1,null], "original_shutdown": "SIGKILL",
     "cancelled_original_polls": ["workflow", "activity", "query"],
+    "cancel_unsent_original_polls": true,
     "markers": [
       {"sequence": 1, "version": 1, "min_supported": 0, "max_supported": 1},
       {"sequence": 2, "version": 1, "min_supported": 1, "max_supported": 1}
