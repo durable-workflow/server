@@ -7,8 +7,9 @@ native source. The old [v1 profile and observations](../v1/README.md) remain
 historical. The standard capacity suite's workload, artifacts and qualification
 rules are unchanged.
 
-Use the existing capacity PHP adapter, `standard-workflow-offered.php` and
-`idle-poll-probe.php` unchanged. The workload has one external activity and a
+Use the existing capacity PHP adapter and `standard-workflow-offered.php`
+unchanged. The revised idle probe is described below. The workload has one
+external activity and a
 1,024-byte Avro value in each direction. Each implementation gets a fresh
 MySQL volume and a different Compose project. Run them sequentially. Never
 enable PHP and native profiles in one project or give them one database.
@@ -99,3 +100,19 @@ time and on-disk observations, not an application speed or peak-memory result.
 All setup containers, databases, dependencies and compiler state are removed
 after inspection. Full measured windows, complete resource sampling, repeats,
 idle/API observations and drift remain unqualified.
+
+The [first full observations](observations-2026-10-14.md) on profile 2.0.0 at
+`6ad7c2df` complete 737 workflows and activities on each implementation, including
+setup and warmup, with zero repairs/failed jobs and clean SDK deregistration.
+PHP has two idle health timeouts and a forced scheduler shutdown. Native has
+variable workflow tails. These observations do not qualify a gain.
+
+The original idle probe also rejects native `timeout` replies. The frozen
+[worker OpenAPI EmptyPoll schema](../../../resources/platform-protocol-specs/worker-protocol-api.openapi.yaml)
+permits both `timeout` and `empty`. This is a probe refusal, not an established
+native wire defect. Profile 2.0.1 records a corrected classifier and its hash.
+Unknown statuses and malformed task values still refuse. The original nonzero
+probe outcomes remain recorded. Separate controls accept six actual native
+`timeout` replies and six actual PHP `empty` replies. A fresh two-workflow PHP
+check with the signal handler exits every role 0 and leaves zero registrations.
+These are local correction checks, not a replacement full matched comparison.

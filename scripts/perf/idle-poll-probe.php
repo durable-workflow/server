@@ -6,6 +6,7 @@ use Composer\InstalledVersions;
 use DurableWorkflow\Exception\ServerException;
 
 require dirname(__DIR__, 2).'/benchmarks/capacity/v1/bindings/php/capacity_adapter.php';
+require __DIR__.'/idle-poll-outcome.php';
 capacityAutoload();
 
 $count = filter_var($argv[1] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1, 'max_range' => 24]]);
@@ -67,9 +68,7 @@ for ($index = 0; $index < $count; $index++) {
                         default => $client->pollWorkflowTaskResponse($workerId, $queue, $pollSeconds),
                     };
                     $result['poll_status'] = $response['poll_status'] ?? null;
-                    $result['outcome'] = isset($response['task']) && is_array($response['task'])
-                        ? 'task'
-                        : ($result['poll_status'] === 'empty' ? 'empty' : 'unexpected');
+                    $result['outcome'] = idlePollOutcome($response);
                 } catch (ServerException $exception) {
                     $result['outcome'] = $exception->status === 429
                         && $exception->reason === 'long_poll_capacity_exhausted' ? 'backpressure' : 'error';
