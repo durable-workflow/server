@@ -9,7 +9,7 @@ evidence=${DW_PARITY_CORRECTED_EVIDENCE:-parity-evidence/corrected-marker}
 image=$(jq -r '.server.images["linux/amd64"]' "$artifacts")
 mkdir -p "$evidence"
 for target in php rust; do
-  for family in markers range clock portable deadlines retries memos; do
+  for family in markers range clock portable deadlines retries memos continuations; do
     recorder="$RESOURCE_SCOPE-corrected-$target-$family-recorder"
     if docker inspect "$recorder" >/dev/null 2>&1; then
       mkdir -p "$evidence/$target"
