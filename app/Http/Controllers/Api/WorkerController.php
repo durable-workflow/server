@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Contracts\AuthProvider;
 use App\Http\Middleware\Authenticate;
+use App\Http\Middleware\RuntimeExternalPayloadTransport;
 use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
 use App\Models\WorkerRegistrationIncarnation;
@@ -4362,6 +4363,34 @@ class WorkerController
         ]);
     }
 
+    public function queryTaskStatus(Request $request, string $queryTaskId): JsonResponse
+    {
+        if ($response = WorkerProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+        if (! WorkerProtocol::versionMeetsMinimum(WorkerProtocol::requestVersion($request), '1.20')) {
+            return WorkerProtocol::json(['reason' => 'query_task_status_unavailable',
+                'error' => 'Query task observation requires worker protocol 1.20.',
+                'minimum_protocol_version' => '1.20'], 422);
+        }
+        $validated = $request->validate([
+            'lease_owner' => ['required', 'string'],
+            'query_task_attempt' => ['required', 'integer', 'min:1'],
+        ]);
+        try {
+            $outcome = $this->queryTasks->status((string) $request->attributes->get('namespace'),
+                $queryTaskId, $validated['lease_owner'], (int) $validated['query_task_attempt']);
+        } catch (\Throwable $exception) {
+            if (! BackendLockPressure::is($exception)) {
+                throw $exception;
+            }
+
+            return BackendLockPressure::workerOperationResponse($request, false);
+        }
+
+        return WorkerProtocol::json($outcome, $outcome['status']);
+    }
+
     public function completeQueryTask(Request $request, string $queryTaskId): JsonResponse
     {
         if ($response = WorkerProtocol::rejectUnsupported($request)) {
@@ -4381,11 +4410,13 @@ class WorkerController
         ]);
 
         $resultEnvelope = null;
+        $operationFingerprint = RuntimeExternalPayloadTransport::queryCompletionFingerprint($request);
         $guard = $this->queryTasks->guardCompletion(
             $namespace,
             $queryTaskId,
             $validated['lease_owner'],
             (int) $validated['query_task_attempt'],
+            $operationFingerprint,
         );
 
         if ($guard !== null) {
@@ -4437,8 +4468,11 @@ class WorkerController
                     (int) $validated['query_task_attempt'],
                     $validated['result'] ?? null,
                     $resultEnvelope,
+                    $operationFingerprint,
                 ),
             );
+        } catch (QueryTaskQueueUnavailableException $exception) {
+            return $this->queryOutcomeQueueUnavailable($queryTaskId, $validated, $exception);
         } catch (\Throwable $exception) {
             if (! BackendLockPressure::is($exception)) {
                 throw $exception;
@@ -4474,6 +4508,10 @@ class WorkerController
             'failure.validation_errors.*.*' => ['string'],
         ]);
 
+        $submitted = $request->isJson()
+            ? json_decode($request->getContent(), false, 512, JSON_THROW_ON_ERROR) : (object) $validated;
+        $operationFingerprint = WorkflowQueryTaskBroker::operationFingerprint('fail', $submitted->failure);
+
         try {
             $outcome = $this->storageMutations->run(
                 fn (): array => $this->queryTasks->fail(
@@ -4482,8 +4520,11 @@ class WorkerController
                     $validated['lease_owner'],
                     (int) $validated['query_task_attempt'],
                     $validated['failure'],
+                    $operationFingerprint,
                 ),
             );
+        } catch (QueryTaskQueueUnavailableException $exception) {
+            return $this->queryOutcomeQueueUnavailable($queryTaskId, $validated, $exception);
         } catch (\Throwable $exception) {
             if (! BackendLockPressure::is($exception)) {
                 throw $exception;
@@ -4496,6 +4537,19 @@ class WorkerController
             array_filter($outcome, static fn (mixed $value): bool => $value !== null),
             (int) ($outcome['status'] ?? 200),
         );
+    }
+
+    private function queryOutcomeQueueUnavailable(string $queryTaskId, array $validated, QueryTaskQueueUnavailableException $exception): JsonResponse
+    {
+        return WorkerProtocol::json([
+            'query_task_id' => $queryTaskId,
+            'query_task_attempt' => (int) $validated['query_task_attempt'],
+            'lease_owner' => $validated['lease_owner'],
+            'outcome' => 'deferred', 'recorded' => false,
+            'reason' => 'query_task_queue_unavailable',
+            'message' => $exception->getMessage(),
+            'retryable' => true, 'retry_after_seconds' => 1,
+        ], 503)->header('Retry-After', '1');
     }
 
     public function pollUpdateValidationTasks(Request $request): JsonResponse

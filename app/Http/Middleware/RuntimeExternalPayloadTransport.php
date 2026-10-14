@@ -7,6 +7,7 @@ use App\Support\RuntimeExternalPayloadAudit;
 use App\Support\RuntimeExternalPayloadException;
 use App\Support\RuntimeExternalPayloadRegistry;
 use App\Support\WorkerProtocol;
+use App\Support\WorkflowQueryTaskBroker;
 use Closure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -255,6 +256,33 @@ class RuntimeExternalPayloadTransport
                 ? WorkerProtocol::json($payload, $exception->status)
                 : ControlPlaneProtocol::jsonForRequest($request, $payload, $exception->status);
         }
+    }
+
+    public function queryCompletionResponse(Request $request): ?JsonResponse
+    {
+        if ($this->action($request) !== 'WorkerController@completeQueryTask') {
+            return null;
+        }
+        $validated = $request->validate([
+            'lease_owner' => ['required', 'string'],
+            'query_task_attempt' => ['required', 'integer', 'min:1'],
+        ]);
+        $guard = app(WorkflowQueryTaskBroker::class)->guardCompletion(
+            (string) $request->attributes->get('namespace'), (string) $request->route('queryTaskId'),
+            $validated['lease_owner'], (int) $validated['query_task_attempt'], self::queryCompletionFingerprint($request),
+        );
+
+        return $guard === null ? null : WorkerProtocol::json($guard, $guard['status']);
+    }
+
+    public static function queryCompletionFingerprint(Request $request): string
+    {
+        $submitted = $request->isJson()
+            ? json_decode($request->getContent(), false, 512, JSON_THROW_ON_ERROR) : (object) $request->all();
+
+        return WorkflowQueryTaskBroker::operationFingerprint('complete', [
+            'result' => $submitted->result ?? null, 'result_envelope' => $submitted->result_envelope ?? null,
+        ]);
     }
 
     public function resolveIncoming(Request $request): void
