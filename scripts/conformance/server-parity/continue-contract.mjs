@@ -126,6 +126,8 @@ export function checkContinueRecord(record,fixture,artifacts,mode='http') {
     assert.equal(record.duplicate.task_id,continued.task.id);
     assert(record.duplicate.worker_output.includes('RunWorkflowTask'));
   } else {
+  assert.deepEqual(record.duplicate.submitted_request,record.duplicate.request.request,
+    'continuation retry includes all original SDK completion metadata');
   if(duplicate.status===409) {
     assert(['run_closed','task_not_leased'].includes(duplicate.response.reason));
     assert.equal(duplicate.response.task_status,'completed');

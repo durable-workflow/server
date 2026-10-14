@@ -51,9 +51,11 @@ try {
             }
             $body = $receipt['request'];
             $state['duplicate'] = ['request' => $receipt,
+                'submitted_request' => $body,
                 'before' => [$snapshot($state['predecessor_run_id']), $snapshot($state['successor_run_id'])],
                 'receipt' => namespaceReceipt('identical_original_continuation', static fn (): array =>
-                    $client->completeWorkflowTask($match[1], $body['lease_owner'], $body['workflow_task_attempt'], $body['commands'])),
+                    $client->completeWorkflowTask($match[1], $body['lease_owner'], $body['workflow_task_attempt'], $body['commands'],
+                        $body['message_stream_cursors'] ?? [], $body['message_stream_waits'] ?? [], $body['sticky_cache'] ?? null)),
                 'after' => [$snapshot($state['predecessor_run_id']), $snapshot($state['successor_run_id'])],
                 'current_after' => $client->describeWorkflow($workflowId)->raw];
             $state['runs_after_duplicate'] = $runs();

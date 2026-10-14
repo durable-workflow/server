@@ -37,6 +37,7 @@ const corruptions=[
   r=>{if(mode==='http')r.phases.successor.actor.receipts=[];else r.duplicate.delivery='constructed';},
   r=>{if(mode==='http')r.phases.successor.actor.receipts.find(receipt=>receipt.path.endsWith('/complete')).response.recorded=false;else r.duplicate.worker_output='';},
 ];
+if(mode==='http')corruptions.push(r=>{delete r.duplicate.submitted_request.sticky_cache;});
 for(const corrupt of corruptions) {
   const changed=structuredClone(record);
   corrupt(changed);

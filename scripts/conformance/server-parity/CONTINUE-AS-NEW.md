@@ -29,6 +29,11 @@ are fixed before admission. There is one activity invocation and completion.
 Its full retry snapshot, original deadlines and typed int64/null/Unicode value
 survive the cold boundary. Initial memo null deletion and empty-list behavior
 follow the separately qualified initial JSON boundary.
+The current HTTP retry retains captured sticky-cache and stream metadata too.
+The first PHP baseline retried only lease/attempt/commands and observed the
+closed-run refusal. That proves no extra successor, but does not qualify a
+content-identical receipt; the corrected full-body control still needs a fresh
+original observation.
 
 This first case does not qualify pending signal/update/stream transfer,
 continued children, cancellation races, external envelopes, namespace routing
