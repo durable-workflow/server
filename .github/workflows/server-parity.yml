@@ -10,6 +10,7 @@ on:
       - tests/Fixtures/ServerParityBaselines/**
       - tests/Fixtures/ServerParityNormalization/**
       - tests/Unit/ServerParityRunnerTest.mjs
+      - tests/Unit/ServerParityCodecDeadlineLoadTest.mjs
       - tests/Unit/ServerParityCooperativeContractTest.mjs
       - tests/Unit/ServerParityChildCancellationContractTest.mjs
       - tests/Support/ServerParityChildCancellationObservation.mjs
@@ -44,6 +45,7 @@ on:
       - tests/Fixtures/ServerParityBaselines/**
       - tests/Fixtures/ServerParityNormalization/**
       - tests/Unit/ServerParityRunnerTest.mjs
+      - tests/Unit/ServerParityCodecDeadlineLoadTest.mjs
       - tests/Unit/ServerParityCooperativeContractTest.mjs
       - tests/Unit/ServerParityChildCancellationContractTest.mjs
       - tests/Support/ServerParityChildCancellationObservation.mjs
@@ -1122,6 +1124,9 @@ jobs:
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run --rm --user=1000:1000 --entrypoint node -v "$PWD:/source:ro" -w /source \
             "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityTaskRetryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs tests/Unit/ServerParityRecordFileTest.mjs > parity-evidence/comparator-tests.txt
+          docker run --rm --user=1000:1000 --cpus=1 --memory=256m --memory-swap=256m \
+            --network=none --entrypoint node -v "$PWD:/source:ro" -w /source \
+            "$image" --test tests/Unit/ServerParityCodecDeadlineLoadTest.mjs > parity-evidence/codec-load-tests.txt
           docker network create "$RESOURCE_SCOPE"
           docker run -d --name "$RESOURCE_SCOPE-rust" --network "$RESOURCE_SCOPE" --network-alias=parity-rust \
             --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \

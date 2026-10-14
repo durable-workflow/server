@@ -26,6 +26,28 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+[#435](https://github.com/durable-workflow/server/pull/435) is delivered at
+`7b53fc26db4e69a8013b6f1ad991fd1d98266833`, complete tree
+`b9f7e9bd652586e23a4e80aa58433c79c1e51ea6` identical to the reviewed candidate.
+All six original final-head and fresh-main jobs pass on SQLite, PostgreSQL
+16/17, MariaDB 10.11 and MySQL 8.0/8.4. Fresh main
+[`38489133816`](https://github.com/durable-workflow/server/actions/runs/38489133816)
+passes corrected portable markers, genuine differing-bound version-1 producer,
+strict complete retry-policy refusal/restoration, both selected range-repair
+checkpoints, fixed Python clocks and all four activity expiry families. It also
+passes the existing ordinary corpus, real process recovery, worker fencing,
+database pressure and applicable TLS controls. PHP/source/repository and public
+boundary checks pass; conditional cancellation/prepared-local qualification is
+explicitly skipped. Historical failed originals remain failed. Their causes,
+new #438 retry/renewal cases, performance and takeover remain separate.
+
+The separate pending [CPU-load case](../scripts/conformance/server-parity/CODEC-DEADLINE-LOAD.md)
+declares real dense Avro reads, independent health observations and a retained
+activity's original global deadline. Six streaming/timeout/status controls pass.
+Actual PHP/native workloads and busy-CPU/deadline qualification remain ahead.
+It leaves the default corpus, native source, dependencies and frozen actors
+unchanged.
+
 Original `871eec1ec` run `38477701278` passes SQLite, PostgreSQL 16/17,
 MariaDB 10.11 and MySQL 8.4. MySQL 8.0 passes its corrected portable, clock and
 activity-expiry comparisons, then its fixture database is OOM-killed during
