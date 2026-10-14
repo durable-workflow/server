@@ -26,6 +26,20 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+The next authored-memo slice follows #445's disabled preparation. Its full
+acceptance includes configured structural limits, actual SDK replay, protocol
+and capability fences, external envelopes, continuation inheritance and
+unchanged state after refusal. The first change wires the published
+`DW_V2_LIMIT_MEMO_SIZE_BYTES` / `WORKFLOW_V2_LIMIT_MEMO_SIZE_BYTES` precedence and
+casts into each native database runtime and its namespace views. Nineteen
+configuration controls were observed on the published PHP package. Zero and
+negative values disable this structural limit; fixed memo count/value/total
+limits still apply. The new actual SQLite control refuses before changing the
+original memo/history and restores at the inclusive whole-map boundary.
+Native source checks are running; the remaining authored/external/inheritance
+work is incomplete and memo updates remain unadvertised. Frozen references
+and the independent #444/#445/#446 gates are unchanged.
+
 [#445](https://github.com/durable-workflow/server/pull/445) prepares authored
 memo transactions on top of #444. Apache Avro's schema-aware serde writer
 preserves the published PHP canonical map bytes. The internal transaction

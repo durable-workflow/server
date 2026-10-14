@@ -134,19 +134,25 @@ impl Runtime {
 
     pub async fn open(database: &str, token: String) -> Result<Self> {
         Self::validate_token(&token)?;
-        let store = Store::new(sqlite::open(database).await?);
+        let limit = super::memo_limits::configured_limit()?;
+        let mut store = Store::new(sqlite::open(database).await?);
+        store.memo_size_limit = limit;
         Self::from_storage(Storage::Sqlite(store), token).await
     }
 
     pub async fn open_postgres(options: PgConnectOptions, token: String) -> Result<Self> {
         Self::validate_token(&token)?;
-        let store = Store::new(PostgresStorage::open(options).await?.into_pool());
+        let limit = super::memo_limits::configured_limit()?;
+        let mut store = Store::new(PostgresStorage::open(options).await?.into_pool());
+        store.memo_size_limit = limit;
         Self::from_storage(Storage::Postgres(store), token).await
     }
 
     pub async fn open_mysql(options: MySqlConnectOptions, token: String) -> Result<Self> {
         Self::validate_token(&token)?;
-        let store = Store::new(MySqlStorage::open(options).await?.into_pool());
+        let limit = super::memo_limits::configured_limit()?;
+        let mut store = Store::new(MySqlStorage::open(options).await?.into_pool());
+        store.memo_size_limit = limit;
         Self::from_storage(Storage::MySql(store), token).await
     }
 

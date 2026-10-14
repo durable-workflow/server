@@ -13,6 +13,7 @@ mod cooperative;
 mod execution;
 mod http;
 mod memo_json;
+mod memo_limits;
 mod memos;
 pub mod mysql;
 mod namespaces;

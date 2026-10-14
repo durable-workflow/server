@@ -422,7 +422,7 @@ mod tests {
     async fn sqlite_transition_preserves_neighbor_metadata_and_rolls_back_failed_history() {
         use super::super::{sqlite, store::Store};
         let directory = tempfile::tempdir().unwrap();
-        let store = Store::<sqlx::Sqlite>::new(
+        let mut store = Store::<sqlx::Sqlite>::new(
             sqlite::open(directory.path().join("memo.sqlite").to_str().unwrap())
                 .await
                 .unwrap(),
@@ -450,6 +450,23 @@ mod tests {
         let codec = ValueCodec::new().unwrap();
         let command = json!({"type":"upsert_memo","entries":super::super::wire(&codec.encode_ordered(
             &Payload::Map(BTreeMap::from([("replace".into(), Payload::Boolean(false))]))).unwrap())});
+        let before_limit = store.describe("memo-unit", Some(run_id)).await.unwrap();
+        store.memo_size_limit = Some(1);
+        let mut refused = store.begin().await.unwrap();
+        let run = Store::<sqlx::Sqlite>::query("SELECT * FROM workflow_runs WHERE id=$1")
+            .bind(run_id).fetch_one(&mut *refused).await.unwrap();
+        let task = Store::<sqlx::Sqlite>::query("SELECT * FROM workflow_tasks WHERE id=$1")
+            .bind(task_id).fetch_one(&mut *refused).await.unwrap();
+        assert!(matches!(store.upsert_memo(&mut refused, &run, &task, &command, 1).await,
+            Err(super::super::RuntimeError::Refused { reason: "structural_limit_exceeded", .. })));
+        refused.rollback().await.unwrap();
+        assert_eq!(store.describe("memo-unit", Some(run_id)).await.unwrap(), before_limit,
+            "configured-limit refusal preserves the original history and memo");
+        let merged = Payload::Map(BTreeMap::from([
+            ("keep".into(), Payload::Long(9007199254740993)),
+            ("replace".into(), Payload::Boolean(false)),
+        ]));
+        store.memo_size_limit = Some(STANDARD.decode(codec.encode_ordered(&merged).unwrap()).unwrap().len());
         let mut tx = store.begin().await.unwrap();
         let run = Store::<sqlx::Sqlite>::query("SELECT * FROM workflow_runs WHERE id=$1")
             .bind(run_id)
@@ -480,17 +497,14 @@ mod tests {
             sequence, 0,
             "untouched neighbor retains its original sequence"
         );
+        store.memo_size_limit = None;
         sqlx::query("CREATE TRIGGER refuse_memo_history BEFORE INSERT ON workflow_history_events WHEN NEW.event_type='MemoUpserted' BEGIN SELECT RAISE(ABORT,'synthetic memo history refusal'); END")
             .execute(&store.pool).await.unwrap();
         let mut tx = store.begin().await.unwrap();
         let changed = json!({"type":"upsert_memo","entries":super::super::wire(&codec.encode_ordered(
             &Payload::Map(BTreeMap::from([("replace".into(), Payload::String("must roll back".into()))]))).unwrap())});
-        assert!(
-            store
-                .upsert_memo(&mut tx, &run, &task, &changed, 2)
-                .await
-                .is_err()
-        );
+        assert!(matches!(store.upsert_memo(&mut tx, &run, &task, &changed, 2).await,
+            Err(super::super::RuntimeError::Database(_))));
         tx.rollback().await.unwrap();
         assert_eq!(
             store.describe("memo-unit", Some(run_id)).await.unwrap(),

@@ -22,6 +22,7 @@ pub(super) struct Store<DB: Backend> {
     pub(super) wake: Arc<Notify>,
     pub(super) namespace: Arc<str>,
     pub(super) memo_codec: Arc<Semaphore>,
+    pub(super) memo_size_limit: Option<usize>,
 }
 pub(super) fn id() -> String {
     Ulid::new().to_string()
@@ -61,6 +62,7 @@ where
             wake: Arc::new(Notify::new()),
             namespace: "default".into(),
             memo_codec: Arc::new(Semaphore::new(1)),
+            memo_size_limit: Some(262_144),
         }
     }
     pub(super) fn in_namespace(&self, namespace: &str) -> Self {
@@ -69,6 +71,7 @@ where
             wake: self.wake.clone(),
             namespace: namespace.into(),
             memo_codec: self.memo_codec.clone(),
+            memo_size_limit: self.memo_size_limit,
         }
     }
     pub(super) async fn database_live(&self) -> bool {
@@ -1874,7 +1877,7 @@ where
             self.memo_codec.clone(),
             stored,
             envelope(command, "entries")?,
-            None,
+            self.memo_size_limit,
         )
         .await?;
         let written_at = now();
