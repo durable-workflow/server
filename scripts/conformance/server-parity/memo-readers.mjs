@@ -33,6 +33,10 @@ const controls = [
 if (mode === 'http') {
   if (!fixture.memo_replay.initial_only) controls.push(['missing capability', r => {r.discovery.workflow_memo_updates.supported = false;}]);
   controls.push(['duplicate mutation', r => {r.duplicate.after.events.pop();}]);
+  controls.push(['captured sticky metadata omitted',r=>{delete r.duplicate.submitted_request.sticky_cache;}]);
+  controls.push(['duplicate falsely recorded',r=>{r.duplicate.receipt.status=200;r.duplicate.receipt.response.recorded=true;}]);
+  controls.push(['conflicting completion accepted',r=>{r.conflicting_completion.receipt.status=200;}]);
+  controls.push(['conflicting completion changes history',r=>{r.conflicting_completion.after.events.pop();}]);
 }
 for (const [name, mutate] of controls) {
   const changed = structuredClone(record);

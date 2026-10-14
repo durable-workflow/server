@@ -56,10 +56,20 @@ try {
                 throw new RuntimeException('Original SDK did not submit an actual memo completion');
             }
             $body = $receipt['request'];
+            $send = static fn (array $request): array => $client->completeWorkflowTask($match[1],
+                $request['lease_owner'], $request['workflow_task_attempt'], $request['commands'],
+                $request['message_stream_cursors'] ?? [], $request['message_stream_waits'] ?? [],
+                $request['sticky_cache'] ?? null);
             $state['duplicate'] = ['before' => $snapshot(), 'request' => $receipt];
+            $state['duplicate']['submitted_request'] = $body;
             $state['duplicate']['receipt'] = namespaceReceipt('identical_original_memo_completion', static fn (): array =>
-                $client->completeWorkflowTask($match[1], $body['lease_owner'], $body['workflow_task_attempt'], $body['commands']));
+                $send($body));
             $state['duplicate']['after'] = $snapshot();
+            $conflict = $body;
+            $conflict['commands'][0]['queue'] = $workflowId.'-conflicting-queue';
+            $state['conflicting_completion'] = ['before' => $snapshot(), 'submitted_request' => $conflict,
+                'receipt' => namespaceReceipt('conflicting_original_memo_completion', static fn (): array => $send($conflict)),
+                'after' => $snapshot()];
         }
         file_put_contents($output, json_encode($state, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)."\n");
     }

@@ -21,6 +21,11 @@ nested null, Unicode, false and an empty list retain their types. The same first
 memo completion is submitted again while the parent is waiting. Its durable
 history and merged memo must remain unchanged. Cold replay must preserve the
 original prefix and produce two memo events, one activity and one completion.
+The retry includes every captured completion field, including sticky-cache
+and stream metadata. A separate changed completion must refuse without changing
+memo or history. The earlier probe omitted sticky metadata and its native
+`conflicting_completion` observation remains a failed duplicate comparison;
+the correction changes the probe, not the runtime receipt boundary.
 
 The actor records normal CLI exits. This case does not claim a killed-worker
 takeover. The original 30-second phase limits and 90-second overall observation
