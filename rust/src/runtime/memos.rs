@@ -17,7 +17,7 @@ pub(super) struct StoredMemo {
     pub(super) projection: Value,
 }
 pub(super) type PreparedMemo = BTreeMap<String, StoredMemo>;
-pub(super) const UPDATES_SUPPORTED: bool = false;
+pub(super) const UPDATES_SUPPORTED: bool = true;
 type StoredRows = Vec<(String, Value, Option<Value>)>;
 
 pub(super) struct PreparedUpdate {

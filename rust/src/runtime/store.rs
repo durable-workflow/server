@@ -2662,9 +2662,25 @@ pub(super) fn reject_fields(body: &Value, allowed: &[&str]) -> Result<()> {
 }
 
 pub(crate) fn capabilities() -> Value {
-    json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "start_child_workflow", "open_condition_wait", "open_signal_wait", "record_version_marker", "complete_workflow"],
+    let mut value = json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "start_child_workflow", "open_condition_wait", "open_signal_wait", "record_version_marker", "complete_workflow"],
         "worker_deregistration_fencing":{"schema":"durable-workflow.v2.worker-deregistration.v1","supported":true,"receipt_retention_seconds":600,"endpoint":"/worker/registrations/{workerId}/deregister"},
         "workflow_memo_updates": false, "cooperative_cancellation": true, "prepared_local_activities": false,
         "worker_sessions": false, "sticky_execution": false, "local_activities": false, "message_streams": false,
-        "workflow_updates": true, "query_tasks": true, "query_task_poll_request_idempotency": false})
+        "workflow_updates": true, "query_tasks": true, "query_task_poll_request_idempotency": false});
+    if super::memos::UPDATES_SUPPORTED {
+        value["supported_workflow_task_commands"]
+            .as_array_mut()
+            .expect("commands")
+            .push(json!("upsert_memo"));
+        value["workflow_memo_updates"] = json!({"supported":true, "type":"upsert_memo",
+            "category":"non_terminal_command", "worker_capability":"memo_upserts",
+            "minimum_protocol_version":"1.14", "required_fields":["type","entries"],
+            "optional_fields":[], "entries":{"shape":"payload-envelope<avro-map<string, Value|null>>",
+                "payload_envelope_field":true,"codec":"avro","value_schema":"durable_workflow.protocol.Value",
+                "key_pattern":"^(?!-?[0-9]+$)[A-Za-z0-9_.:-]{1,64}$", "null_value":"delete_key",
+                "max_keys_per_run":100,"max_value_size_bytes":10240,"max_total_size_bytes":65536,
+                "size_measurement":"avro_single_object_bytes",
+                "runtime_configured_total_limit":"workflows.v2.structural_limits.memo_size_bytes"}});
+    }
+    value
 }

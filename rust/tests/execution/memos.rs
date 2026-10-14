@@ -1,7 +1,7 @@
 use super::*;
 
 #[tokio::test]
-async fn memo_floor_and_unavailable_runtime_refuse_without_mutating_the_original() {
+async fn memo_protocol_floor_preserves_original_and_capable_claim_can_upsert() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
@@ -30,7 +30,8 @@ async fn memo_floor_and_unavailable_runtime_refuse_without_mutating_the_original
     let task = poll(&app, "memo-floor-worker", "workflow").await;
     let body = json!({"lease_owner":task["lease_owner"], "workflow_task_attempt":task["workflow_task_attempt"],
         "commands":[{"type":"upsert_memo", "entries":envelope(Payload::Map(std::collections::BTreeMap::from([
-            ("valid".into(), Payload::Long(1))])))}]});
+            ("valid".into(), Payload::Long(1))])))},
+            {"type":"complete_workflow", "result":envelope(Payload::Long(7))}]});
     let path = format!(
         "/api/worker/workflow-tasks/{}/complete",
         task["task_id"].as_str().unwrap()
@@ -46,21 +47,40 @@ async fn memo_floor_and_unavailable_runtime_refuse_without_mutating_the_original
         floor["reason"],
         "workflow_metadata_capability_protocol_mismatch"
     );
-    let (status, unsupported) = request_protocol(&app, "POST", &path, body, "1.14").await;
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(unsupported["reason"], "workflow_memo_updates_unavailable");
-    assert_eq!(unsupported["recorded"], false);
     assert_eq!(
         request(&app, "GET", &history_path, Value::Null).await,
         before
     );
-    let (status, completed) = request(&app, "POST", &path, json!({
-        "lease_owner":task["lease_owner"], "workflow_task_attempt":task["workflow_task_attempt"],
-        "commands":[{"type":"complete_workflow", "result":envelope(Payload::Long(7))}]
-    })).await;
+    let (status, completed) = request_protocol(&app, "POST", &path, body, "1.14").await;
     assert_eq!(status, StatusCode::OK, "{completed}");
     assert_eq!(completed["task_id"], task["task_id"]);
     assert_eq!(completed["recorded"], true);
+    let (_, history) = request(&app, "GET", &history_path, Value::Null).await;
+    assert_eq!(
+        history["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| event["event_type"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "StartAccepted",
+            "WorkflowStarted",
+            "MemoUpserted",
+            "WorkflowCompleted"
+        ]
+    );
+    let (_, described) = request(
+        &app,
+        "GET",
+        &format!(
+            "/api/workflows/memo-floor-original/runs/{}",
+            original["run_id"].as_str().unwrap()
+        ),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(described["memo"], json!({"valid":1}));
     runtime.close().await;
     database.remove().await;
 }

@@ -42,11 +42,21 @@ diagnostic. Twelve focused controls and the restored full source suite pass:
 and subprocess ignores. Reverting only the transaction's configured limit to
 `None` makes the new actual refusal control fail by accepting that upsert.
 The correction restores the inclusive whole-map boundary and preserves the
-separate actual history-write rollback test. The remaining
-authored/external/inheritance work is incomplete and memo updates remain
-unadvertised. Frozen references and independent #444/#445/#446 gates are
-unchanged. The broader [draft #448](https://github.com/durable-workflow/server/pull/448)
-retains those incomplete acceptance requirements.
+separate actual history-write rollback test. The unpublished local candidate
+enables memo commands and passes the unchanged installed PHP 2.3.9
+author/activity/cold-successor recipe against native SQLite. Three independent
+worker processes preserve the original four- and six-event prefixes and finish
+with eight events, memo command sequences 1/3, one activity, typed int64/null/
+Unicode values and unchanged run/execution deadlines. An identical committed
+receipt while the parent waits returns 200/already_completed/recorded=false;
+a conflicting receipt returns 409/conflicting_completion without mutation.
+All 23 corrupt-reader controls refuse. Protocol 1.13 refusal preserves the
+original task, while the capable 1.14 control upserts and completes it.
+Other SDK authors, external envelopes, inheritance, complete discovery and
+all-database acceptance remain incomplete; no published capability is claimed.
+Frozen references and independent #444/#445/#446 gates are unchanged. The
+broader [draft #448](https://github.com/durable-workflow/server/pull/448) retains
+those incomplete acceptance requirements.
 
 [#445](https://github.com/durable-workflow/server/pull/445) prepares authored
 memo transactions on top of #444. Apache Avro's schema-aware serde writer
