@@ -152,17 +152,35 @@ async fn initial_json_boundary_matches_frozen_admission_and_survives_cold_open()
     let mut originals = Vec::new();
     for case in fixture["cases"].as_array().unwrap() {
         let id = format!("memo-json-{}", case["id"].as_str().unwrap());
-        let metadata: Value = serde_json::from_str(case["json"].as_str().unwrap()).unwrap();
-        let (status, original) = request(
-            &app,
-            "POST",
-            "/api/workflows",
-            json!({
-                "workflow_id":id,"workflow_type":"echo","task_queue":"test",
-                "input":envelope(Payload::Array(vec![])),"memo":{"metadata":metadata}
-            }),
+        let mut raw = json!({"workflow_id":id, "workflow_type":"echo", "task_queue":"test",
+            "input":envelope(Payload::Array(vec![]))})
+        .to_string();
+        raw.pop();
+        raw.push_str(",\"memo\":{\"metadata\":");
+        raw.push_str(case["json"].as_str().unwrap());
+        raw.push_str("}}");
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/workflows")
+                    .header("authorization", "Bearer test-token")
+                    .header("content-type", "application/json")
+                    .header("x-namespace", "default")
+                    .header("x-durable-workflow-control-plane-version", "2")
+                    .body(Body::from(raw))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let original: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), 4 * 1024 * 1024)
+                .await
+                .unwrap(),
         )
-        .await;
+        .unwrap();
         if case["accepted"] == false {
             assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{original}");
             assert_eq!(
@@ -173,6 +191,30 @@ async fn initial_json_boundary_matches_frozen_admission_and_survives_cold_open()
             );
         } else {
             assert_eq!(status, StatusCode::CREATED, "{original}");
+            if let Some(bits) = case["expected_avro_double_bits"].as_str() {
+                let (_, history) = request(
+                    &app,
+                    "GET",
+                    &format!(
+                        "/api/workflows/{id}/runs/{}/history",
+                        original["run_id"].as_str().unwrap()
+                    ),
+                    Value::Null,
+                )
+                .await;
+                let events = history["events"].as_array().unwrap();
+                assert_eq!(events.len(), 2);
+                assert_eq!(events[0]["event_type"], "StartAccepted");
+                assert_eq!(events[1]["event_type"], "WorkflowStarted");
+                for event in events {
+                    let number = &event["payload"]["memo"]["metadata"];
+                    assert!(number.as_i64().is_none());
+                    assert_eq!(
+                        format!("{:016x}", number.as_f64().unwrap().to_bits().swap_bytes()),
+                        bits
+                    );
+                }
+            }
             originals.push((
                 id,
                 original["run_id"].as_str().unwrap().to_owned(),
