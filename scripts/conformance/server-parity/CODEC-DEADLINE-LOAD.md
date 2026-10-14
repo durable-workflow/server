@@ -62,13 +62,39 @@ node scripts/conformance/server-parity/codec-deadline-contract.mjs \
   tests/Fixtures/ServerParityPending/codec-deadline-load.json /evidence/cpu.json
 ```
 
-Actual complete PHP/native qualification and record corruption controls remain
-pending. The first missing-header original fails. After the header correction,
-PHP reaches an OOM event and read/health timeouts at its declared 512 MiB limit.
-The native development build retains deadline fences and healthy responses but
-fails the dense-read timeout gate. An optimized native build is the next
-qualified-artifact candidate, with the same workload and limits. These
-observations do not qualify the complete case or establish a performance number.
-Focused streaming/timeout/status controls run without a target Server. Keep failed
+The optimized native SQLite original passes the unchanged workload and strict
+contract: 91/91 dense reads, 88/88 health/readiness reads, measured busy CPU,
+original timeout history and parent delivery, and refused late outcomes.
+Maximum read times are 926 ms and 27 ms. The service has one CPU, 512 MiB and
+no swap. A stopped read-only database audit confirms one activity attempt,
+one timeout, and zero parent repairs. This is one bounded source qualification,
+not a matched performance comparison or complete CPU/deadline qualification.
+
+Run corruption controls against that actual passing record:
+
+```sh
+node scripts/conformance/server-parity/codec-deadline-controls.mjs \
+  /evidence/record.json \
+  tests/Fixtures/ServerParityPending/codec-deadline-load.json /evidence/cpu.json
+```
+
+The controls refuse 29 changes to original identity, typed values, clocks,
+policies, fencing, reader outcomes and inspected resource/CPU evidence. They
+also check that the profile preserves original int64 bytes. They do not create
+another producer or replace the actual observation.
+
+The first missing-header original fails. After the header correction, PHP's
+development-server observation reaches OOM and read/health timeouts at the
+declared 512 MiB limit. Its earlier explicit-repair maintenance invalidates
+parent-repair qualification. A fresh Apache-entrypoint original uses the scoped
+timeout enforcer and retains its original budget. It also reaches OOM: all
+40 dense reads time out and 3/12 health reads time out. Its author is killed
+at the original 35-second observer limit, with its prepared original checkpoint
+intact. Its database audit is recorded separately in the owning PR. The native
+development build keeps deadline fences
+and healthy responses but fails the dense-read timeout gate. Those failed
+originals stay failed. Optimizing the native artifact does not weaken their
+workload or limits. Seven focused streaming/timeout/status controls run without
+a target Server. Keep failed
 originals readable in GitHub, then remove task-owned applications, dependency
 trees, raw recordings and temporary load resources after the immediate audit.

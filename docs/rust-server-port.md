@@ -43,8 +43,15 @@ new #438 retry/renewal cases, performance and takeover remain separate.
 
 The separate pending [CPU-load case](../scripts/conformance/server-parity/CODEC-DEADLINE-LOAD.md)
 declares real dense Avro reads, independent health observations and a retained
-activity's original global deadline. Six streaming/timeout/status controls pass.
-Actual PHP/native workloads and busy-CPU/deadline qualification remain ahead.
+activity's original global deadline. Seven streaming/timeout/status controls and
+29 actual-record corruption controls pass. An optimized native SQLite original
+passes all 91 dense reads and 88 independent health/readiness reads under measured
+busy CPU at one CPU, 512 MiB and no swap. It preserves the original activity
+deadline, history prefix, parent delivery and late-outcome fences. The debug
+native read-timeout original and PHP OOM/read-timeout originals remain failed.
+This does not establish matched performance, embedded CPU behavior or full
+timer/lease-renewal/cancellation health under load. Other databases and the
+complete CPU/deadline qualification remain ahead.
 It leaves the default corpus, native source, dependencies and frozen actors
 unchanged.
 

@@ -93,7 +93,7 @@ export function checkCodecDeadlineRecord(record,specBytes,cpuEvidence) {
     &&Date.parse(sample.observed_at)/1000<=original.late_observed_at+1.5),'Busy CPU after the original expiry observation');
   assert(cpu.every(sample=>sample.memory_bytes<=spec.server_memory_bytes),'Declared server memory limit');
   return {outcome:'pass',scope:'http_codec_load_and_original_activity_global_deadline',
-    busy_cpu_samples:cpu.length,original_run_id:original.run_id,parent_task_id:parent.task_id,
+    busy_cpu_samples:busy.length,original_run_id:original.run_id,parent_task_id:parent.task_id,
     dense_input_sha256:original.dense.decoded_sha256};
 }
 
