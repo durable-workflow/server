@@ -46,6 +46,63 @@ full SQLite regressions pass. Initial-memo three-runtime/all-database acceptance
 and the authored-upsert gate remain pending. Memo updates are still advertised
 as unsupported; no native release or same-database takeover is qualified.
 
+#438 is merged at `50ce8f42967bc14c0169fc31b16fbbbd5827528f`, complete tree
+`1065360b83f0dbf531a67a7af8edbece19b97fec`, identical to reviewed `97e63c01`
+and its CI merge `e8f4fc49`. All six original final combined jobs in
+`38506521977` and applicable source/boundary gates pass. Exact fresh-main
+`38511209412` is pending before final delivery. Conditional cancellation and
+prepared-local qualification remain explicitly skipped. Earlier failed
+originals and frozen tuples retain their existing dispositions.
+
+#438 candidate `c99b1130090b8e29db0bcab7d1bdfa6fd34a0dbf` qualifies all six
+database configurations in run `38492234181`, after two unchanged-head/limits
+single-job retries for upstream Composer HTTP 500 responses. Its complete tree
+`6eda44f2aadffb046e0c0f018b126ccd1a4be0e3` matches recorded CI merge `6604a3b2`.
+Current-main integration includes #442 and reviewed PHP metadata; its final
+combined qualification passes as recorded above. Native and frozen tuples stay exact.
+
+Earlier #438 run `38486080308` retains two failed originals. SQLite
+stops at the published PHP activity-expiry parent poll's documented
+`503/backend_lock_pressure`. Read-only SQL confirms one original timeout and
+an unclaimed, ready parent task with zero repairs. PostgreSQL 17 passes both
+HTTP deadline and retry families, then Composer receives HTTP 500 fetching
+`league/config` before the corrected embedded application is installed.
+Neither job qualifies the complete matrix or explains older failures.
+
+The fixture now handles only a matching namespace/queue/task-kind pressure
+refusal through the normally installed Client response API. It waits the
+advertised backoff with the same logical poll ID inside the original observer
+budget. Unknown admission errors and malformed responses still fail. Optional
+wire timing and strict reader checks bind each pressure response to its actual
+retry. A normally installed PHP SDK 2.3.9 against the unchanged published
+PHP 2.6.2 image passes all four expiry originals with one synthetic pressure
+response injected before forwarding. Exact prefixes, frozen policies and
+original deadlines survive. All four parent tasks are claimed once with zero
+repairs. Fifteen installed-Client controls and seventeen reader controls pass.
+The complete shared reader suite passes 4,838 cases, with one explicit skip.
+An initial local observer setup error occurred before any workflow admission
+and is not counted as a workload. Candidate qualification is complete; fresh
+combined-main qualification remains pending. The source includes reviewed PHP #440
+merge `11261ef7`; frozen images and native capabilities remain unchanged.
+
+Separate [retry and terminal-response controls](../scripts/conformance/server-parity/ACTIVITY-RETRY-RECEIPTS.md)
+pass fresh published PHP/embedded SQLite comparison at `b6d5faef2`. Four originals
+each retain two actual attempts, eight events, four tasks with zero repairs,
+the entire retry snapshot and exact int64/null/Unicode results. Active-parent
+duplicates before and after expiry and closed-parent duplicates preserve the
+original result. Actual HTTP and embedded refusals remain explicit. Common
+comparison, 86 corruption checks and stopped read-only original deadline
+verification pass. Separate [global deadline originals](https://github.com/durable-workflow/server/issues/325#issuecomment-6156799442)
+pass on PHP and embedded mode while an unused third attempt and the second
+attempt's close budget remain. All three [native SQLite cases and a matched
+live-heartbeat case](https://github.com/durable-workflow/server/issues/325#issuecomment-6156982520)
+also pass. Two heartbeats preserve one original attempt past its initial
+heartbeat deadline; status reads do not renew, and later progress is refused.
+The new `retries` profile family selects the four fixtures across three runtimes
+and runs their actual-record corruption checks. All six candidate database
+configurations pass; current-main qualification remains pending. These controls remain outside #435 and the
+default corpus. They do not establish a stronger content-verified receipt
+contract. Earlier harness failures and unqualified observations remain recorded.
 [#435](https://github.com/durable-workflow/server/pull/435) is delivered at
 `7b53fc26db4e69a8013b6f1ad991fd1d98266833`, complete tree
 `b9f7e9bd652586e23a4e80aa58433c79c1e51ea6` identical to the reviewed candidate.
@@ -94,6 +151,17 @@ Canonical typed values and source fixture hashes remain the evidence for exact
 int64s. JavaScript numeric copies in diagnostic fixture inputs are rounded;
 they are not claimed as lossless payload evidence. Temporary ZIPs are deleted
 after their immediate inspection.
+
+The separate #438 recorder correction now copies validated original fixture
+and probe JSON into each saved case, preserving numeric literals without another
+complete serialization of the wire bodies. At `6a79f7b9c`, nine focused recorder
+controls and all 4,821 shared reader checks pass, with one explicit skip. A fresh
+normally installed SDK 2.2.6 workflow on the unchanged published PHP 2.5.14
+baseline completes with `9007199254740993` preserved in source input, saved
+fixture, decoded history and output. Temporary probe files are absent after
+writing, and the local runtime and recordings are removed after verification.
+Earlier rounded diagnostics remain unchanged. Final-head matrix qualification
+of this recorder revision is still required.
 
 [#429](https://github.com/durable-workflow/server/pull/429) is delivered at
 `6299289185caea472b2738a5d4442a617edf0b8a`, tree
@@ -144,7 +212,7 @@ Completed local bulk recordings and archives have been deleted; code, fixtures
 and readable GitHub outcomes remain. Earlier local retention promises no longer
 apply. New scratch is removed after its immediate inspection.
 
-The expanded `718ea3608` run `38469976743` passes both PostgreSQL jobs.
+The expanded `718ea3608` run `38469976743` passes both PostgreSQL jobs and MySQL 8.4.
 SQLite passes the published PHP eight portable, two clock and four activity
 expiry cases, then fails native discovery because the new stage addressed the
 process intentionally killed by the preceding recovery test. The replacement
@@ -153,7 +221,7 @@ MariaDB exit their PHP recorder with 137 while writing incomplete JSON after
 the final case snapshots complete. The recorder was automatically removed, so
 its OOM state is unavailable. Their database and PHP service states are healthy;
 later pressure controls pass. No product or historical failure cause is inferred.
-MySQL 8.4 remains pending. Originals keep their recorded dispositions.
+Originals keep their recorded dispositions.
 
 The recorder now writes one case at a time to avoid creating another complete
 serialization of all retained HTTP bytes. A bounded 48 MiB heap control preserves

@@ -11,6 +11,7 @@ const upstream = new URL(target);
 if (upstream.protocol !== 'http:') throw new Error('Isolated fixture target must use HTTP');
 const arrivalJournal = process.env.DW_PARITY_HTTP_REQUEST_ARRIVALS;
 const captureNamespace = process.env.DW_PARITY_HTTP_CAPTURE_NAMESPACE === '1';
+const captureTiming = process.env.DW_PARITY_HTTP_CAPTURE_TIMING === '1';
 if (arrivalJournal !== undefined && (!arrivalJournal || observationMode !== '--forwarding-state')) {
   throw new Error('Request-arrival capture requires a journal and forwarding-state mode');
 }
@@ -18,6 +19,7 @@ let requestCounter = 0, arrivalCount = 0, arrivalBytes = 0;
 let startObserved = gateMode === undefined;
 const waitingPolls = new Set();
 const server = http.createServer((request, response) => {
+  const startedAt = Date.now() / 1000;
   const requestObservationId = ++requestCounter;
   const chunks = [];
   let forwarded;
@@ -33,7 +35,8 @@ const server = http.createServer((request, response) => {
       response_retry_after: null, response_bytes_base64: '', response_body: '', client_cancelled: false,
       transport_error: null, ...(observationMode === '--forwarding-state' ? {
         request_body_complete: requestBodyComplete, upstream_request_started: Boolean(forwarded),
-      } : {}), ...(arrivalJournal ? {request_observation_id: requestObservationId} : {}), ...fields})+'\n');
+      } : {}), ...(captureTiming ? {request_started_at: startedAt, response_observed_at: Date.now() / 1000} : {}),
+      ...(arrivalJournal ? {request_observation_id: requestObservationId} : {}), ...fields})+'\n');
   };
   const failed = error => {
     record({transport_error: error.code ?? 'upstream_error'});

@@ -29,6 +29,15 @@ if (original.mode === 'embedded') {
   });
 }
 const results=[];
+if (original.mode==='http' && original.activity_deadline_authority.poll_retries?.length) {
+  Object.assign(mutations, {
+    'pressure retry replaced original identity':value=>{value.activity_deadline_authority.poll_retries[0].poll_request_id='other';},
+    'pressure retry skipped advertised backoff':value=>{const retry=value.activity_deadline_authority.poll_retries[0];retry.retry_at=retry.failed_at;},
+    'pressure retry granted new observer deadline':value=>{value.activity_deadline_authority.poll_retries[0].observer_deadline+=1;},
+    'pressure retry metadata missing':value=>{value.activity_deadline_authority.poll_retries.pop();},
+    'pressure response missing':value=>{value.activity_deadline_authority.requests=value.activity_deadline_authority.requests.filter(wire=>wire.status!==503);},
+  });
+}
 for(const field of fixture.activity_deadline_authority.fields){
   const step=value=>value.activity_deadline_authority.steps[field];
   const controls={

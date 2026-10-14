@@ -9,6 +9,7 @@ case "$family" in
   range) ids=(rust-range-completed rust-range-timer-pending) ;;
   portable) ids=(fresh-numeric fresh-zero deprecation-first genuine-version-one php-full-retry php-full-retry-refusal rust-range-completed rust-range-timer-pending) ;;
   deadlines) ids=(activity-deadline-authority) ;;
+  retries) ids=(activity-deadline-active-receipts activity-deadline-receipts activity-global-deadline-retry activity-heartbeat-renewal) ;;
   *) exit 2 ;;
 esac
 test -n "$RESOURCE_SCOPE"
@@ -49,6 +50,7 @@ roles=(original current)
 record=record.json
 bootstrap_root=/original-runtime
 if test "$family" = deadlines; then roles=(current); record=deadlines-record.json; bootstrap_root=/runtime; fi
+if test "$family" = retries; then roles=(current); record=retries-record.json; bootstrap_root=/runtime; fi
 for role in "${roles[@]}"; do
   package_checks=()
   if test "$role" = original; then
@@ -77,7 +79,7 @@ docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
 fixtures=()
 for id in "${ids[@]}"; do
   path="$profile/$id.json"
-  if test "$family" = deadlines; then path="tests/Fixtures/ServerParityPending/$id.json"; fi
+  if test "$family" = deadlines || test "$family" = retries; then path="tests/Fixtures/ServerParityPending/$id.json"; fi
   fixtures+=(--fixture "$path")
 done
 docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
