@@ -9,7 +9,7 @@ evidence=${DW_PARITY_CORRECTED_EVIDENCE:-parity-evidence/corrected-marker}
 image=$(jq -r '.server.images["linux/amd64"]' "$artifacts")
 mkdir -p "$evidence"
 for target in php rust; do
-  for family in markers range clock portable deadlines; do
+  for family in markers range clock portable deadlines retries; do
     recorder="$RESOURCE_SCOPE-corrected-$target-$family-recorder"
     if docker inspect "$recorder" >/dev/null 2>&1; then
       mkdir -p "$evidence/$target"
@@ -19,14 +19,14 @@ for target in php rust; do
     fi
   done
 done
-docker stop --time 5 "$RESOURCE_SCOPE-corrected-php" "$RESOURCE_SCOPE-corrected-maintenance" >/dev/null 2>&1 || true
-for role in php maintenance; do
+docker stop --time 5 "$RESOURCE_SCOPE-corrected-php" "$RESOURCE_SCOPE-corrected-maintenance" "$RESOURCE_SCOPE-corrected-retries-maintenance" >/dev/null 2>&1 || true
+for role in php maintenance retries-maintenance; do
   if docker inspect "$RESOURCE_SCOPE-corrected-$role" >/dev/null 2>&1; then
     docker logs "$RESOURCE_SCOPE-corrected-$role" > "$evidence/$role-server.log" 2>&1 || true
     docker inspect --format '{{json .State}}' "$RESOURCE_SCOPE-corrected-$role" > "$evidence/$role-state.json" || true
   fi
 done
-docker rm -f "$RESOURCE_SCOPE-corrected-php" "$RESOURCE_SCOPE-corrected-maintenance" >/dev/null 2>&1 || true
+docker rm -f "$RESOURCE_SCOPE-corrected-php" "$RESOURCE_SCOPE-corrected-maintenance" "$RESOURCE_SCOPE-corrected-retries-maintenance" >/dev/null 2>&1 || true
 case "$backend" in
   mysql|pgsql)
     for role in php embedded; do
@@ -42,7 +42,9 @@ case "$backend" in
     done ;;
   sqlite)
     for db in php embedded; do
-      if test -f "$state/$db.sqlite"; then cp "$state/$db.sqlite" "$evidence/$db-final.sqlite"; fi
+      for suffix in '' -wal -shm; do
+        if test -f "$state/$db.sqlite$suffix"; then cp "$state/$db.sqlite$suffix" "$evidence/$db-final.sqlite$suffix"; fi
+      done
     done ;;
   *) exit 2 ;;
 esac

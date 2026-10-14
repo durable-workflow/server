@@ -52,19 +52,38 @@ for target in php rust; do
   bash scripts/conformance/server-parity/corrected-marker-http-profile.sh "$target" "$url" clock
   bash scripts/conformance/server-parity/corrected-marker-http-profile.sh "$target" "$url" deadlines
 done
-docker stop --time 5 "$RESOURCE_SCOPE-corrected-php" "$RESOURCE_SCOPE-corrected-maintenance"
+# Reuse the published package enforcer in one bounded process. It cannot repair
+# a retained parent task or touch a marker/range neighbor's original workflow.
+docker stop --time 5 "$resource-maintenance"
+docker run -d --name "$resource-retries-maintenance" --user=1000:1000 --cpus=0.25 --memory=256m --memory-swap=256m --network "$RESOURCE_SCOPE" --entrypoint php "${database[@]}" "${engine[@]}" -e DW_PARITY_CORRECTED_PREFIX -v "$PWD:/source:ro" "$image" /source/scripts/conformance/server-parity/activity-retries-maintenance.php > "$evidence/retries-maintenance-container.txt"
+for target in php rust; do
+  url="$native_url"
+  if test "$target" = php; then url=http://parity-corrected-php:8080; fi
+  bash scripts/conformance/server-parity/corrected-marker-http-profile.sh "$target" "$url" retries
+done
+docker stop --time 5 "$RESOURCE_SCOPE-corrected-php" "$RESOURCE_SCOPE-corrected-retries-maintenance"
 bash scripts/conformance/server-parity/corrected-marker-embedded-profile.sh "$backend" portable
 bash scripts/conformance/server-parity/corrected-marker-embedded-profile.sh "$backend" deadlines
+bash scripts/conformance/server-parity/corrected-marker-embedded-profile.sh "$backend" retries
 fixtures=()
 for id in fresh-numeric fresh-zero deprecation-first genuine-version-one php-full-retry php-full-retry-refusal rust-range-completed rust-range-timer-pending; do fixtures+=(--fixture "$profile/$id.json"); done
 shared=(-v "$PWD:/source:ro" -v "$PWD/$evidence:/evidence" -w /source)
 docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --network none --entrypoint node "${shared[@]}" "$image" scripts/conformance/server-parity.mjs compare /evidence/php/portable-record.json /evidence/rust/portable-record.json /evidence/embedded/record.json --artifacts "$artifacts" "${fixtures[@]}" > "$evidence/portable-comparison.json"
 docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --network none --entrypoint node "${shared[@]}" "$image" scripts/conformance/server-parity.mjs compare /evidence/php/clock-record.json /evidence/rust/clock-record.json --artifacts "$artifacts" --fixture "$profile/python-clock-zero.json" --fixture "$profile/python-clock-genuine-one.json" > "$evidence/clock-comparison.json"
 docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --network none --entrypoint node "${shared[@]}" "$image" scripts/conformance/server-parity.mjs compare /evidence/php/deadlines-record.json /evidence/rust/deadlines-record.json /evidence/embedded/deadlines-record.json --artifacts "$artifacts" --fixture tests/Fixtures/ServerParityPending/activity-deadline-authority.json > "$evidence/deadlines-comparison.json"
+retry_fixtures=()
+for id in activity-deadline-active-receipts activity-deadline-receipts activity-global-deadline-retry activity-heartbeat-renewal; do retry_fixtures+=(--fixture "tests/Fixtures/ServerParityPending/$id.json"); done
+docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --network none --entrypoint node "${shared[@]}" "$image" scripts/conformance/server-parity.mjs compare /evidence/php/retries-record.json /evidence/rust/retries-record.json /evidence/embedded/retries-record.json --artifacts "$artifacts" "${retry_fixtures[@]}" > "$evidence/retries-comparison.json"
 for target in php rust embedded; do
   record="/evidence/$target/portable-record.json"
   if test "$target" = embedded; then record=/evidence/embedded/record.json; fi
   docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --network none --entrypoint node "${shared[@]}" "$image" scripts/conformance/server-parity/corrected-markers/record-readers.mjs "$record" "/evidence/$target/reader-inputs" portable > "$evidence/$target/reader-controls.json"
   if test "$target" != embedded; then docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --network none --entrypoint node "${shared[@]}" "$image" scripts/conformance/server-parity/corrected-markers/record-readers.mjs "/evidence/$target/clock-record.json" "/evidence/$target/clock-reader-inputs" clock > "$evidence/$target/clock-reader-controls.json"; fi
   docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --network none --entrypoint node "${shared[@]}" "$image" scripts/conformance/server-parity/activity-deadline-readers.mjs "/evidence/$target/deadlines-record.json" > "$evidence/$target/deadlines-reader-controls.json"
+  for id in activity-deadline-active-receipts activity-deadline-receipts; do
+    docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --network none --entrypoint node "${shared[@]}" "$image" scripts/conformance/server-parity/activity-deadline-receipts-readers.mjs "/evidence/$target/retries-record.json" "$id" > "$evidence/$target/$id-reader-controls.json"
+  done
+  for family in global-retry heartbeat-renewal; do
+    docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --network none --entrypoint node "${shared[@]}" "$image" "scripts/conformance/server-parity/activity-$family-readers.mjs" "/evidence/$target/retries-record.json" > "$evidence/$target/$family-reader-controls.json"
+  done
 done

@@ -14,6 +14,11 @@ docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=512m --memory-swap=
   -e COMPOSER_HOME=/tmp/composer -v "$PWD/$output/php:/consumer" -w /consumer "$image" \
   install --no-dev --no-scripts --no-cache --no-interaction --no-progress --prefer-dist \
   > "$output/php-install.txt" 2>&1
+docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
+  --network=none --entrypoint node -v "$PWD:/source:ro" -v "$PWD/$output/php:/sdk:ro" \
+  -e DW_PARITY_SDK_AUTOLOAD=/sdk/vendor/autoload.php -w /source "$image" \
+  --test tests/Conformance/ServerParityDeadlinePollTest.mjs tests/Unit/ServerParityDeadlinePollContractTest.mjs \
+  > "$output/deadline-poll-controls.txt" 2>&1
 cp tests/Fixtures/ServerParityProfiles/version-range-repair/sdk/{composer.json,composer.lock} "$output/php-range/"
 docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=512m --memory-swap=512m --entrypoint composer \
   -e COMPOSER_HOME=/tmp/composer -v "$PWD/$output/php-range:/consumer" -w /consumer "$image" \

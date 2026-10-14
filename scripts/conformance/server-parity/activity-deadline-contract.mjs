@@ -3,6 +3,60 @@ import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 import {gunzipSync,inflateSync,brotliDecompressSync} from 'node:zlib';
 
+export function checkActivityDeadlinePollRetries(state, requests, workflowId) {
+  const failed = requests.filter(wire=>wire.status===503);
+  const retries = state.poll_retries ?? [];
+  assert.equal(retries.length,failed.length,'Every pressure response has one bounded retry');
+  if (!failed.length && state.observer_started_at===undefined) return;
+  assert(Number.isFinite(state.observer_started_at));
+  assert(Number.isFinite(state.observer_deadline));
+  assert(Math.abs(state.observer_deadline-state.observer_started_at-state.overall_budget_seconds)<0.000001,
+    'No new observer budget');
+  for(const wire of requests) {
+    assert(Number.isFinite(wire.request_started_at));
+    assert(Number.isFinite(wire.response_observed_at));
+    assert(wire.request_started_at>=state.observer_started_at-0.002);
+    assert(wire.response_observed_at>=wire.request_started_at);
+    assert(wire.response_observed_at<=state.observer_deadline+0.002,'All observations retain original deadline');
+  }
+  for(const [index,wire] of failed.entries()) {
+    const retry=retries[index], response=wire.response, request=wire.request;
+    const kind=wire.path==='/api/worker/workflow-tasks/poll'?'workflow'
+      :wire.path==='/api/worker/activity-tasks/poll'?'activity':null;
+    assert(kind,'Only worker polls retry pressure');
+    assert.equal(wire.method,'POST');
+    assert.equal(response.reason,'backend_lock_pressure');
+    assert.equal(response.poll_status,'backend_lock_pressure');
+    assert.equal(response.task,null);
+    assert.equal(response.namespace,'default');
+    assert.equal(response.task_queue,request.task_queue);
+    assert.equal(response.task_kind,`${kind}_task`);
+    assert.equal(response.backend.lock_pressure,true);
+    assert(Number.isInteger(response.retry_after_seconds)&&response.retry_after_seconds>0);
+    assert.equal(wire.response_retry_after,String(response.retry_after_seconds));
+    assert(request.task_queue.startsWith(`${workflowId}-`));
+    assert.equal(request.worker_id,`${request.task_queue}-worker`);
+    assert.equal(request.timeout_seconds,0);
+    assert.equal(retry.poll_request_id,request.poll_request_id);
+    assert.equal(retry.worker_id,request.worker_id);
+    assert.equal(retry.task_queue,request.task_queue);
+    assert.equal(retry.task_kind,response.task_kind);
+    assert.equal(retry.namespace,'default');
+    assert.equal(retry.reason,'backend_lock_pressure');
+    assert.equal(retry.retry_after_seconds,response.retry_after_seconds);
+    assert.equal(retry.observer_deadline,state.observer_deadline);
+    assert(retry.failed_at>=wire.response_observed_at-0.002);
+    assert(retry.retry_at>=retry.failed_at+response.retry_after_seconds-0.002,'Advertised backoff');
+    const next=requests[requests.indexOf(wire)+1];
+    assert(next,'Pressure retry is actually observed');
+    assert.equal(next.method,wire.method);
+    assert.equal(next.path,wire.path);
+    assert.equal(next.request_body,wire.request_body,'One logical poll identity and unchanged request');
+    assert(next.request_started_at>=retry.retry_at-0.002);
+    assert([200,503].includes(next.status));
+  }
+}
+
 export function checkActivityDeadlinePackages(fixture, observation, artifacts) {
   if (!fixture.activity_deadline_authority) return;
   assert.equal(observation.sdk_php,artifacts.sdk_php);
@@ -40,6 +94,7 @@ export function checkActivityDeadlines(fixture, observation, workflowId) {
     assert.equal(decoders[wire.response_encoding](Buffer.from(wire.response_bytes_base64,'base64')).toString('utf8'),wire.response_body,'Complete original response bytes');
     return {...wire,request:wire.request_body?JSON.parse(wire.request_body):null,response:wire.response_body?JSON.parse(wire.response_body):null};
   });
+  if(http)checkActivityDeadlinePollRetries(state,requests,workflowId);
   assert.deepEqual(Object.keys(state.steps), spec.fields);
   const identities = [];
   for (const field of spec.fields) {

@@ -1,0 +1,20 @@
+{
+  "id": "activity-deadline-receipts",
+  "workflow_type": "parity.v1.activity_deadline_receipts",
+  "input": {"integer": 9007199254740993, "optional": null, "unicode": "retry receipt λ"},
+  "typed_value": {"type": "map", "value": {
+    "integer": {"type": "int64", "value": "9007199254740993"},
+    "optional": {"type": "null", "value": null},
+    "unicode": {"type": "string", "value": "retry receipt λ"}
+  }},
+  "activity_deadline_receipts": {
+    "start_to_close_timeout": 2,
+    "schedule_to_close_timeout": 12,
+    "max_attempts": 2,
+    "backoff_seconds": [1, 2, 5, 10, 15, 30, 60, 120],
+    "overall_budget_seconds": 35,
+    "ordinary_lease_seconds": 300
+  },
+  "expected_events": ["StartAccepted", "WorkflowStarted", "ActivityScheduled", "ActivityStarted", "ActivityRetryScheduled", "ActivityStarted", "ActivityCompleted", "WorkflowCompleted"],
+  "contract": "One original activity crosses its authored start-to-close deadline in real wall time. Its original attempt refuses late completion, and one timeout retry retains the same execution, entire policy and original schedule-to-close deadline. An actual second claim uses a new task/attempt after the original backoff, completes once before its deadline, and the original workflow completes with exact Avro int64/null/Unicode values. After both authored deadlines have genuinely elapsed, identical submissions never append another event or command. Closed activity 409/stale_attempt/outcome=completed/recorded=false and closed workflow 409/run_closed are permitted; they do not prove submitted-content equality. A retained content-verified receipt may acknowledge its original commit. Conflicting activity output remains refused. No database timestamp, server clock, original deadline or observer budget is rewritten. HTTP uses normal installed Client worker-protocol requests; embedded must use a real queue author and public bridges. This pending follow-through requires both references and native qualification before adoption. Receipt boundary: https://github.com/durable-workflow/server/issues/325#issuecomment-6155987239 ."
+}
