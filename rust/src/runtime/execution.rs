@@ -710,7 +710,14 @@ impl Runtime {
             }
         }
     }
-    delegate!(complete_activity(task_id: &str, body: Value) -> Result<Value>);
+    pub(crate) async fn complete_activity(&self, task_id: &str, body: Value) -> Result<Value> {
+        let external = self.prepare_external(&body["result"]).await?;
+        match &*self.storage {
+            Storage::Sqlite(store) => store.complete_activity(task_id, body, external).await,
+            Storage::Postgres(store) => store.complete_activity(task_id, body, external).await,
+            Storage::MySql(store) => store.complete_activity(task_id, body, external).await,
+        }
+    }
     delegate!(heartbeat_activity(task_id: &str, body: Value, protocol: &str) -> Result<Value>);
     delegate!(activity_status(task_id: &str, body: Value, protocol: &str) -> Result<Value>);
     pub(crate) async fn fail_activity(&self, task_id: &str, body: Value) -> Result<Value> {

@@ -2759,3 +2759,24 @@ unadvertised. Activity, query and memo ingress, completion-upload allowance,
 automatic result externalization, S3, cleanup/backup and all-database external
 semantics remain open. Exact source and hosted qualifications belong to #450;
 these observations do not qualify a release or database takeover.
+
+Explicit activity results now use the same verified reference preparation, with
+retention inside the original activity outcome transaction after lease, attempt,
+run and activity deadline fences. Stale attempts and elapsed leases leave the
+object unclaimed. A real database trigger refuses history publication after
+retention; rollback restores both the object and original activity before a
+matching completion and cold replay succeed. Local checks pass 66 library and
+104 SQLite HTTP cases, followed by all eight external HTTP cases after adding
+that final rollback control. Other database families remain hosted gates.
+
+The result recipe's `activity-author` phase uses actual SDK workflow admission
+and task polling, then an explicit HTTP activity-result completion. Its separate
+`activity-reader` process uses the normally installed SDK to hydrate the original
+activity history and complete the same workflow. Frozen PHP and native SQLite
+each preserve the exact 4,194,392-byte result, one actual activity attempt,
+six events and three first-attempt tasks with zero repairs. Published PHP also
+automatically uploads the small final summary under its policy; native keeps
+that summary inline because automatic upload discovery remains unadvertised.
+This measured difference is not full automatic externalization parity. No
+graceful shutdown is claimed from the stopped 137/no-OOM containers. Activity
+arguments and the remaining external transport gates stay open under #450.

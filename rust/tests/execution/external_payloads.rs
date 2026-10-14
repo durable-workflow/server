@@ -534,6 +534,204 @@ async fn external_workflow_completion_fences_before_retention_and_keeps_opaque_r
     database.remove().await;
 }
 
+#[tokio::test]
+async fn external_activity_result_retains_only_after_live_authority_and_survives_cold_replay() {
+    for expired in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let (database, runtime, app) = setup(
+            ExternalPayloadConfig::default(),
+            &temp.path().join("objects"),
+        )
+        .await;
+        let (_, original) = json_request(
+            &app,
+            "POST",
+            "/api/workflows",
+            "operator-token",
+            json!({
+            "workflow_id":"external-activity-original","workflow_type":"echo","task_queue":"test",
+            "input":envelope(Payload::Array(vec![]))}),
+        )
+        .await;
+        assert_eq!(json_request(&app, "POST", "/api/worker/register", "worker-token", json!({
+            "worker_id":"external-activity-author","task_queue":"test","runtime":"php","sdk_version":"2.3.9","supported_workflow_types":["echo"],
+            "supported_activity_types":["activity-echo"]})).await.0, StatusCode::CREATED);
+        let (_, delivery) = json_request(
+            &app,
+            "POST",
+            "/api/worker/workflow-tasks/poll",
+            "worker-token",
+            json!({
+            "worker_id":"external-activity-author","task_queue":"test","timeout_seconds":0}),
+        )
+        .await;
+        let task = &delivery["task"];
+        let path = format!(
+            "/api/worker/workflow-tasks/{}/complete",
+            task["task_id"].as_str().unwrap()
+        );
+        assert_eq!(json_request(&app, "POST", &path, "worker-token", completion(task, json!([
+            {"type":"schedule_activity","activity_type":"activity-echo","arguments":envelope(Payload::Array(vec![]))}
+        ]))).await.0, StatusCode::OK);
+        let (_, delivery) = json_request(
+            &app,
+            "POST",
+            "/api/worker/activity-tasks/poll",
+            "worker-token",
+            json!({
+            "worker_id":"external-activity-author","task_queue":"test","timeout_seconds":0}),
+        )
+        .await;
+        let activity = &delivery["task"];
+        let blob = ValueCodec::new()
+            .unwrap()
+            .encode(&Payload::Array(vec![
+                Payload::String("x".repeat(3 * 1024 * 1024)),
+                Payload::Long(9007199254740993),
+                Payload::Null,
+                Payload::String("rangeλ".into()),
+            ]))
+            .unwrap();
+        let (status, _, upload) = request(
+            &app,
+            "POST",
+            "/api/external-payloads/v1",
+            "worker-token",
+            "default",
+            Some(&metadata(blob.as_bytes())),
+            Body::from(blob.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let upload: Value = serde_json::from_slice(&upload).unwrap();
+        let result = json!({"codec":"avro","external_payload":upload["reference"]});
+        let path = format!(
+            "/api/worker/activity-tasks/{}/complete",
+            activity["task_id"].as_str().unwrap()
+        );
+        let body = json!({"lease_owner":"external-activity-author","activity_attempt_id":activity["activity_attempt_id"],"result":result});
+        let history_path = format!(
+            "/api/workflows/external-activity-original/runs/{}/history",
+            original["run_id"].as_str().unwrap()
+        );
+        let before = json_request(&app, "GET", &history_path, "operator-token", Value::Null)
+            .await
+            .1;
+        let mut stale = body.clone();
+        stale["activity_attempt_id"] = json!("wrong-original-attempt");
+        assert_eq!(
+            json_request(&app, "POST", &path, "worker-token", stale)
+                .await
+                .0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(unclaimed(&database).await, 1);
+        if expired {
+            database.execute("UPDATE workflow_tasks SET lease_expires_at='2000-01-01 00:00:00' WHERE task_type='activity'").await;
+            assert_eq!(
+                json_request(&app, "POST", &path, "worker-token", body)
+                    .await
+                    .0,
+                StatusCode::CONFLICT
+            );
+            assert_eq!(unclaimed(&database).await, 1);
+            assert_eq!(
+                json_request(&app, "GET", &history_path, "operator-token", Value::Null)
+                    .await
+                    .1,
+                before
+            );
+            runtime.close().await;
+        } else {
+            // Fail after retention and activity-row changes, at history publication.
+            // The same original must remain usable and its object unclaimed.
+            match &database {
+                TestDatabase::Sqlite(_) => database.execute("CREATE TRIGGER refuse_external_activity BEFORE INSERT ON workflow_history_events WHEN NEW.event_type='ActivityCompleted' BEGIN SELECT RAISE(ABORT,'synthetic external result history refusal'); END").await,
+                TestDatabase::MySql { .. } => database.execute("CREATE TRIGGER refuse_external_activity BEFORE INSERT ON workflow_history_events FOR EACH ROW BEGIN IF NEW.event_type='ActivityCompleted' THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='synthetic external result history refusal'; END IF; END").await,
+                TestDatabase::Postgres { .. } => {
+                    database.execute("CREATE FUNCTION refuse_external_activity() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.event_type='ActivityCompleted' THEN RAISE EXCEPTION 'synthetic external result history refusal'; END IF; RETURN NEW; END; $$").await;
+                    database.execute("CREATE TRIGGER refuse_external_activity BEFORE INSERT ON workflow_history_events FOR EACH ROW EXECUTE FUNCTION refuse_external_activity()").await;
+                }
+            }
+            assert_eq!(
+                json_request(&app, "POST", &path, "worker-token", body.clone())
+                    .await
+                    .0,
+                StatusCode::SERVICE_UNAVAILABLE
+            );
+            assert_eq!(unclaimed(&database).await, 1);
+            assert_eq!(
+                json_request(&app, "GET", &history_path, "operator-token", Value::Null)
+                    .await
+                    .1,
+                before
+            );
+            match &database {
+                TestDatabase::Postgres { .. } => {
+                    database
+                        .execute("DROP TRIGGER refuse_external_activity ON workflow_history_events")
+                        .await;
+                    database
+                        .execute("DROP FUNCTION refuse_external_activity()")
+                        .await;
+                }
+                _ => {
+                    database
+                        .execute("DROP TRIGGER refuse_external_activity")
+                        .await
+                }
+            }
+            let (status, receipt) = json_request(&app, "POST", &path, "worker-token", body).await;
+            assert_eq!(status, StatusCode::OK, "{receipt}");
+            assert_eq!(receipt["recorded"], true);
+            assert_eq!(unclaimed(&database).await, 0);
+            runtime.close().await;
+            let cold = database.open().await.unwrap().with_role_tokens(
+                Some("worker-token".into()),
+                Some("operator-token".into()),
+                Some("admin-token".into()),
+            );
+            let app = router(cold.clone());
+            let (_, replay) = json_request(
+                &app,
+                "POST",
+                "/api/worker/workflow-tasks/poll",
+                "worker-token",
+                json!({
+                "worker_id":"external-activity-author","task_queue":"test","timeout_seconds":0}),
+            )
+            .await;
+            let events = replay["task"]["history_events"].as_array().unwrap();
+            let completed: Vec<_> = events
+                .iter()
+                .filter(|event| event["event_type"] == "ActivityCompleted")
+                .collect();
+            assert_eq!(completed.len(), 1);
+            assert_eq!(completed[0]["payload"]["result"], result);
+            let reference = &upload["reference"];
+            assert_eq!(
+                request(
+                    &app,
+                    "GET",
+                    &format!(
+                        "/api/external-payloads/v1/{}",
+                        reference["reference_id"].as_str().unwrap()
+                    ),
+                    "worker-token",
+                    "default",
+                    Some(reference),
+                    Body::empty()
+                )
+                .await
+                .2,
+                blob.as_bytes()
+            );
+            cold.close().await;
+        }
+        database.remove().await;
+    }
+}
+
 async fn setup(
     config: ExternalPayloadConfig,
     root: &std::path::Path,

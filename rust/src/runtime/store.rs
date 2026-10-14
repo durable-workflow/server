@@ -1970,8 +1970,16 @@ where
         Ok(())
     }
 
-    pub(crate) async fn complete_activity(&self, task_id: &str, body: Value) -> Result<Value> {
-        let result = envelope(&body, "result")?;
+    pub(crate) async fn complete_activity(
+        &self,
+        task_id: &str,
+        body: Value,
+        external: Option<super::external_resolution::PreparedExternal>,
+    ) -> Result<Value> {
+        let result = match &external {
+            Some(prepared) => prepared.stored(),
+            None => envelope(&body, "result")?,
+        };
         let attempt_id = text(&body, "activity_attempt_id")?;
         let mut tx = self.begin().await?;
         let task = self.task_row(&mut tx, task_id).await?;
@@ -2013,6 +2021,10 @@ where
             return Err(refuse(StatusCode::CONFLICT, "stale_attempt"));
         }
         super::activity_deadlines::fence::<DB>(&activity)?;
+        if let Some(prepared) = &external {
+            self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri)
+                .await?;
+        }
         Self::query("UPDATE activity_executions SET status='completed',result=$1,exception=NULL,closed_at=$2 WHERE id=$3")
             .bind(&result).bind(DB::bind_time(now())).bind(&activity_id).execute(&mut *tx).await?;
         let activity = Self::query("SELECT * FROM activity_executions WHERE id=$1")

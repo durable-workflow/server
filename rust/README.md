@@ -291,14 +291,16 @@ restart, all database families and S3 qualification. The actual byte probe is
 an isolated runtime configured with its disposable fixture token, a default
 namespace, four MiB payload ceiling and one-object namespace quota. See the
 [port log](../docs/rust-server-port.md) for its precise acceptance scope.
-Workflow start and terminal workflow completion accept verified opaque external
-payloads. Retention commits with the admitted input or fenced result; cold
+Workflow start, terminal workflow completion and activity completion accept
+verified opaque external payloads. Retention commits with the admitted input or fenced result; cold
 delivery, history and descriptions keep references for normal SDK hydration.
 The installed-worker input recipe is
 `scripts/conformance/server-parity/external-input-worker.php`. The explicit
 result-upload/public task-completion recipe and separate cold SDK reader are in
-`scripts/conformance/server-parity/external-result-client.php`. These recipes do
-not establish automatic SDK upload discovery. Activity/memo/query ingress,
+`scripts/conformance/server-parity/external-result-client.php`. Its
+`activity-author` and `activity-reader` phases use explicit activity-result HTTP
+completion and a separate installed SDK workflow-history reader. These recipes
+do not establish automatic SDK upload discovery. Activity-argument/memo/query ingress,
 completion-upload allowances and automatic external result policy remain
 unqualified. Apache's schema-aware validation patch is recorded in
 `vendor/apache-avro/PATCHES.md`.
