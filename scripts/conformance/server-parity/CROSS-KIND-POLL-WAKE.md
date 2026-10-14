@@ -20,8 +20,9 @@ namespace, queue or global notification grants no authority to emit it.
 Workers that do not opt in retain their existing behavior, including other
 already-defined empty or blocked statuses.
 
-The first real worker controls park an ordinary installed mixed worker in an
-activity poll or a query poll, then admit one normal one-activity workflow while
+The first real worker controls use the explicit default namespace. They park an
+ordinary installed mixed worker in an activity poll or a query poll, then admit
+one normal one-activity workflow while
 that request remains unanswered. The PHP reference interrupts the held request
 with the explicit hint. Its worker follows with a workflow sweep and completes
 the original. The unchanged native source instead consumes the remaining

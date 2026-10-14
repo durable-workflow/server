@@ -7,6 +7,7 @@ export function checkCrossKindPollWake(record, profile) {
   assert(['activity', 'query'].includes(record.kind));
   assert.equal(record.original_budget_seconds, 35);
   assert.equal(record.cross_kind_capability, true, 'actual worker opts in');
+  assert.equal(record.namespace, 'default', 'this recipe uses the explicit default namespace');
   assert.equal(record.sdk_version, profile.artifacts.sdk_php_version);
   assert.equal(record.sdk_source, profile.artifacts.sdk_php_source);
   assert.equal(record.adapter_sha256, profile.workload.adapter_sha256);
@@ -52,6 +53,7 @@ export function checkCrossKindPollWake(record, profile) {
     assert(poll.responded_at >= poll.started_at);
     assert.equal(poll.worker_id, record.worker_id);
     assert.equal(poll.task_queue, record.task_queue);
+    assert.equal(poll.namespace_header, record.namespace);
   }
   assert.equal(sweep.namespace_header, held.namespace_header, 'the sweep keeps its namespace');
   assert.deepEqual(record.history_events, ['StartAccepted', 'WorkflowStarted', 'ActivityScheduled',

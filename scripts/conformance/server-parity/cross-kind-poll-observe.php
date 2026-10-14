@@ -59,7 +59,7 @@ foreach (['activity', 'query'] as $kind) {
     if (!is_resource($proxy)) throw new RuntimeException('Proxy setup failed');
     fclose($pipes[0]); stream_set_blocking($pipes[1], false);
     $worker = null;
-    $summary = ['kind'=>$kind, 'original_budget_seconds'=>35,
+    $summary = ['kind'=>$kind, 'namespace'=>'default', 'original_budget_seconds'=>35,
         'sdk_version'=>Composer\InstalledVersions::getPrettyVersion('durable-workflow/sdk'),
         'sdk_source'=>Composer\InstalledVersions::getReference('durable-workflow/sdk'),
         'adapter_sha256'=>hash_file('sha256',$adapter)];
@@ -75,6 +75,7 @@ foreach (['activity', 'query'] as $kind) {
         $queue = $workflowPrefix.'-'.$kind;
         $environment['DURABLE_WORKFLOW_RUNTIME_URL'] = $url;
         $environment['DURABLE_WORKFLOW_TASK_QUEUE'] = $queue;
+        $environment['DURABLE_WORKFLOW_NAMESPACE'] = 'default';
         $environment['DURABLE_WORKFLOW_TOKEN'] = $token ?? '';
         $environment['DURABLE_WORKFLOW_CAPACITY_CELL'] = 'one-activity';
         $worker = proc_open([PHP_BINARY, __DIR__.'/cross-kind-poll-worker.php'],

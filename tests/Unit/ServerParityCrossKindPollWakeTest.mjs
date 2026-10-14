@@ -10,7 +10,7 @@ function observation(kind) {
     outcome: 'observed', worker_exit: 0, kind, original_budget_seconds: 35, cross_kind_capability: true,
     sdk_version: profile.artifacts.sdk_php_version, sdk_source: profile.artifacts.sdk_php_source,
     adapter_sha256: profile.workload.adapter_sha256,
-    worker_id: 'original-worker', task_queue: 'original-queue', workflow_id: 'original-workflow', run_id: 'original-run',
+    worker_id: 'original-worker', task_queue: 'original-queue', namespace: 'default', workflow_id: 'original-workflow', run_id: 'original-run',
     case_started_at: 100, held_observed_at: 110, start_request_at: 111, start_accepted_at: 112, observed_at: 114,
     held_request_id: 2,
     polls: [
@@ -37,6 +37,7 @@ const corruptions = {
   'hint belongs to another queue': r => { r.polls[0].task_queue = 'foreign-queue'; },
   'hint belongs to another worker': r => { r.polls[0].worker_id = 'foreign-worker'; },
   'sweep changes namespace': r => { r.polls.at(-1).namespace_header = 'foreign'; },
+  'both polls use a foreign namespace': r => { for (const poll of r.polls) poll.namespace_header = 'foreign'; },
   'sweep waits again': r => { r.polls.at(-1).requested_seconds = 5; },
   'sweep grants no task': r => { r.polls.at(-1).task_id = null; },
   'hint ended before admission': r => { r.polls[0].responded_at = 110.5; },
