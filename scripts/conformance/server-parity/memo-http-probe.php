@@ -15,7 +15,7 @@ $spec = $fixture['memo_replay'];
 $directory = dirname($output);
 $deadline = microtime(true) + $spec['overall_budget_seconds'];
 $language = getenv('DW_PARITY_MEMO_WORKFLOW_LANGUAGE') ?: 'php';
-if (! in_array($language, ['php', 'python'], true)) {
+if (! in_array($language, ['php', 'python', 'rust'], true)) {
     throw new InvalidArgumentException('Unsupported memo workflow language');
 }
 $client = new Client($url, namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null);
@@ -61,13 +61,28 @@ try {
     $state['initial'] = $snapshot();
     foreach ($spec['phase_order'] as $phase) {
         $state['phase'] = $phase;
-        $command = $language === 'python' && $phase !== 'activity'
-            ? ['env', 'PYTHONPATH='.(getenv('DW_PARITY_CORRECTED_PYTHON_CURRENT_ROOT') ?: '/sdk-python-current'),
-                'python3', __DIR__.'/memo-python-worker.py']
-            : [PHP_BINARY, __DIR__.'/memo-worker.php'];
+        $command = $phase === 'activity' || $language === 'php'
+            ? [PHP_BINARY, __DIR__.'/memo-worker.php']
+            : match ($language) {
+                'python' => ['env', 'PYTHONPATH='.(getenv('DW_PARITY_CORRECTED_PYTHON_CURRENT_ROOT') ?: '/sdk-python-current'),
+                    'python3', __DIR__.'/memo-python-worker.py'],
+                'rust' => [getenv('DW_PARITY_CORRECTED_RUST_WORKER') ?: '/sdk-adapters/rust-worker', 'memo'],
+            };
         array_push($command, $actorUrl, $phase, $workflowId, $state['run_id'], $fixturePath);
+        if ($language === 'rust' && $phase !== 'activity') {
+            $identity = json_decode(file_get_contents(getenv('DW_PARITY_CORRECTED_RUST_IDENTITY')), true, flags: JSON_THROW_ON_ERROR);
+            $binaryHash = hash_file('sha256', getenv('DW_PARITY_CORRECTED_RUST_WORKER'));
+            if ($binaryHash !== $identity['binary_sha256']) {
+                throw new RuntimeException('Rust memo worker differs from its normal installed build identity');
+            }
+        }
         $actor = correctedMarkerPhase($command, $directory, $workflowId, $phase,
             min($deadline, microtime(true) + $spec['phase_budget_seconds']));
+        if ($language === 'rust' && $phase !== 'activity') {
+            $actor['sdk_binary_sha256'] = $binaryHash;
+            $actor['sdk_artifact'] = $identity['rust'];
+            $actor['sdk_cargo_lock_sha256'] = hash_file('sha256', getenv('DW_PARITY_CORRECTED_RUST_LOCK'));
+        }
         if ($language !== 'php') {
             $lines = file($journal, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
             $actor['receipts'] = [];

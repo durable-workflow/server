@@ -24,6 +24,7 @@ const controls = [
   ['second activity invocation', r => {(mode === 'http' ? r.phases.activity.actor : r.phases.activity).activity_invocations++;}],
   ['different actor source', r => {const a = mode === 'http' ? r.phases.original.actor : r.phases.original;
     if (mode === 'http' && a.language === 'python') a.sdk_loaded_sources['workflow.py'] = '0'.repeat(64);
+    else if (mode === 'http' && a.language === 'rust') a.sdk_artifact.source_commit = '0'.repeat(40);
     else a[mode === 'http' ? 'sdk_source' : 'workflow_source'] = '0'.repeat(40);}],
   ['event reorder', r => {const e = r.phases.replacement.events, a = e.length - 1, b = a - 1;[e[a],e[b]] = [e[b],e[a]];}],
   ['different activity identity', r => {r.phases.replacement.events.find(e => e.event_type === 'ActivityCompleted').payload.activity_execution_id = 'different';}],

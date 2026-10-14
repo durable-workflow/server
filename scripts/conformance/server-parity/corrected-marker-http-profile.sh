@@ -42,6 +42,7 @@ shared=(-v "$PWD:/source:ro" -v "$PWD/$evidence:/evidence" -w /source
   -e DW_PARITY_MEMO_WORKFLOW_LANGUAGE
   -e DW_PARITY_CORRECTED_RUST_WORKER=/sdk-adapters/rust-worker
   -e DW_PARITY_CORRECTED_RUST_LOCK=/sdk-adapters/Cargo.lock
+  -e DW_PARITY_CORRECTED_RUST_IDENTITY="/source/$adapters/identity.json"
   -e DW_PARITY_TOKEN -e DW_PARITY_RUNNER_REVISION="$(git rev-parse HEAD)")
 # Separate records preserve completed families when a later boundary fails.
 failed=0

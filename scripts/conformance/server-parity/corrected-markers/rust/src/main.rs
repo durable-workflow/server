@@ -11,6 +11,7 @@ use durable_workflow::{
 use serde_json::{json, Value};
 
 mod legacy_range;
+mod memo_author;
 
 const WORKFLOW: &str = "parity.v1.corrected_markers";
 const ACTIVITY: &str = "parity.v1.echo_activity";
@@ -35,6 +36,9 @@ fn activity_options(queue: &str, policy: &str) -> Result<ActivityOptions> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|value| value == "memo") {
+        return memo_author::run(&args[1..]).await;
+    }
     if args.len() != 8 {
         return Err(Error::WorkerLoop(
             "Expected URL, mode, workflow ID, run ID, case, range profile, retry policy, typed value JSON".into(),

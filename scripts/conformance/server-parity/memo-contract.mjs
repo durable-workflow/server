@@ -49,13 +49,21 @@ export function checkMemoRecord(record, fixture, artifacts, mode = 'http') {
     assert.equal(actor.activity_invocations, name === 'activity' ? 1 : 0);
     if (mode === 'http') {
       const language = name === 'activity' ? 'php' : record.workflow_language ?? 'php';
-      assert(['php', 'python'].includes(language));
+      assert(['php', 'python', 'rust'].includes(language));
       assert.equal(actor.language ?? 'php', language, 'exact selected normally installed actor language');
       if (actor.language === 'python') {
         assert.notEqual(name, 'activity', 'the real activity remains an independent PHP worker');
         assert.equal(actor.sdk_version, artifacts.sdk_python);
         assert.deepEqual(actor.sdk_loaded_sources, artifacts.published_sdk_artifacts.python.loaded_sources);
         assert.equal(actor.shutdown, 'public_stop');
+      } else if (actor.language === 'rust') {
+        assert.notEqual(name, 'activity');
+        assert.equal(actor.sdk_version, `durable-workflow-rust/${artifacts.sdk_rust}`);
+        assert.deepEqual(actor.sdk_artifact, artifacts.published_sdk_artifacts.rust);
+        assert.equal(actor.sdk_cargo_lock_sha256, artifacts.rust_consumer_cargo_lock_sha256);
+        assert.match(actor.sdk_binary_sha256, /^[a-f0-9]{64}$/);
+        assert.equal(actor.sdk_binary_sha256, original.actor.sdk_binary_sha256, 'same compiled cold reader');
+        assert.equal(actor.shutdown, 'public_deregister');
       } else {
         assert.equal(actor.language ?? 'php', 'php');
         assert.equal(actor.sdk_version, artifacts.sdk_php);

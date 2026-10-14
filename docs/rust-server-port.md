@@ -61,9 +61,15 @@ tasks, zero repairs and the same four surviving memo rows on both backends.
 The shared candidate selects this additional cross-language recipe in a
 separate prefix/output directory and compares it with the embedded PHP recipe.
 The existing recorder forwards unchanged bytes; SDKs and clock/history fields
-are not edited. Rust authors, external envelopes, inheritance, complete
-discovery and all-database acceptance remain incomplete; no published
-capability is claimed.
+are not edited. The normal registry Rust 3.5.4 author and cold reader also
+complete actual PHP/native SQLite originals around the same PHP activity,
+passing the identical 23 corruption controls and stopped SQL guards. The
+observer checks binary/build identity before worker execution and keeps the
+exact published crate/source/lock identity. Its reported SDK constant remains
+`durable-workflow-rust/3.5.4`; the reader checks that exact format. The shared
+candidate selects all three SDK author families in separate prefixes/output
+directories. External envelopes, inheritance, complete discovery and
+all-database acceptance remain incomplete; no published capability is claimed.
 Frozen references and independent #444/#445/#446 gates are unchanged. The
 broader [draft #448](https://github.com/durable-workflow/server/pull/448) retains
 those incomplete acceptance requirements.

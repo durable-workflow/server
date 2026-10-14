@@ -24,6 +24,18 @@ Python omits sticky metadata in these actual completions; the omission control
 removes a present captured field, preserving the strict complete-body equality
 check and the existing PHP sticky-metadata control. Frozen tuples are unchanged.
 
+`DW_PARITY_MEMO_RUST=1` adds the normal locked Rust 3.5.4 author and cold
+reader around the same PHP activity. The observer verifies the compiled binary
+against the normal build identity before each worker executes, then records
+the exact registry archive/source identity and lock hash. Its public
+`SDK_VERSION` constant is the exact string `durable-workflow-rust/3.5.4`.
+Actual PHP and native SQLite originals pass the same eight-event recipe,
+all 23 corruption controls and stopped SQL task/memo guards. This uses a new
+test adapter module, with no SDK code/version or native-source change. The
+shared candidate now runs PHP, Python and Rust author families separately and
+compares each with the embedded PHP counterpart; full hosted acceptance remains
+pending, along with external envelopes and continuation inheritance.
+
 The separate `memo-initial-activity-replay` case proves the initial storage/read
 foundation without issuing an upsert. It runs the same original through one
 actual activity and a cold workflow process, checking the authored start-history
