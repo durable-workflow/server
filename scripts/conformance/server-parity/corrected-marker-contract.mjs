@@ -1,0 +1,362 @@
+import assert from 'node:assert/strict';
+import {gunzipSync, inflateSync, brotliDecompressSync} from 'node:zlib';
+
+const sha = /^[a-f0-9]{64}$/;
+const commit = /^[a-f0-9]{40}$/;
+const timestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
+const typed = value => value === null ? {type: 'null', value: null}
+  : typeof value === 'boolean' ? {type: 'boolean', value}
+  : {type: 'int64', value: String(value)};
+
+export function checkCorrectedMarkerArtifacts(fixture, artifacts) {
+  if (!fixture.corrected_markers) return;
+  assert.equal(artifacts.schema, 'durable-workflow.server-port-artifacts/v1');
+  assert.match(artifacts.server.source_commit, commit);
+  assert.match(artifacts.server.images['linux/amd64'], /@sha256:[a-f0-9]{64}$/);
+  assert.match(artifacts.sdk_php_source_commit, commit);
+  assert.match(artifacts.sdk_composer_lock_sha256, sha);
+  assert.equal(artifacts.published_sdk_artifacts.php.version, artifacts.sdk_php);
+  assert.equal(artifacts.published_sdk_artifacts.php.source_commit, artifacts.sdk_php_source_commit);
+  assert.deepEqual(Object.keys(artifacts.published_sdk_artifacts.php.loaded_sources).sort(),
+    ['src/Client.php', 'src/Worker.php', 'src/Worker/WorkflowContext.php']);
+  for (const hash of Object.values(artifacts.published_sdk_artifacts.php.loaded_sources)) assert.match(hash, sha);
+  const rust = artifacts.published_sdk_artifacts.rust;
+  assert.equal(rust.version, artifacts.sdk_rust);
+  assert.match(rust.source_commit, commit);
+  assert.match(rust.archive_sha256, sha);
+  assert.match(artifacts.rust_consumer_cargo_lock_sha256, sha);
+  assert.match(artifacts.embedded_composer_lock_sha256, sha);
+  assert.match(artifacts.workflow_source_commit, commit);
+  assert.match(artifacts.embedded_original.source_commit, commit);
+  assert.match(artifacts.embedded_original.composer_lock_sha256, sha);
+  assert.equal(artifacts.embedded_original.shutdown, 'normal_cli_exit');
+  for (const sources of [artifacts.workflow_loaded_sources, artifacts.embedded_original.loaded_sources]) {
+    assert.equal(Object.keys(sources).length, 4);
+    for (const hash of Object.values(sources)) assert.match(hash, sha);
+  }
+  const spec = fixture.corrected_markers;
+  assert.equal(spec.phase_budget_seconds, 30);
+  assert.equal(spec.overall_budget_seconds, spec.python_clock ? 150 : spec.replay_refusal ? 120 : 90);
+  if (spec.python_clock) {
+    assert.equal(spec.python_clock.current_sdk, '2.5.13');
+    assert.deepEqual(spec.python_clock.phase_order, ['original', 'activity', 'clock_wait', 'second_activity', 'replacement']);
+    assert.equal(spec.python_clock.activity_count, 2);
+    assert.equal(spec.python_clock.clock_contract, 'fixed_workflow_start');
+    assert.equal(spec.python_clock.contract_receipt, 'https://github.com/durable-workflow/sdk-python/issues/146#issuecomment-6139915817');
+    assert.equal(artifacts.published_sdk_artifacts.python.version, spec.python_clock.current_sdk);
+    assert.match(artifacts.published_sdk_artifacts.python.source_commit, commit);
+    assert.match(artifacts.published_sdk_artifacts.python.archive_sha256, sha);
+    for (const hash of Object.values(artifacts.published_sdk_artifacts.python.loaded_sources)) assert.match(hash, sha);
+  }
+  if (spec.replay_refusal) assert.deepEqual(spec.replay_refusal, {
+    kind: 'retry_policy', changed_last_interval: 121,
+    failure_reason: 'activity_retry_policy_mismatch', failure_sequence: 2,
+    phase_order: ['original', 'activity', 'incompatible', 'replacement'], repair: 'same_selected_original_run',
+  });
+  assert(['php', 'rust', 'python'].includes(spec.producer));
+  assert(['empty', 'php_full'].includes(spec.retry_policy));
+  for (const marker of spec.markers) {
+    for (const name of ['sequence', 'version', 'min_supported', 'max_supported']) assert(Number.isSafeInteger(marker[name]));
+    assert(marker.min_supported <= marker.version && marker.version <= marker.max_supported);
+  }
+}
+
+export function checkCorrectedMarkerPackages(fixture, observation, artifacts) {
+  if (!fixture.corrected_markers) return;
+  checkCorrectedMarkerArtifacts(fixture, artifacts);
+  assert.equal(observation.sdk_php_source, artifacts.sdk_php_source_commit);
+  assert.equal(observation.sdk_composer_lock_sha256, artifacts.sdk_composer_lock_sha256);
+  assert.equal(observation.rust_consumer_cargo_lock_sha256, artifacts.rust_consumer_cargo_lock_sha256);
+  assert.deepEqual(observation.sdk_loaded_sources, artifacts.published_sdk_artifacts.php.loaded_sources);
+  if (observation.mode === 'embedded') {
+    const current = {version: artifacts.workflow, source_commit: artifacts.workflow_source_commit,
+      composer_lock_sha256: artifacts.embedded_composer_lock_sha256, loaded_sources: artifacts.workflow_loaded_sources};
+    for (const [name, phase] of Object.entries(observation.corrected_markers.phases)) {
+      const expected = name === 'original' && fixture.corrected_markers.case === 'genuine_one'
+        ? artifacts.embedded_original : current;
+      assert.equal(phase.workflow_package, expected.version);
+      assert.equal(phase.workflow_source, expected.source_commit);
+      assert.equal(phase.embedded_composer_lock_sha256, expected.composer_lock_sha256);
+      assert.deepEqual(phase.workflow_loaded_sources, expected.loaded_sources);
+    }
+    assert.equal(observation.workflow_package, current.version);
+    assert.equal(observation.workflow_source, current.source_commit);
+    assert.equal(observation.embedded_composer_lock_sha256, current.composer_lock_sha256);
+    assert.deepEqual(observation.workflow_loaded_sources, current.loaded_sources);
+    return;
+  }
+  for (const [name, phase] of Object.entries(observation.corrected_markers.phases)) {
+    const producer = name === 'original' ? fixture.corrected_markers.producer
+      : fixture.corrected_markers.python_clock ? (['activity', 'second_activity'].includes(name) ? 'php' : 'python_current') : 'rust';
+    const expected = producer === 'php' ? artifacts.sdk_php : producer === 'python'
+      ? artifacts.historical_python_producer.version : producer === 'python_current' ? artifacts.sdk_python : `durable-workflow-rust/${artifacts.sdk_rust}`;
+    assert.equal(phase.actor.sdk_version, expected);
+    if (producer === 'python_current') assert.deepEqual(phase.actor.loaded_sources, artifacts.published_sdk_artifacts.python.loaded_sources);
+  }
+}
+
+function wireRequests(fixture, observation, workflowId) {
+  return observation.corrected_markers.requests.map(wire => {
+    assert.equal(wire.transport_error, null);
+    if (wire.client_cancelled) {
+      const spec = fixture.corrected_markers;
+      assert.equal(spec.producer, 'python');
+      assert.equal(spec.original_shutdown, 'SIGKILL');
+      assert.equal(observation.corrected_markers.phases.original.actor.author_exit_code, -9);
+      assert.deepEqual(spec.cancelled_original_polls, ['workflow', 'activity', 'query']);
+      assert.equal(wire.method, 'POST');
+      assert(spec.cancelled_original_polls.some(kind => wire.path === `/api/worker/${kind}-tasks/poll`),
+        'only killed original no-result polls can be cancelled');
+      assert.equal(wire.status, 0);
+      assert.equal(wire.response_body, '');
+      assert.equal(wire.response_bytes_base64, '');
+      assert.equal(wire.request_body_complete, true);
+      assert.equal(wire.upstream_request_started, true, 'actual forwarded original poll');
+      const request = JSON.parse(wire.request_body);
+      assert.equal(request.worker_id, `${workflowId}:workflow:original`);
+      assert.equal(request.task_queue, `${workflowId}-workflow`);
+      assert.equal(request.timeout_seconds, 1);
+      return {...wire, request, response: null};
+    }
+    const decoders = {identity: value => value, gzip: gunzipSync, deflate: inflateSync, br: brotliDecompressSync};
+    assert(decoders[wire.response_encoding], 'known actual response encoding');
+    assert.equal(decoders[wire.response_encoding](Buffer.from(wire.response_bytes_base64, 'base64')).toString('utf8'),
+      wire.response_body, 'whole actual response bytes agree with decoded body');
+    return {...wire, request: wire.request_body ? JSON.parse(wire.request_body) : null,
+      response: wire.response_body ? JSON.parse(wire.response_body) : null};
+  });
+}
+
+export function checkCorrectedMarkers(fixture, observation, workflowId) {
+  const spec = fixture.corrected_markers;
+  const {phases} = observation.corrected_markers;
+  assert.equal(observation.workflow_id, workflowId);
+  assert.equal(observation.workflow_type, fixture.workflow_type);
+  assert.equal(observation.namespace, 'default');
+  assert.equal(observation.task_queue, `${workflowId}-workflow`);
+  assert.equal(observation.status, 'completed');
+  assert.equal(observation.payload_codec, 'avro');
+  assert.equal(observation.corrected_markers.overall_budget_seconds, spec.overall_budget_seconds);
+  assert.equal(observation.corrected_markers.phase_budget_seconds, spec.phase_budget_seconds);
+  assert.deepEqual(observation.typed_input, {type: 'list', value: [fixture.typed_value]});
+  const output = {type: 'map', value: {
+    projection: {type: 'list', value: spec.expected_decisions.map(typed)}, typed: fixture.typed_value,
+  }};
+  assert.deepEqual(observation.typed_output, output, 'exact public decoded result types');
+  const order = spec.replay_refusal?.phase_order ?? ['original', 'activity', 'replacement'];
+  assert.deepEqual(Object.keys(phases), order);
+  if (observation.mode === 'http' && spec.retire_killed_producer) {
+    assert.equal(spec.original_shutdown, 'SIGKILL');
+    assert.equal(phases.original.actor.author_exit_code, -9);
+    const retired = phases.original.actor.registration_retirement;
+    assert.equal(retired.worker_id, workflowId + ':workflow:original');
+    assert.equal(retired.outcome, 'deregistered');
+    assert(Number.isSafeInteger(retired.recovered_workflow_task_count));
+  }
+  assert.equal(new Set(Object.values(phases).map(phase => phase.actor.pid)).size, order.length, 'independent public worker processes');
+  for (const [name, phase] of Object.entries(phases)) {
+    assert(Number.isSafeInteger(phase.actor.pid) && phase.actor.pid > 0);
+    assert.equal(phase.actor.workflow_id, workflowId);
+    assert.equal(phase.actor.run_id, observation.run_id);
+    assert.equal(phase.actor.mode, name === 'activity' ? 'activity' : 'workflow');
+    assert.equal(phase.actor.case, spec.case);
+    assert.equal(phase.actor.retry_policy, name === 'incompatible' ? 'different' : spec.retry_policy);
+    assert.equal(phase.actor.range_profile, name === 'replacement' ? 'wider' : name === 'incompatible' ? 'policy-refusal' : 'original');
+    if (name !== 'activity') assert.deepEqual(phase.actor.decisions,
+      [name === 'original' ? spec.original_expected_decisions ?? spec.expected_decisions : spec.expected_decisions]);
+    else assert.deepEqual(phase.actor.decisions, []);
+    if (phase.actor.outcome) {
+      assert.deepEqual(phase.actor.outcome, {Ok: 1});
+      assert.deepEqual(phase.actor.deregistered, {Ok: true});
+    } else assert.equal(phase.actor.worker_finished, true);
+    assert.deepEqual(observation.events.slice(0, phase.events.length), phase.events, 'entire phase prefix and microclocks immutable');
+    for (const key of ['execution_deadline_at', 'run_deadline_at']) {
+      assert.equal(phase.execution[key], phases.original.execution[key], 'original durable deadline unchanged');
+    }
+  }
+  assert.equal(phases.original.status, 'waiting');
+  assert.equal(phases.activity.status, 'waiting');
+  assert.equal(phases.replacement.status, 'completed');
+  if (observation.mode === 'http' && spec.producer === 'python') {
+    assert.equal(phases.original.actor.author_exit_code, -9, 'actual historical author SIGKILL');
+    assert.notEqual(phases.original.actor.pid, phases.original.actor.observer_pid);
+  }
+  const expectedTypes = ['StartAccepted', 'WorkflowStarted', ...spec.markers.map(() => 'VersionMarkerRecorded'),
+    'ActivityScheduled', 'ActivityStarted', 'ActivityCompleted', ...(spec.replay_refusal ? ['RepairRequested'] : []), 'WorkflowCompleted'];
+  assert.deepEqual(observation.events.map(event => event.event_type), expectedTypes, 'complete event inventory');
+  assert.deepEqual(phases.original.events.map(event => event.event_type), expectedTypes.slice(0, 3 + spec.markers.length));
+  assert.deepEqual(phases.activity.events.map(event => event.event_type), expectedTypes.slice(0, spec.replay_refusal ? -2 : -1));
+  const start = observation.events[1].payload;
+  const accepted = observation.events[0].payload;
+  for (const payload of [accepted, start]) {
+    assert.equal(payload.workflow_instance_id, workflowId);
+    assert.equal(payload.workflow_run_id, observation.run_id);
+    assert.equal(payload.workflow_type, fixture.workflow_type);
+    assert(typeof payload.workflow_command_id === 'string' && payload.workflow_command_id.length > 0);
+  }
+  assert.equal(accepted.workflow_command_id, start.workflow_command_id);
+  assert.equal(start.execution_timeout_seconds, 1200);
+  assert.equal(start.run_timeout_seconds, 1200);
+  for (const key of ['execution_deadline_at', 'run_deadline_at']) {
+    assert(Math.abs(Date.parse(start[key]) - Date.parse(observation.execution.started_at) - 1200000) < 1000);
+  }
+  for (const [i, event] of observation.events.entries()) {
+    assert.equal(event.sequence, i + 1);
+    assert.match(event.timestamp, timestamp, 'original microsecond timestamp retained');
+    if (i) assert(event.timestamp >= observation.events[i - 1].timestamp);
+  }
+  const markers = observation.events.filter(event => event.event_type === 'VersionMarkerRecorded');
+  assert.equal(markers.length, spec.markers.length);
+  for (const [i, event] of markers.entries()) {
+    const {task, ...fields} = event.payload;
+    assert.deepEqual(fields, {change_id: spec.change_id, ...spec.markers[i]}, 'all marker fields and stored bounds');
+    assert.equal(event.sequence, i + 3, 'physical original marker position');
+    assert.equal(task.status, 'leased');
+    assert.equal(task.type, 'workflow');
+  }
+  const scheduled = observation.events.find(event => event.event_type === 'ActivityScheduled');
+  const activity = scheduled.payload.activity;
+  assert.equal(scheduled.payload.sequence, spec.markers.length + 1);
+  assert.equal(activity.sequence, spec.markers.length + 1);
+  assert.equal(activity.type, 'parity.v1.echo_activity');
+  assert.equal(activity.queue, `${workflowId}-activity`);
+  assert.equal(activity.idempotency_key, activity.id);
+  const retry = {snapshot_version: 1, max_attempts: 1,
+    backoff_seconds: spec.retry_policy === 'empty' ? [] : [1, 2, 5, 10, 15, 30, 60, 120],
+    start_to_close_timeout: 120, schedule_to_start_timeout: null, schedule_to_close_timeout: 600,
+    heartbeat_timeout: null, non_retryable_error_types: []};
+  assert.deepEqual(activity.retry_policy, retry, 'entire stored retry policy; no unused-entry trimming');
+  assert.deepEqual(scheduled.typed_decoded.activity_arguments, {type: 'list', value: [fixture.typed_value]});
+  const completed = observation.events.find(event => event.event_type === 'ActivityCompleted');
+  assert.deepEqual(completed.typed_decoded.result, fixture.typed_value);
+  assert.deepEqual(observation.events.at(-1).typed_decoded.output, output);
+  if (spec.replay_refusal) {
+    assert.equal(phases.incompatible.status, 'waiting');
+    assert.deepEqual(phases.incompatible.events, phases.activity.events, 'refusal changes no history');
+    const repaired = observation.events.find(event => event.event_type === 'RepairRequested').payload;
+    assert.equal(repaired.task_type, 'workflow');
+    assert.equal(repaired.task.status, 'ready');
+    assert.equal(repaired.task.repair_count, 1);
+    assert.equal(repaired.task_id, repaired.task.id);
+    assert.equal(repaired.command.type, 'repair');
+    assert.equal(repaired.command.resolved_run_id, observation.run_id);
+    const completion = observation.events.at(-1).payload.task;
+    assert.equal(completion.id, repaired.task_id, 'complete the same repaired logical task');
+    assert.equal(completion.attempt_count, 2);
+    assert.equal(completion.repair_count, 1);
+    if (observation.mode === 'http') {
+      assert.equal(phases.incompatible.debug_status, 200);
+      assert.equal(phases.incompatible.debug.execution.liveness_state, 'workflow_replay_blocked');
+      assert.equal(phases.incompatible.debug.latest_workflow_task_failure.replay_blocked, true);
+      const diagnostic = phases.incompatible.debug.latest_workflow_task_failure;
+      assert.equal(diagnostic.type, 'RustWorkflowTaskFailure');
+      assert.equal(diagnostic.message, `non-deterministic workflow replay (${spec.replay_refusal.failure_reason}) at sequence Some(${spec.replay_refusal.failure_sequence}): recorded activity retry policy differs from the current workflow command`);
+      assert.equal(Object.hasOwn(diagnostic, 'reason'), false, 'published Rust diagnostic has no structured reason');
+      assert.equal(Object.hasOwn(diagnostic, 'sequence'), false, 'published Rust diagnostic has no structured sequence');
+    } else {
+      const blocked = phases.incompatible.tasks.filter(task => task.payload?.replay_blocked === true);
+      assert.equal(blocked.length, 1);
+      assert.equal(blocked[0].status, 'failed');
+      assert.equal(blocked[0].lease_expires_at, null);
+      assert.equal(blocked[0].payload.replay_blocked_reason, spec.replay_refusal.failure_reason);
+      assert.equal(blocked[0].id, repaired.task_id);
+      assert.equal(phases.replacement.repair.accepted, true);
+      assert.equal(phases.replacement.repair.resolved_run_id, observation.run_id);
+    }
+  }
+  if (observation.mode === 'embedded') {
+    assert.deepEqual(observation.corrected_markers.requests, [], 'embedded has no simulated HTTP exchanges');
+    const positions = spec.embedded_clock_positions;
+    assert(positions, 'explicit original and replacement clock positions');
+    for (const name of ['original', 'replacement']) {
+      assert.deepEqual(phases[name].clocks, [positions[name].map(position => markers[position - 1].timestamp)],
+        'public embedded clock follows actual marker positions and cached reuse');
+    }
+    assert.deepEqual(phases.activity.clocks, []);
+    assert.equal(phases.original.activity_invocations, 0);
+    assert.equal(phases.activity.activity_invocations, 1);
+    assert.equal(phases.replacement.activity_invocations, 0);
+    const tasks = phases.replacement.tasks;
+    assert.deepEqual(tasks.map(task => task.task_type).sort(), ['activity', 'workflow', 'workflow']);
+    assert.equal(new Set(tasks.map(task => task.id)).size, 3);
+    for (const task of tasks) {
+      assert.equal(task.workflow_run_id, observation.run_id);
+      assert.equal(task.status, 'completed');
+      assert.equal(task.repair_count, spec.replay_refusal && task.id === observation.events.at(-1).payload.task.id ? 1 : 0);
+    }
+  }
+  if (observation.mode === 'http') {
+    const requests = wireRequests(fixture, observation, workflowId);
+    const outcomes = requests.filter(item => item.method === 'POST' && /^\/api\/worker\/workflow-tasks\/[^/]+\/complete$/.test(item.path));
+    assert.equal(outcomes.length, 2, 'original admission and independent cold completion only');
+    for (const item of outcomes) {
+      assert.equal(item.status, 200);
+      assert.equal(item.response.recorded, true);
+    }
+    assert.deepEqual(outcomes[0].request.commands.map(command => command.type),
+      [...spec.markers.map(() => 'record_version_marker'), 'schedule_activity']);
+    assert.deepEqual(outcomes[1].request.commands.map(command => command.type), ['complete_workflow']);
+    for (const [i, marker] of markers.entries()) {
+      const {sequence, ...expected} = spec.markers[i];
+      assert.deepEqual(outcomes[0].request.commands[i], {type: 'record_version_marker', change_id: spec.change_id, ...expected});
+      assert.equal(marker.payload.task.id, outcomes[0].path.split('/').at(-2));
+      assert.equal(marker.payload.task.lease_owner, outcomes[0].request.lease_owner);
+    }
+    const activityOutcomes = requests.filter(item => item.method === 'POST' && /^\/api\/worker\/activity-tasks\/[^/]+\/complete$/.test(item.path));
+    assert.equal(activityOutcomes.length, 1);
+    assert.equal(activityOutcomes[0].status, 200);
+    assert.equal(activityOutcomes[0].response.recorded, true);
+    const deliveries = requests.filter(item => item.path === '/api/worker/workflow-tasks/poll' && item.response?.task);
+    if (spec.retire_killed_producer) {
+      const retired = requests.filter(item => item.method === 'DELETE' && item.path ===
+        '/api/worker/registrations/' + encodeURIComponent(workflowId + ':workflow:original'));
+      assert.equal(retired.length, 1);
+      assert.equal(retired[0].status, 200);
+      assert.deepEqual(retired[0].response, phases.original.actor.registration_retirement);
+      assert(requests.indexOf(retired[0]) < requests.indexOf(activityOutcomes[0]),
+        'Retire killed producer before original activity completion can wake its pending poll');
+    }
+    assert.equal(deliveries.length, spec.replay_refusal ? 3 : 2, 'all actual public workflow deliveries');
+    if (spec.replay_refusal) {
+      const failures = requests.filter(item => item.method === 'POST' && /^\/api\/worker\/workflow-tasks\/[^/]+\/fail$/.test(item.path));
+      assert.equal(failures.length, 1);
+      assert.equal(failures[0].status, 200);
+      assert.equal(failures[0].response.recorded, true);
+      assert.equal(failures[0].response.next_task_id, null);
+      assert.equal(failures[0].request.workflow_task_attempt, 1);
+      assert.deepEqual(failures[0].request.failure, {
+        type: 'RustWorkflowTaskFailure',
+        message: `non-deterministic workflow replay (${spec.replay_refusal.failure_reason}) at sequence Some(${spec.replay_refusal.failure_sequence}): recorded activity retry policy differs from the current workflow command`,
+      }, 'exact published Rust failure format retains reason and sequence in its message');
+      assert.equal(failures[0].path.split('/').at(-2), observation.events.at(-1).payload.task.id);
+      assert.notEqual(failures[0].request.lease_owner, outcomes[1].request.lease_owner);
+      assert.equal(outcomes[1].request.workflow_task_attempt, 2);
+      const repairs = requests.filter(item => item.method === 'POST' && item.path.endsWith('/repair'));
+      assert.equal(repairs.length, 1);
+      assert.equal(repairs[0].path, `/api/workflows/${workflowId}/runs/${observation.run_id}/repair`);
+      assert.equal(repairs[0].status, 200);
+    }
+    const cold = deliveries[1].response.task.history_events;
+    assert.deepEqual(cold.map(event => event.event_type), phases.activity.events.map(event => event.event_type));
+    for (const [i, event] of cold.entries()) {
+      assert.equal(event.recorded_at, phases.activity.events[i].timestamp);
+      assert.equal(event.sequence, phases.activity.events[i].sequence);
+      assert.deepEqual(event.payload, phases.activity.events[i].payload, 'whole raw cold delivery prefix');
+    }
+    if (spec.replay_refusal) {
+      const restored = deliveries.at(-1).response.task.history_events;
+      const expected = observation.events.slice(0, -1);
+      assert.deepEqual(restored.map(event => event.event_type), expected.map(event => event.event_type));
+      for (const [i, event] of restored.entries()) {
+        assert.equal(event.recorded_at, expected[i].timestamp);
+        assert.equal(event.sequence, expected[i].sequence);
+        assert.deepEqual(event.payload, expected[i].payload, 'corrected cold replay includes original prefix and explicit repair');
+      }
+    }
+  }
+  return {fixture_id: fixture.id, workflow_id: workflowId, run_id: '@run:1', workflow_type: fixture.workflow_type,
+    namespace: 'default', status: 'completed', input: observation.typed_input, output,
+    markers: spec.markers, retry_policy: retry, events: expectedTypes,
+    cold_processes: order.length, original_pending_activity: true,
+    ...(spec.replay_refusal ? {replay_refusal: spec.replay_refusal} : {})};
+}

@@ -15,6 +15,35 @@ async fn finish_activity(app: &Router, activity: &Value) {
 }
 
 #[tokio::test]
+async fn public_history_keeps_six_fractional_digits_and_original_microseconds() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "clock-worker", json!(["echo"]), json!([])).await;
+    let started = start(&app, "history-clock-precision").await;
+    database.execute("UPDATE workflow_history_events SET recorded_at='2020-01-02 03:04:05.123000' WHERE sequence=1").await;
+    database.execute("UPDATE workflow_history_events SET recorded_at='2020-01-02 03:04:05.123456' WHERE sequence=2").await;
+    let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    assert_eq!(history[0]["timestamp"], "2020-01-02T03:04:05.123000Z");
+    assert_eq!(history[1]["timestamp"], "2020-01-02T03:04:05.123456Z");
+    let task = poll(&app, "clock-worker", "workflow").await;
+    assert_eq!(
+        task["history_events"][0]["recorded_at"],
+        history[0]["timestamp"]
+    );
+    assert_eq!(
+        task["history_events"][1]["recorded_at"],
+        history[1]["timestamp"]
+    );
+    assert_eq!(
+        run_history(&app, &started["workflow_id"], &started["run_id"]).await,
+        history
+    );
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
 async fn markers_survive_restart_and_advance_later_authored_turns_once() {
     let database = TestDatabase::new().await;
     let first = database.open().await.unwrap();
@@ -51,6 +80,12 @@ async fn markers_survive_restart_and_advance_later_authored_turns_once() {
     );
     assert_eq!(prefix[3]["payload"]["sequence"], 2);
     assert_eq!(prefix[3]["event_type"], "ActivityScheduled");
+    assert!(
+        prefix[3]["payload"]["activity"]
+            .get("retry_policy")
+            .is_none(),
+        "Legacy absence is preserved in the original history"
+    );
     assert_eq!(
         prefix[3]["payload"]["task"], original_task,
         "scheduled activity retains its original workflow task and lease owner"
