@@ -10,6 +10,7 @@ on:
       - tests/Fixtures/ServerParityBaselines/**
       - tests/Fixtures/ServerParityNormalization/**
       - tests/Unit/ServerParityRunnerTest.mjs
+      - tests/Unit/ServerParityArtifactSummaryTest.mjs
       - tests/Unit/ServerParityCodecDeadlineLoadTest.mjs
       - tests/Unit/ServerParityCooperativeContractTest.mjs
       - tests/Unit/ServerParityChildCancellationContractTest.mjs
@@ -45,6 +46,7 @@ on:
       - tests/Fixtures/ServerParityBaselines/**
       - tests/Fixtures/ServerParityNormalization/**
       - tests/Unit/ServerParityRunnerTest.mjs
+      - tests/Unit/ServerParityArtifactSummaryTest.mjs
       - tests/Unit/ServerParityCodecDeadlineLoadTest.mjs
       - tests/Unit/ServerParityCooperativeContractTest.mjs
       - tests/Unit/ServerParityChildCancellationContractTest.mjs
@@ -135,7 +137,7 @@ jobs:
         with:
           name: corrected-marker-adapters
           path: corrected-marker-adapters
-          retention-days: 90
+          retention-days: 1
           if-no-files-found: error
       - name: Build one bounded optimized native artifact for deadline health
         run: bash scripts/conformance/server-parity/codec-operations-build.sh codec-native-build
@@ -147,7 +149,7 @@ jobs:
             codec-native-build/server
             codec-native-build/build.json
             codec-native-build/SHA256SUMS
-          retention-days: 7
+          retention-days: 1
           if-no-files-found: error
       - name: Retire the owned optimized build container
         if: always()
@@ -159,21 +161,21 @@ jobs:
         with:
           name: sdk-direction-adapters
           path: sdk-direction-adapters
-          retention-days: 90
+          retention-days: 1
           if-no-files-found: error
       - name: Share genuine legacy-marker adapters without build trees or caches
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: legacy-marker-adapters
           path: legacy-marker-adapters
-          retention-days: 90
+          retention-days: 1
           if-no-files-found: error
       - name: Share thin adapters without build trees or caches
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: published-sdk-patch-adapters
           path: published-sdk-adapters
-          retention-days: 90
+          retention-days: 1
           if-no-files-found: error
 
       - name: Keep small failed SDK setup diagnostics
@@ -191,7 +193,7 @@ jobs:
             corrected-marker-adapters/*-build.txt
             corrected-marker-adapters/*-install.txt
             codec-native-build/build.txt
-          retention-days: 7
+          retention-days: 1
           if-no-files-found: ignore
 
   codec-deadline-health:
@@ -264,7 +266,7 @@ jobs:
             codec-evidence/server-ready-errors.txt
             codec-evidence/profile.txt
             codec-evidence/failed.json
-          retention-days: 7
+          retention-days: 1
           if-no-files-found: warn
 
   mysql-execution:
@@ -710,13 +712,25 @@ jobs:
           done
           docker rm -f "$RESOURCE_SCOPE-php" "$RESOURCE_SCOPE-php-maintenance" "$RESOURCE_SCOPE-native-a" "$RESOURCE_SCOPE-native-b" "$RESOURCE_SCOPE-recovered" "$RESOURCE_SCOPE-db" || true
           docker network rm "$RESOURCE_SCOPE" || true
-      - name: Retain MySQL execution evidence
+      - name: Summarize MySQL execution evidence
+        if: always()
+        env:
+          PARITY_JOB_OUTCOME: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          mkdir -p parity-evidence parity-summary
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
+          docker run --rm --user="$(id -u):$(id -g)" --network=none --cpus=1 --memory=256m --memory-swap=256m \
+            --entrypoint node -e PARITY_JOB_OUTCOME -e GITHUB_SHA \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence:ro" -v "$PWD/parity-summary:/summary" \
+            "$image" /source/scripts/conformance/server-parity/artifact-summary.mjs /evidence /summary
+      - name: Retain MySQL execution summary
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: mysql-execution-${{ matrix.label }}
-          path: parity-evidence
-          retention-days: 90
+          path: parity-summary
+          retention-days: 1
 
   postgres-storage:
     needs: published-sdk-adapters
@@ -1164,13 +1178,25 @@ jobs:
           done
           docker rm -f "$RESOURCE_SCOPE-php" "$RESOURCE_SCOPE-php-maintenance" "$RESOURCE_SCOPE-native-a" "$RESOURCE_SCOPE-native-b" "$RESOURCE_SCOPE-recovered" "$RESOURCE_SCOPE-db" || true
           docker network rm "$RESOURCE_SCOPE" || true
-      - name: Retain PostgreSQL storage evidence
+      - name: Summarize PostgreSQL storage evidence
+        if: always()
+        env:
+          PARITY_JOB_OUTCOME: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          mkdir -p parity-evidence parity-summary
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
+          docker run --rm --user="$(id -u):$(id -g)" --network=none --cpus=1 --memory=256m --memory-swap=256m \
+            --entrypoint node -e PARITY_JOB_OUTCOME -e GITHUB_SHA \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence:ro" -v "$PWD/parity-summary:/summary" \
+            "$image" /source/scripts/conformance/server-parity/artifact-summary.mjs /evidence /summary
+      - name: Retain PostgreSQL storage summary
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: postgres-storage-${{ matrix.label }}
-          path: parity-evidence
-          retention-days: 90
+          path: parity-summary
+          retention-days: 1
 
   execution-and-codec:
     needs: published-sdk-adapters
@@ -1243,6 +1269,9 @@ jobs:
           docker run --rm --user=1000:1000 --cpus=1 --memory=256m --memory-swap=256m \
             --network=none --entrypoint node -v "$PWD:/source:ro" -w /source \
             "$image" --test tests/Unit/ServerParityCodecDeadlineLoadTest.mjs > parity-evidence/codec-load-tests.txt
+          docker run --rm --user=1000:1000 --cpus=1 --memory=256m --memory-swap=256m \
+            --network=none --entrypoint node -v "$PWD:/source:ro" -w /source \
+            "$image" --test tests/Unit/ServerParityArtifactSummaryTest.mjs > parity-evidence/artifact-summary-tests.txt
           docker network create "$RESOURCE_SCOPE"
           docker run -d --name "$RESOURCE_SCOPE-rust" --network "$RESOURCE_SCOPE" --network-alias=parity-rust \
             --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
@@ -1501,11 +1530,23 @@ jobs:
           docker rm -f "$RESOURCE_SCOPE-rust" || true
           docker rm -f "$RESOURCE_SCOPE-recovered" || true
           docker network rm "$RESOURCE_SCOPE" || true
-      - name: Retain fixture evidence
+      - name: Summarize fixture evidence
+        if: always()
+        env:
+          PARITY_JOB_OUTCOME: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          mkdir -p parity-evidence parity-summary
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
+          docker run --rm --user="$(id -u):$(id -g)" --network=none --cpus=1 --memory=256m --memory-swap=256m \
+            --entrypoint node -e PARITY_JOB_OUTCOME -e GITHUB_SHA \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence:ro" -v "$PWD/parity-summary:/summary" \
+            "$image" /source/scripts/conformance/server-parity/artifact-summary.mjs /evidence /summary
+      - name: Retain fixture summary
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: shared-server-fixtures
-          path: parity-evidence
-          retention-days: 90
+          path: parity-summary
+          retention-days: 1
           if-no-files-found: error
