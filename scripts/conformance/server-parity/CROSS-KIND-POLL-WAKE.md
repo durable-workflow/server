@@ -48,10 +48,11 @@ node scripts/conformance/server-parity/cross-kind-poll-check.mjs \
 
 Observer exit 0 proves completed observations, not wake acceptance. The separate
 reader requires the actual null-task hint, same worker/queue/namespace, a
-zero-timeout workflow sweep, exact output/history and the original 35-second
+zero-timeout first-attempt claim of the original workflow/run, exact output/history and the original 35-second
 budget. Constructed reader controls refuse ordinary timeout completion and
-other malformed observations. The reusable observer and native correction
-still need fresh real qualification. They are not selected in default fixtures.
+other malformed observations. Current qualification is recorded in
+[PR #455](https://github.com/durable-workflow/server/pull/455).
+These controls are not selected in default fixtures.
 
 Native qualification must cover those two cases, opt-in refusal boundaries,
 namespace/queue isolation, ordinary same-kind claims and all database families.
@@ -69,6 +70,10 @@ polls keep their original behavior. A changed registration incarnation or
 removed opt-in disables hints for that held request. No lease, task status,
 receipt, history or deadline is mutated by these observations.
 
+MySQL task candidates keep the indexed scope predicate and then compare exact
+routing bytes. The preserved collation otherwise treats `test`, `Test` and
+`tést` as equal. Query metadata uses binary namespace/queue comparisons.
+
 Task observations keep at most 100 IDs; query observations keep at most 65.
 The query projection reads metadata inside the database and does not transfer
 history snapshots to the HTTP executor. These are conservative availability
@@ -78,10 +83,11 @@ held poll. The hint never promises eligibility or a remaining claimable task.
 Five focused native HTTP test groups cover all six task-kind directions,
 same-kind claim precedence, default 1.19 and named-namespace 1.20 polls,
 independent pools, exact queue/namespace isolation, absent opt-in, replacement,
-preexisting work and zero timeout. They pass on SQLite. Against unchanged
+preexisting work and zero timeout. They pass locally on SQLite, PostgreSQL 17
+and MySQL 8.4. Against unchanged
 native tree `696130d7`, the three positive groups fail with ordinary timeouts;
-the two refusal/zero-timeout groups pass. Cross-database and installed-worker
-qualification of the new source remain pending.
+the two refusal/zero-timeout groups pass. The complete six-cell matrix and
+installed-worker coverage of other task-kind directions remain acceptance gates.
 
 This is a service-mode worker HTTP contract. Embedded execution has no such
 worker HTTP wait and is inapplicable to this specific observation. It retains
