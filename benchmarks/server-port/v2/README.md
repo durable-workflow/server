@@ -99,3 +99,13 @@ time and on-disk observations, not an application speed or peak-memory result.
 All setup containers, databases, dependencies and compiler state are removed
 after inspection. Full measured windows, complete resource sampling, repeats,
 idle/API observations and drift remain unqualified.
+
+The first full PHP observation on profile 2.0.0 at `6ad7c2df` completes 737
+workflows and activities, including
+setup and warmup, with 2,211 completed first-attempt tasks, zero repairs and failed
+jobs, and clean SDK deregistration. Two 24-idle repetitions time out a five-second
+health probe. The scheduler shell also requires the 30-second stop timeout and
+exits 137 without OOM. Those observations remain unsuccessful. Explicit shell
+signal handling in profile 2.0.1 is prepared for a separate fresh cleanup check; it does not
+change the measured source or qualify a performance gain. Matching native
+observations and the corrected recipe's actual teardown remain pending.

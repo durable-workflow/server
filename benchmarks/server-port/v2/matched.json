@@ -1,10 +1,10 @@
 {
   "schema": "durable-workflow.server-port-performance-profile/v1",
-  "profile_version": "2.0.0",
+  "profile_version": "2.0.1",
   "profile_id": "server-port-development-matched-amd64-v2",
   "evidence_class": "development_comparison",
   "publishable_capacity_claim": false,
-  "status": "functional_setup_qualified_measurement_pending",
+  "status": "cleanup_recipe_correction_unqualified",
   "artifacts": {
     "php_server": "durableworkflow/server@sha256:944c384c9875fd82637dd2bdea74dcb881cf983a57599ba0e492bec706296549",
     "php_server_version": "2.6.2",
