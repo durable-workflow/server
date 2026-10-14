@@ -52,8 +52,18 @@ receipt while the parent waits returns 200/already_completed/recorded=false;
 a conflicting receipt returns 409/conflicting_completion without mutation.
 All 23 corrupt-reader controls refuse. Protocol 1.13 refusal preserves the
 original task, while the capable 1.14 control upserts and completes it.
-Other SDK authors, external envelopes, inheritance, complete discovery and
-all-database acceptance remain incomplete; no published capability is claimed.
+The normal installed Python 2.5.13 author and cold successor now complete the
+same original around an independent PHP activity on frozen PHP 2.6.2 and the
+hosted native candidate. Both preserve the eight events, typed memos, original
+deadlines and complete captured first-completion body; each passes all 23
+corruption controls. Stopped read-only SQL shows three completed first-attempt
+tasks, zero repairs and the same four surviving memo rows on both backends.
+The shared candidate selects this additional cross-language recipe in a
+separate prefix/output directory and compares it with the embedded PHP recipe.
+The existing recorder forwards unchanged bytes; SDKs and clock/history fields
+are not edited. Rust authors, external envelopes, inheritance, complete
+discovery and all-database acceptance remain incomplete; no published
+capability is claimed.
 Frozen references and independent #444/#445/#446 gates are unchanged. The
 broader [draft #448](https://github.com/durable-workflow/server/pull/448) retains
 those incomplete acceptance requirements.

@@ -13,6 +13,17 @@ use the same selection without changing any frozen package identity. Local
 native SQLite author/activity/cold-successor acceptance passes; the new
 all-database comparison remains pending.
 
+`DW_PARITY_MEMO_PYTHON=1` adds a separate Python 2.5.13 author and cold
+successor around the normal PHP activity worker. It uses the same committed
+recipe, an independent workflow ID prefix and output directory, the existing
+byte-preserving HTTP recorder, exact package source hashes and all completion
+metadata. The embedded counterpart remains the published PHP recipe. Local
+PHP and native SQLite originals pass all 23 corruption controls and have one
+activity, two memo events, three first-attempt completed tasks and zero repairs.
+Python omits sticky metadata in these actual completions; the omission control
+removes a present captured field, preserving the strict complete-body equality
+check and the existing PHP sticky-metadata control. Frozen tuples are unchanged.
+
 The separate `memo-initial-activity-replay` case proves the initial storage/read
 foundation without issuing an upsert. It runs the same original through one
 actual activity and a cold workflow process, checking the authored start-history

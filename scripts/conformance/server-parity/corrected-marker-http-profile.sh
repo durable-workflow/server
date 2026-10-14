@@ -39,6 +39,7 @@ shared=(-v "$PWD:/source:ro" -v "$PWD/$evidence:/evidence" -w /source
   -e PYTHONPATH=/sdk-python250 -e DW_PARITY_SDK_AUTOLOAD=/sdk-php/vendor/autoload.php
   -e DW_PARITY_CORRECTED_RANGE_PHP_ROOT=/sdk-php-range
   -e DW_PARITY_CORRECTED_PYTHON_CURRENT_ROOT=/sdk-python-current
+  -e DW_PARITY_MEMO_WORKFLOW_LANGUAGE
   -e DW_PARITY_CORRECTED_RUST_WORKER=/sdk-adapters/rust-worker
   -e DW_PARITY_CORRECTED_RUST_LOCK=/sdk-adapters/Cargo.lock
   -e DW_PARITY_TOKEN -e DW_PARITY_RUNNER_REVISION="$(git rev-parse HEAD)")

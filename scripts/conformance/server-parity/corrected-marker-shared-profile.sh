@@ -5,6 +5,10 @@ backend="$1"
 native_url=${2:-}
 export DW_PARITY_MEMO_FIXTURE_ID=${DW_PARITY_MEMO_FIXTURE_ID:-memo-initial-activity-replay}
 case "$DW_PARITY_MEMO_FIXTURE_ID" in memo-initial-activity-replay|memo-activity-replay) ;; *) exit 2 ;; esac
+case "${DW_PARITY_MEMO_PYTHON:-0}" in 0|1) ;; *) exit 2 ;; esac
+if test "${DW_PARITY_MEMO_PYTHON:-0}" = 1; then
+  test "$DW_PARITY_MEMO_FIXTURE_ID" = memo-activity-replay
+fi
 test -n "${RESOURCE_SCOPE:?Set the owning isolated network}"
 profile=tests/Fixtures/ServerParityProfiles/corrected-markers
 export DW_PARITY_CORRECTED_ARTIFACTS=${DW_PARITY_CORRECTED_ARTIFACTS:-$profile/artifacts-workflow-2.5.16.json}
@@ -63,12 +67,23 @@ for target in php rust; do
   if test "$target" = php; then url=http://parity-corrected-php:8080; fi
   bash scripts/conformance/server-parity/corrected-marker-http-profile.sh "$target" "$url" retries
   bash scripts/conformance/server-parity/corrected-marker-http-profile.sh "$target" "$url" memos
+  if test "${DW_PARITY_MEMO_PYTHON:-0}" = 1; then
+    DW_PARITY_MEMO_WORKFLOW_LANGUAGE=python \
+      DW_PARITY_CORRECTED_PREFIX="$DW_PARITY_CORRECTED_PREFIX-python" \
+      DW_PARITY_CORRECTED_EVIDENCE="$evidence/python-memos" \
+      bash scripts/conformance/server-parity/corrected-marker-http-profile.sh "$target" "$url" memos
+  fi
 done
 docker stop --time 5 "$RESOURCE_SCOPE-corrected-php" "$RESOURCE_SCOPE-corrected-retries-maintenance"
 bash scripts/conformance/server-parity/corrected-marker-embedded-profile.sh "$backend" portable
 bash scripts/conformance/server-parity/corrected-marker-embedded-profile.sh "$backend" deadlines
 bash scripts/conformance/server-parity/corrected-marker-embedded-profile.sh "$backend" retries
 bash scripts/conformance/server-parity/corrected-marker-embedded-profile.sh "$backend" memos
+if test "${DW_PARITY_MEMO_PYTHON:-0}" = 1; then
+  DW_PARITY_CORRECTED_PREFIX="$DW_PARITY_CORRECTED_PREFIX-python" \
+    DW_PARITY_CORRECTED_EVIDENCE="$evidence/python-memos" \
+    bash scripts/conformance/server-parity/corrected-marker-embedded-profile.sh "$backend" memos
+fi
 fixtures=()
 for id in fresh-numeric fresh-zero deprecation-first genuine-version-one php-full-retry php-full-retry-refusal rust-range-completed rust-range-timer-pending; do fixtures+=(--fixture "$profile/$id.json"); done
 shared=(-v "$PWD:/source:ro" -v "$PWD/$evidence:/evidence" -w /source)
@@ -77,6 +92,14 @@ docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --net
 docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --network none --entrypoint node "${shared[@]}" "$image" scripts/conformance/server-parity.mjs compare /evidence/php/deadlines-record.json /evidence/rust/deadlines-record.json /evidence/embedded/deadlines-record.json --artifacts "$artifacts" --fixture tests/Fixtures/ServerParityPending/activity-deadline-authority.json > "$evidence/deadlines-comparison.json"
 retry_fixtures=()
 docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --network none --entrypoint node "${shared[@]}" "$image" scripts/conformance/server-parity.mjs compare /evidence/php/memos-record.json /evidence/rust/memos-record.json /evidence/embedded/memos-record.json --artifacts "$artifacts" --fixture "tests/Fixtures/ServerParityPending/$DW_PARITY_MEMO_FIXTURE_ID.json" > "$evidence/memos-comparison.json"
+if test "${DW_PARITY_MEMO_PYTHON:-0}" = 1; then
+  docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --network none --entrypoint node "${shared[@]}" "$image" scripts/conformance/server-parity.mjs compare /evidence/python-memos/php/memos-record.json /evidence/python-memos/rust/memos-record.json /evidence/python-memos/embedded/memos-record.json --artifacts "$artifacts" --fixture "tests/Fixtures/ServerParityPending/$DW_PARITY_MEMO_FIXTURE_ID.json" > "$evidence/python-memos-comparison.json"
+  for target in php rust embedded; do
+    mode=http
+    if test "$target" = embedded; then mode=embedded; fi
+    docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --network none --entrypoint node "${shared[@]}" "$image" scripts/conformance/server-parity/memo-readers.mjs "/evidence/python-memos/$target/$DW_PARITY_CORRECTED_PREFIX-python-$DW_PARITY_MEMO_FIXTURE_ID-memo.json" "tests/Fixtures/ServerParityPending/$DW_PARITY_MEMO_FIXTURE_ID.json" "$artifacts" "$mode" > "$evidence/python-memos/$target/memos-reader-controls.json"
+  done
+fi
 for id in activity-deadline-active-receipts activity-deadline-receipts activity-global-deadline-retry activity-heartbeat-renewal; do retry_fixtures+=(--fixture "tests/Fixtures/ServerParityPending/$id.json"); done
 docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --network none --entrypoint node "${shared[@]}" "$image" scripts/conformance/server-parity.mjs compare /evidence/php/retries-record.json /evidence/rust/retries-record.json /evidence/embedded/retries-record.json --artifacts "$artifacts" "${retry_fixtures[@]}" > "$evidence/retries-comparison.json"
 for target in php rust embedded; do

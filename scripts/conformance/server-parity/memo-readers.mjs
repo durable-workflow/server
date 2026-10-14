@@ -23,7 +23,8 @@ const controls = [
   ['changed pending prefix', r => {r.phases.replacement.events[0].timestamp = '2000-01-01T00:00:00.000000Z';}],
   ['second activity invocation', r => {(mode === 'http' ? r.phases.activity.actor : r.phases.activity).activity_invocations++;}],
   ['different actor source', r => {const a = mode === 'http' ? r.phases.original.actor : r.phases.original;
-    a[mode === 'http' ? 'sdk_source' : 'workflow_source'] = '0'.repeat(40);}],
+    if (mode === 'http' && a.language === 'python') a.sdk_loaded_sources['workflow.py'] = '0'.repeat(64);
+    else a[mode === 'http' ? 'sdk_source' : 'workflow_source'] = '0'.repeat(40);}],
   ['event reorder', r => {const e = r.phases.replacement.events, a = e.length - 1, b = a - 1;[e[a],e[b]] = [e[b],e[a]];}],
   ['different activity identity', r => {r.phases.replacement.events.find(e => e.event_type === 'ActivityCompleted').payload.activity_execution_id = 'different';}],
   ['different attempt identity', r => {r.phases.replacement.events.find(e => e.event_type === 'ActivityCompleted').payload.activity_attempt_id = 'different';}],
@@ -33,7 +34,10 @@ const controls = [
 if (mode === 'http') {
   if (!fixture.memo_replay.initial_only) controls.push(['missing capability', r => {r.discovery.workflow_memo_updates.supported = false;}]);
   controls.push(['duplicate mutation', r => {r.duplicate.after.events.pop();}]);
-  controls.push(['captured sticky metadata omitted',r=>{delete r.duplicate.submitted_request.sticky_cache;}]);
+  controls.push(['captured completion metadata omitted', r => {
+    const field = Object.hasOwn(r.duplicate.request.request, 'sticky_cache') ? 'sticky_cache' : 'lease_owner';
+    delete r.duplicate.submitted_request[field];
+  }]);
   controls.push(['duplicate falsely recorded',r=>{r.duplicate.receipt.status=200;r.duplicate.receipt.response.recorded=true;}]);
   controls.push(['conflicting completion accepted',r=>{r.conflicting_completion.receipt.status=200;}]);
   controls.push(['conflicting completion changes history',r=>{r.conflicting_completion.after.events.pop();}]);
