@@ -51,7 +51,31 @@ only the original timer/cancellation queues. Each supporting PHP role gets
 0.25 CPU, 256 MiB and no swap, separately from the one-CPU/512-MiB Apache service.
 Their resources are part of the reference description. This does not compare
 complete runtime resource use with native. A
-reference headroom failure remains failed. Actual originals, record controls
-and all-database qualification are pending. Passing the earlier activity-only
-original does not pass these families. This is deadline health, with no matched
+reference headroom failure remains failed.
+
+The fresh native SQLite original on `7eef6c86e` passes all four families at the
+unchanged limits. All 85 dense reads and 88 health/readiness reads succeed.
+Canonical timer firing is 105 ms late, cleanup closes 92 ms after its original
+deadline and is observed 138 ms after it. Two actual heartbeats renew the same
+activity attempt across its original heartbeat boundary. A stopped read-only
+database audit confirms the original histories and zero task repairs. The
+actual record passes 58 corruption controls and keeps original int64 bytes.
+The [qualified source outcome](https://github.com/durable-workflow/server/pull/443#issuecomment-6159555660)
+also records the failed race/delayed-description original and the next run's
+incorrect full source identity. Neither is used to qualify exact source.
+
+The published PHP Apache reference fails the same declared workload with OOM
+and dense-read timeouts. Cancellation gets a temporary database-lock refusal
+without admission. Stored timer repairs and activity timeouts are observations,
+not passing HTTP timer, renewal or cleanup qualification.
+
+The reader now compares canonical deadlines using the shared nanosecond parser,
+refusing a one-microsecond-early event or a one-microsecond excess over permitted
+lateness. Raw prefixes and clock strings stay unchanged. Fresh other-database
+execution must use this stronger reader; its small boundary controls do not
+constitute another producer or requalify an old record.
+
+All-database CPU execution, published consumers and promotion remain pending.
+Passing the earlier activity-only original does not pass these families.
+This is deadline health, with no matched
 throughput/capacity, embedded CPU, migration or release claim.

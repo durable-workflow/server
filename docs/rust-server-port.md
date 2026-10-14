@@ -55,6 +55,17 @@ complete CPU/deadline qualification remain ahead.
 It leaves the default corpus, native source, dependencies and frozen actors
 unchanged.
 
+The separate [timer/renewal/cleanup CPU profile](../scripts/conformance/server-parity/CODEC-OPERATIONS-LOAD.md)
+adds three independent installed SDK observers to the same workload. Its fresh
+native SQLite original preserves one timer firing/completion, two timely
+same-attempt heartbeat/lease renewals and original cooperative cleanup expiry
+under measured busy CPU. All 85 dense reads and 88 health/readiness reads succeed,
+and the stopped read-only audit finds zero repairs. The failed barrier race,
+delayed-description observation, incorrect source identity and PHP OOM/lock
+reference remain separate outcomes. The reader preserves fractional deadline
+precision. Other database families, published consumers and the full CPU gate
+remain pending. This is not matched performance or cutover qualification.
+
 Original `871eec1ec` run `38477701278` passes SQLite, PostgreSQL 16/17,
 MariaDB 10.11 and MySQL 8.4. MySQL 8.0 passes its corrected portable, clock and
 activity-expiry comparisons, then its fixture database is OOM-killed during
