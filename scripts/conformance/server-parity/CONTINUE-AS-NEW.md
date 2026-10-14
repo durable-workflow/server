@@ -66,6 +66,16 @@ two completed runs, one canonical continuation link, four completed tasks at
 attempt 1 with zero repairs, no remaining or failed queue jobs, and memo
 inheritance at sequence 1. The original execution deadline stays byte-identical
 and the successor run deadline resets from its own start with exact
-microseconds. These are published PHP and embedded baselines; native
-continue-as-new acceptance remains pending. Disposable runtime, database and
-raw records are removed after the immediate audit.
+microseconds.
+
+The first actual normally installed PHP SDK 2.3.9 original on the native
+SQLite draft also passes all four cold phases and 30 corruption controls.
+The complete captured retry includes sticky metadata and returns
+`recorded=false` without another run. Stopped read-only SQL confirms the same
+one-link/four-task/zero-repair and memo sequence observations. Initial native
+validation originals remain failed: the SDK serializer supplies its default
+queue; accepting null alone did not qualify that normal wire shape. The
+corrected transition accepts explicit unchanged routing and refuses changed
+routing. Full matched PHP/embedded/native database qualification remains
+pending. Disposable runtime, database and compiler files are removed after
+the immediate audit.

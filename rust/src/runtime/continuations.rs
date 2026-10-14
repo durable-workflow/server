@@ -12,14 +12,10 @@ use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Transaction, Ty
 
 pub(super) fn validate(command: &Value) -> Result<()> {
     reject_fields(command, &["type", "arguments", "workflow_type", "queue"])?;
-    if ["workflow_type", "queue"]
-        .iter()
-        .any(|field| command.get(*field).is_some_and(|value| !value.is_null()))
-    {
-        return Err(refuse(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "continue_as_new_routing_unqualified",
-        ));
+    for field in ["workflow_type", "queue"] {
+        if command.get(field).is_some_and(|value| !value.is_null()) {
+            super::text(command, field)?;
+        }
     }
     if command
         .get("arguments")
@@ -75,6 +71,16 @@ where
     ) -> Result<()> {
         let old = DB::string(run, "id")?;
         let workflow = DB::string(run, "workflow_instance_id")?;
+        for field in ["workflow_type", "queue"] {
+            if command.get(field).is_some_and(|value| !value.is_null())
+                && super::text(command, field)? != DB::string(run, field)?
+            {
+                return Err(refuse(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "continue_as_new_routing_unqualified",
+                ));
+            }
+        }
         let instance = Self::query(
             "SELECT current_run_id FROM workflow_instances WHERE id=$1 AND namespace=$2",
         )
