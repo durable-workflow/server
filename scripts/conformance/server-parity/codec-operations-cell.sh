@@ -64,8 +64,10 @@ else
       -v "$output/state:/var/lib/mysql" -e MYSQL_ROOT_PASSWORD=parity-root-disposable \
       -e MYSQL_DATABASE=native_cpu -e MYSQL_USER=parity -e MYSQL_PASSWORD=parity-disposable-password "$image" > "$output/database-container.txt"
     env_args+=(-e DB_PORT=3306 -e DB_SSLMODE=disabled)
-    ready=(docker exec "$db" "$client" --user=parity --password=parity-disposable-password native_cpu --batch --skip-column-names --execute='select 1')
-    sql=(docker exec -i "$db" "$client" --user=parity --password=parity-disposable-password native_cpu --batch --skip-column-names)
+    # Initialization temporarily serves the socket with networking disabled.
+    # Require the final TCP listener used by the native server.
+    ready=(docker exec "$db" "$client" --host=127.0.0.1 --protocol=TCP --user=parity --password=parity-disposable-password native_cpu --batch --skip-column-names --execute='select 1')
+    sql=(docker exec -i "$db" "$client" --host=127.0.0.1 --protocol=TCP --user=parity --password=parity-disposable-password native_cpu --batch --skip-column-names)
   fi
   ready_at=$((SECONDS+120))
   until "${ready[@]}" > "$output/database-ready.txt" 2>&1; do

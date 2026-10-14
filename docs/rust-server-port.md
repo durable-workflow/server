@@ -26,6 +26,17 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+[#445](https://github.com/durable-workflow/server/pull/445) prepares authored
+memo transactions on top of #444. Apache Avro's schema-aware serde writer
+preserves the published PHP canonical map bytes. The internal transaction
+replaces or deletes named keys, preserves untouched row metadata and appends
+the merged history envelope atomically. A real SQLite history-write failure
+rolls back the memo change. Public completions still return
+`workflow_memo_updates_unavailable` with `recorded=false`; discovery remains
+disabled. Protocol-floor refusal leaves the original task usable. Configuration
+limits, external references, inheritance, routing/replay boundaries and actual
+installed SDK acceptance remain required before enabling this capability.
+
 The [first matched development observations](../benchmarks/server-port/v2/observations-2026-10-14.md)
 complete 737 workflows per implementation, including setup and warmup, with
 exact outputs and zero task repairs. They do not qualify a performance gain:
@@ -37,10 +48,12 @@ wake gap: published PHP interrupts an opted-in activity/query wait when new
 workflow work arrives, while the native baseline consumes the remaining waits.
 This does not establish the cause of every earlier tail. The
 [scoped correction in #455](../scripts/conformance/server-parity/CROSS-KIND-POLL-WAKE.md)
-keeps task/lease authority in ordinary claims. Its five focused SQLite HTTP
-tests pass; the unchanged native baseline fails all three positive test groups.
-Cross-database, installed-worker and full combined-tree qualification remain
-required before repeating the corrected matched profile or claiming a gain.
+keeps task/lease authority in ordinary claims. Its five focused HTTP test groups
+pass locally on SQLite, PostgreSQL 17 and MySQL 8.4; the unchanged native baseline
+fails all three positive groups. Installed-worker activity/query controls also
+pass on PHP and native SQLite with the original workflow/run identities.
+Six-cell qualification of the new combined tree remains required before
+repeating the corrected matched profile or claiming a gain.
 
 The #444 original MySQL 8.4 matrix on `95cd4efa` exposed a native activity
 clock disagreement: a retry was recorded 101 ms before its durable
@@ -112,6 +125,16 @@ controls and cover large journals without a receipt, a partial receipt and a
 complete matching receipt. The actual MariaDB journal passes the same unchanged
 identity checks. Fresh exact-source qualification is required before promotion.
 
+The next upsert-preparation matrix has a distinct MySQL 8.4 CPU-cell setup
+failure before native startup or original admission. A successful socket query
+is followed by a missing-socket version query. The CPU-cell readiness and SQL
+checks now require TCP, which does not accept the image's socket-only temporary
+initialization server. Setup remains bounded at 120 seconds; database limits
+and workload budgets are unchanged. This original is an unsuccessful setup,
+not native deadline evidence. The affected cell will use the exact hosted
+optimized binary and native-tree/hash provenance for local qualification;
+broader corrected-source checks remain required.
+
 Seven actual raw JSON admissions on the frozen PHP image exposed an additional
 initial-memo boundary in #444. Empty objects and contiguous numeric-key objects
 become lists; sparse or mixed canonical numeric keys refuse; leading-zero
@@ -127,10 +150,11 @@ are required; no memo-update capability is enabled.
 `1065360b83f0dbf531a67a7af8edbece19b97fec`, identical to reviewed `97e63c01`
 and its CI merge `e8f4fc49`. All six original final combined jobs in
 `38506521977` and applicable source/boundary gates pass. Exact fresh-main
-`38511209412` passes all six original jobs without retries. Independent
-completed logs confirm the four retry/heartbeat families across PHP, Rust and
-embedded mode. The [delivery receipt](https://github.com/durable-workflow/server/pull/438#issuecomment-6161666925)
-records source and boundary success. Conditional cancellation and
+[`38511209412`](https://github.com/durable-workflow/server/actions/runs/38511209412)
+also passes all six original jobs without retries. Independent completed logs
+confirm the four retry/heartbeat families across PHP, Rust and embedded mode.
+The [delivery receipt](https://github.com/durable-workflow/server/pull/438#issuecomment-6161666925)
+records final source and boundary success. Conditional cancellation and
 prepared-local qualification remain explicitly skipped. Earlier failed
 originals and frozen tuples retain their existing dispositions.
 

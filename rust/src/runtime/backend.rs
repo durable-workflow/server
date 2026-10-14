@@ -33,6 +33,9 @@ pub(super) trait Backend: Database {
     const QUERY_CACHE_DELETE: &'static str = "DELETE FROM dw_query_cache WHERE \"key\"=$1";
     const MEMO_INITIAL_INSERT: &'static str = "INSERT INTO workflow_memos(workflow_run_id,workflow_instance_id,\"key\",value,upserted_at_sequence,inherited_from_parent,created_at,updated_at,portable_value,portable_value_sequence) VALUES ($1,$2,$3,$4,0,false,$5,$6,$7,0)";
     const MEMO_READ: &'static str = "SELECT \"key\",value,portable_value,portable_value_sequence,upserted_at_sequence FROM workflow_memos WHERE workflow_run_id=$1 ORDER BY \"key\",id LIMIT 101";
+    const MEMO_UPSERT: &'static str = "INSERT INTO workflow_memos(workflow_run_id,workflow_instance_id,\"key\",value,upserted_at_sequence,inherited_from_parent,created_at,updated_at,portable_value,portable_value_sequence) VALUES ($1,$2,$3,$4,$5,false,$6,$7,$8,$9) ON CONFLICT(workflow_run_id,\"key\") DO UPDATE SET value=excluded.value,upserted_at_sequence=excluded.upserted_at_sequence,inherited_from_parent=false,updated_at=excluded.updated_at,portable_value=excluded.portable_value,portable_value_sequence=excluded.portable_value_sequence";
+    const MEMO_DELETE: &'static str =
+        "DELETE FROM workflow_memos WHERE workflow_run_id=$1 AND \"key\"=$2";
     fn statement(sql: &'static str) -> Cow<'static, str> {
         Cow::Borrowed(sql)
     }
@@ -302,6 +305,9 @@ impl Backend for Postgres {
 
 impl Backend for MySql {
     const POLL_WAKE_QUERIES_SQL: &'static str = "SELECT `key` AS id FROM dw_query_cache WHERE `key` LIKE 'dw-native-query:%' AND expiration>? AND CAST(JSON_UNQUOTE(JSON_EXTRACT(value,'$.namespace')) AS BINARY)=CAST(? AS BINARY) AND CAST(JSON_UNQUOTE(JSON_EXTRACT(value,'$.task_queue')) AS BINARY)=CAST(? AS BINARY) AND CAST(JSON_UNQUOTE(JSON_EXTRACT(value,'$.deadline')) AS SIGNED)>? AND (JSON_UNQUOTE(JSON_EXTRACT(value,'$.status'))='pending' OR (JSON_UNQUOTE(JSON_EXTRACT(value,'$.status'))='leased' AND CAST(JSON_UNQUOTE(JSON_EXTRACT(value,'$.lease_until')) AS SIGNED)<=?)) ORDER BY `key` LIMIT 65";
+    const MEMO_UPSERT: &'static str = "INSERT INTO workflow_memos(workflow_run_id,workflow_instance_id,`key`,value,upserted_at_sequence,inherited_from_parent,created_at,updated_at,portable_value,portable_value_sequence) VALUES ($1,$2,$3,$4,$5,false,$6,$7,$8,$9) ON DUPLICATE KEY UPDATE value=VALUES(value),upserted_at_sequence=VALUES(upserted_at_sequence),inherited_from_parent=false,updated_at=VALUES(updated_at),portable_value=VALUES(portable_value),portable_value_sequence=VALUES(portable_value_sequence)";
+    const MEMO_DELETE: &'static str =
+        "DELETE FROM workflow_memos WHERE workflow_run_id=$1 AND `key`=$2";
     const MEMO_INITIAL_INSERT: &'static str = "INSERT INTO workflow_memos(workflow_run_id,workflow_instance_id,`key`,value,upserted_at_sequence,inherited_from_parent,created_at,updated_at,portable_value,portable_value_sequence) VALUES ($1,$2,$3,$4,0,false,$5,$6,$7,0)";
     const MEMO_READ: &'static str = "SELECT `key`,value,portable_value,portable_value_sequence,upserted_at_sequence FROM workflow_memos WHERE workflow_run_id=$1 ORDER BY `key`,id LIMIT 101";
     const SELECTION_RESOLUTION_SQL: &'static str = "SELECT id,payload FROM workflow_history_events WHERE workflow_run_id=? AND event_type='SelectionResolved' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.selection_group_id'))=? ORDER BY sequence LIMIT 1";
