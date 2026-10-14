@@ -26,6 +26,20 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+The #444 original MySQL 8.4 matrix on `95cd4efa` exposed a native activity
+clock disagreement: a retry was recorded 101 ms before its durable
+`ActivityStarted` timestamp plus the unchanged two-second start-to-close
+timeout. The attempt and deadline already use one original clock; history
+used a later publication clock after database writes. The correction records
+that original attempt-start instant in history, preserving the stored deadline
+and strict reader. A real MySQL control delays attempt insertion by 25 ms;
+the prior source fails with a 35 ms event/deadline disagreement. The corrected
+source passes that control and all four actual MySQL deadline/receipt/restart
+tests, plus 41 library and 89 SQLite HTTP tests (18 explicit external-database
+and subprocess ignores). The original hosted failure remains failed. This
+changes only new native activity-start events, with no PHP correction or
+rewriting of historical records.
+
 The pending [memo fixture](../scripts/conformance/server-parity/MEMOS.md)
 widens metadata coverage before native implementation. Normal installed PHP
 SDK 2.3.9 against the frozen Server 2.6.2 and embedded Workflow 2.5.16 complete

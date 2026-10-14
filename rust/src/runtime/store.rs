@@ -1077,13 +1077,14 @@ where
                     "repair_count":DB::number(&task,"repair_count")?,
                     "available_at":DB::optional_instant(&task,"available_at")?,"leased_at":leased_at,
                     "lease_owner":worker_id,"lease_expires_at":expires,"attempt_count":attempt,"queue":queue});
-                Self::append(
+                Self::append_at(
                     &mut tx,
                     &run_id,
                     "ActivityStarted",
                     payload,
                     Some(&task_id),
                     None,
+                    Some(started_at),
                 )
                 .await?;
                 claim["activity_execution_id"] = json!(activity_id);
@@ -2099,6 +2100,18 @@ where
         task_id: Option<&str>,
         command_id: Option<&str>,
     ) -> Result<()> {
+        Self::append_at(tx, run_id, event_type, payload, task_id, command_id, None).await
+    }
+
+    async fn append_at(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        event_type: &str,
+        payload: Value,
+        task_id: Option<&str>,
+        command_id: Option<&str>,
+        recorded_at: Option<DateTime<Utc>>,
+    ) -> Result<()> {
         // The backend transition lock protects this read and write together.
         // MySQL has no UPDATE RETURNING; all adapters use this same allocation.
         let row = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
@@ -2114,7 +2127,7 @@ where
             .execute(&mut **tx)
             .await?;
         Self::query("INSERT INTO workflow_history_events(id,workflow_run_id,sequence,event_type,payload,workflow_task_id,workflow_command_id,recorded_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
-        .bind(id()).bind(run_id).bind(sequence).bind(event_type).bind(DB::document(&payload)).bind(task_id).bind(command_id).bind(DB::bind_time(now())).execute(&mut **tx).await?;
+        .bind(id()).bind(run_id).bind(sequence).bind(event_type).bind(DB::document(&payload)).bind(task_id).bind(command_id).bind(DB::bind_time(recorded_at.unwrap_or_else(now))).execute(&mut **tx).await?;
         Ok(())
     }
 
