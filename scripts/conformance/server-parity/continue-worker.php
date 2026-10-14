@@ -79,6 +79,9 @@ if ($phase === 'activity') {
         if ($input['generation'] === 0) {
             $value = $ctx->activity('parity.v1.continue_echo', [$input['value']],
                 $spec['activity_options'] + ['queue' => $workflowId.'-activity']);
+            if (isset($spec['memo_before_continuation'])) {
+                $ctx->upsertMemo($spec['memo_before_continuation']);
+            }
             $ctx->continueAsNew([['generation' => 1, 'value' => $value]]);
         }
         if ($input['generation'] !== 1) {

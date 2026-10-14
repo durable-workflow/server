@@ -19,7 +19,7 @@ const corruptions=[
   r=>{r.phases.continuation.events[3].payload.task.repair_count=1;},
   r=>{r.phases.continuation.events[4].payload.attempt_number=2;},
   r=>{r.phases.continuation.events[4].typed_decoded.result.value.integer.value='9007199254740992';},
-  r=>{r.phases.continuation.events[5].payload.continued_to_run_id='changed';},
+  r=>{r.phases.continuation.events.at(-1).payload.continued_to_run_id='changed';},
   r=>{started(r).payload.workflow_link_id='changed';},
   r=>{started(r).payload.continued_from_run_id='changed';},
   r=>{r.phases.successor.events.push(structuredClone(r.phases.successor.events[1]));},
@@ -38,6 +38,13 @@ const corruptions=[
   r=>{if(mode==='http')r.phases.successor.actor.receipts.find(receipt=>receipt.path.endsWith('/complete')).response.recorded=false;else r.duplicate.worker_output='';},
 ];
 if(mode==='http')corruptions.push(r=>{delete r.duplicate.submitted_request.sticky_cache;});
+if(Object.hasOwn(fixture.continuation,'memo_before_continuation'))corruptions.push(
+  r=>{r.phases.continuation.events[5].payload.sequence=3;},
+  r=>{r.phases.continuation.events[5].typed_decoded.entries.value.replace={type:'int64',value:'0'};},
+  r=>{r.phases.continuation.events[5].typed_decoded.merged.value.remove={type:'string',value:'old'};},
+  r=>{r.inherited.typed_memo.value.replace={type:'int64',value:'1'};},
+  r=>{r.phases.successor.typed_memo.value.keep.value.integer.value='9007199254740992';}
+);
 for(const corrupt of corruptions) {
   const changed=structuredClone(record);
   corrupt(changed);

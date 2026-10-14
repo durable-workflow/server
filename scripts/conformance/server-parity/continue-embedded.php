@@ -25,12 +25,15 @@ if (config('server.mode') !== 'embedded' || ! in_array($phase, $spec['phase_orde
 
 final class ContinueEmbeddedState
 {
+    public static array $spec;
+
     public static string $activityQueue;
 
     public static int $activityInvocations = 0;
 }
 
 ContinueEmbeddedState::$activityQueue = $workflowId.'-activity';
+ContinueEmbeddedState::$spec = $spec;
 
 #[\Workflow\V2\Attributes\Type('parity.v1.continue_echo')]
 final class ContinueEmbeddedActivity extends \Workflow\V2\Activity
@@ -52,6 +55,9 @@ final class ContinueEmbeddedWorkflow extends \Workflow\V2\Workflow
             $value = \Workflow\V2\activity(ContinueEmbeddedActivity::class,
                 new ActivityOptions(queue: ContinueEmbeddedState::$activityQueue,
                     maxAttempts: 1, backoff: [], startToCloseTimeout: 120, scheduleToCloseTimeout: 600), $input['value']);
+            if (isset(ContinueEmbeddedState::$spec['memo_before_continuation'])) {
+                self::upsertMemo(ContinueEmbeddedState::$spec['memo_before_continuation']);
+            }
             return self::continueAsNew(['generation' => 1, 'value' => $value]);
         }
         if ($input['generation'] !== 1) {
@@ -75,6 +81,14 @@ $snapshot = static function (string $selected) use ($workflowId): array {
         'timestamp' => $event->recorded_at->toISOString(), 'payload' => $event->payload])->all();
     $events = decodeHistory($events, static fn ($envelope) => Serializer::unserializeWithCodec(
         'avro', is_array($envelope) ? $envelope['blob'] : $envelope));
+    foreach ($events as &$event) {
+        if ($event['event_type'] === 'MemoUpserted') {
+            foreach (['entries', 'merged'] as $field) {
+                $event['typed_decoded'][$field] = typedValue(Serializer::unserializeWithCodec('avro', $event['payload'][$field]['blob']));
+            }
+        }
+    }
+    unset($event);
     $memo = $run->typedMemos();
     ksort($memo);
 

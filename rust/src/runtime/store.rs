@@ -22,6 +22,7 @@ pub(super) struct Store<DB: Backend> {
     pub(super) wake: Arc<Notify>,
     pub(super) namespace: Arc<str>,
     pub(super) memo_codec: Arc<Semaphore>,
+    pub(super) memo_size_limit: Option<usize>,
 }
 pub(super) fn id() -> String {
     Ulid::new().to_string()
@@ -61,6 +62,7 @@ where
             wake: Arc::new(Notify::new()),
             namespace: "default".into(),
             memo_codec: Arc::new(Semaphore::new(1)),
+            memo_size_limit: Some(262_144),
         }
     }
     pub(super) fn in_namespace(&self, namespace: &str) -> Self {
@@ -69,6 +71,7 @@ where
             wake: self.wake.clone(),
             namespace: namespace.into(),
             memo_codec: self.memo_codec.clone(),
+            memo_size_limit: self.memo_size_limit,
         }
     }
     pub(super) async fn database_live(&self) -> bool {
@@ -1431,7 +1434,12 @@ where
                     reject_fields(command, &["type", "result"])?;
                     envelope(command, "result")?;
                 }
-                "continue_as_new" if commands.len() == 1 => {
+                "continue_as_new"
+                    if index + 1 == commands.len()
+                        && commands[..index]
+                            .iter()
+                            .all(|prior| prior["type"] == "upsert_memo") =>
+                {
                     super::continuations::validate(command)?;
                 }
                 "schedule_activity" => {
@@ -1879,13 +1887,26 @@ where
                 portable,
             ));
         }
+        let task_id = DB::string(task, "id")?;
+        let task_attempt = DB::number(task, "attempt_count")?;
         let prepared = super::memos::prepare_update(
             self.memo_codec.clone(),
             stored,
             envelope(command, "entries")?,
-            None,
+            self.memo_size_limit,
         )
-        .await?;
+        .await
+        .map_err(|error| match error {
+            super::RuntimeError::Protocol {
+                status,
+                mut response,
+            } if response["reason"] == "structural_limit_exceeded" => {
+                response["task_id"] = json!(task_id);
+                response["workflow_task_attempt"] = json!(task_attempt);
+                super::RuntimeError::Protocol { status, response }
+            }
+            error => error,
+        })?;
         let written_at = now();
         for (key, value) in prepared.changes {
             if let Some(value) = value {
@@ -2667,9 +2688,25 @@ pub(super) fn reject_fields(body: &Value, allowed: &[&str]) -> Result<()> {
 }
 
 pub(crate) fn capabilities() -> Value {
-    json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "start_child_workflow", "open_condition_wait", "open_signal_wait", "record_version_marker", "complete_workflow", "continue_as_new"],
+    let mut value = json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "start_child_workflow", "open_condition_wait", "open_signal_wait", "record_version_marker", "complete_workflow", "continue_as_new"],
         "worker_deregistration_fencing":{"schema":"durable-workflow.v2.worker-deregistration.v1","supported":true,"receipt_retention_seconds":600,"endpoint":"/worker/registrations/{workerId}/deregister"},
         "workflow_memo_updates": false, "cooperative_cancellation": true, "prepared_local_activities": false,
         "worker_sessions": false, "sticky_execution": false, "local_activities": false, "message_streams": false,
-        "workflow_updates": true, "query_tasks": true, "query_task_poll_request_idempotency": false})
+        "workflow_updates": true, "query_tasks": true, "query_task_poll_request_idempotency": false});
+    if super::memos::UPDATES_SUPPORTED {
+        value["supported_workflow_task_commands"]
+            .as_array_mut()
+            .expect("commands")
+            .push(json!("upsert_memo"));
+        value["workflow_memo_updates"] = json!({"supported":true, "type":"upsert_memo",
+            "category":"non_terminal_command", "worker_capability":"memo_upserts",
+            "minimum_protocol_version":"1.14", "required_fields":["type","entries"],
+            "optional_fields":[], "entries":{"shape":"payload-envelope<avro-map<string, Value|null>>",
+                "payload_envelope_field":true,"codec":"avro","value_schema":"durable_workflow.protocol.Value",
+                "key_pattern":"^(?!-?[0-9]+$)[A-Za-z0-9_.:-]{1,64}$", "null_value":"delete_key",
+                "max_keys_per_run":100,"max_value_size_bytes":10240,"max_total_size_bytes":65536,
+                "size_measurement":"avro_single_object_bytes",
+                "runtime_configured_total_limit":"workflows.v2.structural_limits.memo_size_bytes"}});
+    }
+    value
 }

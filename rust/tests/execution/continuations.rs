@@ -1,6 +1,191 @@
 use super::*;
 
 #[tokio::test]
+async fn continuation_inherits_committed_upserts_before_successor_commands() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let worker = "continuation-memo-worker";
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            "/api/worker/register",
+            json!({"worker_id":worker,"task_queue":"test","runtime":"php",
+            "supported_workflow_types":["echo"],"supported_activity_types":[],
+            "capabilities":["memo_upserts"]})
+        )
+        .await
+        .0,
+        StatusCode::CREATED
+    );
+    let original = request(
+        &app,
+        "POST",
+        "/api/workflows",
+        json!({"workflow_id":"continuation-authored-memos","workflow_type":"echo",
+            "task_queue":"test","input":envelope(Payload::Array(vec![])),
+            "memo":{"keep":{"count":9007199254740993_i64,"optional":null,"message":"memo λ"},
+                "replace":1,"remove":"old"}}),
+    )
+    .await;
+    assert_eq!(original.0, StatusCode::CREATED);
+    let old = original.1["run_id"].as_str().unwrap();
+    let task = poll(&app, worker, "workflow").await;
+    let path = format!(
+        "/api/worker/workflow-tasks/{}/complete",
+        task["task_id"].as_str().unwrap()
+    );
+    let entries = Payload::Map(std::collections::BTreeMap::from([
+        ("replace".into(), Payload::Boolean(false)),
+        ("remove".into(), Payload::Null),
+        (
+            "added".into(),
+            Payload::Array(vec![Payload::Long(9007199254740993), Payload::Null]),
+        ),
+    ]));
+    let body = completion(
+        &task,
+        json!([
+            {"type":"upsert_memo","entries":envelope(entries)},
+            {"type":"continue_as_new"}
+        ]),
+    );
+    let initial = request(
+        &app,
+        "GET",
+        "/api/workflows/continuation-authored-memos",
+        Value::Null,
+    )
+    .await
+    .1;
+    let mut refused_routing = body.clone();
+    refused_routing["commands"][1]["queue"] = json!("different");
+    let refused = request(&app, "POST", &path, refused_routing).await;
+    assert_eq!(refused.0, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(refused.1["reason"], "continue_as_new_routing_unqualified");
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            "/api/workflows/continuation-authored-memos",
+            Value::Null
+        )
+        .await
+        .1,
+        initial,
+        "rejected continuation rolls back its preceding memo mutation"
+    );
+    let wrong_order = completion(
+        &task,
+        json!([
+            {"type":"continue_as_new"}, body["commands"][0]
+        ]),
+    );
+    assert_eq!(
+        request(&app, "POST", &path, wrong_order).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            "/api/workflows/continuation-authored-memos",
+            Value::Null
+        )
+        .await
+        .1,
+        initial
+    );
+    let committed = request(&app, "POST", &path, body.clone()).await;
+    assert_eq!(committed.0, StatusCode::OK, "{}", committed.1);
+    let parent_path = format!("/api/workflows/continuation-authored-memos/runs/{old}");
+    let parent = request(&app, "GET", &parent_path, Value::Null).await.1;
+    let expected = json!({"keep":{"count":9007199254740993_i64,"optional":null,"message":"memo λ"},
+        "replace":false,"added":[9007199254740993_i64,null]});
+    assert_eq!(parent["memo"], expected);
+    let current_path = "/api/workflows/continuation-authored-memos";
+    let current = request(&app, "GET", current_path, Value::Null).await.1;
+    let next = current["run_id"].as_str().unwrap().to_owned();
+    assert_ne!(next, old);
+    assert_eq!(current["memo"], expected);
+    let history_path = format!("{parent_path}/history");
+    let history = request(&app, "GET", &history_path, Value::Null).await.1;
+    assert_eq!(
+        history["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| event["event_type"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "StartAccepted",
+            "WorkflowStarted",
+            "MemoUpserted",
+            "WorkflowContinuedAsNew"
+        ]
+    );
+    runtime.close().await;
+    let cold = database.open().await.unwrap();
+    let app = router(cold.clone());
+    assert_eq!(
+        request(&app, "GET", current_path, Value::Null).await.1["memo"],
+        expected
+    );
+    let duplicate = request(&app, "POST", &path, body.clone()).await;
+    assert_eq!(duplicate.0, StatusCode::OK);
+    assert_eq!(duplicate.1["recorded"], false);
+    let mut conflict = body;
+    conflict["commands"][0]["entries"] = envelope(Payload::Map(std::collections::BTreeMap::from(
+        [("replace".into(), Payload::Long(9))],
+    )));
+    assert_eq!(
+        request(&app, "POST", &path, conflict).await.0,
+        StatusCode::CONFLICT
+    );
+    let successor = poll(&app, worker, "workflow").await;
+    assert_eq!(successor["run_id"], next);
+    let done = request(&app, "POST",
+        &format!("/api/worker/workflow-tasks/{}/complete", successor["task_id"].as_str().unwrap()),
+        completion(&successor, json!([
+            {"type":"upsert_memo","entries":envelope(Payload::Map(std::collections::BTreeMap::from([
+                ("replace".into(), Payload::String("successor".into()))
+            ])))},
+            {"type":"complete_workflow","result":envelope(Payload::Long(7))}
+        ]))).await;
+    assert_eq!(done.0, StatusCode::OK, "{}", done.1);
+    let finished = request(&app, "GET", current_path, Value::Null).await.1;
+    let mut successor_memo = expected;
+    successor_memo["replace"] = json!("successor");
+    assert_eq!(finished["memo"], successor_memo);
+    assert_eq!(finished["output"], 7);
+    assert_eq!(
+        request(&app, "GET", &parent_path, Value::Null).await.1,
+        parent
+    );
+    assert_eq!(
+        request(&app, "GET", &history_path, Value::Null).await.1,
+        history
+    );
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            "/api/workflows/continuation-authored-memos/runs",
+            Value::Null
+        )
+        .await
+        .1["runs"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    cold.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
 async fn continuation_refuses_pending_query_beyond_the_cache_scan_prefix() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();

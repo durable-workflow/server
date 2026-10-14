@@ -17,6 +17,14 @@ $state = ['fixture_sha256' => hash_file('sha256', $fixturePath), 'phase' => 'sta
 $snapshot = static function (string $runId) use ($client, $workflowId): array {
     $run = namespaceHttpRun($client, $workflowId, $runId);
     $run['typed_memo'] = typedValue($run['execution']['memo']);
+    foreach ($run['events'] as &$event) {
+        if ($event['event_type'] === 'MemoUpserted') {
+            foreach (['entries', 'merged'] as $field) {
+                $event['typed_decoded'][$field] = typedValue($client->payloadCodec()->decodeEnvelope($event['payload'][$field]));
+            }
+        }
+    }
+    unset($event);
 
     return $run;
 };

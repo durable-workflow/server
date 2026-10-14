@@ -26,6 +26,86 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+The next authored-memo slice follows #445's disabled preparation. Its full
+acceptance includes configured structural limits, actual SDK replay, protocol
+and capability fences, external envelopes, continuation inheritance and
+unchanged state after refusal. The first change wires the published
+`DW_V2_LIMIT_MEMO_SIZE_BYTES` / `WORKFLOW_V2_LIMIT_MEMO_SIZE_BYTES` precedence and
+casts into each native database runtime and its namespace views. Nineteen
+configuration controls were observed on the published PHP package. Zero and
+negative values disable this structural limit; fixed memo count/value/total
+limits still apply. The new actual SQLite control refuses before changing the
+original memo/history and restores at the inclusive whole-map boundary.
+The configured rejection preserves PHP's 422 task/attempt and measured-limit
+diagnostic. Twelve focused controls and the restored full source suite pass:
+48 library tests and 90 SQLite HTTP tests, with 18 explicit external-database
+and subprocess ignores. Reverting only the transaction's configured limit to
+`None` makes the new actual refusal control fail by accepting that upsert.
+The correction restores the inclusive whole-map boundary and preserves the
+separate actual history-write rollback test. The unpublished local candidate
+enables memo commands and passes the unchanged installed PHP 2.3.9
+author/activity/cold-successor recipe against native SQLite. Three independent
+worker processes preserve the original four- and six-event prefixes and finish
+with eight events, memo command sequences 1/3, one activity, typed int64/null/
+Unicode values and unchanged run/execution deadlines. An identical committed
+receipt while the parent waits returns 200/already_completed/recorded=false;
+a conflicting receipt returns 409/conflicting_completion without mutation.
+All 23 corrupt-reader controls refuse. Protocol 1.13 refusal preserves the
+original task, while the capable 1.14 control upserts and completes it.
+The normal installed Python 2.5.13 author and cold successor now complete the
+same original around an independent PHP activity on frozen PHP 2.6.2 and the
+hosted native candidate. Both preserve the eight events, typed memos, original
+deadlines and complete captured first-completion body; each passes all 23
+corruption controls. Stopped read-only SQL shows three completed first-attempt
+tasks, zero repairs and the same four surviving memo rows on both backends.
+The shared candidate selects this additional cross-language recipe in a
+separate prefix/output directory and compares it with the embedded PHP recipe.
+The existing recorder forwards unchanged bytes; SDKs and clock/history fields
+are not edited. The normal registry Rust 3.5.4 author and cold reader also
+complete actual PHP/native SQLite originals around the same PHP activity,
+passing the identical 23 corruption controls and stopped SQL guards. The
+observer checks binary/build identity before worker execution and keeps the
+exact published crate/source/lock identity. Its reported SDK constant remains
+`durable-workflow-rust/3.5.4`; the reader checks that exact format. The shared
+candidate selects all three SDK author families in separate prefixes/output
+directories. External envelopes, broader inheritance, complete discovery and
+all-database acceptance remain incomplete; no published capability is claimed.
+The combined authoring candidate now integrates exact PHP main #449 and #446's
+continuation foundation. A focused control exposed the sole-command guard's
+refusal of a memo upsert followed by continuation. The correction permits only
+validated memo commands before the terminal continuation, retains unsupported
+transfer/routing refusal and proves rollback of the preceding memo when routing
+refuses. A separate cold-routing control preserves the fenced old claim when
+registration changes and delivers memo history only to a capable successor.
+The new shared `continue-upserted-memo-activity-replay` case completes actual
+frozen PHP and native SQLite originals with one activity, one memo event and one
+successor, preserving the merged memo before successor admission. Each passes
+35 strict reader corruptions. Its first business originals completed but the
+reader failed because the continuation observer omitted typed memo-envelope
+decoding. The corrected observer uses the normal codec on fresh originals;
+no history clock or stored bytes are rewritten. The normally installed embedded
+2.5.16 counterpart also passes with 34 corruption controls. All three originals
+have four completed first-attempt tasks, zero repairs and one canonical
+continuation link. Final native execution passes 96 tests; the recorder passes
+206 controls. The [three-runtime receipt](https://github.com/durable-workflow/server/pull/448#issuecomment-6170709164)
+records exact source, binary, original identities and qualification limits.
+Full matched acceptance, external references and complete discovery remain
+pending. All completed runtime, compiler and raw audit resources were deleted.
+Frozen references and independent #444/#445/#446 gates are unchanged. The
+broader [draft #448](https://github.com/durable-workflow/server/pull/448) retains
+those incomplete acceptance requirements.
+
+[#445](https://github.com/durable-workflow/server/pull/445) prepares authored
+memo transactions on top of #444. Apache Avro's schema-aware serde writer
+preserves the published PHP canonical map bytes. The internal transaction
+replaces or deletes named keys, preserves untouched row metadata and appends
+the merged history envelope atomically. A real SQLite history-write failure
+rolls back the memo change. Public completions still return
+`workflow_memo_updates_unavailable` with `recorded=false`; discovery remains
+disabled. Protocol-floor refusal leaves the original task usable. Configuration
+limits, external references, inheritance, routing/replay boundaries and actual
+installed SDK acceptance remain required before enabling this capability.
+
 [Continuation #446](https://github.com/durable-workflow/server/pull/446)
 adds the first atomic native continue-as-new transition after one genuine
 activity. Four normally installed PHP SDK 2.3.9 workers complete an actual
@@ -57,19 +137,11 @@ omitted captured `sticky_cache`, so native correctly refused a
 changed body as `conflicting_completion`. The [probe correction](https://github.com/durable-workflow/server/pull/444#issuecomment-6163205713)
 preserves all original completion metadata and checks a separate conflicting
 payload refusal. Earlier failed records remain failed; no stronger PHP receipt
-contract or runtime receipt change follows. Full matched checks of the corrected
-probe are recorded in the owning PRs. Authored memo updates remain disabled.
-
-[#445](https://github.com/durable-workflow/server/pull/445) prepares authored
-memo transactions on top of #444. Apache Avro's schema-aware serde writer
-preserves the published PHP canonical map bytes. The internal transaction
-replaces or deletes named keys, preserves untouched row metadata and appends
-the merged history envelope atomically. A real SQLite history-write failure
-rolls back the memo change. Public completions still return
-`workflow_memo_updates_unavailable` with `recorded=false`; discovery remains
-disabled. Protocol-floor refusal leaves the original task usable. Configuration
-limits, external references, inheritance, routing/replay boundaries and actual
-installed SDK acceptance remain required before enabling this capability.
+contract or runtime receipt change follows. #445 and #446's prior candidates
+passed all 13 matched jobs. The delivered #444 foundation and qualified PHP
+#451 source are now integrated for fresh combined qualification. Earlier
+results do not qualify this combined tree. The broader authoring candidate
+remains separate from the disabled memo foundation and unpublished.
 
 The [first matched development observations](../benchmarks/server-port/v2/observations-2026-10-14.md)
 complete 737 workflows per implementation, including setup and warmup, with

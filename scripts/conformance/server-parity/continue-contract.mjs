@@ -20,6 +20,10 @@ export function checkContinueRecord(record,fixture,artifacts,mode='http') {
   assert.equal(typeof next,'string');
   assert(old.length>0&&next.length>0&&old!==next,'distinct original successor');
   const memo=map({empty:list([]),keep:fixture.typed_value});
+  const authored=Object.hasOwn(spec,'memo_before_continuation');
+  if(authored)assert.deepEqual(spec.memo_before_continuation,{added:[],remove:null,replace:false});
+  const initialMemo=authored?map({...memo.value,remove:{type:'string',value:'old'},replace:integer(1)}):memo;
+  const mergedMemo=authored?map({added:list([]),...memo.value,replace:{type:'boolean',value:false}}):memo;
   const pids=[];
   assert(['http','embedded'].includes(mode));
   const definition=createHash('sha256').update(readFileSync(new URL(
@@ -31,7 +35,8 @@ export function checkContinueRecord(record,fixture,artifacts,mode='http') {
     assert.equal(observation.run_id,phase==='successor'?next:old);
     assert.equal(observation.task_queue,original.workflow_id+'-workflow');
     assert.equal(observation.status,['original','activity'].includes(phase)?'waiting':'completed');
-    assert.deepEqual(observation.typed_memo,memo,'typed memo survives each original phase');
+    assert.deepEqual(observation.typed_memo,['original','activity'].includes(phase)?initialMemo:mergedMemo,
+      'exact memo visible at this original command boundary');
     assert.deepEqual(observation.typed_input,list([map({generation:integer(phase==='successor'?1:0),value:fixture.typed_value})]));
     const actor=observation.actor;
     assert(Number.isSafeInteger(actor.pid)&&actor.pid>0);
@@ -64,8 +69,9 @@ export function checkContinueRecord(record,fixture,artifacts,mode='http') {
     assert.equal(completion.request.lease_owner,claim.lease_owner);
     if(kind==='workflow') {
       assert.equal(completion.request.workflow_task_attempt,claim.workflow_task_attempt);
-      assert.deepEqual(completion.request.commands.map(command=>command.type),[
-        {original:'schedule_activity',continuation:'continue_as_new',successor:'complete_workflow'}[phase]]);
+      assert.deepEqual(completion.request.commands.map(command=>command.type),
+        phase==='continuation'&&authored?['upsert_memo','continue_as_new']:[
+          {original:'schedule_activity',continuation:'continue_as_new',successor:'complete_workflow'}[phase]]);
     } else assert.equal(completion.request.activity_attempt_id,claim.activity_attempt_id);
     }
     assert.equal(observation.execution.execution_deadline_at,record.initial.execution.execution_deadline_at);
@@ -75,9 +81,21 @@ export function checkContinueRecord(record,fixture,artifacts,mode='http') {
   assert.deepEqual(activity.events.slice(0,original.events.length),original.events);
   assert.deepEqual(continuation.events.slice(0,activity.events.length),activity.events);
   assert.deepEqual(record.predecessor_final.events,continuation.events);
-  assert.deepEqual(continuation.events.map(event=>event.event_type),[
-    'StartAccepted','WorkflowStarted','ActivityScheduled','ActivityStarted','ActivityCompleted','WorkflowContinuedAsNew']);
-  assert.deepEqual(continuation.events.map(event=>event.sequence),[1,2,3,4,5,6]);
+  const predecessorOrder=['StartAccepted','WorkflowStarted','ActivityScheduled','ActivityStarted','ActivityCompleted',
+    ...(authored?['MemoUpserted']:[]),'WorkflowContinuedAsNew'];
+  assert.deepEqual(continuation.events.map(event=>event.event_type),predecessorOrder);
+  assert.deepEqual(continuation.events.map(event=>event.sequence),predecessorOrder.map((_,index)=>index+1));
+  if(authored) {
+    const upsert=continuation.events[5];
+    assert.equal(upsert.payload.sequence,2);
+    assert.deepEqual(upsert.typed_decoded.entries,map({added:list([]),remove:{type:'null',value:null},replace:{type:'boolean',value:false}}));
+    assert.deepEqual(upsert.typed_decoded.merged,mergedMemo);
+    assert.deepEqual(Object.keys(upsert.typed_decoded.entries.value),Object.keys(upsert.typed_decoded.entries.value).sort());
+    assert.deepEqual(Object.keys(upsert.typed_decoded.merged.value),Object.keys(upsert.typed_decoded.merged.value).sort());
+    assert.equal(upsert.payload.task.id,continuation.events.at(-1).payload.task.id);
+    assert.equal(upsert.payload.task.attempt_count,1);
+    assert.equal(upsert.payload.task.repair_count,0);
+  }
   const successorOrder=spec.successor_event_order[mode];
   assert.deepEqual(successor.events.map(event=>event.event_type),successorOrder);
   assert.deepEqual(successor.events.map(event=>event.sequence),successorOrder.map((_,index)=>index+1));
@@ -87,12 +105,12 @@ export function checkContinueRecord(record,fixture,artifacts,mode='http') {
   assert.equal(successor.execution.run_number,2);
   assert.equal(record.inherited.run_id,next);
   assert.equal(record.inherited.status,'pending');
-  assert.deepEqual(record.inherited.typed_memo,memo,'inherited before successor claim');
+  assert.deepEqual(record.inherited.typed_memo,mergedMemo,'merged memo inherited before successor claim');
   assert.equal(record.inherited.events.length,successorOrder.length-1);
   assert.deepEqual(successor.events.slice(0,record.inherited.events.length),record.inherited.events);
   const continued=continuation.events.at(-1).payload;
   const started=successor.events.find(event=>event.event_type==='WorkflowStarted').payload;
-  assert.equal(continued.sequence,2);
+  assert.equal(continued.sequence,authored?3:2);
   assert.equal(continued.closed_reason,'continued');
   assert.equal(continued.continued_to_run_id,next);
   assert.equal(continued.continued_to_run_number,2);
@@ -151,7 +169,7 @@ export function checkContinueRecord(record,fixture,artifacts,mode='http') {
   const expected=startedAt+BigInt(spec.run_timeout_seconds)*1_000_000_000n;
   assert(deadline<=expected&&expected-deadline<quantum,'published new-run deadline at its displayed precision');
   return {outcome:'pass',workflow_id:original.workflow_id,predecessor_run_id:old,successor_run_id:next,
-    phases:4,activity_invocations:1,predecessor_events:6,successor_events:successorOrder.length,duplicate_status:duplicate?.status??null,mode};
+    phases:4,activity_invocations:1,predecessor_events:predecessorOrder.length,successor_events:successorOrder.length,duplicate_status:duplicate?.status??null,mode};
 }
 
 if(process.argv[1]===new URL(import.meta.url).pathname) {

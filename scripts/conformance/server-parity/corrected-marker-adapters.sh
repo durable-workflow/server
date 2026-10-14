@@ -54,7 +54,7 @@ docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=
   -v "$PWD/$cargo:/cargo:ro" -w /source "$image" \
   "$adapter/identity.mjs" /adapters "$artifacts" /cargo/registry/src
 git rev-parse HEAD > "$output/runner-revision.txt"
-sha256sum "$adapter"/rust/{Cargo.toml,Cargo.lock,src/main.rs,src/legacy_range.rs} "$adapter"/{php.php,python250.py,admission_receipt.py,python250-requirements.txt,python-current.py,python-current-requirements.txt} \
+sha256sum "$adapter"/rust/{Cargo.toml,Cargo.lock,src/main.rs,src/legacy_range.rs,src/memo_author.rs} "$adapter"/{php.php,python250.py,admission_receipt.py,python250-requirements.txt,python-current.py,python-current-requirements.txt} scripts/conformance/server-parity/memo-python-worker.py \
   > "$output/source-hashes.sha256"
 if test "$cargo" = "$output/cargo"; then find "$cargo" -depth -delete; fi
 if test "$target" = "$output/target"; then find "$target" -depth -delete; fi
