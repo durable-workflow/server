@@ -37,6 +37,14 @@ reader incorrectly required HTTP 200; this was a reader error, not a product
 defect or a stronger receipt contract. Full native parity, protocol/capability
 and limit refusals, inheritance and external payload gates remain ahead. Existing
 frozen profiles and default fixture discovery remain unchanged.
+The draft native foundation now persists initial JSON-like memos as both the
+PHP host's legacy projection and a sequence-bound Avro envelope. Reads preserve
+the current envelope's types and follow the published legacy fallback when the
+portable sequence is stale or its value is null. Official codec work runs on a
+bounded blocking worker. Focused codec and cold-storage controls pass locally;
+full SQLite regressions pass. Initial-memo three-runtime/all-database acceptance
+and the authored-upsert gate remain pending. Memo updates are still advertised
+as unsupported; no native release or same-database takeover is qualified.
 
 [#435](https://github.com/durable-workflow/server/pull/435) is delivered at
 `7b53fc26db4e69a8013b6f1ad991fd1d98266833`, complete tree

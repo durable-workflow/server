@@ -26,7 +26,15 @@ HTTP probe inside the repository runtime with `DW_PARITY_SDK_AUTOLOAD` and
 path. Server bootstrap, database isolation and cleanup belong to the caller.
 No database is shared concurrently between PHP, Rust and embedded mode.
 
-Native implementation follows the actual published PHP and embedded baseline.
+The native draft foundation persists initial memos and reads the host's
+sequence-bound portable values. It keeps the legacy JSON projection separately
+and uses it when the portable value has no current authority. Official Avro
+work runs outside executor threads with a held concurrency permit. Authored
+memo updates remain unsupported and unadvertised. The native initial-memo
+HTTP/storage tests are preparatory source controls, with three-runtime and
+all-database acceptance still pending.
+
+Further native implementation follows the actual published PHP and embedded baseline.
 Additional required memo gates include malformed input and structural limits,
 protocol/capability enforcement and replay routing, unchanged state after
 refusal, stale-task fencing, namespace/auth checks, continue-as-new inheritance

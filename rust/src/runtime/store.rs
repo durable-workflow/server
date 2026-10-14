@@ -21,6 +21,7 @@ pub(super) struct Store<DB: Backend> {
     pub(super) pool: Pool<DB>,
     pub(super) wake: Arc<Notify>,
     pub(super) namespace: Arc<str>,
+    pub(super) memo_codec: Arc<Semaphore>,
 }
 pub(super) fn id() -> String {
     Ulid::new().to_string()
@@ -59,6 +60,7 @@ where
             pool,
             wake: Arc::new(Notify::new()),
             namespace: "default".into(),
+            memo_codec: Arc::new(Semaphore::new(1)),
         }
     }
     pub(super) fn in_namespace(&self, namespace: &str) -> Self {
@@ -66,6 +68,7 @@ where
             pool: self.pool.clone(),
             wake: self.wake.clone(),
             namespace: namespace.into(),
+            memo_codec: self.memo_codec.clone(),
         }
     }
     pub(super) async fn database_live(&self) -> bool {
@@ -109,9 +112,13 @@ where
     pub(super) async fn begin(&self) -> Result<Transaction<'static, DB>> {
         DB::begin(&self.pool).await
     }
-    pub(crate) async fn start(&self, body: Value) -> Result<Value> {
+    pub(crate) async fn start(
+        &self,
+        body: Value,
+        memo: super::memos::PreparedMemo,
+    ) -> Result<Value> {
         let mut tx = self.begin().await?;
-        let started = Self::start_in(&mut tx, &body, &self.namespace).await?;
+        let started = Self::start_in(&mut tx, &body, &self.namespace, Some(&memo)).await?;
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok(started)
@@ -123,6 +130,7 @@ where
         tx: &mut Transaction<'_, DB>,
         body: &Value,
         namespace: &str,
+        memo: Option<&super::memos::PreparedMemo>,
     ) -> Result<Value> {
         let workflow_id = text(&body, "workflow_id")?;
         if workflow_id.len() > 128
@@ -150,8 +158,15 @@ where
                 "execution_timeout_seconds",
                 "run_timeout_seconds",
                 "duplicate_policy",
+                "memo",
             ],
         )?;
+        if memo.is_none() && body.get("memo").is_some_and(|value| !value.is_null()) {
+            return Err(refuse(
+                StatusCode::CONFLICT,
+                "workflow_memo_updates_unavailable",
+            ));
+        }
         if body
             .get("duplicate_policy")
             .is_some_and(|v| v != "fail" && v != "use-existing")
@@ -188,6 +203,20 @@ where
             .bind(&run_id).bind(workflow_id).bind(workflow_type).bind(workflow_type).bind(&arguments)
             .bind(queue).bind(run_timeout).bind(DB::bind_time(execution_deadline)).bind(DB::bind_time(run_deadline))
             .bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(namespace).execute(&mut **tx).await?;
+        if let Some(memo) = memo {
+            for (key, value) in memo {
+                Self::query(DB::MEMO_INITIAL_INSERT)
+                    .bind(&run_id)
+                    .bind(workflow_id)
+                    .bind(key)
+                    .bind(DB::document(&value.projection))
+                    .bind(DB::bind_time(started_at))
+                    .bind(DB::bind_time(started_at))
+                    .bind(DB::document(&value.envelope))
+                    .execute(&mut **tx)
+                    .await?;
+            }
+        }
         Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,command_type,source,status,outcome,workflow_type,payload_codec,payload,command_sequence,accepted_at,applied_at) VALUES ($1,$2,$3,$4,'start','control_plane','accepted','started_new',$5,'avro',$6,1,$7,$8)")
             .bind(&command_id).bind(workflow_id).bind(&run_id).bind(&run_id).bind(workflow_type).bind(&arguments).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut **tx).await?;
         Self::query("UPDATE workflow_runs SET last_command_sequence=1 WHERE id=$1")
@@ -235,6 +264,27 @@ where
             .bind(workflow_id).bind(run_id).bind(self.namespace.as_ref()).fetch_optional(&self.pool).await?
             .ok_or_else(|| refuse(StatusCode::NOT_FOUND, if run_id.is_some() {"run_not_found"} else {"instance_not_found"}))?;
         let output = DB::optional_string(&row, "output")?;
+        let memo_rows = Self::query(DB::MEMO_READ)
+            .bind(DB::string(&row, "id")?)
+            .fetch_all(&self.pool)
+            .await?;
+        let mut stored = Vec::with_capacity(memo_rows.len());
+        for memo in memo_rows {
+            let portable = if DB::optional_number(&memo, "portable_value_sequence")?
+                == Some(DB::number(&memo, "upserted_at_sequence")?)
+            {
+                DB::optional_document_row(&memo, "portable_value")?
+                    .filter(|value| value.is_object() || value.is_array())
+            } else {
+                None
+            };
+            stored.push((
+                DB::string(&memo, "key")?,
+                DB::document_row(&memo, "value")?,
+                portable,
+            ));
+        }
+        let memo = super::memos::read_stored(self.memo_codec.clone(), stored).await?;
         let status = DB::string(&row, "status")?;
         let terminal = matches!(
             status.as_str(),
@@ -272,7 +322,7 @@ where
             "is_current_run": DB::optional_string(&row,"current_run_id")?.as_deref() == Some(DB::string(&row,"id")?.as_str()),
             "run_count": DB::number(&row,"run_count")?,
             "is_terminal": terminal, "closed_reason": DB::optional_string(&row,"closed_reason")?, "run_number": DB::number(&row,"run_number")?,
-            "payload_codec": "avro", "input": null, "output": null,
+            "payload_codec": "avro", "input": null, "output": null, "memo": memo,
             "input_envelope": wire(&DB::string(&row,"arguments")?), "output_envelope": output.as_deref().map(wire),
             "started_at": DB::instant(&row,"started_at")?, "closed_at": DB::optional_instant(&row,"closed_at")?,
             "execution_timeout_seconds": DB::optional_number(&row,"execution_timeout_seconds")?,
