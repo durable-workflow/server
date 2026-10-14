@@ -26,6 +26,30 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+Final-head #438 run `38486080308` retains two failed originals. SQLite
+stops at the published PHP activity-expiry parent poll's documented
+`503/backend_lock_pressure`. Read-only SQL confirms one original timeout and
+an unclaimed, ready parent task with zero repairs. PostgreSQL 17 passes both
+HTTP deadline and retry families, then Composer receives HTTP 500 fetching
+`league/config` before the corrected embedded application is installed.
+Neither job qualifies the complete matrix or explains older failures.
+
+The fixture now handles only a matching namespace/queue/task-kind pressure
+refusal through the normally installed Client response API. It waits the
+advertised backoff with the same logical poll ID inside the original observer
+budget. Unknown admission errors and malformed responses still fail. Optional
+wire timing and strict reader checks bind each pressure response to its actual
+retry. A normally installed PHP SDK 2.3.9 against the unchanged published
+PHP 2.6.2 image passes all four expiry originals with one synthetic pressure
+response injected before forwarding. Exact prefixes, frozen policies and
+original deadlines survive. All four parent tasks are claimed once with zero
+repairs. Fifteen installed-Client controls and seventeen reader controls pass.
+The complete shared reader suite passes 4,838 cases, with one explicit skip.
+An initial local observer setup error occurred before any workflow admission
+and is not counted as a workload. Fresh final-head hosted qualification is
+required. The combined source also includes General's reviewed PHP #440
+merge `11261ef7`; frozen images and native capabilities remain unchanged.
+
 Separate [retry and terminal-response controls](../scripts/conformance/server-parity/ACTIVITY-RETRY-RECEIPTS.md)
 pass fresh published PHP/embedded SQLite comparison at `b6d5faef2`. Four originals
 each retain two actual attempts, eight events, four tasks with zero repairs,
