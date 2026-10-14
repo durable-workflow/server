@@ -2825,4 +2825,25 @@ control's next valid upload returns 503 instead of 201. Three isolated identical
 controls and one unchanged full 105-case repeat pass. The original remains
 failed, its cause unestablished, with no timeout/source change or claimed fix.
 Exact source and hosted qualification remain in #450. No automatic upload,
-complete batch-workflow, S3, cleanup/backup, migration or release claim follows.
+S3, cleanup/backup, migration or release claim follows.
+
+The same installed-worker recipe now also accepts
+`DW_PARITY_EXTERNAL_ACTIVITY_COUNT=2`. Frozen PHP and the unchanged native
+binary each complete two distinct 4,194,356-byte argument references admitted
+in one workflow-task completion. Two actual activity callbacks, two payload
+GETs and two committed activity completions precede a separate cold parent
+reader. It joins results by authored activity sequence without changing event
+arrival order. Exact int64, null, Unicode and both 3 MiB string hashes survive.
+PHP completes in 8.17 seconds and native in 6.68 seconds against the original
+30-second budget. These single observations are functional checks, not a
+performance comparison.
+
+Stopped-state inspection finds the same nine-event history and task pattern in
+both databases: four first-attempt completed tasks, zero repairs, and one extra
+unclaimed ready workflow task. A final poll after closure returns no task in
+both implementations. Both large objects remain retained with exact provider
+bytes and no expiry. PHP also externalizes the two small activity results and
+final result; native keeps those inline under its unadvertised automatic policy.
+Both containers stop with 137 and no OOM. All local databases, provider objects,
+SDK dependencies, compiler output and task resources are removed after this
+audit. Hosted all-database external semantics remain pending.

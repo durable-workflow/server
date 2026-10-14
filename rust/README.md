@@ -312,6 +312,9 @@ encoded bytes for an admitted batch, within the existing 100-command bound.
 `scripts/conformance/server-parity/external-arguments-worker.php` exercises an
 explicit upload/scheduling author, an unchanged installed activity worker, and a
 separate cold SDK workflow reader that completes the same original workflow.
+Set `DW_PARITY_EXTERNAL_ACTIVITY_COUNT=2` for two distinct large arguments in
+one completion batch. The reader joins results by authored activity sequence
+and checks that a closed run delivers no further workflow task.
 
 The native development bootstrap creates the complete SQLite schema from the
 frozen published PHP image: 49 tables and 333 explicit indexes. Native completion
