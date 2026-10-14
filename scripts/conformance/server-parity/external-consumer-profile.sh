@@ -19,6 +19,12 @@ test ! -e "$state"
 test ! -e "$evidence"
 mkdir -p "$state"/{php,native}/objects "$evidence"/{php,native}
 chmod -R a+rwX "$state" "$evidence"
+jq -n --arg runner "$(git rev-parse HEAD)" --arg tree "$(git rev-parse HEAD:rust)" \
+  --arg binary "$(sha256sum rust-target/debug/durable-workflow-server | cut -d ' ' -f1)" \
+  --arg php "$image" --arg backend "$backend" \
+  --arg lock "$(sha256sum "$sdk/composer.lock" | cut -d ' ' -f1)" \
+  '{runner_revision:$runner,native_tree:$tree,native_binary_sha256:$binary,php_image:$php,
+    backend:$backend,sdk_lock_sha256:$lock}' > "$evidence/identity.json"
 created=()
 servers=()
 cleanup() {
