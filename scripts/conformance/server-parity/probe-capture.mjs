@@ -1,10 +1,10 @@
-import {closeSync, mkdtempSync, openSync, readFileSync, rmSync, statSync} from 'node:fs';
+import {closeSync, copyFileSync, mkdtempSync, openSync, readFileSync, rmSync, statSync} from 'node:fs';
 import {join} from 'node:path';
 import {spawnSync} from 'node:child_process';
 
 // Full SDK wire observations can exceed a pipe's buffer even when every actor
 // succeeds. Keep output on disk until the child exits, then admit complete bytes.
-export function captureProbe(command, args, {directory, env, timeout = 45000}) {
+export function captureProbe(command, args, {directory, env, timeout = 45000, preserveStdout}) {
   const capture = mkdtempSync(join(directory, '.probe-capture-'));
   const stdoutPath = join(capture, 'stdout');
   const stderrPath = join(capture, 'stderr');
@@ -20,7 +20,9 @@ export function captureProbe(command, args, {directory, env, timeout = 45000}) {
         return {...result, error: result.error ?? error, stdout: '', stderr: ''};
       }
     }
-    return {...result, stdout: readFileSync(stdoutPath, 'utf8'), stderr: readFileSync(stderrPath, 'utf8')};
+    if (preserveStdout) copyFileSync(stdoutPath, preserveStdout);
+    return {...result, stdout: readFileSync(stdoutPath, 'utf8'), stderr: readFileSync(stderrPath, 'utf8'),
+      stdoutPath: preserveStdout};
   } finally {
     if (stdoutFd !== undefined) closeSync(stdoutFd);
     if (stderrFd !== undefined) closeSync(stderrFd);

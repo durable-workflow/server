@@ -1,0 +1,18 @@
+{
+  "id": "activity-heartbeat-renewal",
+  "workflow_type": "parity.v1.activity_deadline_receipts",
+  "input": {"integer": 9007199254740993, "optional": null, "unicode": "renewal λ"},
+  "typed_value": {"type": "map", "value": {
+    "integer": {"type": "int64", "value": "9007199254740993"},
+    "optional": {"type": "null", "value": null},
+    "unicode": {"type": "string", "value": "renewal λ"}
+  }},
+  "activity_deadline_receipts": {
+    "start_to_close_timeout": 6, "schedule_to_close_timeout": 10,
+    "heartbeat_timeout": 2, "max_attempts": 1, "backoff_seconds": [],
+    "overall_budget_seconds": 25, "ordinary_lease_seconds": 300,
+    "heartbeat_control": true
+  },
+  "expected_events": ["StartAccepted", "WorkflowStarted", "ActivityScheduled", "ActivityStarted", "ActivityHeartbeatRecorded", "ActivityHeartbeatRecorded", "ActivityCompleted", "WorkflowCompleted"],
+  "contract": "Two real timely heartbeats keep one original attempt alive past its initial heartbeat deadline and extend its ordinary lease. Non-renewing status reads preserve lease, progress and the complete history prefix. Completion occurs within unchanged start-to-close and global deadlines, with one exact typed activity/workflow outcome and no retry. Post-terminal progress after the original global bound cannot renew or append history. This does not claim surviving the full ordinary 300-second lease or a new receipt contract. Use original wall-clock bounds without database backdating."
+}
