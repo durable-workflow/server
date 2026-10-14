@@ -54,6 +54,10 @@ docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=
   /source/scripts/conformance/server-parity/external-payload-reference.php \
   /source/rust/tests/fixtures/external-payload-reference-v1.json \
   > "$output/external-reference-controls.json"
+docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=128m --memory-swap=128m \
+  --network=none --entrypoint php -v "$PWD:/source:ro" "$image" \
+  /source/scripts/conformance/server-parity/external-payload-snapshot.php \
+  > "$output/external-snapshot-controls.json"
 docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
   --network=none --entrypoint node -v "$PWD:/source:ro" -v "$PWD/$output:/adapters" \
   -v "$PWD/$cargo:/cargo:ro" -w /source "$image" \

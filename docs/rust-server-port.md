@@ -26,6 +26,22 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+The external byte foundation now captures verified anonymous file snapshots
+with fixed 8 KiB reads, declared-size refusal before reading and a one-byte
+observed-size probe. SHA-256 measures the exact uploaded Base64 byte string;
+Avro frame validation belongs to the later state-bearing request. Blocking
+disk/hash work holds a concurrency permit, and a verified snapshot keeps that
+permit through its consumer lifetime. The async reader retains capacity and
+uses bounded file buffers. Abandoned captures stop between reads and retain
+capacity until a blocked source returns; callers must bound individual reads.
+Published PHP snapshot controls pass eight exact-size, spill, backing-change
+and one-byte-probe cases. Native library checks pass 56 tests with 18 explicit
+external-database/subprocess ignores. A counterfactual that performs capture on
+the single Tokio executor fails the responsiveness control after the watchdog
+releases the source; restoring the blocking worker passes. Namespace/registry
+admission, HTTP upload/fetch, provider persistence and real consumer acceptance
+are still pending. This enables no transport or memo capability.
+
 External memo references require the existing authenticated runtime transport,
 not provider URIs in clients. The next foundation validates the five-field
 opaque reference against 46 published PHP controls, including exact integer
