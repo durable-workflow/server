@@ -57,12 +57,9 @@ async def checkpoint():
                             assert [event["payload"]["version"] for event in markers] == [1, 1]
                             assert [(event["payload"]["min_supported"], event["payload"]["max_supported"]) for event in markers] == [(0, 1), (1, 1)]
                             with open(journal_path) as journal:
-                                captured = journal.read(4 * 1024 * 1024 + 1)
-                            if len(captured) > 4 * 1024 * 1024:
-                                raise RuntimeError("Original admission journal exceeds the fixture limit")
-                            if admission_acknowledged(captured, scheduled["payload"]["task"],
-                                                      WORKFLOW_ID + ":workflow:original"):
-                                break
+                                if admission_acknowledged(journal, scheduled["payload"]["task"],
+                                                          WORKFLOW_ID + ":workflow:original"):
+                                    break
                         if child.poll() is not None:
                             raise RuntimeError("Historical author exited before the committed checkpoint")
                         await asyncio.sleep(.025)

@@ -2,6 +2,7 @@
 import copy
 import json
 import sys
+import tempfile
 import unittest
 
 from admission_receipt import admission_acknowledged
@@ -48,6 +49,23 @@ class AdmissionReceiptTests(unittest.TestCase):
     def test_malformed_completed_lines_are_not_silently_ignored(self):
         with self.assertRaises(json.JSONDecodeError):
             admission_acknowledged("{broken}\n", TASK, WORKER)
+
+    def test_large_journal_stream_requires_the_matching_complete_receipt(self):
+        with tempfile.TemporaryFile(mode="w+t") as journal:
+            unrelated = json.dumps({"method": "GET", "path": "/api/history", "body": "x" * 1024}) + "\n"
+            for _ in range(4096):
+                journal.write(unrelated)
+            self.assertGreater(journal.tell(), 4 * 1024 * 1024)
+            journal.seek(0)
+            self.assertFalse(admission_acknowledged(journal, TASK, WORKER))
+            journal.seek(0, 2)
+            journal.write(json.dumps(WIRE))
+            journal.seek(0)
+            self.assertFalse(admission_acknowledged(journal, TASK, WORKER))
+            journal.seek(0, 2)
+            journal.write("\n")
+            journal.seek(0)
+            self.assertTrue(admission_acknowledged(journal, TASK, WORKER))
 
 
 if __name__ == "__main__":

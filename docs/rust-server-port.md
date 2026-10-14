@@ -73,7 +73,14 @@ within its unchanged 30-second limit. It changes no SDK, reader, clock, receipt
 or frozen package contract. Four focused tests, fourteen refusal controls and
 both actual failed captures confirm that unacknowledged admission cannot trigger
 the kill. The actor helper is included in adapter source integrity checks.
-Fresh exact-source qualification is required before promotion.
+The next matched revision exposed a separate fixture limit: a legitimate
+4,955,564-byte PHP HTTP journal was rejected before its matching acknowledged
+admission could be read. MySQL 8.4 in `38549329699` and all three MySQL/MariaDB
+cells in `38549468335` remain failed. The observer now streams complete lines
+instead of imposing a total-file limit. Five tests retain all fourteen refusal
+controls and cover large journals without a receipt, a partial receipt and a
+complete matching receipt. The actual MariaDB journal passes the same unchanged
+identity checks. Fresh exact-source qualification is required before promotion.
 
 Seven actual raw JSON admissions on the frozen PHP image exposed an additional
 initial-memo boundary in #444. Empty objects and contiguous numeric-key objects
@@ -104,9 +111,13 @@ six CPU/deadline cells, six ordinary database cells and the SDK/build job.
 Source and boundary gates pass. Independent CPU logs confirm the declared
 activity, timer, renewal and canonical cleanup observations under load, plus
 stopped read-only history and task audits with zero repairs. Exact fresh-main
-`38520403960` remains pending before final delivery. Native and frozen packages
-are unchanged. This does not establish matched PHP/Rust performance, takeover
-or rewrite release readiness.
+`38520403960` failed at the killed-producer poll checkpoint, as documented in
+#447. That correction is merged at `07015a65`; fresh-main `38544906272` passes
+all thirteen original jobs, with applicable source and boundary gates also
+passing. [Final delivery](https://github.com/durable-workflow/server/pull/447#issuecomment-6166892004)
+preserves both failed originals and the conditional skips. Native and frozen
+packages are unchanged. This does not establish matched PHP/Rust performance,
+takeover or rewrite release readiness.
 
 #438 candidate `c99b1130090b8e29db0bcab7d1bdfa6fd34a0dbf` qualifies all six
 database configurations in run `38492234181`, after two unchanged-head/limits
