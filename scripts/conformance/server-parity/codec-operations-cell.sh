@@ -6,8 +6,13 @@ if test "$#" != 5; then
   exit 2
 fi
 database_id=$1
-scope=$2
-[[ "$scope" =~ ^[a-z0-9][a-z0-9-]{1,54}$ ]] || exit 2
+[[ "$2" =~ ^[a-z0-9][a-z0-9-]{1,54}$ ]] || exit 2
+scope_identity="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${GITHUB_JOB:-codec}"
+if test -z "${RESOURCE_SCOPE:-}"; then
+  RESOURCE_SCOPE="dw-codec-$scope_identity-$2"
+fi
+export RESOURCE_SCOPE
+scope="$RESOURCE_SCOPE"
 binary=$(realpath "$3")
 sdk=$(realpath "$4")
 output=$5
@@ -25,19 +30,15 @@ binary_sha=$(sha256sum "$binary/server" | cut -d ' ' -f1)
 jq -e --arg tree "$native_tree" --arg sha "$binary_sha" \
   '.native_tree==$tree and .binary_sha256==$sha and .profile=="release" and .locked==true' \
   "$binary/build.json" >/dev/null
-server="$scope-native"
+if test -n "${GITHUB_RUN_ID:-}"; then
+  revision=$(git rev-parse HEAD)
+  jq -e --arg revision "$revision" '.source_revision==$revision' "$binary/build.json" >/dev/null
+fi
+native_server="$scope-native"
 db="$scope-db"
 probe="$scope-ready"
 cleanup() {
-  docker logs --tail 40 "$server" > "$output/server-log.txt" 2>&1 || true
-  docker rm -f "$probe" "$server" >/dev/null 2>&1 || true
-  if test "$connection" != sqlite; then
-    docker stop --timeout 10 "$db" >/dev/null 2>&1 || true
-    docker rm "$db" >/dev/null 2>&1 || true
-  fi
-  docker network rm "$scope" >/dev/null 2>&1 || true
-  # The unique state directory contains only this cell's disposable database.
-  rm -r -- "$output/state"
+  docker logs --tail 40 "$native_server" > "$output/server-log.txt" 2>&1 || true
 }
 trap cleanup EXIT
 docker network create "$scope" >/dev/null
@@ -77,7 +78,7 @@ else
     '.image==$image and .resources.nano_cpus==1000000000 and .resources.memory_bytes==$memory and .resources.memory_swap_bytes==$memory and .state.status=="running" and .state.oom_killed==false' "$output/database.json" >/dev/null
   env_args+=(-e DB_HOST=codec-db -e DB_DATABASE=native_cpu -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password)
 fi
-docker run -d --name "$server" --user="$(id -u):$(id -g)" --cpus=1 --memory=512m --memory-swap=512m \
+docker run -d --name "$native_server" --user="$(id -u):$(id -g)" --cpus=1 --memory=512m --memory-swap=512m \
   --network "$scope" --network-alias codec-native --entrypoint /bin-owned/server \
   -v "$binary:/bin-owned:ro" -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token \
   -e DW_BIND_ADDRESS=0.0.0.0:8080 "${env_args[@]}" "$runtime" > "$output/server-container.txt"
@@ -89,8 +90,8 @@ docker run --rm --name "$probe" --user="$(id -u):$(id -g)" --cpus=1 --memory=128
   http://codec-native:8080/api/ready > "$output/server-ready.json" 2> "$output/server-ready-errors.txt"
 cp "$binary/build.json" "$output/build.json"
 DW_PARITY_TOKEN=parity-test-token bash scripts/conformance/server-parity/codec-operations-profile.sh \
-  "$scope" "$server" http://codec-native:8080 "$scope" "$sdk" "$output"
-docker stop --timeout 10 "$server" >/dev/null
+  "$scope" "$native_server" http://codec-native:8080 "$scope" "$sdk" "$output"
+docker stop --time 10 "$native_server" >/dev/null
 if test "$connection" != sqlite; then
   docker inspect "$db" --format '{{json .State}}' | jq '{Status,ExitCode,OOMKilled}' > "$output/database-final-state.json"
   jq -e '.Status=="running" and .OOMKilled==false' "$output/database-final-state.json" >/dev/null
@@ -134,3 +135,5 @@ docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=
   scripts/conformance/server-parity/codec-operations-database-controls.mjs /evidence \
   > "$output/database-controls.json"
 cat "$output/database-controls.json"
+if test "$connection" != sqlite; then docker stop --time 10 "$db" >/dev/null; fi
+rm -r -- "$output/state"

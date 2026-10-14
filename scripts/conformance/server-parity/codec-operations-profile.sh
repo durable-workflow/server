@@ -6,7 +6,7 @@ if test "$#" != 6; then
   exit 2
 fi
 network=$1
-server=$2
+target_server=$2
 url=$3
 prefix=$4
 sdk=$(realpath "$5")
@@ -18,22 +18,26 @@ revision=$(git rev-parse HEAD)
 spec=tests/Fixtures/ServerParityPending/codec-operations-load.json
 artifacts=tests/Fixtures/ServerParityProfiles/corrected-markers/artifacts-workflow-2.5.16.json
 image=$(jq -r '.server.images["linux/amd64"]' "$artifacts")
-observer="$server-codec-observer"
+scope_identity="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${GITHUB_JOB:-codec}"
+if test -z "${RESOURCE_SCOPE:-}"; then
+  RESOURCE_SCOPE="dw-codec-$scope_identity-$prefix"
+fi
+export RESOURCE_SCOPE
+observer="$RESOURCE_SCOPE-native-codec-observer"
 stats_pid=''
 finish() {
   if test -n "$stats_pid"; then kill "$stats_pid" 2>/dev/null || true; wait "$stats_pid" 2>/dev/null || true; fi
-  docker rm -f "$observer" >/dev/null 2>&1 || true
 }
 trap finish EXIT
-docker inspect "$server" --format '{{json .HostConfig}}' | jq \
+docker inspect "$target_server" --format '{{json .HostConfig}}' | jq \
   '{nano_cpus:.NanoCpus,memory_bytes:.Memory,memory_swap_bytes:.MemorySwap}' > "$output/limits.json"
-docker inspect "$server" --format '{{json .State}}' | jq \
+docker inspect "$target_server" --format '{{json .State}}' | jq \
   '{Status,ExitCode,OOMKilled}' > "$output/initial-state.json"
 jq -e '.Status=="running" and .OOMKilled==false' "$output/initial-state.json" >/dev/null
 # The first Docker counter has no previous interval. Keep it as an idle sample,
 # then retain real cumulative-counter deltas around the original deadlines.
 curl --silent --show-error --no-buffer --max-time 170 --unix-socket /var/run/docker.sock \
-  "http://localhost/v1.47/containers/$server/stats?stream=true" \
+  "http://localhost/v1.47/containers/$target_server/stats?stream=true" \
   > "$output/docker-stats.jsonl" 2>"$output/stats-error.txt" &
 stats_pid=$!
 set +e
@@ -56,7 +60,7 @@ jq -c '{observed_at:.read,cpu_percent:(if (.precpu_stats.system_cpu_usage!=null)
 unlink "$output/docker-stats.jsonl"
 jq -n --slurpfile limits "$output/limits.json" --slurpfile samples "$output/stats.jsonl" \
   '{resource_limits:$limits[0],samples:$samples}' > "$output/cpu.json"
-docker inspect "$server" --format '{{json .State}}' | jq \
+docker inspect "$target_server" --format '{{json .State}}' | jq \
   '{Status,ExitCode,OOMKilled}' > "$output/final-state.json"
 if test "$status" != 0; then cat "$output/profile.txt" >&2; exit "$status"; fi
 jq -e --arg revision "$revision" '.runner_revision==$revision' "$output/record.json" >/dev/null

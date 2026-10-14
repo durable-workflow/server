@@ -7,15 +7,19 @@ test ! -e "$output"
 mkdir -p "$output/cargo" "$output/target"
 output=$(realpath "$output")
 root=$(git rev-parse --show-toplevel)
-scope="dw-codec-build-$(date -u +%Y%m%d%H%M%S)-$$"
+scope_identity="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${GITHUB_JOB:-codec}"
+if test -z "${RESOURCE_SCOPE:-}"; then
+  RESOURCE_SCOPE="dw-codec-$scope_identity-$(date -u +%Y%m%d%H%M%S)-$$"
+fi
+export RESOURCE_SCOPE
+build_container="$RESOURCE_SCOPE-build"
 image=mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
 cleanup() {
-  docker rm -f "$scope" >/dev/null 2>&1 || true
   rm -r -- "$output/cargo" "$output/target"
 }
 trap cleanup EXIT
 started=$SECONDS
-docker run --rm --name "$scope" --user="$(id -u):$(id -g)" --cpus=1 --memory=2g --memory-swap=2g \
+docker run --rm --name "$build_container" --user="$(id -u):$(id -g)" --cpus=1 --memory=2g --memory-swap=2g \
   -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=1 \
   -e CARGO_INCREMENTAL=0 -e CARGO_PROFILE_RELEASE_DEBUG=0 \
   -v "$root:/source:ro" -v "$output/cargo:/cargo" -v "$output/target:/target" \

@@ -85,11 +85,14 @@ After the strict readers and 58 corruption controls pass, it stops the service
 and compares canonical histories and task attempts through a read-only database
 transaction. Three controls refuse altered duplicate completion, manual repair
 and conflicting status rows from that same actual SQL observation. Cleanup
-retires only that cell's containers, network and database.
+retires only that cell's containers, network and database in the Action's
+`if: always()` step. A local caller installs the equivalent scoped exit trap:
 The Action keeps small outcomes/diagnostics for seven days, without DB dumps or
 full typed sidecars. The local equivalent is:
 
 ```sh
+export RESOURCE_SCOPE="dw-codec-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${GITHUB_JOB:-codec}-unique"
+trap 'bash scripts/conformance/server-parity/codec-operations-cleanup.sh build; bash scripts/conformance/server-parity/codec-operations-cleanup.sh cell' EXIT
 bash scripts/conformance/server-parity/codec-operations-build.sh /fresh/native-bin
 bash scripts/conformance/server-parity/codec-operations-cell.sh postgres-17 \
   unique-lowercase-scope /fresh/native-bin /normally-installed/php-sdk /fresh/result

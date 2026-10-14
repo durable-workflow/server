@@ -79,6 +79,8 @@ jobs:
   published-sdk-adapters:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      RESOURCE_SCOPE: dw-codec-build-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Build the locked published SDK adapter once
@@ -141,6 +143,11 @@ jobs:
             codec-native-build/SHA256SUMS
           retention-days: 7
           if-no-files-found: error
+      - name: Retire the owned optimized build container
+        if: always()
+        run: |
+          build_container="$RESOURCE_SCOPE-build"
+          docker rm -f "$build_container" >/dev/null 2>&1 || true
       - name: Share thin published SDK direction adapters
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -190,7 +197,7 @@ jobs:
       matrix:
         database: [sqlite, postgres-16, postgres-17, mysql-8.0, mysql-8.4, mariadb-10.11]
     env:
-      CODEC_SCOPE: dw-codec-${{ github.run_id }}-${{ github.run_attempt }}
+      RESOURCE_SCOPE: dw-codec-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ matrix.database }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Fetch this run's optimized native binary
@@ -210,11 +217,21 @@ jobs:
           set -euo pipefail
           (cd codec-native-build; sha256sum -c SHA256SUMS)
           chmod +x codec-native-build/server
-          revision=$(git rev-parse HEAD)
-          jq -e --arg revision "$revision" '.source_revision==$revision' codec-native-build/build.json >/dev/null
-          scope="$CODEC_SCOPE-$(printf '%s' '${{ matrix.database }}' | tr '.' '-')"
           bash scripts/conformance/server-parity/codec-operations-cell.sh \
-            '${{ matrix.database }}' "$scope" codec-native-build corrected-marker-adapters/php codec-evidence
+            '${{ matrix.database }}' cpu-cell codec-native-build corrected-marker-adapters/php codec-evidence
+      - name: Retire this cell's exact owned resources
+        if: always()
+        run: |
+          scope="$RESOURCE_SCOPE"
+          native_server="$scope-native"
+          db="$scope-db"
+          probe="$scope-ready"
+          observer="$RESOURCE_SCOPE-native-codec-observer"
+          docker rm -f "$observer" "$probe" "$native_server" >/dev/null 2>&1 || true
+          docker stop --time 10 "$db" >/dev/null 2>&1 || true
+          docker rm "$db" >/dev/null 2>&1 || true
+          docker network rm "$scope" >/dev/null 2>&1 || true
+          if test -d codec-evidence/state; then rm -r -- codec-evidence/state; fi
       - name: Publish the bounded outcome
         if: always()
         run: |
