@@ -267,7 +267,7 @@ where
     }
 
     pub(crate) async fn describe(&self, workflow_id: &str, run_id: Option<&str>) -> Result<Value> {
-        let row = Self::query("SELECT r.*,i.execution_timeout_seconds,i.current_run_id,(SELECT COUNT(*) FROM workflow_runs counted WHERE counted.workflow_instance_id=i.id) AS run_count FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE i.id=$1 AND r.id=COALESCE($2,i.current_run_id) AND r.namespace=$3")
+        let row = Self::query("SELECT r.*,i.execution_timeout_seconds,i.current_run_id,(SELECT parent_workflow_run_id FROM workflow_links l WHERE l.child_workflow_run_id=r.id AND l.link_type='continue_as_new' LIMIT 1) AS continued_from_run_id,(SELECT COUNT(*) FROM workflow_runs counted WHERE counted.workflow_instance_id=i.id) AS run_count FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE i.id=$1 AND r.id=COALESCE($2,i.current_run_id) AND r.namespace=$3")
             .bind(workflow_id).bind(run_id).bind(self.namespace.as_ref()).fetch_optional(&self.pool).await?
             .ok_or_else(|| refuse(StatusCode::NOT_FOUND, if run_id.is_some() {"run_not_found"} else {"instance_not_found"}))?;
         let output = DB::optional_string(&row, "output")?;
@@ -329,6 +329,7 @@ where
             "is_current_run": DB::optional_string(&row,"current_run_id")?.as_deref() == Some(DB::string(&row,"id")?.as_str()),
             "run_count": DB::number(&row,"run_count")?,
             "is_terminal": terminal, "closed_reason": DB::optional_string(&row,"closed_reason")?, "run_number": DB::number(&row,"run_number")?,
+            "continued_from_run_id": DB::optional_string(&row,"continued_from_run_id")?,
             "payload_codec": "avro", "input": null, "output": null, "memo": memo,
             "input_envelope": wire(&DB::string(&row,"arguments")?), "output_envelope": output.as_deref().map(wire),
             "started_at": DB::instant(&row,"started_at")?, "closed_at": DB::optional_instant(&row,"closed_at")?,
@@ -1430,6 +1431,9 @@ where
                     reject_fields(command, &["type", "result"])?;
                     envelope(command, "result")?;
                 }
+                "continue_as_new" if commands.len() == 1 => {
+                    super::continuations::validate(command)?;
+                }
                 "schedule_activity" => {
                     super::selections::fields(
                         command,
@@ -1587,6 +1591,10 @@ where
                 Some("complete_update" | "fail_update")
             ) {
                 Self::apply_update(&mut tx, &run, &task, command, sequence + 1).await?;
+            } else if command["type"] == "continue_as_new" {
+                sequence += 1;
+                self.continue_run(&mut tx, &run, &task, command, sequence)
+                    .await?;
             } else if command["type"] == "start_child_workflow" {
                 sequence += 1;
                 Self::start_child(&mut tx, &run, task_id, command, sequence).await?;
@@ -2659,7 +2667,7 @@ pub(super) fn reject_fields(body: &Value, allowed: &[&str]) -> Result<()> {
 }
 
 pub(crate) fn capabilities() -> Value {
-    json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "start_child_workflow", "open_condition_wait", "open_signal_wait", "record_version_marker", "complete_workflow"],
+    json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "start_child_workflow", "open_condition_wait", "open_signal_wait", "record_version_marker", "complete_workflow", "continue_as_new"],
         "worker_deregistration_fencing":{"schema":"durable-workflow.v2.worker-deregistration.v1","supported":true,"receipt_retention_seconds":600,"endpoint":"/worker/registrations/{workerId}/deregister"},
         "workflow_memo_updates": false, "cooperative_cancellation": true, "prepared_local_activities": false,
         "worker_sessions": false, "sticky_execution": false, "local_activities": false, "message_streams": false,

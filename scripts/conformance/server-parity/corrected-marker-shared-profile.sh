@@ -61,12 +61,14 @@ for target in php rust; do
   if test "$target" = php; then url=http://parity-corrected-php:8080; fi
   bash scripts/conformance/server-parity/corrected-marker-http-profile.sh "$target" "$url" retries
   bash scripts/conformance/server-parity/corrected-marker-http-profile.sh "$target" "$url" memos
+  bash scripts/conformance/server-parity/corrected-marker-http-profile.sh "$target" "$url" continuations
 done
 docker stop --time 5 "$RESOURCE_SCOPE-corrected-php" "$RESOURCE_SCOPE-corrected-retries-maintenance"
 bash scripts/conformance/server-parity/corrected-marker-embedded-profile.sh "$backend" portable
 bash scripts/conformance/server-parity/corrected-marker-embedded-profile.sh "$backend" deadlines
 bash scripts/conformance/server-parity/corrected-marker-embedded-profile.sh "$backend" retries
 bash scripts/conformance/server-parity/corrected-marker-embedded-profile.sh "$backend" memos
+bash scripts/conformance/server-parity/corrected-marker-embedded-profile.sh "$backend" continuations
 fixtures=()
 for id in fresh-numeric fresh-zero deprecation-first genuine-version-one php-full-retry php-full-retry-refusal rust-range-completed rust-range-timer-pending; do fixtures+=(--fixture "$profile/$id.json"); done
 shared=(-v "$PWD:/source:ro" -v "$PWD/$evidence:/evidence" -w /source)
@@ -75,11 +77,13 @@ docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --net
 docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --network none --entrypoint node "${shared[@]}" "$image" scripts/conformance/server-parity.mjs compare /evidence/php/deadlines-record.json /evidence/rust/deadlines-record.json /evidence/embedded/deadlines-record.json --artifacts "$artifacts" --fixture tests/Fixtures/ServerParityPending/activity-deadline-authority.json > "$evidence/deadlines-comparison.json"
 retry_fixtures=()
 docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --network none --entrypoint node "${shared[@]}" "$image" scripts/conformance/server-parity.mjs compare /evidence/php/memos-record.json /evidence/rust/memos-record.json /evidence/embedded/memos-record.json --artifacts "$artifacts" --fixture tests/Fixtures/ServerParityPending/memo-initial-activity-replay.json > "$evidence/memos-comparison.json"
+docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --network none --entrypoint node "${shared[@]}" "$image" scripts/conformance/server-parity.mjs compare /evidence/php/continuations-record.json /evidence/rust/continuations-record.json /evidence/embedded/continuations-record.json --artifacts "$artifacts" --fixture tests/Fixtures/ServerParityPending/continue-initial-memo-activity-replay.json > "$evidence/continuations-comparison.json"
 for id in activity-deadline-active-receipts activity-deadline-receipts activity-global-deadline-retry activity-heartbeat-renewal; do retry_fixtures+=(--fixture "tests/Fixtures/ServerParityPending/$id.json"); done
 docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --network none --entrypoint node "${shared[@]}" "$image" scripts/conformance/server-parity.mjs compare /evidence/php/retries-record.json /evidence/rust/retries-record.json /evidence/embedded/retries-record.json --artifacts "$artifacts" "${retry_fixtures[@]}" > "$evidence/retries-comparison.json"
 for target in php rust embedded; do
   mode=http
   if test "$target" = embedded; then mode=embedded; fi
+  docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --network none --entrypoint node "${shared[@]}" "$image" scripts/conformance/server-parity/continue-controls.mjs "/evidence/$target/$DW_PARITY_CORRECTED_PREFIX-continue-initial-memo-activity-replay-continuation.json" tests/Fixtures/ServerParityPending/continue-initial-memo-activity-replay.json "$artifacts" "$mode" > "$evidence/$target/continuations-reader-controls.json"
   docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --network none --entrypoint node "${shared[@]}" "$image" scripts/conformance/server-parity/memo-readers.mjs "/evidence/$target/$DW_PARITY_CORRECTED_PREFIX-memo-initial-activity-replay-memo.json" tests/Fixtures/ServerParityPending/memo-initial-activity-replay.json "$artifacts" "$mode" > "$evidence/$target/memos-reader-controls.json"
   record="/evidence/$target/portable-record.json"
   if test "$target" = embedded; then record=/evidence/embedded/record.json; fi

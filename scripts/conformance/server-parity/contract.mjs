@@ -28,6 +28,7 @@ import {checkCorrectedRange, checkCorrectedRangePackages} from './corrected-rang
 import {checkCorrectedClock} from './corrected-clock-contract.mjs';
 import {checkActivityDeadlines,checkActivityDeadlinePackages} from './activity-deadline-contract.mjs';
 import {checkMemoRecord} from './memo-contract.mjs';
+import {checkContinueRecord} from './continue-contract.mjs';
 import {checkActivityDeadlineReceipts, checkActivityDeadlineReceiptPackages} from './activity-deadline-receipts-contract.mjs';
 
 export function instantNanoseconds(value) {
@@ -43,6 +44,14 @@ export function instantNanoseconds(value) {
 // Only this fixture's declared semantics are projected. The full observation
 // remains in the recording, including implementation metadata and timestamps.
 export function checkObservation(fixture, observation, workflowId, artifacts) {
+  if (fixture.continuation) {
+    assert.equal(observation.workflow_id, workflowId);
+    const record=observation.continuation;
+    checkContinueRecord(record,fixture,artifacts,observation.mode);
+    return {workflow_id:workflowId,workflow_type:fixture.workflow_type,namespace:'default',
+      typed_output:fixture.typed_value,typed_memo:record.phases.successor.typed_memo,
+      phases:4,activity_invocations:1,run_count:2,continuation_count:1};
+  }
   if (fixture.memo_replay) {
     assert.equal(observation.workflow_id, workflowId);
     return checkMemoRecord(observation.memo_replay, fixture, artifacts, observation.mode);
@@ -692,7 +701,7 @@ export function compareRecords(records, expectedFixtureHashes, expectedFixtures,
       const baseline = reference.cases[index];
       assert.equal(item.fixture_id, item.fixture.id, 'case identity matches fixture');
       assert.deepStrictEqual(item.fixture, expectedFixtures[`${item.fixture_id}.json`], 'case expectations match the current reviewed source fixture');
-      if (item.fixture.signal_count || item.fixture.schedule || item.fixture.visibility || item.fixture.admission || item.fixture.patch_deployment || item.fixture.range_repair || item.fixture.sdk_direction || item.fixture.sdk_child_direction || item.fixture.sdk_timer_author || item.fixture.activity_deadline_authority || item.fixture.activity_deadline_receipts || item.fixture.memo_replay) assert.equal(item.observation.mode, record.mode, 'observation uses its recording adapter');
+      if (item.fixture.signal_count || item.fixture.schedule || item.fixture.visibility || item.fixture.admission || item.fixture.patch_deployment || item.fixture.range_repair || item.fixture.sdk_direction || item.fixture.sdk_child_direction || item.fixture.sdk_timer_author || item.fixture.activity_deadline_authority || item.fixture.activity_deadline_receipts || item.fixture.memo_replay || item.fixture.continuation) assert.equal(item.observation.mode, record.mode, 'observation uses its recording adapter');
       assert.equal(item.observation.sdk_php, record.artifacts.sdk_php, 'installed SDK matches tuple');
       checkPublishedPatchArtifacts(item.fixture, record.artifacts);
       checkRangeArtifacts(item.fixture, record.artifacts);
