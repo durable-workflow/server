@@ -101,14 +101,21 @@ SELECT 'history',workflow_run_id,event_type,COUNT(*) FROM workflow_history_event
 SELECT 'task',workflow_run_id,task_type,attempt_count,repair_count FROM workflow_tasks ORDER BY workflow_run_id,task_type;
 SQL
 if test "$connection" = sqlite; then
+  find "$output/state" -type f ! -name '*-shm' -print0 | sort -z | xargs -0 sha256sum > "$output/sqlite-state-before.sha256"
   docker run --rm --user="$(id -u):$(id -g)" --network=none --entrypoint php \
-    -v "$output:/evidence:ro" "$observer_image" -r '
-      $db=new PDO("sqlite:file:/evidence/state/native.sqlite?mode=ro");
+    -v "$output:/evidence" "$observer_image" -r '
+      $db=new PDO("sqlite:/evidence/state/native.sqlite",null,null,
+        [PDO::SQLITE_ATTR_OPEN_FLAGS=>PDO::SQLITE_OPEN_READONLY]);
       $db->exec("PRAGMA query_only=ON");$db->beginTransaction();
       foreach(explode(";",file_get_contents("/evidence/audit.sql")) as $sql) {
         if(trim($sql)==="")continue;
         foreach($db->query($sql,PDO::FETCH_NUM) as $row)echo implode("\t",$row),"\n";
       }$db->rollBack();' > "$output/database-audit.tsv"
+  # WAL readers may create/update their disposable shared-memory lock file.
+  # PRAGMA query_only forbids SQL mutation; the main DB and WAL bytes must also
+  # remain exact. Never use immutable mode to bypass an uncheckpointed WAL.
+  find "$output/state" -type f ! -name '*-shm' -print0 | sort -z | xargs -0 sha256sum > "$output/sqlite-state-after.sha256"
+  cmp "$output/sqlite-state-before.sha256" "$output/sqlite-state-after.sha256"
 elif test "$connection" = pgsql; then
   { printf 'BEGIN READ ONLY;\n'; cat "$output/audit.sql"; printf 'COMMIT;\n'; } \
     | "${sql[@]}" > "$output/database-audit.tsv"
