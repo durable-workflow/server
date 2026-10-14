@@ -1,7 +1,7 @@
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
 import {createInterface} from 'node:readline';
-import {readFileSync,writeFileSync,mkdirSync} from 'node:fs';
+import {readFileSync,writeFileSync,mkdirSync,existsSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 
 const [url,prefix,specPath,artifactsPath,directory]=process.argv.slice(2);
@@ -9,14 +9,17 @@ if(!url||!prefix||!specPath||!artifactsPath||!directory)throw new Error('Expecte
 const spec=JSON.parse(readFileSync(specPath));
 mkdirSync(directory,{recursive:true});
 const children=[];
+const childStates=[];
 function child(executable,args) {
   const process=spawn(executable,args,{stdio:['pipe','pipe','inherit']});children.push(process);
+  const state={executable,code:null,signal:null};childStates.push(state);
   const queued=[],waiters=[];
   createInterface({input:process.stdout}).on('line',line=>{
     const value=JSON.parse(line);if(waiters.length)waiters.shift().resolve(value);else queued.push(value);
   });
   const closed=once(process,'close');
-  closed.then(([code])=>{for(const waiter of waiters.splice(0))waiter.reject(new Error(`Observer closed with ${code}`));});
+  closed.then(([code,signal])=>{state.code=code;state.signal=signal;
+    for(const waiter of waiters.splice(0))waiter.reject(new Error(`Observer closed with ${code}`));});
   return {process,closed,next:()=>queued.length?Promise.resolve(queued.shift()):new Promise((resolve,reject)=>waiters.push({resolve,reject}))};
 }
 const health=child(process.execPath,['scripts/conformance/server-parity/codec-deadline-load.mjs','health',url,specPath,`${directory}/health.json`]);
@@ -48,5 +51,6 @@ try {
 } finally {
   clearTimeout(timer);
   for(const process of children)if(process.exitCode===null)process.kill('SIGKILL');
-  if(!complete)writeFileSync(`${directory}/failed.json`,JSON.stringify({outcome:'failed',observed_at:new Date().toISOString()})+'\n');
+  if(!complete)writeFileSync(`${directory}/failed.json`,JSON.stringify({outcome:'failed',observed_at:new Date().toISOString(),
+    children:childStates,memory_events:existsSync('/sys/fs/cgroup/memory.events')?readFileSync('/sys/fs/cgroup/memory.events','utf8'):null})+'\n');
 }

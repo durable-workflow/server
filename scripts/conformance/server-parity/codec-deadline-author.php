@@ -21,7 +21,11 @@ $state = ['specification_sha256'=>hash_file('sha256', $specPath), 'preparation_s
 $check = static function (bool $condition, string $message): void {
     if (!$condition) throw new RuntimeException($message);
 };
+$checkpoint = static function () use ($output, &$state): void {
+    file_put_contents($output, json_encode($state, JSON_THROW_ON_ERROR|JSON_UNESCAPED_UNICODE)."\n");
+};
 try {
+    $state['phase'] = 'preparation';
     $check($state['sdk_version']===$artifacts['sdk_php'], 'Wrong normally installed SDK version');
     $check($state['sdk_source']===$artifacts['sdk_php_source_commit'], 'Wrong normally installed SDK source');
     $check(\DurableWorkflow\Version::CONTROL_PLANE_PROTOCOL===$spec['control_plane_protocol'], 'Wrong installed control-plane protocol');
@@ -67,6 +71,9 @@ try {
     $state['status_before'] = $client->activityTaskStatus($activity['task_id'], $activity['activity_attempt_id'], $activity['lease_owner']);
     $check($state['status_before']['can_continue']===true, 'Original activity already lacks authority before load');
     $check(microtime(true)<$preparationDeadline, 'Original preparation budget expired');
+    $state['phase'] = 'prepared_original';
+    $state['outcome'] = 'pending';
+    $checkpoint();
     // Both independent load processes are ready before the parent releases this
     // barrier. No new execution or activity budget is issued at the barrier.
     echo json_encode(['ready'=>true, 'dense_workflow_id'=>$seedId, 'dense_run_id'=>$seed->selectedRunId], JSON_THROW_ON_ERROR)."\n";
@@ -104,6 +111,8 @@ try {
     } while ($parent===null);
     $state['parent_delivery'] = $parent;
     $state['after'] = namespaceHttpRun($client, $id, $original->selectedRunId);
+    $state['phase'] = 'deadline_observed';
+    $checkpoint();
     // Let the controller finish the read wave before checking that its original
     // Avro value survived. This read cannot re-admit or repair either workflow.
     echo json_encode(['deadline_observed'=>true], JSON_THROW_ON_ERROR)."\n";
@@ -118,6 +127,7 @@ try {
     $state['observer_deadline'] = $deadline;
     $state['observer_finished_at'] = microtime(true);
     $state['outcome'] = 'observed';
+    $state['phase'] = 'complete';
 } catch (Throwable $error) {
     $state['outcome'] = 'failed';
     $state['error'] = ['type'=>$error::class,
