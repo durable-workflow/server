@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "53"
+  version: "54"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -23,6 +23,14 @@ x-durable-workflow-catalog-entry: worker_protocol_api
 x-durable-workflow-catalog-schema: durable-workflow.v2.platform-protocol-specs.catalog
 x-durable-workflow-catalog-version: 16
 x-durable-workflow-evolution-rule: additive_minor_breaking_major
+x-durable-workflow-cross-kind-poll-wake:
+  opt_in_worker_capability: cross_kind_poll_wake
+  scope: [namespace, task_queue]
+  reply: { task: null, poll_status: task_queue_changed }
+  authority: hint_only
+  allocates_task_or_lease: false
+  changes_acceptance_or_deadline: false
+  non_opted_workers: preserve_existing_behavior
 x-durable-workflow-cancellation-scope-admission:
   minimum_protocol_version: "1.20"
   status: unfrozen_candidate_membership_only
@@ -1905,7 +1913,15 @@ components:
           required: [task]
           properties:
             task: { type: "null" }
-            poll_status: { type: string, enum: [timeout, empty] }
+            poll_status:
+              type: string
+              enum: [timeout, empty, task_queue_changed]
+              description: >
+                task_queue_changed is an optional hint for workers registered
+                with cross_kind_poll_wake. It interrupts an empty wait after
+                work is published in that namespace and task queue so the worker
+                can sweep its task kinds again. It grants no task, lease or
+                acceptance authority and does not renew an existing deadline.
     DrainingPoll:
       allOf:
         - $ref: "#/components/schemas/WorkerEnvelope"
