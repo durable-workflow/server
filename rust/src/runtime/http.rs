@@ -743,8 +743,15 @@ async fn task_history(
 
 async fn register(
     Extension(runtime): Extension<Runtime>,
+    headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
+    if body["capabilities"]
+        .as_array()
+        .is_some_and(|flags| flags.iter().any(|flag| flag == "memo_upserts"))
+    {
+        memo_protocol(&headers)?;
+    }
     Ok((
         StatusCode::CREATED,
         Json(worker_response(runtime.register(body).await?)),
@@ -850,8 +857,16 @@ async fn deliver_cancellation(
 async fn complete_workflow(
     Extension(runtime): Extension<Runtime>,
     Path(task_id): Path<String>,
+    headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
+    if body["commands"].as_array().is_some_and(|commands| {
+        commands
+            .iter()
+            .any(|command| command["type"] == "upsert_memo")
+    }) {
+        memo_protocol(&headers)?;
+    }
     let attempt = body["workflow_task_attempt"].clone();
     runtime
         .complete_workflow(&task_id, body)
@@ -866,6 +881,22 @@ async fn complete_workflow(
             )
         })
         .map(Json)
+}
+
+fn memo_protocol(headers: &HeaderMap) -> Result<()> {
+    let version = request_protocol(headers)?;
+    if version
+        .strip_prefix("1.")
+        .and_then(|minor| minor.parse::<u32>().ok())
+        .is_none_or(|minor| minor < 14)
+    {
+        return Err(super::RuntimeError::Protocol {
+            status: StatusCode::CONFLICT,
+            response: json!({"reason":"workflow_metadata_capability_protocol_mismatch",
+                "worker_capability":"memo_upserts","minimum_protocol_version":"1.14","recorded":false}),
+        });
+    }
+    Ok(())
 }
 async fn fail_workflow_task(
     Extension(runtime): Extension<Runtime>,

@@ -1,6 +1,71 @@
 use super::*;
 
 #[tokio::test]
+async fn memo_floor_and_unavailable_runtime_refuse_without_mutating_the_original() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let registration = json!({"worker_id":"memo-floor-worker", "task_queue":"test", "runtime":"php",
+        "supported_workflow_types":["echo"], "supported_activity_types":[], "capabilities":["memo_upserts"]});
+    let (status, refused) = request_protocol(
+        &app,
+        "POST",
+        "/api/worker/register",
+        registration.clone(),
+        "1.13",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(
+        refused["reason"],
+        "workflow_metadata_capability_protocol_mismatch"
+    );
+    assert_eq!(
+        request_protocol(&app, "POST", "/api/worker/register", registration, "1.14")
+            .await
+            .0,
+        StatusCode::CREATED
+    );
+    let original = start(&app, "memo-floor-original").await;
+    let task = poll(&app, "memo-floor-worker", "workflow").await;
+    let body = json!({"lease_owner":task["lease_owner"], "workflow_task_attempt":task["workflow_task_attempt"],
+        "commands":[{"type":"upsert_memo", "entries":envelope(Payload::Map(std::collections::BTreeMap::from([
+            ("valid".into(), Payload::Long(1))])))}]});
+    let path = format!(
+        "/api/worker/workflow-tasks/{}/complete",
+        task["task_id"].as_str().unwrap()
+    );
+    let history_path = format!(
+        "/api/workflows/memo-floor-original/runs/{}/history",
+        original["run_id"].as_str().unwrap()
+    );
+    let before = request(&app, "GET", &history_path, Value::Null).await;
+    let (status, floor) = request_protocol(&app, "POST", &path, body.clone(), "1.13").await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(
+        floor["reason"],
+        "workflow_metadata_capability_protocol_mismatch"
+    );
+    let (status, unsupported) = request_protocol(&app, "POST", &path, body, "1.14").await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(unsupported["reason"], "workflow_memo_updates_unavailable");
+    assert_eq!(unsupported["recorded"], false);
+    assert_eq!(
+        request(&app, "GET", &history_path, Value::Null).await,
+        before
+    );
+    let (status, completed) = request(&app, "POST", &path, json!({
+        "lease_owner":task["lease_owner"], "workflow_task_attempt":task["workflow_task_attempt"],
+        "commands":[{"type":"complete_workflow", "result":envelope(Payload::Long(7))}]
+    })).await;
+    assert_eq!(status, StatusCode::OK, "{completed}");
+    assert_eq!(completed["task_id"], task["task_id"]);
+    assert_eq!(completed["recorded"], true);
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
 async fn initial_memo_survives_cold_open_and_uses_the_same_sequence_portable_value() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
@@ -47,7 +112,7 @@ async fn initial_memo_survives_cold_open_and_uses_the_same_sequence_portable_val
 
     // Reproduce an older writer advancing the logical value without updating
     // the host's portable sequence. Stale Avro bytes must not win authority.
-    database.execute("UPDATE workflow_memos SET value='\"legacy\"',portable_value_sequence=-1 WHERE workflow_instance_id='memo-initial'").await;
+    database.execute("UPDATE workflow_memos SET value='\"legacy\"',portable_value_sequence=1 WHERE workflow_instance_id='memo-initial'").await;
     let (status, legacy) = request(&app, "GET", &path, Value::Null).await;
     assert_eq!(status, StatusCode::OK, "{legacy}");
     assert_eq!(legacy["memo"], json!({"metadata":"legacy"}));
