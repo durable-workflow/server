@@ -43,7 +43,14 @@ node scripts/conformance/server-parity/codec-operations-contract.mjs \
 
 No runtime or SDK patch, database backdating, explicit parent repair or frozen
 tuple change is allowed. The published PHP reference needs its normal timer,
-activity timeout and cleanup watchdog paths scoped to these originals. A
+activity timeout and cleanup watchdog paths scoped to these originals.
+`codec-operations-maintenance.php` boots the installed package once, expires
+only the two original activities, and invokes the cleanup watchdog only after
+the original cancellation deadline is due. A real database queue worker handles
+only the original timer/cancellation queues. Each supporting PHP role gets
+0.25 CPU, 256 MiB and no swap, separately from the one-CPU/512-MiB Apache service.
+Their resources are part of the reference description. This does not compare
+complete runtime resource use with native. A
 reference headroom failure remains failed. Actual originals, record controls
 and all-database qualification are pending. Passing the earlier activity-only
 original does not pass these families. This is deadline health, with no matched
