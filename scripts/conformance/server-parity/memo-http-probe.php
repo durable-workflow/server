@@ -66,7 +66,11 @@ try {
                 $send($body));
             $state['duplicate']['after'] = $snapshot();
             $conflict = $body;
-            $conflict['commands'][0]['queue'] = $workflowId.'-conflicting-queue';
+            if ($conflict['commands'][0]['type'] === 'schedule_activity') {
+                $conflict['commands'][0]['queue'] = $workflowId.'-conflicting-queue';
+            } else {
+                $conflict['commands'][0]['entries'] = $client->payloadCodec()->envelope(['conflicting' => true]);
+            }
             $state['conflicting_completion'] = ['before' => $snapshot(), 'submitted_request' => $conflict,
                 'receipt' => namespaceReceipt('conflicting_original_memo_completion', static fn (): array => $send($conflict)),
                 'after' => $snapshot()];
