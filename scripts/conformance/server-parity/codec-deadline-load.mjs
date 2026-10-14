@@ -33,8 +33,9 @@ export async function codecLoadRead(url, {timeoutSeconds,maximumBytes,minimumByt
   });
 }
 
-export async function codecLoadWave(url,spec,{health=false,token=null}={}) {
+export async function codecLoadWave(url,spec,{health=false,token=null,onStarted=null}={}) {
   const startedAt=new Date().toISOString(),start=performance.now(),end=start+spec.wave_seconds*1000;
+  onStarted?.({started:true,started_at:startedAt});
   const readers=Array.from({length:health?1:spec.readers},()=>({requests:0,successes:0,bytes:0,
     statuses:{},errors:{},minimum_milliseconds:null,maximum_milliseconds:0,hashes:[]}));
   await Promise.all(readers.map(async summary=>{
@@ -69,6 +70,7 @@ if(process.argv[1]===new URL(import.meta.url).pathname) {
   // The parent has already admitted and claimed the original activity. Both
   // load processes start from its explicit handoff, without rebasing it.
   await once(process.stdin,'data');process.stdin.pause();
-  const result=await codecLoadWave(url,spec,{health:role==='health',token:process.env.DW_PARITY_TOKEN});
+  const result=await codecLoadWave(url,spec,{health:role==='health',token:process.env.DW_PARITY_TOKEN,
+    onStarted:receipt=>process.stdout.write(JSON.stringify(receipt)+'\n')});
   writeFileSync(output,JSON.stringify({specification_sha256:createHash('sha256').update(specBytes).digest('hex'),...result})+'\n');
 }
