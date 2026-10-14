@@ -4,12 +4,36 @@ import http from 'node:http';
 import {once} from 'node:events';
 import {createHash} from 'node:crypto';
 import {codecLoadRead,codecLoadWave} from '../../scripts/conformance/server-parity/codec-deadline-load.mjs';
+import {checkCanonicalLateness} from '../../scripts/conformance/server-parity/codec-operations-contract.mjs';
 
 async function withServer(handler,run) {
   const server=http.createServer(handler);server.listen(0,'127.0.0.1');await once(server,'listening');
   try{return await run(`http://127.0.0.1:${server.address().port}`);}
   finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 }
+
+test('one microsecond early is refused even when Date.parse reports the same millisecond',()=>{
+  const due='2026-10-14T02:19:46.114321Z',early='2026-10-14T02:19:46.114320Z';
+  assert.equal(Date.parse(due),Date.parse(early));
+  assert.throws(()=>checkCanonicalLateness(early,due,1));
+  checkCanonicalLateness(due,due,1);
+});
+
+test('one microsecond beyond declared lateness is refused without rounding the original deadline',()=>{
+  const due='2026-10-14T02:19:46.114321Z',atLimit='2026-10-14T02:19:47.114321Z',late='2026-10-14T02:19:47.114322Z';
+  assert.equal(Date.parse(atLimit),Date.parse(late));
+  checkCanonicalLateness(atLimit,due,1);
+  assert.throws(()=>checkCanonicalLateness(late,due,1));
+});
+
+test('the actual wave start is acknowledged before dependent operations are released',async()=>{
+  let started=null,requests=0;
+  await withServer((_request,response)=>{assert(started?.started);requests++;response.end('{}');},async url=>{
+    const record=await codecLoadWave(url,{wave_seconds:0.03,readers:2,request_timeout_seconds:1,maximum_response_bytes:1000},
+      {onStarted:receipt=>{assert.equal(started,null);started=receipt;}});
+    assert.equal(record.started_at,started.started_at);assert(requests>0);
+  });
+});
 
 test('published control-plane version and namespace are carried on every description read',async()=>{
   const observed=[];
