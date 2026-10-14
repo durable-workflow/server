@@ -50,6 +50,11 @@ docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=1536m --memory-swap
 cp "$target/debug/server-parity-corrected-rust-markers" "$output/bin/rust-worker"
 cp "$adapter/rust/Cargo.lock" "$output/bin/Cargo.lock"
 docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
+  --network=none --entrypoint php -v "$PWD:/source:ro" "$image" \
+  /source/scripts/conformance/server-parity/external-payload-reference.php \
+  /source/rust/tests/fixtures/external-payload-reference-v1.json \
+  > "$output/external-reference-controls.json"
+docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
   --network=none --entrypoint node -v "$PWD:/source:ro" -v "$PWD/$output:/adapters" \
   -v "$PWD/$cargo:/cargo:ro" -w /source "$image" \
   "$adapter/identity.mjs" /adapters "$artifacts" /cargo/registry/src
