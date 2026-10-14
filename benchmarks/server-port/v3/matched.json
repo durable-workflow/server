@@ -1,0 +1,172 @@
+{
+  "schema": "durable-workflow.server-port-performance-profile/v1",
+  "profile_version": "3.0.0",
+  "profile_id": "server-port-development-matched-amd64-v3",
+  "evidence_class": "development_comparison",
+  "publishable_capacity_claim": false,
+  "status": "prospective_functional_qualification_pending",
+  "artifacts": {
+    "php_server": "durableworkflow/server@sha256:944c384c9875fd82637dd2bdea74dcb881cf983a57599ba0e492bec706296549",
+    "php_server_version": "2.6.2",
+    "php_workflow_version": "2.5.14",
+    "native_source": "29d461baeb0d9a5c8871edcc5e952a12729ce78e",
+    "native_build_runner_revision": "29d461baeb0d9a5c8871edcc5e952a12729ce78e",
+    "native_rust_tree": "6903b01acfbbd16c9a10d082de75428f0e4846ba",
+    "native_build": "cargo build --release --locked --bin durable-workflow-server",
+    "native_binary_sha256": "6bff4423e6e3e5c0f95502c5a8fce0da6f7af23694f2b22379667db7705ecb3b",
+    "sdk_php_version": "2.3.9",
+    "sdk_php_source": "7decd1a9fc39704f48b10c9209a23db8668ae7f2",
+    "sdk_php_lock": "scripts/conformance/server-parity/corrected-markers/php/composer.lock",
+    "sdk_php_lock_sha256": "42e814ee38813d3dafcf2e4cc371327d661536adda653e6cf1518a91a46087ca",
+    "mysql": "mysql@sha256:679e7e924f38a3cbb62a3d7df32924b83f7321a602d3f9f967c01b3df18495d6",
+    "mysql_version": "8.4.5",
+    "redis": "redis@sha256:0637954999d01b7c9ce9167db2da50656e2590d3b884f1c600c5f63bb6e6773c",
+    "redis_version": "7.2.16"
+  },
+  "hardware": {
+    "architecture": "x86_64",
+    "logical_cpus": null,
+    "physical_memory_bytes": null,
+    "kernel": null,
+    "docker": null,
+    "containerd": null,
+    "runc": null,
+    "cgroup_version": null,
+    "cgroup_driver": null,
+    "docker_storage_driver": null,
+    "durable_volume_filesystem": null,
+    "durable_storage_medium": null,
+    "concurrent_unrelated_workload": "record_before_and_after_every_window_and_invalidate_a_changed_pair"
+  },
+  "topology": {
+    "compose": "scripts/perf/server-port-matched.compose.yml",
+    "database_isolation": "different_compose_project_and_fresh_mysql_volume_for_each_implementation",
+    "implementations_never_run_concurrently": true,
+    "extra_swap_bytes": 0,
+    "runtime_aggregate_limit": {
+      "cpu_cores": 2,
+      "memory_bytes": 2147483648
+    },
+    "php_runtime_components": [
+      "php-server",
+      "php-worker",
+      "php-scheduler",
+      "redis"
+    ],
+    "native_runtime_components": [
+      "native-server"
+    ],
+    "database_limit": {
+      "cpu_cores": 1,
+      "memory_bytes": 1073741824
+    },
+    "sdk_worker_limit": {
+      "cpu_cores": 0.5,
+      "memory_bytes": 536870912
+    },
+    "probe_limit": {
+      "cpu_cores": 0.5,
+      "memory_bytes": 536870912
+    },
+    "runtime_memory_accounting": "all_runtime_components_plus_mysql_reported_separately_from_sdk_and_probe"
+  },
+  "workload": {
+    "authority": "benchmarks/capacity/v1/suite.json",
+    "authority_suite_version": "1.9.0",
+    "cell": "one-activity",
+    "workflow_type": "capacity.v1.one_activity",
+    "activity_type": "capacity.v1.echo",
+    "payload_bytes_each_direction": 1024,
+    "codec": "avro",
+    "client_processes": 1,
+    "sdk_worker_processes": 1,
+    "adapter": "benchmarks/capacity/v1/bindings/php/capacity_adapter.php",
+    "adapter_sha256": "0ad9fd714f325970c18d32cfedf754895cec621bd048593ac04fd8b9a247b926",
+    "command": "scripts/perf/standard-workflow-offered.php",
+    "command_sha256": "cac36195aa9d0867516dff7bcb09f7d9df5fc65b9c0a0b7f49f8d7852def055f",
+    "warmup_seconds": 60,
+    "offer_seconds": 120,
+    "drain_limit_seconds": 120,
+    "describe_interval_ms": 250,
+    "offered_rates_per_second": [
+      0.25,
+      0.5,
+      1
+    ],
+    "repeats": 3,
+    "baseline_drift_control": "repeat_0.25_before_and_after_higher_rates"
+  },
+  "idle": {
+    "command": "scripts/perf/idle-poll-probe.php",
+    "command_sha256": "e25704097dcd2138914b2dde9b81ea50ec47baa19764c2930823699f709f16cc",
+    "outcome_classifier": "scripts/perf/idle-poll-outcome.php",
+    "outcome_classifier_sha256": "df85f993c7fcec89b40986dd7643094b87da2b444f740368198b295bea1d9338",
+    "kind": "mixed",
+    "counts": [
+      6,
+      12,
+      24
+    ],
+    "requested_timeout_seconds": 10,
+    "repeats": 3,
+    "ordinary_api_probe": "health_and_ready_during_held_polls",
+    "queue_condition": "no_tasks_or_active_workflows"
+  },
+  "required_evidence": [
+    "source_and_runner_revisions_input_hashes_and_optimized_binary_hash",
+    "actual_installed_sdk_and_php_engine_identity",
+    "resolved_images_machine_facts_and_actual_component_limits",
+    "offered_accepted_in_window_completed_drained_and_verified_counts",
+    "latencies_errors_full_window_component_cpu_and_memory_samples",
+    "ordinary_api_latency_during_work_and_idle_waits",
+    "final_database_tasks_registrations_restarts_oom_and_swap",
+    "all_repetitions_including_failures_and_baseline_drift",
+    "cleanup_of_databases_objects_dependencies_compiler_and_task_resources"
+  ],
+  "limitations": [
+    "Prospective inputs; pending build and functional prerequisites prohibit measured admission.",
+    "The original v1 PHP measurements remain historical; both implementations need fresh matched observations.",
+    "This single-client 120-second development workload does not qualify the standard capacity topology or maximum sustained capacity.",
+    "Equal aggregate runtime limits include PHP HTTP, queue, scheduler and Redis, or the replacement native process; MySQL is additional and identical.",
+    "A debug build, missing component samples, growing backlog, failed cleanup or changed background workload cannot establish a performance gain.",
+    "Earlier component qualification and failed v2 observations do not qualify this combined native tree or establish a performance gain.",
+    "The earlier local machine facts and observations cannot qualify a new VM; no reachable target or measurement start is established."
+  ],
+  "prerequisites": {
+    "native_shared_source_run": "https://github.com/durable-workflow/server/actions/runs/38647001027",
+    "native_source_checks_run": "https://github.com/durable-workflow/server/actions/runs/38647001036",
+    "source_qualification": "pending",
+    "optimized_build": "pass",
+    "installed_observer_on_selected_binary": "pass_local_sqlite_held_activity_and_query_cases",
+    "isolated_host_access": "unavailable",
+    "actual_target_machine_facts": "pending"
+  },
+  "build_observation": {
+    "container_image": "rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0",
+    "rustc": "1.99.0 (b940084d7 2026-09-28)",
+    "cargo": "1.99.0 (5f94df478 2026-08-27)",
+    "llvm": "23.1.1",
+    "started_at": "2026-10-14T22:25:44.128803549Z",
+    "finished_at": "2026-10-14T22:33:00.819793917Z",
+    "reported_cargo_elapsed_seconds": 436,
+    "cpu_cores": 1,
+    "memory_bytes": 1610612736,
+    "memory_swap_bytes": 1610612736,
+    "cargo_jobs": 1,
+    "binary_bytes": 27545656,
+    "registry_bytes_after_build": 200589312,
+    "target_bytes_after_build": 583819264,
+    "compiler_state_deleted_after_audit": true,
+    "exit_code": 0,
+    "oom_killed": false,
+    "qualification": "one_local_build_observation_not_a_runtime_performance_result"
+  },
+  "host_requirements": {
+    "target": "separate_isolated_experiment_vm",
+    "minimum_logical_cpus": 4,
+    "minimum_physical_memory_bytes": 8589934592,
+    "actual_machine_facts_before_admission": true,
+    "fresh_php_and_native_baselines_on_same_host": true,
+    "shared_development_host_measurement": false
+  }
+}
