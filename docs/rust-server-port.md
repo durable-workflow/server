@@ -23,8 +23,9 @@ failed; later qualifying runs are separate observations.
 The active integration order is:
 
 - [#445](https://github.com/durable-workflow/server/pull/445): canonical memo
-  transaction foundation merged `bb199cb71`; separate fresh-main qualification
-  is pending. This preparation kept the memo-update gate disabled.
+  transaction foundation merged `bb199cb71`; its separate fresh-main 13-job
+  qualification passes in 38645794230, with every database log audited.
+  This preparation kept the memo-update gate disabled.
 - [#446](https://github.com/durable-workflow/server/pull/446): cold continue-as-new
   after a genuine activity, merged `dff9e846`. Its identical whole tree passes
   all 13 candidate jobs after one unchanged MariaDB retry. The original hosted
