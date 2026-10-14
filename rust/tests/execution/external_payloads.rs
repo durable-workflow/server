@@ -369,6 +369,171 @@ async fn malformed_and_expired_external_input_never_claims_or_admits_a_workflow(
     database.remove().await;
 }
 
+#[tokio::test]
+async fn external_workflow_completion_fences_before_retention_and_keeps_opaque_result_after_cold_open()
+ {
+    let temp = tempfile::tempdir().unwrap();
+    let mut config = ExternalPayloadConfig::default();
+    config.max_bytes = 8 * 1024 * 1024;
+    let (database, runtime, app) = setup(config, &temp.path().join("objects")).await;
+    assert_eq!(
+        json_request(
+            &app,
+            "POST",
+            "/api/worker/register",
+            "worker-token",
+            json!({
+        "worker_id":"external-result-author","task_queue":"test","runtime":"php",
+        "supported_workflow_types":["echo"],"supported_activity_types":[]})
+        )
+        .await
+        .0,
+        StatusCode::CREATED
+    );
+    let (status, original) = json_request(
+        &app,
+        "POST",
+        "/api/workflows",
+        "operator-token",
+        json!({
+        "workflow_id":"external-result-original","workflow_type":"echo","task_queue":"test",
+        "input":envelope(Payload::Array(vec![]))}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{original}");
+    let (_, delivery) = json_request(
+        &app,
+        "POST",
+        "/api/worker/workflow-tasks/poll",
+        "worker-token",
+        json!({
+        "worker_id":"external-result-author","task_queue":"test","timeout_seconds":0}),
+    )
+    .await;
+    let task = &delivery["task"];
+    let result = Payload::Array(vec![
+        Payload::String("x".repeat(3 * 1024 * 1024)),
+        Payload::Long(9007199254740993),
+        Payload::Null,
+        Payload::String("rangeλ".into()),
+    ]);
+    let blob = durable_workflow_server::codec::ValueCodec::new()
+        .unwrap()
+        .encode(&result)
+        .unwrap();
+    let (status, _, upload) = request(
+        &app,
+        "POST",
+        "/api/external-payloads/v1",
+        "worker-token",
+        "default",
+        Some(&metadata(blob.as_bytes())),
+        Body::from(blob.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let upload: Value = serde_json::from_slice(&upload).unwrap();
+    let output = json!({"codec":"avro","external_payload":upload["reference"]});
+    let path = format!(
+        "/api/worker/workflow-tasks/{}/complete",
+        task["task_id"].as_str().unwrap()
+    );
+    let body = completion(task, json!([{"type":"complete_workflow","result":output}]));
+    let history_path = format!(
+        "/api/workflows/external-result-original/runs/{}/history",
+        original["run_id"].as_str().unwrap()
+    );
+    let before = json_request(&app, "GET", &history_path, "operator-token", Value::Null)
+        .await
+        .1;
+    let mut stale = body.clone();
+    stale["workflow_task_attempt"] = json!(99);
+    assert_eq!(
+        json_request(&app, "POST", &path, "worker-token", stale)
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(unclaimed(&database).await, 1);
+    assert_eq!(
+        json_request(&app, "GET", &history_path, "operator-token", Value::Null)
+            .await
+            .1,
+        before
+    );
+    let mut unsupported = body.clone();
+    unsupported["commands"][0]["unknown"] = json!(true);
+    assert_eq!(
+        json_request(&app, "POST", &path, "worker-token", unsupported)
+            .await
+            .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(unclaimed(&database).await, 1);
+    let (status, receipt) = json_request(&app, "POST", &path, "worker-token", body.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{receipt}");
+    assert_eq!(receipt["recorded"], true);
+    assert_eq!(unclaimed(&database).await, 0);
+    let prefix = json_request(&app, "GET", &history_path, "operator-token", Value::Null)
+        .await
+        .1;
+    runtime.close().await;
+    let cold = database.open().await.unwrap().with_role_tokens(
+        Some("worker-token".into()),
+        Some("operator-token".into()),
+        Some("admin-token".into()),
+    );
+    let app = router(cold.clone());
+    let (status, run) = json_request(
+        &app,
+        "GET",
+        "/api/workflows/external-result-original",
+        "operator-token",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(run["status"], "completed");
+    assert_eq!(run["output_envelope"], output);
+    assert_eq!(
+        json_request(&app, "GET", &history_path, "operator-token", Value::Null)
+            .await
+            .1,
+        prefix
+    );
+    let reference = &upload["reference"];
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            &format!(
+                "/api/external-payloads/v1/{}",
+                reference["reference_id"].as_str().unwrap()
+            ),
+            "worker-token",
+            "default",
+            Some(reference),
+            Body::empty()
+        )
+        .await
+        .2,
+        blob.as_bytes()
+    );
+    // This observes only the existing native exact-body receipt, not a stronger
+    // shared PHP receipt contract or content reconciliation after provider loss.
+    let (status, duplicate) = json_request(&app, "POST", &path, "worker-token", body).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(duplicate["recorded"], false);
+    assert_eq!(
+        json_request(&app, "GET", &history_path, "operator-token", Value::Null)
+            .await
+            .1,
+        prefix
+    );
+    cold.close().await;
+    database.remove().await;
+}
+
 async fn setup(
     config: ExternalPayloadConfig,
     root: &std::path::Path,

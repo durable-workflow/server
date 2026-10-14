@@ -570,6 +570,15 @@ impl Runtime {
     delegate!(task_history(task_id: &str, body: Value) -> Result<Value>);
     delegate!(fail_workflow_task(task_id: &str, body: Value) -> Result<Value>);
     pub(crate) async fn complete_workflow(&self, task_id: &str, body: Value) -> Result<Value> {
+        let external = match body["commands"]
+            .as_array()
+            .and_then(|commands| commands.last())
+        {
+            Some(command) if command["type"] == "complete_workflow" => {
+                self.prepare_external(&command["result"]).await?
+            }
+            _ => None,
+        };
         if let Some(commands) = body["commands"].as_array() {
             for command in commands
                 .iter()
@@ -617,17 +626,17 @@ impl Runtime {
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
-                    .complete_workflow(task_id, body, self.signal_codec.clone())
+                    .complete_workflow(task_id, body, self.signal_codec.clone(), external)
                     .await
             }
             Storage::Postgres(store) => {
                 store
-                    .complete_workflow(task_id, body, self.signal_codec.clone())
+                    .complete_workflow(task_id, body, self.signal_codec.clone(), external)
                     .await
             }
             Storage::MySql(store) => {
                 store
-                    .complete_workflow(task_id, body, self.signal_codec.clone())
+                    .complete_workflow(task_id, body, self.signal_codec.clone(), external)
                     .await
             }
         }

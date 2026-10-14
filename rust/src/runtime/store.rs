@@ -1425,6 +1425,7 @@ where
         task_id: &str,
         body: Value,
         signal_codec: Arc<Semaphore>,
+        external: Option<super::external_resolution::PreparedExternal>,
     ) -> Result<Value> {
         let commands = body["commands"]
             .as_array()
@@ -1449,7 +1450,9 @@ where
             match text(command, "type")? {
                 "complete_workflow" if index + 1 == commands.len() => {
                     reject_fields(command, &["type", "result"])?;
-                    envelope(command, "result")?;
+                    if external.is_none() {
+                        envelope(command, "result")?;
+                    }
                 }
                 "continue_as_new"
                     if index + 1 == commands.len()
@@ -1811,11 +1814,18 @@ where
                 {
                     return Err(refuse(StatusCode::CONFLICT, "pending_durable_operations"));
                 }
-                let output = envelope(command, "result")?;
+                let output = match &external {
+                    Some(prepared) => prepared.stored(),
+                    None => envelope(command, "result")?,
+                };
                 let closed_at = now();
                 if Self::cancellation_request(&run)?.is_some() {
                     Self::finish_root_cancellation(&mut tx, &run, Some(task_id)).await?;
                 } else {
+                    if let Some(prepared) = &external {
+                        self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri)
+                            .await?;
+                    }
                     Self::append(
                         &mut tx,
                         &run_id,

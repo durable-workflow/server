@@ -2733,3 +2733,29 @@ the next successful turn. There are no new dependencies or schema changes.
 Qualification outcomes are recorded in #339. Cancellation/parallel timer groups, expiry recovery,
 missing timer reconstruction, CPU-heavy deadline health, throughput and complete
 operational parity remain open. This slice does not qualify database takeover.
+
+The [external-payload development slice in #450](https://github.com/durable-workflow/server/pull/450)
+now accepts an explicit verified local reference for workflow input and terminal
+workflow output. Output retention commits in the same transaction as the fenced
+completion and history. Wrong attempts and malformed commands leave the object
+unclaimed; cold descriptions/history retain its opaque reference. The focused
+HTTP case also checks the existing native exact-body duplicate receipt without
+claiming a stronger shared PHP receipt or provider-loss contract.
+
+The installed PHP SDK recipe `external-result-client.php` explicitly uploads the
+bytes and calls the public task-completion API. A separate cold process reads
+the completed output with the normal SDK. Frozen PHP and native SQLite each
+preserve the same 4,194,392 encoded bytes and SHA-256, a 3 MiB string, signed
+integer 9007199254740993, null and Unicode within the original 30-second
+observation budget. Stopped-state inspection confirms one completed
+first-attempt task, three events and one retained object per qualified original.
+The first PHP fixture original remains unsuccessful after a local field-name
+error before completion; the qualified original is separate. Both application
+containers stop with 137/no OOM, so this is not graceful-shutdown evidence.
+
+Local verification passes 66 library and 103 SQLite HTTP cases, with 18
+explicit database/subprocess library ignores. Full transport discovery stays
+unadvertised. Activity, query and memo ingress, completion-upload allowance,
+automatic result externalization, S3, cleanup/backup and all-database external
+semantics remain open. Exact source and hosted qualifications belong to #450;
+these observations do not qualify a release or database takeover.
