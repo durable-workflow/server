@@ -19,43 +19,14 @@ test ! -e "$state"
 test ! -e "$evidence"
 mkdir -p "$state"/{php,native}/objects "$evidence"/{php,native}
 chmod -R a+rwX "$state" "$evidence"
-jq -n --arg runner "$(git rev-parse HEAD)" --arg tree "$(git rev-parse HEAD:rust)" \
+jq -n --arg runner "$(git rev-parse HEAD)" --arg tree "$(git rev-parse HEAD:rust)" --arg scope "$RESOURCE_SCOPE" \
   --arg binary "$(sha256sum rust-target/debug/durable-workflow-server | cut -d ' ' -f1)" \
   --arg php "$image" --arg backend "$backend" \
   --arg lock "$(sha256sum "$sdk/composer.lock" | cut -d ' ' -f1)" \
-  '{runner_revision:$runner,native_tree:$tree,native_binary_sha256:$binary,php_image:$php,
+  '{runner_revision:$runner,native_tree:$tree,native_binary_sha256:$binary,php_image:$php,resource_scope:$scope,
     backend:$backend,sdk_lock_sha256:$lock}' > "$evidence/identity.json"
-created=()
-servers=()
-cleanup() {
-  result=$?
-  trap - EXIT
-  set +e
-  for target in "${servers[@]}"; do
-    docker stop --signal SIGTERM --timeout 10 "$resource-$target" > "$evidence/$target-stop.txt" 2>&1 || result=1
-    docker logs "$resource-$target" > "$evidence/$target-server.log" 2>&1
-    docker inspect --format '{{json .State}}' "$resource-$target" > "$evidence/$target-state.json"
-    if ! jq -e '.ExitCode == 0 and .OOMKilled == false and .Running == false' "$evidence/$target-state.json" > /dev/null; then
-      cat "$evidence/$target-state.json"
-      result=1
-    fi
-    docker rm -f "$resource-$target" > /dev/null || result=1
-  done
-  for name in "${created[@]}"; do
-    if test "$backend" = mysql; then
-      docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint mysql "$MYSQL_IMAGE" \
-        -h parity-mysql -uroot -pparity-disposable-password -e "DROP DATABASE $name" \
-        > "$evidence/$name-retire.txt" 2>&1 || result=1
-    else
-      docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" -e PGPASSWORD=parity-disposable-password \
-        --entrypoint dropdb "$POSTGRES_IMAGE" -h parity-pg -U parity "$name" \
-        > "$evidence/$name-retire.txt" 2>&1 || result=1
-    fi
-  done
-  rm -r -- "$state" || result=1
-  exit "$result"
-}
-trap cleanup EXIT
+# The workflow's separate always-step owns retirement, including partial setup.
+trap 'printf "%s\n" "$?" > "$evidence/profile-status.txt"' EXIT
 case "$backend" in
   mysql) db=(-e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password) ;;
   pgsql) db=(-e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password) ;;
@@ -68,11 +39,11 @@ for target in php native; do
     docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint mysql "$MYSQL_IMAGE" \
       -h parity-mysql -uroot -pparity-disposable-password \
       -e "CREATE DATABASE $database CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci" > "$evidence/$target-create.txt"
-    created+=("$database")
+    printf '%s\n' "$RESOURCE_SCOPE" > "$evidence/$target-database-owned.txt"
   elif test "$backend" = pgsql; then
     docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" -e PGPASSWORD=parity-disposable-password \
       --entrypoint createdb "$POSTGRES_IMAGE" -h parity-pg -U parity "$database" > "$evidence/$target-create.txt"
-    created+=("$database")
+    printf '%s\n' "$RESOURCE_SCOPE" > "$evidence/$target-database-owned.txt"
   else
     database=/state/database.sqlite
     if test "$target" = php; then touch "$state/php/database.sqlite"; chmod 0666 "$state/php/database.sqlite"; fi
@@ -96,7 +67,6 @@ for target in php native; do
       --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m "${configuration[@]}" "${mount[@]}" \
       -e DW_BIND_ADDRESS=0.0.0.0:8080 "${native[@]}" "$rust_image" > "$evidence/native-container.txt"
   fi
-  servers+=("$target")
   ready=0
   for attempt in $(seq 1 30); do
     if docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint curl "$image" \

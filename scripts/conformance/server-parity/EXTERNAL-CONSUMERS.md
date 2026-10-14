@@ -15,9 +15,11 @@ database image variables, normally installed `corrected-marker-adapters/php`
 and previously built `rust-target/debug/durable-workflow-server`. `BACKEND` is
 `sqlite`, `mysql` or `pgsql`. The profile creates its own databases, provider
 directories and servers. It never shares a database between implementations.
-Cleanup stops those servers, drops only those databases and removes provider
-bytes immediately. Small result summaries and diagnostic logs enter the
-existing bounded artifact exporter.
+The separate `external-consumer-cleanup.sh BACKEND` always-step stops those
+servers, drops only databases with this execution's ownership receipt and
+removes provider bytes immediately. A local caller must likewise run that
+cleanup after success or failure, before retiring the database/network. Small
+result summaries and diagnostic logs enter the existing bounded artifact exporter.
 
 The independent 64-bit PHP reader checks original identities, typed values,
 encoded digests, activity counts, fixed bounds and unchanged cold-read history.
