@@ -96,6 +96,7 @@ class RuntimeExternalPayloadTransport
     private const OUTGOING_ENVELOPE_PATHS = [
         'ServiceCatalogReadController@callShow' => [['result_envelope']],
         'ActivityController@show' => [['result']],
+        'ActivityResultController@show' => [['result_envelope']],
         'ActivityTaskController@poll' => [['task', 'arguments']],
         'ScheduleController@index' => [['schedules', '*', 'action', 'input']],
         'ScheduleController@show' => [['action', 'input']],
