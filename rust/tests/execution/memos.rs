@@ -47,7 +47,7 @@ async fn initial_memo_survives_cold_open_and_uses_the_same_sequence_portable_val
 
     // Reproduce an older writer advancing the logical value without updating
     // the host's portable sequence. Stale Avro bytes must not win authority.
-    database.execute("UPDATE workflow_memos SET value='\"legacy\"',portable_value_sequence=-1 WHERE workflow_instance_id='memo-initial'").await;
+    database.execute("UPDATE workflow_memos SET value='\"legacy\"',portable_value_sequence=1 WHERE workflow_instance_id='memo-initial'").await;
     let (status, legacy) = request(&app, "GET", &path, Value::Null).await;
     assert_eq!(status, StatusCode::OK, "{legacy}");
     assert_eq!(legacy["memo"], json!({"metadata":"legacy"}));
