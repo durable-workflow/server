@@ -7,6 +7,8 @@ async fn initial_memo_survives_cold_open_and_uses_the_same_sequence_portable_val
     let app = router(runtime.clone());
     let value = json!({"integer":9007199254740993_i64, "optional":null,
         "unicode":"memo λ", "false":false, "list":[], "map":{}, "double":7.0});
+    let mut projected = value.clone();
+    projected["map"] = json!({"$type":"map", "entries":[]});
     let (status, admitted) = request(
         &app,
         "POST",
@@ -28,7 +30,7 @@ async fn initial_memo_survives_cold_open_and_uses_the_same_sequence_portable_val
     );
     let (status, original) = request(&app, "GET", &path, Value::Null).await;
     assert_eq!(status, StatusCode::OK, "{original}");
-    assert_eq!(original["memo"], json!({"metadata":value}));
+    assert_eq!(original["memo"], json!({"metadata":projected}));
     assert_eq!(
         original["memo"]["metadata"]["integer"].as_i64(),
         Some(9007199254740993)
