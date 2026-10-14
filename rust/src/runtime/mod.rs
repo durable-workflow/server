@@ -12,7 +12,9 @@ mod continuations;
 mod control_plane;
 mod cooperative;
 mod execution;
+mod external_config;
 mod external_registry;
+mod external_transport;
 mod http;
 mod memo_json;
 mod memo_limits;
@@ -38,6 +40,7 @@ mod visibility;
 mod worker_incarnations;
 
 pub use execution::Runtime;
+pub use external_config::ExternalPayloadConfig;
 pub use http::router;
 
 use axum::{

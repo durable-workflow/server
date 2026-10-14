@@ -1,9 +1,10 @@
-//! Recoverable registry transitions, not yet exposed by HTTP/discovery.
+//! Recoverable registry transitions for the development byte transport.
 //! Provider writes must occur between prepare and promote under the same
 //! object lock as cleanup. Completion admission/lease fencing remains separate.
 use super::{
     Result,
     backend::Backend,
+    external_config::Quota,
     refuse,
     store::{Store, id, now},
 };
@@ -13,7 +14,7 @@ use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Transaction, Type};
 
-pub(super) struct RegisteredPayload {
+pub(crate) struct RegisteredPayload {
     pub(super) reference: Reference,
     pub(super) uri: String,
 }
@@ -101,11 +102,56 @@ where
     /// The caller commits this writing row before any provider effect. A retry
     /// keeps the existing ID, ready status and retained ownership; abandoned
     /// unclaimed retries renew only their upload expiry, matching PHP.
+    #[cfg(test)]
     pub(super) async fn prepare_external_upload(
         &self,
         expected: &Reference,
         uri: &str,
         expires: DateTime<Utc>,
+    ) -> Result<Reference> {
+        self.prepare_external_upload_with_quota(expected, uri, expires, Quota::default())
+            .await
+    }
+
+    pub(super) async fn upload_external_local(
+        &self,
+        local: crate::external_payload::LocalStorage,
+        expected: Reference,
+        snapshot: crate::external_payload::Snapshot,
+        expires: DateTime<Utc>,
+        quota: Quota,
+    ) -> Result<Reference> {
+        let uri = local
+            .uri_for(&expected)
+            .map_err(super::external_transport::snapshot_error)?;
+        let reference = self
+            .prepare_external_upload_with_quota(&expected, &uri, expires, quota)
+            .await?;
+        let mut tx = self.begin().await?;
+        Self::payload_object_lock(&mut tx, &uri).await?;
+        // Recheck registration after acquiring the provider lock. Cleanup may
+        // have removed an abandoned row before this write was admitted.
+        if Self::scalar("SELECT COUNT(*) FROM runtime_external_payloads WHERE id=$1 AND namespace=$2 AND storage_uri=$3")
+            .bind(&reference.reference_id).bind(self.namespace.as_ref()).bind(&uri)
+            .fetch_one(&mut *tx).await? != 1 {
+            return Err(refuse(StatusCode::SERVICE_UNAVAILABLE, "external_payload_unavailable"));
+        }
+        local
+            .put(reference.clone(), snapshot)
+            .await
+            .map_err(super::external_transport::snapshot_error)?;
+        self.promote_external_upload(&mut tx, &reference, &uri)
+            .await?;
+        tx.commit().await?;
+        Ok(reference)
+    }
+
+    pub(super) async fn prepare_external_upload_with_quota(
+        &self,
+        expected: &Reference,
+        uri: &str,
+        expires: DateTime<Utc>,
+        quota: Quota,
     ) -> Result<Reference> {
         let value = serde_json::to_value(expected)?;
         if !Reference::validate(&value).is_ok_and(|canonical| canonical == *expected)
@@ -137,6 +183,48 @@ where
             }
             Self::payload_row(&row)?.reference
         } else {
+            if quota.bytes.is_some() || quota.objects.is_some() {
+                Self::query("UPDATE workflow_namespaces SET name=name WHERE name=$1")
+                    .bind(self.namespace.as_ref())
+                    .execute(&mut *tx)
+                    .await?;
+                if Self::scalar("SELECT COUNT(*) FROM workflow_namespaces WHERE name=$1")
+                    .bind(self.namespace.as_ref())
+                    .fetch_one(&mut *tx)
+                    .await?
+                    == 0
+                {
+                    return Err(refuse(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "external_payload_namespace_quota_unavailable",
+                    ));
+                }
+                let objects = Self::scalar(
+                    "SELECT COUNT(*) FROM runtime_external_payloads WHERE namespace=$1",
+                )
+                .bind(self.namespace.as_ref())
+                .fetch_one(&mut *tx)
+                .await?;
+                let bytes = Self::scalar(DB::EXTERNAL_PAYLOAD_BYTES)
+                    .bind(self.namespace.as_ref())
+                    .fetch_one(&mut *tx)
+                    .await?;
+                if quota.objects.is_some_and(|limit| objects >= limit) {
+                    return Err(refuse(
+                        StatusCode::TOO_MANY_REQUESTS,
+                        "external_payload_namespace_objects_exhausted",
+                    ));
+                }
+                if quota
+                    .bytes
+                    .is_some_and(|limit| expected.size_bytes > limit.saturating_sub(bytes.max(0)))
+                {
+                    return Err(refuse(
+                        StatusCode::TOO_MANY_REQUESTS,
+                        "external_payload_namespace_bytes_exhausted",
+                    ));
+                }
+            }
             let reference = Reference {
                 reference_id: format!("ep_{}", id()),
                 ..expected.clone()
@@ -200,6 +288,16 @@ where
         }
         Self::match_payload(&row, expected, None)?;
         Self::payload_row(&row)
+    }
+
+    pub(super) async fn mark_external_fetched(&self, expected: &Reference) -> Result<()> {
+        let mut tx = self.begin().await?;
+        let timestamp = now();
+        Self::query("UPDATE runtime_external_payloads SET last_fetched_at=$1,updated_at=$2 WHERE id=$3 AND namespace=$4 AND upload_status='ready'")
+            .bind(DB::bind_time(timestamp)).bind(DB::bind_time(timestamp))
+            .bind(&expected.reference_id).bind(self.namespace.as_ref()).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(())
     }
 }
 

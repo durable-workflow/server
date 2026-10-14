@@ -279,6 +279,19 @@ at 1000 records and eight MiB of encoded payloads per page. Requests are capped
 at three MiB and inline envelopes at two MiB. Full customer payload/resource
 limits and external transport remain unqualified.
 
+The development external-payload routes upload/fetch verified encoded bytes at
+`/api/external-payloads/v1`, with authenticated namespace binding, local policy,
+object/byte quota admission and an independent request size/timeout bound.
+`PUT /api/namespaces/{namespace}/external-storage` is admin-only and currently
+supports the local driver. Completion-upload allowance headers refuse until
+their original task/lease authority is implemented. Full transport discovery
+stays unadvertised pending real workflow resolution/retention, cleanup/backup,
+restart, all database families and S3 qualification. The actual byte probe is
+`scripts/conformance/server-parity/external-payload-http.py`; run it only against
+an isolated runtime configured with its disposable fixture token, a default
+namespace, four MiB payload ceiling and one-object namespace quota. See the
+[port log](../docs/rust-server-port.md) for its precise acceptance scope.
+
 The native development bootstrap creates the complete SQLite schema from the
 frozen published PHP image: 49 tables and 333 explicit indexes. Native completion
 and poll receipts use separate relations. SQLx records a checksummed migration;

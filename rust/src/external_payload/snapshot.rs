@@ -21,6 +21,8 @@ pub enum SnapshotError {
     IntegrityMismatch,
     #[error("external_payload_unavailable")]
     Unavailable,
+    #[error("external_payload_not_found")]
+    NotFound,
     #[error("external_payload_transfer_cancelled")]
     Cancelled,
 }
@@ -165,6 +167,9 @@ fn capture_blocking<R: Read>(
         let count = match source.read(&mut buffer[..read_size]) {
             Ok(count) => count,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Err(SnapshotError::NotFound);
+            }
             Err(_) => return Err(SnapshotError::Unavailable),
         };
         if count == 0 {

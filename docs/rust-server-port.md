@@ -26,6 +26,38 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+The development external-payload transport now exposes authenticated versioned
+upload/fetch routes and an admin-only local namespace policy. The byte route has
+its own configured size ceiling, original request timeout and one bounded
+snapshot worker; it accepts worker, operator and admin credentials without
+either protocol-version header, matching the frozen PHP transport. Namespace
+object/byte quotas include precommitted writing rows and refuse a new object
+before any provider write. Identical retries keep their reference ID. Fetch
+verifies independent bytes and updates fetch metadata without retaining the
+object or renewing its expiry. Completion-upload headers explicitly refuse
+while the required task/lease authority checks remain unfinished.
+
+Actual separate native and frozen PHP 2.6.2 HTTP servers each pass nineteen
+byte-transport checks with a 3,145,729-byte object: exact upload/fetch hash,
+same-reference retry, conflicting metadata, authentication, namespace isolation
+and object-quota refusal. Stopped database/provider inspection confirms two
+ready, unclaimed namespace records, distinct reference IDs and one exact shared
+content-addressed object on each server. The PHP fixture's initial local-policy
+setup returned 404 because this minimal launcher had not seeded its default
+namespace; an actual namespace admission preceded its first payload comparison.
+Both test runtimes, their databases, network and raw scratch are deleted.
+This observes bytes, not a valid Avro datum or an admitted workflow. The full
+transport capability remains unadvertised. Complete policy variants, all
+database families, local/S3 providers, completion-upload authority, retained
+claims, cleanup/backup/restart and real external memo/continuation consumers
+remain qualification gates. Tokio-util 0.7.19 supplies the standard streaming
+adapters; existing locked crate versions are unchanged.
+Final native source checks pass 63 library tests with 18 explicit
+database/subprocess ignores and all 100 SQLite execution HTTP tests. The four
+new HTTP controls also cover corrupt/missing provider bytes, partial-object
+repair, observed oversize, refusal before body polling/provider effects and
+recovery of transfer capacity after a stalled upload's original timeout.
+
 The external-storage preparation now writes local content-addressed objects
 and records recoverable `writing`/`ready` registry transitions. Exact retries
 preserve accepted bytes and reference identity, while partial objects can be
@@ -40,8 +72,9 @@ The actual frozen PHP registry passes fifteen independent controls, including
 an injected provider write failure and recovery with the same reference ID.
 Final native library checks pass 62 tests with 18 explicit database/subprocess
 ignores, and all 96 SQLite execution HTTP tests pass. These registry methods
-remain internal preparation: HTTP routing,
-policy/quotas, completion-upload fences, retained-state claims, cleanup/backup
+were internal preparation at that checkpoint. The subsequent byte handlers
+above add local HTTP routing and quota admission; completion-upload fences,
+retained-state claims, cleanup/backup
 coordination, external database execution and S3 remain pending. No external
 transport or memo capability is enabled.
 
@@ -58,8 +91,8 @@ and one-byte-probe cases. That snapshot foundation passed 56 library tests with 
 external-database/subprocess ignores. A counterfactual that performs capture on
 the single Tokio executor fails the responsiveness control after the watchdog
 releases the source; restoring the blocking worker passes. Namespace/registry
-admission, HTTP upload/fetch, provider persistence and real consumer acceptance
-are still pending. This enables no transport or memo capability.
+admission, HTTP upload/fetch and provider persistence were still pending at that
+snapshot-only checkpoint. Real workflow consumer acceptance remains pending.
 
 External memo references require the existing authenticated runtime transport,
 not provider URIs in clients. The next foundation validates the five-field
@@ -69,8 +102,9 @@ present-null/empty codec fallback. The published validator and codec-contract
 source hashes match this PHP tree. A reference's permitted identifier alphabet
 does not assert that an object exists or that its bytes have passed integrity.
 Native storage lookup must separately bind namespace, ready state, metadata and
-expiry before byte verification. The primitive is preparatory and not called
-by HTTP ingress yet. It changes no transport capability or frozen actor tuple.
+expiry before byte verification. The primitive was preparatory at that checkpoint;
+the byte handlers above now use it. It changes no advertised transport capability
+or frozen actor tuple.
 The full transport slice remains upload/fetch and normal installed SDK use,
 bounded streaming, durable content-addressed admission, integrity and quota
 controls, current-lease completion upload fences, runtime-owned resolution and

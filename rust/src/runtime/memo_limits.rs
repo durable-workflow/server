@@ -18,6 +18,11 @@ fn limit(primary: Option<&str>, legacy: Option<&str>) -> Option<usize> {
     let Some(value) = primary.filter(|value| !typed_null(value)).or(legacy) else {
         return Some(DEFAULT_BYTES);
     };
+    let bytes = cast_integer(value);
+    (bytes > 0).then_some(bytes.max(0) as usize)
+}
+
+pub(super) fn cast_integer(value: &str) -> i64 {
     let value = match value.to_ascii_lowercase().as_str() {
         "true" | "(true)" => "1",
         "false" | "(false)" | "null" | "(null)" | "empty" | "(empty)" => "0",
@@ -33,16 +38,19 @@ fn limit(primary: Option<&str>, legacy: Option<&str>) -> Option<usize> {
                 .and_then(|value| value.strip_suffix('\''))
         })
         .unwrap_or(value);
+    cast_numeric_string(value)
+}
+
+pub(super) fn cast_numeric_string(value: &str) -> i64 {
     let numeric = NUMERIC_PREFIX
         .captures(value)
         .and_then(|value| value.get(1));
-    let bytes = numeric.map_or(0, |value| {
+    numeric.map_or(0, |value| {
         value
             .as_str()
             .parse::<i64>()
             .unwrap_or_else(|_| value.as_str().parse::<f64>().unwrap_or(0.0) as i64)
-    });
-    (bytes > 0).then_some(bytes.max(0) as usize)
+    })
 }
 
 pub(super) fn configured_limit() -> Result<Option<usize>> {

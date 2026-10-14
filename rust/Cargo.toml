@@ -20,6 +20,8 @@ subtle = "=2.6.1"
 getrandom = "=0.3.4"
 regex-lite = "0.1"
 tempfile = "3"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+tokio-util = { version = "=0.7.19", features = ["io", "io-util"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time", "fs", "io-util"] }
 ulid = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }

@@ -90,7 +90,7 @@ impl LocalStorage {
             if !directory.starts_with(root.as_ref()) || directory == *root {
                 return Err(SnapshotError::Unavailable);
             }
-            if fs::symlink_metadata(&path).is_ok_and(|entry| entry.file_type().is_symlink()) {
+            if fs::symlink_metadata(&path).is_ok_and(|entry| !entry.file_type().is_file()) {
                 return Err(SnapshotError::Unavailable);
             }
             let mut output = OpenOptions::new()
@@ -158,7 +158,7 @@ impl LocalStorage {
         workers: Arc<Semaphore>,
     ) -> Result<Snapshot, SnapshotError> {
         if self.uri_for(&reference)? != uri {
-            return Err(SnapshotError::IntegrityMismatch);
+            return Err(SnapshotError::Unavailable);
         }
         let path = self.path(&reference)?;
         // Opening is part of capture's admitted blocking work, so queued
@@ -182,6 +182,9 @@ impl Read for LocalReader {
         if self.source.is_none() {
             let resolved = self.path.canonicalize()?;
             if !resolved.starts_with(self.root.as_ref()) {
+                return Err(std::io::Error::other("external_payload_unavailable"));
+            }
+            if !resolved.is_file() {
                 return Err(std::io::Error::other("external_payload_unavailable"));
             }
             self.source = Some(File::open(resolved)?);
