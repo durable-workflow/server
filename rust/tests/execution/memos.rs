@@ -66,6 +66,105 @@ async fn memo_floor_and_unavailable_runtime_refuse_without_mutating_the_original
 }
 
 #[tokio::test]
+async fn initial_json_boundary_matches_frozen_admission_and_survives_cold_open() {
+    let fixture: Value =
+        serde_json::from_str(include_str!("../fixtures/memo-initial-json-v1.json")).unwrap();
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let mut originals = Vec::new();
+    for case in fixture["cases"].as_array().unwrap() {
+        let id = format!("memo-json-{}", case["id"].as_str().unwrap());
+        let metadata: Value = serde_json::from_str(case["json"].as_str().unwrap()).unwrap();
+        let (status, original) = request(
+            &app,
+            "POST",
+            "/api/workflows",
+            json!({
+                "workflow_id":id,"workflow_type":"echo","task_queue":"test",
+                "input":envelope(Payload::Array(vec![])),"memo":{"metadata":metadata}
+            }),
+        )
+        .await;
+        if case["accepted"] == false {
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{original}");
+            assert_eq!(
+                request(&app, "GET", &format!("/api/workflows/{id}"), Value::Null)
+                    .await
+                    .0,
+                StatusCode::NOT_FOUND
+            );
+        } else {
+            assert_eq!(status, StatusCode::CREATED, "{original}");
+            originals.push((
+                id,
+                original["run_id"].as_str().unwrap().to_owned(),
+                case["expected"].clone(),
+            ));
+        }
+    }
+    let raw = r#"{"workflow_id":"memo-json-history","workflow_type":"echo","task_queue":"test","input":{"codec":"avro","blob":"wwHioz3/VYAiNwA="},"memo":{"metadata":{"map":{},"numeric":{"1":"one","0":"zero"}},"deleted":null}}"#;
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/workflows")
+                .header("authorization", "Bearer test-token")
+                .header("content-type", "application/json")
+                .header("x-namespace", "default")
+                .header("x-durable-workflow-control-plane-version", "2")
+                .body(Body::from(raw))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let original: Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), 4 * 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let run = original["run_id"].as_str().unwrap();
+    let (_, history) = request(
+        &app,
+        "GET",
+        &format!("/api/workflows/memo-json-history/runs/{run}/history"),
+        Value::Null,
+    )
+    .await;
+    for event in history["events"].as_array().unwrap().iter().take(2) {
+        assert_eq!(
+            event["payload"]["memo"],
+            json!({"metadata":{"map":[],"numeric":{"1":"one","0":"zero"}},"deleted":null})
+        );
+    }
+    originals.push((
+        "memo-json-history".into(),
+        run.into(),
+        json!({"map":[], "numeric":["zero","one"]}),
+    ));
+    runtime.close().await;
+    drop(app);
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    for (id, run, expected) in originals {
+        let (status, description) = request(
+            &app,
+            "GET",
+            &format!("/api/workflows/{id}/runs/{run}"),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{description}");
+        assert_eq!(description["memo"], json!({"metadata":expected}));
+    }
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
 async fn initial_memo_survives_cold_open_and_uses_the_same_sequence_portable_value() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
@@ -73,7 +172,9 @@ async fn initial_memo_survives_cold_open_and_uses_the_same_sequence_portable_val
     let value = json!({"integer":9007199254740993_i64, "optional":null,
         "unicode":"memo λ", "false":false, "list":[], "map":{}, "double":7.0});
     let mut projected = value.clone();
-    projected["map"] = json!({"$type":"map", "entries":[]});
+    projected["map"] = json!([]);
+    let mut admitted_value = value.clone();
+    admitted_value["map"] = json!([]);
     let (status, admitted) = request(
         &app,
         "POST",
@@ -106,7 +207,7 @@ async fn initial_memo_survives_cold_open_and_uses_the_same_sequence_portable_val
     for event in history["events"].as_array().unwrap().iter().take(2) {
         assert_eq!(
             event["payload"]["memo"],
-            json!({"metadata":value, "deleted":null})
+            json!({"metadata":admitted_value, "deleted":null})
         );
     }
 

@@ -40,8 +40,8 @@ fn valid_key(key: &str) -> bool {
         && !(!numeric.is_empty() && numeric.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
-// Initial HTTP memos are JSON-like values. A JSON object resembling an Avro
-// envelope or byte projection remains a literal map, as in StartOptions.
+// Initial JSON follows the published PHP associative-array boundary. Typed
+// portable envelopes bypass this conversion. Envelope-shaped JSON is literal.
 fn from_json(value: Value) -> Result<Payload> {
     Ok(match value {
         Value::Null => Payload::Null,
@@ -57,12 +57,34 @@ fn from_json(value: Value) -> Result<Payload> {
         Value::Array(values) => {
             Payload::Array(values.into_iter().map(from_json).collect::<Result<_>>()?)
         }
-        Value::Object(values) => Payload::Map(
-            values
-                .into_iter()
-                .map(|(key, value)| Ok((key, from_json(value)?)))
-                .collect::<Result<_>>()?,
-        ),
+        Value::Object(mut values) => {
+            if (0..values.len()).all(|index| values.contains_key(&index.to_string())) {
+                Payload::Array(
+                    (0..values.len())
+                        .map(|index| {
+                            from_json(
+                                values
+                                    .remove(&index.to_string())
+                                    .expect("contiguous JSON keys"),
+                            )
+                        })
+                        .collect::<Result<_>>()?,
+                )
+            } else {
+                if values.keys().any(|key| {
+                    key.parse::<i64>()
+                        .is_ok_and(|number| number.to_string() == *key)
+                }) {
+                    return Err(invalid());
+                }
+                Payload::Map(
+                    values
+                        .into_iter()
+                        .map(|(key, value)| Ok((key, from_json(value)?)))
+                        .collect::<Result<_>>()?,
+                )
+            }
+        }
     })
 }
 
@@ -481,6 +503,28 @@ mod tests {
     }
 
     #[test]
+    fn initial_json_boundary_matches_the_actual_frozen_php_admissions() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/memo-initial-json-v1.json"
+        ))
+        .unwrap();
+        for case in fixture["cases"].as_array().unwrap() {
+            let value: Value = serde_json::from_str(case["json"].as_str().unwrap()).unwrap();
+            let prepared = initial(json!({"metadata":value}));
+            if case["accepted"] == false {
+                assert!(prepared.is_err(), "{} must refuse", case["id"]);
+            } else {
+                assert_eq!(
+                    prepared.unwrap()["metadata"].projection,
+                    case["expected"],
+                    "{}",
+                    case["id"]
+                );
+            }
+        }
+    }
+
+    #[test]
     fn initial_values_retain_int64_null_false_lists_and_literal_envelopes() {
         let values = initial(
             json!({"integer":9007199254740993_i64, "optional":null, "false":false,
@@ -498,7 +542,7 @@ mod tests {
             codec
                 .decode(values["map"].envelope["blob"].as_str().unwrap())
                 .unwrap(),
-            Payload::Map(BTreeMap::new())
+            Payload::Array(vec![])
         );
         assert_eq!(
             codec

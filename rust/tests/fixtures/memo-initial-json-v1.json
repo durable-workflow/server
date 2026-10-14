@@ -1,0 +1,13 @@
+{
+  "contract": "Initial JSON memo values follow the frozen PHP associative-array boundary. Authored Avro maps keep their own branch identity.",
+  "reference": "https://github.com/durable-workflow/server/pull/444#issuecomment-6161749621",
+  "cases": [
+    {"id":"empty","json":"{}","accepted":true,"expected":[]},
+    {"id":"list-key","json":"{\"0\":\"zero\"}","accepted":true,"expected":["zero"]},
+    {"id":"ordered","json":"{\"0\":\"zero\",\"1\":\"one\"}","accepted":true,"expected":["zero","one"]},
+    {"id":"reversed","json":"{\"1\":\"one\",\"0\":\"zero\"}","accepted":true,"expected":["zero","one"]},
+    {"id":"sparse-key","json":"{\"9\":\"nine\"}","accepted":false},
+    {"id":"mixed-key","json":"{\"0\":\"zero\",\"word\":\"value\"}","accepted":false},
+    {"id":"leading-zero","json":"{\"01\":\"one\"}","accepted":true,"expected":{"01":"one"}}
+  ]
+}
