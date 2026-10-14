@@ -572,7 +572,7 @@ where
         .map(|row| DB::number(&row, "sequence"))
         .transpose()?
         .unwrap_or(0);
-        let wait = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('SignalWaitOpened','ConditionWaitOpened','VersionMarkerRecorded') ORDER BY sequence DESC LIMIT 1")
+        let wait = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('SignalWaitOpened','ConditionWaitOpened','VersionMarkerRecorded','MemoUpserted') ORDER BY sequence DESC LIMIT 1")
             .bind(run_id).fetch_optional(&mut **tx).await?;
         let wait_sequence = wait
             .map(|row| DB::document_row(&row, "payload"))
@@ -956,6 +956,19 @@ where
             DB::optional_instant(&task, "lease_expires_at")?;
             let run_id = DB::string(&task, "workflow_run_id")?;
             let mut task_payload = DB::document_row(&task, "payload")?;
+            if kind == "workflow"
+                && !DB::optional_document_row(&worker, "capabilities")?.is_some_and(|flags| {
+                    flags
+                        .as_array()
+                        .is_some_and(|flags| flags.iter().any(|flag| flag == "memo_upserts"))
+                })
+            {
+                let memo_history = Self::scalar("SELECT COUNT(*) FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='MemoUpserted'")
+                    .bind(&run_id).fetch_one(&mut *tx).await?;
+                if memo_history > 0 {
+                    continue;
+                }
+            }
             let run = Self::query("SELECT * FROM workflow_runs WHERE id=$1")
                 .bind(&run_id)
                 .fetch_one(&mut *tx)
@@ -1450,6 +1463,17 @@ where
                 "record_version_marker" => {
                     version_marker_payload(command)?;
                 }
+                "upsert_memo" => {
+                    reject_fields(command, &["type", "entries"])?;
+                    envelope(command, "entries")?;
+                    if !super::memos::UPDATES_SUPPORTED {
+                        return Err(super::RuntimeError::Protocol {
+                            status: StatusCode::CONFLICT,
+                            response: json!({"reason":"workflow_memo_updates_unavailable",
+                                "command_type":"upsert_memo","recorded":false}),
+                        });
+                    }
+                }
                 "open_condition_wait" => {
                     reject_fields(
                         command,
@@ -1588,6 +1612,10 @@ where
                     None,
                 )
                 .await?;
+            } else if command["type"] == "upsert_memo" {
+                sequence += 1;
+                self.upsert_memo(&mut tx, &run, &task, command, sequence)
+                    .await?;
             } else if command["type"] == "schedule_activity" {
                 sequence += 1;
                 let metadata = super::selections::metadata(command, "activity")?;
@@ -1796,6 +1824,102 @@ where
         Ok(
             json!({"task_id": task_id, "run_id": run_id, "run_status": run_status, "workflow_task_attempt": body["workflow_task_attempt"], "outcome": "completed", "recorded": true, "reason": null}),
         )
+    }
+
+    pub(super) async fn upsert_memo(
+        &self,
+        tx: &mut Transaction<'_, DB>,
+        run: &DB::Row,
+        task: &DB::Row,
+        command: &Value,
+        sequence: i64,
+    ) -> Result<()> {
+        let run_id = DB::string(run, "id")?;
+        let worker_id = DB::optional_string(task, "lease_owner")?
+            .ok_or_else(|| refuse(StatusCode::CONFLICT, "task_not_leased"))?;
+        let worker = Self::query("SELECT capabilities,status FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2")
+            .bind(self.namespace.as_ref()).bind(&worker_id).fetch_optional(&mut **tx).await?;
+        let capable = worker
+            .as_ref()
+            .map(|worker| -> Result<bool> {
+                Ok(DB::string(worker, "status")? == "active"
+                    && DB::optional_document_row(worker, "capabilities")?.is_some_and(|flags| {
+                        flags
+                            .as_array()
+                            .is_some_and(|flags| flags.iter().any(|flag| flag == "memo_upserts"))
+                    }))
+            })
+            .transpose()?
+            .unwrap_or(false);
+        if !capable {
+            return Err(super::RuntimeError::Protocol {
+                status: StatusCode::CONFLICT,
+                response: json!({"reason":"workflow_metadata_capability_not_advertised",
+                    "worker_capability":"memo_upserts","worker_id":worker_id,
+                    "command_type":"upsert_memo","recorded":false}),
+            });
+        }
+        let rows = Self::query(DB::MEMO_READ)
+            .bind(&run_id)
+            .fetch_all(&mut **tx)
+            .await?;
+        let mut stored = Vec::with_capacity(rows.len());
+        for row in rows {
+            let portable = if DB::optional_number(&row, "portable_value_sequence")?
+                == Some(DB::number(&row, "upserted_at_sequence")?)
+            {
+                DB::optional_document_row(&row, "portable_value")?
+                    .filter(|value| value.is_object() || value.is_array())
+            } else {
+                None
+            };
+            stored.push((
+                DB::string(&row, "key")?,
+                DB::document_row(&row, "value")?,
+                portable,
+            ));
+        }
+        let prepared = super::memos::prepare_update(
+            self.memo_codec.clone(),
+            stored,
+            envelope(command, "entries")?,
+            None,
+        )
+        .await?;
+        let written_at = now();
+        for (key, value) in prepared.changes {
+            if let Some(value) = value {
+                Self::query(DB::MEMO_UPSERT)
+                    .bind(&run_id)
+                    .bind(DB::string(run, "workflow_instance_id")?)
+                    .bind(key)
+                    .bind(DB::document(&value.projection))
+                    .bind(sequence)
+                    .bind(DB::bind_time(written_at))
+                    .bind(DB::bind_time(written_at))
+                    .bind(DB::document(&value.envelope))
+                    .bind(sequence)
+                    .execute(&mut **tx)
+                    .await?;
+            } else {
+                Self::query(DB::MEMO_DELETE)
+                    .bind(&run_id)
+                    .bind(key)
+                    .execute(&mut **tx)
+                    .await?;
+            }
+        }
+        Self::append(
+            tx,
+            &run_id,
+            "MemoUpserted",
+            json!({"sequence":sequence,
+            "entries":prepared.entries,"merged":prepared.merged,"task":Self::task_snapshot(task)?}),
+            Some(&DB::string(task, "id")?),
+            None,
+        )
+        .await?;
+        Ok(())
     }
 
     pub(crate) async fn complete_activity(&self, task_id: &str, body: Value) -> Result<Value> {

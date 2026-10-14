@@ -17,6 +17,14 @@ pub(super) struct StoredMemo {
     pub(super) projection: Value,
 }
 pub(super) type PreparedMemo = BTreeMap<String, StoredMemo>;
+pub(super) const UPDATES_SUPPORTED: bool = false;
+type StoredRows = Vec<(String, Value, Option<Value>)>;
+
+pub(super) struct PreparedUpdate {
+    pub(super) changes: BTreeMap<String, Option<StoredMemo>>,
+    pub(super) entries: Value,
+    pub(super) merged: Value,
+}
 
 fn invalid() -> super::RuntimeError {
     refuse(StatusCode::UNPROCESSABLE_ENTITY, INVALID)
@@ -117,7 +125,7 @@ fn encode(values: BTreeMap<String, Payload>) -> Result<PreparedMemo> {
     let mut total = 0;
     let mut prepared = BTreeMap::new();
     for (key, value) in values {
-        let blob = codec.encode(&value).map_err(|_| invalid())?;
+        let blob = codec.encode_ordered(&value).map_err(|_| invalid())?;
         let size = STANDARD.decode(&blob).map_err(|_| invalid())?.len();
         total += size;
         if size > MAX_VALUE_BYTES || total > MAX_TOTAL_BYTES {
@@ -151,6 +159,106 @@ fn initial(value: Value) -> Result<PreparedMemo> {
             .map(|(key, value)| Ok((key, from_json(value)?)))
             .collect::<Result<_>>()?,
     )
+}
+
+fn decode_rows(rows: StoredRows, codec: &ValueCodec) -> Result<BTreeMap<String, Payload>> {
+    if rows.len() > MAX_ENTRIES {
+        return Err(invalid());
+    }
+    let mut values = BTreeMap::new();
+    for (key, projection, portable) in rows {
+        if !valid_key(&key) || values.contains_key(&key) {
+            return Err(invalid());
+        }
+        let value = if let Some(portable) = portable {
+            let blob = super::envelope(&json!({"value":portable}), "value")?;
+            codec.decode(&blob).map_err(|_| invalid())?
+        } else {
+            from_json(projection)?
+        };
+        values.insert(key, value);
+    }
+    Ok(values)
+}
+
+fn update(
+    rows: StoredRows,
+    blob: String,
+    configured_limit: Option<usize>,
+) -> Result<PreparedUpdate> {
+    let codec = ValueCodec::new().map_err(|_| invalid())?;
+    let Payload::Map(entries) = codec.decode(&blob).map_err(|_| invalid())? else {
+        return Err(invalid());
+    };
+    if entries.is_empty() || entries.keys().any(|key| !valid_key(key)) {
+        return Err(invalid());
+    }
+    let mut merged = decode_rows(rows, &codec)
+        .map_err(|_| refuse(StatusCode::CONFLICT, "unsupported_stored_memo"))?;
+    for (key, value) in &entries {
+        if matches!(value, Payload::Null) {
+            merged.remove(key);
+        } else {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
+    let mut prepared = encode(merged.clone())?;
+    let canonical_entries = super::wire(
+        &codec
+            .encode_ordered(&Payload::Map(entries.clone()))
+            .map_err(|_| invalid())?,
+    );
+    let canonical_merged = super::wire(
+        &codec
+            .encode_ordered(&Payload::Map(merged))
+            .map_err(|_| invalid())?,
+    );
+    // The fixed total limit sums individual envelopes. The configured
+    // structural limit measures the whole canonical map, including its keys.
+    let merged_bytes = STANDARD
+        .decode(canonical_merged["blob"].as_str().expect("prepared blob"))
+        .expect("prepared base64")
+        .len();
+    if configured_limit.is_some_and(|limit| merged_bytes > limit) {
+        return Err(refuse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "structural_limit_exceeded",
+        ));
+    }
+    let changes = entries
+        .into_iter()
+        .map(|(key, value)| {
+            let change = if matches!(value, Payload::Null) {
+                None
+            } else {
+                Some(prepared.remove(&key).ok_or_else(invalid)?)
+            };
+            Ok((key, change))
+        })
+        .collect::<Result<_>>()?;
+    Ok(PreparedUpdate {
+        changes,
+        entries: canonical_entries,
+        merged: canonical_merged,
+    })
+}
+
+pub(super) async fn prepare_update(
+    codec: Arc<Semaphore>,
+    rows: StoredRows,
+    blob: String,
+    configured_limit: Option<usize>,
+) -> Result<PreparedUpdate> {
+    let permit = codec
+        .acquire_owned()
+        .await
+        .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "memo_codec_unavailable"))?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        update(rows, blob, configured_limit)
+    })
+    .await
+    .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "memo_codec_unavailable"))?
 }
 
 pub(super) async fn prepare_initial(codec: Arc<Semaphore>, value: Value) -> Result<PreparedMemo> {
@@ -187,19 +295,7 @@ pub(super) async fn read_stored(
         let _permit = permit;
         let decode = || -> Result<Value> {
             let codec = ValueCodec::new().map_err(|_| invalid())?;
-            let mut values = BTreeMap::new();
-            for (key, projection, portable) in rows {
-                if values.contains_key(&key) {
-                    return Err(invalid());
-                }
-                let value = if let Some(portable) = portable {
-                    let blob = super::envelope(&json!({"value":portable}), "value")?;
-                    codec.decode(&blob).map_err(|_| invalid())?
-                } else {
-                    from_json(projection)?
-                };
-                values.insert(key, value);
-            }
+            let values = decode_rows(rows, &codec)?;
             let prepared = encode(values)?;
             Ok(Value::Object(
                 prepared
@@ -217,6 +313,191 @@ pub(super) async fn read_stored(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_replaces_deletes_and_preserves_the_original_typed_neighbors() {
+        let codec = ValueCodec::new().unwrap();
+        let rows = vec![
+            (
+                "keep".into(),
+                Value::Null,
+                Some(super::super::wire(
+                    &codec
+                        .encode_ordered(&Payload::Long(9007199254740993))
+                        .unwrap(),
+                )),
+            ),
+            ("delete".into(), json!("present"), None),
+            ("replace".into(), json!("old"), None),
+        ];
+        let entries = Payload::Map(BTreeMap::from([
+            ("delete".into(), Payload::Null),
+            ("replace".into(), Payload::Boolean(false)),
+            (
+                "new".into(),
+                Payload::Array(vec![Payload::Null, Payload::String("memo λ".into())]),
+            ),
+        ]));
+        let prepared = update(rows, codec.encode_ordered(&entries).unwrap(), None).unwrap();
+        assert_eq!(prepared.changes.len(), 3);
+        assert!(!prepared.changes.contains_key("keep"));
+        assert!(prepared.changes["delete"].is_none());
+        assert_eq!(
+            codec
+                .decode(prepared.entries["blob"].as_str().unwrap())
+                .unwrap(),
+            entries
+        );
+        let Payload::Map(merged) = codec
+            .decode(prepared.merged["blob"].as_str().unwrap())
+            .unwrap()
+        else {
+            panic!("merged memo must remain a map");
+        };
+        assert_eq!(merged["keep"], Payload::Long(9007199254740993));
+        assert_eq!(merged["replace"], Payload::Boolean(false));
+        assert!(!merged.contains_key("delete"));
+    }
+
+    #[test]
+    fn update_rejects_invalid_shape_keys_and_limits_before_exposing_changes() {
+        let codec = ValueCodec::new().unwrap();
+        for entries in [
+            Payload::Null,
+            Payload::Array(vec![]),
+            Payload::Map(BTreeMap::new()),
+            Payload::Map(BTreeMap::from([("0".into(), Payload::Long(1))])),
+            Payload::Map(BTreeMap::from([(
+                "large".into(),
+                Payload::String("x".repeat(10_240)),
+            )])),
+        ] {
+            assert!(update(vec![], codec.encode_ordered(&entries).unwrap(), None).is_err());
+        }
+        let entries = Payload::Map(BTreeMap::from([("valid".into(), Payload::Long(1))]));
+        assert!(matches!(
+            update(vec![], codec.encode_ordered(&entries).unwrap(), Some(1)),
+            Err(super::super::RuntimeError::Refused {
+                reason: "structural_limit_exceeded",
+                ..
+            })
+        ));
+        let corrupt = vec![(
+            "bad".into(),
+            Value::Null,
+            Some(json!({"codec":"avro", "blob":"broken"})),
+        )];
+        assert!(matches!(
+            update(corrupt, codec.encode_ordered(&entries).unwrap(), None),
+            Err(super::super::RuntimeError::Refused {
+                reason: "unsupported_stored_memo",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn configured_limit_measures_the_complete_map_at_the_inclusive_boundary() {
+        let codec = ValueCodec::new().unwrap();
+        let entries = Payload::Map(BTreeMap::from([("k".repeat(64), Payload::Long(1))]));
+        let blob = codec.encode_ordered(&entries).unwrap();
+        let size = STANDARD.decode(&blob).unwrap().len();
+        assert!(
+            size > STANDARD
+                .decode(codec.encode_ordered(&Payload::Long(1)).unwrap())
+                .unwrap()
+                .len()
+        );
+        assert!(update(vec![], blob.clone(), Some(size)).is_ok());
+        assert!(matches!(
+            update(vec![], blob, Some(size - 1)),
+            Err(super::super::RuntimeError::Refused {
+                reason: "structural_limit_exceeded",
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn sqlite_transition_preserves_neighbor_metadata_and_rolls_back_failed_history() {
+        use super::super::{sqlite, store::Store};
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::<sqlx::Sqlite>::new(
+            sqlite::open(directory.path().join("memo.sqlite").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        store.register(json!({"worker_id":"memo-unit-worker", "task_queue":"test", "runtime":"php",
+            "supported_workflow_types":["echo"], "supported_activity_types":[], "capabilities":["memo_upserts"]})).await.unwrap();
+        let original = store
+            .start(
+                json!({"workflow_id":"memo-unit", "workflow_type":"echo", "task_queue":"test",
+            "input":{"codec":"avro","blob":"wwHioz3/VYAiNwA="}}),
+                initial(json!({"keep":9007199254740993_i64,"replace":"old"})).unwrap(),
+            )
+            .await
+            .unwrap();
+        let run_id = original["run_id"].as_str().unwrap();
+        let claimed = store
+            .poll(
+                json!({"worker_id":"memo-unit-worker","task_queue":"test","timeout_seconds":0}),
+                "workflow",
+                "1.20",
+            )
+            .await
+            .unwrap();
+        let task_id = claimed["task"]["task_id"].as_str().unwrap();
+        let codec = ValueCodec::new().unwrap();
+        let command = json!({"type":"upsert_memo","entries":super::super::wire(&codec.encode_ordered(
+            &Payload::Map(BTreeMap::from([("replace".into(), Payload::Boolean(false))]))).unwrap())});
+        let mut tx = store.begin().await.unwrap();
+        let run = Store::<sqlx::Sqlite>::query("SELECT * FROM workflow_runs WHERE id=$1")
+            .bind(run_id)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        let task = Store::<sqlx::Sqlite>::query("SELECT * FROM workflow_tasks WHERE id=$1")
+            .bind(task_id)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        store
+            .upsert_memo(&mut tx, &run, &task, &command, 1)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let before = store.describe("memo-unit", Some(run_id)).await.unwrap();
+        assert_eq!(
+            before["memo"],
+            json!({"keep":9007199254740993_i64,"replace":false})
+        );
+        let sequence: i64 =
+            sqlx::query_scalar("SELECT upserted_at_sequence FROM workflow_memos WHERE key='keep'")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            sequence, 0,
+            "untouched neighbor retains its original sequence"
+        );
+        sqlx::query("CREATE TRIGGER refuse_memo_history BEFORE INSERT ON workflow_history_events WHEN NEW.event_type='MemoUpserted' BEGIN SELECT RAISE(ABORT,'synthetic memo history refusal'); END")
+            .execute(&store.pool).await.unwrap();
+        let mut tx = store.begin().await.unwrap();
+        let changed = json!({"type":"upsert_memo","entries":super::super::wire(&codec.encode_ordered(
+            &Payload::Map(BTreeMap::from([("replace".into(), Payload::String("must roll back".into()))]))).unwrap())});
+        assert!(
+            store
+                .upsert_memo(&mut tx, &run, &task, &changed, 2)
+                .await
+                .is_err()
+        );
+        tx.rollback().await.unwrap();
+        assert_eq!(
+            store.describe("memo-unit", Some(run_id)).await.unwrap(),
+            before
+        );
+        store.close().await;
+    }
 
     #[test]
     fn initial_json_boundary_matches_the_actual_frozen_php_admissions() {
