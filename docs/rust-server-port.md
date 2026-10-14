@@ -53,6 +53,17 @@ preserved authored metadata in both start events and the instance row. Fresh
 native and matched qualification of that revision is required. All 4,845 shared
 reader checks pass, with one explicit skip.
 
+Seven actual raw JSON admissions on the frozen PHP image exposed an additional
+initial-memo boundary in #444. Empty objects and contiguous numeric-key objects
+become lists; sparse or mixed canonical numeric keys refuse; leading-zero
+string keys stay maps. Start history keeps PHP's decoded JSON shape, including
+an empty list and a reversed numeric-key object, while portable memo storage
+canonicalizes the latter to a list. The native correction uses a memo-specific
+serde visitor and separate storage conversion. It preserves unrelated request
+fields, top-level null metadata and typed Avro memo maps. The baseline native
+control reproduces the empty-object mismatch. Fresh exact-head shared checks
+are required; no memo-update capability is enabled.
+
 #438 is merged at `50ce8f42967bc14c0169fc31b16fbbbd5827528f`, complete tree
 `1065360b83f0dbf531a67a7af8edbece19b97fec`, identical to reviewed `97e63c01`
 and its CI merge `e8f4fc49`. All six original final combined jobs in

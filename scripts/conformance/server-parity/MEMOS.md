@@ -42,6 +42,12 @@ HTTP/storage tests are preparatory source controls, with three-runtime and
 all-database acceptance still pending.
 
 Further native implementation follows the actual published PHP and embedded baseline.
+The separate initial JSON boundary is recorded in #444: empty objects and
+contiguous numeric-key objects become lists, sparse or mixed canonical numeric
+keys refuse, and leading-zero string keys remain maps. Seven raw published
+HTTP controls supply the native regression vectors. This conversion applies
+only to initial JSON and legacy projections. Current typed Avro memo maps retain
+their original union branch and keys. It does not relax the typed memo reader.
 Additional required memo gates include malformed input and structural limits,
 protocol/capability enforcement and replay routing, unchanged state after
 refusal, stale-task fencing, namespace/auth checks, continue-as-new inheritance
