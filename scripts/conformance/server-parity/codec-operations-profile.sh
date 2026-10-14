@@ -33,12 +33,8 @@ jq -e '.Status=="running" and .OOMKilled==false' "$output/initial-state.json" >/
 # The first Docker counter has no previous interval. Keep it as an idle sample,
 # then retain real cumulative-counter deltas around the original deadlines.
 curl --silent --show-error --no-buffer --max-time 170 --unix-socket /var/run/docker.sock \
-  "http://localhost/v1.47/containers/$server/stats?stream=true" 2>"$output/stats-error.txt" | \
-  jq --unbuffered -c '{observed_at:.read,cpu_percent:(if (.precpu_stats.system_cpu_usage!=null)
-    and ((.cpu_stats.system_cpu_usage//0)-(.precpu_stats.system_cpu_usage//0))>0
-    then (((.cpu_stats.cpu_usage.total_usage//0)-(.precpu_stats.cpu_usage.total_usage//0))
-      /((.cpu_stats.system_cpu_usage//0)-(.precpu_stats.system_cpu_usage//0))*(.cpu_stats.online_cpus//1)*100)
-    else 0 end),memory_bytes:.memory_stats.usage}' > "$output/stats.jsonl" &
+  "http://localhost/v1.47/containers/$server/stats?stream=true" \
+  > "$output/docker-stats.jsonl" 2>"$output/stats-error.txt" &
 stats_pid=$!
 set +e
 docker run --rm --name "$observer" --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
@@ -52,6 +48,12 @@ set -e
 kill "$stats_pid" 2>/dev/null || true
 wait "$stats_pid" 2>/dev/null || true
 stats_pid=''
+jq -c '{observed_at:.read,cpu_percent:(if (.precpu_stats.system_cpu_usage!=null)
+  and ((.cpu_stats.system_cpu_usage//0)-(.precpu_stats.system_cpu_usage//0))>0
+  then (((.cpu_stats.cpu_usage.total_usage//0)-(.precpu_stats.cpu_usage.total_usage//0))
+    /((.cpu_stats.system_cpu_usage//0)-(.precpu_stats.system_cpu_usage//0))*(.cpu_stats.online_cpus//1)*100)
+  else 0 end),memory_bytes:.memory_stats.usage}' "$output/docker-stats.jsonl" > "$output/stats.jsonl"
+unlink "$output/docker-stats.jsonl"
 jq -n --slurpfile limits "$output/limits.json" --slurpfile samples "$output/stats.jsonl" \
   '{resource_limits:$limits[0],samples:$samples}' > "$output/cpu.json"
 docker inspect "$server" --format '{{json .State}}' | jq \
