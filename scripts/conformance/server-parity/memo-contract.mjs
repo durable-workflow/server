@@ -117,15 +117,23 @@ export function checkMemoRecord(record, fixture, artifacts, mode = 'http') {
       assert(record.discovery.supported_workflow_task_commands.includes('upsert_memo'));
     }
     const duplicate = record.duplicate.receipt;
+    assert.deepEqual(record.duplicate.submitted_request,record.duplicate.request.request,
+      'resubmit all captured SDK completion metadata');
     // Memo idempotency promises no second application. A completed-task fence
     // does not promise content-verified receipt reconciliation or HTTP 200.
     assert([200, 409].includes(duplicate.status), 'explicit committed duplicate response');
     if (duplicate.status === 409) {
       assert.equal(duplicate.response.reason, 'task_not_leased');
       assert.equal(duplicate.response.task_status, 'completed');
-    }
+    } else assert.equal(duplicate.response.recorded,false);
     assert.deepEqual(record.duplicate.before.events, record.duplicate.after.events, 'duplicate changes no history');
     assert.deepEqual(record.duplicate.before.typed_memo, record.duplicate.after.typed_memo, 'duplicate changes no memo');
+    const conflict=record.conflicting_completion;
+    assert.notDeepEqual(conflict.submitted_request,record.duplicate.submitted_request);
+    assert.equal(conflict.receipt.status,409,'conflicting completion refuses');
+    assert(['task_not_leased','conflicting_completion'].includes(conflict.receipt.response.reason));
+    assert.deepEqual(conflict.before.events,conflict.after.events,'conflict changes no history');
+    assert.deepEqual(conflict.before.typed_memo,conflict.after.typed_memo,'conflict changes no memo');
     const registration = original.actor.receipts.find(receipt => receipt.path === '/api/worker/register');
     assert(registration?.request.capabilities.includes('memo_upserts'), 'actual author advertises memo capability');
   }
