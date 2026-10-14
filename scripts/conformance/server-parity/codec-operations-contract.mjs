@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {checkCodecDeadlineRecord} from './codec-deadline-contract.mjs';
+import {instantNanoseconds} from './contract.mjs';
 
 const instant=value=>Date.parse(value.includes('T')?value:value.replace(' ','T')+'Z')/1000;
 const rawEvents=events=>events.map(({decoded,typed_decoded,...event})=>event);
+export function checkCanonicalLateness(at,deadline,maximumSeconds) {
+  const delta=instantNanoseconds(at)-instantNanoseconds(deadline);
+  assert(delta>=0n&&delta<=BigInt(maximumSeconds)*1_000_000_000n,'Canonical deadline keeps every fractional digit');
+}
 function prefix(before,after){assert.deepEqual(rawEvents(after.slice(0,before.length)),rawEvents(before),'Entire original prefix and clocks');}
 function events(observation,types){assert.deepEqual(observation.events.map(event=>event.event_type),types);}
 
@@ -44,7 +49,7 @@ export function checkCodecOperationsRecord(record,specBytes,cpu) {
       for(const field of ['timer_id','sequence','delay_seconds','fire_at'])assert.deepEqual(fired[field],scheduled[field]);
       assert.equal(scheduled.delay_seconds,spec.operations.timer.delay_seconds);assert.equal(scheduled.sequence,1);
       const due=instant(scheduled.fire_at),at=instant(fired.fired_at);
-      assert(at>=due&&at-due<=spec.operations.timer.maximum_lateness_seconds,'Canonical timer fires promptly');
+      checkCanonicalLateness(fired.fired_at,scheduled.fire_at,spec.operations.timer.maximum_lateness_seconds);
       underLoad(due);underLoad(at);underLoad(o.timer_delivered_at);busy(due);
       assert.equal(o.parent.run_id,o.run_id);assert.equal(o.parent.workflow_task_attempt,1);
       assert.equal(o.after.status,'completed');assert.deepEqual(o.after.typed_output,spec.typed_row);
@@ -82,16 +87,16 @@ export function checkCodecOperationsRecord(record,specBytes,cpu) {
       }
       assert(instant(o.heartbeat_first.lease_expires_at)>instant(o.status_before.lease_expires_at));
       assert(instant(o.heartbeat_second.lease_expires_at)>instant(o.heartbeat_first.lease_expires_at));
-      assert(instant(o.heartbeat_first.last_heartbeat_at)<instant(o.before.events[3].timestamp)+policy.heartbeat_timeout_seconds);
-      assert(instant(o.heartbeat_second.last_heartbeat_at)<instant(o.heartbeat_first.last_heartbeat_at)+policy.heartbeat_timeout_seconds);
+      assert(instantNanoseconds(o.heartbeat_first.last_heartbeat_at)<instantNanoseconds(o.before.events[3].timestamp)+BigInt(policy.heartbeat_timeout_seconds)*1_000_000_000n);
+      assert(instantNanoseconds(o.heartbeat_second.last_heartbeat_at)<instantNanoseconds(o.heartbeat_first.last_heartbeat_at)+BigInt(policy.heartbeat_timeout_seconds)*1_000_000_000n);
       const second=o.calls.find(call=>call.name==='heartbeat_second');
       assert(second.submitted_at>=instant(o.before.events[3].timestamp)+policy.heartbeat_timeout_seconds,
         'The same attempt survives its original heartbeat boundary');
       assert.equal(o.after.events[6].payload.activity_attempt_id,task.activity_attempt_id);
       assert.deepEqual(o.after.events[6].typed_decoded.result,spec.typed_row);
       assert.deepEqual(o.after.events[7].typed_decoded.output,spec.typed_row);
-      assert(instant(o.after.events[6].timestamp)<instant(o.before.events[3].timestamp)+policy.start_to_close_seconds);
-      assert(instant(o.after.events[6].timestamp)<instant(o.before.events[2].timestamp)+policy.schedule_to_close_seconds);
+      assert(instantNanoseconds(o.after.events[6].timestamp)<instantNanoseconds(o.before.events[3].timestamp)+BigInt(policy.start_to_close_seconds)*1_000_000_000n);
+      assert(instantNanoseconds(o.after.events[6].timestamp)<instantNanoseconds(o.before.events[2].timestamp)+BigInt(policy.schedule_to_close_seconds)*1_000_000_000n);
       assert.equal(o.parent.run_id,o.run_id);assert.equal(o.parent.workflow_task_attempt,1);
       assert.equal(o.activity_completion.recorded,true);assert.equal(o.workflow_completion.recorded,true);
       assert.equal(o.after.status,'completed');assert.deepEqual(o.after.typed_output,spec.typed_row);
@@ -108,7 +113,7 @@ export function checkCodecOperationsRecord(record,specBytes,cpu) {
       assert.equal(context.schema,'durable-workflow.cancellation-context/v1');
       assert.equal(context.request_id,requested.payload.workflow_command_id);
       assert.deepEqual(context.requester,{type:'auth:token',id:'legacy-token',label:'Admin'});
-      assert.equal(deadline-requestedAt,policy.cleanup_timeout_seconds);
+      assert.equal(instantNanoseconds(context.cleanup_deadline_at)-instantNanoseconds(context.requested_at),BigInt(policy.cleanup_timeout_seconds)*1_000_000_000n);
       assert.equal(context.reason,policy.reason);assert.equal(context.root_request_id,context.request_id);
       assert.equal(context.root_workflow_instance_id,o.workflow_id);assert.equal(context.root_workflow_run_id,o.run_id);
       assert.equal(context.parent_request_id,null);assert.equal(context.source,'control_plane');
@@ -123,7 +128,7 @@ export function checkCodecOperationsRecord(record,specBytes,cpu) {
         assert.equal(receipt.cancellation_request.cleanup_deadline_at,context.cleanup_deadline_at);
       }
       assert.equal(o.duplicate.duplicate,true);assert.equal(o.terminal_duplicate.duplicate,true);
-      assert(instant(o.renewal.lease_expires_at)<=deadline,'Cleanup lease capped by original deadline');
+      assert(instantNanoseconds(o.renewal.lease_expires_at)<=instantNanoseconds(context.cleanup_deadline_at),'Cleanup lease capped by original deadline');
       assert.equal(o.after.events[2].payload.delay_seconds,policy.original_delay_seconds);
       assert.equal(o.after.events[6].payload.delay_seconds,policy.cleanup_delay_seconds);
       assert.notEqual(o.after.events[2].payload.timer_id,o.after.events[6].payload.timer_id);
@@ -134,7 +139,7 @@ export function checkCodecOperationsRecord(record,specBytes,cpu) {
       assert.equal(cleanup.request_id,context.request_id);assert.equal(cleanup.cleanup_deadline_at,context.cleanup_deadline_at);
       assert.equal(cleanup.outcome,'deadline_expired');assert.equal(cleanup.delivery_sequence,1);
       assert.equal(cleanup.finished_at,o.after.execution.closed_at);assert.equal(o.after.status,'cancelled');assert.equal(o.after.output,null);
-      assert(closed>=deadline&&closed-deadline<=policy.maximum_lateness_seconds,'Canonical cleanup expires promptly');
+      checkCanonicalLateness(cleanup.finished_at,context.cleanup_deadline_at,policy.maximum_lateness_seconds);
       assert(o.closure_observed_at>=closed&&o.closure_observed_at-deadline<=policy.maximum_lateness_seconds);
       underLoad(deadline);underLoad(closed);underLoad(o.closure_observed_at);busy(deadline);
     }
