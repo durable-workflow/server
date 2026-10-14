@@ -10,11 +10,12 @@ export function checkMemoRecord(record, fixture, artifacts, mode = 'http') {
   const spec = fixture.memo_replay;
   const initialOnly = spec.initial_only === true;
   const input = fixture.typed_value;
-  const initial = map({delete: scalar('string', 'present'), empty: list([]), keep: input,
+  const visibleInitial = map({delete: scalar('string', 'present'), empty: list([]), keep: input,
     replace: scalar('string', 'initial')});
+  const initial = initialOnly ? map({...visibleInitial.value, deleted_at_start: scalar('null', null)}) : visibleInitial;
   const added = list([input.value.integer, input.value.optional, input.value.unicode]);
-  const waiting = initialOnly ? initial : map({added, empty: list([]), keep: input, replace: scalar('boolean', false)});
-  const completed = initialOnly ? initial : map({counter: scalar('int64', '7'), empty: list([]), keep: input,
+  const waiting = initialOnly ? visibleInitial : map({added, empty: list([]), keep: input, replace: scalar('boolean', false)});
+  const completed = initialOnly ? visibleInitial : map({counter: scalar('int64', '7'), empty: list([]), keep: input,
     replace: scalar('string', 'final')});
   const entries = [map({added, delete: scalar('null', null), replace: scalar('boolean', false)}),
     map({added: scalar('null', null), counter: scalar('int64', '7'), replace: scalar('string', 'final')})];
@@ -26,7 +27,7 @@ export function checkMemoRecord(record, fixture, artifacts, mode = 'http') {
   const phases = record.phases;
   const original = phases.original;
   const final = phases.replacement;
-  assert.deepEqual(mode === 'http' ? record.initial.typed_memo : original.typed_initial_memo, initial,
+  assert.deepEqual(mode === 'http' ? record.initial.typed_memo : original.typed_initial_memo, visibleInitial,
     'original initial memo retains its typed values');
   assert.deepEqual(original.typed_memo, waiting, 'waiting memo merge');
   assert.deepEqual(phases.activity.typed_memo, waiting, 'activity leaves memo unchanged');

@@ -67,12 +67,26 @@ fn project(value: Payload) -> Value {
         Payload::String(value) => json!(value),
         Payload::Bytes(value) => json!({"$type":"bytes", "base64":STANDARD.encode(value)}),
         Payload::Array(values) => Value::Array(values.into_iter().map(project).collect()),
-        Payload::Map(values) => Value::Object(
-            values
-                .into_iter()
-                .map(|(key, value)| (key, project(value)))
-                .collect(),
-        ),
+        Payload::Map(values) => {
+            // PHP uses the public map adapter when arrays would erase an empty
+            // map or coerce an exact string key to a signed 64-bit integer.
+            let wrapped = values.is_empty()
+                || values.keys().any(|key| {
+                    key.parse::<i64>()
+                        .is_ok_and(|value| value.to_string() == *key)
+                });
+            if wrapped {
+                json!({"$type":"map", "entries":values.into_iter().map(|(key, value)|
+                    json!({"key":key, "value":project(value)})).collect::<Vec<_>>()})
+            } else {
+                Value::Object(
+                    values
+                        .into_iter()
+                        .map(|(key, value)| (key, project(value)))
+                        .collect(),
+                )
+            }
+        }
     }
 }
 
@@ -260,6 +274,19 @@ mod tests {
                 json!({"codec":"avro", "blob":"literal"}),
                 None,
             ),
+            (
+                "empty_map".into(),
+                json!([]),
+                Some(portable(Payload::Map(BTreeMap::new()))),
+            ),
+            (
+                "numeric_map".into(),
+                Value::Null,
+                Some(portable(Payload::Map(BTreeMap::from([(
+                    "0".into(),
+                    Payload::String("literal key".into()),
+                )])))),
+            ),
         ];
         let result = read_stored(Arc::new(Semaphore::new(1)), rows)
             .await
@@ -268,6 +295,11 @@ mod tests {
         assert!(result["double"].as_i64().is_none());
         assert_eq!(result["bytes"], json!({"$type":"bytes", "base64":"/wA="}));
         assert_eq!(result["literal"], json!({"codec":"avro", "blob":"literal"}));
+        assert_eq!(result["empty_map"], json!({"$type":"map", "entries":[]}));
+        assert_eq!(
+            result["numeric_map"],
+            json!({"$type":"map", "entries":[{"key":"0","value":"literal key"}]})
+        );
         assert!(
             read_stored(
                 Arc::new(Semaphore::new(1)),

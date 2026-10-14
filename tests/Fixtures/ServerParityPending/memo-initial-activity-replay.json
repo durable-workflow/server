@@ -15,6 +15,7 @@
       "keep": {"integer": 9007199254740993, "optional": null, "unicode": "memo λ"},
       "replace": "initial",
       "delete": "present",
+      "deleted_at_start": null,
       "empty": []
     },
     "updates": [],
