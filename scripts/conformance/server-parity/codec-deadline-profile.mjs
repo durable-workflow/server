@@ -49,8 +49,8 @@ try {
     artifacts:JSON.parse(readFileSync(artifactsPath))};
   // The original PHP JSON retains exact int64 literals. Validation above must
   // not replace those bytes with JavaScript's rounded diagnostic number values.
-  const prefix=JSON.stringify(header).slice(0,-1);
-  writeFileSync(`${directory}/record.json`,prefix+',"original":'+readFileSync(`${directory}/original.json`,'utf8').trim()
+  const recordHeader=JSON.stringify(header).slice(0,-1);
+  writeFileSync(`${directory}/record.json`,recordHeader+',"original":'+readFileSync(`${directory}/original.json`,'utf8').trim()
     +',"load":'+JSON.stringify(inputs.load)+',"health":'+JSON.stringify(inputs.health)+'}\n');
   complete=true;
 } finally {
