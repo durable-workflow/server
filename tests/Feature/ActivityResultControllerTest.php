@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Queue;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\ExternalGreetingWorkflow;
+use Tests\Fixtures\ResultInspectionRetryWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
@@ -183,6 +184,88 @@ final class ActivityResultControllerTest extends TestCase
             ->getJson($this->path($workflowId, $runId, $activityId))->assertForbidden();
         $this->withHeaders($this->apiHeaders() + ['Authorization' => 'Bearer synthetic-operator-token'])
             ->getJson($this->path($workflowId, $runId, $activityId))->assertOk()->assertJsonPath('state', 'pending');
+    }
+
+    public function test_closed_workflow_keeps_its_distinct_activity_result_inspectable(): void
+    {
+        [$workflowId, $runId, $activityId] = $this->activity();
+        $this->complete('activity result');
+        $this->runReadyWorkflowTask($runId);
+        $this->assertSame('completed', WorkflowRun::query()->findOrFail($runId)->status->value);
+        $response = $this->withHeaders($this->apiHeaders())->getJson($this->path($workflowId, $runId, $activityId))
+            ->assertOk()->assertJsonPath('state', 'available');
+        $this->assertSame('activity result', Serializer::unserializeWithCodec('avro', $response->json('result_envelope.blob')));
+        $this->withHeaders($this->apiHeaders())->getJson("/api/workflows/{$workflowId}/runs/{$runId}")
+            ->assertOk()->assertJsonPath('output.greeting', 'activity result');
+    }
+
+    public function test_discovery_advertises_the_scoped_result_read(): void
+    {
+        $this->withHeaders($this->apiHeaders())->getJson('/api/cluster/info')
+            ->assertOk()->assertJsonPath('capabilities.workflow_activity_result_inspection', true);
+    }
+
+    public function test_retry_completion_selects_the_same_activity_and_final_attempt(): void
+    {
+        $this->configureWorkflowTypes(['tests.external-greeting-workflow' => ResultInspectionRetryWorkflow::class]);
+        [$workflowId, $runId, $activityId] = $this->activity();
+        $this->registerWorker('result-inspection-worker', 'external-activities',
+            supportedActivityTypes: ['tests.result-inspection-retry-activity']);
+        $first = $this->withHeaders($this->workerHeaders())->postJson('/api/worker/activity-tasks/poll', [
+            'worker_id' => 'result-inspection-worker', 'task_queue' => 'external-activities',
+        ])->assertOk()->json('task');
+        $this->withHeaders($this->workerHeaders())->postJson('/api/worker/activity-tasks/'.$first['task_id'].'/fail', [
+            'activity_attempt_id' => $first['activity_attempt_id'], 'lease_owner' => 'result-inspection-worker',
+            'failure' => ['message' => 'First attempt failed.', 'retryable' => true],
+        ])->assertOk();
+        $this->withHeaders($this->apiHeaders())->getJson($this->path($workflowId, $runId, $activityId))
+            ->assertOk()->assertJsonPath('state', 'pending')->assertJsonMissingPath('result_envelope');
+        $second = $this->withHeaders($this->workerHeaders())->postJson('/api/worker/activity-tasks/poll', [
+            'worker_id' => 'result-inspection-worker', 'task_queue' => 'external-activities',
+        ])->assertOk()->json('task');
+        $this->assertNotSame($first['activity_attempt_id'], $second['activity_attempt_id']);
+        $this->withHeaders($this->workerHeaders())->postJson('/api/worker/activity-tasks/'.$second['task_id'].'/complete', [
+            'activity_attempt_id' => $second['activity_attempt_id'], 'lease_owner' => 'result-inspection-worker',
+            'result' => ['codec' => 'avro', 'blob' => Serializer::serializeWithCodec('avro', 'second attempt')],
+        ])->assertOk();
+        $response = $this->withHeaders($this->apiHeaders())->getJson($this->path($workflowId, $runId, $activityId))
+            ->assertOk()->assertJsonPath('activity_id', $activityId)->assertJsonPath('state', 'available');
+        $this->assertSame('second attempt', Serializer::unserializeWithCodec('avro', $response->json('result_envelope.blob')));
+        $this->assertSame(2, ActivityExecution::query()->findOrFail($activityId)->attempts()->count());
+        $this->assertSame(1, WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::ActivityCompleted->value)->count());
+    }
+
+    public static function malformedHistories(): array
+    {
+        return [
+            'missing result' => ['missing', 'unavailable'],
+            'identity conflict' => ['identity', 'unsupported'],
+            'value conflict' => ['value', 'unsupported'],
+            'unsupported codec' => ['codec', 'unsupported'],
+        ];
+    }
+
+    #[DataProvider('malformedHistories')]
+    public function test_malformed_retained_history_does_not_present_an_available_result(string $kind, string $state): void
+    {
+        [$workflowId, $runId, $activityId] = $this->activity();
+        $this->complete('original');
+        $event = $this->completion($runId);
+        $payload = $event->payload;
+        if ($kind === 'missing') {
+            unset($payload['result'], $payload['activity']['result']);
+        } elseif ($kind === 'identity') {
+            $payload['activity']['id'] = 'different-activity';
+        } elseif ($kind === 'value') {
+            $payload['activity']['result'] = ['codec' => 'avro', 'blob' => Serializer::serializeWithCodec('avro', 'different')];
+        } else {
+            $payload['activity']['payload_codec'] = 'json';
+        }
+        $event->forceFill(['payload' => $payload])->save();
+        $this->withHeaders($this->apiHeaders())->getJson($this->path($workflowId, $runId, $activityId))
+            ->assertOk()->assertJsonPath('state', $state)->assertJsonPath('available', false)
+            ->assertJsonMissingPath('result_envelope');
     }
 
     private function activity(string $workflowId = 'result-inspection'): array

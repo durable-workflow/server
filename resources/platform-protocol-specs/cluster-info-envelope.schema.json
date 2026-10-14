@@ -104,6 +104,7 @@
       "properties": {
         "workflow_tasks": {"type": "boolean"},
         "activity_tasks": {"type": "boolean"},
+        "workflow_activity_result_inspection": {"type": "boolean", "description": "Targeted canonical result inspection for a remote activity in one explicit run. Missing or false means unsupported; local activities remain explicitly unqualified."},
         "signals": {"type": "boolean"},
         "queries": {"type": "boolean"},
         "updates": {"type": "boolean"},
