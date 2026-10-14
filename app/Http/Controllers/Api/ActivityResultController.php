@@ -28,7 +28,8 @@ final class ActivityResultController
         $namespace = (string) $request->attributes->get('namespace');
         $run = NamespaceWorkflowScope::run($namespace, $workflowId, $runId);
         $identity = ['workflow_id' => $workflowId, 'run_id' => $runId, 'activity_id' => $activityId];
-        if ($run === null) {
+        if ($run === null || $run->id !== $runId || $run->workflow_instance_id !== $workflowId
+            || $run->namespace !== $namespace) {
             return ControlPlaneProtocol::jsonForRequest($request, $identity + [
                 'reason' => 'run_not_found', 'message' => 'Workflow run not found.',
             ], 404);
@@ -51,9 +52,9 @@ final class ActivityResultController
         if ($event === null) {
             // A retained row establishes identity only. Its mutable status and
             // result are never a substitute for missing durable outcome history.
-            $exists = ConfiguredV2Models::query('activity_execution_model', ActivityExecution::class)
-                ->setEagerLoads([])->whereKey($activityId)->where('workflow_run_id', $run->id)->exists();
-            if (! $exists) {
+            $row = ConfiguredV2Models::query('activity_execution_model', ActivityExecution::class)
+                ->setEagerLoads([])->whereKey($activityId)->where('workflow_run_id', $run->id)->first(['id']);
+            if ($row === null || $row->id !== $activityId) {
                 return ControlPlaneProtocol::jsonForRequest($request, $identity + [
                     'reason' => 'activity_not_found', 'message' => 'Activity not found in this run.',
                 ], 404);
@@ -71,7 +72,7 @@ final class ActivityResultController
             return $this->state($request, $identity, 'unsupported', 'activity_result_history_identity_mismatch');
         }
         if (($snapshot['local_activity'] ?? false) === true) {
-            return $this->state($request, $identity, 'unsupported', 'local_activity_result_inspection_unqualified');
+            return $this->state($request, $identity, 'unsupported', 'local_activity_result_inspection_unsupported');
         }
 
         $status = $snapshot['status'] ?? null;

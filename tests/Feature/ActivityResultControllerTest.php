@@ -101,7 +101,7 @@ final class ActivityResultControllerTest extends TestCase
             ->assertOk()->assertJsonPath('state', 'pruned')->assertJsonPath('available', false);
     }
 
-    public function test_local_results_are_explicitly_unqualified(): void
+    public function test_local_results_are_explicitly_unsupported(): void
     {
         [$workflowId, $runId, $activityId] = $this->activity();
         $this->complete('local');
@@ -111,7 +111,7 @@ final class ActivityResultControllerTest extends TestCase
         $event->forceFill(['payload' => $payload])->save();
         $this->withHeaders($this->apiHeaders())->getJson($this->path($workflowId, $runId, $activityId))
             ->assertOk()->assertJsonPath('state', 'unsupported')
-            ->assertJsonPath('reason', 'local_activity_result_inspection_unqualified')->assertJsonMissingPath('result_envelope');
+            ->assertJsonPath('reason', 'local_activity_result_inspection_unsupported')->assertJsonMissingPath('result_envelope');
     }
 
     public function test_it_preserves_external_result_bytes_without_returning_stored_paths(): void
