@@ -26,6 +26,25 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+The external-storage preparation now writes local content-addressed objects
+and records recoverable `writing`/`ready` registry transitions. Exact retries
+preserve accepted bytes and reference identity, while partial objects can be
+repaired at that identity. Provider work stays off Tokio executor threads;
+contended local writer locks refuse instead of blocking indefinitely. Paths
+match PHP's encoded file URI, and reads bind the configured local root before
+verifying an independent snapshot. Native SQLite controls prove that failed
+provider writes and rolled-back ready promotions retain the original writing
+row and upload deadline. Cross-namespace lookups, conflicting metadata and
+expired uploads refuse; retained retries preserve ownership and no expiry.
+The actual frozen PHP registry passes fifteen independent controls, including
+an injected provider write failure and recovery with the same reference ID.
+Final native library checks pass 62 tests with 18 explicit database/subprocess
+ignores, and all 96 SQLite execution HTTP tests pass. These registry methods
+remain internal preparation: HTTP routing,
+policy/quotas, completion-upload fences, retained-state claims, cleanup/backup
+coordination, external database execution and S3 remain pending. No external
+transport or memo capability is enabled.
+
 The external byte foundation now captures verified anonymous file snapshots
 with fixed 8 KiB reads, declared-size refusal before reading and a one-byte
 observed-size probe. SHA-256 measures the exact uploaded Base64 byte string;
@@ -35,7 +54,7 @@ permit through its consumer lifetime. The async reader retains capacity and
 uses bounded file buffers. Abandoned captures stop between reads and retain
 capacity until a blocked source returns; callers must bound individual reads.
 Published PHP snapshot controls pass eight exact-size, spill, backing-change
-and one-byte-probe cases. Native library checks pass 56 tests with 18 explicit
+and one-byte-probe cases. That snapshot foundation passed 56 library tests with 18 explicit
 external-database/subprocess ignores. A counterfactual that performs capture on
 the single Tokio executor fails the responsiveness control after the watchdog
 releases the source; restoring the blocking worker passes. Namespace/registry

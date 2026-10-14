@@ -12,6 +12,7 @@ mod continuations;
 mod control_plane;
 mod cooperative;
 mod execution;
+mod external_registry;
 mod http;
 mod memo_json;
 mod memo_limits;

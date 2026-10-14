@@ -58,6 +58,10 @@ docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=128m --memory-swap=
   --network=none --entrypoint php -v "$PWD:/source:ro" "$image" \
   /source/scripts/conformance/server-parity/external-payload-snapshot.php \
   > "$output/external-snapshot-controls.json"
+docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=512m --memory-swap=512m \
+  --network=none --entrypoint php -v "$PWD:/source:ro" "$image" \
+  /source/scripts/conformance/server-parity/external-payload-registry.php \
+  > "$output/external-registry-controls.json"
 docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
   --network=none --entrypoint node -v "$PWD:/source:ro" -v "$PWD/$output:/adapters" \
   -v "$PWD/$cargo:/cargo:ro" -w /source "$image" \

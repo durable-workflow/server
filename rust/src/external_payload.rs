@@ -3,7 +3,9 @@
 
 use serde::Serialize;
 use serde_json::Value;
+mod local;
 mod snapshot;
+pub use local::LocalStorage;
 pub use snapshot::{AsyncSnapshot, Snapshot, SnapshotError, capture};
 
 pub const REFERENCE_SCHEMA: &str = "durable-workflow.v2.runtime-external-payload-reference.v1";

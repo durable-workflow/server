@@ -35,6 +35,10 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    pub(crate) fn rewind(&mut self) -> Result<(), SnapshotError> {
+        self.file.rewind().map_err(|_| SnapshotError::Unavailable)
+    }
+
     pub fn size_bytes(&self) -> u64 {
         self.size_bytes
     }
