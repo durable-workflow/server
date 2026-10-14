@@ -41,7 +41,13 @@ baselines are separate; embedded successor `StartAccepted` remains explicit.
 The earlier native request-shape originals stay failed: normal SDK serialization
 supplies its default queue, and null-only routing acceptance was insufficient.
 Changed routing and related/pending transfer families remain refused and
-unqualified. The corrected cohort now selects this separate pending fixture
+unqualified. Review also found that the pending-query guard could miss a
+predecessor entry beyond its 65-row cache prefix. The draft now checks the
+complete native-owned predecessor scope in SQL without loading cached history
+snapshots onto the executor. A constructed database boundary control covers
+pending/leased refusal, unchanged history and successor count, then same-original
+continuation after the query becomes terminal. Exact revised qualification
+remains required. The corrected cohort now selects this separate pending fixture
 on all six database cells; full matched qualification remains next. This does
 not enable memo upserts or establish full continuation, migration or release
 readiness. Disposable runtime, compiler and raw records were removed after audit.

@@ -1,6 +1,94 @@
 use super::*;
 
 #[tokio::test]
+async fn continuation_refuses_pending_query_beyond_the_cache_scan_prefix() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "continuation-worker", json!(["echo"]), json!([])).await;
+    let original = start(&app, "continuation-query-boundary").await;
+    let task = poll(&app, "continuation-worker", "workflow").await;
+    let run = original["run_id"].as_str().unwrap();
+    let column = match &database {
+        TestDatabase::MySql { .. } => "`key`",
+        _ => "\"key\"",
+    };
+    let expires = chrono::Utc::now().timestamp() + 600;
+    // Construct the storage boundary explicitly. The predecessor query sorts
+    // after all 65 unrelated entries and cannot appear in a prefix scan.
+    // SQL interpolation here uses only this test's generated ULID, numeric
+    // counters and fixed keys/statuses, never application-supplied input.
+    for index in 0..65 {
+        database.execute(sqlx::AssertSqlSafe(format!(
+            "INSERT INTO dw_query_cache({column},value,expiration) VALUES ('dw-native-query:000{index:03}','{{\"run_id\":\"other\",\"status\":\"completed\"}}',{expires})"
+        ))).await;
+    }
+    database.execute(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO dw_query_cache({column},value,expiration) VALUES ('dw-native-query:zzz','{{\"run_id\":\"{run}\",\"status\":\"pending\"}}',{expires})"
+    ))).await;
+    let path = format!(
+        "/api/worker/workflow-tasks/{}/complete",
+        task["task_id"].as_str().unwrap()
+    );
+    let history_path = format!("/api/workflows/continuation-query-boundary/runs/{run}/history");
+    let before = request(&app, "GET", &history_path, Value::Null).await.1;
+    let body = completion(&task, json!([{"type":"continue_as_new"}]));
+    for status in ["pending", "leased"] {
+        database.execute(sqlx::AssertSqlSafe(format!(
+            "UPDATE dw_query_cache SET value='{{\"run_id\":\"{run}\",\"status\":\"{status}\"}}' WHERE {column}='dw-native-query:zzz'"
+        ))).await;
+        let refused = request(&app, "POST", &path, body.clone()).await;
+        assert_eq!(refused.0, StatusCode::CONFLICT);
+        assert_eq!(refused.1["reason"], "continue_as_new_transfer_unqualified");
+        assert_eq!(
+            request(&app, "GET", &history_path, Value::Null).await.1,
+            before
+        );
+        assert_eq!(
+            request(
+                &app,
+                "GET",
+                "/api/workflows/continuation-query-boundary/runs",
+                Value::Null
+            )
+            .await
+            .1["runs"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+    database.execute(sqlx::AssertSqlSafe(format!(
+        "UPDATE dw_query_cache SET value='{{\"run_id\":\"{run}\",\"status\":\"completed\"}}' WHERE {column}='dw-native-query:zzz'"
+    ))).await;
+    database.execute(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO dw_query_cache({column},value,expiration) VALUES ('foreign-query:pending','{{\"run_id\":\"{run}\",\"status\":\"pending\"}}',{expires})"
+    ))).await;
+    database.execute(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO dw_query_cache({column},value,expiration) VALUES ('dw-native-query:expired','{{\"run_id\":\"{run}\",\"status\":\"pending\"}}',0)"
+    ))).await;
+    let committed = request(&app, "POST", &path, body).await;
+    assert_eq!(committed.0, StatusCode::OK, "{}", committed.1);
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            "/api/workflows/continuation-query-boundary/runs",
+            Value::Null
+        )
+        .await
+        .1["runs"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
 async fn malformed_or_unsupported_continuation_refuses_without_a_successor() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();

@@ -158,20 +158,20 @@ where
                 "continue_as_new_transfer_unqualified",
             ));
         }
-        for row in Self::query(DB::QUERY_CACHE_SCAN)
-            .fetch_all(&mut **tx)
+        // A bounded cache prefix cannot prove that this run has no pending
+        // query. Check the complete native-owned scope without loading or
+        // parsing its history snapshots on the executor.
+        if Self::scalar(DB::QUERY_CACHE_PENDING_FOR_RUN)
+            .bind(&old)
+            .bind(now().timestamp())
+            .fetch_one(&mut **tx)
             .await?
+            != 0
         {
-            let query: Value = serde_json::from_str(&DB::string(&row, "value")?)?;
-            if query["run_id"] == old
-                && matches!(query["status"].as_str(), Some("pending" | "leased"))
-                && DB::number(&row, "expiration")? > now().timestamp()
-            {
-                return Err(refuse(
-                    StatusCode::CONFLICT,
-                    "continue_as_new_transfer_unqualified",
-                ));
-            }
+            return Err(refuse(
+                StatusCode::CONFLICT,
+                "continue_as_new_transfer_unqualified",
+            ));
         }
         let rows = Self::query(DB::MEMO_READ)
             .bind(&old)

@@ -336,7 +336,7 @@ impl TestDatabase {
         }
     }
 
-    async fn execute(&self, statement: &'static str) {
+    async fn execute(&self, statement: impl sqlx::SqlSafeStr) {
         match self {
             Self::Sqlite(dir) => {
                 let pool = sqlx::SqlitePool::connect(&format!(
