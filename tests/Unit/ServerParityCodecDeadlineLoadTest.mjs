@@ -11,6 +11,21 @@ async function withServer(handler,run) {
   finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 }
 
+test('published control-plane version and namespace are carried on every description read',async()=>{
+  const observed=[];
+  await withServer((request,response)=>{
+    observed.push({version:request.headers['x-durable-workflow-control-plane-version'],namespace:request.headers['x-namespace']});
+    response.writeHead(observed.at(-1).version==='2'?200:400);response.end('{}');
+  },async url=>{
+    const counterfactual=await codecLoadRead(url,{timeoutSeconds:1,maximumBytes:1000});
+    assert.equal(counterfactual.status,400);
+    const actual=await codecLoadWave(url,{wave_seconds:0.03,readers:2,request_timeout_seconds:1,
+      maximum_response_bytes:1000,control_plane_protocol:'2'});
+    for(const reader of actual.readers){assert(reader.requests>0);assert.equal(reader.successes,reader.requests);}
+    for(const read of observed.slice(1))assert.deepEqual(read,{version:'2',namespace:'default'});
+  });
+});
+
 test('dense reader retains byte count/hash and status without parsing large int64 bodies',async()=>{
   const bytes=Buffer.from('{"integer":9007199254740993,"unicode":"λ"}');
   await withServer((_request,response)=>{response.write(bytes.subarray(0,10));response.end(bytes.subarray(10));},async url=>{

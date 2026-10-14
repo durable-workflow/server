@@ -151,6 +151,23 @@ jobs:
           retention-days: 90
           if-no-files-found: error
 
+      - name: Keep small failed SDK setup diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: failed-sdk-setup-diagnostics
+          path: |
+            published-sdk-adapters/*-build.txt
+            published-sdk-adapters/*-install.txt
+            legacy-marker-adapters/*-build.txt
+            legacy-marker-adapters/*-install.txt
+            sdk-direction-adapters/*-build.txt
+            sdk-direction-adapters/*-install.txt
+            corrected-marker-adapters/*-build.txt
+            corrected-marker-adapters/*-install.txt
+          retention-days: 7
+          if-no-files-found: ignore
+
   mysql-execution:
     needs: published-sdk-adapters
     runs-on: ubuntu-latest

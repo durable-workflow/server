@@ -1,5 +1,6 @@
 {
   "schema": "durable-workflow.server-port-codec-deadline/v1",
+  "control_plane_protocol": "2",
   "rows": 8192,
   "row": {"integer": 9007199254740993, "optional": null, "unicode": "original codec deadline λ", "sequence": 7},
   "typed_row": {"type":"map","value":{"integer":{"type":"int64","value":"9007199254740993"},"optional":{"type":"null","value":null},"unicode":{"type":"string","value":"original codec deadline λ"},"sequence":{"type":"int64","value":"7"}}},

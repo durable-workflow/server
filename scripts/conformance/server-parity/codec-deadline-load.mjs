@@ -6,7 +6,7 @@ import {performance} from 'node:perf_hooks';
 
 // Consume response bytes without retaining or parsing repeated dense payloads.
 // The installed SDK verifies the original value before and after this wave.
-export async function codecLoadRead(url, {timeoutSeconds,maximumBytes,minimumBytes=0,token}) {
+export async function codecLoadRead(url, {timeoutSeconds,maximumBytes,minimumBytes=0,controlPlaneProtocol,token}) {
   const started=performance.now();
   return new Promise(resolve=>{
     let bytes=0,finished=false,status=null;
@@ -17,6 +17,7 @@ export async function codecLoadRead(url, {timeoutSeconds,maximumBytes,minimumByt
         elapsed_milliseconds:performance.now()-started});
     };
     const request=http.get(url,{headers:{'accept':'application/json','x-namespace':'default',
+      ...(controlPlaneProtocol?{'x-durable-workflow-control-plane-version':controlPlaneProtocol}:{}),
       ...(token?{authorization:`Bearer ${token}`}:{})}},response=>{
       status=response.statusCode;
       response.on('data',chunk=>{
@@ -42,7 +43,8 @@ export async function codecLoadWave(url,spec,{health=false,token=null}={}) {
       for(const path of paths) {
         const response=await codecLoadRead(health?new URL(path,url):new URL(url),{timeoutSeconds:spec.request_timeout_seconds,
           maximumBytes:health?65536:spec.maximum_response_bytes,
-          minimumBytes:health?0:spec.minimum_dense_response_bytes,token});
+          minimumBytes:health?0:spec.minimum_dense_response_bytes,
+          controlPlaneProtocol:spec.control_plane_protocol,token});
         summary.requests++;summary.bytes+=response.bytes;
         const status=String(response.status);summary.statuses[status]=(summary.statuses[status]??0)+1;
         if(response.error)summary.errors[response.error]=(summary.errors[response.error]??0)+1;

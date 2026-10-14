@@ -24,6 +24,7 @@ $check = static function (bool $condition, string $message): void {
 try {
     $check($state['sdk_version']===$artifacts['sdk_php'], 'Wrong normally installed SDK version');
     $check($state['sdk_source']===$artifacts['sdk_php_source_commit'], 'Wrong normally installed SDK source');
+    $check(\DurableWorkflow\Version::CONTROL_PLANE_PROTOCOL===$spec['control_plane_protocol'], 'Wrong installed control-plane protocol');
     $dense = array_fill(0, $spec['rows'], $spec['row']);
     $arguments = [$dense];
     $envelope = $client->payloadCodec()->envelope($arguments);
