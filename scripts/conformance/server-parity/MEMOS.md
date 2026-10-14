@@ -34,7 +34,7 @@ all 23 corruption controls and stopped SQL task/memo guards. This uses a new
 test adapter module, with no SDK code/version or native-source change. The
 shared candidate now runs PHP, Python and Rust author families separately and
 compares each with the embedded PHP counterpart; full hosted acceptance remains
-pending, along with external envelopes and continuation inheritance.
+pending, along with external envelopes and broader continuation inheritance.
 
 The authoring candidate integrates #446's continuation transition. A separate
 `continue-upserted-memo-activity-replay` recipe upserts after one actual activity,
@@ -43,8 +43,14 @@ deletion, an empty list and untouched int64/null/Unicode values before the cold
 successor claims work. `DW_PARITY_CONTINUE_MEMO_UPSERTS=1` adds this case while
 keeping the original initial-memo continuation case. The native batch accepts
 validated memo commands before a terminal continuation; other transfer and
-routing boundaries retain their explicit refusals. Actual three-runtime
-acceptance of the new recipe is pending.
+routing boundaries retain their explicit refusals. Actual PHP and native SQLite
+originals pass 35 reader corruption controls each; the normally installed
+embedded 2.5.16 original passes 34. Each has one actual activity, one memo event,
+one continuation link, four first-attempt completed tasks and zero repairs.
+The [receipt](https://github.com/durable-workflow/server/pull/448#issuecomment-6170709164)
+preserves the failed initial observer comparisons and the pending full matrix,
+external-reference and discovery gates. Completed runtime and raw audit data
+were deleted after verification.
 
 The separate `memo-initial-activity-replay` case proves the initial storage/read
 foundation without issuing an upsert. It runs the same original through one

@@ -68,7 +68,7 @@ observer checks binary/build identity before worker execution and keeps the
 exact published crate/source/lock identity. Its reported SDK constant remains
 `durable-workflow-rust/3.5.4`; the reader checks that exact format. The shared
 candidate selects all three SDK author families in separate prefixes/output
-directories. External envelopes, inheritance, complete discovery and
+directories. External envelopes, broader inheritance, complete discovery and
 all-database acceptance remain incomplete; no published capability is claimed.
 The combined authoring candidate now integrates exact PHP main #449 and #446's
 continuation foundation. A focused control exposed the sole-command guard's
@@ -83,8 +83,14 @@ successor, preserving the merged memo before successor admission. Each passes
 35 strict reader corruptions. Its first business originals completed but the
 reader failed because the continuation observer omitted typed memo-envelope
 decoding. The corrected observer uses the normal codec on fresh originals;
-no history clock or stored bytes are rewritten. Embedded and full matched
-acceptance of this combined source remain pending.
+no history clock or stored bytes are rewritten. The normally installed embedded
+2.5.16 counterpart also passes with 34 corruption controls. All three originals
+have four completed first-attempt tasks, zero repairs and one canonical
+continuation link. Final native execution passes 96 tests; the recorder passes
+206 controls. The [three-runtime receipt](https://github.com/durable-workflow/server/pull/448#issuecomment-6170709164)
+records exact source, binary, original identities and qualification limits.
+Full matched acceptance, external references and complete discovery remain
+pending. All completed runtime, compiler and raw audit resources were deleted.
 Frozen references and independent #444/#445/#446 gates are unchanged. The
 broader [draft #448](https://github.com/durable-workflow/server/pull/448) retains
 those incomplete acceptance requirements.
@@ -132,8 +138,8 @@ changed body as `conflicting_completion`. The [probe correction](https://github.
 preserves all original completion metadata and checks a separate conflicting
 payload refusal. Earlier failed records remain failed; no stronger PHP receipt
 contract or runtime receipt change follows. #445 and #446's prior candidates
-passed all 13 matched jobs. #444's original activity-clock correction still has
-its MariaDB job active. Exact PHP #449 integration has a fresh #444 comparison
+passed all 13 matched jobs. #444's original activity-clock correction also passed
+all 13 jobs. Exact PHP #449 integration has a fresh #444 comparison
 pending before promotion; earlier results do not qualify the combined tree.
 The broader authoring candidate remains separate from those disabled memo
 foundations and unpublished.
