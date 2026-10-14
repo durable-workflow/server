@@ -184,21 +184,6 @@ fn update(
         }
     }
     let mut prepared = encode(merged.clone())?;
-    let total: usize = prepared
-        .values()
-        .map(|value| {
-            STANDARD
-                .decode(value.envelope["blob"].as_str().expect("prepared blob"))
-                .expect("prepared base64")
-                .len()
-        })
-        .sum();
-    if configured_limit.is_some_and(|limit| total > limit) {
-        return Err(refuse(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "structural_limit_exceeded",
-        ));
-    }
     let canonical_entries = super::wire(
         &codec
             .encode_ordered(&Payload::Map(entries.clone()))
@@ -209,6 +194,18 @@ fn update(
             .encode_ordered(&Payload::Map(merged))
             .map_err(|_| invalid())?,
     );
+    // The fixed total limit sums individual envelopes. The configured
+    // structural limit measures the whole canonical map, including its keys.
+    let merged_bytes = STANDARD
+        .decode(canonical_merged["blob"].as_str().expect("prepared blob"))
+        .expect("prepared base64")
+        .len();
+    if configured_limit.is_some_and(|limit| merged_bytes > limit) {
+        return Err(refuse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "structural_limit_exceeded",
+        ));
+    }
     let changes = entries
         .into_iter()
         .map(|(key, value)| {
@@ -375,6 +372,28 @@ mod tests {
             update(corrupt, codec.encode_ordered(&entries).unwrap(), None),
             Err(super::super::RuntimeError::Refused {
                 reason: "unsupported_stored_memo",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn configured_limit_measures_the_complete_map_at_the_inclusive_boundary() {
+        let codec = ValueCodec::new().unwrap();
+        let entries = Payload::Map(BTreeMap::from([("k".repeat(64), Payload::Long(1))]));
+        let blob = codec.encode_ordered(&entries).unwrap();
+        let size = STANDARD.decode(&blob).unwrap().len();
+        assert!(
+            size > STANDARD
+                .decode(codec.encode_ordered(&Payload::Long(1)).unwrap())
+                .unwrap()
+                .len()
+        );
+        assert!(update(vec![], blob.clone(), Some(size)).is_ok());
+        assert!(matches!(
+            update(vec![], blob, Some(size - 1)),
+            Err(super::super::RuntimeError::Refused {
+                reason: "structural_limit_exceeded",
                 ..
             })
         ));

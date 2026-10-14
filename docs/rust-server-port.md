@@ -26,6 +26,17 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+[#445](https://github.com/durable-workflow/server/pull/445) prepares authored
+memo transactions on top of #444. Apache Avro's schema-aware serde writer
+preserves the published PHP canonical map bytes. The internal transaction
+replaces or deletes named keys, preserves untouched row metadata and appends
+the merged history envelope atomically. A real SQLite history-write failure
+rolls back the memo change. Public completions still return
+`workflow_memo_updates_unavailable` with `recorded=false`; discovery remains
+disabled. Protocol-floor refusal leaves the original task usable. Configuration
+limits, external references, inheritance, routing/replay boundaries and actual
+installed SDK acceptance remain required before enabling this capability.
+
 The pending [memo fixture](../scripts/conformance/server-parity/MEMOS.md)
 widens metadata coverage before native implementation. Normal installed PHP
 SDK 2.3.9 against the frozen Server 2.6.2 and embedded Workflow 2.5.16 complete
@@ -57,7 +68,11 @@ reader checks pass, with one explicit skip.
 `1065360b83f0dbf531a67a7af8edbece19b97fec`, identical to reviewed `97e63c01`
 and its CI merge `e8f4fc49`. All six original final combined jobs in
 `38506521977` and applicable source/boundary gates pass. Exact fresh-main
-`38511209412` is pending before final delivery. Conditional cancellation and
+[`38511209412`](https://github.com/durable-workflow/server/actions/runs/38511209412)
+also passes all six original jobs without retries. Independent completed logs
+confirm the four retry/heartbeat families across PHP, Rust and embedded mode.
+The [delivery receipt](https://github.com/durable-workflow/server/pull/438#issuecomment-6161666925)
+records final source and boundary success. Conditional cancellation and
 prepared-local qualification remain explicitly skipped. Earlier failed
 originals and frozen tuples retain their existing dispositions.
 
