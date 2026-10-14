@@ -387,8 +387,37 @@ async fn heartbeat_renews_only_progress_deadline_and_cannot_resurrect_elapsed_au
         finish_task(&app, &workflow, json!([scheduled])).await.0,
         StatusCode::OK
     );
+    if let TestDatabase::MySql { options, .. } = &database {
+        let pool = sqlx::mysql::MySqlPoolOptions::new()
+            .connect_with(options.as_ref().clone())
+            .await
+            .unwrap();
+        // Force storage latency after the attempt clock is captured. The
+        // durable event must use that clock, rather than its publication time.
+        sqlx::raw_sql("CREATE TRIGGER delay_activity_attempt BEFORE INSERT ON activity_attempts FOR EACH ROW SET @activity_clock_delay = SLEEP(0.025)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+    }
     let activity = poll(&app, "heartbeat-deadline-worker", "activity").await;
     let initial = running_deadlines(&database).await;
+    let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    let start = history
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["event_type"] == "ActivityStarted")
+        .unwrap();
+    let at = chrono::DateTime::parse_from_rfc3339(start["timestamp"].as_str().unwrap()).unwrap();
+    // All three qualification backends use UTC; SQL text omits the RFC3339 Z.
+    let sql_deadline = format!("{}Z", initial.0.trim_end_matches("+00").replace(' ', "T"));
+    let close = chrono::DateTime::parse_from_rfc3339(&sql_deadline).unwrap();
+    assert_eq!(
+        close,
+        at + chrono::Duration::seconds(30),
+        "The immutable deadline and durable start event share the original attempt clock"
+    );
     let base = json!({"activity_attempt_id":activity["activity_attempt_id"],"lease_owner":activity["lease_owner"]});
     let status_path = format!(
         "/api/worker/activity-tasks/{}/status",
