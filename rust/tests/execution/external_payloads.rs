@@ -89,6 +89,286 @@ fn metadata(bytes: &[u8]) -> Value {
     json!({"size_bytes":bytes.len() as i64,"sha256":digest(bytes)})
 }
 
+async fn json_request(
+    router: &Router,
+    method: &str,
+    path: &str,
+    token: &str,
+    value: Value,
+) -> (StatusCode, Value) {
+    let version = if path.starts_with("/api/worker/") {
+        ("x-durable-workflow-protocol-version", "1.20")
+    } else {
+        ("x-durable-workflow-control-plane-version", "2")
+    };
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(path)
+                .header("authorization", format!("Bearer {token}"))
+                .header(version.0, version.1)
+                .header("content-type", "application/json")
+                .body(Body::from(value.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), 4 * 1024 * 1024)
+        .await
+        .unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap())
+}
+
+async fn unclaimed(database: &TestDatabase) -> i64 {
+    let query = "SELECT COUNT(*) FROM runtime_external_payloads WHERE retained_at IS NULL AND expires_at IS NOT NULL";
+    match database {
+        TestDatabase::Sqlite(dir) => {
+            let pool = sqlx::SqlitePool::connect(&format!(
+                "sqlite://{}",
+                dir.path().join("runtime.sqlite").display()
+            ))
+            .await
+            .unwrap();
+            let count = sqlx::query_scalar(query).fetch_one(&pool).await.unwrap();
+            pool.close().await;
+            count
+        }
+        TestDatabase::Postgres { options, .. } => {
+            let pool = sqlx::postgres::PgPoolOptions::new()
+                .connect_with(options.as_ref().clone())
+                .await
+                .unwrap();
+            let count = sqlx::query_scalar(query).fetch_one(&pool).await.unwrap();
+            pool.close().await;
+            count
+        }
+        TestDatabase::MySql { options, .. } => {
+            let pool = sqlx::mysql::MySqlPoolOptions::new()
+                .connect_with(options.as_ref().clone())
+                .await
+                .unwrap();
+            let count = sqlx::query_scalar(query).fetch_one(&pool).await.unwrap();
+            pool.close().await;
+            count
+        }
+    }
+}
+
+#[tokio::test]
+async fn external_workflow_input_retains_one_reference_with_start_and_survives_cold_worker_completion()
+ {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("objects");
+    let mut config = ExternalPayloadConfig::default();
+    config.max_bytes = 8 * 1024 * 1024;
+    let (database, runtime, app) = setup(config, &root).await;
+    let blob = durable_workflow_server::codec::ValueCodec::new()
+        .unwrap()
+        .encode(&Payload::Array(vec![
+            Payload::String("x".repeat(3 * 1024 * 1024)),
+            Payload::Long(9007199254740993),
+            Payload::Null,
+        ]))
+        .unwrap();
+    assert!(blob.len() > 3 * 1024 * 1024);
+    let (status, _, bytes) = request(
+        &app,
+        "POST",
+        "/api/external-payloads/v1",
+        "worker-token",
+        "default",
+        Some(&metadata(blob.as_bytes())),
+        Body::from(blob.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let uploaded: Value = serde_json::from_slice(&bytes).unwrap();
+    let reference = &uploaded["reference"];
+    assert_eq!(unclaimed(&database).await, 1);
+    let mut body = json!({"workflow_id":"invalid id", "workflow_type":"echo", "task_queue":"external-input",
+        "input":{"codec":"avro","external_payload":reference}});
+    assert_eq!(
+        json_request(
+            &app,
+            "POST",
+            "/api/workflows",
+            "operator-token",
+            body.clone()
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        unclaimed(&database).await,
+        1,
+        "failed state admission rolls retention back"
+    );
+    body["workflow_id"] = json!("external-input-original");
+    let (status, original) =
+        json_request(&app, "POST", "/api/workflows", "operator-token", body).await;
+    assert_eq!(status, StatusCode::CREATED, "{original}");
+    assert_eq!(unclaimed(&database).await, 0);
+    runtime.close().await;
+    let cold = database.open().await.unwrap().with_role_tokens(
+        Some("worker-token".into()),
+        Some("operator-token".into()),
+        Some("admin-token".into()),
+    );
+    let app = router(cold.clone());
+    assert_eq!(
+        json_request(
+            &app,
+            "POST",
+            "/api/worker/register",
+            "worker-token",
+            json!({
+        "worker_id":"external-input-reader", "task_queue":"external-input", "runtime":"php",
+        "supported_workflow_types":["echo"], "supported_activity_types":[]})
+        )
+        .await
+        .0,
+        StatusCode::CREATED
+    );
+    let (status, delivery) = json_request(&app, "POST", "/api/worker/workflow-tasks/poll", "worker-token",
+        json!({"worker_id":"external-input-reader","task_queue":"external-input","timeout_seconds":0})).await;
+    assert_eq!(status, StatusCode::OK);
+    let task = &delivery["task"];
+    assert_eq!(task["run_id"], original["run_id"]);
+    assert_eq!(
+        task["arguments"],
+        json!({"codec":"avro","external_payload":reference})
+    );
+    assert!(
+        task["arguments"].to_string().len() < 400,
+        "durable delivery does not inline external bytes"
+    );
+    let path = format!(
+        "/api/external-payloads/v1/{}",
+        reference["reference_id"].as_str().unwrap()
+    );
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            &path,
+            "worker-token",
+            "default",
+            Some(reference),
+            Body::empty()
+        )
+        .await
+        .2,
+        blob.as_bytes()
+    );
+    let (status, receipt) = json_request(&app, "POST", &format!("/api/worker/workflow-tasks/{}/complete", task["task_id"].as_str().unwrap()),
+        "worker-token", completion(task, json!([{"type":"complete_workflow","result":envelope(Payload::Long(9007199254740993))}]))).await;
+    assert_eq!(status, StatusCode::OK, "{receipt}");
+    assert_eq!(receipt["recorded"], true);
+    let (_, result) = json_request(
+        &app,
+        "GET",
+        "/api/workflows/external-input-original",
+        "operator-token",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(result["status"], "completed");
+    assert_eq!(result["input_envelope"], task["arguments"]);
+    assert_eq!(unclaimed(&database).await, 0);
+    cold.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn malformed_and_expired_external_input_never_claims_or_admits_a_workflow() {
+    let temp = tempfile::tempdir().unwrap();
+    let (database, runtime, app) = setup(
+        ExternalPayloadConfig::default(),
+        &temp.path().join("objects"),
+    )
+    .await;
+    let header = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        "wwHioz3/VYAiNw==",
+    )
+    .unwrap();
+    for (index, suffix) in [vec![12, 1, 2, 4, 0, 0], vec![2, 2], vec![10, 2, 255]]
+        .into_iter()
+        .enumerate()
+    {
+        let mut datum = header.clone();
+        datum.extend(suffix);
+        let blob = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, datum);
+        let (status, _, upload) = request(
+            &app,
+            "POST",
+            "/api/external-payloads/v1",
+            "worker-token",
+            "default",
+            Some(&metadata(blob.as_bytes())),
+            Body::from(blob),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let upload: Value = serde_json::from_slice(&upload).unwrap();
+        let (status, refusal) = json_request(&app, "POST", "/api/workflows", "operator-token", json!({
+            "workflow_id":format!("invalid-external-{index}"),"workflow_type":"echo","task_queue":"test",
+            "input":{"codec":"avro","external_payload":upload["reference"]}})).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refusal}");
+        assert_eq!(refusal["reason"], "invalid_external_payload_datum");
+        assert_eq!(unclaimed(&database).await, (index + 1) as i64);
+        assert_eq!(
+            json_request(
+                &app,
+                "GET",
+                &format!("/api/workflows/invalid-external-{index}"),
+                "operator-token",
+                Value::Null
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+    }
+    let blob = durable_workflow_server::codec::ValueCodec::new()
+        .unwrap()
+        .encode(&Payload::Array(vec![]))
+        .unwrap();
+    let (_, _, upload) = request(
+        &app,
+        "POST",
+        "/api/external-payloads/v1",
+        "worker-token",
+        "default",
+        Some(&metadata(blob.as_bytes())),
+        Body::from(blob),
+    )
+    .await;
+    let upload: Value = serde_json::from_slice(&upload).unwrap();
+    database
+        .execute("UPDATE runtime_external_payloads SET expires_at='2000-01-01 00:00:00'")
+        .await;
+    let (status, refusal) = json_request(
+        &app,
+        "POST",
+        "/api/workflows",
+        "operator-token",
+        json!({
+        "workflow_id":"expired-external","workflow_type":"echo","task_queue":"test",
+        "input":{"codec":"avro","external_payload":upload["reference"]}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::GONE, "{refusal}");
+    assert_eq!(refusal["reason"], "external_payload_expired");
+    assert_eq!(unclaimed(&database).await, 4);
+    runtime.close().await;
+    database.remove().await;
+}
+
 async fn setup(
     config: ExternalPayloadConfig,
     root: &std::path::Path,

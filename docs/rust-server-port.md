@@ -26,6 +26,44 @@ receipts remain unqualified; the latter capability is advertised as false.
 
 ## Work order and current status
 
+External workflow inputs now retain their verified opaque reference in the same
+native transaction as start admission. Failed starts roll that retention back.
+Cold workflow delivery and description keep the small reference, while the
+normal installed SDK fetches and decodes the original bytes. Invalid Avro,
+including malformed negative collection blocks, and expired/unbound references
+refuse without admitting a workflow or retaining an abandoned upload.
+
+The same normal PHP 2.3.9 consumer completes actual frozen PHP 2.6.2 and native
+SQLite originals with an exact 4,194,356-byte input, preserving the large int64,
+null and Unicode arguments. Each invokes and completes once within its original
+30-second observation budget. Stopped SQL/provider inspection independently
+confirms one completed first-attempt task, zero repairs, one completion event,
+the exact retained input hash/size, null upload expiry and a small stored pointer
+instead of expanded bytes. The native binary is
+`c58762759f4c03302ee54b3e22a11261ed087783d374ff7537dfb48d1ec5fd0b`.
+The first PHP business original completed but its observer incorrectly decoded
+the raw external result as inline; that observation remains unsuccessful. The
+corrected observer uses the normal SDK result reader on a separate original.
+Client header typing and native opt-in/listen setup failures preceded admission.
+
+Validation uses Apache Avro 0.22.0's schema-aware reader and a discarding Serde
+visitor, not a decoded collection or rewritten stored bytes. An actual regression
+proved the unpatched reader accepted an invalid negative collection byte length
+that frozen PHP rejects. The narrowly vendored patch checks those block bounds,
+streams discarded bytes, and grows scalar buffers from observed data before a
+short-stream refusal. Its source/package provenance and two changed upstream
+files are documented in `rust/vendor/apache-avro/PATCHES.md`. Thirteen actual
+frozen PHP datum controls pass; native final source passes 66 library tests
+with 18 explicit database/subprocess ignores and all 102 SQLite HTTP tests.
+Formatting and probe syntax checks pass. All completed local runtime, database,
+vendor-install, compiler/cache, formatter and raw evidence resources are deleted.
+
+This is workflow-input acceptance only. General completion/activity/memo/query
+reference ingress, automatic external result policy, complete policy/provider
+variants, allocation/CPU/deep-nesting qualification, cleanup/backup/restart and
+the full database/consumer matrix remain ahead. Full transport discovery stays
+unadvertised; no release, performance, migration or cutover claim follows.
+
 The development external-payload transport now exposes authenticated versioned
 upload/fetch routes and an admin-only local namespace policy. The byte route has
 its own configured size ceiling, original request timeout and one bounded

@@ -162,7 +162,7 @@ pub(super) fn local_policy(body: Value) -> Result<Value> {
     Ok(policy)
 }
 
-async fn local(runtime: &Runtime) -> Result<LocalStorage> {
+pub(super) async fn local(runtime: &Runtime) -> Result<LocalStorage> {
     let metadata = runtime.describe_namespace(runtime.namespace()).await?;
     let policy = &metadata["external_payload_storage"];
     if policy.is_null() || policy["enabled"] == false || policy["driver"] != "local" {

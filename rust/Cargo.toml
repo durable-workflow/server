@@ -36,4 +36,5 @@ debug = 0
 debug = 0
 
 [patch.crates-io]
+apache-avro = { path = "vendor/apache-avro" }
 sqlx-mysql = { path = "vendor/sqlx-mysql" }

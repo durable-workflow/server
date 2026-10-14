@@ -14,6 +14,7 @@ mod cooperative;
 mod execution;
 mod external_config;
 mod external_registry;
+mod external_resolution;
 mod external_transport;
 mod http;
 mod memo_json;
@@ -284,11 +285,18 @@ fn envelope(body: &Value, field: &str) -> Result<String> {
     }
     let blob = value["blob"]
         .as_str()
-        .filter(|s| !s.is_empty() && s.len() <= 2 * 1024 * 1024)
+        .filter(|s| {
+            !s.is_empty()
+                && s.len() <= 2 * 1024 * 1024
+                && !s.starts_with(external_resolution::STORED_PREFIX)
+        })
         .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_payload_envelope"))?;
     Ok(blob.to_owned())
 }
 
 fn wire(blob: &str) -> Value {
+    if let Some(envelope) = external_resolution::stored_envelope(blob) {
+        return envelope;
+    }
     json!({"codec": "avro", "blob": blob})
 }

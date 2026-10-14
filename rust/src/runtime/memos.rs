@@ -433,6 +433,7 @@ mod tests {
                 json!({"workflow_id":"memo-unit", "workflow_type":"echo", "task_queue":"test",
             "input":{"codec":"avro","blob":"wwHioz3/VYAiNwA="}}),
                 initial(json!({"keep":9007199254740993_i64,"replace":"old"})).unwrap(),
+                None,
             )
             .await
             .unwrap();

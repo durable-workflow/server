@@ -291,6 +291,13 @@ restart, all database families and S3 qualification. The actual byte probe is
 an isolated runtime configured with its disposable fixture token, a default
 namespace, four MiB payload ceiling and one-object namespace quota. See the
 [port log](../docs/rust-server-port.md) for its precise acceptance scope.
+Workflow start now also accepts a verified opaque external input. Retention and
+start commit together; cold delivery and descriptions keep the reference for
+normal SDK hydration. The installed-worker recipe is
+`scripts/conformance/server-parity/external-input-worker.php`. General external
+completion/activity/memo/query ingress and automatic external result policy are
+still unqualified. Apache's schema-aware validation patch is recorded in
+`vendor/apache-avro/PATCHES.md`.
 
 The native development bootstrap creates the complete SQLite schema from the
 frozen published PHP image: 49 tables and 333 explicit indexes. Native completion

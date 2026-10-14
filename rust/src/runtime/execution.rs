@@ -277,10 +277,11 @@ impl Runtime {
     pub(crate) async fn start(&self, body: Value) -> Result<Value> {
         let memo =
             super::memos::prepare_initial(self.signal_codec.clone(), body["memo"].clone()).await?;
+        let external = self.prepare_external(&body["input"]).await?;
         match &*self.storage {
-            Storage::Sqlite(store) => store.start(body, memo).await,
-            Storage::Postgres(store) => store.start(body, memo).await,
-            Storage::MySql(store) => store.start(body, memo).await,
+            Storage::Sqlite(store) => store.start(body, memo, external).await,
+            Storage::Postgres(store) => store.start(body, memo, external).await,
+            Storage::MySql(store) => store.start(body, memo, external).await,
         }
     }
     pub(crate) async fn create_schedule(&self, body: Value, context: Value) -> Result<Value> {

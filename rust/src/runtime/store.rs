@@ -119,9 +119,22 @@ where
         &self,
         body: Value,
         memo: super::memos::PreparedMemo,
+        external: Option<super::external_resolution::PreparedExternal>,
     ) -> Result<Value> {
         let mut tx = self.begin().await?;
-        let started = Self::start_in(&mut tx, &body, &self.namespace, Some(&memo)).await?;
+        let arguments = external.as_ref().map(|prepared| prepared.stored());
+        if let Some(prepared) = &external {
+            self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri)
+                .await?;
+        }
+        let started = Self::start_in(
+            &mut tx,
+            &body,
+            &self.namespace,
+            Some(&memo),
+            arguments.as_deref(),
+        )
+        .await?;
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok(started)
@@ -134,6 +147,7 @@ where
         body: &Value,
         namespace: &str,
         memo: Option<&super::memos::PreparedMemo>,
+        external_arguments: Option<&str>,
     ) -> Result<Value> {
         let workflow_id = text(&body, "workflow_id")?;
         if workflow_id.len() > 128
@@ -148,7 +162,10 @@ where
         }
         let workflow_type = text(&body, "workflow_type")?;
         let queue = text(&body, "task_queue")?;
-        let arguments = envelope(&body, "input")?;
+        let arguments = match external_arguments {
+            Some(arguments) => arguments.to_owned(),
+            None => envelope(&body, "input")?,
+        };
         let execution_timeout = positive_seconds(&body, "execution_timeout_seconds", 3600)?;
         let run_timeout = positive_seconds(&body, "run_timeout_seconds", 600)?;
         reject_fields(
