@@ -215,6 +215,7 @@ final class WorkflowQueryTaskBroker
             $timeout['reason'],
             $timeout['message'],
             $timeout['status'],
+            extra: ['query_task_id' => $task['query_task_id']],
         );
     }
 
@@ -421,12 +422,17 @@ final class WorkflowQueryTaskBroker
             return;
         }
 
-        $this->withQueueLock($task['namespace'], $task['task_queue'], function () use ($queryTaskId): void {
-            $current = $this->task($queryTaskId);
-            if (is_array($current)) {
-                $this->expireTask($current);
-            }
-        });
+        try {
+            $this->withQueueLock($task['namespace'], $task['task_queue'], function () use ($queryTaskId): void {
+                $current = $this->task($queryTaskId);
+                if (is_array($current)) {
+                    $this->expireTask($current);
+                }
+            }, waitSeconds: 0);
+        } catch (QueryTaskQueueUnavailableException) {
+            // The immutable deadline still fences new outcomes. Cache cleanup
+            // cannot replace the original caller's canonical timeout.
+        }
     }
 
     /**
@@ -554,6 +560,8 @@ final class WorkflowQueryTaskBroker
         }
 
         $workerPollFence = WorkerPollFence::snapshot($worker);
+        $workerPollFence['registration_incarnation'] = is_string($worker->registration_token)
+            ? hash('sha256', $worker->registration_token) : null;
 
         $this->rememberQueryTaskPollingWorker($namespace, $taskQueue, $worker->worker_id, $timeoutSeconds);
 
@@ -844,7 +852,8 @@ final class WorkflowQueryTaskBroker
             return false;
         }
 
-        return (int) ($current['attempt_count'] ?? 0) === (int) ($task['query_task_attempt'] ?? 0);
+        return (int) ($current['attempt_count'] ?? 0) === (int) ($task['query_task_attempt'] ?? 0)
+            && $this->guardLease($current, $namespace, $queryTaskId, $leaseOwner, (int) $task['query_task_attempt']) === null;
     }
 
     /**
@@ -1126,6 +1135,24 @@ final class WorkflowQueryTaskBroker
      */
     private function taskForResultWait(string $queryTaskId): ?array
     {
+        try {
+            return $this->refreshTaskForResultWait($queryTaskId);
+        } catch (QueryTaskQueueUnavailableException) {
+            $task = $this->task($queryTaskId);
+            if (! is_array($task) || ($refusal = $this->deadlineRefusal($task)) === null) {
+                return $task;
+            }
+            if ($refusal['reason'] === 'query_deadline_unavailable') {
+                return array_replace($task, ['status' => 'failed', 'reason' => $refusal['reason'],
+                    'message' => $refusal['error'], 'http_status' => 409]);
+            }
+
+            return array_replace($task, ['status' => 'timed_out', 'timed_out_from_status' => $task['status']]);
+        }
+    }
+
+    private function refreshTaskForResultWait(string $queryTaskId): ?array
+    {
         $task = $this->task($queryTaskId);
 
         if (is_array($task) && ! in_array($task['status'] ?? null, ['completed', 'failed', 'timed_out'], true)
@@ -1137,7 +1164,7 @@ final class WorkflowQueryTaskBroker
                 }
 
                 return $current;
-            });
+            }, waitSeconds: 0);
         }
 
         if (! is_array($task) || ($task['status'] ?? null) !== 'leased') {
@@ -1157,7 +1184,8 @@ final class WorkflowQueryTaskBroker
             ->where('worker_id', $leaseOwner)
             ->first();
 
-        if ($owner instanceof WorkerRegistration && WorkerPollFence::isFresh($owner)) {
+        if ($owner instanceof WorkerRegistration && WorkerPollFence::isFresh($owner)
+            && $this->registrationMatchesTask($task, $owner)) {
             return $task;
         }
 
@@ -1165,45 +1193,54 @@ final class WorkflowQueryTaskBroker
             $namespace,
             $taskQueue,
             function (LockContract $lock) use ($namespace, $taskQueue, $leaseOwner, $queryTaskId, $task): bool {
-                $current = $this->task($queryTaskId);
+                return DB::transaction(function () use ($namespace, $taskQueue, $leaseOwner, $queryTaskId, $task, $lock): bool {
+                    $current = $this->task($queryTaskId);
 
-                if (! is_array($current)
-                    || ($current['status'] ?? null) !== 'leased'
-                    || ($current['lease_owner'] ?? null) !== $leaseOwner
-                    || (int) ($current['attempt_count'] ?? 0) !== (int) ($task['attempt_count'] ?? 0)
-                ) {
-                    return false;
-                }
+                    if (! is_array($current)
+                        || ($current['status'] ?? null) !== 'leased'
+                        || ($current['lease_owner'] ?? null) !== $leaseOwner
+                        || (int) ($current['attempt_count'] ?? 0) !== (int) ($task['attempt_count'] ?? 0)
+                    ) {
+                        return false;
+                    }
 
-                $owner = WorkerRegistration::query()
-                    ->where('namespace', $namespace)
-                    ->where('worker_id', $leaseOwner)
-                    ->first();
+                    $owner = WorkerRegistration::query()
+                        ->where('namespace', $namespace)
+                        ->where('worker_id', $leaseOwner)
+                        ->lockForUpdate()
+                        ->first();
 
-                if ($owner instanceof WorkerRegistration && WorkerPollFence::isFresh($owner)) {
-                    return false;
-                }
+                    $this->assertQueueLockOwned($namespace, $taskQueue, $lock);
+                    if ($this->expireTask($current)) {
+                        return false;
+                    }
+                    if ($owner instanceof WorkerRegistration && WorkerPollFence::isFresh($owner)
+                        && $this->registrationMatchesTask($current, $owner)) {
+                        return false;
+                    }
 
-                if ($owner instanceof WorkerRegistration) {
-                    $owner->forceFill(['status' => WorkerRegistration::STATUS_SUPERSEDED])->save();
-                }
+                    if ($owner instanceof WorkerRegistration && ! WorkerPollFence::isFresh($owner)) {
+                        $owner->forceFill(['status' => WorkerRegistration::STATUS_SUPERSEDED])->save();
+                    }
 
-                $this->assertQueueLockOwned($namespace, $taskQueue, $lock);
-                $this->forgetLeasedTask($current);
-                $current['status'] = 'pending';
-                $current['abandoned_lease_owner'] = $leaseOwner;
-                $current['abandoned_lease_attempt'] = (int) ($current['attempt_count'] ?? 0);
-                $current['recovered_at'] = now()->toJSON();
-                unset($current['lease_owner'], $current['lease_expires_at'], $current['leased_at']);
+                    $this->assertQueueLockOwned($namespace, $taskQueue, $lock);
+                    $this->forgetLeasedTask($current);
+                    $current['status'] = 'pending';
+                    $current['abandoned_lease_owner'] = $leaseOwner;
+                    $current['abandoned_lease_attempt'] = (int) ($current['attempt_count'] ?? 0);
+                    $current['recovered_at'] = now()->toJSON();
+                    unset($current['lease_owner'], $current['lease_expires_at'], $current['leased_at']);
 
-                $this->putTask($current);
-                $this->store()->forget($this->leaseKey($queryTaskId));
-                $pending = $this->pendingTaskIds($namespace, $taskQueue);
-                $pending[] = $queryTaskId;
-                $this->storePendingTaskIds($namespace, $taskQueue, array_values(array_unique($pending)));
+                    $this->putTask($current);
+                    $this->store()->forget($this->leaseKey($queryTaskId));
+                    $pending = $this->pendingTaskIds($namespace, $taskQueue);
+                    $pending[] = $queryTaskId;
+                    $this->storePendingTaskIds($namespace, $taskQueue, array_values(array_unique($pending)));
 
-                return true;
+                    return true;
+                });
             },
+            waitSeconds: 0,
         );
 
         if ($recovered) {
@@ -1713,7 +1750,7 @@ final class WorkflowQueryTaskBroker
             $leaseExpiresAt = $this->timestamp($task['lease_expires_at'] ?? null);
 
             if (! $leaseExpiresAt instanceof Carbon || $leaseExpiresAt->lte(now())
-                || $this->deadlineRefusal($task) !== null) {
+                || $this->guardLease($task, $namespace, $queryTaskId, $leaseOwner, (int) ($task['attempt_count'] ?? 0)) !== null) {
                 continue;
             }
 
@@ -1794,6 +1831,13 @@ final class WorkflowQueryTaskBroker
                 return ['poll_status' => 'stale_worker_registration'];
             }
 
+            $worker = WorkerRegistration::query()->where('namespace', $namespace)->where('worker_id', $leaseOwner)->first();
+            $incarnation = is_string($worker?->registration_token) ? hash('sha256', $worker->registration_token) : null;
+            if (array_key_exists('registration_incarnation', $workerPollFence)
+                && $workerPollFence['registration_incarnation'] !== $incarnation) {
+                return ['poll_status' => 'stale_worker_registration'];
+            }
+
             if ($this->expireTask($task)) {
                 continue;
             }
@@ -1811,9 +1855,7 @@ final class WorkflowQueryTaskBroker
             $task['status'] = 'leased';
             $task['lease_owner'] = $leaseOwner;
             $task['lease_expires_at'] = $leaseExpiresAt->toJSON();
-            $worker = WorkerRegistration::query()->where('namespace', $namespace)->where('worker_id', $leaseOwner)->first();
-            $task['registration_incarnation'] = is_string($worker?->registration_token)
-                ? hash('sha256', $worker->registration_token) : null;
+            $task['registration_incarnation'] = $incarnation;
             $task['attempt_count'] = $attempt;
             $task['leased_at'] = now()->toJSON();
             $task['poll_request_id'] = $pollRequestId;
@@ -2724,9 +2766,8 @@ final class WorkflowQueryTaskBroker
             ->when($lockWorker, static fn ($query) => $query->lockForUpdate())
             ->first();
 
-        $incarnation = is_string($leaseWorker?->registration_token) ? hash('sha256', $leaseWorker->registration_token) : null;
         if (! $leaseWorker instanceof WorkerRegistration || ! WorkerPollFence::isFresh($leaseWorker)
-            || (array_key_exists('registration_incarnation', $task) && $task['registration_incarnation'] !== $incarnation)) {
+            || ! $this->registrationMatchesTask($task, $leaseWorker)) {
             return [
                 'query_task_id' => $queryTaskId,
                 'query_task_attempt' => $queryTaskAttempt,
@@ -2756,6 +2797,13 @@ final class WorkflowQueryTaskBroker
         }
 
         return null;
+    }
+
+    private function registrationMatchesTask(array $task, WorkerRegistration $worker): bool
+    {
+        $incarnation = is_string($worker->registration_token) ? hash('sha256', $worker->registration_token) : null;
+
+        return ! array_key_exists('registration_incarnation', $task) || $task['registration_incarnation'] === $incarnation;
     }
 
     private function workerIsFresh(WorkerRegistration $worker): bool
@@ -3105,7 +3153,7 @@ final class WorkflowQueryTaskBroker
      * @param  Closure(): TReturn  $callback
      * @return TReturn
      */
-    private function withQueueLock(string $namespace, string $taskQueue, Closure $callback): mixed
+    private function withQueueLock(string $namespace, string $taskQueue, Closure $callback, ?int $waitSeconds = null): mixed
     {
         $store = $this->store()->getStore();
 
@@ -3116,7 +3164,7 @@ final class WorkflowQueryTaskBroker
         try {
             $lock = $store->lock($this->queueLockKey($namespace, $taskQueue), $this->queueLockTtlSeconds());
 
-            return $lock->block($this->queueLockWaitSeconds(), fn () => $callback($lock));
+            return $lock->block($waitSeconds ?? $this->queueLockWaitSeconds(), fn () => $callback($lock));
         } catch (LockTimeoutException $exception) {
             throw new QueryTaskQueueUnavailableException($namespace, $taskQueue, 'Timed out waiting for the query task queue lock.', $exception);
         }

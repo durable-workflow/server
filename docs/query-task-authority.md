@@ -32,6 +32,12 @@ lock after external result preparation. Worker registration replacement cannot
 upgrade an existing query claim. SDKs must stop loading and suppress handler
 execution after authority ends. The final Server fence still applies.
 
+A poll waiting on one registration cannot acquire authority from a replacement
+with the same worker ID. Cached deliveries also keep the original incarnation.
+Recovery may assign a new attempt on the same query while its original budget
+remains. It preserves admission, deadline and receipt expiry, and does not fence
+the replacement registration.
+
 ## Lost acknowledgments and bounded receipts
 
 Authentication, worker role and namespace isolation precede receipt lookup.
@@ -47,6 +53,9 @@ refused. `503/query_task_queue_unavailable` on an outcome includes its original
 claim identity, `outcome=deferred`, `recorded=false` and a one-second retry hint.
 Any retry uses the same operation and remaining original budget. It grants no
 new deadline. A committed receipt can still reconcile without that lock.
+Result waiting observes the original expiry even when cache bookkeeping cannot
+acquire the lock. It does not replace the caller's canonical timeout with a
+generic transport error or admit another query.
 
 Receipt expiry is fixed at admission, preserving the configured task TTL and
 at least 60 seconds after the original result deadline. Reads and duplicates

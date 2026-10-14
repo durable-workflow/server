@@ -557,6 +557,101 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         $this->assertSame($committed, $broker->task($task['query_task_id']));
     }
 
+    public function test_query_poll_cannot_upgrade_its_registration_incarnation_before_claim(): void
+    {
+        Queue::fake();
+        $this->travelTo(Carbon::parse('2026-10-14T22:00:00.123456Z'));
+        $run = $this->startRemoteWorkflow('wf-query-poll-incarnation-race');
+        $this->registerPythonWorker('query-incarnation-worker', 'python-queries', ['python.queryable']);
+        WorkerRegistration::query()->where('worker_id', 'query-incarnation-worker')->update([
+            'registration_token' => str_repeat('a', 32),
+            'process_metrics' => ['host' => 'same-process', 'process_id' => 17, 'process_started_at' => 'original'],
+        ]);
+        $requests = new WorkflowQueryTaskBrokerSupersessionRacePollRequestStore(app(ServerPollingCache::class));
+        $broker = new WorkflowQueryTaskBroker(app(ServerPollingCache::class), app(LongPoller::class),
+            app(LongPollSignalStore::class), app(ExternalPayloadEnvelopeService::class), $requests);
+        $task = $broker->enqueue('default', $run, 'status', $this->queryArguments());
+        $worker = WorkerRegistration::query()->where('worker_id', 'query-incarnation-worker')->sole();
+        $requests->afterFirstCurrentCheck = static function (): void {
+            WorkerRegistration::query()->where('worker_id', 'query-incarnation-worker')->update([
+                'registration_token' => str_repeat('b', 32),
+            ]);
+        };
+        $this->assertNull($broker->poll('default', $worker, 'original-query-poll'));
+        $this->assertSame($task, $broker->task($task['query_task_id']));
+        $replacement = WorkerRegistration::query()->where('worker_id', 'query-incarnation-worker')->sole();
+        $fresh = $broker->poll('default', $replacement, 'replacement-query-poll');
+        $this->assertSame($task['query_task_id'], $fresh['query_task_id']);
+        $this->assertSame(1, $fresh['query_task_attempt']);
+        $this->assertSame(hash('sha256', str_repeat('b', 32)), $broker->task($task['query_task_id'])['registration_incarnation']);
+    }
+
+    public function test_cached_query_poll_cannot_deliver_a_previous_registration_claim(): void
+    {
+        [$broker, $task] = $this->claimedAuthorityQuery();
+        WorkerRegistration::query()->where('worker_id', 'python-query-authority-controls')->update([
+            'registration_token' => str_repeat('a', 32),
+        ]);
+        $this->postJson('/api/worker/query-tasks/poll', [
+            'worker_id' => 'python-query-authority-controls', 'task_queue' => 'python-queries',
+            'poll_request_id' => 'query-authority-controls', 'timeout_seconds' => 0,
+        ], $this->workerHeaders())->assertOk()->assertJsonPath('task', null);
+        $this->assertSame(1, $broker->task($task['query_task_id'])['attempt_count']);
+    }
+
+    public function test_replacement_query_registration_gets_a_new_attempt_without_another_result_budget(): void
+    {
+        [$broker, $task, $body, $path] = $this->claimedAuthorityQuery();
+        WorkerRegistration::query()->where('worker_id', $body['lease_owner'])->update([
+            'registration_token' => str_repeat('a', 32),
+        ]);
+        $requeued = (new \ReflectionMethod($broker, 'taskForResultWait'))->invoke($broker, $task['query_task_id']);
+        $this->assertSame('pending', $requeued['status']);
+        $this->assertSame($task['query_deadline_at'], $requeued['query_deadline_at']);
+        $this->assertSame($task['receipt_expires_at'], $requeued['receipt_expires_at']);
+        $this->assertSame('active', WorkerRegistration::query()->where('worker_id', $body['lease_owner'])->sole()->status);
+        $this->postJson('/api/worker/query-tasks/poll', [
+            'worker_id' => $body['lease_owner'], 'task_queue' => 'python-queries',
+            'poll_request_id' => 'replacement-authority-poll', 'timeout_seconds' => 0,
+        ], $this->workerHeaders())->assertOk()->assertJsonPath('task.query_task_id', $task['query_task_id'])
+            ->assertJsonPath('task.query_task_attempt', 2)
+            ->assertJsonPath('task.query_deadline_at', $task['query_deadline_at']);
+        $this->postJson($path, $body, $this->workerHeaders())->assertStatus(409)
+            ->assertJsonPath('reason', 'query_task_attempt_mismatch');
+        $body['query_task_attempt'] = 2;
+        $this->postJson($path, $body, $this->workerHeaders())->assertOk()->assertJsonPath('recorded', true);
+    }
+
+    public function test_original_query_timeout_survives_an_unavailable_queue_lock(): void
+    {
+        Queue::fake();
+        $this->app->instance(ServerPollingCache::class, app(ServerPollingCache::class));
+        config(['server.query_tasks.timeout' => 10]);
+        $run = $this->startRemoteWorkflow('wf-query-timeout-lock-pressure');
+        $this->registerPythonWorker('query-timeout-lock-worker', 'python-queries', ['python.queryable']);
+        $original = null;
+        $this->mock(LongPoller::class)->shouldReceive('until')->andReturnUsing(function (callable $probe) use (&$original) {
+            $value = $probe();
+            if (is_array($value) && isset($value['query_task_id']) && $original === null) {
+                $original = $value;
+                $this->travel(10)->seconds();
+                $this->bindPollingCacheStore(new WorkflowQueryTaskBrokerTestLockTimeoutStore);
+                (new \ReflectionMethod(WorkflowQueryTaskBroker::class, 'putTask'))
+                    ->invoke(app(WorkflowQueryTaskBroker::class), $value);
+
+                return $probe();
+            }
+
+            return $value;
+        });
+        $response = $this->postJson('/api/workflows/'.$run->workflow_instance_id.'/query/status', [
+            'input' => ['summary'],
+        ], $this->apiHeaders());
+        $response->assertStatus(504)->assertJsonPath('reason', 'query_task_not_claimed')
+            ->assertJsonPath('query_task_id', $original['query_task_id']);
+        $this->assertSame($original, app(WorkflowQueryTaskBroker::class)->task($original['query_task_id']));
+    }
+
     private function claimedAuthorityQuery(): array
     {
         Queue::fake();
