@@ -77,6 +77,12 @@ on:
 permissions:
   contents: read
 
+env:
+  DW_PARITY_MEMO_FIXTURE_ID: memo-activity-replay
+  DW_PARITY_MEMO_PYTHON: '1'
+  DW_PARITY_MEMO_RUST: '1'
+  DW_PARITY_CONTINUE_MEMO_UPSERTS: '1'
+
 jobs:
   published-sdk-adapters:
     runs-on: ubuntu-latest

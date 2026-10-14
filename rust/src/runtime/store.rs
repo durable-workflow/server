@@ -22,6 +22,7 @@ pub(super) struct Store<DB: Backend> {
     pub(super) wake: Arc<Notify>,
     pub(super) namespace: Arc<str>,
     pub(super) memo_codec: Arc<Semaphore>,
+    pub(super) memo_size_limit: Option<usize>,
 }
 pub(super) fn id() -> String {
     Ulid::new().to_string()
@@ -61,6 +62,7 @@ where
             wake: Arc::new(Notify::new()),
             namespace: "default".into(),
             memo_codec: Arc::new(Semaphore::new(1)),
+            memo_size_limit: Some(262_144),
         }
     }
     pub(super) fn in_namespace(&self, namespace: &str) -> Self {
@@ -69,6 +71,7 @@ where
             wake: self.wake.clone(),
             namespace: namespace.into(),
             memo_codec: self.memo_codec.clone(),
+            memo_size_limit: self.memo_size_limit,
         }
     }
     pub(super) async fn database_live(&self) -> bool {
@@ -116,9 +119,22 @@ where
         &self,
         body: Value,
         memo: super::memos::PreparedMemo,
+        external: Option<super::external_resolution::PreparedExternal>,
     ) -> Result<Value> {
         let mut tx = self.begin().await?;
-        let started = Self::start_in(&mut tx, &body, &self.namespace, Some(&memo)).await?;
+        let arguments = external.as_ref().map(|prepared| prepared.stored());
+        if let Some(prepared) = &external {
+            self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri)
+                .await?;
+        }
+        let started = Self::start_in(
+            &mut tx,
+            &body,
+            &self.namespace,
+            Some(&memo),
+            arguments.as_deref(),
+        )
+        .await?;
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok(started)
@@ -131,6 +147,7 @@ where
         body: &Value,
         namespace: &str,
         memo: Option<&super::memos::PreparedMemo>,
+        external_arguments: Option<&str>,
     ) -> Result<Value> {
         let workflow_id = text(&body, "workflow_id")?;
         if workflow_id.len() > 128
@@ -145,7 +162,10 @@ where
         }
         let workflow_type = text(&body, "workflow_type")?;
         let queue = text(&body, "task_queue")?;
-        let arguments = envelope(&body, "input")?;
+        let arguments = match external_arguments {
+            Some(arguments) => arguments.to_owned(),
+            None => envelope(&body, "input")?,
+        };
         let execution_timeout = positive_seconds(&body, "execution_timeout_seconds", 3600)?;
         let run_timeout = positive_seconds(&body, "run_timeout_seconds", 600)?;
         reject_fields(
@@ -267,7 +287,7 @@ where
     }
 
     pub(crate) async fn describe(&self, workflow_id: &str, run_id: Option<&str>) -> Result<Value> {
-        let row = Self::query("SELECT r.*,i.execution_timeout_seconds,i.current_run_id,(SELECT COUNT(*) FROM workflow_runs counted WHERE counted.workflow_instance_id=i.id) AS run_count FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE i.id=$1 AND r.id=COALESCE($2,i.current_run_id) AND r.namespace=$3")
+        let row = Self::query("SELECT r.*,i.execution_timeout_seconds,i.current_run_id,(SELECT parent_workflow_run_id FROM workflow_links l WHERE l.child_workflow_run_id=r.id AND l.link_type='continue_as_new' LIMIT 1) AS continued_from_run_id,(SELECT COUNT(*) FROM workflow_runs counted WHERE counted.workflow_instance_id=i.id) AS run_count FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE i.id=$1 AND r.id=COALESCE($2,i.current_run_id) AND r.namespace=$3")
             .bind(workflow_id).bind(run_id).bind(self.namespace.as_ref()).fetch_optional(&self.pool).await?
             .ok_or_else(|| refuse(StatusCode::NOT_FOUND, if run_id.is_some() {"run_not_found"} else {"instance_not_found"}))?;
         let output = DB::optional_string(&row, "output")?;
@@ -329,6 +349,7 @@ where
             "is_current_run": DB::optional_string(&row,"current_run_id")?.as_deref() == Some(DB::string(&row,"id")?.as_str()),
             "run_count": DB::number(&row,"run_count")?,
             "is_terminal": terminal, "closed_reason": DB::optional_string(&row,"closed_reason")?, "run_number": DB::number(&row,"run_number")?,
+            "continued_from_run_id": DB::optional_string(&row,"continued_from_run_id")?,
             "payload_codec": "avro", "input": null, "output": null, "memo": memo,
             "input_envelope": wire(&DB::string(&row,"arguments")?), "output_envelope": output.as_deref().map(wire),
             "started_at": DB::instant(&row,"started_at")?, "closed_at": DB::optional_instant(&row,"closed_at")?,
@@ -1418,6 +1439,7 @@ where
         task_id: &str,
         body: Value,
         signal_codec: Arc<Semaphore>,
+        external: super::external_resolution::PreparedCommands,
     ) -> Result<Value> {
         let commands = body["commands"]
             .as_array()
@@ -1442,7 +1464,17 @@ where
             match text(command, "type")? {
                 "complete_workflow" if index + 1 == commands.len() => {
                     reject_fields(command, &["type", "result"])?;
-                    envelope(command, "result")?;
+                    if !external.contains_key(&index) {
+                        envelope(command, "result")?;
+                    }
+                }
+                "continue_as_new"
+                    if index + 1 == commands.len()
+                        && commands[..index]
+                            .iter()
+                            .all(|prior| prior["type"] == "upsert_memo") =>
+                {
+                    super::continuations::validate(command)?;
                 }
                 "schedule_activity" => {
                     super::selections::fields(
@@ -1460,7 +1492,9 @@ where
                         ],
                     )?;
                     text(command, "activity_type")?;
-                    envelope(command, "arguments")?;
+                    if !external.contains_key(&index) {
+                        envelope(command, "arguments")?;
+                    }
                     super::activity_failures::retry_policy(command)?;
                 }
                 "start_child_workflow" if commands.len() == 1 => {
@@ -1595,12 +1629,16 @@ where
         }
         let mut sequence = Self::authored_sequence(&mut tx, &run_id).await?;
         Self::apply_task_signal(&mut tx, &run_id, task_id, &task, signal_codec).await?;
-        for command in commands {
+        for (index, command) in commands.iter().enumerate() {
             if matches!(
                 command["type"].as_str(),
                 Some("complete_update" | "fail_update")
             ) {
                 Self::apply_update(&mut tx, &run, &task, command, sequence + 1).await?;
+            } else if command["type"] == "continue_as_new" {
+                sequence += 1;
+                self.continue_run(&mut tx, &run, &task, command, sequence)
+                    .await?;
             } else if command["type"] == "start_child_workflow" {
                 sequence += 1;
                 Self::start_child(&mut tx, &run, task_id, command, sequence).await?;
@@ -1633,7 +1671,14 @@ where
                         text(command, "queue").map(str::to_owned)
                     })?;
                 let activity_type = text(command, "activity_type")?;
-                let arguments = envelope(command, "arguments")?;
+                let arguments = match external.get(&index) {
+                    Some(prepared) => {
+                        self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri)
+                            .await?;
+                        prepared.stored()
+                    }
+                    None => envelope(command, "arguments")?,
+                };
                 let policy = super::activity_failures::retry_policy(command)?;
                 let scheduled_at = now();
                 let schedule_deadline = super::activity_deadlines::deadline(
@@ -1792,11 +1837,18 @@ where
                 {
                     return Err(refuse(StatusCode::CONFLICT, "pending_durable_operations"));
                 }
-                let output = envelope(command, "result")?;
+                let output = match external.get(&index) {
+                    Some(prepared) => prepared.stored(),
+                    None => envelope(command, "result")?,
+                };
                 let closed_at = now();
                 if Self::cancellation_request(&run)?.is_some() {
                     Self::finish_root_cancellation(&mut tx, &run, Some(task_id)).await?;
                 } else {
+                    if let Some(prepared) = external.get(&index) {
+                        self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri)
+                            .await?;
+                    }
                     Self::append(
                         &mut tx,
                         &run_id,
@@ -1885,13 +1937,26 @@ where
                 portable,
             ));
         }
+        let task_id = DB::string(task, "id")?;
+        let task_attempt = DB::number(task, "attempt_count")?;
         let prepared = super::memos::prepare_update(
             self.memo_codec.clone(),
             stored,
             envelope(command, "entries")?,
-            None,
+            self.memo_size_limit,
         )
-        .await?;
+        .await
+        .map_err(|error| match error {
+            super::RuntimeError::Protocol {
+                status,
+                mut response,
+            } if response["reason"] == "structural_limit_exceeded" => {
+                response["task_id"] = json!(task_id);
+                response["workflow_task_attempt"] = json!(task_attempt);
+                super::RuntimeError::Protocol { status, response }
+            }
+            error => error,
+        })?;
         let written_at = now();
         for (key, value) in prepared.changes {
             if let Some(value) = value {
@@ -1928,8 +1993,16 @@ where
         Ok(())
     }
 
-    pub(crate) async fn complete_activity(&self, task_id: &str, body: Value) -> Result<Value> {
-        let result = envelope(&body, "result")?;
+    pub(crate) async fn complete_activity(
+        &self,
+        task_id: &str,
+        body: Value,
+        external: Option<super::external_resolution::PreparedExternal>,
+    ) -> Result<Value> {
+        let result = match &external {
+            Some(prepared) => prepared.stored(),
+            None => envelope(&body, "result")?,
+        };
         let attempt_id = text(&body, "activity_attempt_id")?;
         let mut tx = self.begin().await?;
         let task = self.task_row(&mut tx, task_id).await?;
@@ -1971,6 +2044,10 @@ where
             return Err(refuse(StatusCode::CONFLICT, "stale_attempt"));
         }
         super::activity_deadlines::fence::<DB>(&activity)?;
+        if let Some(prepared) = &external {
+            self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri)
+                .await?;
+        }
         Self::query("UPDATE activity_executions SET status='completed',result=$1,exception=NULL,closed_at=$2 WHERE id=$3")
             .bind(&result).bind(DB::bind_time(now())).bind(&activity_id).execute(&mut *tx).await?;
         let activity = Self::query("SELECT * FROM activity_executions WHERE id=$1")
@@ -2673,9 +2750,25 @@ pub(super) fn reject_fields(body: &Value, allowed: &[&str]) -> Result<()> {
 }
 
 pub(crate) fn capabilities() -> Value {
-    json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "start_child_workflow", "open_condition_wait", "open_signal_wait", "record_version_marker", "complete_workflow"],
+    let mut value = json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "start_child_workflow", "open_condition_wait", "open_signal_wait", "record_version_marker", "complete_workflow", "continue_as_new"],
         "worker_deregistration_fencing":{"schema":"durable-workflow.v2.worker-deregistration.v1","supported":true,"receipt_retention_seconds":600,"endpoint":"/worker/registrations/{workerId}/deregister"},
         "workflow_memo_updates": false, "cooperative_cancellation": true, "prepared_local_activities": false,
         "worker_sessions": false, "sticky_execution": false, "local_activities": false, "message_streams": false,
-        "workflow_updates": true, "query_tasks": true, "query_task_poll_request_idempotency": false})
+        "workflow_updates": true, "query_tasks": true, "query_task_poll_request_idempotency": false});
+    if super::memos::UPDATES_SUPPORTED {
+        value["supported_workflow_task_commands"]
+            .as_array_mut()
+            .expect("commands")
+            .push(json!("upsert_memo"));
+        value["workflow_memo_updates"] = json!({"supported":true, "type":"upsert_memo",
+            "category":"non_terminal_command", "worker_capability":"memo_upserts",
+            "minimum_protocol_version":"1.14", "required_fields":["type","entries"],
+            "optional_fields":[], "entries":{"shape":"payload-envelope<avro-map<string, Value|null>>",
+                "payload_envelope_field":true,"codec":"avro","value_schema":"durable_workflow.protocol.Value",
+                "key_pattern":"^(?!-?[0-9]+$)[A-Za-z0-9_.:-]{1,64}$", "null_value":"delete_key",
+                "max_keys_per_run":100,"max_value_size_bytes":10240,"max_total_size_bytes":65536,
+                "size_measurement":"avro_single_object_bytes",
+                "runtime_configured_total_limit":"workflows.v2.structural_limits.memo_size_bytes"}});
+    }
+    value
 }

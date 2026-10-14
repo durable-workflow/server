@@ -17,7 +17,7 @@ pub(super) struct StoredMemo {
     pub(super) projection: Value,
 }
 pub(super) type PreparedMemo = BTreeMap<String, StoredMemo>;
-pub(super) const UPDATES_SUPPORTED: bool = false;
+pub(super) const UPDATES_SUPPORTED: bool = true;
 type StoredRows = Vec<(String, Value, Option<Value>)>;
 
 pub(super) struct PreparedUpdate {
@@ -219,11 +219,14 @@ fn update(
         .decode(canonical_merged["blob"].as_str().expect("prepared blob"))
         .expect("prepared base64")
         .len();
-    if configured_limit.is_some_and(|limit| merged_bytes > limit) {
-        return Err(refuse(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "structural_limit_exceeded",
-        ));
+    if let Some(limit) = configured_limit.filter(|limit| merged_bytes > *limit) {
+        return Err(super::RuntimeError::Protocol {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            response: json!({"reason":"structural_limit_exceeded", "limit_kind":"memo_size",
+                "outcome":"rejected", "recorded":false, "current_value":merged_bytes,
+                "configured_limit":limit,
+                "error":format!("Structural limit exceeded: memo size {merged_bytes} bytes (limit {limit} bytes).")}),
+        });
     }
     let changes = entries
         .into_iter()
@@ -377,10 +380,8 @@ mod tests {
         let entries = Payload::Map(BTreeMap::from([("valid".into(), Payload::Long(1))]));
         assert!(matches!(
             update(vec![], codec.encode_ordered(&entries).unwrap(), Some(1)),
-            Err(super::super::RuntimeError::Refused {
-                reason: "structural_limit_exceeded",
-                ..
-            })
+            Err(super::super::RuntimeError::Protocol { response, .. })
+                if response["reason"] == "structural_limit_exceeded"
         ));
         let corrupt = vec![(
             "bad".into(),
@@ -411,10 +412,8 @@ mod tests {
         assert!(update(vec![], blob.clone(), Some(size)).is_ok());
         assert!(matches!(
             update(vec![], blob, Some(size - 1)),
-            Err(super::super::RuntimeError::Refused {
-                reason: "structural_limit_exceeded",
-                ..
-            })
+            Err(super::super::RuntimeError::Protocol { response, .. })
+                if response["reason"] == "structural_limit_exceeded"
         ));
     }
 
@@ -422,7 +421,7 @@ mod tests {
     async fn sqlite_transition_preserves_neighbor_metadata_and_rolls_back_failed_history() {
         use super::super::{sqlite, store::Store};
         let directory = tempfile::tempdir().unwrap();
-        let store = Store::<sqlx::Sqlite>::new(
+        let mut store = Store::<sqlx::Sqlite>::new(
             sqlite::open(directory.path().join("memo.sqlite").to_str().unwrap())
                 .await
                 .unwrap(),
@@ -434,6 +433,7 @@ mod tests {
                 json!({"workflow_id":"memo-unit", "workflow_type":"echo", "task_queue":"test",
             "input":{"codec":"avro","blob":"wwHioz3/VYAiNwA="}}),
                 initial(json!({"keep":9007199254740993_i64,"replace":"old"})).unwrap(),
+                None,
             )
             .await
             .unwrap();
@@ -450,6 +450,57 @@ mod tests {
         let codec = ValueCodec::new().unwrap();
         let command = json!({"type":"upsert_memo","entries":super::super::wire(&codec.encode_ordered(
             &Payload::Map(BTreeMap::from([("replace".into(), Payload::Boolean(false))]))).unwrap())});
+        let before_limit = store.describe("memo-unit", Some(run_id)).await.unwrap();
+        store.memo_size_limit = Some(1);
+        let mut refused = store.begin().await.unwrap();
+        let run = Store::<sqlx::Sqlite>::query("SELECT * FROM workflow_runs WHERE id=$1")
+            .bind(run_id)
+            .fetch_one(&mut *refused)
+            .await
+            .unwrap();
+        let task = Store::<sqlx::Sqlite>::query("SELECT * FROM workflow_tasks WHERE id=$1")
+            .bind(task_id)
+            .fetch_one(&mut *refused)
+            .await
+            .unwrap();
+        let rejected = store
+            .upsert_memo(&mut refused, &run, &task, &command, 1)
+            .await
+            .unwrap_err();
+        let super::super::RuntimeError::Protocol { status, response } = rejected else {
+            panic!("configured limit must retain its published diagnostic");
+        };
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(response["reason"], "structural_limit_exceeded");
+        assert_eq!(response["limit_kind"], "memo_size");
+        assert_eq!(response["task_id"], task_id);
+        assert_eq!(response["workflow_task_attempt"], 1);
+        assert_eq!(response["outcome"], "rejected");
+        assert_eq!(response["recorded"], false);
+        assert_eq!(response["configured_limit"], 1);
+        refused.rollback().await.unwrap();
+        assert_eq!(
+            store.describe("memo-unit", Some(run_id)).await.unwrap(),
+            before_limit,
+            "configured-limit refusal preserves the original history and memo"
+        );
+        let merged = Payload::Map(BTreeMap::from([
+            ("keep".into(), Payload::Long(9007199254740993)),
+            ("replace".into(), Payload::Boolean(false)),
+        ]));
+        assert_eq!(
+            response["current_value"],
+            STANDARD
+                .decode(codec.encode_ordered(&merged).unwrap())
+                .unwrap()
+                .len()
+        );
+        store.memo_size_limit = Some(
+            STANDARD
+                .decode(codec.encode_ordered(&merged).unwrap())
+                .unwrap()
+                .len(),
+        );
         let mut tx = store.begin().await.unwrap();
         let run = Store::<sqlx::Sqlite>::query("SELECT * FROM workflow_runs WHERE id=$1")
             .bind(run_id)
@@ -480,17 +531,16 @@ mod tests {
             sequence, 0,
             "untouched neighbor retains its original sequence"
         );
+        store.memo_size_limit = None;
         sqlx::query("CREATE TRIGGER refuse_memo_history BEFORE INSERT ON workflow_history_events WHEN NEW.event_type='MemoUpserted' BEGIN SELECT RAISE(ABORT,'synthetic memo history refusal'); END")
             .execute(&store.pool).await.unwrap();
         let mut tx = store.begin().await.unwrap();
         let changed = json!({"type":"upsert_memo","entries":super::super::wire(&codec.encode_ordered(
             &Payload::Map(BTreeMap::from([("replace".into(), Payload::String("must roll back".into()))]))).unwrap())});
-        assert!(
-            store
-                .upsert_memo(&mut tx, &run, &task, &changed, 2)
-                .await
-                .is_err()
-        );
+        assert!(matches!(
+            store.upsert_memo(&mut tx, &run, &task, &changed, 2).await,
+            Err(super::super::RuntimeError::Database(_))
+        ));
         tx.rollback().await.unwrap();
         assert_eq!(
             store.describe("memo-unit", Some(run_id)).await.unwrap(),

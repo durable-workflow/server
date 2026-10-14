@@ -50,11 +50,24 @@ docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=1536m --memory-swap
 cp "$target/debug/server-parity-corrected-rust-markers" "$output/bin/rust-worker"
 cp "$adapter/rust/Cargo.lock" "$output/bin/Cargo.lock"
 docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
+  --network=none --entrypoint php -v "$PWD:/source:ro" "$image" \
+  /source/scripts/conformance/server-parity/external-payload-reference.php \
+  /source/rust/tests/fixtures/external-payload-reference-v1.json \
+  > "$output/external-reference-controls.json"
+docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=128m --memory-swap=128m \
+  --network=none --entrypoint php -v "$PWD:/source:ro" "$image" \
+  /source/scripts/conformance/server-parity/external-payload-snapshot.php \
+  > "$output/external-snapshot-controls.json"
+docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=512m --memory-swap=512m \
+  --network=none --entrypoint php -v "$PWD:/source:ro" "$image" \
+  /source/scripts/conformance/server-parity/external-payload-registry.php \
+  > "$output/external-registry-controls.json"
+docker run --rm --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
   --network=none --entrypoint node -v "$PWD:/source:ro" -v "$PWD/$output:/adapters" \
   -v "$PWD/$cargo:/cargo:ro" -w /source "$image" \
   "$adapter/identity.mjs" /adapters "$artifacts" /cargo/registry/src
 git rev-parse HEAD > "$output/runner-revision.txt"
-sha256sum "$adapter"/rust/{Cargo.toml,Cargo.lock,src/main.rs,src/legacy_range.rs} "$adapter"/{php.php,python250.py,admission_receipt.py,python250-requirements.txt,python-current.py,python-current-requirements.txt} \
+sha256sum "$adapter"/rust/{Cargo.toml,Cargo.lock,src/main.rs,src/legacy_range.rs,src/memo_author.rs} "$adapter"/{php.php,python250.py,admission_receipt.py,python250-requirements.txt,python-current.py,python-current-requirements.txt} scripts/conformance/server-parity/memo-python-worker.py \
   > "$output/source-hashes.sha256"
 if test "$cargo" = "$output/cargo"; then find "$cargo" -depth -delete; fi
 if test "$target" = "$output/target"; then find "$target" -depth -delete; fi

@@ -9,11 +9,19 @@ evidence=${DW_PARITY_CORRECTED_EVIDENCE:-parity-evidence/corrected-marker}
 image=$(jq -r '.server.images["linux/amd64"]' "$artifacts")
 mkdir -p "$evidence"
 for target in php rust; do
-  for family in markers range clock portable deadlines retries memos; do
+  for family in markers range clock portable deadlines retries memos continuations memos-python memos-rust; do
     recorder="$RESOURCE_SCOPE-corrected-$target-$family-recorder"
     if docker inspect "$recorder" >/dev/null 2>&1; then
-      mkdir -p "$evidence/$target"
-      docker inspect --format '{{json .State}}' "$recorder" > "$evidence/$target/$family-recorder-state.json"
+      actor_evidence="$evidence"
+      record_family="$family"
+      case "$family" in
+        memos-python|memos-rust)
+          actor_evidence="$evidence/${family#memos-}-memos"
+          record_family=memos
+          ;;
+      esac
+      mkdir -p "$actor_evidence/$target"
+      docker inspect --format '{{json .State}}' "$recorder" > "$actor_evidence/$target/$record_family-recorder-state.json"
       docker stop --time 5 "$recorder" >/dev/null 2>&1 || true
       docker rm "$recorder" >/dev/null 2>&1 || true
     fi

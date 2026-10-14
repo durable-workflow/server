@@ -30,6 +30,18 @@ pub fn router(runtime: Runtime) -> Router {
             get(list_namespaces).post(create_namespace),
         )
         .route("/api/namespaces/{namespace}", get(describe_namespace))
+        .route(
+            "/api/namespaces/{namespace}/external-storage",
+            axum::routing::put(super::external_transport::set_policy),
+        )
+        .route(
+            "/api/external-payloads/v1",
+            post(super::external_transport::upload).layer(DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/api/external-payloads/v1/{reference_id}",
+            get(super::external_transport::fetch),
+        )
         .route("/api/workflows", get(list_workflows).post(start))
         .route("/api/schedules", post(super::schedule_http::create))
         .route(
@@ -53,6 +65,7 @@ pub fn router(runtime: Runtime) -> Router {
             post(super::schedule_http::trigger),
         )
         .route("/api/workflows/{workflow_id}", get(describe_current))
+        .route("/api/workflows/{workflow_id}/runs", get(list_runs))
         .route("/api/workflows/{workflow_id}/cancel", post(cancel_current))
         .route("/api/workflows/{workflow_id}/repair", post(repair_current))
         .route(
@@ -173,6 +186,8 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         return next.run(request).await;
     }
     let worker = path == "/api/worker" || path.starts_with("/api/worker/");
+    let payload =
+        path == "/api/external-payloads/v1" || path.starts_with("/api/external-payloads/v1/");
     let authorization = request
         .headers()
         .get("authorization")
@@ -200,6 +215,18 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         })
     });
     let Some((role, legacy_full_access, legacy_credential)) = authenticated else {
+        if payload {
+            return admission_error(
+                request,
+                false,
+                StatusCode::UNAUTHORIZED,
+                super::external_transport::error_body(
+                    StatusCode::UNAUTHORIZED,
+                    "external_payload_unauthorized",
+                ),
+            )
+            .await;
+        }
         return admission_error(
             request,
             worker,
@@ -208,17 +235,21 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         )
         .await;
     };
-    let allowed_roles: &[&str] = if path == "/api/worker/register" || path == "/api/cluster/info" {
-        &["worker", "operator", "admin"]
-    } else if worker {
-        &["worker"]
-    } else if path.starts_with("/api/workers/")
-        || path == "/api/namespaces" && request.method() == Method::POST
-    {
-        &["admin"]
-    } else {
-        &["operator", "admin"]
-    };
+    let allowed_roles: &[&str] =
+        if payload || path == "/api/worker/register" || path == "/api/cluster/info" {
+            &["worker", "operator", "admin"]
+        } else if worker {
+            &["worker"]
+        } else if path.starts_with("/api/workers/")
+            || path == "/api/namespaces" && request.method() == Method::POST
+            || path.starts_with("/api/namespaces/")
+                && path.ends_with("/external-storage")
+                && request.method() == Method::PUT
+        {
+            &["admin"]
+        } else {
+            &["operator", "admin"]
+        };
     if !legacy_full_access && !allowed_roles.contains(&role) {
         return admission_error(request, worker, StatusCode::FORBIDDEN, json!({
             "reason":"forbidden", "message":"Authenticated role is not allowed to access this endpoint.",
@@ -249,7 +280,7 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
     } else {
         requested == Some(version) || path == "/api/cluster/info" && requested.is_none()
     };
-    if !compatible {
+    if !compatible && !payload {
         let missing = requested.is_none();
         let reason = match (worker, missing) {
             (true, true) => "missing_protocol_version",
@@ -337,6 +368,12 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
 }
 
 fn named_namespace_operation(method: &str, path: &str) -> bool {
+    if path == "/api/external-payloads/v1" {
+        return method == "POST";
+    }
+    if path.starts_with("/api/external-payloads/v1/") {
+        return method == "GET";
+    }
     // Keep unimplemented families from reaching default-namespace selectors.
     // Further families require their own shared namespace fixtures.
     if path == "/api/workflows" {
@@ -486,6 +523,13 @@ async fn describe_current(
     Ok(Json(
         super::control_plane::Operation::Describe.response(body),
     ))
+}
+
+async fn list_runs(
+    Extension(runtime): Extension<Runtime>,
+    Path(workflow): Path<String>,
+) -> Result<Json<Value>> {
+    Ok(Json(runtime.list_runs(&workflow).await?))
 }
 
 async fn cancel_current(

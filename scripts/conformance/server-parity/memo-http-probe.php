@@ -14,8 +14,17 @@ $fixture = json_decode(file_get_contents($fixturePath), true, flags: JSON_THROW_
 $spec = $fixture['memo_replay'];
 $directory = dirname($output);
 $deadline = microtime(true) + $spec['overall_budget_seconds'];
+$language = getenv('DW_PARITY_MEMO_WORKFLOW_LANGUAGE') ?: 'php';
+if (! in_array($language, ['php', 'python', 'rust'], true)) {
+    throw new InvalidArgumentException('Unsupported memo workflow language');
+}
 $client = new Client($url, namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null);
-$state = ['fixture_sha256' => hash_file('sha256', $fixturePath), 'phase' => 'start', 'outcome' => 'pending'];
+$state = ['fixture_sha256' => hash_file('sha256', $fixturePath), 'workflow_language' => $language,
+    'phase' => 'start', 'outcome' => 'pending'];
+$proxy = null;
+$actorUrl = $url;
+$journal = $directory.'/'.$workflowId.'-memo-http.jsonl';
+$observedLines = 0;
 $snapshot = static function () use ($client, $workflowId, &$state): array {
     $run = namespaceHttpRun($client, $workflowId, $state['run_id']);
     $run['typed_memo'] = typedValue($run['execution']['memo']);
@@ -34,15 +43,61 @@ $snapshot = static function () use ($client, $workflowId, &$state): array {
     return $run;
 };
 try {
+    if ($language !== 'php') {
+        $proxy = proc_open(['node', __DIR__.'/published-sdk-patch/observe-http.mjs', $url, $journal, '--forwarding-state'],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $directory.'/'.$workflowId.'-memo-observer.stderr', 'w']], $pipes);
+        if (! is_resource($proxy)) {
+            throw new RuntimeException('Could not start the existing memo HTTP recorder');
+        }
+        fclose($pipes[0]);
+        $actorUrl = trim(fgets($pipes[1]));
+        if (! preg_match('#^http://127\\.0\\.0\\.1:[0-9]+$#', $actorUrl)) {
+            throw new RuntimeException('Memo HTTP recorder did not bind its local port');
+        }
+    }
     $handle = $client->startWorkflow($fixture['workflow_type'], $workflowId, $workflowId.'-workflow', [$fixture['input']],
         executionTimeoutSeconds: 1200, runTimeoutSeconds: 1200, memo: $spec['initial']);
     $state['run_id'] = $handle->selectedRunId;
     $state['initial'] = $snapshot();
     foreach ($spec['phase_order'] as $phase) {
         $state['phase'] = $phase;
-        $actor = correctedMarkerPhase([PHP_BINARY, __DIR__.'/memo-worker.php', $url, $phase, $workflowId,
-            $state['run_id'], $fixturePath], $directory, $workflowId, $phase,
+        $command = $phase === 'activity' || $language === 'php'
+            ? [PHP_BINARY, __DIR__.'/memo-worker.php']
+            : match ($language) {
+                'python' => ['env', 'PYTHONPATH='.(getenv('DW_PARITY_CORRECTED_PYTHON_CURRENT_ROOT') ?: '/sdk-python-current'),
+                    'python3', __DIR__.'/memo-python-worker.py'],
+                'rust' => [getenv('DW_PARITY_CORRECTED_RUST_WORKER') ?: '/sdk-adapters/rust-worker', 'memo'],
+            };
+        array_push($command, $actorUrl, $phase, $workflowId, $state['run_id'], $fixturePath);
+        if ($language === 'rust' && $phase !== 'activity') {
+            $identity = json_decode(file_get_contents(getenv('DW_PARITY_CORRECTED_RUST_IDENTITY')), true, flags: JSON_THROW_ON_ERROR);
+            $binaryHash = hash_file('sha256', getenv('DW_PARITY_CORRECTED_RUST_WORKER'));
+            if ($binaryHash !== $identity['binary_sha256']) {
+                throw new RuntimeException('Rust memo worker differs from its normal installed build identity');
+            }
+        }
+        $actor = correctedMarkerPhase($command, $directory, $workflowId, $phase,
             min($deadline, microtime(true) + $spec['phase_budget_seconds']));
+        if ($language === 'rust' && $phase !== 'activity') {
+            $actor['sdk_binary_sha256'] = $binaryHash;
+            $actor['sdk_artifact'] = $identity['rust'];
+            $actor['sdk_cargo_lock_sha256'] = hash_file('sha256', getenv('DW_PARITY_CORRECTED_RUST_LOCK'));
+        }
+        if ($language !== 'php') {
+            $lines = file($journal, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+            $actor['receipts'] = [];
+            foreach (array_slice($lines, $observedLines) as $line) {
+                $observed = json_decode($line, true, flags: JSON_THROW_ON_ERROR);
+                if (! str_starts_with($observed['path'], '/api/worker/')) {
+                    continue;
+                }
+                $actor['receipts'][] = ['method' => $observed['method'], 'path' => $observed['path'],
+                    'request' => $observed['request_body'] === '' ? null : json_decode($observed['request_body'], true, flags: JSON_THROW_ON_ERROR),
+                    'status' => $observed['status'],
+                    'response' => $observed['response_body'] === '' ? null : json_decode($observed['response_body'], true, flags: JSON_THROW_ON_ERROR)];
+            }
+            $observedLines = count($lines);
+        }
         $state['phases'][$phase] = $snapshot() + ['actor' => $actor];
         if ($phase === 'original') {
             $poll = array_values(array_filter($actor['receipts'], static fn (array $receipt): bool =>
@@ -82,6 +137,11 @@ try {
     $state['outcome'] = 'failed';
     $state['error'] = ['type' => $error::class, 'message' => $error->getMessage()];
 } finally {
+    if (is_resource($proxy)) {
+        fclose($pipes[1]);
+        proc_terminate($proxy, 15);
+        proc_close($proxy);
+    }
     file_put_contents($output, json_encode($state, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)."\n");
 }
 echo file_get_contents($output);

@@ -1,7 +1,149 @@
 use super::*;
 
 #[tokio::test]
-async fn memo_floor_and_unavailable_runtime_refuse_without_mutating_the_original() {
+async fn memo_capability_refusal_and_cold_replay_routing_preserve_original_history() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let worker = "memo-routing-author";
+    register(&app, worker, json!(["echo"]), json!(["echo_activity"])).await;
+    let original = start(&app, "memo-routing-original").await;
+    let task = poll(&app, worker, "workflow").await;
+    let path = format!(
+        "/api/worker/workflow-tasks/{}/complete",
+        task["task_id"].as_str().unwrap()
+    );
+    let history_path = format!(
+        "/api/workflows/memo-routing-original/runs/{}/history",
+        original["run_id"].as_str().unwrap()
+    );
+    let before = request(&app, "GET", &history_path, Value::Null).await.1;
+    let mut body = completion(
+        &task,
+        json!([
+            {"type":"upsert_memo","entries":envelope(Payload::Map(std::collections::BTreeMap::from([
+                ("counter".into(), Payload::Long(9007199254740993))
+            ])))},
+            {"type":"schedule_activity","activity_type":"echo_activity",
+                "arguments":envelope(Payload::Array(vec![Payload::Long(7)]))}
+        ]),
+    );
+    let refused = request(&app, "POST", &path, body.clone()).await;
+    assert_eq!(refused.0, StatusCode::CONFLICT);
+    assert_eq!(
+        refused.1["reason"],
+        "workflow_metadata_capability_not_advertised"
+    );
+    assert_eq!(refused.1["recorded"], false);
+    assert_eq!(
+        request(&app, "GET", &history_path, Value::Null).await.1,
+        before
+    );
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            "/api/worker/register",
+            json!({"worker_id":worker,"task_queue":"test","runtime":"php",
+            "supported_workflow_types":["echo"],"supported_activity_types":["echo_activity"],
+            "capabilities":["memo_upserts"]})
+        )
+        .await
+        .0,
+        StatusCode::CREATED
+    );
+    let replacement = poll(&app, worker, "workflow").await;
+    assert_eq!(replacement["task_id"], task["task_id"]);
+    assert_eq!(replacement["run_id"], original["run_id"]);
+    assert_eq!(
+        request(&app, "POST", &path, body.clone()).await.0,
+        StatusCode::CONFLICT,
+        "changed registration does not upgrade the old claim authority"
+    );
+    body["lease_owner"] = replacement["lease_owner"].clone();
+    body["workflow_task_attempt"] = replacement["workflow_task_attempt"].clone();
+    let accepted = request(&app, "POST", &path, body.clone()).await;
+    assert_eq!(accepted.0, StatusCode::OK, "{}", accepted.1);
+    let activity = poll(&app, worker, "activity").await;
+    let completed = request(&app, "POST", &format!("/api/worker/activity-tasks/{}/complete", activity["task_id"].as_str().unwrap()),
+        json!({"lease_owner":activity["lease_owner"],"activity_attempt_id":activity["activity_attempt_id"],
+            "result":envelope(Payload::Long(7))})).await;
+    assert_eq!(completed.0, StatusCode::OK, "{}", completed.1);
+    let prefix = request(&app, "GET", &history_path, Value::Null).await.1;
+    runtime.close().await;
+    let cold = database.open().await.unwrap();
+    let app = router(cold.clone());
+    register(&app, "memo-routing-incapable", json!(["echo"]), json!([])).await;
+    assert!(
+        poll(&app, "memo-routing-incapable", "workflow")
+            .await
+            .is_null()
+    );
+    assert_eq!(
+        request(&app, "GET", &history_path, Value::Null).await.1,
+        prefix
+    );
+    let duplicate = request(&app, "POST", &path, body.clone()).await;
+    assert_eq!(duplicate.0, StatusCode::OK);
+    assert_eq!(duplicate.1["recorded"], false);
+    let mut stale = body;
+    stale["workflow_task_attempt"] = json!(99);
+    assert_eq!(
+        request(&app, "POST", &path, stale).await.0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        request(&app, "GET", &history_path, Value::Null).await.1,
+        prefix
+    );
+    let parent = poll(&app, worker, "workflow").await;
+    assert_eq!(parent["run_id"], original["run_id"]);
+    assert!(
+        parent["history_events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["event_type"] == "MemoUpserted")
+    );
+    assert_eq!(
+        finish_task(
+            &app,
+            &parent,
+            json!([
+                {"type":"complete_workflow","result":envelope(Payload::Long(7))}
+            ])
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let final_history = request(&app, "GET", &history_path, Value::Null).await.1;
+    assert_eq!(
+        final_history["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["event_type"] == "MemoUpserted")
+            .count(),
+        1
+    );
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            "/api/workflows/memo-routing-original",
+            Value::Null
+        )
+        .await
+        .1["memo"],
+        json!({"counter":9007199254740993_i64})
+    );
+    cold.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn memo_protocol_floor_preserves_original_and_capable_claim_can_upsert() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
@@ -30,7 +172,8 @@ async fn memo_floor_and_unavailable_runtime_refuse_without_mutating_the_original
     let task = poll(&app, "memo-floor-worker", "workflow").await;
     let body = json!({"lease_owner":task["lease_owner"], "workflow_task_attempt":task["workflow_task_attempt"],
         "commands":[{"type":"upsert_memo", "entries":envelope(Payload::Map(std::collections::BTreeMap::from([
-            ("valid".into(), Payload::Long(1))])))}]});
+            ("valid".into(), Payload::Long(1))])))},
+            {"type":"complete_workflow", "result":envelope(Payload::Long(7))}]});
     let path = format!(
         "/api/worker/workflow-tasks/{}/complete",
         task["task_id"].as_str().unwrap()
@@ -46,21 +189,40 @@ async fn memo_floor_and_unavailable_runtime_refuse_without_mutating_the_original
         floor["reason"],
         "workflow_metadata_capability_protocol_mismatch"
     );
-    let (status, unsupported) = request_protocol(&app, "POST", &path, body, "1.14").await;
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(unsupported["reason"], "workflow_memo_updates_unavailable");
-    assert_eq!(unsupported["recorded"], false);
     assert_eq!(
         request(&app, "GET", &history_path, Value::Null).await,
         before
     );
-    let (status, completed) = request(&app, "POST", &path, json!({
-        "lease_owner":task["lease_owner"], "workflow_task_attempt":task["workflow_task_attempt"],
-        "commands":[{"type":"complete_workflow", "result":envelope(Payload::Long(7))}]
-    })).await;
+    let (status, completed) = request_protocol(&app, "POST", &path, body, "1.14").await;
     assert_eq!(status, StatusCode::OK, "{completed}");
     assert_eq!(completed["task_id"], task["task_id"]);
     assert_eq!(completed["recorded"], true);
+    let (_, history) = request(&app, "GET", &history_path, Value::Null).await;
+    assert_eq!(
+        history["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| event["event_type"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "StartAccepted",
+            "WorkflowStarted",
+            "MemoUpserted",
+            "WorkflowCompleted"
+        ]
+    );
+    let (_, described) = request(
+        &app,
+        "GET",
+        &format!(
+            "/api/workflows/memo-floor-original/runs/{}",
+            original["run_id"].as_str().unwrap()
+        ),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(described["memo"], json!({"valid":1}));
     runtime.close().await;
     database.remove().await;
 }

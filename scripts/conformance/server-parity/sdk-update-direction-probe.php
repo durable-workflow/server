@@ -148,13 +148,13 @@ function sdkUpdateDirectionHttpObservation(array $fixture, array $options): arra
         }
         if ($ack === null || $snapshot === null || $snapshot['status'] !== ($phase === 'replacement' ? 'completed' : 'waiting')
             || count(array_filter($snapshot['events'], static fn (array $event): bool => $event['event_type'] === 'UpdateCompleted')) !== $completedCount) {
-            throw new RuntimeException('Actual SDK update author did not reach its matching fenced checkpoint; sidecar retained.');
+            throw new RuntimeException('Actual SDK update '.$phase.' phase did not reach its matching fenced checkpoint; sidecar retained.');
         }
         $ackOrder = $trace('checkpoint_receipt_observed', $phase, ['task_id' => $ack['task_id'], 'request_index' => $ack['request_index']]);
         file_put_contents($actor['receipt'], json_encode($ack, JSON_THROW_ON_ERROR)."\n");
         $result = $finish($phase, $snapshot, ['checkpoint_workflow_ack' => $ack, 'checkpoint_ack_order' => $ackOrder]);
         if (($result['worker_finished'] ?? false) !== true) {
-            throw new RuntimeException('Actual SDK update author failed after its checkpoint; sidecar retained.');
+            throw new RuntimeException('Actual SDK update '.$phase.' phase failed after its checkpoint; sidecar retained.');
         }
 
         return $snapshot;
