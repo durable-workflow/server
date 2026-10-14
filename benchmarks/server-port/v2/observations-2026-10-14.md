@@ -35,7 +35,7 @@ SDK/client component has cumulative CPU and memory samples from before admission
 through the full offer window and verification. Largest sample gap is 1.260s.
 No component restarts or OOMs occur during windows. Other local application/build
 stacks are absent. Host counters record ten 4-KiB swap-ins and no swap-outs.
-those host pages are not attributed to an application.
+Those host pages are not attributed to an application.
 
 ## Offered work and latency
 
@@ -68,7 +68,7 @@ Core-seconds/workflow divides those counters by verified completions. Runtime
 memory is the maximum sampled aggregate Docker cgroup usage, including all four
 PHP runtime roles or the one native process. MySQL is additional. These are
 container-charged samples, not RSS, proportional physical RAM or kernel peaks.
-shared/cached executable pages can be charged elsewhere. Do not extrapolate the
+Shared/cached executable pages can be charged elsewhere. Do not extrapolate the
 small native cgroup figure into a full-host RAM or Cloud cost claim.
 
 | Runtime / phase | Runtime core-s/workflow | MySQL core-s/workflow | Runtime charged MiB | MySQL charged MiB | SDK core-s/workflow | Probe core-s/workflow |
