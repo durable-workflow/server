@@ -37,8 +37,11 @@ try {
   if(!(await load.next()).ready)throw new Error('Description readers failed preparation');
   clearTimeout(timer);
   timer=setTimeout(()=>{for(const process of children)process.kill('SIGKILL');},spec.observer_budget_seconds*1000);
-  process.stdout.write(JSON.stringify({phase:'load_started',observed_at:new Date().toISOString()})+'\n');
-  load.process.stdin.end('start\n');health.process.stdin.end('start\n');author.process.stdin.write('start\n');
+  load.process.stdin.end('start\n');health.process.stdin.end('start\n');
+  const [loadStart,healthStart]=await Promise.all([load.next(),health.next()]);
+  if(!loadStart.started||!healthStart.started)throw new Error('Actual read wave handoff was not acknowledged');
+  process.stdout.write(JSON.stringify({phase:'load_started',observed_at:loadStart.started_at})+'\n');
+  author.process.stdin.write('start\n');
   for(const observer of operations)observer.process.stdin.end('start\n');
   if(!(await author.next()).deadline_observed)throw new Error('Original deadline observation failed');
   const [[loadCode],[healthCode]]=await Promise.all([load.closed,health.closed]);

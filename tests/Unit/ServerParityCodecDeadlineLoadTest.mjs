@@ -11,6 +11,15 @@ async function withServer(handler,run) {
   finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 }
 
+test('the actual wave start is acknowledged before dependent operations are released',async()=>{
+  let started=null,requests=0;
+  await withServer((_request,response)=>{assert(started?.started);requests++;response.end('{}');},async url=>{
+    const record=await codecLoadWave(url,{wave_seconds:0.03,readers:2,request_timeout_seconds:1,maximum_response_bytes:1000},
+      {onStarted:receipt=>{assert.equal(started,null);started=receipt;}});
+    assert.equal(record.started_at,started.started_at);assert(requests>0);
+  });
+});
+
 test('published control-plane version and namespace are carried on every description read',async()=>{
   const observed=[];
   await withServer((request,response)=>{
