@@ -33,7 +33,7 @@ pub struct Snapshot {
     file: File,
     size_bytes: u64,
     sha256: String,
-    _permit: OwnedSemaphorePermit,
+    _permit: Arc<OwnedSemaphorePermit>,
 }
 
 impl Snapshot {
@@ -67,7 +67,7 @@ pub struct AsyncSnapshot {
     file: tokio::fs::File,
     size_bytes: u64,
     sha256: String,
-    _permit: OwnedSemaphorePermit,
+    _permit: Arc<OwnedSemaphorePermit>,
 }
 
 impl AsyncSnapshot {
@@ -124,6 +124,31 @@ pub async fn capture<R: Read + Send + 'static>(
         .acquire_owned()
         .await
         .map_err(|_| SnapshotError::Unavailable)?;
+    capture_with_permit(
+        source,
+        expected,
+        max_bytes,
+        temporary_directory,
+        Arc::new(permit),
+    )
+    .await
+}
+
+/// One bounded request can verify several references sequentially. Its snapshots
+/// share transfer admission, retaining that slot until every consumer finishes.
+pub(crate) async fn capture_with_permit<R: Read + Send + 'static>(
+    source: R,
+    expected: Reference,
+    max_bytes: u64,
+    temporary_directory: PathBuf,
+    permit: Arc<OwnedSemaphorePermit>,
+) -> Result<Snapshot, SnapshotError> {
+    let limit = max_bytes.max(1);
+    let expected_size =
+        u64::try_from(expected.size_bytes).map_err(|_| SnapshotError::IntegrityMismatch)?;
+    if expected_size > limit {
+        return Err(SnapshotError::Oversized);
+    }
     let cancelled = Arc::new(AtomicBool::new(false));
     let _cancellation = CancelOnDrop(cancelled.clone());
     tokio::task::spawn_blocking(move || {
@@ -148,7 +173,7 @@ fn capture_blocking<R: Read>(
     limit: u64,
     temporary_directory: &Path,
     cancelled: &AtomicBool,
-    permit: OwnedSemaphorePermit,
+    permit: Arc<OwnedSemaphorePermit>,
 ) -> Result<Snapshot, SnapshotError> {
     let mut file =
         tempfile::tempfile_in(temporary_directory).map_err(|_| SnapshotError::Unavailable)?;
@@ -219,6 +244,38 @@ mod tests {
             "codec":"avro","size_bytes":bytes.len(),"sha256":Sha256::digest(bytes).iter().map(|byte|format!("{byte:02x}")).collect::<String>()
         }))
         .unwrap()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_batch_retains_its_single_slot_until_the_last_snapshot_consumer_finishes() {
+        let directory = tempfile::tempdir().unwrap();
+        let workers = Arc::new(Semaphore::new(1));
+        let permit = Arc::new(workers.clone().acquire_owned().await.unwrap());
+        let first = capture_with_permit(
+            Cursor::new(b"first".to_vec()),
+            reference(b"first"),
+            16,
+            directory.path().to_owned(),
+            permit.clone(),
+        )
+        .await
+        .unwrap();
+        let second = capture_with_permit(
+            Cursor::new(b"second".to_vec()),
+            reference(b"second"),
+            16,
+            directory.path().to_owned(),
+            permit.clone(),
+        )
+        .await
+        .unwrap();
+        drop(permit);
+        assert_eq!(workers.available_permits(), 0);
+        let first = first.into_async();
+        drop(second);
+        assert_eq!(workers.available_permits(), 0);
+        drop(first);
+        assert_eq!(workers.available_permits(), 1);
     }
 
     #[tokio::test(flavor = "current_thread")]

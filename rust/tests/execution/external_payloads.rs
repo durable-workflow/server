@@ -732,6 +732,191 @@ async fn external_activity_result_retains_only_after_live_authority_and_survives
     }
 }
 
+#[tokio::test]
+async fn external_activity_argument_batch_shares_admission_and_rolls_back_all_references() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut config = ExternalPayloadConfig::default();
+    config.timeout = Duration::from_secs(5);
+    let (database, runtime, app) = setup(config, &temp.path().join("objects")).await;
+    let mut arguments = Vec::new();
+    let mut blobs = Vec::new();
+    for text in ["x", "y"] {
+        let blob = ValueCodec::new()
+            .unwrap()
+            .encode(&Payload::Array(vec![
+                Payload::String(text.repeat(3 * 1024 * 1024)),
+                Payload::Long(9007199254740993),
+                Payload::Null,
+                Payload::String("rangeλ".into()),
+            ]))
+            .unwrap();
+        let (status, _, upload) = request(
+            &app,
+            "POST",
+            "/api/external-payloads/v1",
+            "worker-token",
+            "default",
+            Some(&metadata(blob.as_bytes())),
+            Body::from(blob.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let upload: Value = serde_json::from_slice(&upload).unwrap();
+        arguments.push(json!({"codec":"avro","external_payload":upload["reference"]}));
+        blobs.push(blob);
+    }
+    let (status, original) = json_request(
+        &app,
+        "POST",
+        "/api/workflows",
+        "operator-token",
+        json!({
+        "workflow_id":"external-argument-batch","workflow_type":"echo","task_queue":"test",
+        "input":envelope(Payload::Array(vec![]))}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(
+        json_request(
+            &app,
+            "POST",
+            "/api/worker/register",
+            "worker-token",
+            json!({
+        "worker_id":"external-argument-author","task_queue":"test","runtime":"php",
+        "supported_workflow_types":["echo"],"supported_activity_types":["activity-echo"],
+        "max_concurrent_activity_tasks":2})
+        )
+        .await
+        .0,
+        StatusCode::CREATED
+    );
+    let (_, delivery) = json_request(
+        &app,
+        "POST",
+        "/api/worker/workflow-tasks/poll",
+        "worker-token",
+        json!({
+        "worker_id":"external-argument-author","task_queue":"test","timeout_seconds":0}),
+    )
+    .await;
+    let task = &delivery["task"];
+    let path = format!(
+        "/api/worker/workflow-tasks/{}/complete",
+        task["task_id"].as_str().unwrap()
+    );
+    let commands: Vec<_> = arguments
+        .iter()
+        .map(|arguments| {
+            json!({"type":"schedule_activity",
+        "activity_type":"activity-echo","arguments":arguments})
+        })
+        .collect();
+    let history_path = format!(
+        "/api/workflows/external-argument-batch/runs/{}/history",
+        original["run_id"].as_str().unwrap()
+    );
+    let before = json_request(&app, "GET", &history_path, "operator-token", Value::Null)
+        .await
+        .1;
+    let mut invalid = commands.clone();
+    invalid.push(json!({"type":"complete_workflow","result":envelope(Payload::Null)}));
+    let (status, refusal) = tokio::time::timeout(
+        Duration::from_secs(10),
+        json_request(
+            &app,
+            "POST",
+            &path,
+            "worker-token",
+            completion(task, json!(invalid)),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(status, StatusCode::CONFLICT, "{refusal}");
+    assert_eq!(refusal["reason"], "pending_durable_operations");
+    assert_eq!(unclaimed(&database).await, 2);
+    assert_eq!(
+        json_request(&app, "GET", &history_path, "operator-token", Value::Null)
+            .await
+            .1,
+        before
+    );
+    assert!(
+        json_request(
+            &app,
+            "POST",
+            "/api/worker/activity-tasks/poll",
+            "worker-token",
+            json!({
+        "worker_id":"external-argument-author","task_queue":"test","timeout_seconds":0})
+        )
+        .await
+        .1["task"]
+            .is_null()
+    );
+    let body = completion(task, json!(commands));
+    let mut stale = body.clone();
+    stale["workflow_task_attempt"] = json!(99);
+    assert_eq!(
+        json_request(&app, "POST", &path, "worker-token", stale)
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(unclaimed(&database).await, 2);
+    let (status, accepted) = json_request(&app, "POST", &path, "worker-token", body).await;
+    assert_eq!(status, StatusCode::OK, "{accepted}");
+    assert_eq!(unclaimed(&database).await, 0);
+    runtime.close().await;
+    let cold = database.open().await.unwrap().with_role_tokens(
+        Some("worker-token".into()),
+        Some("operator-token".into()),
+        Some("admin-token".into()),
+    );
+    let app = router(cold.clone());
+    let mut received = Vec::new();
+    for _ in 0..2 {
+        let (_, delivery) = json_request(
+            &app,
+            "POST",
+            "/api/worker/activity-tasks/poll",
+            "worker-token",
+            json!({
+            "worker_id":"external-argument-author","task_queue":"test","timeout_seconds":0}),
+        )
+        .await;
+        let activity = &delivery["task"];
+        let index = arguments
+            .iter()
+            .position(|value| value == &activity["arguments"])
+            .unwrap();
+        assert!(!received.contains(&index));
+        received.push(index);
+        let reference = &arguments[index]["external_payload"];
+        assert_eq!(
+            request(
+                &app,
+                "GET",
+                &format!(
+                    "/api/external-payloads/v1/{}",
+                    reference["reference_id"].as_str().unwrap()
+                ),
+                "worker-token",
+                "default",
+                Some(reference),
+                Body::empty()
+            )
+            .await
+            .2,
+            blobs[index].as_bytes()
+        );
+    }
+    assert_eq!(received.len(), 2);
+    cold.close().await;
+    database.remove().await;
+}
+
 async fn setup(
     config: ExternalPayloadConfig,
     root: &std::path::Path,

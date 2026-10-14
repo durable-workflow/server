@@ -3,6 +3,8 @@ use super::{Result, Runtime, refuse};
 use crate::external_payload::{Reference, Snapshot};
 use axum::http::StatusCode;
 use serde_json::{Value, json};
+use std::{collections::BTreeMap, sync::Arc};
+use tokio::sync::OwnedSemaphorePermit;
 
 pub(super) const STORED_PREFIX: &str = "dw-native-external-payload-v1:";
 
@@ -12,6 +14,7 @@ pub(crate) struct PreparedExternal {
     // Keep verified bytes and bounded transfer capacity until state commits.
     _snapshot: Snapshot,
 }
+pub(super) type PreparedCommands = BTreeMap<usize, PreparedExternal>;
 
 impl PreparedExternal {
     pub(super) fn stored(&self) -> String {
@@ -30,6 +33,70 @@ pub(super) fn stored_envelope(blob: &str) -> Option<Value> {
 
 impl Runtime {
     pub(super) async fn prepare_external(&self, value: &Value) -> Result<Option<PreparedExternal>> {
+        self.prepare_external_with_permit(value, None).await
+    }
+
+    pub(super) async fn prepare_command_payloads(&self, body: &Value) -> Result<PreparedCommands> {
+        let commands = body["commands"]
+            .as_array()
+            .filter(|commands| !commands.is_empty() && commands.len() <= 100)
+            .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_commands"))?;
+        let selected: Vec<_> = commands
+            .iter()
+            .enumerate()
+            .filter_map(|(index, command)| {
+                let value = match command["type"].as_str() {
+                    Some("complete_workflow") => &command["result"],
+                    Some("schedule_activity") => &command["arguments"],
+                    _ => return None,
+                };
+                (value.get("external_payload").is_some() || value.get("external_storage").is_some())
+                    .then_some((index, value))
+            })
+            .collect();
+        if selected.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let prepare = async {
+            let permit = Arc::new(
+                self.external
+                    .workers
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| {
+                        refuse(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "external_payload_unavailable",
+                        )
+                    })?,
+            );
+            let mut prepared = BTreeMap::new();
+            for (index, value) in selected {
+                let payload = self
+                    .prepare_external_with_permit(value, Some(permit.clone()))
+                    .await?
+                    .expect("selected external envelope");
+                prepared.insert(index, payload);
+            }
+            Ok(prepared)
+        };
+        // One original deadline covers capacity admission and every reference.
+        tokio::time::timeout(self.external.timeout, prepare)
+            .await
+            .map_err(|_| {
+                refuse(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "external_payload_unavailable",
+                )
+            })?
+    }
+
+    async fn prepare_external_with_permit(
+        &self,
+        value: &Value,
+        permit: Option<Arc<OwnedSemaphorePermit>>,
+    ) -> Result<Option<PreparedExternal>> {
         if value.get("external_storage").is_some() {
             return Err(refuse(
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -65,17 +132,32 @@ impl Runtime {
         }
         let prepare = async {
             let registered = self.external_payload_for_fetch(&reference).await?;
-            let snapshot = super::external_transport::local(self)
-                .await?
-                .fetch(
-                    reference.clone(),
-                    &registered.uri,
-                    self.external.max_bytes,
-                    std::env::temp_dir(),
-                    self.external.workers.clone(),
-                )
-                .await
-                .map_err(super::external_transport::snapshot_error)?;
+            let storage = super::external_transport::local(self).await?;
+            let snapshot = match permit {
+                Some(permit) => {
+                    storage
+                        .fetch_with_permit(
+                            reference.clone(),
+                            &registered.uri,
+                            self.external.max_bytes,
+                            std::env::temp_dir(),
+                            permit,
+                        )
+                        .await
+                }
+                None => {
+                    storage
+                        .fetch(
+                            reference.clone(),
+                            &registered.uri,
+                            self.external.max_bytes,
+                            std::env::temp_dir(),
+                            self.external.workers.clone(),
+                        )
+                        .await
+                }
+            }
+            .map_err(super::external_transport::snapshot_error)?;
             tokio::task::spawn_blocking(move || {
                 let mut snapshot = snapshot;
                 crate::codec::ValueCodec::new()

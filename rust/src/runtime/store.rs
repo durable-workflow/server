@@ -1425,7 +1425,7 @@ where
         task_id: &str,
         body: Value,
         signal_codec: Arc<Semaphore>,
-        external: Option<super::external_resolution::PreparedExternal>,
+        external: super::external_resolution::PreparedCommands,
     ) -> Result<Value> {
         let commands = body["commands"]
             .as_array()
@@ -1450,7 +1450,7 @@ where
             match text(command, "type")? {
                 "complete_workflow" if index + 1 == commands.len() => {
                     reject_fields(command, &["type", "result"])?;
-                    if external.is_none() {
+                    if !external.contains_key(&index) {
                         envelope(command, "result")?;
                     }
                 }
@@ -1478,7 +1478,9 @@ where
                         ],
                     )?;
                     text(command, "activity_type")?;
-                    envelope(command, "arguments")?;
+                    if !external.contains_key(&index) {
+                        envelope(command, "arguments")?;
+                    }
                     super::activity_failures::retry_policy(command)?;
                 }
                 "start_child_workflow" if commands.len() == 1 => {
@@ -1613,7 +1615,7 @@ where
         }
         let mut sequence = Self::authored_sequence(&mut tx, &run_id).await?;
         Self::apply_task_signal(&mut tx, &run_id, task_id, &task, signal_codec).await?;
-        for command in commands {
+        for (index, command) in commands.iter().enumerate() {
             if matches!(
                 command["type"].as_str(),
                 Some("complete_update" | "fail_update")
@@ -1655,7 +1657,14 @@ where
                         text(command, "queue").map(str::to_owned)
                     })?;
                 let activity_type = text(command, "activity_type")?;
-                let arguments = envelope(command, "arguments")?;
+                let arguments = match external.get(&index) {
+                    Some(prepared) => {
+                        self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri)
+                            .await?;
+                        prepared.stored()
+                    }
+                    None => envelope(command, "arguments")?,
+                };
                 let policy = super::activity_failures::retry_policy(command)?;
                 let scheduled_at = now();
                 let schedule_deadline = super::activity_deadlines::deadline(
@@ -1814,7 +1823,7 @@ where
                 {
                     return Err(refuse(StatusCode::CONFLICT, "pending_durable_operations"));
                 }
-                let output = match &external {
+                let output = match external.get(&index) {
                     Some(prepared) => prepared.stored(),
                     None => envelope(command, "result")?,
                 };
@@ -1822,7 +1831,7 @@ where
                 if Self::cancellation_request(&run)?.is_some() {
                     Self::finish_root_cancellation(&mut tx, &run, Some(task_id)).await?;
                 } else {
-                    if let Some(prepared) = &external {
+                    if let Some(prepared) = external.get(&index) {
                         self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri)
                             .await?;
                     }

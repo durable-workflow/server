@@ -8,7 +8,7 @@ use std::{
     path::PathBuf,
     sync::Arc,
 };
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 #[derive(Clone)]
 pub struct LocalStorage {
@@ -169,6 +169,32 @@ impl LocalStorage {
             source: None,
         };
         capture(source, reference, max_bytes, temporary_directory, workers).await
+    }
+
+    pub(crate) async fn fetch_with_permit(
+        &self,
+        reference: Reference,
+        uri: &str,
+        max_bytes: u64,
+        temporary_directory: PathBuf,
+        permit: Arc<OwnedSemaphorePermit>,
+    ) -> Result<Snapshot, SnapshotError> {
+        if self.uri_for(&reference)? != uri {
+            return Err(SnapshotError::Unavailable);
+        }
+        let source = LocalReader {
+            path: self.path(&reference)?,
+            root: self.root.clone(),
+            source: None,
+        };
+        super::snapshot::capture_with_permit(
+            source,
+            reference,
+            max_bytes,
+            temporary_directory,
+            permit,
+        )
+        .await
     }
 }
 
