@@ -119,9 +119,22 @@ where
         &self,
         body: Value,
         memo: super::memos::PreparedMemo,
+        external: Option<super::external_resolution::PreparedExternal>,
     ) -> Result<Value> {
         let mut tx = self.begin().await?;
-        let started = Self::start_in(&mut tx, &body, &self.namespace, Some(&memo)).await?;
+        let arguments = external.as_ref().map(|prepared| prepared.stored());
+        if let Some(prepared) = &external {
+            self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri)
+                .await?;
+        }
+        let started = Self::start_in(
+            &mut tx,
+            &body,
+            &self.namespace,
+            Some(&memo),
+            arguments.as_deref(),
+        )
+        .await?;
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok(started)
@@ -134,6 +147,7 @@ where
         body: &Value,
         namespace: &str,
         memo: Option<&super::memos::PreparedMemo>,
+        external_arguments: Option<&str>,
     ) -> Result<Value> {
         let workflow_id = text(&body, "workflow_id")?;
         if workflow_id.len() > 128
@@ -148,7 +162,10 @@ where
         }
         let workflow_type = text(&body, "workflow_type")?;
         let queue = text(&body, "task_queue")?;
-        let arguments = envelope(&body, "input")?;
+        let arguments = match external_arguments {
+            Some(arguments) => arguments.to_owned(),
+            None => envelope(&body, "input")?,
+        };
         let execution_timeout = positive_seconds(&body, "execution_timeout_seconds", 3600)?;
         let run_timeout = positive_seconds(&body, "run_timeout_seconds", 600)?;
         reject_fields(
@@ -1408,6 +1425,7 @@ where
         task_id: &str,
         body: Value,
         signal_codec: Arc<Semaphore>,
+        external: super::external_resolution::PreparedCommands,
     ) -> Result<Value> {
         let commands = body["commands"]
             .as_array()
@@ -1432,7 +1450,9 @@ where
             match text(command, "type")? {
                 "complete_workflow" if index + 1 == commands.len() => {
                     reject_fields(command, &["type", "result"])?;
-                    envelope(command, "result")?;
+                    if !external.contains_key(&index) {
+                        envelope(command, "result")?;
+                    }
                 }
                 "continue_as_new"
                     if index + 1 == commands.len()
@@ -1458,7 +1478,9 @@ where
                         ],
                     )?;
                     text(command, "activity_type")?;
-                    envelope(command, "arguments")?;
+                    if !external.contains_key(&index) {
+                        envelope(command, "arguments")?;
+                    }
                     super::activity_failures::retry_policy(command)?;
                 }
                 "start_child_workflow" if commands.len() == 1 => {
@@ -1593,7 +1615,7 @@ where
         }
         let mut sequence = Self::authored_sequence(&mut tx, &run_id).await?;
         Self::apply_task_signal(&mut tx, &run_id, task_id, &task, signal_codec).await?;
-        for command in commands {
+        for (index, command) in commands.iter().enumerate() {
             if matches!(
                 command["type"].as_str(),
                 Some("complete_update" | "fail_update")
@@ -1635,7 +1657,14 @@ where
                         text(command, "queue").map(str::to_owned)
                     })?;
                 let activity_type = text(command, "activity_type")?;
-                let arguments = envelope(command, "arguments")?;
+                let arguments = match external.get(&index) {
+                    Some(prepared) => {
+                        self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri)
+                            .await?;
+                        prepared.stored()
+                    }
+                    None => envelope(command, "arguments")?,
+                };
                 let policy = super::activity_failures::retry_policy(command)?;
                 let scheduled_at = now();
                 let schedule_deadline = super::activity_deadlines::deadline(
@@ -1794,11 +1823,18 @@ where
                 {
                     return Err(refuse(StatusCode::CONFLICT, "pending_durable_operations"));
                 }
-                let output = envelope(command, "result")?;
+                let output = match external.get(&index) {
+                    Some(prepared) => prepared.stored(),
+                    None => envelope(command, "result")?,
+                };
                 let closed_at = now();
                 if Self::cancellation_request(&run)?.is_some() {
                     Self::finish_root_cancellation(&mut tx, &run, Some(task_id)).await?;
                 } else {
+                    if let Some(prepared) = external.get(&index) {
+                        self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri)
+                            .await?;
+                    }
                     Self::append(
                         &mut tx,
                         &run_id,
@@ -1943,8 +1979,16 @@ where
         Ok(())
     }
 
-    pub(crate) async fn complete_activity(&self, task_id: &str, body: Value) -> Result<Value> {
-        let result = envelope(&body, "result")?;
+    pub(crate) async fn complete_activity(
+        &self,
+        task_id: &str,
+        body: Value,
+        external: Option<super::external_resolution::PreparedExternal>,
+    ) -> Result<Value> {
+        let result = match &external {
+            Some(prepared) => prepared.stored(),
+            None => envelope(&body, "result")?,
+        };
         let attempt_id = text(&body, "activity_attempt_id")?;
         let mut tx = self.begin().await?;
         let task = self.task_row(&mut tx, task_id).await?;
@@ -1986,6 +2030,10 @@ where
             return Err(refuse(StatusCode::CONFLICT, "stale_attempt"));
         }
         super::activity_deadlines::fence::<DB>(&activity)?;
+        if let Some(prepared) = &external {
+            self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri)
+                .await?;
+        }
         Self::query("UPDATE activity_executions SET status='completed',result=$1,exception=NULL,closed_at=$2 WHERE id=$3")
             .bind(&result).bind(DB::bind_time(now())).bind(&activity_id).execute(&mut *tx).await?;
         let activity = Self::query("SELECT * FROM activity_executions WHERE id=$1")

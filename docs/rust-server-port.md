@@ -6,25 +6,170 @@ The unpublished Rust crate has an Avro foundation and an opt-in SQLite/PostgreSQ
 execution slice. Full runtime parity, migration, performance improvement and
 cutover remain unqualified.
 
-Query slice #341 adds a shared state query before signals, after one delivery,
-and after completion. The [hosted matrix](https://github.com/durable-workflow/server/actions/runs/37981215484)
-on [06499eb7](https://github.com/durable-workflow/server/commit/06499eb7)
-passes all eight PHP/Rust/embedded fixtures on SQLite, PostgreSQL 16/17,
-MySQL 8.0/8.4 and MariaDB 10.11. It also passes native query lease/limit tests,
-complete schema qualification and actual process-kill recovery of pending
-timers/signals and leased activities. This qualifies these representative cases;
-full query semantics, #325, takeover and performance remain open.
-Native admission uses immutable quiescent snapshots,
-original query contracts and leased transient tasks in a separate native
-`dw_query_cache` table. The frozen PHP schema has no Laravel cache table;
-development schema version 3 adds only native bookkeeping and refuses older
-native development databases. PHP-owned relations remain unchanged.
-Arguments/results use the official codec outside Tokio executor threads.
-Bounded pending/result inventory, expiry, independent-pool completion and stale
-fences have dedicated tests. Busy workflow/query routing and query poll-request
-receipts remain unqualified; the latter capability is advertised as false.
+The latest delivered main foundation is [#444](https://github.com/durable-workflow/server/pull/444),
+including initial portable memo and the earlier corrected marker/clock/retry
+profiles. Its exact merged main passes [all 13 shared jobs across six databases](https://github.com/durable-workflow/server/actions/runs/38599251632)
+and normal source/boundary checks. Frozen published PHP, embedded and SDK tuples
+remain separate from current PHP release work. Representative timer, signal,
+query, update, activity, cancellation, namespace and recovery checks do not
+establish complete parity for those families. The original failed records remain
+failed; later qualifying runs are separate observations.
 
 ## Work order and current status
+
+The active integration order is:
+
+- [#445](https://github.com/durable-workflow/server/pull/445): canonical memo
+  transaction foundation, with public updates still disabled. Its current-main
+  combined [qualification](https://github.com/durable-workflow/server/actions/runs/38608723068)
+  is pending; the older source's pass is separate.
+- [#446](https://github.com/durable-workflow/server/pull/446): cold continue-as-new
+  after a genuine activity. Prior candidate qualification passes; exact current-main
+  integration, promotion and fresh-main acceptance remain ahead.
+- [#448](https://github.com/durable-workflow/server/pull/448): actual SDK memo
+  authoring and continuation inheritance. Its candidate passes all 13 shared
+  jobs across six databases; promotion and external-memo policy remain pending.
+- [#450](https://github.com/durable-workflow/server/pull/450): verified local
+  external input, workflow/activity results and activity arguments. Installed
+  PHP/native originals, including a two-activity batch and cold parent, complete.
+  Two-reference atomic rollback/cold delivery controls pass. Latest-source hosted
+  qualification is pending. The older byte-only and input-only sources pass
+  their own full matrices. One local 100 ms transfer control
+  failed; three isolated controls and an unchanged full repeat pass, with the
+  original cause still unknown.
+
+Full transport discovery stays unadvertised. Complete batch workflow semantics,
+memo/query reference ingress, upload allowances, automatic result policy, S3,
+cleanup/backup/restart and full database/consumer qualification remain open.
+Broader runtime/operational parity, safe sequential PHP database takeover,
+matched performance measurements and release/cutover preparation remain #325
+requirements. No native release or deployment is qualified.
+
+### Earlier external input and byte milestones
+
+External workflow inputs now retain their verified opaque reference in the same
+native transaction as start admission. Failed starts roll that retention back.
+Cold workflow delivery and description keep the small reference, while the
+normal installed SDK fetches and decodes the original bytes. Invalid Avro,
+including malformed negative collection blocks, and expired/unbound references
+refuse without admitting a workflow or retaining an abandoned upload.
+
+The same normal PHP 2.3.9 consumer completes actual frozen PHP 2.6.2 and native
+SQLite originals with an exact 4,194,356-byte input, preserving the large int64,
+null and Unicode arguments. Each invokes and completes once within its original
+30-second observation budget. Stopped SQL/provider inspection independently
+confirms one completed first-attempt task, zero repairs, one completion event,
+the exact retained input hash/size, null upload expiry and a small stored pointer
+instead of expanded bytes. The native binary is
+`c58762759f4c03302ee54b3e22a11261ed087783d374ff7537dfb48d1ec5fd0b`.
+The first PHP business original completed but its observer incorrectly decoded
+the raw external result as inline; that observation remains unsuccessful. The
+corrected observer uses the normal SDK result reader on a separate original.
+Client header typing and native opt-in/listen setup failures preceded admission.
+
+Validation uses Apache Avro 0.22.0's schema-aware reader and a discarding Serde
+visitor, not a decoded collection or rewritten stored bytes. An actual regression
+proved the unpatched reader accepted an invalid negative collection byte length
+that frozen PHP rejects. The narrowly vendored patch checks those block bounds,
+streams discarded bytes, and grows scalar buffers from observed data before a
+short-stream refusal. Its source/package provenance and two changed upstream
+files are documented in `rust/vendor/apache-avro/PATCHES.md`. Thirteen actual
+frozen PHP datum controls pass; native final source passes 66 library tests
+with 18 explicit database/subprocess ignores and all 102 SQLite HTTP tests.
+Formatting and probe syntax checks pass. All completed local runtime, database,
+vendor-install, compiler/cache, formatter and raw evidence resources are deleted.
+
+This is workflow-input acceptance only. General completion/activity/memo/query
+reference ingress, automatic external result policy, complete policy/provider
+variants, allocation/CPU/deep-nesting qualification, cleanup/backup/restart and
+the full database/consumer matrix remain ahead. Full transport discovery stays
+unadvertised; no release, performance, migration or cutover claim follows.
+
+The development external-payload transport now exposes authenticated versioned
+upload/fetch routes and an admin-only local namespace policy. The byte route has
+its own configured size ceiling, original request timeout and one bounded
+snapshot worker; it accepts worker, operator and admin credentials without
+either protocol-version header, matching the frozen PHP transport. Namespace
+object/byte quotas include precommitted writing rows and refuse a new object
+before any provider write. Identical retries keep their reference ID. Fetch
+verifies independent bytes and updates fetch metadata without retaining the
+object or renewing its expiry. Completion-upload headers explicitly refuse
+while the required task/lease authority checks remain unfinished.
+
+Actual separate native and frozen PHP 2.6.2 HTTP servers each pass nineteen
+byte-transport checks with a 3,145,729-byte object: exact upload/fetch hash,
+same-reference retry, conflicting metadata, authentication, namespace isolation
+and object-quota refusal. Stopped database/provider inspection confirms two
+ready, unclaimed namespace records, distinct reference IDs and one exact shared
+content-addressed object on each server. The PHP fixture's initial local-policy
+setup returned 404 because this minimal launcher had not seeded its default
+namespace; an actual namespace admission preceded its first payload comparison.
+Both test runtimes, their databases, network and raw scratch are deleted.
+This observes bytes, not a valid Avro datum or an admitted workflow. The full
+transport capability remains unadvertised. Complete policy variants, all
+database families, local/S3 providers, completion-upload authority, retained
+claims, cleanup/backup/restart and real external memo/continuation consumers
+remain qualification gates. Tokio-util 0.7.19 supplies the standard streaming
+adapters; existing locked crate versions are unchanged.
+Final native source checks pass 63 library tests with 18 explicit
+database/subprocess ignores and all 100 SQLite execution HTTP tests. The four
+new HTTP controls also cover corrupt/missing provider bytes, partial-object
+repair, observed oversize, refusal before body polling/provider effects and
+recovery of transfer capacity after a stalled upload's original timeout.
+
+The external-storage preparation now writes local content-addressed objects
+and records recoverable `writing`/`ready` registry transitions. Exact retries
+preserve accepted bytes and reference identity, while partial objects can be
+repaired at that identity. Provider work stays off Tokio executor threads;
+contended local writer locks refuse instead of blocking indefinitely. Paths
+match PHP's encoded file URI, and reads bind the configured local root before
+verifying an independent snapshot. Native SQLite controls prove that failed
+provider writes and rolled-back ready promotions retain the original writing
+row and upload deadline. Cross-namespace lookups, conflicting metadata and
+expired uploads refuse; retained retries preserve ownership and no expiry.
+The actual frozen PHP registry passes fifteen independent controls, including
+an injected provider write failure and recovery with the same reference ID.
+Final native library checks pass 62 tests with 18 explicit database/subprocess
+ignores, and all 96 SQLite execution HTTP tests pass. These registry methods
+were internal preparation at that checkpoint. The subsequent byte handlers
+above add local HTTP routing and quota admission; completion-upload fences,
+retained-state claims, cleanup/backup
+coordination, external database execution and S3 remain pending. No external
+transport or memo capability is enabled.
+
+The external byte foundation now captures verified anonymous file snapshots
+with fixed 8 KiB reads, declared-size refusal before reading and a one-byte
+observed-size probe. SHA-256 measures the exact uploaded Base64 byte string;
+Avro frame validation belongs to the later state-bearing request. Blocking
+disk/hash work holds a concurrency permit, and a verified snapshot keeps that
+permit through its consumer lifetime. The async reader retains capacity and
+uses bounded file buffers. Abandoned captures stop between reads and retain
+capacity until a blocked source returns; callers must bound individual reads.
+Published PHP snapshot controls pass eight exact-size, spill, backing-change
+and one-byte-probe cases. That snapshot foundation passed 56 library tests with 18 explicit
+external-database/subprocess ignores. A counterfactual that performs capture on
+the single Tokio executor fails the responsiveness control after the watchdog
+releases the source; restoring the blocking worker passes. Namespace/registry
+admission, HTTP upload/fetch and provider persistence were still pending at that
+snapshot-only checkpoint. Real workflow consumer acceptance remains pending.
+
+External memo references require the existing authenticated runtime transport,
+not provider URIs in clients. The next foundation validates the five-field
+opaque reference against 46 published PHP controls, including exact integer
+sizes, strict unknown-field refusal, digest canonicalization and the published
+present-null/empty codec fallback. The published validator and codec-contract
+source hashes match this PHP tree. A reference's permitted identifier alphabet
+does not assert that an object exists or that its bytes have passed integrity.
+Native storage lookup must separately bind namespace, ready state, metadata and
+expiry before byte verification. The primitive was preparatory at that checkpoint;
+the byte handlers above now use it. It changes no advertised transport capability
+or frozen actor tuple.
+The full transport slice remains upload/fetch and normal installed SDK use,
+bounded streaming, durable content-addressed admission, integrity and quota
+controls, current-lease completion upload fences, runtime-owned resolution and
+claim retention, restart/recovery, cleanup/backup holds, three database families
+and local/S3 provider compatibility. Memo history/read and continuation tests
+must consume those real references before full memo support can be qualified.
 
 The next authored-memo slice follows #445's disabled preparation. Its full
 acceptance includes configured structural limits, actual SDK replay, protocol
@@ -2618,3 +2763,97 @@ the next successful turn. There are no new dependencies or schema changes.
 Qualification outcomes are recorded in #339. Cancellation/parallel timer groups, expiry recovery,
 missing timer reconstruction, CPU-heavy deadline health, throughput and complete
 operational parity remain open. This slice does not qualify database takeover.
+
+The [external-payload development slice in #450](https://github.com/durable-workflow/server/pull/450)
+now accepts an explicit verified local reference for workflow input and terminal
+workflow output. Output retention commits in the same transaction as the fenced
+completion and history. Wrong attempts and malformed commands leave the object
+unclaimed; cold descriptions/history retain its opaque reference. The focused
+HTTP case also checks the existing native exact-body duplicate receipt without
+claiming a stronger shared PHP receipt or provider-loss contract.
+
+The installed PHP SDK recipe `external-result-client.php` explicitly uploads the
+bytes and calls the public task-completion API. A separate cold process reads
+the completed output with the normal SDK. Frozen PHP and native SQLite each
+preserve the same 4,194,392 encoded bytes and SHA-256, a 3 MiB string, signed
+integer 9007199254740993, null and Unicode within the original 30-second
+observation budget. Stopped-state inspection confirms one completed
+first-attempt task, three events and one retained object per qualified original.
+The first PHP fixture original remains unsuccessful after a local field-name
+error before completion; the qualified original is separate. Both application
+containers stop with 137/no OOM, so this is not graceful-shutdown evidence.
+
+Local verification passes 66 library and 103 SQLite HTTP cases, with 18
+explicit database/subprocess library ignores. Full transport discovery stays
+unadvertised. Activity, query and memo ingress, completion-upload allowance,
+automatic result externalization, S3, cleanup/backup and all-database external
+semantics remain open. Exact source and hosted qualifications belong to #450;
+these observations do not qualify a release or database takeover.
+
+Explicit activity results now use the same verified reference preparation, with
+retention inside the original activity outcome transaction after lease, attempt,
+run and activity deadline fences. Stale attempts and elapsed leases leave the
+object unclaimed. A real database trigger refuses history publication after
+retention; rollback restores both the object and original activity before a
+matching completion and cold replay succeed. Local checks pass 66 library and
+104 SQLite HTTP cases, followed by all eight external HTTP cases after adding
+that final rollback control. Other database families remain hosted gates.
+
+The result recipe's `activity-author` phase uses actual SDK workflow admission
+and task polling, then an explicit HTTP activity-result completion. Its separate
+`activity-reader` process uses the normally installed SDK to hydrate the original
+activity history and complete the same workflow. Frozen PHP and native SQLite
+each preserve the exact 4,194,392-byte result, one actual activity attempt,
+six events and three first-attempt tasks with zero repairs. Published PHP also
+automatically uploads the small final summary under its policy; native keeps
+that summary inline because automatic upload discovery remains unadvertised.
+This measured difference is not full automatic externalization parity. No
+graceful shutdown is claimed from the stopped 137/no-OOM containers. Activity
+arguments and the remaining external transport gates stay open under #450.
+
+Activity arguments now accept verified local references too. A completion batch
+prepares at most the existing 100 commands under one original deadline and one
+shared transfer slot; every verified snapshot retains that slot until the last
+consumer finishes. Two distinct 4 MiB references pass one batch without waiting
+on their own admission limit. A later terminal completion with pending work
+rolls back both schedules, history and retention claims. The same original then
+accepts the matching schedules, and both opaque argument deliveries survive a
+cold open. This control does not claim a completed two-activity workflow.
+
+The separate installed-worker recipe `external-arguments-worker.php` completes
+one real large-argument activity and its original parent through three cold
+processes. Frozen PHP and native SQLite preserve 4,194,356 encoded bytes/hash,
+the exact 3 MiB string, integer 9007199254740993, null and Unicode, six events,
+three first-attempt completed tasks and zero repairs. PHP's automatic summary
+upload and native's inline summary remain the earlier explicit policy difference.
+The first PHP fixture handler omitted required ActivityContext and never claimed
+its activity; only the separate corrected original qualifies.
+
+67 library cases and nine focused external HTTP cases pass. The first full
+105-case run has 104 passes and one failure: the existing 100 ms stalled-upload
+control's next valid upload returns 503 instead of 201. Three isolated identical
+controls and one unchanged full 105-case repeat pass. The original remains
+failed, its cause unestablished, with no timeout/source change or claimed fix.
+Exact source and hosted qualification remain in #450. No automatic upload,
+S3, cleanup/backup, migration or release claim follows.
+
+The same installed-worker recipe now also accepts
+`DW_PARITY_EXTERNAL_ACTIVITY_COUNT=2`. Frozen PHP and the unchanged native
+binary each complete two distinct 4,194,356-byte argument references admitted
+in one workflow-task completion. Two actual activity callbacks, two payload
+GETs and two committed activity completions precede a separate cold parent
+reader. It joins results by authored activity sequence without changing event
+arrival order. Exact int64, null, Unicode and both 3 MiB string hashes survive.
+PHP completes in 8.17 seconds and native in 6.68 seconds against the original
+30-second budget. These single observations are functional checks, not a
+performance comparison.
+
+Stopped-state inspection finds the same nine-event history and task pattern in
+both databases: four first-attempt completed tasks, zero repairs, and one extra
+unclaimed ready workflow task. A final poll after closure returns no task in
+both implementations. Both large objects remain retained with exact provider
+bytes and no expiry. PHP also externalizes the two small activity results and
+final result; native keeps those inline under its unadvertised automatic policy.
+Both containers stop with 137 and no OOM. All local databases, provider objects,
+SDK dependencies, compiler output and task resources are removed after this
+audit. Hosted all-database external semantics remain pending.

@@ -70,6 +70,9 @@ mod condition_occurrences;
 #[path = "execution/query_arguments.rs"]
 mod query_arguments;
 
+#[path = "execution/external_payloads.rs"]
+mod external_payloads;
+
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
     Postgres {

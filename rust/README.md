@@ -279,6 +279,43 @@ at 1000 records and eight MiB of encoded payloads per page. Requests are capped
 at three MiB and inline envelopes at two MiB. Full customer payload/resource
 limits and external transport remain unqualified.
 
+The development external-payload routes upload/fetch verified encoded bytes at
+`/api/external-payloads/v1`, with authenticated namespace binding, local policy,
+object/byte quota admission and an independent request size/timeout bound.
+`PUT /api/namespaces/{namespace}/external-storage` is admin-only and currently
+supports the local driver. Completion-upload allowance headers refuse until
+their original task/lease authority is implemented. Full transport discovery
+stays unadvertised pending real workflow resolution/retention, cleanup/backup,
+restart, all database families and S3 qualification. The actual byte probe is
+`scripts/conformance/server-parity/external-payload-http.py`; run it only against
+an isolated runtime configured with its disposable fixture token, a default
+namespace, four MiB payload ceiling and one-object namespace quota. See the
+[port log](../docs/rust-server-port.md) for its precise acceptance scope.
+Workflow start, activity arguments, terminal workflow completion and activity completion accept
+verified opaque external payloads. Retention commits with the admitted input or fenced result; cold
+delivery, history and descriptions keep references for normal SDK hydration.
+The installed-worker input recipe is
+`scripts/conformance/server-parity/external-input-worker.php`. The explicit
+result-upload/public task-completion recipe and separate cold SDK reader are in
+`scripts/conformance/server-parity/external-result-client.php`. Its
+`activity-author` and `activity-reader` phases use explicit activity-result HTTP
+completion and a separate installed SDK workflow-history reader. These recipes
+do not establish automatic SDK upload discovery. Memo/query ingress,
+completion-upload allowances and automatic external result policy remain
+unqualified. Apache's schema-aware validation patch is recorded in
+`vendor/apache-avro/PATCHES.md`.
+
+Activity argument batches share transfer admission and one preparation deadline.
+Verified snapshots remain alive until the whole transaction finishes, including
+rollback after a later command. Temporary storage must accommodate the combined
+encoded bytes for an admitted batch, within the existing 100-command bound.
+`scripts/conformance/server-parity/external-arguments-worker.php` exercises an
+explicit upload/scheduling author, an unchanged installed activity worker, and a
+separate cold SDK workflow reader that completes the same original workflow.
+Set `DW_PARITY_EXTERNAL_ACTIVITY_COUNT=2` for two distinct large arguments in
+one completion batch. The reader joins results by authored activity sequence
+and checks that a closed run delivers no further workflow task.
+
 The native development bootstrap creates the complete SQLite schema from the
 frozen published PHP image: 49 tables and 333 explicit indexes. Native completion
 and poll receipts use separate relations. SQLx records a checksummed migration;

@@ -28,6 +28,7 @@ pub struct Runtime {
     pub(crate) role_tokens: [Option<Arc<str>>; 3],
     scheduler: Arc<TimerScheduler>,
     signal_codec: Arc<Semaphore>,
+    pub(super) external: Arc<super::ExternalPayloadConfig>,
 }
 
 struct TimerScheduler {
@@ -109,6 +110,10 @@ macro_rules! delegate {
 }
 
 impl Runtime {
+    pub fn with_external_payload_config(mut self, config: super::ExternalPayloadConfig) -> Self {
+        self.external = Arc::new(config);
+        self
+    }
     /// Immutable configured-token cohort. Database transitions and scheduler
     /// stay shared; configuring credentials does not mutate process state.
     pub fn with_role_tokens(
@@ -134,35 +139,43 @@ impl Runtime {
 
     pub async fn open(database: &str, token: String) -> Result<Self> {
         Self::validate_token(&token)?;
+        let external = super::ExternalPayloadConfig::from_env()?;
         let limit = super::memo_limits::configured_limit()?;
         let mut store = Store::new(sqlite::open(database).await?);
         store.memo_size_limit = limit;
-        Self::from_storage(Storage::Sqlite(store), token).await
+        Self::from_storage(Storage::Sqlite(store), token, external).await
     }
 
     pub async fn open_postgres(options: PgConnectOptions, token: String) -> Result<Self> {
         Self::validate_token(&token)?;
+        let external = super::ExternalPayloadConfig::from_env()?;
         let limit = super::memo_limits::configured_limit()?;
         let mut store = Store::new(PostgresStorage::open(options).await?.into_pool());
         store.memo_size_limit = limit;
-        Self::from_storage(Storage::Postgres(store), token).await
+        Self::from_storage(Storage::Postgres(store), token, external).await
     }
 
     pub async fn open_mysql(options: MySqlConnectOptions, token: String) -> Result<Self> {
         Self::validate_token(&token)?;
+        let external = super::ExternalPayloadConfig::from_env()?;
         let limit = super::memo_limits::configured_limit()?;
         let mut store = Store::new(MySqlStorage::open(options).await?.into_pool());
         store.memo_size_limit = limit;
-        Self::from_storage(Storage::MySql(store), token).await
+        Self::from_storage(Storage::MySql(store), token, external).await
     }
 
-    async fn from_storage(storage: Storage, token: String) -> Result<Self> {
+    async fn from_storage(
+        storage: Storage,
+        token: String,
+        external: super::ExternalPayloadConfig,
+    ) -> Result<Self> {
         let runtime = Self {
             storage: Arc::new(storage),
             token: token.into(),
             role_tokens: [None, None, None],
             scheduler: Arc::new(TimerScheduler::new()),
             signal_codec: Arc::new(Semaphore::new(1)),
+            external: Arc::new(external),
         };
         runtime.verify_ready().await?;
         if let Err(error) = runtime.initialize_namespace_registry().await {
@@ -229,6 +242,14 @@ impl Runtime {
             role_tokens: self.role_tokens.clone(),
             scheduler: self.scheduler.clone(),
             signal_codec: self.signal_codec.clone(),
+            external: self.external.clone(),
+        }
+    }
+    pub(super) fn namespace(&self) -> &str {
+        match &*self.storage {
+            Storage::Sqlite(store) => &store.namespace,
+            Storage::Postgres(store) => &store.namespace,
+            Storage::MySql(store) => &store.namespace,
         }
     }
     delegate!(initialize_namespace_registry() -> Result<()>);
@@ -236,14 +257,31 @@ impl Runtime {
     delegate!(list_namespaces() -> Result<Value>);
     delegate!(describe_namespace(name: &str) -> Result<Value>);
     delegate!(create_namespace(body: Value) -> Result<Value>);
+    delegate!(set_external_policy(name: &str, body: Value) -> Result<Value>);
+    delegate!(
+        upload_external_local(
+            local: crate::external_payload::LocalStorage,
+            expected: crate::external_payload::Reference,
+            snapshot: crate::external_payload::Snapshot,
+            expires: chrono::DateTime<chrono::Utc>,
+            quota: super::external_config::Quota,
+        ) -> Result<crate::external_payload::Reference>
+    );
+    delegate!(
+        external_payload_for_fetch(
+            expected: &crate::external_payload::Reference,
+        ) -> Result<super::external_registry::RegisteredPayload>
+    );
+    delegate!(mark_external_fetched(expected: &crate::external_payload::Reference) -> Result<()>);
     delegate!(database_live() -> bool);
     pub(crate) async fn start(&self, body: Value) -> Result<Value> {
         let memo =
             super::memos::prepare_initial(self.signal_codec.clone(), body["memo"].clone()).await?;
+        let external = self.prepare_external(&body["input"]).await?;
         match &*self.storage {
-            Storage::Sqlite(store) => store.start(body, memo).await,
-            Storage::Postgres(store) => store.start(body, memo).await,
-            Storage::MySql(store) => store.start(body, memo).await,
+            Storage::Sqlite(store) => store.start(body, memo, external).await,
+            Storage::Postgres(store) => store.start(body, memo, external).await,
+            Storage::MySql(store) => store.start(body, memo, external).await,
         }
     }
     pub(crate) async fn create_schedule(&self, body: Value, context: Value) -> Result<Value> {
@@ -532,6 +570,7 @@ impl Runtime {
     delegate!(task_history(task_id: &str, body: Value) -> Result<Value>);
     delegate!(fail_workflow_task(task_id: &str, body: Value) -> Result<Value>);
     pub(crate) async fn complete_workflow(&self, task_id: &str, body: Value) -> Result<Value> {
+        let external = self.prepare_command_payloads(&body).await?;
         if let Some(commands) = body["commands"].as_array() {
             for command in commands
                 .iter()
@@ -579,17 +618,17 @@ impl Runtime {
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
-                    .complete_workflow(task_id, body, self.signal_codec.clone())
+                    .complete_workflow(task_id, body, self.signal_codec.clone(), external)
                     .await
             }
             Storage::Postgres(store) => {
                 store
-                    .complete_workflow(task_id, body, self.signal_codec.clone())
+                    .complete_workflow(task_id, body, self.signal_codec.clone(), external)
                     .await
             }
             Storage::MySql(store) => {
                 store
-                    .complete_workflow(task_id, body, self.signal_codec.clone())
+                    .complete_workflow(task_id, body, self.signal_codec.clone(), external)
                     .await
             }
         }
@@ -663,7 +702,14 @@ impl Runtime {
             }
         }
     }
-    delegate!(complete_activity(task_id: &str, body: Value) -> Result<Value>);
+    pub(crate) async fn complete_activity(&self, task_id: &str, body: Value) -> Result<Value> {
+        let external = self.prepare_external(&body["result"]).await?;
+        match &*self.storage {
+            Storage::Sqlite(store) => store.complete_activity(task_id, body, external).await,
+            Storage::Postgres(store) => store.complete_activity(task_id, body, external).await,
+            Storage::MySql(store) => store.complete_activity(task_id, body, external).await,
+        }
+    }
     delegate!(heartbeat_activity(task_id: &str, body: Value, protocol: &str) -> Result<Value>);
     delegate!(activity_status(task_id: &str, body: Value, protocol: &str) -> Result<Value>);
     pub(crate) async fn fail_activity(&self, task_id: &str, body: Value) -> Result<Value> {
