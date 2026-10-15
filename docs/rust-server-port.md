@@ -6,11 +6,13 @@ The unpublished Rust crate has an Avro foundation and an opt-in SQLite/PostgreSQ
 execution slice. Full runtime parity, migration, performance improvement and
 cutover remain unqualified.
 
-The latest merged foundation is [#450](https://github.com/durable-workflow/server/pull/450),
-at `e603a245e`, following #445's memo transaction preparation, #446's bounded
-continuation and #448's SDK memo authoring. Each exact candidate tree passes
-its own 13-job shared suite across six databases. Separate fresh-main
-qualification remains pending; no result is carried across changed trees.
+The latest qualified merged foundation is [#457](https://github.com/durable-workflow/server/pull/457),
+at `303ffc633`, including #445's memo transaction preparation, #446's bounded
+continuation, #448's SDK memo authoring and #450's local external transport.
+Its separate fresh-main [38668891437](https://github.com/durable-workflow/server/actions/runs/38668891437)
+passes all 13 jobs across six databases; all six execution logs were read.
+Required PHP/source and boundary checks also pass. Earlier failed observations
+remain failed; this current-tree result is not carried across later changes.
 The merged native development runtime enables memo upserts, while full external
 transport discovery stays unadvertised. Frozen published PHP, embedded and SDK tuples
 remain separate from current PHP release work. Representative timer, signal,
@@ -20,41 +22,52 @@ failed; later qualifying runs are separate observations.
 
 ## Work order and current status
 
-The active integration order is:
+The current integration order is:
 
-- [#445](https://github.com/durable-workflow/server/pull/445): canonical memo
-  transaction foundation merged `bb199cb71`; its separate fresh-main 13-job
-  qualification passes in 38645794230, with every database log audited.
-  This preparation kept the memo-update gate disabled.
-- [#446](https://github.com/durable-workflow/server/pull/446): cold continue-as-new
-  after a genuine activity, merged `dff9e846`. Its identical whole tree passes
-  all 13 candidate jobs after one unchanged MariaDB retry. The original hosted
-  runner loss remains failed without an established cause. Fresh main is pending.
-- [#448](https://github.com/durable-workflow/server/pull/448): actual SDK memo
-  authoring and continuation inheritance, merged `284f5b822`. Its exact whole
-  tree passes all 13 candidate jobs and required source checks. Fresh main and
-  external-memo policy remain pending.
-- [#450](https://github.com/durable-workflow/server/pull/450): verified local
-  external input, workflow/activity results and activity arguments. Installed
-  PHP/native originals, including a two-activity batch and cold parent, complete.
-  Two-reference atomic rollback/cold delivery controls pass. Its exact whole
-  tree is merged as `e603a245e` after all 13 candidate jobs and required source
-  checks pass. Fresh main is pending. Those regression jobs do not imply new
-  external-consumer execution on every database. One local 100 ms transfer control
-  failed; three isolated controls and an unchanged full repeat pass, with the
-  original cause still unknown.
+- Merged [#445](https://github.com/durable-workflow/server/pull/445),
+  [#446](https://github.com/durable-workflow/server/pull/446),
+  [#448](https://github.com/durable-workflow/server/pull/448) and
+  [#450](https://github.com/durable-workflow/server/pull/450) provide memo
+  transactions, actual SDK memo authoring, bounded continuation and verified
+  local external values. Their individual acceptance records preserve original
+  registration, runner and 100 ms upload failures. Current merged execution is
+  covered by the separate #457 fresh-main qualification above. External memo
+  policy, complete continuation transfer and full external transport remain open.
 - [#455](https://github.com/durable-workflow/server/pull/455): opt-in,
-  namespace/queue-scoped null-task poll wake. Its combined matrix remains
-  pending. An earlier component's SQLite PHP target failed after an activity
+  namespace/queue-scoped null-task poll wake. Component `1fa1cc2e6` passes all
+  13 jobs and all six databases; promotion is through the combined #458 tree,
+  whose own matrix remains pending. An earlier component's SQLite PHP target failed after an activity
   completion response when the Rust actor's registration DELETE returned
   lock-pressure 503; later refusal/repair phases were not reached. That original
   stays failed. Idle/query cost and matched performance remain open.
 - [#457](https://github.com/durable-workflow/server/pull/457): extend the actual
   installed external consumers to separate PHP/native databases in all six
-  configurations. Its first local SQLite recipe completes five originals per
-  target and cold reads with exact typed values. Other database execution,
-  final-head hosted qualification and promotion remain pending. This does not
-  qualify automatic policy, S3 or completion-upload authority.
+  configurations. Candidate and separate merged-main executions now pass all
+  six configurations, with five original workflows per target and exact typed
+  cold reads. It is delivered at `303ffc633`. This does not qualify automatic
+  policy, S3 or completion-upload authority.
+- [#458](https://github.com/durable-workflow/server/pull/458): completion-bound
+  local activity-result uploads, including exact PHP Unicode context hashing,
+  original live authority and durable allowances. Combined head `93368d2ae`
+  includes #455 and the current PHP source; its exact matrix remains pending.
+  Earlier component passes do not establish acceptance for this whole tree.
+- [#460](https://github.com/durable-workflow/server/pull/460): read-only PHP
+  catalog/data inventory. Head `4459140cd` adds actual FIFO/directory refusal
+  and a separately budgeted fresh-upload capacity control. Its matrix is
+  pending; the earlier SQLite 100 ms upload failure remains failed. Inspection
+  does not establish backup consistency, PHP quiescence, stored-representation
+  compatibility or takeover authority. All those qualification flags stay false.
+- Native [query authority](https://github.com/durable-workflow/server/issues/433)
+  is prepared at `5d10c6b74` under the agreed PHP contract: immutable UTC6
+  timing, capped leases, non-renewing status, registration/namespace fences and
+  content-bound query receipts. Local staged checks cover SQLite, MySQL 8.4
+  and PostgreSQL 17. The corrected waiter preserves the original deadline under
+  a held writer and refuses a result delayed by codec capacity. This is not a
+  clean full-suite or matched PHP/SDK qualification: the earlier complete
+  SQLite run still has its failed fresh-upload control. Receipt reconciliation
+  under writer pressure, continuation expiry, remaining pressure boundaries,
+  combined ancestry and installed consumers remain next. Discovery keeps
+  `query_task_authority=false` until those gates pass.
 
 Full transport discovery stays unadvertised. Complete batch workflow semantics,
 memo/query reference ingress, upload allowances, automatic result policy, S3,
