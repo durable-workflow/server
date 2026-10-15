@@ -3028,3 +3028,11 @@ final result; native keeps those inline under its unadvertised automatic policy.
 Both containers stop with 137 and no OOM. All local databases, provider objects,
 SDK dependencies, compiler output and task resources are removed after this
 audit. Hosted all-database external semantics remain pending.
+
+The upload/poll-hint candidate now incorporates exact qualified PHP source
+`1f994962` and its `applyStickyCacheClaim` primary-key correction, including
+the current PHP release metadata and numeric declaration normalization. Its
+WorkerController bytes match the qualified PHP handoff. This combined tree
+requires fresh normal and six-database qualification. The preceding `3409a776`
+component pass, its MySQL-only retry, and all failed originals remain their
+separate records; none qualifies this integration or a native release.
