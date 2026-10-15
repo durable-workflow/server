@@ -118,7 +118,7 @@ async fn payload_cli_bounds_allocation_and_preserves_valid_and_malformed_origina
         .decode(codec.encode(&Value::String(String::new())).unwrap())
         .unwrap();
     assert_eq!(oversized.pop(), Some(0));
-    apache_avro::writer::datum::GenericDatumWriter::new(&apache_avro::Schema::Long)
+    apache_avro::writer::datum::GenericDatumWriter::builder(&apache_avro::Schema::Long)
         .build()
         .unwrap()
         .write_value_ref(
