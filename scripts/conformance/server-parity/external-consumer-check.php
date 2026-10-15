@@ -80,10 +80,30 @@ function checkExternalConsumers(array $records, array $artifacts): array
             $require($author['encoded_bytes'] > $textBytes, "$target/$case real large payload");
             $runs[$case] = $author['run_id'];
         }
-        $require(count(array_unique($runs)) === 5, "$target distinct originals");
+        $completion = $data['completion-upload'];
+        $require($completion['scope'] === 'raw_http_activity_completion_upload'
+            && $completion['parent_run_id'] === $completion['run_id']
+            && $completion['task_id'] !== $completion['parent_task_id']
+            && $completion['activity_completion_count'] === 1 && $completion['workflow_status'] === 'completed',
+            "$target completion original/task/history");
+        $require($completion['result'] === [$number, null, 'rangeλ'], "$target typed completion result");
+        $require($completion['lease_expires_before'] === $completion['lease_expires_after']
+            && is_string($completion['lease_expires_before']) && $completion['lease_expires_before'] !== '',
+            "$target upload cannot renew the lease");
+        $require($completion['original_deadline'] - $completion['started_at'] === 30.0
+            && $completion['finished_at'] < $completion['original_deadline']
+            && $completion['elapsed_seconds'] === $completion['finished_at'] - $completion['started_at'],
+            "$target completion original budget");
+        $require($completion['reference']['codec'] === 'avro' && $completion['reference']['size_bytes'] === 44
+            && $completion['reference']['sha256'] === '72f7246e42b2f948968398c4718ce8567ad4417aee4901f8975eefd5963b9ba5',
+            "$target completion byte identity");
+        $require($completion['controls'] === ['identical_upload', 'conflicting_slot', 'foreign_owner',
+            'closed_upload_reconciliation', 'cold_parent'], "$target completion controls");
+        $runs['completion-upload'] = $completion['run_id'];
+        $require(count(array_unique($runs)) === 6, "$target distinct originals");
         $joinedRuns[$target] = $runs;
     }
-    $require(count(array_unique(array_merge(array_values($joinedRuns['php']), array_values($joinedRuns['native'])))) === 10,
+    $require(count(array_unique(array_merge(array_values($joinedRuns['php']), array_values($joinedRuns['native'])))) === 12,
         'Implementations must have independent original runs');
     foreach (['input', 'workflow-author', 'activity-author', 'arguments-1-author', 'arguments-2-author'] as $label) {
         foreach (['encoded_bytes', 'encoded_sha256'] as $field) {
@@ -98,7 +118,7 @@ function checkExternalConsumers(array $records, array $artifacts): array
 $artifacts = json_decode(file_get_contents($profilePath), true, flags: JSON_THROW_ON_ERROR)['artifacts'];
 $labels = ['input', 'workflow-author', 'workflow-reader', 'activity-author', 'activity-reader',
     'arguments-1-author', 'arguments-1-activity', 'arguments-1-reader',
-    'arguments-2-author', 'arguments-2-activity', 'arguments-2-reader'];
+    'arguments-2-author', 'arguments-2-activity', 'arguments-2-reader', 'completion-upload'];
 $records = [];
 foreach (['php', 'native'] as $target) {
     foreach ($labels as $label) {
@@ -114,6 +134,9 @@ $mutations = [
     'lost_activity' => static function (array &$bad): void { $bad['native']['arguments-2-activity']['activity_completions'] = 1; },
     'changed_reference' => static function (array &$bad): void { $bad['php']['workflow-author']['reference']['sha256'] = str_repeat('0', 64); },
     'expired_observation' => static function (array &$bad): void { $bad['native']['workflow-reader']['elapsed_seconds'] = 30; },
+    'completion_other_parent' => static function (array &$bad): void { $bad['native']['completion-upload']['parent_run_id'] = 'other'; },
+    'completion_lease_renewal' => static function (array &$bad): void { $bad['php']['completion-upload']['lease_expires_after'] .= 'changed'; },
+    'completion_rounded_int64' => static function (array &$bad): void { $bad['native']['completion-upload']['result'][0] = 9007199254740992; },
 ];
 foreach ($mutations as $label => $mutate) {
     $bad = $records;
@@ -126,5 +149,5 @@ foreach ($mutations as $label => $mutate) {
     throw new RuntimeException('Reader accepted '.$label);
 }
 echo json_encode(['outcome' => 'pass', 'scope' => 'installed_service_external_consumers',
-    'original_runs' => $runs, 'scenarios_per_target' => 5, 'original_budget_seconds' => 30,
+    'original_runs' => $runs, 'scenarios_per_target' => 6, 'original_budget_seconds' => 30,
     'reader_refusals' => array_keys($mutations), 'embedded_transport' => 'inapplicable'], JSON_THROW_ON_ERROR)."\n";

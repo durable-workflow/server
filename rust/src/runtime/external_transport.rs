@@ -32,6 +32,8 @@ pub(super) fn error_body(status: StatusCode, reason: &str) -> Value {
         "reason":reason,"message":reason,"retryable":retryable,"status":status.as_u16()});
     if reason.starts_with("external_payload_namespace_") {
         body["retry_after_seconds"] = json!(60);
+    } else if reason == "external_payload_completion_budget_exhausted" {
+        body["retry_after_seconds"] = json!(5);
     }
     body
 }
@@ -50,6 +52,10 @@ fn response_error(error: RuntimeError) -> Response {
         response
             .headers_mut()
             .insert("retry-after", "60".parse().expect("static header"));
+    } else if reason == "external_payload_completion_budget_exhausted" {
+        response
+            .headers_mut()
+            .insert("retry-after", "5".parse().expect("static header"));
     }
     response
 }
@@ -217,15 +223,17 @@ async fn upload_inner(runtime: Runtime, request: Request, deadline: Instant) -> 
             "external_payload_unsupported",
         ));
     }
-    if request
+    let context = if request
         .headers()
         .contains_key("x-durable-workflow-payload-completion")
     {
-        return Err(refuse(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "development_payload_completion_upload_unqualified",
-        ));
-    }
+        Some(super::activity_completion_uploads::Context::parse(header(
+            request.headers(),
+            "x-durable-workflow-payload-completion",
+        )?)?)
+    } else {
+        None
+    };
     if declared_size(request.headers())? as u64 > runtime.external.max_bytes.max(1) {
         return Err(refuse(
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -233,6 +241,11 @@ async fn upload_inner(runtime: Runtime, request: Request, deadline: Instant) -> 
         ));
     }
     let expected = metadata(request.headers(), &format!("ep_{}", ulid::Ulid::new()))?;
+    if let Some(context) = &context {
+        runtime
+            .authorize_completion_upload(context, &expected)
+            .await?;
+    }
     let timed_out = Arc::new(AtomicBool::new(false));
     let timeout_flag = timed_out.clone();
     let stream = request
@@ -259,6 +272,13 @@ async fn upload_inner(runtime: Runtime, request: Request, deadline: Instant) -> 
         ));
     }
     let snapshot = snapshot.map_err(snapshot_error)?;
+    if let Some(context) = &context
+        && let Some(reference) = runtime
+            .authorize_completion_upload(context, &expected)
+            .await?
+    {
+        return Ok(upload_response(reference));
+    }
     let local = local(&runtime).await?;
     let quota = runtime.external.quota(runtime.namespace())?;
     let expires = chrono::Duration::try_seconds(runtime.external.abandoned_seconds.max(1))
@@ -269,12 +289,34 @@ async fn upload_inner(runtime: Runtime, request: Request, deadline: Instant) -> 
                 "external_payload_unavailable",
             )
         })?;
-    let reference = runtime
-        .upload_external_local(local, expected, snapshot, expires, quota)
-        .await?;
-    Ok((StatusCode::CREATED, [("cache-control", "no-store, private")], Json(json!({
+    let reference = if let Some(context) = context {
+        runtime
+            .upload_activity_completion(
+                local,
+                expected,
+                snapshot,
+                expires,
+                quota,
+                context,
+                runtime
+                    .external
+                    .completion_max_bytes
+                    .unwrap_or(runtime.external.max_bytes),
+                runtime.external.abandoned_seconds,
+            )
+            .await?
+    } else {
+        runtime
+            .upload_external_local(local, expected, snapshot, expires, quota)
+            .await?
+    };
+    Ok(upload_response(reference))
+}
+
+fn upload_response(reference: Reference) -> Response {
+    (StatusCode::CREATED, [("cache-control", "no-store, private")], Json(json!({
         "schema":"durable-workflow.v2.runtime-external-payload-upload.v1","transport_version":1,"reference":reference
-    }))).into_response())
+    }))).into_response()
 }
 
 pub(super) async fn fetch(

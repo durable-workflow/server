@@ -1,4 +1,6 @@
 use super::*;
+#[path = "external_payloads/completion_uploads.rs"]
+mod completion_uploads;
 use axum::{body::Bytes, http::HeaderMap};
 use durable_workflow_server::runtime::ExternalPayloadConfig;
 use sha2::{Digest, Sha256};

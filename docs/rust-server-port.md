@@ -33,14 +33,15 @@ The active integration order is:
   8.4 comparison failed in 38650678703; its cause is under inspection.
 - [#448](https://github.com/durable-workflow/server/pull/448): actual SDK memo
   authoring and continuation inheritance, merged `284f5b822`. Its exact whole
-  tree passes all 13 candidate jobs and required source checks. Fresh main and
-  external-memo policy remain pending.
+  tree passes all 13 candidate and fresh-main jobs (38651677462), with all six
+  logs independently audited. External-memo policy remains pending.
 - [#450](https://github.com/durable-workflow/server/pull/450): verified local
   external input, workflow/activity results and activity arguments. Installed
   PHP/native originals, including a two-activity batch and cold parent, complete.
   Two-reference atomic rollback/cold delivery controls pass. Its exact whole
   tree is merged as `e603a245e` after all 13 candidate jobs and required source
-  checks pass. Fresh main is pending. Those regression jobs do not imply new
+  checks pass. Fresh main also passes all 13 jobs in 38652717748, with all six
+  logs independently audited. Those regression jobs do not imply new
   external-consumer execution on every database. One local 100 ms transfer control
   failed; three isolated controls and an unchanged full repeat pass, with the
   original cause still unknown.
@@ -61,6 +62,14 @@ The active integration order is:
   ownership/partial/repeated cleanup controls passing. Final-head hosted
   qualification and promotion remain pending. This does not
   qualify automatic policy, S3 or completion-upload authority.
+- [#458](https://github.com/durable-workflow/server/pull/458): version-1 activity
+  result completion uploads. The separate published PHP original passes upload,
+  conflict/owner checks, post-closure upload reconciliation and cold parent
+  consumption. The unchanged native control explicitly refuses the header.
+  A native prototype passes 69 library tests (18 explicit ignores) and three
+  actual HTTP authority/race cases on SQLite. Full regression, installed recipe,
+  all-database execution and promotion remain pending. No workflow/query/prepared
+  context, pressure-bypass or full transport capability is advertised.
 
 Full transport discovery stays unadvertised. Complete batch workflow semantics,
 memo/query reference ingress, upload allowances, automatic result policy, S3,

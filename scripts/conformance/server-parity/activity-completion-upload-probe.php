@@ -12,13 +12,14 @@ $started = microtime(true);
 $deadline = $started + 30;
 $http = new Client(['base_uri' => rtrim($url, '/'), 'http_errors' => false,
     'connect_timeout' => 1, 'timeout' => 5]);
-$headers = ['Authorization' => 'Bearer completion-fixture-token', 'X-Namespace' => 'default',
+$headers = ['Authorization' => 'Bearer '.(getenv('DW_PARITY_TOKEN') ?: 'completion-fixture-token'), 'X-Namespace' => 'default',
     'X-Durable-Workflow-Control-Plane-Version' => '2', 'X-Durable-Workflow-Protocol-Version' => '1.20'];
 $request = static function (string $method, string $path, array $body = []) use ($http, $headers, $deadline): array {
     if (microtime(true) >= $deadline) {
         throw new RuntimeException('Original 30-second observation expired');
     }
-    $response = $http->request($method, $path, ['headers' => $headers, 'json' => $body]);
+    $response = $http->request($method, $path, ['headers' => $headers, 'json' => $body,
+        'timeout' => min(5, max(0.001, $deadline - microtime(true)))]);
 
     return [$response->getStatusCode(), json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR)];
 };
@@ -64,6 +65,10 @@ $expect($request('POST', '/api/worker/workflow-tasks/'.$task['task_id'].'/comple
 ]), 200, 'activity admission');
 $activity = $expect($request('POST', '/api/worker/activity-tasks/poll', $poll), 200, 'activity claim')['task'];
 $require($activity['run_id'] === $original['run_id'], 'Original activity claim changed');
+$statusPath = '/api/worker/activity-tasks/'.$activity['task_id'].'/status';
+$ownership = ['activity_attempt_id' => $activity['activity_attempt_id'], 'lease_owner' => $activity['lease_owner']];
+$beforeUpload = $expect($request('POST', $statusPath, $ownership), 200, 'original activity status');
+$require($beforeUpload['can_continue'] === true, 'Original activity lacks upload authority');
 $context = ['schema' => 'durable-workflow.v2.payload-completion-context.v1', 'kind' => 'activity',
     'task_id' => $activity['task_id'], 'attempt' => $activity['activity_attempt_id'],
     'lease_owner' => $activity['lease_owner'], 'operation' => 'complete', 'slot' => ['result']];
@@ -78,7 +83,7 @@ $upload = static function (array $context, string $bytes) use ($http, $headers, 
         'X-Durable-Workflow-Payload-Size' => (string) strlen($bytes),
         'X-Durable-Workflow-Payload-SHA256' => hash('sha256', $bytes),
         'X-Durable-Workflow-Payload-Completion' => json_encode($context, JSON_THROW_ON_ERROR),
-    ], 'body' => $bytes]);
+    ], 'body' => $bytes, 'timeout' => min(5, max(0.001, $deadline - microtime(true)))]);
 
     return [$response->getStatusCode(), json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR)];
 };
@@ -101,6 +106,9 @@ $wrongOwner['lease_owner'] .= '-wrong';
 $refused = $upload($wrongOwner, $bytes);
 $expect($refused, 409, 'foreign owner');
 $require($refused[1]['reason'] === 'external_payload_completion_lease_rejected', 'Unexpected owner disposition');
+$afterUpload = $expect($request('POST', $statusPath, $ownership), 200, 'activity status after uploads');
+$require($afterUpload['can_continue'] === true && $afterUpload['lease_expires_at'] === $beforeUpload['lease_expires_at'],
+    'Upload changed original activity lease authority');
 $completion = $expect($request('POST', '/api/worker/activity-tasks/'.$activity['task_id'].'/complete', [
     'lease_owner' => $activity['lease_owner'], 'activity_attempt_id' => $activity['activity_attempt_id'],
     'result' => ['codec' => 'avro', 'external_payload' => $reference],
@@ -130,7 +138,12 @@ $expect($request('POST', '/api/worker/workflow-tasks/'.$parent['task_id'].'/comp
 $describe = $expect($request('GET', '/api/workflows/'.$prefix.'/runs/'.$original['run_id']), 200, 'original result');
 $require($describe['status'] === 'completed' && microtime(true) < $deadline, 'Original did not complete within its budget');
 $expect($request('DELETE', '/api/worker/registrations/'.rawurlencode($prefix)), 200, 'registration retirement');
+$finished = microtime(true);
 echo json_encode(['outcome' => 'pass', 'scope' => 'raw_http_activity_completion_upload',
     'run_id' => $original['run_id'], 'task_id' => $activity['task_id'], 'activity_attempt_id' => $activity['activity_attempt_id'],
-    'reference' => $reference, 'original_budget_seconds' => 30, 'elapsed_seconds' => microtime(true) - $started,
+    'parent_run_id' => $parent['run_id'], 'parent_task_id' => $parent['task_id'], 'result' => $expected,
+    'activity_completion_count' => count($completed), 'workflow_status' => $describe['status'],
+    'lease_expires_before' => $beforeUpload['lease_expires_at'], 'lease_expires_after' => $afterUpload['lease_expires_at'],
+    'reference' => $reference, 'original_budget_seconds' => 30, 'elapsed_seconds' => $finished - $started,
+    'started_at' => $started, 'original_deadline' => $deadline, 'finished_at' => $finished,
     'controls' => ['identical_upload', 'conflicting_slot', 'foreign_owner', 'closed_upload_reconciliation', 'cold_parent']], JSON_THROW_ON_ERROR)."\n";
