@@ -147,8 +147,8 @@ jobs:
           # On a release tag like 0.1.0, produces immutable tags:
           #   durableworkflow/server:0.1.0
           #   ghcr.io/durable-workflow/server:0.1.0
-          # workflow_dispatch checks out the existing immutable tag before it
-          # reproduces these exact image identities for recovery.
+          # Manual dispatch may publish an unpublished immutable source tag.
+          # Existing images use published-release-recovery.yml instead.
           # yamllint disable rule:line-length
           tags: |
             type=semver,pattern={{version}},value=${{ steps.release_publish.outputs.tag }},enable=${{ steps.release_publish.outputs.is_semver == 'true' }}
