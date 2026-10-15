@@ -642,6 +642,22 @@ where
                     "invalid_query_task_attempt",
                 )
             })?;
+        let fingerprint = authority::operation(body, failed)?;
+        // Retained decisions are immutable. Reconcile them using a scoped
+        // read before acquiring a writer or preparing the result again.
+        let observed = Self::query(DB::QUERY_CACHE_GET)
+            .bind(&key)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| refuse(StatusCode::NOT_FOUND, "query_task_not_found"))?;
+        let observed = Self::cached_query(&observed, task_id, self.namespace.as_ref())?;
+        if let Some(receipt) =
+            authority::receipt(&observed, owner, attempt, &fingerprint, authority::now())?
+        {
+            return Ok(Some(receipt));
+        }
+        // A decision may commit between this read and writer admission. The
+        // transaction repeats receipt lookup before any fresh-authority fence.
         let mut tx = self.begin().await?;
         let row = Self::query(DB::QUERY_CACHE_GET)
             .bind(&key)
@@ -649,7 +665,6 @@ where
             .await?
             .ok_or_else(|| refuse(StatusCode::NOT_FOUND, "query_task_not_found"))?;
         let mut task = Self::cached_query(&row, task_id, self.namespace.as_ref())?;
-        let fingerprint = authority::operation(body, failed)?;
         if let Some(receipt) =
             authority::receipt(&task, owner, attempt, &fingerprint, authority::now())?
         {

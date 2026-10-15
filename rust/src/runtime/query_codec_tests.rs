@@ -11,8 +11,16 @@ fn envelope(value: Payload) -> Value {
     json!({"codec":"avro","blob":ValueCodec::new().unwrap().encode(&value).unwrap()})
 }
 
-#[tokio::test]
-async fn query_outcome_rechecks_original_deadline_after_codec_wait_without_holding_writer() {
+struct Original {
+    _directory: tempfile::TempDir,
+    runtime: Runtime,
+    started: Value,
+    history_before: Vec<(i64, String, String)>,
+    waiting: JoinHandle<Result<(StatusCode, Value)>>,
+    task: Value,
+}
+
+async fn original(timeout_seconds: i64) -> Original {
     let directory = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(
         directory.path().join("runtime.sqlite").to_str().unwrap(),
@@ -21,8 +29,8 @@ async fn query_outcome_rechecks_original_deadline_after_codec_wait_without_holdi
     .await
     .unwrap()
     .with_query_task_config(QueryTaskConfig {
-        timeout_seconds: 2,
-        lease_timeout_seconds: 2,
+        timeout_seconds,
+        lease_timeout_seconds: timeout_seconds,
         ..Default::default()
     });
     runtime.register(json!({"worker_id":"codec-worker","task_queue":"test","runtime":"php",
@@ -50,7 +58,7 @@ async fn query_outcome_rechecks_original_deadline_after_codec_wait_without_holdi
     let pool = runtime.sqlite_pool().clone();
     let history_before: Vec<(i64,String,String)> = sqlx::query_as("SELECT sequence,event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 ORDER BY sequence")
         .bind(started["run_id"].as_str().unwrap()).fetch_all(&pool).await.unwrap();
-    let mut waiting = {
+    let waiting = {
         let runtime = runtime.clone();
         tokio::spawn(async move {
             runtime
@@ -79,6 +87,27 @@ async fn query_outcome_rechecks_original_deadline_after_codec_wait_without_holdi
     })
     .await
     .unwrap();
+    Original {
+        _directory: directory,
+        runtime,
+        started,
+        history_before,
+        waiting,
+        task,
+    }
+}
+
+#[tokio::test]
+async fn query_outcome_rechecks_original_deadline_after_codec_wait_without_holding_writer() {
+    let Original {
+        _directory,
+        runtime,
+        started,
+        history_before,
+        mut waiting,
+        task,
+    } = original(2).await;
+    let pool = runtime.sqlite_pool().clone();
     let held = runtime.signal_codec.clone().acquire_owned().await.unwrap();
     let mut complete = {
         let runtime = runtime.clone();
@@ -168,5 +197,96 @@ async fn query_outcome_rechecks_original_deadline_after_codec_wait_without_holdi
     let history_after: Vec<(i64,String,String)> = sqlx::query_as("SELECT sequence,event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 ORDER BY sequence")
         .bind(started["run_id"].as_str().unwrap()).fetch_all(&pool).await.unwrap();
     assert_eq!(history_before, history_after);
+    runtime.close().await;
+}
+
+#[tokio::test]
+async fn committed_query_receipt_ignores_writer_and_codec_pressure_before_and_after_expiry() {
+    let Original {
+        _directory,
+        runtime,
+        started,
+        history_before,
+        waiting,
+        task,
+    } = original(3).await;
+    let pool = runtime.sqlite_pool().clone();
+    let id = task["query_task_id"].as_str().unwrap();
+    let key = format!("dw-native-query:{id}");
+    let body = json!({"lease_owner":"codec-worker","query_task_attempt":task["query_task_attempt"],
+        "result_envelope":envelope(Payload::Long(9007199254740993))});
+    let first = runtime.complete_query(id, body.clone()).await.unwrap();
+    assert_eq!(first["recorded"], true);
+    assert_eq!(waiting.await.unwrap().unwrap().0, StatusCode::OK);
+    let before: (String, i64) =
+        sqlx::query_as("SELECT value,expiration FROM dw_query_cache WHERE \"key\"=$1")
+            .bind(&key)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let held = runtime.signal_codec.clone().acquire_owned().await.unwrap();
+    let mut writer = pool.acquire().await.unwrap();
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *writer)
+        .await
+        .unwrap();
+    for after_expiry in [false, true] {
+        if after_expiry {
+            let deadline =
+                chrono::DateTime::parse_from_rfc3339(task["query_deadline_at"].as_str().unwrap())
+                    .unwrap()
+                    .with_timezone(&chrono::Utc);
+            tokio::time::sleep(
+                (deadline - chrono::Utc::now()).to_std().unwrap_or_default()
+                    + Duration::from_millis(10),
+            )
+            .await;
+        }
+        let duplicate = tokio::time::timeout(
+            Duration::from_millis(250),
+            runtime.complete_query(id, body.clone()),
+        )
+        .await
+        .expect("a retained decision must not acquire the writer or codec slot")
+        .unwrap();
+        let mut expected = first.clone();
+        expected["recorded"] = json!(false);
+        assert_eq!(duplicate, expected);
+    }
+    let mut different = body;
+    different["result_envelope"] = json!({"codec":"avro","blob":"different-invalid-bytes"});
+    let conflict = tokio::time::timeout(
+        Duration::from_millis(250),
+        runtime.complete_query(id, different),
+    )
+    .await
+    .expect("conflicting retained decisions also refuse before writer/codec work")
+    .unwrap_err();
+    assert!(
+        matches!(
+            conflict,
+            RuntimeError::Refused {
+                status: StatusCode::CONFLICT,
+                reason: "query_completion_conflict"
+            }
+        ),
+        "{conflict:?}"
+    );
+    let after: (String, i64) =
+        sqlx::query_as("SELECT value,expiration FROM dw_query_cache WHERE \"key\"=$1")
+            .bind(&key)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        before, after,
+        "a retry must not write or extend the receipt"
+    );
+    let history_after: Vec<(i64,String,String)> = sqlx::query_as("SELECT sequence,event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 ORDER BY sequence")
+        .bind(started["run_id"].as_str().unwrap()).fetch_all(&pool).await.unwrap();
+    assert_eq!(history_before, history_after);
+    sqlx::query("ROLLBACK").execute(&mut *writer).await.unwrap();
+    drop(writer);
+    drop(held);
     runtime.close().await;
 }
