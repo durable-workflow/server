@@ -358,11 +358,10 @@ async fn run_observation_timer_summary_refresh_requires_retained_matching_wait()
         let valid = observe(&app, "default", &run).await;
         assert_eq!(valid["liveness_state"], "timer_scheduled", "{valid}");
         run_observation_summaries::export_reference(&database, &valid, &valid["history"]).await;
-        let run_id = run["run_id"].as_str().unwrap();
         database.execute(if missing {
-            format!("DELETE FROM workflow_run_waits WHERE workflow_run_id='{run_id}'")
+            "DELETE FROM workflow_run_waits WHERE workflow_run_id IN (SELECT id FROM workflow_runs WHERE workflow_instance_id='timer-summary-authority-true')"
         } else {
-            format!("UPDATE workflow_run_waits SET deadline_at=NULL WHERE workflow_run_id='{run_id}'")
+            "UPDATE workflow_run_waits SET deadline_at=NULL WHERE workflow_run_id IN (SELECT id FROM workflow_runs WHERE workflow_instance_id='timer-summary-authority-false')"
         }).await;
         assert_eq!(
             request(&app, "POST", &path, input).await.0,
