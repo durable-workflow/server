@@ -81,20 +81,25 @@ async fn run_observation_children_preserve_identity_through_cold_completion_and_
             assert!(wait[field].is_null(), "{field}: {wait}");
         }
         assert_eq!(history(&app, &run).await, before);
-        originals.push((cancelled, run, observed["current_waits"].clone(), before));
+        originals.push((
+            cancelled,
+            run,
+            observed["current_waits"]["waits"].clone(),
+            before,
+        ));
     }
     runtime.close().await;
     let a = database.open().await.unwrap();
     let b = database.open().await.unwrap();
     let (app_a, app_b) = (router(a.clone()), router(b.clone()));
     for (cancelled, run, wait, before) in originals {
-        assert_eq!(observe(&app_b, &run).await["current_waits"], wait);
+        assert_eq!(observe(&app_b, &run).await["current_waits"]["waits"], wait);
         let child = poll(&app_a, "child-observer", "workflow").await;
         assert_eq!(
             child["run_id"],
             before["events"][2]["payload"]["child_workflow_run_id"]
         );
-        assert_eq!(observe(&app_b, &run).await["current_waits"], wait);
+        assert_eq!(observe(&app_b, &run).await["current_waits"]["waits"], wait);
         let resolved = if cancelled {
             request(
                 &app_a,
