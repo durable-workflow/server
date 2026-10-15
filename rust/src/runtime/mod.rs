@@ -27,6 +27,7 @@ mod namespaces;
 pub mod postgres;
 mod previews;
 mod queries;
+mod query_authority;
 mod schedule_execution;
 mod schedule_http;
 mod schedule_storage;
@@ -45,6 +46,7 @@ mod worker_incarnations;
 pub use execution::Runtime;
 pub use external_config::ExternalPayloadConfig;
 pub use http::router;
+pub use query_authority::QueryTaskConfig;
 
 use axum::{
     Json,

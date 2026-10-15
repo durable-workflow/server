@@ -281,7 +281,7 @@ async fn named_idle_query_poll_preserves_same_id_default_namespace_claim() {
         idle.1["task"].is_null(),
         "named poll must not replay another namespace's same-ID lease"
     );
-    assert_eq!(poll(&app, "shared-query-worker", "query").await, original);
+    assert_query_replay(&original, poll(&app, "shared-query-worker", "query").await);
     assert_eq!(request(&app,"POST",
         &format!("/api/worker/query-tasks/{}/complete",original["query_task_id"].as_str().unwrap()),
         json!({"lease_owner":"shared-query-worker","query_task_attempt":original["query_task_attempt"],"result_envelope":result})).await.0,
@@ -531,7 +531,9 @@ async fn same_worker_id_isolated_claims_completion_and_deregistration_by_namespa
         &path,
         completion(
             &first_task,
-            json!([{"type":"start_timer","delay_seconds":0}]),
+            // Timers have separate positive namespace coverage. Child commands
+            // remain outside this namespace slice and must fail atomically.
+            json!([child_command(9007199254740993)]),
         ),
     )
     .await;

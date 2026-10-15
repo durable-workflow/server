@@ -1452,7 +1452,7 @@ where
             if self.namespace.as_ref() != "default"
                 && !matches!(
                     text(command, "type")?,
-                    "complete_workflow" | "schedule_activity"
+                    "complete_workflow" | "schedule_activity" | "start_timer"
                 )
                 && !(text(command, "type")? == "open_condition_wait" && commands.len() == 1)
             {
@@ -2115,7 +2115,9 @@ where
         // New timers use the canonical PHP timestamp shape on SQLite and typed
         // UTC values elsewhere. Existing PHP data still cannot be adopted.
         // The read probe avoids acquiring the transition lock when idle.
-        const DUE: &str = "SELECT t.*,r.queue FROM workflow_run_timers t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE r.namespace='default' AND r.status IN ('running','waiting') AND t.status='pending' AND t.fire_at<=$1 ORDER BY t.fire_at,t.id LIMIT 50";
+        // Maintenance visits every namespace; each timer's persisted run
+        // supplies its namespace, independently of the store that woke it.
+        const DUE: &str = "SELECT t.*,r.queue,r.namespace AS run_namespace FROM workflow_run_timers t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE r.status IN ('running','waiting') AND t.status='pending' AND t.fire_at<=$1 ORDER BY t.fire_at,t.id LIMIT 50";
         if Self::query(DUE)
             .bind(DB::bind_time(now()))
             .fetch_optional(&self.pool)
@@ -2150,6 +2152,7 @@ where
             let task = Self::query(DB::TIMER_TASK_SQL)
                 .bind(&run_id)
                 .bind(&timer_id)
+                .bind(DB::string(&timer, "run_namespace")?)
                 .fetch_one(&mut *tx)
                 .await?;
             let task_id = DB::string(&task, "id")?;
@@ -2754,7 +2757,7 @@ pub(crate) fn capabilities() -> Value {
         "worker_deregistration_fencing":{"schema":"durable-workflow.v2.worker-deregistration.v1","supported":true,"receipt_retention_seconds":600,"endpoint":"/worker/registrations/{workerId}/deregister"},
         "workflow_memo_updates": false, "cooperative_cancellation": true, "prepared_local_activities": false,
         "worker_sessions": false, "sticky_execution": false, "local_activities": false, "message_streams": false,
-        "workflow_updates": true, "query_tasks": true, "query_task_poll_request_idempotency": false});
+        "workflow_updates": true, "query_tasks": true, "query_task_authority":true, "query_task_poll_request_idempotency": false});
     if super::memos::UPDATES_SUPPORTED {
         value["supported_workflow_task_commands"]
             .as_array_mut()
