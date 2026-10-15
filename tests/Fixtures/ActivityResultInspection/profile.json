@@ -17,6 +17,11 @@
     "start_to_close_timeout": 120,
     "schedule_to_close_timeout": 600
   },
+  "retry_activity_command_options": {
+    "retry_policy": {"max_attempts": 2, "backoff_seconds": []},
+    "start_to_close_timeout": 120,
+    "schedule_to_close_timeout": 600
+  },
   "capability": "capabilities.workflow_activity_result_inspection",
   "scope": "Separate activity-result cohort. Existing frozen tuples remain unchanged. Retry cases explicitly author their own retry policy before admission."
 }

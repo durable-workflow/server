@@ -25,17 +25,19 @@ $workflowId = $state['workflow_id'];
 $expected = match ($state['case']) {
     'encoded-null' => null,
     'encoded-false' => false,
-    'typed-map' => ['integer' => 9007199254740993, 'optional' => null, 'text' => '日本語 λ'],
+    'typed-map', 'retry-completed' => ['integer' => 9007199254740993, 'optional' => null, 'text' => '日本語 λ'],
     'external-result' => ['integer' => 9007199254740993, 'optional' => null, 'text' => '日本語 λ', 'large' => str_repeat('x', 2 * 1024 * 1024)],
     default => throw new RuntimeException('Unknown activity result fixture.'),
 };
 $worker = null;
 $completions = 0;
+$failures = 0;
+$afterFailure = null;
 $payloadGets = 0;
 $stack = HandlerStack::create();
-$stack->push(static function (callable $handler) use (&$worker, &$completions, &$payloadGets): callable {
-    return static function (RequestInterface $request, array $options) use ($handler, &$worker, &$completions, &$payloadGets) {
-        return $handler($request, $options)->then(static function (ResponseInterface $response) use ($request, &$worker, &$completions, &$payloadGets): ResponseInterface {
+$stack->push(static function (callable $handler) use (&$worker, &$completions, &$failures, &$afterFailure, &$payloadGets): callable {
+    return static function (RequestInterface $request, array $options) use ($handler, &$worker, &$completions, &$failures, &$afterFailure, &$payloadGets) {
+        return $handler($request, $options)->then(static function (ResponseInterface $response) use ($request, &$worker, &$completions, &$failures, &$afterFailure, &$payloadGets): ResponseInterface {
             $path = $request->getUri()->getPath();
             if ($request->getMethod() === 'GET' && str_starts_with($path, '/api/external-payloads/v1/')) {
                 $payloadGets++;
@@ -43,6 +45,10 @@ $stack->push(static function (callable $handler) use (&$worker, &$completions, &
             if ($response->getStatusCode() === 200 && preg_match('#^/api/worker/activity-tasks/[^/]+/complete$#', $path)) {
                 $completions++;
                 $worker?->requestShutdown();
+            }
+            if ($response->getStatusCode() === 200 && preg_match('#^/api/worker/activity-tasks/[^/]+/fail$#', $path)) {
+                $failures++;
+                $afterFailure?->__invoke();
             }
 
             return $response;
@@ -80,6 +86,8 @@ if ($phase === 'author') {
             'threshold_bytes' => 1048576, 'config' => ['uri' => 'file:///state/objects']])[0] !== 200) {
         throw new RuntimeException('External result policy setup failed.');
     }
+    $state['authored_activity_options'] = $state['case'] === 'retry-completed'
+        ? $profile['retry_activity_command_options'] : $profile['activity_command_options'];
     $state['started_at'] = microtime(true);
     $state['original_deadline'] = $state['started_at'] + $profile['original_observation_budget_seconds'];
     [$status, $original] = $control('POST', '/api/workflows', ['workflow_id' => $workflowId,
@@ -96,7 +104,7 @@ if ($phase === 'author') {
     }
     $receipt = $client->completeWorkflowTask($task['task_id'], $task['lease_owner'], $task['workflow_task_attempt'], [[
         'type' => 'schedule_activity', 'activity_type' => 'parity.activity_result_value',
-        'arguments' => $client->payloadCodec()->envelope([]), ...$profile['activity_command_options'],
+        'arguments' => $client->payloadCodec()->envelope([]), ...$state['authored_activity_options'],
     ]]);
     if (($receipt['recorded'] ?? null) !== true) {
         throw new RuntimeException('Original activity schedule was not committed.');
@@ -109,6 +117,7 @@ if ($phase === 'author') {
         throw new RuntimeException('Expected one original activity schedule.');
     }
     $state['activity_id'] = $scheduled[0]['payload']['activity_execution_id'];
+    $state['scheduled_history_prefix'] = $events;
     $pending = $client->workflowActivityResult($workflowId, $state['run_id'], $state['activity_id']);
     if ($pending['state'] !== 'pending' || $pending['available'] !== false || array_key_exists('result_envelope', $pending)) {
         throw new RuntimeException('Pending activity was mistaken for an available null.');
@@ -120,6 +129,25 @@ if ($phase === 'author') {
 } elseif ($phase === 'activity') {
     $budget();
     $invocations = 0;
+    $retry = $state['case'] === 'retry-completed';
+    $retryPending = false;
+    $attemptNumbers = [];
+    $attemptIds = [];
+    if ($retry) {
+        $afterFailure = static function () use ($client, $workflowId, $state, $budget, &$retryPending): void {
+            $budget();
+            $pending = $client->workflowActivityResult($workflowId, $state['run_id'], $state['activity_id']);
+            $history = $client->workflowHistory($workflowId, $state['run_id'])['events'];
+            $failed = array_values(array_filter($history, static fn (array $event): bool => $event['event_type'] === 'ActivityFailed'));
+            $completed = array_values(array_filter($history, static fn (array $event): bool => $event['event_type'] === 'ActivityCompleted'));
+            if ($pending['state'] !== 'pending' || $pending['available'] !== false
+                || $pending['reason'] !== 'activity_result_pending' || array_key_exists('result_envelope', $pending)
+                || count($failed) !== 1 || $completed !== []) {
+                throw new RuntimeException('Committed retry failure was mistaken for a terminal result.');
+            }
+            $retryPending = true;
+        };
+    }
     if ($state['case'] === 'external-result') {
         // Explicit public-client completion isolates this read contract from
         // automatic Worker upload policy, which has its own qualification gate.
@@ -152,27 +180,50 @@ if ($phase === 'author') {
 
             return microtime(true);
         });
-        $worker->registerActivity('parity.activity_result_value', static function (ActivityContext $context) use ($expected, &$invocations): mixed {
+        $worker->registerActivity('parity.activity_result_value', static function (ActivityContext $context) use ($expected, $retry, &$invocations, &$attemptNumbers, &$attemptIds): mixed {
             $invocations++;
+            $attemptNumbers[] = $context->attemptNumber;
+            $attemptIds[] = $context->activityAttemptId;
+            if ($context->attemptNumber !== $invocations) {
+                throw new RuntimeException('Original activity attempt order changed.');
+            }
+            if ($retry && $invocations === 1) {
+                throw new RuntimeException('Authored first-attempt failure for result inspection.');
+            }
 
             return $expected;
         });
         $worker->run(1);
-        if ($invocations !== 1) {
-            throw new RuntimeException('Expected one actual activity callback.');
+        if ($invocations !== ($retry ? 2 : 1) || count(array_unique($attemptIds)) !== $invocations) {
+            throw new RuntimeException('Actual callbacks or attempt identities changed.');
         }
     }
     $budget();
     if ($completions !== 1) {
         throw new RuntimeException('Expected one committed original activity completion.');
     }
+    if ($failures !== ($retry ? 1 : 0) || ($retry && ! $retryPending)) {
+        throw new RuntimeException('Expected the original committed retry failure and pending result observation.');
+    }
     echo json_encode(['outcome' => 'pass', 'phase' => $phase, 'run_id' => $state['run_id'],
         'activity_invocations' => $invocations, 'activity_completions' => $completions,
+        'failure_submissions' => $failures, 'retry_pending_observed' => $retryPending,
+        'attempt_numbers' => $attemptNumbers, 'attempt_ids' => $attemptIds,
         ...$summary($expected)], JSON_THROW_ON_ERROR)."\n";
 } elseif (in_array($phase, ['reader', 'cold-read'], true)) {
     $budget();
     $path = '/api/workflows/'.$workflowId.'/runs/'.$state['run_id'];
     [$historyStatus, $before] = $control('GET', $path.'/history');
+    if (array_slice($before['events'] ?? [], 0, count($state['scheduled_history_prefix'])) !== $state['scheduled_history_prefix']) {
+        throw new RuntimeException('The original scheduled history prefix changed.');
+    }
+    if ($state['case'] === 'retry-completed') {
+        $counts = array_count_values(array_column($before['events'], 'event_type'));
+        if (($counts['ActivityScheduled'] ?? 0) !== 1 || ($counts['ActivityStarted'] ?? 0) !== 2
+            || ($counts['ActivityFailed'] ?? 0) !== 1 || ($counts['ActivityCompleted'] ?? 0) !== 1) {
+            throw new RuntimeException('Retry changed the original activity admission or terminal count.');
+        }
+    }
     [$rawStatus, $raw] = $control('GET', $path.'/activities/'.$state['activity_id'].'/result');
     if ($historyStatus !== 200 || $rawStatus !== 200 || $payloadGets !== 0) {
         throw new RuntimeException('Raw canonical observation unexpectedly fetched payload bytes.');
