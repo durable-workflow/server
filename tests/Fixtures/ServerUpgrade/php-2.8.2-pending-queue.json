@@ -1,0 +1,98 @@
+{
+    "scope": "genuine_published_php_pending_queue_and_canonical_tasks",
+    "source_image": "ghcr.io\/durable-workflow\/server@sha256:91a5bb87dbf280c1966693af3eb1d13eac6912d88fd82ae2095f05830a38dab0",
+    "database_sha256": "d0e6b4697bc58e7d3770a8d8beb39b01111d25614855002de18795ef41411cdc",
+    "configuration": {
+        "connection": "database",
+        "default_connection": "database",
+        "default_queue": "default"
+    },
+    "jobs": [
+        {
+            "id": 1,
+            "queue": "default",
+            "payload": "{\"uuid\":\"6087e1ba-a850-4c05-9038-b8e0b8cea1e9\",\"displayName\":\"Workflow\\\\V2\\\\Jobs\\\\RunTimerTask\",\"job\":\"Illuminate\\\\Queue\\\\CallQueuedHandler@call\",\"maxTries\":5,\"maxExceptions\":null,\"failOnTimeout\":false,\"countCrashesAsExceptions\":false,\"backoff\":null,\"timeout\":null,\"retryUntil\":null,\"deleteWhenMissingModels\":false,\"data\":{\"commandName\":\"Workflow\\\\V2\\\\Jobs\\\\RunTimerTask\",\"command\":\"O:29:\\\"Workflow\\\\V2\\\\Jobs\\\\RunTimerTask\\\":3:{s:6:\\\"taskId\\\";s:26:\\\"01m4z9j4m1xzdhhsz81n2jck0s\\\";s:5:\\\"delay\\\";O:25:\\\"Illuminate\\\\Support\\\\Carbon\\\":3:{s:4:\\\"date\\\";s:26:\\\"2026-10-15 08:16:22.000000\\\";s:13:\\\"timezone_type\\\";i:3;s:8:\\\"timezone\\\";s:3:\\\"UTC\\\";}s:11:\\\"afterCommit\\\";b:1;}\",\"batchId\":null},\"createdAt\":1792051581,\"delay\":601}",
+            "attempts": 0,
+            "reserved_at": null,
+            "available_at": 1792052182,
+            "created_at": 1792051581
+        }
+    ],
+    "tasks": [
+        {
+            "id": "01m4z9j3t31s1671kvkym0bb31",
+            "workflow_run_id": "01m4z9j3s6txy344xderc5qd3y",
+            "namespace": "default",
+            "task_type": "workflow",
+            "status": "completed",
+            "connection": null,
+            "queue": "upgrade-source",
+            "available_at": "2026-10-15 08:06:20.739318",
+            "lease_owner": "upgrade-source-worker",
+            "lease_expires_at": null,
+            "attempt_count": 1
+        },
+        {
+            "id": "01m4z9j430njna84p73hcca0jg",
+            "workflow_run_id": "01m4z9j3s6txy344xderc5qd3y",
+            "namespace": "default",
+            "task_type": "activity",
+            "status": "leased",
+            "connection": null,
+            "queue": "upgrade-source",
+            "available_at": "2026-10-15 08:06:21.023789",
+            "lease_owner": "upgrade-source-worker",
+            "lease_expires_at": "2026-10-15 08:11:21.169593",
+            "attempt_count": 1
+        },
+        {
+            "id": "01m4z9j4c4w5nbt2sa4r8tdzhg",
+            "workflow_run_id": "01m4z9j4bv8563btw4n0pnxraa",
+            "namespace": "default",
+            "task_type": "workflow",
+            "status": "completed",
+            "connection": null,
+            "queue": "upgrade-source",
+            "available_at": "2026-10-15 08:06:21.316700",
+            "lease_owner": "upgrade-source-worker",
+            "lease_expires_at": null,
+            "attempt_count": 1
+        },
+        {
+            "id": "01m4z9j4m1xzdhhsz81n2jck0s",
+            "workflow_run_id": "01m4z9j4bv8563btw4n0pnxraa",
+            "namespace": "default",
+            "task_type": "timer",
+            "status": "ready",
+            "connection": null,
+            "queue": "upgrade-source",
+            "available_at": "2026-10-15 08:16:21.566122",
+            "lease_owner": null,
+            "lease_expires_at": null,
+            "attempt_count": 0
+        }
+    ],
+    "runs": [
+        {
+            "id": "01m4z9j3s6txy344xderc5qd3y",
+            "workflow_instance_id": "upgrade-source-activity",
+            "workflow_class": "parity.upgrade_activity",
+            "workflow_type": "parity.upgrade_activity",
+            "namespace": "default",
+            "queue": "upgrade-source",
+            "status": "waiting"
+        },
+        {
+            "id": "01m4z9j4bv8563btw4n0pnxraa",
+            "workflow_instance_id": "upgrade-source-timer",
+            "workflow_class": "parity.upgrade_timer",
+            "workflow_type": "parity.upgrade_timer",
+            "namespace": "default",
+            "queue": "upgrade-source",
+            "status": "waiting"
+        }
+    ],
+    "source_mutated": false,
+    "php_objects_executed": false,
+    "takeover_allowed": false
+}
