@@ -32,6 +32,18 @@ work can resume. Database-specific column types, collations, timestamps, JSON,
 transaction isolation, locking and migration history still need a complete
 mapping and executable tests.
 
+The published Workflow source at
+[`fbccb54b`](https://github.com/durable-workflow/workflow/blob/fbccb54b8f52e8724847296ee5b89d093b4a91d7/src/V2/Support/ExternalPayloads.php)
+stores provider references as `dw-external-payload:v1:` followed by base64 JSON
+containing `{codec, external_storage}`. The native development runtime instead
+stores `dw-native-external-payload-v1:` followed by JSON containing its opaque
+runtime reference. These formats are not interchangeable with inline Avro or
+with each other. Common HTTP envelopes do not establish storage compatibility.
+Preflight must identify both formats, bind provider and registry state, and
+preserve the original URI, reference identity, codec, size, hash and object
+bytes before a qualified read path or one-time conversion can be used. No such
+conversion or external backup/restore is qualified by the queue inspection.
+
 ## Backup-first, sequential upgrade gates
 
 1. Run a read-only preflight against a consistent PHP reference installation.
