@@ -50,6 +50,8 @@ verify database write capacity. See [database storage recovery](docs/database-st
 for full disks, tablespaces and temporary storage.
 See [PHP database ownership checks](docs/php-database-ownership.md) for Rust
 schema refusal, database permissions and SQLite crash-recovery capacity.
+For terminal summaries that undercount history bytes, follow the
+[selected-run summary repair guide](docs/terminal-summary-recovery.md).
 
 Install the current CLI for server administration and workflow inspection:
 
