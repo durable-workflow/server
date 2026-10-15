@@ -211,6 +211,17 @@ Broader runtime/operational parity, safe sequential PHP database takeover,
 matched performance measurements and release/cutover preparation remain #325
 requirements. No native release or deployment is qualified.
 
+Targeted-result candidate `d83a3cb9` fails two independent hosted boundaries in
+run `38746470760`: MySQL 8.4 image pull times out before admission, and the
+PostgreSQL 17 CPU-health renewal observer exits without its failed-call detail.
+The other five execution archives independently show 29 passing comparisons,
+20 zero profile statuses and 129 native execution tests each. Those successes
+do not qualify the failed cells. A fresh local PostgreSQL 17 diagnostic passes
+on the exact optimized binary, without explaining the hosted renewal failure.
+The next runner adds bounded original-call renewal diagnostics and upstream
+query-response/client-state diagnostics. Native code and original deadlines
+remain unchanged; all-database acceptance is a new gate.
+
 Completed local raw archives, transport journals and databases have been deleted.
 Historical retention descriptions below do not guarantee that those bytes are
 still available. Code, readable owning outcomes and bounded temporary job
