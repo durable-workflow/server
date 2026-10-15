@@ -4,6 +4,7 @@ use super::{
     backend::Backend,
     external_wait_summary::ExternalWaitHistory,
     store::{Store, now},
+    timer_summary::TimerSummaryHistory,
     transaction::Transaction,
 };
 use chrono::{DateTime, Utc};
@@ -13,7 +14,8 @@ pub(super) struct ActiveSummary {
     pub(super) state: String,
     pub(super) reason: String,
     pub(super) task_id: Option<String>,
-    task_status: Option<String>,
+    pub(super) task_type: Option<String>,
+    pub(super) task_status: Option<String>,
     available_at: Option<DateTime<Utc>>,
     lease_expires_at: Option<DateTime<Utc>>,
     pub(super) wait: Option<SummaryWait>,
@@ -47,6 +49,7 @@ where
         tx: &mut Transaction<'_, DB>,
         run: &DB::Row,
         external_waits: &ExternalWaitHistory,
+        timers: &TimerSummaryHistory,
     ) -> Result<Option<ActiveSummary>> {
         // Compatibility/fleet and task-backed wait classifiers are separate slices.
         // Leave an explicit unavailable summary instead of inventing liveness.
@@ -54,6 +57,8 @@ where
             return Ok(None);
         }
         let run_id = DB::string(run, "id")?;
+        if Self::scalar("SELECT COUNT(*) FROM workflow_run_waits WHERE workflow_run_id=$1 AND status='open' AND kind NOT IN ('condition','signal','timer')")
+            .bind(&run_id).fetch_one(&mut **tx).await? > 0 { return Ok(None); }
         // These native task transitions do not author queue-driver metadata.
         // Its presence needs the separately qualified transport classifier,
         // including historical task problems and redispatch configuration.
@@ -66,6 +71,7 @@ where
             state: "repair_needed".into(),
             reason: "Run is non-terminal but has no durable next-resume source.".into(),
             task_id: None,
+            task_type: None,
             task_status: None,
             available_at: None,
             lease_expires_at: None,
@@ -97,7 +103,8 @@ where
         let task = Self::query("SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND status IN ('ready','leased') ORDER BY CASE WHEN status='leased' AND lease_expires_at<=$2 THEN 0 ELSE 1 END,CASE WHEN status='leased' THEN 0 ELSE 1 END,CASE WHEN available_at IS NULL THEN 1 ELSE 0 END,available_at,CASE WHEN created_at IS NULL THEN 1 ELSE 0 END,created_at,id LIMIT 1")
             .bind(&run_id).bind(DB::bind_time(at)).fetch_optional(&mut **tx).await?;
         if let Some(task) = task {
-            if DB::string(&task, "task_type")? != "workflow"
+            let kind = DB::string(&task, "task_type")?;
+            if !matches!(kind.as_str(), "workflow" | "timer")
                 || DB::optional_string(&task, "compatibility")?
                     .is_some_and(|v| !v.trim().is_empty())
             {
@@ -107,20 +114,21 @@ where
             let status = DB::string(&task, "status")?;
             let expires = DB::optional_instant(&task, "lease_expires_at")?;
             let expired = status == "leased" && expires.is_some_and(|v| v <= at);
+            let label = if kind == "timer" { "Timer" } else { "Workflow" };
             summary.state = if expired {
                 "repair_needed".into()
             } else {
-                format!("workflow_task_{status}")
+                format!("{kind}_task_{status}")
             };
             summary.reason = if expired {
                 format!(
-                    "Workflow task {id} lease expired at {}.",
+                    "{label} task {id} lease expired at {}.",
                     expires.unwrap().format("%Y-%m-%dT%H:%M:%S%.6fZ")
                 )
             } else if status == "leased" {
-                format!("Workflow task {id} is leased to a worker.")
+                format!("{label} task {id} is leased to a worker.")
             } else {
-                format!("Workflow task {id} is ready to run.")
+                format!("{label} task {id} is ready to run.")
             };
             let wait_reason = if expired {
                 "Workflow task lease expired"
@@ -131,7 +139,7 @@ where
             }
             .into();
             summary.available_at = DB::optional_instant(&task, "available_at")?;
-            summary.wait = Some(SummaryWait {
+            summary.wait = (kind == "workflow").then_some(SummaryWait {
                 kind: "workflow-task",
                 id: format!("workflow-task:{id}"),
                 reason: wait_reason,
@@ -143,7 +151,8 @@ where
             summary.lease_expires_at = expires;
             summary.task_id = Some(id);
             summary.task_status = Some(status);
-            summary.problem |= expired;
+            summary.problem |= expired && kind == "workflow";
+            summary.task_type = Some(kind);
             summary.repair_blocked = (!expired).then_some("repair_not_needed");
         }
         if let Some(reason) = blocked {
@@ -157,6 +166,9 @@ where
         if summary.task_id.is_none() && Self::scalar("SELECT COUNT(*) FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received'")
             .bind(&run_id).fetch_one(&mut **tx).await? > 0 { return Ok(None); }
         if !Self::apply_external_wait_summary(tx, &run_id, external_waits, &mut summary).await? {
+            return Ok(None);
+        }
+        if !Self::apply_timer_summary(tx, &run_id, timers, &mut summary).await? {
             return Ok(None);
         }
         if summary.wait.is_none() && summary.task_id.is_none() {
@@ -175,7 +187,7 @@ where
             .bind(wait.map(|w| w.kind)).bind(wait.map(|w| w.reason.as_str()))
             .bind(DB::optional_time(wait.and_then(|w| w.started_at))).bind(DB::optional_time(wait.and_then(|w| w.deadline_at))).bind(wait.map(|w| w.id.as_str()))
             .bind(wait.map(|w| w.source_kind)).bind(wait.and_then(|w| w.source_id.as_deref()))
-            .bind(DB::optional_time(summary.available_at)).bind(summary.task_id.as_deref()).bind(summary.task_id.as_ref().map(|_| "workflow"))
+            .bind(DB::optional_time(summary.available_at)).bind(summary.task_id.as_deref()).bind(summary.task_type.as_deref())
             .bind(summary.task_status.as_deref()).bind(DB::optional_time(summary.lease_expires_at))
             .bind(i64::from(summary.repair_blocked == Some("unsupported_history"))).bind(i64::from(summary.problem)).bind(run_id).execute(&mut **tx).await?;
         Ok(())

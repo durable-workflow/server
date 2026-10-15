@@ -87,7 +87,7 @@ where
         history: &ExternalWaitHistory,
         summary: &mut ActiveSummary,
     ) -> Result<bool> {
-        let rows = Self::query("SELECT * FROM workflow_run_waits WHERE workflow_run_id=$1 AND status='open' ORDER BY sequence,wait_id LIMIT 101")
+        let rows = Self::query("SELECT * FROM workflow_run_waits WHERE workflow_run_id=$1 AND status='open' AND kind IN ('condition','signal') ORDER BY sequence,wait_id LIMIT 101")
             .bind(run_id).fetch_all(&mut **tx).await?;
         if rows.len() != history.open.len() || rows.len() > 100 {
             return Ok(false);

@@ -157,7 +157,10 @@ async fn run_observation_timers_follow_real_fire_across_cold_nodes_and_namespace
     let (a, b) = (a.unwrap(), b.unwrap());
     let (app_a, app_b) = (router(a.clone()), router(b.clone()));
     for (namespace, run, wait, _) in &originals {
-        assert_eq!(observe(&app_b, namespace, run).await["liveness_state"], "timer_scheduled");
+        assert_eq!(
+            observe(&app_b, namespace, run).await["liveness_state"],
+            "timer_scheduled"
+        );
         assert_eq!(
             observe(&app_b, namespace, run).await["current_waits"]["waits"][0],
             wait.clone()
@@ -184,7 +187,10 @@ async fn run_observation_timers_follow_real_fire_across_cold_nodes_and_namespace
         assert_eq!(history(&app_b, namespace, &run).await, fired);
         let resumed = claim(&app_a, namespace).await;
         assert_eq!(resumed["run_id"], run["run_id"]);
-        assert_eq!(observe(&app_b, namespace, &run).await["liveness_state"], "workflow_task_leased");
+        assert_eq!(
+            observe(&app_b, namespace, &run).await["liveness_state"],
+            "workflow_task_leased"
+        );
         assert!(claim(&app_b, namespace).await.is_null());
         let path = format!(
             "/api/worker/workflow-tasks/{}/complete",
@@ -260,14 +266,29 @@ async fn run_observation_timer_summary_failure_rolls_back_schedule() {
     let before = history(&app, "default", &run).await;
     database.execute("CREATE TRIGGER reject_timer_summary BEFORE INSERT ON workflow_run_summaries BEGIN SELECT RAISE(ABORT, 'timer summary rejected'); END").await;
     let commands = json!([{"type":"start_timer","delay_seconds":120}]);
-    assert_eq!(finish_task(&app, &task, commands.clone()).await.0, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        finish_task(&app, &task, commands.clone()).await.0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
     assert_eq!(history(&app, "default", &run).await, before);
-    assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_run_timers").await, 0);
-    assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_run_waits").await, 0);
-    assert_eq!(observe(&app, "default", &run).await["liveness_state"], "workflow_task_leased");
+    assert_eq!(
+        task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_run_timers").await,
+        0
+    );
+    assert_eq!(
+        task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_run_waits").await,
+        0
+    );
+    assert_eq!(
+        observe(&app, "default", &run).await["liveness_state"],
+        "workflow_task_leased"
+    );
     database.execute("DROP TRIGGER reject_timer_summary").await;
     assert_eq!(finish_task(&app, &task, commands).await.0, StatusCode::OK);
-    assert_eq!(observe(&app, "default", &run).await["liveness_state"], "timer_scheduled");
+    assert_eq!(
+        observe(&app, "default", &run).await["liveness_state"],
+        "timer_scheduled"
+    );
     runtime.close().await;
     database.remove().await;
 }

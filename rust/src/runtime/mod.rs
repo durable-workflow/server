@@ -50,6 +50,7 @@ mod task_failures;
 mod task_repair;
 mod task_repair_http;
 mod terminal_summary;
+mod timer_summary;
 mod timer_wait_projection;
 mod transaction;
 mod updates;

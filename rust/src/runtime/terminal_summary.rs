@@ -3,6 +3,7 @@ use super::transaction::Transaction;
 use super::{
     Result, backend::Backend, external_wait_summary::ExternalWaitHistory, history_budget,
     run_observation::command_contract, run_observation_store::terminal, store::Store,
+    timer_summary::TimerSummaryHistory,
 };
 use serde_json::Value;
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
@@ -52,6 +53,7 @@ where
         let mut started = None;
         let mut active_history_supported = true;
         let mut external_waits = ExternalWaitHistory::default();
+        let mut timers = TimerSummaryHistory::default();
         loop {
             // Bound hydrated history to sixteen events. The transaction already
             // owns this run; sequence continuity detects missing retained rows.
@@ -74,7 +76,14 @@ where
                 bytes += history_budget::event_size(&kind, &raw)? as i64;
                 let payload: Value = serde_json::from_str(&raw)?;
                 if !closed {
-                    active_history_supported &= external_waits.apply(&kind, &payload);
+                    active_history_supported &= if matches!(
+                        kind.as_str(),
+                        "TimerScheduled" | "TimerFired" | "TimerCancelled"
+                    ) {
+                        timers.apply(&kind, &payload)
+                    } else {
+                        external_waits.apply(&kind, &payload)
+                    };
                 }
                 if kind == "WorkflowStarted" && started.is_none() {
                     started = Some(payload.clone());
@@ -128,7 +137,7 @@ where
             if !active_history_supported {
                 return Ok(());
             }
-            match Self::active_task_summary(tx, &run, &external_waits).await? {
+            match Self::active_task_summary(tx, &run, &external_waits, &timers).await? {
                 Some(summary) => Some(summary),
                 None => return Ok(()),
             }
