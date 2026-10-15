@@ -16,6 +16,29 @@
       "DurableWorkflow\\Transport\\Psr18Transport": "0857170cf128876338040f197ba469c5c6431cbb020da0453705c3798c60883a"
     }
   },
+  "sdk_python": {
+    "version": "2.5.15",
+    "source": "35aad4ab344cf13e01de3e5f4704380eac1532a6",
+    "wheel_sha256": "b905d7e440d5d3708c4570ad8c8986d2ff83149bee6ba4bce209992ad3e8a7dc",
+    "loaded_files": 34,
+    "loaded_tree_sha256": "88a3d64aee16523fcd577ab005ad6cda094349c4f88ee9f61fec3b8e4e679e57"
+  },
+  "sdk_rust": {
+    "version": "3.5.5",
+    "source": "4d5047ba9da39785512340b0975ce28da09f0cee",
+    "crate_sha256": "04147fcb82f749ea1e308c0a3836e30454efc415d5933884d615ca4aae76bb2e"
+  },
+  "client_images": {
+    "python": "mirror.gcr.io/library/python@sha256:bf44cdfcb76cd3b41e879bc058fc37ec5872002ccfde7fcb765e218cde0cd79c",
+    "rust": "mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0"
+  },
+  "client_cases": [
+    {"mode": "timely", "protocol": "1.20"},
+    {"mode": "timely", "protocol": "1.19"},
+    {"mode": "late-poll", "protocol": "1.20"},
+    {"mode": "late-handler-async", "protocol": "1.20"},
+    {"mode": "late-handler-sync", "protocol": "1.20"}
+  ],
   "query_timeout_seconds": 4,
   "original_observation_seconds": 30,
   "delayed_response_seconds": 6,
