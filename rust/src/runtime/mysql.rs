@@ -173,17 +173,31 @@ pub(super) async fn php_source_catalog(connection: &mut MySqlConnection) -> Resu
             ));
         }
     }
-    let expected: Catalog = Flavor::detect(connection).await?.expected()?.into_iter()
+    let flavor = Flavor::detect(connection).await?;
+    let expected: Catalog = flavor.expected()?.into_iter()
         .filter(|(table, _)| !super::upgrade::native_relation(table))
         .map(|(table, ddl)| (table, ddl.replace(
             ",\n  KEY `dw_workflow_tasks_poll` (`namespace`(64),`queue`(64),`task_type`(16),`status`(16),`available_at`)", "")))
         .collect();
     let actual = catalog(connection).await?;
     if actual != expected {
-        return Err(refuse(
-            StatusCode::CONFLICT,
-            "upgrade_source_catalog_unqualified",
-        ));
+        let delta = match flavor {
+            Flavor::MySql => include_str!("../../upgrade/php-2.8.0/mysql.json"),
+            Flavor::MariaDb => {
+                return Err(refuse(
+                    StatusCode::CONFLICT,
+                    "upgrade_source_catalog_unqualified",
+                ));
+            }
+        };
+        let mut current = super::upgrade::source_catalog_variant(&expected, delta)?;
+        current.sort_by(|left, right| left.0.cmp(&right.0));
+        if actual != current {
+            return Err(refuse(
+                StatusCode::CONFLICT,
+                "upgrade_source_catalog_unqualified",
+            ));
+        }
     }
     Ok(actual)
 }

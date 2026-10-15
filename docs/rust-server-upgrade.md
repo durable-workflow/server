@@ -14,12 +14,24 @@ and supports SQLite, MySQL/MariaDB and PostgreSQL. It requires the existing
 development opt-in. SQLite inspection never creates a missing database or runs
 recovery pragmas.
 
+SQLite WAL inspection is initially refused before opening SQLite: a read-only
+SQLite connection can still create shared-memory and WAL sidecars. This first
+path accepts rollback-journal databases only and does not change their journal
+mode. WAL inventory requires a separately qualified consistent snapshot path.
+Use a read-only filesystem mount as an additional boundary and stop writers
+before inspection; the report does not certify that they have stopped.
+
 Inspection must refuse a native ownership marker, an unknown catalog, missing
 permissions and unavailable storage before reporting durable-state counts.
 The known PHP catalog is the existing compiled physical schema with only the
 explicit native additions excluded. Database-generated next-ID counters remain
 data; no other catalog differences are discarded. Schema equality identifies a
 layout, not the installed PHP package version.
+
+The separate exact PHP 2.8.0 catalog variant records the published service-call
+deadline and worker incarnation additions. It is compared as a complete
+catalog after applying a reviewed, exact delta in memory; it does not change
+native schema migrations or qualify execution against the newer source layout.
 
 A successful report contains the backend, visible-catalog fingerprint, counts
 for the known PHP tables, and explicit `takeover_allowed: false`,

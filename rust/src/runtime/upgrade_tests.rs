@@ -82,6 +82,37 @@ async fn missing_source_is_not_created() {
 }
 
 #[tokio::test]
+async fn wal_source_refuses_before_creating_sidecars_or_ignoring_wal() {
+    let (_directory, path) = php_layout().await;
+    mutate(&path, "PRAGMA journal_mode=WAL").await;
+    let before = std::fs::read(&path).unwrap();
+    assert_eq!(&before[18..20], &[2, 2]);
+    assert!(!Path::new(&format!("{path}-wal")).exists());
+    assert!(!Path::new(&format!("{path}-shm")).exists());
+    reason(
+        inspect_sqlite(&path).await,
+        "upgrade_source_sqlite_journal_unqualified",
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert!(!Path::new(&format!("{path}-wal")).exists());
+    assert!(!Path::new(&format!("{path}-shm")).exists());
+    // A live WAL with committed changes must also refuse, never silently
+    // inspect only the main file as an immutable connection could do.
+    let mut writer = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path))
+        .await
+        .unwrap();
+    writer.execute("UPDATE jobs SET attempts=1").await.unwrap();
+    let wal_path = format!("{path}-wal");
+    let wal = std::fs::read(&wal_path).unwrap();
+    reason(
+        inspect_sqlite(&path).await,
+        "upgrade_source_sqlite_journal_unqualified",
+    );
+    assert_eq!(std::fs::read(&wal_path).unwrap(), wal);
+    writer.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn inspection_preserves_source_bytes_reports_counts_and_never_grants_takeover() {
     let (_directory, path) = php_layout().await;
     let before = std::fs::read(&path).unwrap();

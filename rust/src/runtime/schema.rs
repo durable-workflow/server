@@ -86,10 +86,17 @@ pub(super) async fn php_source_catalog(connection: &mut SqliteConnection) -> Res
         .collect();
     let actual = catalog(connection).await?;
     if actual != expected {
-        return Err(refuse(
-            StatusCode::CONFLICT,
-            "upgrade_source_catalog_unqualified",
-        ));
+        let mut current = super::upgrade::source_catalog_variant(
+            &expected,
+            include_str!("../../upgrade/php-2.8.0/sqlite.json"),
+        )?;
+        current.sort_by(|left, right| (&left.0, &left.1).cmp(&(&right.0, &right.1)));
+        if actual != current {
+            return Err(refuse(
+                StatusCode::CONFLICT,
+                "upgrade_source_catalog_unqualified",
+            ));
+        }
     }
     Ok(actual)
 }

@@ -1,7 +1,7 @@
 //! Read-only PHP source inventory. This command never grants takeover authority.
 use super::{Result, mysql, postgres, refuse, schema};
 use axum::http::StatusCode;
-use serde::Serialize;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{
@@ -9,9 +9,44 @@ use sqlx::{
     mysql::MySqlConnectOptions, postgres::PgConnectOptions, sqlite::SqliteConnectOptions,
 };
 use std::{collections::BTreeMap, future::Future, time::Duration};
+use tokio::io::AsyncReadExt;
 use tokio::time::{Instant, timeout, timeout_at};
 
 const BUDGET: Duration = Duration::from_secs(30);
+
+/// Exact published-catalog additions/replacements, applied only in memory.
+/// Neither unknown objects nor unmatched old definitions are discarded.
+pub(super) fn source_catalog_variant<T>(baseline: &[T], delta: &str) -> Result<Vec<T>>
+where
+    T: Clone + PartialEq + DeserializeOwned,
+{
+    #[derive(Deserialize)]
+    struct Delta<T> {
+        remove: Vec<T>,
+        add: Vec<T>,
+    }
+    let delta: Delta<T> = serde_json::from_str(delta)?;
+    let mut result = baseline.to_vec();
+    for row in delta.remove {
+        let Some(position) = result.iter().position(|existing| existing == &row) else {
+            return Err(refuse(
+                StatusCode::CONFLICT,
+                "upgrade_source_catalog_unqualified",
+            ));
+        };
+        result.remove(position);
+    }
+    for row in delta.add {
+        if result.contains(&row) {
+            return Err(refuse(
+                StatusCode::CONFLICT,
+                "upgrade_source_catalog_unqualified",
+            ));
+        }
+        result.push(row);
+    }
+    Ok(result)
+}
 
 pub(super) fn native_relation(name: &str) -> bool {
     matches!(
@@ -106,6 +141,32 @@ pub async fn inspect_sqlite(path: &str) -> Result<Value> {
             "upgrade_source_file_required",
         ));
     }
+    // SQLITE_OPEN_READONLY can still create WAL/shared-memory sidecars. Do
+    // not open an unqualified WAL source or attempt journal recovery. Unlike
+    // immutable=1 this preserves normal SQLite locking/change detection for
+    // the supported rollback-journal source, rather than ignoring live WAL.
+    timeout_at(deadline, async {
+        let mut file = tokio::fs::File::open(path).await?;
+        let mut header = [0_u8; 20];
+        file.read_exact(&mut header).await?;
+        if &header[..16] != b"SQLite format 3\0" || header[18..20] != [1, 1] {
+            return Err(refuse(
+                StatusCode::CONFLICT,
+                "upgrade_source_sqlite_journal_unqualified",
+            ));
+        }
+        for suffix in ["-wal", "-shm", "-journal"] {
+            if tokio::fs::try_exists(format!("{path}{suffix}")).await? {
+                return Err(refuse(
+                    StatusCode::CONFLICT,
+                    "upgrade_source_sqlite_journal_unqualified",
+                ));
+            }
+        }
+        Ok::<_, super::RuntimeError>(())
+    })
+    .await
+    .map_err(|_| expired())??;
     let mut connection = timeout_at(
         deadline,
         SqliteConnection::connect_with(
