@@ -125,6 +125,31 @@ async fn run_observation_projects_actual_activity_retry_and_terminal_transitions
             "default"
         };
         assert_eq!(observe(&app, other, &path).await.0, StatusCode::NOT_FOUND);
+        let task = projection_poll(&app, namespace, "workflow").await;
+        let closed = namespaces::scoped(
+            &app,
+            namespace,
+            "POST",
+            &format!(
+                "/api/worker/workflow-tasks/{}/complete",
+                task["task_id"].as_str().unwrap()
+            ),
+            completion(
+                &task,
+                json!([{"type":"complete_workflow","result":envelope(Payload::Null)}]),
+            ),
+        )
+        .await;
+        assert_eq!(closed.0, StatusCode::OK, "{}", closed.1);
+        run_observation_summaries::check_completed(
+            &database,
+            &app,
+            namespace,
+            &started,
+            u64::from(namespace != "default"),
+            0,
+        )
+        .await;
     }
     runtime.close().await;
     database.remove().await;

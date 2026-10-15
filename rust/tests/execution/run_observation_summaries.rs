@@ -34,7 +34,7 @@ async fn history(app: &Router, namespace: &str, run: &Value) -> Value {
     response.1
 }
 
-fn assert_terminal(summary: &Value, history: &Value, status: &str, exceptions: u64) {
+fn assert_terminal(summary: &Value, history: &Value, status: &str, exceptions: u64, fan_out: u64) {
     assert_eq!(summary["summary_state"], "observed", "{summary}");
     assert_eq!(summary["status"], status);
     assert_eq!(summary["liveness_state"], "closed");
@@ -50,20 +50,81 @@ fn assert_terminal(summary: &Value, history: &Value, status: &str, exceptions: u
         history["events"].as_array().unwrap().len()
     );
     assert!(summary["history_size_bytes"].as_u64().unwrap() > 0);
-    assert_eq!(summary["history_fan_out"], 0);
+    assert_eq!(summary["history_fan_out"], fan_out);
     assert_eq!(summary["exception_count"], exceptions);
     assert!(summary["duration_ms"].as_u64().is_some());
     assert_eq!(summary["summary_observed_at"], summary["closed_at"]);
-    // Optional local qualification output is synthetic test data. The published
-    // PHP counter independently checks these actual native histories.
+}
+
+pub(super) async fn check_completed(
+    database: &TestDatabase,
+    app: &Router,
+    namespace: &str,
+    run: &Value,
+    exceptions: u64,
+    fan_out: u64,
+) {
+    let summary = observation(app, namespace, run).await;
+    let events = history(app, namespace, run).await;
+    assert_terminal(&summary, &events, "completed", exceptions, fan_out);
+    export_reference(database, &summary, &events).await;
+}
+
+async fn export_reference(database: &TestDatabase, summary: &Value, history: &Value) {
+    // Preserve database JSON order for the independent published PHP counter.
     if let Ok(path) = std::env::var("DW_TEST_SUMMARY_REFERENCE") {
         use std::io::Write;
+        let run = summary["run_id"].as_str().unwrap();
+        let query = "SELECT event_type,CAST(payload AS TEXT) FROM workflow_history_events WHERE workflow_run_id=$1 ORDER BY sequence";
+        macro_rules! rows {
+            ($pool:expr,$query:expr) => {{
+                let pool = $pool;
+                let rows: Vec<(String, Option<String>)> = sqlx::query_as($query)
+                    .bind(run)
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+                rows
+            }};
+        }
+        let rows = match database {
+            TestDatabase::Sqlite(dir) => rows!(
+                sqlx::SqlitePool::connect(&format!(
+                    "sqlite://{}",
+                    dir.path().join("runtime.sqlite").display()
+                ))
+                .await
+                .unwrap(),
+                query
+            ),
+            TestDatabase::Postgres { options, .. } => rows!(
+                sqlx::postgres::PgPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap(),
+                query
+            ),
+            TestDatabase::MySql { options, .. } => rows!(
+                sqlx::mysql::MySqlPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap(),
+                "SELECT event_type,CAST(payload AS CHAR) FROM workflow_history_events WHERE workflow_run_id=? ORDER BY sequence"
+            ),
+        };
+        let raw:Vec<Value> = rows.into_iter().map(|(kind,payload)| json!({"event_type":kind,"payload_json":payload.unwrap_or_else(||"null".into())})).collect();
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)
             .unwrap();
-        writeln!(file, "{}", json!({"summary":summary,"history":history})).unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({"summary":summary,"history":history,"raw_history":raw})
+        )
+        .unwrap();
     }
 }
 
@@ -87,12 +148,11 @@ async fn run_observation_terminal_summaries_survive_cold_nodes_and_duplicate_com
         .await;
         assert_eq!(result.0, StatusCode::CREATED);
         for cancelled in [false, true] {
-            let run = namespaces::start_scoped(
-                &app,
-                namespace,
-                &format!("summary-{namespace}-{cancelled}"),
-            )
-            .await;
+            let created = namespaces::scoped(&app,namespace,"POST","/api/workflows",json!({
+                "workflow_id":format!("summary-{namespace}-{cancelled}"),"workflow_type":"echo","task_queue":"test",
+                "input":envelope(Payload::Array(vec![])),"memo":{"numeric_keys":{"0":0,"1":1,"2":2,"3":3,"4":4,"5":5,"6":6,"7":7,"8":8,"9":9,"10":10},"fractions":[0.00001,1e17],"text":"日本語 λ\u{2028}"}})).await;
+            assert_eq!(created.0, StatusCode::CREATED, "{}", created.1);
+            let run = created.1;
             assert_eq!(
                 observation(&app, namespace, &run).await["summary_state"],
                 "unavailable"
@@ -137,7 +197,9 @@ async fn run_observation_terminal_summaries_survive_cold_nodes_and_duplicate_com
                 &events,
                 if cancelled { "cancelled" } else { "completed" },
                 u64::from(cancelled),
+                0,
             );
+            export_reference(&database, &summary, &events).await;
             // Completion replays its receipt. A fresh cancel request against a
             // closed run is explicitly refused; neither may change counters.
             assert_eq!(
@@ -211,16 +273,17 @@ async fn run_observation_terminal_summary_continuation_counts_all_history_pages(
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
-    register(&app, "summary-continuation", json!(["echo"]), json!([])).await;
+    assert_eq!(request(&app,"POST","/api/worker/register",json!({"worker_id":"summary-continuation","task_queue":"test","runtime":"php","supported_workflow_types":["echo"],"supported_activity_types":[],"capabilities":["memo_upserts"]})).await.0,StatusCode::CREATED);
     let original = start(&app, "summary-continuation").await;
     let task = poll(&app, "summary-continuation", "workflow").await;
-    let mut commands:Vec<Value> = (0..20).map(|index| json!({"type":"record_version_marker","change_id":format!("summary-{index}"),"version":1,"min_supported":1,"max_supported":1})).collect();
+    let mut commands:Vec<Value> = (0..20).map(|index| json!({"type":"upsert_memo","entries":envelope(Payload::Map(std::collections::BTreeMap::from([(format!("summary-{index}"),Payload::Long(9007199254740993))])))})).collect();
     commands.push(json!({"type":"continue_as_new"}));
     let response = finish_task(&app, &task, json!(commands)).await;
     assert_eq!(response.0, StatusCode::OK, "{}", response.1);
     let summary = observation(&app, "default", &original).await;
     let events = history(&app, "default", &original).await;
-    assert_terminal(&summary, &events, "completed", 0);
+    assert_terminal(&summary, &events, "completed", 0, 0);
+    export_reference(&database, &summary, &events).await;
     assert_eq!(summary["closed_reason"], "continued");
     assert_eq!(summary["history_event_count"], 23);
     assert_eq!(summary["is_current_run"], false);
@@ -246,7 +309,14 @@ async fn run_observation_terminal_summary_continuation_counts_all_history_pages(
         &history(&app, "default", &successor).await,
         "completed",
         0,
+        0,
     );
+    export_reference(
+        &database,
+        &observation(&app, "default", &successor).await,
+        &history(&app, "default", &successor).await,
+    )
+    .await;
     assert_eq!(history(&app, "default", &original).await, events);
     runtime.close().await;
     database.remove().await;
@@ -278,6 +348,7 @@ async fn run_observation_terminal_summary_write_failure_rolls_back_completion() 
         &observation(&app, "default", &run).await,
         &history(&app, "default", &run).await,
         "completed",
+        0,
         0,
     );
     database.execute("DELETE FROM workflow_run_summaries").await;

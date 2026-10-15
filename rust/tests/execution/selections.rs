@@ -315,6 +315,7 @@ async fn timer_winner_and_pending_activity_survive_original_task_repair_and_rest
         repaired_history.as_array().unwrap()
     );
     assert_eq!(events[10]["event_type"], "WorkflowCompleted");
+    run_observation_summaries::check_completed(&database, &app, "default", &started, 0, 2).await;
     assert!(poll(&app, "restored", "workflow").await.is_null());
     assert!(poll(&app, "activity-only", "activity").await.is_null());
     restored.close().await;
