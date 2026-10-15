@@ -276,6 +276,7 @@ where
         payload["attempt_number"] = json!(DB::number(&attempt, "attempt_number")?);
         payload["progress"] = progress;
         payload["heartbeat_at"] = json!(at);
+        payload["activity"]["last_heartbeat_at"] = json!(at);
         payload["lease_expires_at"] = json!(expires);
         payload["activity_attempt"] = json!({"id":attempt_id,"attempt_number":DB::number(&attempt,"attempt_number")?,
             "status":"running","task_id":task_id,"lease_owner":body["lease_owner"],"last_heartbeat_at":at,

@@ -3130,3 +3130,23 @@ The external producer uses explicit upload/protocol completion. This does not
 qualify automatic Worker uploads. Capability discovery, metadata-only listing,
 unrelated-object isolation, all-database installed consumers, embedded negative
 controls and Waterline acceptance remain open.
+
+The activity metadata route now projects the existing PHP `RunActivityView`
+without selecting activity arguments, results or exceptions. Its constructed
+31-case released-PHP corpus covers typed history, mutable open fallback, terminal
+refusal, attempts, local counters, parallel paths, heartbeat details and ordering.
+The read bounds relevant history before driver allocation, ignores unrelated
+payload events and acquires a CPU permit before blocking projection work.
+Native inspection discovery remains unadvertised.
+
+The separate `ActivityMetadataConsumer` profile selects immutable PHP 2.8.5 and
+normally installed PHP SDK 2.4.2. It observes original pending work, running
+attempts, typed heartbeats, retry, completion and cold reads in default and named
+namespaces. Temporary provider-directory unavailability checks metadata without
+result hydration. Actual retry comparisons exposed native event producers
+omitting the retained activity start and heartbeat timestamps. The correction
+preserves those timestamps, including the just-recorded heartbeat, rather than
+changing the released projector or expected count. The first failed original
+and the two intermediate retry disagreements remain failures. Final-source
+functional and whole-tree qualification are pending. Clock values and their
+reported fractional precision remain separate from business-field comparison.
