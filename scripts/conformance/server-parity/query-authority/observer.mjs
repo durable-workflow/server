@@ -84,7 +84,11 @@ const server = http.createServer(async (request, response) => {
       if (task && typeof task === 'object') {
         const utc6 = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$/;
         for (const key of ['query_admitted_at', 'query_deadline_at', 'lease_expires_at', 'server_time']) {
-          if (!utc6.test(task[key]) || !Number.isFinite(Date.parse(task[key]))) throw Error('Missing original UTC6 authority: ' + key);
+          const parsed = Date.parse(task[key]);
+          if (!utc6.test(task[key]) || !Number.isFinite(parsed)
+            || new Date(parsed).toISOString() !== task[key].slice(0, 23) + 'Z') {
+            throw Error('Missing original UTC6 authority: ' + key);
+          }
         }
         const original = JSON.parse(body.toString('utf8'));
         if (Date.parse(task.query_deadline_at) - Date.parse(task.query_admitted_at) !== 4_000
@@ -131,6 +135,7 @@ const server = http.createServer(async (request, response) => {
     response.destroy(error);
   }
 });
-server.listen(8080, '0.0.0.0', () => console.log(JSON.stringify({ready: true})));
+server.listen(Number(process.env.DW_PARITY_QUERY_OBSERVER_PORT ?? 8080), '0.0.0.0', () =>
+  console.log(JSON.stringify({ready: true, port: server.address().port})));
 process.on('SIGTERM', () => server.close(() => process.exit(0)));
 
