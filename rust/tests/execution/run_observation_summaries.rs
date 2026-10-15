@@ -75,12 +75,12 @@ pub(super) async fn export_reference(database: &TestDatabase, summary: &Value, h
     if let Ok(path) = std::env::var("DW_TEST_SUMMARY_REFERENCE") {
         use std::io::Write;
         let run = summary["run_id"].as_str().unwrap();
-        let query = "SELECT event_type,CAST(payload AS TEXT) FROM workflow_history_events WHERE workflow_run_id=$1 ORDER BY sequence";
+        let query = "SELECT event_type,CAST(payload AS TEXT),CAST(recorded_at AS TEXT) FROM workflow_history_events WHERE workflow_run_id=$1 ORDER BY sequence";
         let task_query = "SELECT id,task_type,status,CAST(available_at AS TEXT),CAST(leased_at AS TEXT),CAST(lease_expires_at AS TEXT),compatibility FROM workflow_tasks WHERE workflow_run_id=$1 AND status IN ('ready','leased') ORDER BY id";
         macro_rules! rows {
             ($pool:expr,$query:expr,$tasks:expr) => {{
                 let pool = $pool;
-                let rows: Vec<(String, Option<String>)> = sqlx::query_as($query)
+                let rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as($query)
                     .bind(run)
                     .fetch_all(&pool)
                     .await
@@ -126,11 +126,11 @@ pub(super) async fn export_reference(database: &TestDatabase, summary: &Value, h
                     .connect_with(options.as_ref().clone())
                     .await
                     .unwrap(),
-                "SELECT event_type,CAST(payload AS CHAR) FROM workflow_history_events WHERE workflow_run_id=? ORDER BY sequence",
+                "SELECT event_type,CAST(payload AS CHAR),CAST(recorded_at AS CHAR) FROM workflow_history_events WHERE workflow_run_id=? ORDER BY sequence",
                 "SELECT id,task_type,status,CAST(available_at AS CHAR),CAST(leased_at AS CHAR),CAST(lease_expires_at AS CHAR),compatibility FROM workflow_tasks WHERE workflow_run_id=? AND status IN ('ready','leased') ORDER BY id"
             ),
         };
-        let raw:Vec<Value> = rows.into_iter().map(|(kind,payload)| json!({"event_type":kind,"payload_json":payload.unwrap_or_else(||"null".into())})).collect();
+        let raw:Vec<Value> = rows.into_iter().map(|(kind,payload,recorded)| json!({"event_type":kind,"payload_json":payload.unwrap_or_else(||"null".into()),"recorded_at":recorded})).collect();
         let tasks: Vec<Value> = tasks
             .into_iter()
             .map(

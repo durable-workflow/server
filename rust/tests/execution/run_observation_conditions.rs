@@ -161,6 +161,7 @@ async fn run_observation_conditions_follow_authored_occurrences_across_cold_node
             "{observation}"
         );
         let wait = observation["current_waits"]["waits"][0].clone();
+        assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_run_summaries s JOIN workflow_run_waits w ON w.workflow_run_id=s.id AND w.status='open' WHERE w.kind='condition' AND (s.wait_kind<>'condition' OR s.open_wait_id<>w.wait_id OR s.resume_source_kind<>'external_input' OR s.resume_source_id IS NOT NULL OR s.wait_deadline_at IS NOT NULL OR s.wait_reason<>'Waiting for condition ready 日本語' OR s.task_problem)").await, 0);
         assert_eq!(
             wait["id"],
             history["events"][2]["payload"]["condition_wait_id"]
@@ -392,6 +393,100 @@ async fn run_observation_conditions_cancellation_closes_the_persisted_wait() {
     assert_eq!(
         read(&app, "default", &run, "observation").await["current_waits"]["returned_count"],
         0
+    );
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn run_observation_conditions_summary_does_not_trust_inconsistent_projection() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register_observer(&app, "default").await;
+    let run = start(&app, "condition-summary-mismatch").await;
+    let task = claim(&app, "default").await;
+    assert_eq!(
+        finish(&app, "default", &task, open("first")).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        read(&app, "default", &run, "observation").await["liveness_state"],
+        "waiting_for_condition"
+    );
+    database
+        .execute("UPDATE workflow_run_waits SET target_name='different condition'")
+        .await;
+    signal(&app, "default", &run).await;
+    for _ in 0..2 {
+        let observation = read(&app, "default", &run, "observation").await;
+        assert_eq!(observation["summary_state"], "unavailable");
+        assert!(observation["liveness_state"].is_null());
+    }
+    assert_eq!(stored(&database).await.len(), 1);
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn run_observation_conditions_summary_failure_rolls_back_wait_and_signal_receipt() {
+    let database = TestDatabase::Sqlite(tempfile::tempdir().unwrap());
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register_observer(&app, "default").await;
+    let run = start(&app, "condition-summary-atomic").await;
+    let task = claim(&app, "default").await;
+    let before = read(&app, "default", &run, "history").await;
+    database.execute("CREATE TRIGGER reject_wait_summary BEFORE INSERT ON workflow_run_summaries BEGIN SELECT RAISE(ABORT, 'wait summary rejected'); END").await;
+    assert_eq!(
+        finish(&app, "default", &task, open("first")).await.0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(read(&app, "default", &run, "history").await, before);
+    assert!(stored(&database).await.is_empty());
+    assert_eq!(
+        read(&app, "default", &run, "observation").await["liveness_state"],
+        "workflow_task_leased"
+    );
+    database.execute("DROP TRIGGER reject_wait_summary").await;
+    assert_eq!(
+        finish(&app, "default", &task, open("first")).await.0,
+        StatusCode::OK
+    );
+    let before = read(&app, "default", &run, "history").await;
+    database.execute("CREATE TRIGGER reject_receipt_summary BEFORE INSERT ON workflow_run_summaries BEGIN SELECT RAISE(ABORT, 'receipt summary rejected'); END").await;
+    let response = request(
+        &app,
+        "POST",
+        &format!(
+            "/api/workflows/condition-summary-atomic/runs/{}/signal/payload",
+            run["run_id"].as_str().unwrap()
+        ),
+        json!({"input":envelope(Payload::Array(vec![Payload::Array(vec![])]))}),
+    )
+    .await;
+    assert_eq!(
+        response.0,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "{}",
+        response.1
+    );
+    assert_eq!(read(&app, "default", &run, "history").await, before);
+    assert_eq!(
+        task_retry::rows(
+            &database,
+            "SELECT COUNT(*) FROM workflow_tasks WHERE status IN ('ready','leased')"
+        )
+        .await,
+        0
+    );
+    database
+        .execute("DROP TRIGGER reject_receipt_summary")
+        .await;
+    signal(&app, "default", &run).await;
+    assert_eq!(
+        read(&app, "default", &run, "observation").await["liveness_state"],
+        "waiting_for_condition"
     );
     runtime.close().await;
     database.remove().await;

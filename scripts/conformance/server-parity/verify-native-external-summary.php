@@ -39,7 +39,7 @@ foreach (file($argv[2], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line)
             'sequence' => $index + 1,
             'event_type' => $raw['event_type'],
             'payload' => $raw['payload_json'],
-            'recorded_at' => $case['history']['events'][$index]['recorded_at'],
+            'recorded_at' => $raw['recorded_at'] ?? throw new RuntimeException('Missing original history timestamp.'),
         ]);
         $events[] = $event;
     }
