@@ -4,7 +4,7 @@
     {"id":"encoded-null","producer":"genuine_activity","typed_value":{"type":"null","value":null},"state":"available","available":true,"reason":null},
     {"id":"encoded-false","producer":"genuine_activity","typed_value":{"type":"boolean","value":false},"state":"available","available":true,"reason":null},
     {"id":"typed-map","producer":"genuine_activity","typed_value":{"type":"map","value":{"integer":{"type":"int64","value":"9007199254740993"},"optional":{"type":"null","value":null},"text":{"type":"string","value":"日本語 λ"}}},"state":"available","available":true,"reason":null},
-    {"id":"external-result","producer":"genuine_activity","encoded_size_minimum":2097152,"state":"available","available":true,"reason":null,"assertions":["opaque_reference","exact_bytes_and_sha256_after_client_fetch","no_unrelated_fetch"]},
+    {"id":"external-result","producer":"explicit_activity_protocol_completion","encoded_size_minimum":2097152,"state":"available","available":true,"reason":null,"assertions":["opaque_reference","exact_bytes_and_sha256_after_client_fetch","no_unrelated_fetch"]},
     {"id":"pending","producer":"genuine_activity_schedule","state":"pending","available":false,"reason":"activity_result_pending"},
     {"id":"retry-pending","producer":"genuine_activity_failure_with_retry","state":"pending","available":false,"reason":"activity_result_pending"},
     {"id":"retry-completed","producer":"genuine_second_activity_attempt","state":"available","available":true,"reason":null},

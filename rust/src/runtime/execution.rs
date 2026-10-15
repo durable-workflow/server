@@ -319,6 +319,7 @@ impl Runtime {
         }
     }
     delegate!(describe_schedule(schedule: &str) -> Result<Value>);
+    delegate!(activity_result(workflow_id: &str, run_id: &str, activity_id: &str) -> Result<Value>);
     delegate!(schedule_history(schedule: &str, after: i64, limit: i64) -> Result<Value>);
     delegate!(edit_schedule(schedule: &str, operation: &str, context: Value) -> Result<Value>);
     delegate!(trigger_schedule(schedule: &str, context: Value) -> Result<Value>);

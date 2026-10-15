@@ -6,6 +6,7 @@ mod activity_completion_uploads;
 mod activity_deadlines;
 mod activity_failures;
 mod activity_heartbeats;
+mod activity_results;
 mod backend;
 mod cancellation;
 mod children;

@@ -13,9 +13,8 @@
   "control_plane_version": "2",
   "namespaces": ["default", "activity-result-inspection"],
   "original_observation_budget_seconds": 30,
-  "activity_retry_policy": {
-    "max_attempts": 1,
-    "backoff": [],
+  "activity_command_options": {
+    "retry_policy": {"max_attempts": 1, "backoff_seconds": []},
     "start_to_close_timeout": 120,
     "schedule_to_close_timeout": 600
   },

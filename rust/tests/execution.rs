@@ -55,6 +55,9 @@ mod version_markers;
 #[path = "execution/activity_deadlines.rs"]
 mod activity_deadlines;
 
+#[path = "execution/activity_results.rs"]
+mod activity_results;
+
 #[path = "execution/waiting_history.rs"]
 mod waiting_history;
 
