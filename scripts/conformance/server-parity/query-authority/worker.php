@@ -91,7 +91,7 @@ final class QueryAuthorityTransport implements Transport, BoundedTransport,
 
 [$script, $url, $mode, $protocol] = $argv;
 queryCheck(in_array([$mode, $protocol], [
-    ['timely', '1.20'], ['timely', '1.19'], ['late-poll', '1.20'], ['late-handler', '1.20'],
+    ['timely', '1.20'], ['timely', '1.19'], ['late-poll', '1.20'], ['late-handler', '1.20'], ['timely-active', '1.20'],
 ], true), 'Unknown query authority case.');
 $artifacts = json_decode(file_get_contents(__DIR__.'/../../../../tests/Fixtures/ServerParityProfiles/query-authority/artifacts.json'), true, flags: JSON_THROW_ON_ERROR);
 queryCheck(InstalledVersions::getPrettyVersion('durable-workflow/sdk') === $artifacts['sdk_php']['version']
@@ -103,10 +103,15 @@ foreach ($artifacts['sdk_php']['loaded_sha256'] as $class => $sha256) {
 queryCheck(function_exists('pcntl_fork') && function_exists('posix_kill'), 'This real Worker fixture requires Unix CLI.');
 $started = hrtime(true) / 1e9;
 $until = $started + $artifacts['original_observation_seconds'];
-$namespace = 'parity-query-authority-'.bin2hex(random_bytes(6));
+$workflowId = 'parity-query-authority-'.bin2hex(random_bytes(6));
+$active = $mode === 'timely-active';
+$timely = in_array($mode, ['timely', 'timely-active'], true);
+$namespace = $active ? 'default' : $workflowId;
 $token = getenv('DW_PARITY_TOKEN') ?: 'query-authority-fixture-token';
 $admin = new Client($url, token: $token);
-$admin->createNamespace($namespace);
+if (!$active) {
+    $admin->createNamespace($namespace);
+}
 $client = new Client($url, namespace: $namespace, token: $token);
 $journal = tempnam(sys_get_temp_dir(), 'query-authority-');
 $record = static function (string $event, array $details = []) use ($journal): void {
@@ -124,7 +129,7 @@ try {
     if ($pid === 0) {
         try {
             $worker = new Worker(new Client($url, namespace: $namespace, token: $token,
-                transport: new QueryAuthorityTransport($mode, $record), workerProtocolVersion: $protocol), $namespace,
+                transport: new QueryAuthorityTransport($mode, $record), workerProtocolVersion: $protocol), $workflowId,
                 clock: static function () use ($until): float {
                     queryCheck(hrtime(true) / 1e9 < $until, 'Original Worker observation deadline expired.');
                     return microtime(true);
@@ -135,8 +140,10 @@ try {
                         $record('registered', $details);
                     }
                 }, requireQueryTaskAuthority: $protocol === '1.20');
-            $worker->registerWorkflow('parity.query-authority.v1', static function (WorkflowContext $context): int {
-                $context->sleep(60);
+            $worker->registerWorkflow('parity.query-authority.v1', static function (WorkflowContext $context) use ($active): int {
+                if ($active) {
+                    $context->sleep(60);
+                }
                 return 7;
             });
             $worker->registerQuery('parity.query-authority.v1', 'value', static function (QueryContext $context) use ($mode, $record): array {
@@ -166,18 +173,19 @@ try {
         usleep(20000);
     } while (hrtime(true) / 1e9 < $until);
     queryCheck(hrtime(true) / 1e9 < $until, 'No Worker registered within the original observation.');
-    $handle = $client->startWorkflow('parity.query-authority.v1', $namespace, $namespace);
+    $handle = $client->startWorkflow('parity.query-authority.v1', $workflowId, $workflowId);
+    $expectedStatus = $active ? 'waiting' : 'completed';
     do {
         $status = strtolower((string) $handle->describe()->status);
-        if ($status === 'waiting') {
+        if ($status === $expectedStatus) {
             break;
         }
         usleep(20000);
     } while (hrtime(true) / 1e9 < $until);
-    queryCheck($status === 'waiting', 'The original did not reach its committed timer wait.');
-    $before = $client->workflowHistory($namespace, $handle->selectedRunId);
+    queryCheck($status === $expectedStatus, 'The original did not reach its committed '.$expectedStatus.' state.');
+    $before = $client->workflowHistory($workflowId, $handle->selectedRunId);
     $expected = ['long' => 9007199254740993, 'nil' => null, 'text' => 'rangeλ'];
-    if ($mode === 'timely') {
+    if ($timely) {
         queryCheck($handle->query('value') === $expected, 'The actual typed query result changed.');
     } else {
         try {
@@ -199,8 +207,8 @@ try {
     $named = static fn (string $name): array => array_values(array_filter($events, static fn (array $event): bool => $event['event'] === $name));
     queryCheck(count($named('claim')) === 1, 'Expected one actual original query claim.');
     $claim = $named('claim')[0]['details'];
-    queryCheck(($claim['workflow_id'] ?? null) === $namespace && ($claim['run_id'] ?? null) === $handle->selectedRunId
-        && ($claim['task_queue'] ?? null) === $namespace && ($claim['namespace'] ?? $client->namespace) === $namespace
+    queryCheck(($claim['workflow_id'] ?? null) === $workflowId && ($claim['run_id'] ?? null) === $handle->selectedRunId
+        && ($claim['task_queue'] ?? null) === $workflowId && ($claim['namespace'] ?? $client->namespace) === $namespace
         && ($claim['query_task_attempt'] ?? null) === 1, 'The delivery changed its original run, namespace or attempt.');
     foreach (['query_admitted_at', 'query_deadline_at', 'lease_expires_at', 'server_time'] as $field) {
         queryCheck(is_string($claim[$field] ?? null) && preg_match('/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$/D', $claim[$field]) === 1,
@@ -218,11 +226,12 @@ try {
     }
     queryCheck(($named('status') !== []) === ($protocol === '1.20'), 'Protocol status use does not match the declared boundary.');
     queryCheck(count($named('handler')) === ($mode === 'late-poll' ? 0 : 1), 'The callback dispatched outside its original authority.');
-    queryCheck(count($named('submission')) === ($mode === 'timely' ? 1 : 0), 'An expired callback attempted a terminal submission.');
-    queryCheck(count($named('acknowledgement')) === ($mode === 'timely' ? 1 : 0), 'An expired callback submitted a terminal outcome.');
-    queryCheck($before === $client->workflowHistory($namespace, $handle->selectedRunId), 'Query execution changed the original workflow history.');
+    queryCheck(count($named('submission')) === ($timely ? 1 : 0), 'An expired callback attempted a terminal submission.');
+    queryCheck(count($named('acknowledgement')) === ($timely ? 1 : 0), 'An expired callback submitted a terminal outcome.');
+    queryCheck($before === $client->workflowHistory($workflowId, $handle->selectedRunId), 'Query execution changed the original workflow history.');
     queryCheck($named('actor-error') === [] && hrtime(true) / 1e9 < $until, 'The original Worker observation failed.');
-    $result = ['outcome' => 'pass', 'mode' => $mode, 'protocol' => $protocol, 'workflow_id' => $namespace,
+    $result = ['outcome' => 'pass', 'mode' => $mode, 'protocol' => $protocol, 'workflow_id' => $workflowId,
+        'namespace' => $namespace, 'original_run_status' => $expectedStatus,
         'run_id' => $handle->selectedRunId, 'claim' => $claim, 'observations' => $events,
         'original_budget_seconds' => 30, 'sdk_version' => InstalledVersions::getPrettyVersion('durable-workflow/sdk'),
         'sdk_source' => InstalledVersions::getReference('durable-workflow/sdk'),
@@ -233,7 +242,7 @@ try {
         'history_sha256' => hash('sha256', json_encode($before, JSON_THROW_ON_ERROR))];
 } catch (Throwable $error) {
     fwrite(STDERR, json_encode(['outcome' => 'fail', 'mode' => $mode, 'protocol' => $protocol,
-        'workflow_id' => $namespace, 'run_id' => $handle?->selectedRunId,
+        'workflow_id' => $workflowId, 'namespace' => $namespace, 'run_id' => $handle?->selectedRunId,
         'error' => $error->getMessage(), 'observations' => $read()], JSON_THROW_ON_ERROR)."\n");
     throw $error;
 } finally {
@@ -254,8 +263,8 @@ try {
         $drained = pcntl_wifexited($status) && pcntl_wexitstatus($status) === 0;
     }
     try {
-        if ($handle !== null) {
-            $client->terminateWorkflow($namespace, 'query authority qualification complete', $handle->selectedRunId);
+        if ($handle !== null && $active) {
+            $client->terminateWorkflow($workflowId, 'query authority qualification complete', $handle->selectedRunId);
         }
     } finally {
         unlink($journal);

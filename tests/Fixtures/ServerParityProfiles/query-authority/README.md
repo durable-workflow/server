@@ -32,7 +32,10 @@ Startup waits for the installed Worker's `worker.registered` diagnostic, emitted
 after its actual registration acknowledgement. It does not depend on worker
 listing, which is also outside the current native slice.
 
-The actual Worker creates a waiting timer workflow, then serves its query.
+The four deadline cases use completed workflows in distinct named namespaces.
+The additional timely-active case uses a genuine waiting timer workflow in the
+default namespace. Native named-timer authoring still refuses explicitly and is
+not qualified by this profile. Earlier waiting named originals remain failed.
 Timely 1.20 and 1.19 controls retain the exact int64/null/Unicode result.
 Separate late controls hold a genuine poll reply for six seconds or let a
 synchronous callback return after six seconds. They require the original caller
