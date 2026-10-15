@@ -3078,6 +3078,14 @@ timer envelope against its original task/run. Twelve focused decoder/binding
 controls pass. The source database has Laravel transport queue `default` and
 SDK queue `upgrade-source`; its rounded transport wakeup does not replace the
 canonical microsecond timer availability. Borrowed source rows retain their
-original state and a separate leased activity. Full native/CLI integration,
-complete source-row validation, restored backup verification and actual
-sequential takeover remain unqualified.
+original state and a separate leased activity.
+
+The separate `upgrade-queue-inspect` command now scans every database-queue row
+inside the existing read-only observation. Bounded pages and transfer limits
+precede canonical joins. Unknown representations, orphaned/foreign bindings
+and skipped nonpositive IDs refuse before a success report. Local native checks
+pass 93 library cases with 18 existing database/subprocess ignores and the
+process refusal control for both inspection commands. Actual published-source
+CLI and fresh all-database integration remain pending. Complete stored-state
+validation, restored backup verification and sequential takeover stay open.
+

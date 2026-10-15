@@ -1,8 +1,10 @@
 //! Read-only PHP source inventory. This command never grants takeover authority.
 pub mod queue;
 pub mod queue_binding;
+mod queue_scan;
 use super::{Result, mysql, postgres, refuse, schema};
 use axum::http::StatusCode;
+use queue_binding::QueueSourceConfig;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -93,18 +95,37 @@ async fn close(future: impl Future<Output = std::result::Result<(), sqlx::Error>
     Ok(())
 }
 
-fn report(backend: &str, catalog: &impl Serialize, counts: BTreeMap<String, i64>) -> Result<Value> {
+fn report(
+    backend: &str,
+    catalog: &impl Serialize,
+    counts: BTreeMap<String, i64>,
+    queue_inspection: Option<Value>,
+) -> Result<Value> {
     let digest = Sha256::digest(serde_json::to_vec(catalog)?)
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
-    Ok(json!({
+    let mut report = json!({
         "schema":"durable-workflow.rust-upgrade-source-inspection.v1",
         "status":"inspected", "backend":backend, "catalog_visibility":"configured_role",
         "catalog_sha256":digest, "table_rows":counts,
         "source_mutated":false, "takeover_allowed":false, "backup_verified":false,
         "php_quiescence_verified":false, "stored_representation_compatibility_verified":false
-    }))
+    });
+    if let Some(queues) = queue_inspection {
+        report["queue_inspection"] = queues;
+    }
+    Ok(report)
+}
+
+fn queue_config(config: Option<&QueueSourceConfig<'_>>) -> Result<()> {
+    if config.is_some_and(|config| !queue_binding::valid_config(config)) {
+        return Err(refuse(
+            StatusCode::BAD_REQUEST,
+            "upgrade_source_queue_config_required",
+        ));
+    }
+    Ok(())
 }
 
 // Names come only from a catalog equal to the compiled physical PHP layout.
@@ -136,6 +157,15 @@ macro_rules! count_tables {
 }
 
 pub async fn inspect_sqlite(path: &str) -> Result<Value> {
+    inspect_sqlite_inner(path, None).await
+}
+
+pub async fn inspect_sqlite_queues(path: &str, config: &QueueSourceConfig<'_>) -> Result<Value> {
+    inspect_sqlite_inner(path, Some(config)).await
+}
+
+async fn inspect_sqlite_inner(path: &str, queues: Option<&QueueSourceConfig<'_>>) -> Result<Value> {
+    queue_config(queues)?;
     let deadline = Instant::now() + BUDGET;
     if path.is_empty() || path.contains(['?', ':']) {
         return Err(refuse(
@@ -208,8 +238,14 @@ pub async fn inspect_sqlite(path: &str) -> Result<Value> {
             .map(|(_, name, _, _)| name.clone())
             .collect();
         let counts = count_tables!(tx, tables, '"');
+        let queue_inspection = match queues {
+            Some(config) => {
+                Some(queue_scan::inspect::<sqlx::Sqlite>(&mut *tx, config, counts["jobs"]).await?)
+            }
+            None => None,
+        };
         tx.rollback().await?;
-        report("sqlite", &catalog, counts)
+        report("sqlite", &catalog, counts, queue_inspection)
     })
     .await
     .map_err(|_| expired())
@@ -219,6 +255,21 @@ pub async fn inspect_sqlite(path: &str) -> Result<Value> {
 }
 
 pub async fn inspect_mysql(options: MySqlConnectOptions) -> Result<Value> {
+    inspect_mysql_inner(options, None).await
+}
+
+pub async fn inspect_mysql_queues(
+    options: MySqlConnectOptions,
+    config: &QueueSourceConfig<'_>,
+) -> Result<Value> {
+    inspect_mysql_inner(options, Some(config)).await
+}
+
+async fn inspect_mysql_inner(
+    options: MySqlConnectOptions,
+    queues: Option<&QueueSourceConfig<'_>>,
+) -> Result<Value> {
+    queue_config(queues)?;
     let deadline = Instant::now() + BUDGET;
     let mut connection = timeout_at(
         deadline,
@@ -245,6 +296,12 @@ pub async fn inspect_mysql(options: MySqlConnectOptions) -> Result<Value> {
         let catalog = mysql::php_source_catalog(&mut tx).await?;
         let tables: Vec<String> = catalog.iter().map(|(name, _)| name.clone()).collect();
         let counts = count_tables!(tx, tables, '`');
+        let queue_inspection = match queues {
+            Some(config) => {
+                Some(queue_scan::inspect::<sqlx::MySql>(&mut *tx, config, counts["jobs"]).await?)
+            }
+            None => None,
+        };
         // MySQL's metadata is not an MVCC snapshot. Refuse a changed visible
         // catalog rather than joining counts to a different schema.
         if mysql::php_source_catalog(&mut tx).await? != catalog {
@@ -254,7 +311,7 @@ pub async fn inspect_mysql(options: MySqlConnectOptions) -> Result<Value> {
             ));
         }
         tx.rollback().await?;
-        report(backend, &catalog, counts)
+        report(backend, &catalog, counts, queue_inspection)
     })
     .await
     .map_err(|_| expired())
@@ -264,6 +321,21 @@ pub async fn inspect_mysql(options: MySqlConnectOptions) -> Result<Value> {
 }
 
 pub async fn inspect_postgres(options: PgConnectOptions) -> Result<Value> {
+    inspect_postgres_inner(options, None).await
+}
+
+pub async fn inspect_postgres_queues(
+    options: PgConnectOptions,
+    config: &QueueSourceConfig<'_>,
+) -> Result<Value> {
+    inspect_postgres_inner(options, Some(config)).await
+}
+
+async fn inspect_postgres_inner(
+    options: PgConnectOptions,
+    queues: Option<&QueueSourceConfig<'_>>,
+) -> Result<Value> {
+    queue_config(queues)?;
     let deadline = Instant::now() + BUDGET;
     let mut connection = timeout_at(
         deadline,
@@ -282,8 +354,14 @@ pub async fn inspect_postgres(options: PgConnectOptions) -> Result<Value> {
             .map(|(_, name, _)| name.clone())
             .collect();
         let counts = count_tables!(tx, tables, '"');
+        let queue_inspection = match queues {
+            Some(config) => {
+                Some(queue_scan::inspect::<sqlx::Postgres>(&mut *tx, config, counts["jobs"]).await?)
+            }
+            None => None,
+        };
         tx.rollback().await?;
-        report("pgsql", &catalog, counts)
+        report("pgsql", &catalog, counts, queue_inspection)
     })
     .await
     .map_err(|_| expired())

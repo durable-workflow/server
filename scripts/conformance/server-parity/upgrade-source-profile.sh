@@ -89,8 +89,10 @@ if test "$backend" = sqlite; then reader=("${admin[@]}"); fi
 inspect_source() {
   docker run --rm --name "$resource-inspect" --user=1000:1000 --cpus=1 --memory=256m --memory-swap=256m \
     --network "$RESOURCE_SCOPE" "${reader[@]}" -e DB_DATABASE="$database" -e DW_RUST_EXPERIMENTAL=1 \
+    -e DW_RUST_UPGRADE_QUEUE_CONNECTION=database -e DW_RUST_UPGRADE_QUEUE_DEFAULT_CONNECTION=database \
+    -e DW_RUST_UPGRADE_QUEUE_DEFAULT_QUEUE=default \
     -v "$PWD/$state:/state:ro" -v "$PWD/rust-target:/target:ro" \
-    --entrypoint /target/debug/durable-workflow-server "$rust_image" upgrade-inspect
+    --entrypoint /target/debug/durable-workflow-server "$rust_image" "${1:-upgrade-inspect}"
 }
 snapshot() {
   if test "$backend" = sqlite; then
@@ -107,6 +109,12 @@ jq -e '.status=="inspected" and (.table_rows|length)==50 and .table_rows.workflo
   and .table_rows.activity_executions==1 and .catalog_visibility=="configured_role"
   and .source_mutated==false and .takeover_allowed==false and .backup_verified==false
   and .php_quiescence_verified==false and .stored_representation_compatibility_verified==false' "$evidence/inspection.json" >/dev/null
+inspect_source upgrade-queue-inspect > "$evidence/queue-inspection.json" 2> "$evidence/queue-inspection.stderr"
+jq -e '.status=="inspected" and .queue_inspection.status=="known_subset_bound"
+  and .queue_inspection.jobs==1 and .queue_inspection.timer_jobs==1
+  and .queue_inspection.workflow_jobs==0 and .queue_inspection.activity_jobs==0
+  and .source_mutated==false and .takeover_allowed==false and .backup_verified==false
+  and .php_quiescence_verified==false and .stored_representation_compatibility_verified==false' "$evidence/queue-inspection.json" >/dev/null
 snapshot > "$evidence/after.json"
 cmp "$evidence/before.json" "$evidence/after.json"
 refusal() {

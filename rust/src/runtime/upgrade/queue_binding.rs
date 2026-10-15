@@ -106,18 +106,36 @@ fn identifier(value: &str) -> bool {
     !value.is_empty() && value.chars().count() <= 255 && !value.contains('\0')
 }
 
+fn envelope(job: &SourceQueueJob) -> Result<Envelope, QueueBindingError> {
+    // Check the outer body before allocating/unescaping its PHP command.
+    if job.payload.len() > 128 * 1024 {
+        return Err(QueueBindingError::MalformedEnvelope);
+    }
+    serde_json::from_str(&job.payload).map_err(|_| QueueBindingError::MalformedEnvelope)
+}
+
+/// Locate the canonical row without executing the transport command. This
+/// alone does not validate the outer policy or authorize a binding.
+pub(super) fn referenced_task_id(job: &SourceQueueJob) -> Result<String, QueueBindingError> {
+    let envelope = envelope(job)?;
+    let command = inspect_queue_command(envelope.data.command.as_bytes())
+        .map_err(QueueBindingError::Decode)?;
+    Ok(command.task_id.to_owned())
+}
+
+pub(super) fn valid_config(config: &QueueSourceConfig<'_>) -> bool {
+    identifier(config.connection)
+        && identifier(config.default_connection)
+        && identifier(config.default_queue)
+}
+
 pub fn bind_queue_job<'a>(
     job: &'a SourceQueueJob,
     task: &'a SourceTask,
     run: &'a SourceRun,
     config: &QueueSourceConfig<'_>,
 ) -> Result<QueueTaskBinding<'a>, QueueBindingError> {
-    // Check the outer body before allocating/unescaping its PHP command.
-    if job.payload.len() > 128 * 1024 {
-        return Err(QueueBindingError::MalformedEnvelope);
-    }
-    let envelope: Envelope =
-        serde_json::from_str(&job.payload).map_err(|_| QueueBindingError::MalformedEnvelope)?;
+    let envelope = envelope(job)?;
     let command = inspect_queue_command(envelope.data.command.as_bytes())
         .map_err(QueueBindingError::Decode)?;
     let (class, kind, tries) = match command.kind {

@@ -141,6 +141,30 @@ timestamp semantics, restore a backup or continue the original workflows in
 Rust. `upgrade-inspect` remains the earlier catalog/count inventory and its
 takeover flags remain false.
 
+The separate development command `upgrade-queue-inspect` adds database-queue
+binding checks inside that same read-only snapshot and 30-second observation
+budget. Set all three original transport settings explicitly:
+
+```sh
+DW_RUST_EXPERIMENTAL=1 \
+DW_RUST_UPGRADE_QUEUE_CONNECTION=database \
+DW_RUST_UPGRADE_QUEUE_DEFAULT_CONNECTION=database \
+DW_RUST_UPGRADE_QUEUE_DEFAULT_QUEUE=default \
+durable-workflow-server upgrade-queue-inspect
+```
+
+These settings describe the original Laravel connection and defaults, not a
+new SDK destination. Ordinary `DB_*` settings still select the source database.
+The command reads 32 jobs per primary-key page and limits each transferred
+payload to 128 KiB before decoding. Every job must bind its existing canonical
+task and run; unknown representations, missing/changed bindings and count
+disagreements refuse without a partial success report. The output adds only
+job-kind counts, not payloads or identities. No jobs are deleted or executed,
+and all takeover, backup, quiescence and complete representation flags remain
+false. An empty database queue does not establish the state of Redis, another
+queue connection or another transport. The hosted published-source recipe now
+requires this separate component; its fresh all-database execution is pending.
+
 The separate published PHP 2.8.0 profile prepares two genuine original runs:
 one leased activity and one pending timer. It explicitly stops PHP before
 inspection, compares source state and sequence positions before/after, and
