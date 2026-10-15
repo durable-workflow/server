@@ -272,6 +272,22 @@ Current checkpoint, October 15:
   unavailable pending their own controls. Published observation API, installed
   native/browser, hosted combined-source and performance gates stay separate.
 
+- Source follow-through for the Sonar findings consolidates the four ordinary
+  wait projectors under one database implementation, sharing projection identity
+  and external-wait closure handling. History counting, task classification and
+  wait timing have separate helpers. Seven redundant constant lifetimes and the
+  single-namespace test loop are simplified. The analyzer's 4.2% duplication
+  failure on `0551089c3` remains its actual result; the profile and 3% threshold
+  are unchanged. At `ce2be116d`, all 79 library checks pass with 18 existing
+  ignores and all 161 SQLite execution checks pass. The 32-test observation
+  selection passes with each of PostgreSQL 17.11 and MySQL 8.0.46: each selection
+  contains 21 tests using that network database and 11 explicit SQLite fixtures.
+  Installed Server 2.8.6 / Workflow 2.5.22 agrees on 100 history-counter
+  comparisons (34 SQLite, 33 per network database) and 93 classifier comparisons
+  (30 task, 21 external wait, 18 timer and 24 activity), all with zero reference
+  queries. Formatting and diff checks pass. A fresh combined-source Sonar
+  analysis is still required before claiming those findings resolved.
+
 The preserved `c0b14c15` [shared run](https://github.com/durable-workflow/server/actions/runs/38806818394)
 is terminal with 12 passing jobs and one failure in the existing-PHP PostgreSQL
 job at the published-query comparison step. The assertion and cause remain
