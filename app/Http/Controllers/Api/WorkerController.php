@@ -2696,16 +2696,23 @@ class WorkerController
                 'sticky_until' => $stickyUntil,
             ]);
 
-        WorkflowTask::query()
+        $readyTasks = WorkflowTask::query()
+            ->useWritePdo()
             ->where('workflow_run_id', $task->workflow_run_id)
             ->where('task_type', TaskType::Workflow->value)
-            ->where('status', TaskStatus::Ready->value)
-            ->update([
+            ->where('status', TaskStatus::Ready->value);
+
+        // A range UPDATE can lock another run's ready task through the shared
+        // status index. Discover without row locks, then retain every scope
+        // predicate when writing individual primary keys.
+        foreach ((clone $readyTasks)->orderBy('id')->pluck('id') as $readyTaskId) {
+            (clone $readyTasks)->whereKey($readyTaskId)->update([
                 'sticky_worker_id' => $retainAffinity ? $leaseOwner : null,
                 'sticky_until' => $stickyUntil,
                 'sticky_replay_mode' => null,
                 'sticky_claimed_at' => null,
             ]);
+        }
 
         $processMetrics = is_array($worker->process_metrics) ? $worker->process_metrics : [];
         $processMetrics['sticky_cache'] = is_array($stickyCache['metrics'] ?? null)
