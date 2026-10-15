@@ -21,6 +21,10 @@ enum Storage {
     MySql(Store<MySql>),
 }
 
+#[cfg(test)]
+#[path = "query_codec_tests.rs"]
+mod query_codec_tests;
+
 #[derive(Clone)]
 pub struct Runtime {
     storage: Arc<Storage>,
@@ -29,6 +33,7 @@ pub struct Runtime {
     scheduler: Arc<TimerScheduler>,
     signal_codec: Arc<Semaphore>,
     pub(super) external: Arc<super::ExternalPayloadConfig>,
+    queries: Arc<super::QueryTaskConfig>,
 }
 
 struct TimerScheduler {
@@ -114,6 +119,10 @@ impl Runtime {
         self.external = Arc::new(config);
         self
     }
+    pub fn with_query_task_config(mut self, config: super::QueryTaskConfig) -> Self {
+        self.queries = Arc::new(config);
+        self
+    }
     /// Immutable configured-token cohort. Database transitions and scheduler
     /// stay shared; configuring credentials does not mutate process state.
     pub fn with_role_tokens(
@@ -140,34 +149,38 @@ impl Runtime {
     pub async fn open(database: &str, token: String) -> Result<Self> {
         Self::validate_token(&token)?;
         let external = super::ExternalPayloadConfig::from_env()?;
+        let queries = super::QueryTaskConfig::from_env()?;
         let limit = super::memo_limits::configured_limit()?;
         let mut store = Store::new(sqlite::open(database).await?);
         store.memo_size_limit = limit;
-        Self::from_storage(Storage::Sqlite(store), token, external).await
+        Self::from_storage(Storage::Sqlite(store), token, external, queries).await
     }
 
     pub async fn open_postgres(options: PgConnectOptions, token: String) -> Result<Self> {
         Self::validate_token(&token)?;
         let external = super::ExternalPayloadConfig::from_env()?;
+        let queries = super::QueryTaskConfig::from_env()?;
         let limit = super::memo_limits::configured_limit()?;
         let mut store = Store::new(PostgresStorage::open(options).await?.into_pool());
         store.memo_size_limit = limit;
-        Self::from_storage(Storage::Postgres(store), token, external).await
+        Self::from_storage(Storage::Postgres(store), token, external, queries).await
     }
 
     pub async fn open_mysql(options: MySqlConnectOptions, token: String) -> Result<Self> {
         Self::validate_token(&token)?;
         let external = super::ExternalPayloadConfig::from_env()?;
+        let queries = super::QueryTaskConfig::from_env()?;
         let limit = super::memo_limits::configured_limit()?;
         let mut store = Store::new(MySqlStorage::open(options).await?.into_pool());
         store.memo_size_limit = limit;
-        Self::from_storage(Storage::MySql(store), token, external).await
+        Self::from_storage(Storage::MySql(store), token, external, queries).await
     }
 
     async fn from_storage(
         storage: Storage,
         token: String,
         external: super::ExternalPayloadConfig,
+        queries: super::QueryTaskConfig,
     ) -> Result<Self> {
         let runtime = Self {
             storage: Arc::new(storage),
@@ -176,6 +189,7 @@ impl Runtime {
             scheduler: Arc::new(TimerScheduler::new()),
             signal_codec: Arc::new(Semaphore::new(1)),
             external: Arc::new(external),
+            queries: Arc::new(queries),
         };
         runtime.verify_ready().await?;
         if let Err(error) = runtime.initialize_namespace_registry().await {
@@ -243,6 +257,7 @@ impl Runtime {
             scheduler: self.scheduler.clone(),
             signal_codec: self.signal_codec.clone(),
             external: self.external.clone(),
+            queries: self.queries.clone(),
         }
     }
     pub(super) fn namespace(&self) -> &str {
@@ -511,23 +526,58 @@ impl Runtime {
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
-                    .query_workflow(workflow_id, run_id, name, arguments, values)
+                    .query_workflow(workflow_id, run_id, name, arguments, values, &self.queries)
                     .await
             }
             Storage::Postgres(store) => {
                 store
-                    .query_workflow(workflow_id, run_id, name, arguments, values)
+                    .query_workflow(workflow_id, run_id, name, arguments, values, &self.queries)
                     .await
             }
             Storage::MySql(store) => {
                 store
-                    .query_workflow(workflow_id, run_id, name, arguments, values)
+                    .query_workflow(workflow_id, run_id, name, arguments, values, &self.queries)
                     .await
             }
         }
     }
-    delegate!(poll_query(body: Value) -> Result<Value>);
+    pub(crate) async fn poll_query(&self, body: Value) -> Result<Value> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.poll_query(body, &self.queries).await,
+            Storage::Postgres(store) => store.poll_query(body, &self.queries).await,
+            Storage::MySql(store) => store.poll_query(body, &self.queries).await,
+        }
+    }
+    pub(crate) async fn query_status(&self, id: &str, owner: &str, attempt: i64) -> Result<Value> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.query_status(id, owner, attempt, &self.queries).await,
+            Storage::Postgres(store) => store.query_status(id, owner, attempt, &self.queries).await,
+            Storage::MySql(store) => store.query_status(id, owner, attempt, &self.queries).await,
+        }
+    }
     pub(crate) async fn complete_query(&self, task_id: &str, body: Value) -> Result<Value> {
+        // Check retained decisions and live authority before codec work, then
+        // repeat the same fences atomically after decoding.
+        let receipt = match &*self.storage {
+            Storage::Sqlite(store) => {
+                store
+                    .guard_query_outcome(task_id, &body, false, &self.queries)
+                    .await
+            }
+            Storage::Postgres(store) => {
+                store
+                    .guard_query_outcome(task_id, &body, false, &self.queries)
+                    .await
+            }
+            Storage::MySql(store) => {
+                store
+                    .guard_query_outcome(task_id, &body, false, &self.queries)
+                    .await
+            }
+        }?;
+        if let Some(receipt) = receipt {
+            return Ok(receipt);
+        }
         let result = super::envelope(&body, "result_envelope")?;
         if result.len() > super::queries::RESULT_BYTES {
             return Err(refuse(
@@ -544,7 +594,30 @@ impl Runtime {
         .await?;
         self.finish_query(task_id, body, false).await
     }
-    delegate!(finish_query(task_id: &str, body: Value, failed: bool) -> Result<Value>);
+    pub(crate) async fn finish_query(
+        &self,
+        task_id: &str,
+        body: Value,
+        failed: bool,
+    ) -> Result<Value> {
+        match &*self.storage {
+            Storage::Sqlite(store) => {
+                store
+                    .finish_query(task_id, body, failed, &self.queries)
+                    .await
+            }
+            Storage::Postgres(store) => {
+                store
+                    .finish_query(task_id, body, failed, &self.queries)
+                    .await
+            }
+            Storage::MySql(store) => {
+                store
+                    .finish_query(task_id, body, failed, &self.queries)
+                    .await
+            }
+        }
+    }
     delegate!(
         history(
             workflow_id: &str,

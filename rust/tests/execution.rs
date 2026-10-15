@@ -69,6 +69,8 @@ mod condition_occurrences;
 
 #[path = "execution/query_arguments.rs"]
 mod query_arguments;
+#[path = "execution/query_authority.rs"]
+mod query_authority;
 
 #[path = "execution/external_payloads.rs"]
 mod external_payloads;
@@ -2069,6 +2071,19 @@ async fn await_query(app: &Router, worker: &str) -> Value {
     .expect("query must be admitted without holding the database pool")
 }
 
+fn assert_query_replay(first: &Value, repeated: Value) {
+    let initial =
+        chrono::DateTime::parse_from_rfc3339(first["server_time"].as_str().unwrap()).unwrap();
+    let current =
+        chrono::DateTime::parse_from_rfc3339(repeated["server_time"].as_str().unwrap()).unwrap();
+    assert!(current >= initial);
+    let mut replay = repeated;
+    // Only this observation clock is nondeterministic. Original query timing,
+    // lease, identities, values and every business-history field remain exact.
+    replay["server_time"] = first["server_time"].clone();
+    assert_eq!(replay, *first);
+}
+
 #[tokio::test]
 async fn queries_fence_recovered_leases_across_pools_without_mutating_the_run() {
     let database = TestDatabase::new().await;
@@ -2165,7 +2180,7 @@ async fn queries_fence_recovered_leases_across_pools_without_mutating_the_run() 
     );
     assert_eq!(projected, before["events"]);
     assert_eq!(claim["query_arguments"], input["input"]);
-    assert_eq!(poll(&a, "query-a", "query").await, claim);
+    assert_query_replay(&claim, poll(&a, "query-a", "query").await);
     assert!(poll(&b, "query-b", "query").await.is_null());
     let finish_path = format!(
         "/api/worker/query-tasks/{}/complete",
@@ -2177,7 +2192,7 @@ async fn queries_fence_recovered_leases_across_pools_without_mutating_the_run() 
     wrong["lease_owner"] = json!("query-b");
     assert_eq!(
         request(&b, "POST", &finish_path, wrong).await.1["reason"],
-        "query_task_lease_owner_mismatch"
+        "lease_owner_mismatch"
     );
     let mut invalid = completion.clone();
     invalid["result_envelope"]["blob"] = json!("not-avro");
@@ -2186,15 +2201,15 @@ async fn queries_fence_recovered_leases_across_pools_without_mutating_the_run() 
         "invalid_query_result"
     );
     match &database {
-        TestDatabase::Sqlite(_) => database.execute("UPDATE dw_query_cache SET value=json_set(value,'$.lease_until',0) WHERE value LIKE '%\"status\":\"leased\"%'").await,
-        TestDatabase::Postgres{..} => database.execute("UPDATE dw_query_cache SET value=jsonb_set(value::jsonb,'{lease_until}','0')::text WHERE value LIKE '%\"status\":\"leased\"%'").await,
-        TestDatabase::MySql{..} => database.execute("UPDATE dw_query_cache SET value=JSON_SET(value,'$.lease_until',0) WHERE value LIKE '%\"status\":\"leased\"%'").await,
+        TestDatabase::Sqlite(_) => database.execute("UPDATE dw_query_cache SET value=json_set(value,'$.lease_expires_at','2000-01-01T00:00:00.000000Z') WHERE value LIKE '%\"status\":\"leased\"%'").await,
+        TestDatabase::Postgres{..} => database.execute("UPDATE dw_query_cache SET value=jsonb_set(value::jsonb,'{lease_expires_at}','\"2000-01-01T00:00:00.000000Z\"')::text WHERE value LIKE '%\"status\":\"leased\"%'").await,
+        TestDatabase::MySql{..} => database.execute("UPDATE dw_query_cache SET value=JSON_SET(value,'$.lease_expires_at','2000-01-01T00:00:00.000000Z') WHERE value LIKE '%\"status\":\"leased\"%'").await,
     }
     assert_eq!(
         request(&a, "POST", &finish_path, completion.clone())
             .await
             .1["reason"],
-        "query_task_lease_expired"
+        "lease_expired"
     );
     let recovered = await_query(&a, "query-b").await;
     assert_eq!(recovered["query_task_id"], claim["query_task_id"]);
@@ -2204,7 +2219,7 @@ async fn queries_fence_recovered_leases_across_pools_without_mutating_the_run() 
         request(&a, "POST", &finish_path, completion.clone())
             .await
             .1["reason"],
-        "query_task_lease_owner_mismatch"
+        "lease_owner_mismatch"
     );
     let mut current = completion.clone();
     current["lease_owner"] = json!("query-b");
@@ -2220,10 +2235,9 @@ async fn queries_fence_recovered_leases_across_pools_without_mutating_the_run() 
     let outcome = waiting.await.unwrap();
     assert_eq!(outcome.0, StatusCode::OK, "{}", outcome.1);
     assert_eq!(outcome.1["result_envelope"], result);
-    assert_eq!(
-        request(&b, "POST", &finish_path, current).await.1["reason"],
-        "query_task_not_leased"
-    );
+    let duplicate = request(&b, "POST", &finish_path, current).await;
+    assert_eq!(duplicate.0, StatusCode::OK, "{}", duplicate.1);
+    assert_eq!(duplicate.1["recorded"], false);
     assert_eq!(
         request(&a, "GET", &history_path, Value::Null).await.1,
         before

@@ -3,7 +3,9 @@
 use super::{
     Result,
     backend::Backend,
-    envelope, refuse,
+    envelope,
+    query_authority::{self as authority, QueryTaskConfig},
+    refuse,
     store::{Store, validate_arguments},
     text, wire,
 };
@@ -16,12 +18,19 @@ use tokio::sync::Semaphore;
 const PREFIX: &str = "dw-native-query:";
 const MAX_PENDING: usize = 16;
 const MAX_ENTRIES: usize = 64;
-const WAIT_SECONDS: i64 = 30;
-const LEASE_SECONDS: i64 = 10;
-const RECEIPT_SECONDS: i64 = 60;
 const SNAPSHOT_BYTES: usize = 1024 * 1024;
 pub(super) const ARGUMENT_BYTES: usize = 64 * 1024;
 pub(super) const RESULT_BYTES: usize = 256 * 1024;
+
+enum QueryClaim {
+    Task(Value),
+    Empty,
+    StaleWorker,
+}
+
+fn poll_result(task: Option<Value>, status: &str) -> Value {
+    json!({"task":task,"poll_status":status,"server_capabilities":super::store::capabilities()})
+}
 
 fn now() -> i64 {
     chrono::Utc::now().timestamp()
@@ -94,9 +103,11 @@ where
     usize: ColumnIndex<DB::Row>,
 {
     pub(super) async fn query_entries(
+        &self,
         tx: &mut Transaction<'_, DB>,
     ) -> Result<Vec<(String, Value)>> {
         let rows = Self::query(DB::QUERY_CACHE_SCAN)
+            .bind(self.namespace.to_string())
             .fetch_all(&mut **tx)
             .await?;
         let mut entries = vec![];
@@ -109,7 +120,11 @@ where
                     .await?;
                 continue;
             }
-            entries.push((key, serde_json::from_str(&DB::string(&row, "value")?)?));
+            let mut task: Value = serde_json::from_str(&DB::string(&row, "value")?)?;
+            if authority::expire(&mut task, authority::now())? {
+                Self::put_query(tx, &key, &task, authority::expiration(&task)?).await?;
+            }
+            entries.push((key, task));
         }
         if entries.len() > MAX_ENTRIES {
             return Err(refuse(
@@ -142,6 +157,7 @@ where
         name: &str,
         arguments: String,
         values: Vec<crate::codec::Value>,
+        config: &QueryTaskConfig,
     ) -> Result<(StatusCode, Value)> {
         if name.is_empty() || name.len() > 255 {
             return Err(refuse(
@@ -150,9 +166,15 @@ where
             ));
         }
         let mut tx = self.begin().await?;
-        let run = Self::query("SELECT r.* FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE i.id=$1 AND r.id=COALESCE($2,i.current_run_id) AND r.namespace='default'")
-            .bind(workflow_id).bind(selected_run).fetch_optional(&mut *tx).await?
+        let run = Self::query("SELECT r.* FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE i.id=$1 AND r.id=COALESCE($2,i.current_run_id) AND r.namespace=$3")
+            .bind(workflow_id).bind(selected_run).bind(self.namespace.as_ref()).fetch_optional(&mut *tx).await?
             .ok_or_else(|| refuse(StatusCode::NOT_FOUND, "instance_not_found"))?;
+        if DB::string(&run, "namespace")? != self.namespace.as_ref()
+            || DB::string(&run, "workflow_instance_id")? != workflow_id
+            || selected_run.is_some_and(|id| DB::string(&run, "id").ok().as_deref() != Some(id))
+        {
+            return Err(refuse(StatusCode::NOT_FOUND, "instance_not_found"));
+        }
         let run_id = DB::string(&run, "id")?;
         let status = DB::string(&run, "status")?;
         if !matches!(
@@ -186,7 +208,7 @@ where
             "unsupported_query_contract",
             "invalid_query_arguments",
         )?;
-        let entries = Self::query_entries(&mut tx).await?;
+        let entries = self.query_entries(&mut tx).await?;
         if entries.len() >= MAX_ENTRIES
             || entries
                 .iter()
@@ -208,14 +230,18 @@ where
         }
         let task_id = ulid::Ulid::new().to_string();
         let key = key(&task_id)?;
-        let deadline = now() + WAIT_SECONDS;
-        let task = json!({"query_task_id":task_id,"query_task_attempt":0,"status":"pending",
-            "namespace":"default","workflow_id":workflow_id,"run_id":run_id,
+        let admitted = authority::now();
+        let (deadline, retained_until) = config.timing(admitted)?;
+        let mut task = json!({"query_task_id":task_id,"query_task_attempt":0,"status":"pending",
+            "namespace":self.namespace.as_ref(),"workflow_id":workflow_id,"run_id":run_id,
             "workflow_type":DB::string(&run,"workflow_type")?,"workflow_class":DB::string(&run,"workflow_class")?,
             "task_queue":DB::string(&run,"queue")?,"payload_codec":"avro","query_name":name,
             "workflow_arguments":wire(&DB::string(&run,"arguments")?),"query_arguments":wire(&arguments),
             "run_status":status,"history_events":history,"last_history_sequence":DB::number(&run,"last_history_sequence")?,
-            "history_cutoff_sequence":DB::number(&run,"last_history_sequence")?,"deadline":deadline});
+            "history_cutoff_sequence":DB::number(&run,"last_history_sequence")?,
+            "query_admitted_at":authority::wire(admitted),"query_deadline_at":authority::wire(deadline),
+            "receipt_expires_at":authority::wire(retained_until)});
+        authority::expire(&mut task, authority::now())?;
         if serde_json::to_vec(&task)?.len() > SNAPSHOT_BYTES {
             return Err(refuse(
                 StatusCode::PAYLOAD_TOO_LARGE,
@@ -225,19 +251,27 @@ where
         Self::query(DB::QUERY_CACHE_INSERT)
             .bind(&key)
             .bind(task.to_string())
-            .bind(deadline + RECEIPT_SECONDS)
+            .bind(authority::expiration(&task)?)
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
         self.wake.notify_waiters();
         // Never hold the transition lock or a pooled connection across the wait.
         // Periodic probes observe results committed by another server process.
+        let timed_out = || super::RuntimeError::Protocol {
+            status: StatusCode::GATEWAY_TIMEOUT,
+            response: json!({"workflow_id":workflow_id,"run_id":run_id,"query_name":name,
+                "reason":"query_task_timed_out","message":"Timed out waiting for the original query result."}),
+        };
         loop {
             let wake = self.wake.notified();
-            let row = Self::query(DB::QUERY_CACHE_GET)
+            let remaining = (deadline - authority::now()).to_std().unwrap_or_default();
+            let read = Self::query(DB::QUERY_CACHE_GET)
                 .bind(&key)
-                .fetch_optional(&self.pool)
-                .await?
+                .fetch_optional(&self.pool);
+            let row = tokio::time::timeout(remaining, read)
+                .await
+                .map_err(|_| timed_out())??
                 .ok_or_else(|| refuse(StatusCode::CONFLICT, "query_task_timed_out"))?;
             let task: Value = serde_json::from_str(&DB::string(&row, "value")?)?;
             match task["status"].as_str() {
@@ -260,7 +294,17 @@ where
                     body["query_name"] = json!(name);
                     return Ok((status, body));
                 }
-                _ if now() >= deadline => {
+                Some("timed_out") => {
+                    return Err(timed_out());
+                }
+                _ if authority::deadline(&task)
+                    .is_some_and(|deadline| authority::now() >= deadline) =>
+                {
+                    // The stored deadline already fences every new outcome.
+                    // Cleanup must not delay the caller behind a busy writer.
+                    return Err(timed_out());
+                }
+                _ if authority::deadline(&task).is_none() => {
                     let mut tx = self.begin().await?;
                     // Recheck under the same lock as completion: a committed
                     // result wins over a racing timeout.
@@ -270,13 +314,13 @@ where
                         .await?;
                     let mut task: Value = serde_json::from_str(&DB::string(&row, "value")?)?;
                     if matches!(task["status"].as_str(), Some("completed" | "failed")) {
+                        tx.rollback().await?;
                         continue;
                     }
-                    task["status"] = json!("timed_out");
-                    task.as_object_mut().unwrap().remove("history_events");
-                    Self::put_query(&mut tx, &key, &task, now() + RECEIPT_SECONDS).await?;
+                    authority::expire(&mut task, authority::now())?;
+                    Self::put_query(&mut tx, &key, &task, authority::expiration(&task)?).await?;
                     tx.commit().await?;
-                    return Err(refuse(StatusCode::CONFLICT, "query_task_timed_out"));
+                    continue;
                 }
                 _ => {}
             }
@@ -284,38 +328,111 @@ where
         }
     }
 
-    pub(super) async fn poll_query(&self, body: Value) -> Result<Value> {
-        text(&body, "worker_id")?;
+    pub(super) async fn poll_query(&self, body: Value, config: &QueryTaskConfig) -> Result<Value> {
+        let owner = text(&body, "worker_id")?;
         text(&body, "task_queue")?;
         let timeout = body
             .get("timeout_seconds")
             .map_or(Some(5), Value::as_u64)
             .filter(|v| *v <= 60)
             .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_poll_timeout"))?;
+        let timeout = timeout.min(config.poll_timeout_seconds.max(1) as u64);
         let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
+        // One request belongs to the registration observed before its wait.
+        // A later same-ID registration cannot silently upgrade this poll.
+        let Some(proof) =
+            Self::query_worker_proof(&self.pool, self.namespace.as_ref(), owner, config).await?
+        else {
+            return Ok(poll_result(None, "stale_worker_registration"));
+        };
         loop {
             let wake = self.wake.notified();
-            if let Some(task) = self.claim_query(&body).await? {
-                return Ok(
-                    json!({"task":task,"poll_status":"task","server_capabilities":super::store::capabilities()}),
-                );
+            match self.claim_query(&body, config, &proof).await? {
+                QueryClaim::Task(task) => return Ok(poll_result(Some(task), "task")),
+                QueryClaim::StaleWorker => {
+                    return Ok(poll_result(None, "stale_worker_registration"));
+                }
+                QueryClaim::Empty => {}
             }
             if tokio::time::Instant::now() >= deadline {
-                return Ok(
-                    json!({"task":null,"poll_status":"timeout","server_capabilities":super::store::capabilities()}),
-                );
+                return Ok(poll_result(None, "timeout"));
             }
             tokio::select! { _ = wake => {}, _ = tokio::time::sleep(Duration::from_millis(50)) => {} }
         }
     }
 
-    async fn claim_query(&self, body: &Value) -> Result<Option<Value>> {
+    async fn query_worker_proof<'e, E>(
+        executor: E,
+        namespace: &str,
+        owner: &str,
+        config: &QueryTaskConfig,
+    ) -> Result<Option<String>>
+    where
+        E: Executor<'e, Database = DB>,
+    {
+        let rows = Self::query("SELECT w.worker_id,w.namespace,w.last_heartbeat_at,i.token,i.worker_id AS incarnation_worker_id,i.namespace AS incarnation_namespace FROM workflow_worker_registrations w JOIN dw_worker_registration_incarnations i ON i.worker_id=w.worker_id AND i.namespace=w.namespace AND i.status='active' WHERE w.namespace=$1 AND w.worker_id=$2 AND w.status='active' LIMIT 2")
+            .bind(namespace.to_owned()).bind(owner.to_owned()).fetch_all(executor).await?;
+        if rows.len() != 1 {
+            return Ok(None);
+        }
+        let row = &rows[0];
+        if DB::string(row, "worker_id")? != owner
+            || DB::string(row, "namespace")? != namespace
+            || DB::string(row, "incarnation_worker_id")? != owner
+            || DB::string(row, "incarnation_namespace")? != namespace
+            || DB::instant(row, "last_heartbeat_at")?
+                <= QueryTaskConfig::add(
+                    authority::now(),
+                    -config.worker_stale_after_seconds.max(1),
+                )?
+        {
+            return Ok(None);
+        }
+        use sha2::{Digest, Sha256};
+        let digest: String = Sha256::digest(DB::string(row, "token")?.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        Ok(Some(digest))
+    }
+
+    fn query_delivery(task: &Value) -> Value {
+        let mut delivered = task.clone();
+        for field in [
+            "receipt_expires_at",
+            "terminal_receipt",
+            "registration_incarnation",
+            "legacy_refusal_at",
+        ] {
+            delivered
+                .as_object_mut()
+                .expect("native query task")
+                .remove(field);
+        }
+        delivered["server_time"] = json!(authority::wire(authority::now()));
+        delivered
+    }
+
+    async fn claim_query(
+        &self,
+        body: &Value,
+        config: &QueryTaskConfig,
+        expected_proof: &str,
+    ) -> Result<QueryClaim> {
         let owner = text(body, "worker_id")?;
         let queue = text(body, "task_queue")?;
         let mut tx = self.begin().await?;
-        let worker = Self::query("SELECT * FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2 AND status='active' AND last_heartbeat_at>$3")
-            .bind(self.namespace.as_ref()).bind(owner).bind(DB::bind_time(chrono::Utc::now() - chrono::Duration::seconds(60)))
-            .fetch_optional(&mut *tx).await?.ok_or_else(|| refuse(StatusCode::CONFLICT, "worker_not_registered"))?;
+        let worker = Self::query("SELECT * FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2 AND status='active'")
+            .bind(self.namespace.as_ref()).bind(owner)
+            .fetch_optional(&mut *tx).await?;
+        let Some(worker) = worker else {
+            return Ok(QueryClaim::StaleWorker);
+        };
+        let proof =
+            Self::query_worker_proof(&mut *tx, self.namespace.as_ref(), owner, config).await?;
+        let Some(proof) = proof.filter(|proof| proof == expected_proof) else {
+            return Ok(QueryClaim::StaleWorker);
+        };
         if DB::string(&worker, "task_queue")? != queue {
             return Err(refuse(StatusCode::CONFLICT, "task_queue_mismatch"));
         }
@@ -326,12 +443,12 @@ where
             .as_array()
             .is_some_and(|values| values.iter().any(|v| v == "query_tasks"))
         {
-            return Ok(None);
+            return Ok(QueryClaim::Empty);
         }
-        for (key, mut task) in Self::query_entries(&mut tx).await? {
+        for (key, mut task) in self.query_entries(&mut tx).await? {
             if !matches!(task["status"].as_str(), Some("pending" | "leased"))
                 || task["namespace"] != self.namespace.as_ref()
-                || task["deadline"].as_i64().unwrap_or(0) <= now()
+                || authority::deadline(&task).is_none_or(|deadline| deadline <= authority::now())
                 || task["task_queue"] != queue
                 || !types
                     .as_array()
@@ -348,32 +465,144 @@ where
             {
                 continue;
             }
-            if task["status"] == "leased" && task["lease_until"].as_i64().unwrap_or(0) > now() {
-                if task["lease_owner"] == owner {
-                    return Ok(Some(task));
+            if task["status"] == "leased"
+                && authority::timestamp(&task["lease_expires_at"])
+                    .is_some_and(|lease| lease > authority::now())
+            {
+                let existing_owner = task["lease_owner"].as_str().unwrap_or("");
+                let existing_proof = Self::query_worker_proof(
+                    &mut *tx,
+                    self.namespace.as_ref(),
+                    existing_owner,
+                    config,
+                )
+                .await?;
+                if existing_proof
+                    .as_deref()
+                    .is_some_and(|proof| task["registration_incarnation"] == proof)
+                {
+                    if existing_owner == owner {
+                        let delivered = Self::query_delivery(&task);
+                        tx.commit().await?;
+                        return Ok(QueryClaim::Task(delivered));
+                    }
+                    continue;
                 }
-                continue;
             }
-            task["query_task_attempt"] =
-                json!(task["query_task_attempt"].as_i64().unwrap_or(0) + 1);
+            let next_attempt = task["query_task_attempt"]
+                .as_i64()
+                .and_then(|attempt| attempt.checked_add(1))
+                .ok_or_else(|| refuse(StatusCode::CONFLICT, "query_task_attempt_exhausted"))?;
+            task["query_task_attempt"] = json!(next_attempt);
             task["status"] = json!("leased");
             task["lease_owner"] = json!(owner);
-            let expires = (now() + LEASE_SECONDS).min(task["deadline"].as_i64().unwrap());
-            task["lease_until"] = json!(expires);
-            task["lease_expires_at"] = json!(chrono::DateTime::from_timestamp(expires, 0).unwrap());
-            Self::put_query(
-                &mut tx,
-                &key,
-                &task,
-                task["deadline"].as_i64().unwrap() + RECEIPT_SECONDS,
-            )
-            .await?;
+            let time = authority::now();
+            let expires = QueryTaskConfig::add(time, config.lease_timeout_seconds.max(1))?
+                .min(authority::deadline(&task).expect("checked original deadline"));
+            if expires <= time {
+                continue;
+            }
+            task["lease_expires_at"] = json!(authority::wire(expires));
+            task["registration_incarnation"] = json!(proof);
+            Self::put_query(&mut tx, &key, &task, authority::expiration(&task)?).await?;
             tx.commit().await?;
-            return Ok(Some(task));
+            return Ok(QueryClaim::Task(Self::query_delivery(&task)));
         }
         // Commit cleanup even when no compatible task is found.
         tx.commit().await?;
-        Ok(None)
+        Ok(QueryClaim::Empty)
+    }
+
+    fn cached_query(row: &DB::Row, id: &str, namespace: &str) -> Result<Value> {
+        if DB::number(row, "expiration")? <= now() {
+            return Err(refuse(StatusCode::NOT_FOUND, "query_task_not_found"));
+        }
+        let task: Value = serde_json::from_str(&DB::string(row, "value")?)?;
+        authority::scope(&task, id, namespace)?;
+        Ok(task)
+    }
+
+    async fn query_claim_reason<'e, E>(
+        executor: E,
+        task: &Value,
+        owner: &str,
+        attempt: i64,
+        config: &QueryTaskConfig,
+    ) -> Result<Option<&'static str>>
+    where
+        E: Executor<'e, Database = DB>,
+    {
+        let reason = authority::claim_reason(task, owner, attempt, authority::now());
+        if reason.is_some_and(|reason| reason != "lease_expired") {
+            return Ok(reason);
+        }
+        let proof = Self::query_worker_proof(
+            executor,
+            task["namespace"].as_str().unwrap_or(""),
+            owner,
+            config,
+        )
+        .await?;
+        if proof
+            .as_deref()
+            .is_none_or(|proof| task["registration_incarnation"] != proof)
+        {
+            return Ok(Some("stale_worker_registration"));
+        }
+        // Database reads can consume the remaining lease. Recheck against a
+        // fresh clock after observing current registration authority.
+        Ok(authority::claim_reason(
+            task,
+            owner,
+            attempt,
+            authority::now(),
+        ))
+    }
+
+    pub(super) async fn query_status(
+        &self,
+        id: &str,
+        owner: &str,
+        attempt: i64,
+        config: &QueryTaskConfig,
+    ) -> Result<Value> {
+        let key = key(id)?;
+        let row = Self::query(DB::QUERY_CACHE_GET)
+            .bind(&key)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| refuse(StatusCode::NOT_FOUND, "query_task_not_found"))?;
+        let task = Self::cached_query(&row, id, self.namespace.as_ref())?;
+        // Observation reveals timing only to the bound claim. It neither
+        // expires a row nor writes a tombstone, heartbeat or receipt.
+        if task["lease_owner"] != owner {
+            return Err(authority::reject_reason("lease_owner_mismatch"));
+        }
+        if task["query_task_attempt"] != attempt {
+            return Err(authority::reject_reason("query_task_attempt_mismatch"));
+        }
+        let reason = Self::query_claim_reason(&self.pool, &task, owner, attempt, config).await?;
+        let status = match reason {
+            Some("query_deadline_unavailable") => "failed",
+            Some("query_task_timed_out") => "timed_out",
+            _ => task["status"].as_str().unwrap_or("failed"),
+        };
+        Ok(
+            json!({"query_task_id":id,"query_task_attempt":attempt,"lease_owner":owner,
+            "query_admitted_at":task["query_admitted_at"],"query_deadline_at":task["query_deadline_at"],
+            "lease_expires_at":task["lease_expires_at"],"server_time":authority::wire(authority::now()),
+            "query_task_status":status,"can_continue":reason.is_none(),"reason":reason,"status":200}),
+        )
+    }
+
+    pub(super) async fn guard_query_outcome(
+        &self,
+        id: &str,
+        body: &Value,
+        failed: bool,
+        config: &QueryTaskConfig,
+    ) -> Result<Option<Value>> {
+        self.query_outcome(id, body, failed, config, false).await
     }
 
     pub(super) async fn finish_query(
@@ -381,7 +610,21 @@ where
         task_id: &str,
         body: Value,
         failed: bool,
+        config: &QueryTaskConfig,
     ) -> Result<Value> {
+        self.query_outcome(task_id, &body, failed, config, true)
+            .await?
+            .ok_or_else(|| refuse(StatusCode::SERVICE_UNAVAILABLE, "query_outcome_unavailable"))
+    }
+
+    async fn query_outcome(
+        &self,
+        task_id: &str,
+        body: &Value,
+        failed: bool,
+        config: &QueryTaskConfig,
+        commit: bool,
+    ) -> Result<Option<Value>> {
         if serde_json::to_vec(&body)?.len() > 512 * 1024 {
             return Err(refuse(
                 StatusCode::PAYLOAD_TOO_LARGE,
@@ -389,7 +632,7 @@ where
             ));
         }
         let key = key(task_id)?;
-        let owner = text(&body, "lease_owner")?;
+        let owner = text(body, "lease_owner")?;
         let attempt = body["query_task_attempt"]
             .as_i64()
             .filter(|v| *v > 0)
@@ -405,73 +648,88 @@ where
             .fetch_optional(&mut *tx)
             .await?
             .ok_or_else(|| refuse(StatusCode::NOT_FOUND, "query_task_not_found"))?;
-        let mut task: Value = serde_json::from_str(&DB::string(&row, "value")?)?;
-        if task["deadline"].as_i64().unwrap_or(0) <= now()
-            || DB::number(&row, "expiration")? <= now()
+        let mut task = Self::cached_query(&row, task_id, self.namespace.as_ref())?;
+        let fingerprint = authority::operation(body, failed)?;
+        if let Some(receipt) =
+            authority::receipt(&task, owner, attempt, &fingerprint, authority::now())?
         {
-            return Err(refuse(StatusCode::CONFLICT, "query_task_timed_out"));
+            tx.rollback().await?;
+            return Ok(Some(receipt));
         }
-        if task["status"] != "leased" {
-            return Err(refuse(StatusCode::CONFLICT, "query_task_not_leased"));
+        if authority::expire(&mut task, authority::now())? {
+            let reason = if authority::deadline(&task).is_none() {
+                "query_deadline_unavailable"
+            } else {
+                "query_task_timed_out"
+            };
+            Self::put_query(&mut tx, &key, &task, authority::expiration(&task)?).await?;
+            tx.commit().await?;
+            self.wake.notify_waiters();
+            return Err(authority::reject_reason(reason));
         }
-        if task["lease_owner"] != owner {
-            return Err(refuse(
-                StatusCode::CONFLICT,
-                "query_task_lease_owner_mismatch",
-            ));
+        if let Some(reason) =
+            Self::query_claim_reason(&mut *tx, &task, owner, attempt, config).await?
+        {
+            return Err(authority::reject_reason(reason));
         }
-        if task["query_task_attempt"] != attempt {
-            return Err(refuse(StatusCode::CONFLICT, "query_task_attempt_mismatch"));
+        if !commit {
+            tx.rollback().await?;
+            return Ok(None);
         }
-        if task["lease_until"].as_i64().unwrap_or(0) <= now() {
-            return Err(refuse(StatusCode::CONFLICT, "query_task_lease_expired"));
-        }
-        // Registration revocation also fences an otherwise unexpired claim.
-        let registered = Self::query("SELECT worker_id FROM workflow_worker_registrations WHERE namespace='default' AND worker_id=$1 AND status='active'")
-            .bind(owner).fetch_optional(&mut *tx).await?;
-        if registered.is_none() {
-            return Err(refuse(StatusCode::CONFLICT, "worker_not_registered"));
-        }
-        let reason;
+        let reason: Option<String>;
+        let failure;
+        let result;
         if failed {
-            let failure = &body["failure"];
-            if !failure.is_object() || serde_json::to_vec(failure)?.len() > 32 * 1024 {
+            let supplied = &body["failure"];
+            if !supplied.is_object() || serde_json::to_vec(supplied)?.len() > 32 * 1024 {
                 return Err(refuse(
                     StatusCode::UNPROCESSABLE_ENTITY,
                     "invalid_query_failure",
                 ));
             }
-            reason = failure["reason"]
-                .as_str()
-                .filter(|v| !v.is_empty() && v.len() <= 255)
-                .unwrap_or("query_rejected");
-            task["failure"] = failure.clone();
-            task["failure"]["reason"] = json!(reason);
-            task["status"] = json!("failed");
+            reason = Some(
+                supplied["reason"]
+                    .as_str()
+                    .filter(|v| !v.is_empty() && v.len() <= 255)
+                    .unwrap_or("query_rejected")
+                    .to_owned(),
+            );
+            failure = Some(supplied.clone());
+            result = None;
         } else {
-            let result = envelope(&body, "result_envelope")?;
-            if result.len() > RESULT_BYTES {
+            let supplied = envelope(body, "result_envelope")?;
+            if supplied.len() > RESULT_BYTES {
                 return Err(refuse(
                     StatusCode::PAYLOAD_TOO_LARGE,
                     "query_result_exceeds_budget",
                 ));
             }
-            task["result_envelope"] = wire(&result);
-            task["status"] = json!("completed");
-            reason = "";
+            result = Some(wire(&supplied));
+            failure = None;
+            reason = None;
         }
+        let decided_at = authority::now();
+        if let Some(reason) = authority::claim_reason(&task, owner, attempt, decided_at) {
+            return Err(authority::reject_reason(reason));
+        }
+        let decision = json!({"query_task_id":task_id,"query_task_attempt":attempt,
+            "outcome":if failed {"failed"} else {"completed"},"reason":reason,"status":200,"recorded":true});
+        task["status"] = json!(if failed { "failed" } else { "completed" });
+        if let Some(failure) = failure {
+            task["failure"] = failure;
+            task["failure"]["reason"] = json!(reason);
+        }
+        if let Some(result) = result {
+            task["result_envelope"] = result;
+        }
+        task["terminal_receipt"] = json!({"lease_owner":owner,"attempt":attempt,
+            "fingerprint":fingerprint,"decision":decision,"decided_at":authority::wire(decided_at)});
         // Results reserve their slot at admission, and discard the large replay
         // snapshot. No workflow rows, histories, cursors or waits are changed.
-        let object = task.as_object_mut().unwrap();
-        for field in ["history_events", "workflow_arguments", "query_arguments"] {
-            object.remove(field);
-        }
-        Self::put_query(&mut tx, &key, &task, now() + RECEIPT_SECONDS).await?;
+        authority::discard_snapshot(&mut task);
+        Self::put_query(&mut tx, &key, &task, authority::expiration(&task)?).await?;
         tx.commit().await?;
         self.wake.notify_waiters();
-        Ok(
-            json!({"query_task_id":task_id,"query_task_attempt":attempt,"outcome":if failed {"failed"} else {"completed"},
-            "reason":if failed {Some(reason)} else {None},"status":200}),
-        )
+        Ok(Some(decision))
     }
 }
