@@ -2370,6 +2370,7 @@ where
         Self::project_activity_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
         Self::project_timer_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
         Self::project_signal_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
+        Self::project_condition_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
         Ok(())
     }
 

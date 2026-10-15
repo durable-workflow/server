@@ -92,6 +92,16 @@ Signal receipt and application are distinct transitions. A buffered receipt
 can precede the opening event; applying it later resolves that wait. These
 projection writes do not qualify signal timeouts or the remaining wait families.
 
+Ordinary condition waits use the existing authored `ConditionWaitOpened` identity
+and condition key. Unlike a direct signal wait, receipt of external input leaves
+the condition open. Its existing `ConditionWaitSatisfied` event resolves the
+matching wait when the worker applies that input. A subsequent occurrence has
+its own identity even when it uses the same condition key. Resolution and terminal
+closure only update retained rows; they do not recreate a missing projection.
+This component covers the already admitted default and named-namespace commands.
+Condition timeouts and cancellation scopes remain separate qualification gates;
+their current command refusals are unchanged.
+
 Exercise current and selected runs, default and named namespaces, invalid
 current pointers, absent summaries, typed selected context, growing histories,
 pruned details, and bounded relationship/wait/failure collections. Separate
