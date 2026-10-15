@@ -115,6 +115,15 @@ jq -e '.status=="inspected" and .queue_inspection.status=="known_subset_bound"
   and .queue_inspection.workflow_jobs==0 and .queue_inspection.activity_jobs==0
   and .source_mutated==false and .takeover_allowed==false and .backup_verified==false
   and .php_quiescence_verified==false and .stored_representation_compatibility_verified==false' "$evidence/queue-inspection.json" >/dev/null
+inspect_source upgrade-payload-inspect > "$evidence/payload-inspection.json" 2> "$evidence/payload-inspection.stderr"
+jq -e '.status=="inspected" and (.payload_inspection.columns|length)==4
+  and .payload_inspection.references_metadata_supported==true
+  and ([.payload_inspection.columns[].counts.php_v1_references]|add)==0
+  and ([.payload_inspection.columns[].counts.other_unvalidated]|add)==3
+  and .payload_inspection.provider_bytes_verified==false
+  and .payload_inspection.registry_binding_verified==false
+  and .source_mutated==false and .takeover_allowed==false and .backup_verified==false
+  and .php_quiescence_verified==false and .stored_representation_compatibility_verified==false' "$evidence/payload-inspection.json" >/dev/null
 snapshot > "$evidence/after.json"
 cmp "$evidence/before.json" "$evidence/after.json"
 refusal() {

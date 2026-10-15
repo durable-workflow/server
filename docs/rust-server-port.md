@@ -3097,3 +3097,21 @@ All 97 local library tests pass, with 18 existing database/subprocess cases
 explicitly ignored. This reader is not yet wired to source-row scanning or
 conversion and fetches no object. Registry/provider binding, restored backup
 bytes, complete representation coverage and sequential takeover remain open.
+
+The next preparation connects that decoder to `upgrade-payload-inspect`, a
+separate read-only root-column scan. It reports bounded counts and affected row
+IDs for unsupported metadata, with no provider fetch, payload/URI output or
+takeover authority. New controls cover all four columns, pagination, omitted
+diagnostics, oversized values, source identity and byte preservation. Existing
+inventory and queue inspection behavior is unchanged. Exact local and hosted
+qualification belongs to #460; constructed source rows are not executed workflows.
+
+The corrected preparation passes 101 library cases and the CLI filesystem
+refusal test, with 18 existing database/subprocess ignores. Fifteen separate CLI
+controls on SQLite DELETE, MySQL 8.4 and PostgreSQL 17 inspect metadata, refuse
+unsupported/malformed/oversized references and accept explicit restoration.
+Network readers have SELECT-only authority; each source fingerprint is unchanged.
+The first MySQL fixture ID overflow and prototype reserved SQL alias remain failed
+observations. The fixture ID and alias are corrected, and the shared upgrade
+profile now exercises the new scan. Hosted integration and every takeover gate
+remain pending.

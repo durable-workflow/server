@@ -22,6 +22,8 @@ fn special_sqlite_sources_refuse_without_waiting_for_a_writer() {
         (directory.path(), "upgrade-inspect"),
         (fifo.as_path(), "upgrade-queue-inspect"),
         (directory.path(), "upgrade-queue-inspect"),
+        (fifo.as_path(), "upgrade-payload-inspect"),
+        (directory.path(), "upgrade-payload-inspect"),
     ] {
         let mut child = Command::new(env!("CARGO_BIN_EXE_durable-workflow-server"))
             .env_clear()

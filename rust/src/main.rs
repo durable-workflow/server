@@ -127,7 +127,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         if env::args().count() != 2
             || !matches!(
                 command.as_str(),
-                "schema-bootstrap" | "schema-check" | "upgrade-inspect" | "upgrade-queue-inspect"
+                "schema-bootstrap"
+                    | "schema-check"
+                    | "upgrade-inspect"
+                    | "upgrade-queue-inspect"
+                    | "upgrade-payload-inspect"
             )
         {
             return Err("unknown development command".into());
@@ -135,7 +139,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let backend = env::var("DB_CONNECTION").unwrap_or_default();
         if matches!(
             command.as_str(),
-            "upgrade-inspect" | "upgrade-queue-inspect"
+            "upgrade-inspect" | "upgrade-queue-inspect" | "upgrade-payload-inspect"
         ) {
             use durable_workflow_server::runtime::upgrade::{
                 self, queue_binding::QueueSourceConfig,
@@ -167,21 +171,39 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let result = match backend.as_str() {
                 "sqlite" => {
                     let path = env::var("DB_DATABASE").map_err(|_| "DB_DATABASE is required")?;
-                    match queues.as_ref() {
-                        Some(config) => upgrade::inspect_sqlite_queues(&path, config).await,
-                        None => upgrade::inspect_sqlite(&path).await,
+                    if command == "upgrade-payload-inspect" {
+                        upgrade::inspect_sqlite_payloads(&path).await
+                    } else {
+                        match queues.as_ref() {
+                            Some(config) => upgrade::inspect_sqlite_queues(&path, config).await,
+                            None => upgrade::inspect_sqlite(&path).await,
+                        }
                     }
                 }
-                "mysql" | "mariadb" => match queues.as_ref() {
-                    Some(config) => upgrade::inspect_mysql_queues(mysql_options()?, config).await,
-                    None => upgrade::inspect_mysql(mysql_options()?).await,
-                },
-                "pgsql" => match queues.as_ref() {
-                    Some(config) => {
-                        upgrade::inspect_postgres_queues(postgres_options()?, config).await
+                "mysql" | "mariadb" => {
+                    if command == "upgrade-payload-inspect" {
+                        upgrade::inspect_mysql_payloads(mysql_options()?).await
+                    } else {
+                        match queues.as_ref() {
+                            Some(config) => {
+                                upgrade::inspect_mysql_queues(mysql_options()?, config).await
+                            }
+                            None => upgrade::inspect_mysql(mysql_options()?).await,
+                        }
                     }
-                    None => upgrade::inspect_postgres(postgres_options()?).await,
-                },
+                }
+                "pgsql" => {
+                    if command == "upgrade-payload-inspect" {
+                        upgrade::inspect_postgres_payloads(postgres_options()?).await
+                    } else {
+                        match queues.as_ref() {
+                            Some(config) => {
+                                upgrade::inspect_postgres_queues(postgres_options()?, config).await
+                            }
+                            None => upgrade::inspect_postgres(postgres_options()?).await,
+                        }
+                    }
+                }
                 _ => {
                     return Err(
                         "upgrade inspection requires DB_CONNECTION=sqlite, pgsql, mysql or mariadb"
@@ -190,7 +212,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
             };
             match result {
-                Ok(report) => println!("{report}"),
+                Ok(report) => {
+                    println!("{report}");
+                    if report["status"] == "unqualified" {
+                        eprintln!("upgrade_source_payload_metadata_unqualified");
+                        return Err("upgrade source inspection refused".into());
+                    }
+                }
                 Err(error) => {
                     let reason = match error {
                         RuntimeError::Refused { reason, .. } => reason,

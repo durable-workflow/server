@@ -322,6 +322,259 @@ async fn unknown_source_catalog_refuses_without_repair_or_retained_reader() {
     assert_eq!(std::fs::read(&path).unwrap(), before);
 }
 
+fn stored_reference() -> String {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../tests/Fixtures/ServerUpgrade/php-2.5.20-external-references.json"
+    ))
+    .unwrap();
+    fixture["cases"][0]["stored"].as_str().unwrap().to_owned()
+}
+
+async fn payload_run(
+    connection: &mut SqliteConnection,
+    id: &str,
+    arguments: Option<&str>,
+    output: Option<&str>,
+    codec: &str,
+) {
+    sqlx::query("INSERT INTO workflow_runs(id,workflow_instance_id,run_number,workflow_class,workflow_type,status,payload_codec,arguments,output,output_payload_codec) VALUES (?, ?,1,'SourceFixture','source.fixture','completed',?,?,?,'avro')")
+        .bind(id).bind(format!("instance-{id}")).bind(codec).bind(arguments).bind(output)
+        .execute(connection).await.unwrap();
+}
+
+fn column_counts<'a>(report: &'a Value, table: &str, column: &str) -> &'a Value {
+    &report["payload_inspection"]["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|value| value["table"] == table && value["column"] == column)
+        .unwrap()["counts"]
+}
+
+#[tokio::test]
+async fn payload_scan_checks_all_four_columns_and_every_page_without_mutation_or_locations() {
+    let (_directory, path) = php_layout().await;
+    let mut connection = SqliteConnection::connect_with(
+        &SqliteConnectOptions::new()
+            .filename(&path)
+            .foreign_keys(false),
+    )
+    .await
+    .unwrap();
+    let reference = stored_reference();
+    let large_inline = "private-inline-value".repeat(100_000);
+    for index in 0..33 {
+        let arguments = match index {
+            0 => Some(reference.as_str()),
+            1 => None,
+            _ => Some(large_inline.as_str()),
+        };
+        payload_run(
+            &mut connection,
+            &format!("run-{index:02}"),
+            arguments,
+            (index == 32).then_some(reference.as_str()),
+            "avro",
+        )
+        .await;
+    }
+    sqlx::query("INSERT INTO activity_executions(id,workflow_run_id,sequence,activity_class,activity_type,status,payload_codec,arguments,result) VALUES ('activity-1','run-00',1,'SourceFixture','source.fixture','completed','avro',?,?)")
+        .bind(&reference).bind(&reference).execute(&mut connection).await.unwrap();
+    connection.close().await.unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let report = inspect_sqlite_payloads(&path).await.unwrap();
+    assert_eq!(report["status"], "inspected");
+    assert_eq!(
+        report["payload_inspection"]["references_metadata_supported"],
+        true
+    );
+    assert_eq!(
+        column_counts(&report, "workflow_runs", "arguments"),
+        &json!({"rows":33,"absent":1,"other_unvalidated":31,"php_v1_references":1,"unqualified_references":0})
+    );
+    assert_eq!(
+        column_counts(&report, "workflow_runs", "output")["php_v1_references"],
+        1
+    );
+    for field in ["arguments", "result"] {
+        assert_eq!(
+            column_counts(&report, "activity_executions", field)["php_v1_references"],
+            1
+        );
+    }
+    assert_eq!(report["payload_inspection"]["diagnostics"], json!([]));
+    for flag in [
+        "inline_values_verified",
+        "nested_payloads_verified",
+        "provider_bytes_verified",
+        "registry_binding_verified",
+        "source_mutated",
+        "takeover_allowed",
+    ] {
+        assert_eq!(report["payload_inspection"][flag], false, "{flag}");
+    }
+    assert!(!report.to_string().contains(&reference));
+    assert!(!report.to_string().contains("private-inline-value"));
+    let decoded = external_reference::inspect_php_reference(&reference, Some("avro"))
+        .unwrap()
+        .unwrap();
+    assert!(!report.to_string().contains(decoded.reference().uri()));
+    assert!(!report.to_string().contains(decoded.reference().sha256()));
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    mutate(&path, "BEGIN EXCLUSIVE; ROLLBACK").await;
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
+#[tokio::test]
+async fn payload_scan_reports_unknown_and_malformed_references_after_first_page() {
+    let (_directory, path) = php_layout().await;
+    let mut connection = SqliteConnection::connect_with(
+        &SqliteConnectOptions::new()
+            .filename(&path)
+            .foreign_keys(false),
+    )
+    .await
+    .unwrap();
+    for index in 0..33 {
+        payload_run(
+            &mut connection,
+            &format!("run-{index:02}"),
+            None,
+            None,
+            "avro",
+        )
+        .await;
+    }
+    let reference = stored_reference();
+    for (id, value, codec) in [
+        ("run-33", "dw-external-payload:v2:private-uri", "avro"),
+        ("run-34", "dw-external-payload:v1:%%%", "avro"),
+        (
+            "run-35",
+            "dw-native-external-payload-v1:private-uri",
+            "avro",
+        ),
+        ("run-36", reference.as_str(), "json"),
+    ] {
+        payload_run(&mut connection, id, Some(value), None, codec).await;
+    }
+    connection.close().await.unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let report = inspect_sqlite_payloads(&path).await.unwrap();
+    assert_eq!(report["status"], "unqualified");
+    assert_eq!(
+        column_counts(&report, "workflow_runs", "arguments")["unqualified_references"],
+        4
+    );
+    let diagnostics = &report["payload_inspection"]["diagnostics"];
+    assert_eq!(diagnostics.as_array().unwrap().len(), 4);
+    assert_eq!(
+        diagnostics[0],
+        json!({"table":"workflow_runs","column":"arguments","record_id":"run-33","reason":"external_reference_format_unsupported"})
+    );
+    assert_eq!(
+        diagnostics[1]["reason"],
+        "external_reference_base64_invalid"
+    );
+    assert_eq!(
+        diagnostics[2]["reason"],
+        "external_reference_format_unsupported"
+    );
+    assert_eq!(
+        diagnostics[3]["reason"],
+        "external_reference_codec_mismatch"
+    );
+    assert!(!report.to_string().contains("private-uri"));
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert!(
+        inspect_sqlite(&path)
+            .await
+            .unwrap()
+            .get("payload_inspection")
+            .is_none()
+    );
+    mutate(&path, "BEGIN EXCLUSIVE; ROLLBACK").await;
+}
+
+#[tokio::test]
+async fn payload_scan_bounds_diagnostics_and_refuses_oversized_reference_metadata() {
+    let (_directory, path) = php_layout().await;
+    let mut connection = SqliteConnection::connect_with(
+        &SqliteConnectOptions::new()
+            .filename(&path)
+            .foreign_keys(false),
+    )
+    .await
+    .unwrap();
+    let oversized = format!("dw-external-payload:v1:{}", "A".repeat(65536));
+    for index in 0..20 {
+        payload_run(
+            &mut connection,
+            &format!("run-{index:02}"),
+            Some(&oversized),
+            None,
+            "avro",
+        )
+        .await;
+    }
+    connection.close().await.unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let report = inspect_sqlite_payloads(&path).await.unwrap();
+    assert_eq!(report["status"], "unqualified");
+    assert_eq!(
+        column_counts(&report, "workflow_runs", "arguments")["unqualified_references"],
+        20
+    );
+    assert_eq!(
+        report["payload_inspection"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .len(),
+        16
+    );
+    assert_eq!(report["payload_inspection"]["diagnostics_omitted"], 4);
+    assert_eq!(
+        report["payload_inspection"]["diagnostics"][0]["reason"],
+        "external_reference_too_large"
+    );
+    assert!(report.to_string().len() < 8192);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
+#[tokio::test]
+async fn payload_scan_does_not_skip_empty_or_oversized_source_identities() {
+    for id in [String::new(), "x".repeat(257)] {
+        let (_directory, path) = php_layout().await;
+        let mut connection = SqliteConnection::connect_with(
+            &SqliteConnectOptions::new()
+                .filename(&path)
+                .foreign_keys(false),
+        )
+        .await
+        .unwrap();
+        payload_run(
+            &mut connection,
+            &id,
+            Some(&stored_reference()),
+            None,
+            "avro",
+        )
+        .await;
+        connection.close().await.unwrap();
+        let before = std::fs::read(&path).unwrap();
+        reason(
+            inspect_sqlite_payloads(&path).await,
+            if id.is_empty() {
+                "upgrade_source_payload_rows_unqualified"
+            } else {
+                "upgrade_source_payload_identity_unqualified"
+            },
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        mutate(&path, "BEGIN EXCLUSIVE; ROLLBACK").await;
+    }
+}
+
 #[tokio::test]
 async fn empty_malformed_and_view_ownership_markers_refuse_before_definition_execution() {
     for statement in [
