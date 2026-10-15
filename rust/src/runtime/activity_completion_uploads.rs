@@ -157,7 +157,10 @@ where
             .task_row(tx, &context.task)
             .await
             .map_err(lease_error)?;
-        if DB::string(&task, "task_type")? != "activity" {
+        // A case-folding database lookup must not create another allowance for
+        // an alias of the same canonical task or attempt.
+        if DB::string(&task, "task_type")? != "activity" || DB::string(&task, "id")? != context.task
+        {
             return Err(rejected());
         }
         Self::fence(&task, &json!({"lease_owner":context.owner})).map_err(lease_error)?;
@@ -178,6 +181,7 @@ where
                 .await?
                 .ok_or_else(rejected)?;
         if DB::string(&attempt, "status")? != "running"
+            || DB::string(&attempt, "id")? != context.attempt
             || DB::number(&attempt, "attempt_number")? != DB::number(&task, "attempt_count")?
             || DB::string(&attempt, "lease_owner")? != context.owner
             || DB::optional_string(&activity, "current_attempt_id")?.as_deref()

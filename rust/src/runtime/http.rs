@@ -235,7 +235,7 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         )
         .await;
     };
-    let allowed_roles: &[&str] = if payload
+    let allowed_roles: &[&str] = if path == "/api/external-payloads/v1"
         && request.method() == Method::POST
         && request
             .headers()
