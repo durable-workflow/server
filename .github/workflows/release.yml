@@ -186,6 +186,11 @@ jobs:
           WORKFLOW_PACKAGE_COMMIT: ${{ steps.workflow.outputs.commit }}
         run: node scripts/ci/resolve-release-image-cache.mjs
 
+      - name: Refuse replacement of published release images
+        env:
+          RELEASE_TAG: ${{ steps.release_publish.outputs.tag }}
+        run: sh scripts/ci/guard-unpublished-release-images.sh
+
       - name: Start exact image build timer
         id: build_started
         run: printf 'epoch_seconds=%s\n' "$(date +%s)" >> "$GITHUB_OUTPUT"
