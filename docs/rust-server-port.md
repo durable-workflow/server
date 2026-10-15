@@ -34,7 +34,18 @@ failed; later qualifying runs are separate observations.
 - [Activity metadata listing](contracts/activity-metadata-listing.md) is a
   separate current-PHP-source slice. All 31 projection cases pass on published
   PHP 2.8.5. Original `9da7b93b` passes all 13 jobs, while retry-corrected
-  candidate `062ce91a` is qualifying independently. Combined API preparation
+  candidate `062ce91a` has a failed SQLite original in
+  [38738644671](https://github.com/durable-workflow/server/actions/runs/38738644671).
+  Its frozen PHP recorder timed out waiting for a pending-history task before
+  embedded/native comparison. The original peer, poll phase and cause are
+  unestablished; the other five database originals remain in progress.
+  Shared diagnostic preparation `e6c56de3` identifies the failed poll phase,
+  original workflow/run/worker/queue and final status/reason, preserving the
+  ten-second budget and excluding headers and business payloads. PHP syntax,
+  48 existing contract controls and a separate mock timeout control pass.
+  Two fresh, explicitly selected waiting-history fixtures also pass against
+  the unchanged frozen PHP 2.5.14 / SDK 2.2.6 tuple. They do not explain or
+  rescue the earlier full-run failure. Combined API preparation
   `6720274c` passes 24 installed PHP/native originals and 88 metadata snapshot
   comparisons on MySQL 8.4 and PostgreSQL 17. The earlier twelve SQLite
   originals remain their own component result. Full database-version consumer
