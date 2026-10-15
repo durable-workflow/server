@@ -35,7 +35,11 @@ The whole inspection has a fixed 30-second observation budget. Timeout,
 unknown schema or access failure produces an explicit refusal, with no source
 DDL, ledger, marker, row, lease, sequence or provider mutation. Standalone
 connections close on both success and refusal; no cancelled connection returns
-to an application pool.
+to an application pool. Socket retirement has a separate one-second ceiling.
+Inspection runs against the configured role's visible catalog. It cannot prove
+absence of objects hidden by database privileges, nor infer an installed package
+version from schema equality. PostgreSQL row-security policies require separate
+qualification and refuse this first inventory path.
 
 ## Qualification and next migration gates
 

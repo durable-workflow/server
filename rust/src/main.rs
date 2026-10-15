@@ -125,11 +125,49 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     if let Some(command) = env::args().nth(1) {
         if env::args().count() != 2
-            || !matches!(command.as_str(), "schema-bootstrap" | "schema-check")
+            || !matches!(
+                command.as_str(),
+                "schema-bootstrap" | "schema-check" | "upgrade-inspect"
+            )
         {
             return Err("unknown development command".into());
         }
         let backend = env::var("DB_CONNECTION").unwrap_or_default();
+        if command == "upgrade-inspect" {
+            let result = match backend.as_str() {
+                "sqlite" => {
+                    durable_workflow_server::runtime::upgrade::inspect_sqlite(
+                        &env::var("DB_DATABASE").map_err(|_| "DB_DATABASE is required")?,
+                    )
+                    .await
+                }
+                "mysql" | "mariadb" => {
+                    durable_workflow_server::runtime::upgrade::inspect_mysql(mysql_options()?).await
+                }
+                "pgsql" => {
+                    durable_workflow_server::runtime::upgrade::inspect_postgres(postgres_options()?)
+                        .await
+                }
+                _ => {
+                    return Err(
+                        "upgrade-inspect requires DB_CONNECTION=sqlite, pgsql, mysql or mariadb"
+                            .into(),
+                    );
+                }
+            };
+            match result {
+                Ok(report) => println!("{report}"),
+                Err(error) => {
+                    let reason = match error {
+                        RuntimeError::Refused { reason, .. } => reason,
+                        _ => "upgrade_inspection_unavailable",
+                    };
+                    eprintln!("{reason}");
+                    return Err("upgrade source inspection refused".into());
+                }
+            }
+            return Ok(());
+        }
         let result = match backend.as_str() {
             "pgsql" => {
                 let options = postgres_options()?;

@@ -54,6 +54,45 @@ async fn catalog(connection: &mut PgConnection) -> Result<Catalog> {
     Ok(sqlx::query_as(CATALOG_QUERY).fetch_all(connection).await?)
 }
 
+pub(super) async fn php_source_catalog(connection: &mut PgConnection) -> Result<Catalog> {
+    verify_scope(connection).await?;
+    if marked(connection).await? {
+        return Err(refuse(StatusCode::CONFLICT, "upgrade_source_already_owned"));
+    }
+    let row_security: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND (c.relrowsecurity OR c.relforcerowsecurity))")
+        .fetch_one(&mut *connection).await?;
+    if row_security {
+        return Err(refuse(
+            StatusCode::CONFLICT,
+            "upgrade_source_row_security_unqualified",
+        ));
+    }
+    let native: Catalog =
+        serde_json::from_str(include_str!("../../migrations/postgres/0004_catalog.json"))?;
+    let expected: Catalog = native
+        .into_iter()
+        .filter(|(kind, name, _)| {
+            if kind == "column" || kind == "constraint" {
+                !super::upgrade::native_relation(name.split('.').next().unwrap_or(name))
+            } else {
+                !super::upgrade::native_object(name)
+            }
+        })
+        .collect();
+    let actual = catalog(connection).await?;
+    if actual != expected {
+        return Err(refuse(
+            StatusCode::CONFLICT,
+            "upgrade_source_catalog_unqualified",
+        ));
+    }
+    Ok(actual)
+}
+
+pub(super) fn source_options(options: PgConnectOptions) -> PgConnectOptions {
+    self::options(options)
+}
+
 async fn empty(connection: &mut PgConnection) -> Result<bool> {
     let occupied: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m','f','S')) OR EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public')")
         .fetch_one(connection).await?;
