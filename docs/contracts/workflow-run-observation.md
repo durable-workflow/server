@@ -85,6 +85,13 @@ compatibility is still unimplemented and remains a migration gate.
 
 ## Qualification
 
+The draft produces activity and ordinary timer waits, plus ordinary signal
+waits in the default namespace. Named-namespace `open_signal_wait` retains its
+`development_namespace_command_unqualified` refusal until separately qualified.
+Signal receipt and application are distinct transitions. A buffered receipt
+can precede the opening event; applying it later resolves that wait. These
+projection writes do not qualify signal timeouts or the remaining wait families.
+
 Exercise current and selected runs, default and named namespaces, invalid
 current pointers, absent summaries, typed selected context, growing histories,
 pruned details, and bounded relationship/wait/failure collections. Separate

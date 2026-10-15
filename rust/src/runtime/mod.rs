@@ -33,6 +33,7 @@ mod query_authority;
 mod run_observation;
 mod run_observation_store;
 mod run_observation_waits;
+mod signal_wait_projection;
 mod schedule_execution;
 mod schedule_http;
 mod schedule_storage;

@@ -126,9 +126,8 @@ async fn run_observation_signals_preserve_receipt_and_application_across_cold_no
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
-    namespaces::create(&app, "signal-observation").await;
     let mut originals = Vec::new();
-    for namespace in ["default", "signal-observation"] {
+    for namespace in ["default"] {
         register_signal_worker(&app, namespace).await;
         for buffered in [false, true] {
             let run = namespaces::start_scoped(
@@ -223,6 +222,31 @@ async fn run_observation_signals_preserve_receipt_and_application_across_cold_no
     }
     a.close().await;
     b.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn run_observation_signals_named_namespace_retains_its_admission_gate() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    namespaces::create(&app, "signal-observation").await;
+    register_signal_worker(&app, "signal-observation").await;
+    let run = namespaces::start_scoped(&app, "signal-observation", "signal-named-refusal").await;
+    let task = claim(&app, "signal-observation").await;
+    let before = read(&app, "signal-observation", &run, "history").await;
+    let refused = finish(&app, "signal-observation", &task, open_commands()).await;
+    assert_eq!(refused.0, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        refused.1["reason"],
+        "development_namespace_command_unqualified"
+    );
+    assert_eq!(
+        read(&app, "signal-observation", &run, "history").await,
+        before
+    );
+    assert_eq!(stored_wait_count(&database).await, 0);
+    runtime.close().await;
     database.remove().await;
 }
 

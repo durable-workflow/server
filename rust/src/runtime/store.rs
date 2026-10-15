@@ -2369,6 +2369,7 @@ where
         .bind(id()).bind(run_id).bind(sequence).bind(event_type).bind(DB::document(&payload)).bind(task_id).bind(command_id).bind(DB::bind_time(recorded_at)).execute(&mut **tx).await?;
         Self::project_activity_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
         Self::project_timer_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
+        Self::project_signal_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
         Ok(())
     }
 

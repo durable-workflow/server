@@ -84,6 +84,11 @@ verifies explicit selected-run repair for each while retaining the original
 failure. Four fresh originals covering completed/failed and default/named
 namespaces pass with the helper from
 [#480](https://github.com/durable-workflow/server/pull/480) overlaid on the image.
-This is source validation, not a published correction.
+Those earlier runs verify the source overlay.
+The subsequent [installed release verification](https://github.com/durable-workflow/server/issues/479#issuecomment-6202298825)
+passes all four directions against the exact published Server 2.8.6 amd64 image:
+72 current/selected responses, eight consumed failure-cursor pages and an
+independent matching canonical history budget. Existing affected summaries
+still require explicit repair. The earlier failed originals remain failed.
 Native installed-consumer qualification remains open in
 [#478](https://github.com/durable-workflow/server/pull/478).

@@ -89,13 +89,19 @@ Current checkpoint, October 15:
   [#480](https://github.com/durable-workflow/server/pull/480). Release preparation
   [#482](https://github.com/durable-workflow/server/pull/482) is merged at
   `f2775db7`, matching the fully qualified candidate tree `493f4331`.
-  Immutable tag `2.8.6` points there; publication and installed verification
-  remain separate pending gates.
+  Immutable tag `2.8.6` points there. The normal image/chart publication and all
+  `f2775db7` fresh-main checks pass. Four completed/failed × default/named originals
+  against the exact published amd64 image pass 72 observation responses and
+  eight consumed failure-cursor pages with installed PHP SDK 2.4.2. Independent
+  canonical budget recomputation agrees with all four summaries. The
+  [delivery receipt](https://github.com/durable-workflow/server/issues/479#issuecomment-6202298825)
+  records the identities and limits; #479 is closed. The README recovery link
+  is merged through [#483](https://github.com/durable-workflow/server/pull/483).
   The separate recipe extension at `83bb5c35` verifies selected-run repair of
   completed and failed originals on published PHP, retaining the original
   failures and deadline. Four fresh completed/failed × default/named controls
-  pass with the corrected helper overlaid. This is source validation and repair
-  evidence, not published correction delivery or native parity.
+  pass with the corrected helper overlaid. Those earlier source and repair
+  results remain separate from the published-image result and native parity.
   The exact native artifact download timed out before any installed native
   original began. Independent retained-artifact review, full differential reads,
   projection production and native browser acceptance remain open. PHP-issued cursor
@@ -133,13 +139,26 @@ Current checkpoint, October 15:
   controls and cancellation recovery. The earlier full SQLite result is not a
   repeat against the corrected fixture source. This does not
   provide summary production, other wait families or installed native acceptance.
+- Ordinary signal waits now follow their typed opening, receipt, application
+  and terminal events in the same transaction. Receipt resolves an existing
+  wait before worker application; a buffered receipt that predates the wait
+  resolves it at application. Missing rows stay missing. The initial scheduling
+  regression failed with zero projected waits. The first implementation batch
+  passed three controls and exposed the existing named-namespace admission
+  refusal in the fourth. That gate is retained and tested explicitly, so the
+  positive component scope is the default namespace. All 146 SQLite execution
+  tests pass, including projection-write rollback and stored cancellation.
+  PostgreSQL 17 and MySQL 8 each pass six signal controls, including cold
+  recovery, selected-run guards and waiting-history behavior.
+  Named signal-wait admission, signal timeouts, other wait families and complete
+  native observation remain open.
 
-Next, qualify the combined observation source and verify the published PHP
-correction with normally installed SDK readers. Independent retained-artifact
+Next, qualify the combined observation source and finish native summary and
+remaining wait production. Independent retained-artifact
 reviews remain incomplete. Native Waterline acceptance then needs
 qualified discovery, followed by the same
 unmodified browser recipe. Keep the incomplete inspector review separate.
-No new release, database takeover or full-family parity is claimed.
+No native release, database takeover or full-family parity is claimed.
 
 The earlier installed result checkpoint at `d83a3cb9` remains separate:
 normally installed SDK 2.4.2 completed ten fresh native originals across both
