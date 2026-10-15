@@ -433,6 +433,9 @@ async fn run_observation_history_retains_the_original_ceiling_and_pruned_state()
     assert_eq!(pruned.0, StatusCode::OK);
     assert_eq!(pruned.1["history"]["details_state"], "pruned");
     assert_eq!(pruned.1["history"]["returned_count"], 0);
+    assert_eq!(pruned.1["history"]["through_sequence"], 0);
+    assert_eq!(pruned.1["history"]["has_more"], false);
+    assert!(pruned.1["history"]["next_page_token"].is_null());
     assert_eq!(pruned.1["current_waits"]["state"], "pruned");
     second_runtime.close().await;
     runtime.close().await;

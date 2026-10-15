@@ -33,13 +33,17 @@ Current checkpoint, October 15:
   configuration. SQLite also records 77 library passes with the existing
   18 explicit ignores. The separate main run above remains its own gate.
 - [Metadata-only activity listing #476](https://github.com/durable-workflow/server/pull/476)
-  is still a draft at `4b9384b3`. Its [13-job qualification](https://github.com/durable-workflow/server/actions/runs/38773360007)
+  is still a draft. Its earlier [13-job qualification](https://github.com/durable-workflow/server/actions/runs/38773360007)
   passes at tested merge `146e27a6`, tree `34a0caeb`. Independent readback of
   all six retained summaries confirms 29 passing comparisons, 20 zero-exit
   profile statuses and 133 native execution tests per database configuration.
-  SQLite also records 78 library passes with 18 explicit ignores. Source and
-  current merge-tree review remain open. Earlier unsuccessful originals remain
-  unsuccessful.
+  SQLite also records 78 library passes with 18 explicit ignores. The installed
+  SDK consumer then completed 24 originals on independent published PHP and
+  native databases across all six configurations and two namespaces, with
+  96 matching metadata snapshots. These use public SDK task primitives, not
+  workflow callbacks. The integrated `d30a7687` candidate has a separate
+  [qualification run](https://github.com/durable-workflow/server/actions/runs/38787311689)
+  in progress. Earlier unsuccessful originals remain unsuccessful.
 - [Read-only upgrade inspection #460](https://github.com/durable-workflow/server/pull/460)
   remains a draft at `7066a50e`. Qualification and review are incomplete, so
   the candidate is not being promoted. No backup, migration or takeover
@@ -61,6 +65,15 @@ Current checkpoint, October 15:
   18 library ignores; five focused HTTP controls also pass on PostgreSQL 17
   and MySQL 8.0. Missing summaries/waits remain explicit, and constructed
   retained projections are separate from genuine retry/failure execution.
+  Its first [hosted MariaDB job](https://github.com/durable-workflow/server/actions/runs/38783984695/job/116596418338)
+  fails during bootstrap with exit 101; the assertion log remains unavailable.
+  Independent reproduction on that MariaDB image found all five observation
+  controls returning 503: `COALESCE(MAX(sequence), 0)` promotes the unsigned
+  ceiling to DECIMAL. The reader now keeps nullable integer `MAX(sequence)`
+  and supplies zero in Rust for an empty history. Empty/pruned history coverage
+  also asserts the zero ceiling and absence of a continuation token. The corrected
+  local source passes all 134 MariaDB execution tests and five focused SQLite
+  observation tests. This does not supply the missing original hosted assertion.
   Hosted qualification, published PHP/SDK differential reads, projection
   production and native browser acceptance are still open. PHP-issued cursor
   compatibility remains an explicit migration gate.

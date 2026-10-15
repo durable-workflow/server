@@ -249,14 +249,16 @@ where
         let window = match window {
             Some(window) => window,
             None => {
-                let row = Self::query("SELECT COALESCE(MAX(sequence),0) AS ceiling FROM workflow_history_events WHERE workflow_run_id=$1")
+                // MariaDB promotes COALESCE(unsigned sequence, 0) to DECIMAL.
+                // Keep the stored integer type and default an empty history here.
+                let row = Self::query("SELECT MAX(sequence) AS ceiling FROM workflow_history_events WHERE workflow_run_id=$1")
                     .bind(run).fetch_one(&self.pool).await?;
                 Window::new(
                     &self.namespace,
                     workflow,
                     run,
                     0,
-                    DB::number(&row, "ceiling")?,
+                    DB::optional_number(&row, "ceiling")?.unwrap_or(0),
                 )
             }
         };
