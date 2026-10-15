@@ -32,6 +32,44 @@ work can resume. Database-specific column types, collations, timestamps, JSON,
 transaction isolation, locking and migration history still need a complete
 mapping and executable tests.
 
+The published Workflow source at
+[`fbccb54b`](https://github.com/durable-workflow/workflow/blob/fbccb54b8f52e8724847296ee5b89d093b4a91d7/src/V2/Support/ExternalPayloads.php)
+stores provider references as `dw-external-payload:v1:` followed by base64 JSON
+containing `{codec, external_storage}`. The native development runtime instead
+stores `dw-native-external-payload-v1:` followed by JSON containing its opaque
+runtime reference. These formats are not interchangeable with inline Avro or
+with each other. Common HTTP envelopes do not establish storage compatibility.
+Preflight must identify both formats, bind provider and registry state, and
+preserve the original URI, reference identity, codec, size, hash and object
+bytes before a qualified read path or one-time conversion can be used. No such
+conversion or external backup/restore is qualified by the queue inspection.
+
+`runtime::upgrade::external_reference` now prepares a separate metadata reader
+for the canonical PHP v1 format. Its fixture uses released Workflow 2.5.20
+serializer classes whose loaded hashes also match 2.5.21. The locations are
+fictional; no external object was created or fetched. The reader preserves the
+URI, integer size and digest text, requires matching Avro codecs, and refuses
+unknown versions, native opaque references, duplicate/unknown fields, malformed
+base64/JSON, invalid digests and invalid integer sizes. It bounds the complete
+stored string to 64 KiB before decoding. Only canonical padded base64 and the
+tested object fields are supported; other representations refuse explicitly.
+
+The separate `upgrade-payload-inspect` command now scans only
+`workflow_runs.arguments/output` and `activity_executions.arguments/result`
+inside the same read-only snapshot as the schema inventory. It reports per-column
+counts and at most sixteen affected row IDs with static diagnostics. It never
+reports reference locations, hashes or payload contents. A malformed or unsupported
+reference produces an `unqualified` report and nonzero exit. The existing inventory
+and queue commands keep their behavior.
+
+The scan uses primary-key pages of 32 and bounds transferred values to 64 KiB
+before driver allocation. Large inline values remain explicitly unvalidated.
+The original 30-second inspection deadline covers the complete operation.
+No object is fetched. This does not establish nested history/command/memo
+compatibility, registry ownership, object availability, restored bytes,
+reclamation holds or takeover readiness. Every compatibility, backup, quiescence
+and takeover flag stays false.
+
 ## Backup-first, sequential upgrade gates
 
 1. Run a read-only preflight against a consistent PHP reference installation.

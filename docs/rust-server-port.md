@@ -6,13 +6,14 @@ The unpublished Rust crate has an Avro foundation and an opt-in SQLite/PostgreSQ
 execution slice. Full runtime parity, migration, performance improvement and
 cutover remain unqualified.
 
-The latest qualified merged foundation is [#457](https://github.com/durable-workflow/server/pull/457),
-at `303ffc633`, including #445's memo transaction preparation, #446's bounded
-continuation, #448's SDK memo authoring and #450's local external transport.
-Its separate fresh-main [38668891437](https://github.com/durable-workflow/server/actions/runs/38668891437)
-passes all 13 jobs across six databases; all six execution logs were read.
-Required PHP/source and boundary checks also pass. Earlier failed observations
-remain failed; this current-tree result is not carried across later changes.
+The delivered foundation is [#463](https://github.com/durable-workflow/server/pull/463),
+at `0934c46d`, whole tree `98775e68`, native tree `a633a639`. It includes the
+earlier #455/#458 foundation and #457 consumers. Exact fresh-main
+[38738455163](https://github.com/durable-workflow/server/actions/runs/38738455163)
+passes all 13 jobs across six databases. Each execution summary independently
+passes 29 comparisons, 20 exit records and 125 native HTTP tests. Required
+PHP/source and boundary checks pass. Earlier failed originals remain failed;
+these source results qualify no later tree, image or complete query family.
 The merged native development runtime enables memo upserts, while full external
 transport discovery stays unadvertised. Frozen published PHP, embedded and SDK tuples
 remain separate from current PHP release work. Representative timer, signal,
@@ -22,7 +23,33 @@ failed; later qualifying runs are separate observations.
 
 ## Work order and current status
 
-The current integration order is:
+The next independent qualification stages are:
+
+- [#460](https://github.com/durable-workflow/server/pull/460) is isolated on
+  query main with read-only inventory, queue binding, external-reference
+  metadata and bounded inline Avro inspection. Integration `870b733a`, native
+  tree `180e0104`, needs fresh exact-tree qualification. It includes no pending
+  metadata/result endpoint or worker capability change. Earlier combined
+  source `03b3bd3c` separately passes stopped published PHP 2.8.5 originals on
+  SQLite DELETE, MySQL 8.4 and PostgreSQL 17: six pending runs, nine inline
+  argument frames and three bound timer jobs. That component has no populated
+  workflow outputs or activity results. Backup, quiescence, complete
+  representation and takeover remain false. See the
+  [upgrade bounds and remaining gates](rust-server-upgrade.md).
+- Activity metadata #476 candidate `062ce91a` retains its original SQLite
+  recorder failure and five passing network originals. Exactly one same-SHA,
+  unchanged-budget SQLite-only repeat is running; the other five were not
+  rerun. Its original peer/poll phase/cause remain unknown.
+- Targeted result #470 candidate `d83a3cb9` retains a MySQL 8.4 preadmission
+  image-pull failure and a PostgreSQL 17 renewal observer failure. A separate
+  diagnostic runner `01046823` passes fresh local PostgreSQL originals using
+  the exact d83 binary. It does not reproduce, explain or replace the CI
+  failure. Both endpoint branches remain separate from this inspector.
+
+## Earlier qualification stages
+
+The following entries preserve earlier components and failed originals. Their
+pending descriptions are historical, not the current disposition above.
 
 - Merged [#445](https://github.com/durable-workflow/server/pull/445),
   [#446](https://github.com/durable-workflow/server/pull/446),
@@ -182,6 +209,15 @@ does not qualify the no-status expiry branch, revised Rust consumer or a new
 all-database combined tree. Earlier PHP component checks remain scoped to
 their original fixture source.
 
+The separately prepared [#460](https://github.com/durable-workflow/server/pull/460)
+adds read-only upgrade source inspection. Its original SQLite gate failed the
+existing fresh-upload 100 ms control before inventory admission. The revised
+control preserves that stalled request limit and checks shared capacity with
+a new normal-policy request. The original stays failed. CLI process controls
+refuse pipes and directories without waiting for a writer. Catalog/count
+inspection grants no backup, quiescence, complete representation or takeover
+authority; later prepared source components require independent qualification.
+
 Full transport discovery stays unadvertised. Complete batch workflow semantics,
 memo/query reference ingress, upload allowances, automatic result policy, S3,
 cleanup/backup/restart and full database/consumer qualification remain open.
@@ -192,6 +228,18 @@ and selected-build-cohort parity remains a separate open gate.
 Broader runtime/operational parity, safe sequential PHP database takeover,
 matched performance measurements and release/cutover preparation remain #325
 requirements. No native release or deployment is qualified.
+
+Inspector `58542a5e` passes hosted run `38754495860` across all six databases,
+but promotion is held for a separate constructed path-replacement control.
+After its header check, SQLite can reopen a substituted WAL file and create
+sidecars on a writable mount before refusing the catalog. Main-file bytes stay
+exact. The correction enforces the documented kernel read-only mount for the
+source and resolved parent directory at the CLI boundary, before SQLite opens.
+It retains SQLite locking, header/journal refusal and the original overall
+30-second budget. Hosted CLI controls use read-only and writable aliases of the
+same private fixture to prove writable refusal and actual valid/malformed Avro
+decoding. New exact-source acceptance is still required; the older passes do
+not establish the corrected boundary or takeover safety.
 
 Completed local raw archives, transport journals and databases have been deleted.
 Historical retention descriptions below do not guarantee that those bytes are
@@ -3057,3 +3105,52 @@ WorkerController bytes match the qualified PHP handoff. This combined tree
 requires fresh normal and six-database qualification. The preceding `3409a776`
 component pass, its MySQL-only retry, and all failed originals remain their
 separate records; none qualifies this integration or a native release.
+
+Upgrade preparation now includes a non-executing queue-command reader under
+`runtime::upgrade::queue`. The released token parser recognizes only the tested
+V2 job/Carbon subset under explicit byte, depth and token limits. Published
+class fixtures preserve original task IDs, a Unicode queue and microsecond
+delay fields. Malformed and unqualified representations are refused. This is
+an independently tested decoder, not a source-row migration or takeover path.
+A pure binding validator now checks one genuine published PHP 2.8.2 pending
+timer envelope against its original task/run. Twelve focused decoder/binding
+controls pass. The source database has Laravel transport queue `default` and
+SDK queue `upgrade-source`; its rounded transport wakeup does not replace the
+canonical microsecond timer availability. Borrowed source rows retain their
+original state and a separate leased activity.
+
+The separate `upgrade-queue-inspect` command now scans every database-queue row
+inside the existing read-only observation. Bounded pages and transfer limits
+precede canonical joins. Unknown representations, orphaned/foreign bindings
+and skipped nonpositive IDs refuse before a success report. Local native checks
+pass 93 library cases with 18 existing database/subprocess ignores and the
+process refusal control for both inspection commands. Actual published-source
+CLI and fresh all-database integration remain pending. Complete stored-state
+validation, restored backup verification and sequential takeover stay open.
+
+The separate #460 source preparation now recognizes canonical PHP stored
+external-reference metadata under a 64 KiB bound, using a fixture emitted by
+released Workflow 2.5.20 serializer classes. Four focused groups cover preserved
+fields, format separation, malformed/duplicate fields, codec and integer bounds.
+All 97 local library tests pass, with 18 existing database/subprocess cases
+explicitly ignored. This reader is not yet wired to source-row scanning or
+conversion and fetches no object. Registry/provider binding, restored backup
+bytes, complete representation coverage and sequential takeover remain open.
+
+The next preparation connects that decoder to `upgrade-payload-inspect`, a
+separate read-only root-column scan. It reports bounded counts and affected row
+IDs for unsupported metadata, with no provider fetch, payload/URI output or
+takeover authority. New controls cover all four columns, pagination, omitted
+diagnostics, oversized values, source identity and byte preservation. Existing
+inventory and queue inspection behavior is unchanged. Exact local and hosted
+qualification belongs to #460; constructed source rows are not executed workflows.
+
+The corrected preparation passes 101 library cases and the CLI filesystem
+refusal test, with 18 existing database/subprocess ignores. Fifteen separate CLI
+controls on SQLite DELETE, MySQL 8.4 and PostgreSQL 17 inspect metadata, refuse
+unsupported/malformed/oversized references and accept explicit restoration.
+Network readers have SELECT-only authority; each source fingerprint is unchanged.
+The first MySQL fixture ID overflow and prototype reserved SQL alias remain failed
+observations. The fixture ID and alias are corrected, and the shared upgrade
+profile now exercises the new scan. Hosted integration and every takeover gate
+remain pending.

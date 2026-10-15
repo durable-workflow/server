@@ -40,6 +40,7 @@ mod task_failures;
 mod task_repair;
 mod task_repair_http;
 mod updates;
+pub mod upgrade;
 mod visibility;
 mod worker_incarnations;
 

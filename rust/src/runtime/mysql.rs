@@ -149,6 +149,62 @@ async fn catalog(connection: &mut MySqlConnection) -> Result<Catalog> {
     Ok(result)
 }
 
+pub(super) async fn php_source_catalog(connection: &mut MySqlConnection) -> Result<Catalog> {
+    let marked: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND LOWER(TABLE_NAME)='dw_server_schema'")
+        .fetch_one(&mut *connection).await?;
+    if marked != 0 {
+        return Err(refuse(StatusCode::CONFLICT, "upgrade_source_already_owned"));
+    }
+    // Table-only grants can hide an ownership marker from information_schema.
+    // A denied probe is unknown ownership, never proof of absence.
+    match sqlx::query("SELECT 1 FROM `dw_server_schema` LIMIT 0")
+        .fetch_all(&mut *connection)
+        .await
+    {
+        Err(sqlx::Error::Database(error))
+            if error
+                .try_downcast_ref::<sqlx::mysql::MySqlDatabaseError>()
+                .is_some_and(|error| error.number() == 1146 && error.code() == Some("42S02")) => {}
+        Ok(_) => return Err(refuse(StatusCode::CONFLICT, "upgrade_source_already_owned")),
+        Err(_) => {
+            return Err(refuse(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "upgrade_source_ownership_unknown",
+            ));
+        }
+    }
+    let flavor = Flavor::detect(connection).await?;
+    let mut expected: Catalog = flavor.expected()?.into_iter()
+        .filter(|(table, _)| !super::upgrade::native_relation(table))
+        .map(|(table, ddl)| (table, ddl.replace(
+            ",\n  KEY `dw_workflow_tasks_poll` (`namespace`(64),`queue`(64),`task_type`(16),`status`(16),`available_at`)", "")))
+        .collect();
+    let mut actual = catalog(connection).await?;
+    // MariaDB's information_schema collation ignores some underscores. Only
+    // canonicalize catalog presentation; preserve every full definition.
+    expected.sort_by(|left, right| left.0.cmp(&right.0));
+    actual.sort_by(|left, right| left.0.cmp(&right.0));
+    if actual != expected {
+        let delta = match flavor {
+            Flavor::MySql => include_str!("../../upgrade/php-2.8.0/mysql.json"),
+            Flavor::MariaDb => include_str!("../../upgrade/php-2.8.0/mariadb.json"),
+        };
+        let mut current = super::upgrade::source_catalog_variant(&expected, delta)?;
+        current.sort_by(|left, right| left.0.cmp(&right.0));
+        if actual != current {
+            return Err(refuse(
+                StatusCode::CONFLICT,
+                "upgrade_source_catalog_unqualified",
+            ));
+        }
+    }
+    Ok(actual)
+}
+
+pub(super) fn source_options(options: MySqlConnectOptions) -> MySqlConnectOptions {
+    self::options(options)
+}
+
 async fn history(
     connection: &mut MySqlConnection,
     flavor: Flavor,
