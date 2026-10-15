@@ -138,12 +138,16 @@ if ($phase === 'author') {
             $budget();
             $pending = $client->workflowActivityResult($workflowId, $state['run_id'], $state['activity_id']);
             $history = $client->workflowHistory($workflowId, $state['run_id'])['events'];
-            $failed = array_values(array_filter($history, static fn (array $event): bool => $event['event_type'] === 'ActivityFailed'));
-            $completed = array_values(array_filter($history, static fn (array $event): bool => $event['event_type'] === 'ActivityCompleted'));
+            $counts = array_count_values(array_column($history, 'event_type'));
             if ($pending['state'] !== 'pending' || $pending['available'] !== false
                 || $pending['reason'] !== 'activity_result_pending' || array_key_exists('result_envelope', $pending)
-                || count($failed) !== 1 || $completed !== []) {
-                throw new RuntimeException('Committed retry failure was mistaken for a terminal result.');
+                || ($counts['ActivityRetryScheduled'] ?? 0) !== 1 || ($counts['ActivityFailed'] ?? 0) !== 0
+                || ($counts['ActivityCompleted'] ?? 0) !== 0) {
+                throw new RuntimeException('Committed retry observation disagrees: '.json_encode([
+                    'state' => $pending['state'] ?? null, 'available' => $pending['available'] ?? null,
+                    'reason' => $pending['reason'] ?? null, 'envelope_present' => array_key_exists('result_envelope', $pending),
+                    'event_counts' => $counts,
+                ], JSON_THROW_ON_ERROR));
             }
             $retryPending = true;
         };
@@ -220,7 +224,8 @@ if ($phase === 'author') {
     if ($state['case'] === 'retry-completed') {
         $counts = array_count_values(array_column($before['events'], 'event_type'));
         if (($counts['ActivityScheduled'] ?? 0) !== 1 || ($counts['ActivityStarted'] ?? 0) !== 2
-            || ($counts['ActivityFailed'] ?? 0) !== 1 || ($counts['ActivityCompleted'] ?? 0) !== 1) {
+            || ($counts['ActivityRetryScheduled'] ?? 0) !== 1 || ($counts['ActivityFailed'] ?? 0) !== 0
+            || ($counts['ActivityCompleted'] ?? 0) !== 1) {
             throw new RuntimeException('Retry changed the original activity admission or terminal count.');
         }
     }
