@@ -179,6 +179,77 @@ pub async fn inspect_sqlite_payloads(path: &str) -> Result<Value> {
     inspect_sqlite_inner(path, None, true).await
 }
 
+/// The operator CLI requires the documented kernel read-only mount. SQLite's
+/// READONLY flag alone does not prohibit creating WAL/shared-memory sidecars
+/// if another process replaces a checked path before SQLite opens it.
+pub async fn inspect_sqlite_cli(
+    path: &str,
+    queues: Option<&QueueSourceConfig<'_>>,
+    payloads: bool,
+) -> Result<Value> {
+    timeout(BUDGET, async {
+        queue_config(queues)?;
+        if path.is_empty() || path.contains(['?', ':']) {
+            return Err(refuse(
+                StatusCode::BAD_REQUEST,
+                "upgrade_source_file_required",
+            ));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            // SQLite resolves symlinks before locating its sidecars. Check the
+            // resolved parent as well: a file-only read-only bind mount can
+            // still have a writable directory beside it.
+            let resolved = tokio::fs::canonicalize(path).await?;
+            let mut options = tokio::fs::OpenOptions::new();
+            options.read(true).custom_flags(libc::O_NONBLOCK);
+            let file = options.open(&resolved).await?;
+            if !file.metadata().await?.is_file() {
+                return Err(refuse(
+                    StatusCode::BAD_REQUEST,
+                    "upgrade_source_regular_file_required",
+                ));
+            }
+            let parent = options
+                .open(resolved.parent().ok_or_else(|| {
+                    refuse(StatusCode::BAD_REQUEST, "upgrade_source_file_required")
+                })?)
+                .await?;
+            for descriptor in [&file, &parent] {
+                let mut filesystem = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+                // fstatvfs uses this live descriptor's mount. Only read the
+                // returned structure after success.
+                if unsafe { libc::fstatvfs(descriptor.as_raw_fd(), filesystem.as_mut_ptr()) } != 0 {
+                    return Err(std::io::Error::last_os_error().into());
+                }
+                let filesystem = unsafe { filesystem.assume_init() };
+                if filesystem.f_flag & libc::ST_RDONLY == 0 {
+                    return Err(refuse(
+                        StatusCode::CONFLICT,
+                        "upgrade_source_readonly_filesystem_required",
+                    ));
+                }
+            }
+            return inspect_sqlite_inner(
+                resolved.to_str().ok_or_else(|| {
+                    refuse(StatusCode::BAD_REQUEST, "upgrade_source_file_required")
+                })?,
+                queues,
+                payloads,
+            )
+            .await;
+        }
+        #[cfg(not(unix))]
+        return Err(refuse(
+            StatusCode::CONFLICT,
+            "upgrade_source_readonly_filesystem_unavailable",
+        ));
+    })
+    .await
+    .map_err(|_| expired())?
+}
+
 async fn inspect_sqlite_inner(
     path: &str,
     queues: Option<&QueueSourceConfig<'_>>,

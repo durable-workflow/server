@@ -13,61 +13,84 @@ use std::{
 fn special_sqlite_sources_refuse_without_waiting_for_a_writer() {
     let directory = tempfile::tempdir().unwrap();
     let fifo = directory.path().join("source.sqlite");
+    let regular = directory.path().join("writable.sqlite");
+    let header = b"SQLite format 3\0\0\0\x01\x01";
+    std::fs::write(&regular, header).unwrap();
     let name = CString::new(fifo.as_os_str().as_bytes()).unwrap();
     // The path belongs to this test's new private temporary directory.
     assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
 
-    for (source, command) in [
-        (fifo.as_path(), "upgrade-inspect"),
-        (directory.path(), "upgrade-inspect"),
-        (fifo.as_path(), "upgrade-queue-inspect"),
-        (directory.path(), "upgrade-queue-inspect"),
-        (fifo.as_path(), "upgrade-payload-inspect"),
-        (directory.path(), "upgrade-payload-inspect"),
+    for command in [
+        "upgrade-inspect",
+        "upgrade-queue-inspect",
+        "upgrade-payload-inspect",
     ] {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_durable-workflow-server"))
-            .env_clear()
-            .env("DW_RUST_EXPERIMENTAL", "1")
-            .env("DB_CONNECTION", "sqlite")
-            .env("DB_DATABASE", source)
-            .env("DW_RUST_UPGRADE_QUEUE_CONNECTION", "database")
-            .env("DW_RUST_UPGRADE_QUEUE_DEFAULT_CONNECTION", "database")
-            .env("DW_RUST_UPGRADE_QUEUE_DEFAULT_QUEUE", "default")
-            .arg(command)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while child.try_wait().unwrap().is_none() {
-            if Instant::now() >= deadline {
-                child.kill().unwrap();
-                child.wait().unwrap();
-                panic!("source refusal did not retire the CLI process");
+        for (source, reason) in [
+            (fifo.as_path(), "upgrade_source_regular_file_required"),
+            (directory.path(), "upgrade_source_regular_file_required"),
+            (
+                regular.as_path(),
+                "upgrade_source_readonly_filesystem_required",
+            ),
+        ] {
+            let mut child = Command::new(env!("CARGO_BIN_EXE_durable-workflow-server"))
+                .env_clear()
+                .env("DW_RUST_EXPERIMENTAL", "1")
+                .env("DB_CONNECTION", "sqlite")
+                .env("DB_DATABASE", source)
+                .env("DW_RUST_UPGRADE_QUEUE_CONNECTION", "database")
+                .env("DW_RUST_UPGRADE_QUEUE_DEFAULT_CONNECTION", "database")
+                .env("DW_RUST_UPGRADE_QUEUE_DEFAULT_QUEUE", "default")
+                .arg(command)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while child.try_wait().unwrap().is_none() {
+                if Instant::now() >= deadline {
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    panic!("source refusal did not retire the CLI process");
+                }
+                std::thread::sleep(Duration::from_millis(10));
             }
-            std::thread::sleep(Duration::from_millis(10));
+            let output = child.wait_with_output().unwrap();
+            assert!(!output.status.success());
+            assert!(output.stdout.is_empty());
+            assert!(String::from_utf8(output.stderr).unwrap().contains(reason));
         }
-        let output = child.wait_with_output().unwrap();
-        assert!(!output.status.success());
-        assert!(output.stdout.is_empty());
-        assert!(
-            String::from_utf8(output.stderr)
-                .unwrap()
-                .contains("upgrade_source_regular_file_required")
-        );
     }
-    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    assert_eq!(std::fs::read(&regular).unwrap(), header);
+    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 2);
 }
 
 #[tokio::test]
-async fn payload_cli_bounds_allocation_and_preserves_valid_and_malformed_original_bytes() {
+async fn payload_cli_refuses_writable_sources_and_checks_mounted_payloads() {
     use base64::{Engine, engine::general_purpose::STANDARD};
     use durable_workflow_server::codec::{Value, ValueCodec};
     use sqlx::{
         Connection, Executor, SqliteConnection,
         sqlite::{SqliteConnectOptions, SqliteJournalMode},
     };
-    let directory = tempfile::tempdir().unwrap();
+    // CI mounts its evidence directory through both writable and read-only
+    // aliases. The child must use the read-only alias, while this producer
+    // writes the next standalone fixture through the writable one.
+    let aliases = match (
+        std::env::var_os("DW_UPGRADE_TEST_WRITABLE"),
+        std::env::var_os("DW_UPGRADE_TEST_READONLY"),
+    ) {
+        (Some(writable), Some(readonly)) => Some((
+            std::path::PathBuf::from(writable),
+            std::path::PathBuf::from(readonly),
+        )),
+        (None, None) => None,
+        _ => panic!("both upgrade test mount aliases are required"),
+    };
+    let directory = match &aliases {
+        Some((writable, _)) => tempfile::tempdir_in(writable).unwrap(),
+        None => tempfile::tempdir().unwrap(),
+    };
     let path = directory.path().join("source.sqlite");
     let mut connection = SqliteConnection::connect_with(
         &SqliteConnectOptions::new()
@@ -142,11 +165,33 @@ async fn payload_cli_bounds_allocation_and_preserves_valid_and_malformed_origina
             .unwrap();
         connection.close().await.unwrap();
         let before = std::fs::read(&path).unwrap();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_durable-workflow-server"))
+        let refused = Command::new(env!("CARGO_BIN_EXE_durable-workflow-server"))
             .env_clear()
             .env("DW_RUST_EXPERIMENTAL", "1")
             .env("DB_CONNECTION", "sqlite")
             .env("DB_DATABASE", &path)
+            .arg("upgrade-payload-inspect")
+            .output()
+            .unwrap();
+        assert!(!refused.status.success());
+        assert!(refused.stdout.is_empty());
+        assert!(
+            String::from_utf8_lossy(&refused.stderr)
+                .contains("upgrade_source_readonly_filesystem_required")
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let Some((writable, readonly)) = &aliases else {
+            // A normal local cargo test still verifies the mandatory writable
+            // refusal. The hosted mount profile additionally executes both
+            // actual decoding cases below; absence is explicit in its setup.
+            continue;
+        };
+        let source = readonly.join(path.strip_prefix(writable).unwrap());
+        let mut child = Command::new(env!("CARGO_BIN_EXE_durable-workflow-server"))
+            .env_clear()
+            .env("DW_RUST_EXPERIMENTAL", "1")
+            .env("DB_CONNECTION", "sqlite")
+            .env("DB_DATABASE", &source)
             .arg("upgrade-payload-inspect")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

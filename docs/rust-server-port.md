@@ -229,6 +229,18 @@ Broader runtime/operational parity, safe sequential PHP database takeover,
 matched performance measurements and release/cutover preparation remain #325
 requirements. No native release or deployment is qualified.
 
+Inspector `58542a5e` passes hosted run `38754495860` across all six databases,
+but promotion is held for a separate constructed path-replacement control.
+After its header check, SQLite can reopen a substituted WAL file and create
+sidecars on a writable mount before refusing the catalog. Main-file bytes stay
+exact. The correction enforces the documented kernel read-only mount for the
+source and resolved parent directory at the CLI boundary, before SQLite opens.
+It retains SQLite locking, header/journal refusal and the original overall
+30-second budget. Hosted CLI controls use read-only and writable aliases of the
+same private fixture to prove writable refusal and actual valid/malformed Avro
+decoding. New exact-source acceptance is still required; the older passes do
+not establish the corrected boundary or takeover safety.
+
 Completed local raw archives, transport journals and databases have been deleted.
 Historical retention descriptions below do not guarantee that those bytes are
 still available. Code, readable owning outcomes and bounded temporary job

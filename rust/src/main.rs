@@ -179,14 +179,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let result = match backend.as_str() {
                 "sqlite" => {
                     let path = env::var("DB_DATABASE").map_err(|_| "DB_DATABASE is required")?;
-                    if command == "upgrade-payload-inspect" {
-                        upgrade::inspect_sqlite_payloads(&path).await
-                    } else {
-                        match queues.as_ref() {
-                            Some(config) => upgrade::inspect_sqlite_queues(&path, config).await,
-                            None => upgrade::inspect_sqlite(&path).await,
-                        }
-                    }
+                    upgrade::inspect_sqlite_cli(
+                        &path,
+                        queues.as_ref(),
+                        command == "upgrade-payload-inspect",
+                    )
+                    .await
                 }
                 "mysql" | "mariadb" => {
                     if command == "upgrade-payload-inspect" {

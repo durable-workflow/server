@@ -20,8 +20,12 @@ SQLite WAL inspection is initially refused before opening SQLite: a read-only
 SQLite connection can still create shared-memory and WAL sidecars. This first
 path accepts rollback-journal databases only and does not change their journal
 mode. WAL inventory requires a separately qualified consistent snapshot path.
-Use a read-only filesystem mount as an additional boundary and stop writers
-before inspection; the report does not certify that they have stopped.
+The CLI requires a kernel read-only mount for both the source file and its
+resolved parent directory. A read-only file mount with a writable parent is
+insufficient because sidecars are created beside the file. A writable mount
+refuses with `upgrade_source_readonly_filesystem_required` before SQLite opens.
+Stop writers before inspection; the mount check does not prove that another
+process cannot write through a different mount or certify that writers stopped.
 
 With the development binary and existing connection environment configured,
 run `DW_RUST_EXPERIMENTAL=1 durable-workflow-server upgrade-inspect`.
