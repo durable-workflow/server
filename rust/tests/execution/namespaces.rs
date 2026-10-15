@@ -531,7 +531,9 @@ async fn same_worker_id_isolated_claims_completion_and_deregistration_by_namespa
         &path,
         completion(
             &first_task,
-            json!([{"type":"start_timer","delay_seconds":0}]),
+            // Timers have separate positive namespace coverage. Child commands
+            // remain outside this namespace slice and must fail atomically.
+            json!([child_command(9007199254740993)]),
         ),
     )
     .await;
