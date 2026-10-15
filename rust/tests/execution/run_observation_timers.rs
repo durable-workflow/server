@@ -24,6 +24,9 @@ async fn schedule(app: &Router, namespace: &str, workflow: &str, delay: i64) -> 
     assert_eq!(duplicate.0, StatusCode::OK, "{}", duplicate.1);
     assert_eq!(duplicate.1["recorded"], false);
     let observation = observe(app, namespace, &run).await;
+    assert_eq!(observation["summary_state"], "observed", "{observation}");
+    assert_eq!(observation["liveness_state"], "timer_scheduled");
+    assert_eq!(observation["history_event_count"], 3);
     assert_eq!(
         observation["current_waits"]["returned_count"], 1,
         "{observation}"
@@ -124,6 +127,8 @@ async fn run_observation_timers_follow_real_fire_across_cold_nodes_and_namespace
     for namespace in ["default", "timer-observation"] {
         let (run, wait) = schedule(&app, namespace, &format!("timer-{namespace}"), 10).await;
         let before = history(&app, namespace, &run).await;
+        let scheduled = observe(&app, namespace, &run).await;
+        run_observation_summaries::export_reference(&database, &scheduled, &before).await;
         assert_eq!(
             observe(&app, namespace, &run).await["current_waits"]["waits"][0],
             wait
@@ -152,6 +157,7 @@ async fn run_observation_timers_follow_real_fire_across_cold_nodes_and_namespace
     let (a, b) = (a.unwrap(), b.unwrap());
     let (app_a, app_b) = (router(a.clone()), router(b.clone()));
     for (namespace, run, wait, _) in &originals {
+        assert_eq!(observe(&app_b, namespace, run).await["liveness_state"], "timer_scheduled");
         assert_eq!(
             observe(&app_b, namespace, run).await["current_waits"]["waits"][0],
             wait.clone()
@@ -159,6 +165,10 @@ async fn run_observation_timers_follow_real_fire_across_cold_nodes_and_namespace
     }
     for (namespace, run, wait, before) in originals {
         let fired = wait_for_fire(&app_a, namespace, &run, deadline).await;
+        let resumed_summary = observe(&app_b, namespace, &run).await;
+        assert_eq!(resumed_summary["liveness_state"], "workflow_task_ready");
+        assert_eq!(resumed_summary["history_event_count"], 4);
+        run_observation_summaries::export_reference(&database, &resumed_summary, &fired).await;
         assert_eq!(
             &fired["events"].as_array().unwrap()[..3],
             before["events"].as_array().unwrap().as_slice()
@@ -174,6 +184,7 @@ async fn run_observation_timers_follow_real_fire_across_cold_nodes_and_namespace
         assert_eq!(history(&app_b, namespace, &run).await, fired);
         let resumed = claim(&app_a, namespace).await;
         assert_eq!(resumed["run_id"], run["run_id"]);
+        assert_eq!(observe(&app_b, namespace, &run).await["liveness_state"], "workflow_task_leased");
         assert!(claim(&app_b, namespace).await.is_null());
         let path = format!(
             "/api/worker/workflow-tasks/{}/complete",
@@ -234,6 +245,29 @@ async fn run_observation_timers_schedule_and_projection_commit_together() {
         observe(&app, "default", &run).await["current_waits"]["returned_count"],
         1
     );
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn run_observation_timer_summary_failure_rolls_back_schedule() {
+    let database = TestDatabase::Sqlite(tempfile::tempdir().unwrap());
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "timer-summary-rollback", json!(["echo"]), json!([])).await;
+    let run = start(&app, "timer-summary-rollback").await;
+    let task = poll(&app, "timer-summary-rollback", "workflow").await;
+    let before = history(&app, "default", &run).await;
+    database.execute("CREATE TRIGGER reject_timer_summary BEFORE INSERT ON workflow_run_summaries BEGIN SELECT RAISE(ABORT, 'timer summary rejected'); END").await;
+    let commands = json!([{"type":"start_timer","delay_seconds":120}]);
+    assert_eq!(finish_task(&app, &task, commands.clone()).await.0, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(history(&app, "default", &run).await, before);
+    assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_run_timers").await, 0);
+    assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_run_waits").await, 0);
+    assert_eq!(observe(&app, "default", &run).await["liveness_state"], "workflow_task_leased");
+    database.execute("DROP TRIGGER reject_timer_summary").await;
+    assert_eq!(finish_task(&app, &task, commands).await.0, StatusCode::OK);
+    assert_eq!(observe(&app, "default", &run).await["liveness_state"], "timer_scheduled");
     runtime.close().await;
     database.remove().await;
 }
