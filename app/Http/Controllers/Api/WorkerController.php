@@ -572,7 +572,7 @@ class WorkerController
         $normalized = [];
 
         foreach ($contracts as $workflowType => $contract) {
-            if (! is_string($workflowType) || ! is_array($contract)) {
+            if (! is_string($workflowType)) {
                 continue;
             }
 
@@ -582,13 +582,45 @@ class WorkerController
                 continue;
             }
 
-            $commandContract = $this->workflowCommandContract($contract);
-
-            if ($commandContract === null) {
-                continue;
+            if (! is_array($contract)) {
+                throw ValidationException::withMessages([
+                    'workflow_command_contracts' => sprintf('Invalid command contract for workflow type [%s].', $workflowType),
+                ]);
             }
 
-            $normalized[$workflowType] = $commandContract;
+            // Validate each entry without treating workflow type dots as paths
+            // or letting nested validated-data filtering erase an empty entry.
+            $validator = Validator::make($contract, [
+                'queries' => ['sometimes', 'array', 'list'],
+                'queries.*' => ['required', 'string', 'max:255'],
+                'signals' => ['sometimes', 'array', 'list'],
+                'signals.*' => ['required', 'string', 'max:255'],
+                'updates' => ['sometimes', 'array', 'list'],
+                'updates.*' => ['required', 'string', 'max:255'],
+                'update_validators' => ['sometimes', 'array', 'list'],
+                'update_validators.*' => ['required', 'string', 'max:255'],
+                'query_contracts' => ['sometimes', 'array', 'list'],
+                'query_contracts.*' => ['array'],
+                'query_contracts.*.name' => ['required', 'string', 'max:255'],
+                'signal_contracts' => ['sometimes', 'array', 'list'],
+                'signal_contracts.*' => ['array'],
+                'signal_contracts.*.name' => ['required', 'string', 'max:255'],
+                'update_contracts' => ['sometimes', 'array', 'list'],
+                'update_contracts.*' => ['array'],
+                'update_contracts.*.name' => ['required', 'string', 'max:255'],
+            ]);
+
+            if ($validator->fails()) {
+                throw ValidationException::withMessages([
+                    'workflow_command_contracts' => sprintf(
+                        'Invalid command contract for workflow type [%s]: %s',
+                        $workflowType,
+                        $validator->errors()->first(),
+                    ),
+                ]);
+            }
+
+            $normalized[$workflowType] = $this->workflowCommandContract($contract);
         }
 
         ksort($normalized);
@@ -598,9 +630,9 @@ class WorkerController
 
     /**
      * @param  array<string, mixed>  $contract
-     * @return array<string, mixed>|null
+     * @return array<string, mixed>
      */
-    private function workflowCommandContract(array $contract): ?array
+    private function workflowCommandContract(array $contract): array
     {
         $normalized = [
             'queries' => $this->nonEmptyStringArray($contract['queries'] ?? []),
@@ -617,16 +649,8 @@ class WorkerController
             );
         }
 
-        if ($normalized['queries'] === []
-            && $normalized['query_contracts'] === []
-            && $normalized['signals'] === []
-            && $normalized['signal_contracts'] === []
-            && $normalized['updates'] === []
-            && $normalized['update_contracts'] === []
-        ) {
-            return null;
-        }
-
+        // A supplied valid workflow entry declares its contract even when it
+        // has no commands. Only an absent entry leaves the contract unknown.
         foreach ($normalized['query_contracts'] as $handlerContract) {
             $normalized['queries'][] = $handlerContract['name'];
         }
