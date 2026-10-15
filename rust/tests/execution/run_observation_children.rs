@@ -230,3 +230,108 @@ async fn run_observation_children_parent_summary_failure_rolls_back_child_resolu
     );
     runtime.close().await;
 }
+
+#[tokio::test]
+async fn run_observation_children_sequential_outcomes_keep_published_precedence() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    for cancelled in [false, true] {
+        let (run, task) = parent(&app, &format!("sequential-observation-{cancelled}")).await;
+        assert_eq!(
+            finish_task(&app, &task, json!([child_command(1)])).await.0,
+            StatusCode::OK
+        );
+        let child = poll(&app, "child-observer", "workflow").await;
+        if cancelled {
+            let result = request(
+                &app,
+                "POST",
+                &format!(
+                    "/api/workflows/{}/runs/{}/cancel",
+                    child["workflow_id"].as_str().unwrap(),
+                    child["run_id"].as_str().unwrap()
+                ),
+                json!({"reason":"first child cancelled"}),
+            )
+            .await;
+            assert_eq!(result.0, StatusCode::OK, "{}", result.1);
+        } else {
+            assert_eq!(
+                finish_task(&app, &child, completed()).await.0,
+                StatusCode::OK
+            );
+        }
+        let resumed = poll(&app, "parent-observer", "workflow").await;
+        assert_eq!(
+            finish_task(&app, &resumed, json!([child_command(2)]))
+                .await
+                .0,
+            StatusCode::OK
+        );
+        let second = export(&database, &app, &run).await;
+        assert_eq!(second["summary_state"], "observed", "{second}");
+        assert_eq!(
+            second["liveness_state"],
+            if cancelled {
+                "repair_needed"
+            } else {
+                "waiting_for_child"
+            }
+        );
+        assert_eq!(second["current_waits"]["returned_count"], 1);
+        assert_ne!(
+            second["current_waits"]["waits"][0]["dependency_id"],
+            child["run_id"]
+        );
+        let next = poll(&app, "child-observer", "workflow").await;
+        assert_eq!(
+            finish_task(&app, &next, completed()).await.0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            export(&database, &app, &run).await["liveness_state"],
+            "workflow_task_ready"
+        );
+        let final_task = poll(&app, "parent-observer", "workflow").await;
+        assert_eq!(
+            finish_task(&app, &final_task, completed()).await.0,
+            StatusCode::OK
+        );
+    }
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn run_observation_children_mismatched_projection_loses_summary_without_affecting_resume() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let (run, task) = parent(&app, "mismatched-child-observation").await;
+    assert_eq!(
+        finish_task(&app, &task, json!([child_command(1)])).await.0,
+        StatusCode::OK
+    );
+    database
+        .execute("UPDATE workflow_run_waits SET resume_source_id='wrong-child' WHERE kind='child'")
+        .await;
+    let before = history(&app, &run).await;
+    assert_eq!(
+        observe(&app, &run).await["current_waits"]["waits"][0]["dependency_id"],
+        "wrong-child"
+    );
+    assert_eq!(history(&app, &run).await, before);
+    let child = poll(&app, "child-observer", "workflow").await;
+    assert_eq!(
+        finish_task(&app, &child, completed()).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(observe(&app, &run).await["summary_state"], "unavailable");
+    assert_eq!(
+        poll(&app, "parent-observer", "workflow").await["run_id"],
+        run["run_id"]
+    );
+    runtime.close().await;
+    database.remove().await;
+}
