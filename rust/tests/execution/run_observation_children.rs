@@ -120,6 +120,7 @@ async fn run_observation_children_preserve_identity_through_cold_completion_and_
         assert_eq!(ready["summary_state"], "observed", "{ready}");
         assert_eq!(ready["liveness_state"], "workflow_task_ready");
         assert_eq!(ready["current_waits"]["returned_count"], 0);
+        assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_run_waits w JOIN workflow_tasks t ON t.id=w.task_id AND t.workflow_run_id=w.workflow_run_id WHERE w.kind='child' AND w.status IN ('resolved','cancelled') AND w.task_backed=TRUE AND w.task_type='workflow' AND w.task_status=t.status AND t.status='ready'").await, 1);
         let resumed = poll(&app_a, "parent-observer", "workflow").await;
         assert_eq!(resumed["run_id"], run["run_id"]);
         assert_eq!(resumed["child_workflow_run_id"], child["run_id"]);
@@ -127,6 +128,7 @@ async fn run_observation_children_preserve_identity_through_cold_completion_and_
             export(&database, &app_b, &run).await["liveness_state"],
             "workflow_task_leased"
         );
+        assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_run_waits w JOIN workflow_tasks t ON t.id=w.task_id AND t.workflow_run_id=w.workflow_run_id WHERE w.kind='child' AND w.status IN ('resolved','cancelled') AND w.task_backed=TRUE AND w.task_type='workflow' AND w.task_status=t.status AND t.status='leased'").await, 1);
         assert!(poll(&app_b, "parent-observer", "workflow").await.is_null());
         assert_eq!(
             finish_task(&app_a, &resumed, completed()).await.0,
