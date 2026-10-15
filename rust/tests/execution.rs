@@ -67,6 +67,8 @@ mod run_observation;
 mod run_observation_timers;
 #[path = "execution/run_observation_signals.rs"]
 mod run_observation_signals;
+#[path = "execution/run_observation_conditions.rs"]
+mod run_observation_conditions;
 
 #[path = "execution/waiting_history.rs"]
 mod waiting_history;
