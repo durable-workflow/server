@@ -19,9 +19,11 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Support\RunTimelineProjector;
+use Workflow\V2\Support\HistoryBudget;
 
 /**
  * Contract test for server-derived principal attribution on workflow
@@ -677,6 +679,12 @@ class WorkflowHistoryPrincipalAttributionTest extends TestCase
             $this->assertSame('auth:token', $terminalEvent['principal']['type'] ?? null);
             $this->assertSame('worker:principal-attribution', $terminalEvent['principal']['id'] ?? null);
             $this->assertSame('Worker', $terminalEvent['principal']['label'] ?? null);
+
+            $run = WorkflowRun::query()->findOrFail($runId);
+            $summary = WorkflowRunSummary::query()->findOrFail($runId);
+            $budget = HistoryBudget::forRun($run);
+            $this->assertSame($budget['history_event_count'], $summary->history_event_count);
+            $this->assertSame($budget['history_size_bytes'], $summary->history_size_bytes);
         }
     }
 
