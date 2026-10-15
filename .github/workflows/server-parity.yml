@@ -627,7 +627,6 @@ jobs:
       - name: Compare separate configured role-token cohort
         run: bash scripts/conformance/server-parity/role-profile.sh mysql
       - name: Inspect separate published PHP upgrade source without takeover
-        if: ${{ !cancelled() }}
         timeout-minutes: 8
         run: bash scripts/conformance/server-parity/upgrade-source-profile.sh mysql
       - name: Retire upgrade source cohort
@@ -1075,7 +1074,6 @@ jobs:
           POSTGRES_IMAGE: ${{ matrix.image }}
         run: bash scripts/conformance/server-parity/role-profile.sh pgsql
       - name: Inspect separate published PHP upgrade source without takeover
-        if: ${{ !cancelled() }}
         timeout-minutes: 8
         run: bash scripts/conformance/server-parity/upgrade-source-profile.sh pgsql
       - name: Retire upgrade source cohort
@@ -1507,7 +1505,6 @@ jobs:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: bash scripts/conformance/server-parity/role-profile.sh sqlite
       - name: Inspect separate published PHP upgrade source without takeover
-        if: ${{ !cancelled() }}
         timeout-minutes: 8
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}

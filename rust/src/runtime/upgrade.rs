@@ -146,7 +146,25 @@ pub async fn inspect_sqlite(path: &str) -> Result<Value> {
     // immutable=1 this preserves normal SQLite locking/change detection for
     // the supported rollback-journal source, rather than ignoring live WAL.
     timeout_at(deadline, async {
-        let mut file = tokio::fs::File::open(path).await?;
+        let regular_file_required = || {
+            refuse(
+                StatusCode::BAD_REQUEST,
+                "upgrade_source_regular_file_required",
+            )
+        };
+        if !tokio::fs::metadata(path).await?.is_file() {
+            return Err(regular_file_required());
+        }
+        let mut options = tokio::fs::OpenOptions::new();
+        options.read(true);
+        // Tokio filesystem opens use blocking workers. A replaced FIFO must
+        // not strand one beyond the observation budget or prevent CLI exit.
+        #[cfg(unix)]
+        options.custom_flags(libc::O_NONBLOCK);
+        let mut file = options.open(path).await?;
+        if !file.metadata().await?.is_file() {
+            return Err(regular_file_required());
+        }
         let mut header = [0_u8; 20];
         file.read_exact(&mut header).await?;
         if &header[..16] != b"SQLite format 3\0" || header[18..20] != [1, 1] {

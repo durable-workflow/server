@@ -12,7 +12,9 @@ database using a dedicated read-only transaction, without constructing a runtime
 pool. It uses the same `DB_*` connection configuration as native schema checks
 and supports SQLite, MySQL/MariaDB and PostgreSQL. It requires the existing
 development opt-in. SQLite inspection never creates a missing database or runs
-recovery pragmas.
+recovery pragmas. It requires a regular source file and refuses directories,
+pipes and devices before reading a database header. Unix opens remain
+nonblocking if a source path changes to a pipe during validation.
 
 SQLite WAL inspection is initially refused before opening SQLite: a read-only
 SQLite connection can still create shared-memory and WAL sidecars. This first
@@ -67,6 +69,23 @@ qualification and refuse this first inventory path.
 
 ## Qualification and next migration gates
 
+Catalog recognition does not decode stored values. The source audit identifies
+these separate compatibility boundaries:
+
+| Representation | Required takeover check |
+| --- | --- |
+| V2 arguments/results with a row codec, JSON task/history documents and external references | Validate the stored codec and exact typed values, preserving original bytes, IDs and deadlines. Do not infer a codec from table shape. |
+| Laravel queue jobs | The V2 workflow/activity/timer jobs carry a task ID and claim canonical task state. Qualify replacement wakeups against those same tasks; never execute serialized PHP objects in Rust or discard unknown jobs. |
+| PHP class names, legacy stored workflows and internal serialized closures | Class-name presence is not a portable type binding. Establish a tested conversion/read path or refuse unsupported active data before mutation. |
+| Cache and Redis entries | Identify original query, poll and receipt state separately from reconstructable wakeups. A database-only snapshot does not prove these states survive. |
+
+The queue observation comes from the published Core's `TaskDispatcher` and
+`RunWorkflowTask`, `RunActivityTask` and `RunTimerTask` handlers. It does not
+qualify migration of a queue payload, a closure, a legacy workflow or a live
+receipt. Current native SQLite timestamp reads and claim ordering already
+handle the supported PHP UTC SQL form and native UTC form; an actual sequential
+takeover must still prove pending work retains its original microseconds.
+
 The separate published PHP 2.8.0 profile prepares two genuine original runs:
 one leased activity and one pending timer. It explicitly stops PHP before
 inspection, compares source state and sequence positions before/after, and
@@ -75,7 +94,9 @@ security. SQLite uses the explicitly selected DELETE journal profile. Its raw
 public-protocol author does not establish SDK continuation or workload
 completion. The independent SQLite WAL refusal remains a separate observation.
 The CI profile adds an eight-minute phase and separate three-minute cleanup
-ceiling; existing scenario, transaction and job budgets remain unchanged.
+ceiling and requires the preceding deployment checks to succeed. A failed
+prerequisite skips inspection rather than counting a missing deployment as an
+inspected source. Existing scenario, transaction and job budgets remain unchanged.
 
 Use a separate cohort populated by the current published PHP artifact, record
 its actual identity, and stop every PHP writer before refusal/byte-preservation

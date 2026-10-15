@@ -31,20 +31,27 @@ The active integration order is:
 - [#455](https://github.com/durable-workflow/server/pull/455): opt-in cross-kind
   null-task poll wake hint with exact namespace/queue isolation and no delivery
   authority. Current PHP query documentation is preserved at combined revision
-  55. Hosted integration follows #457.
+  55. Exact candidate 1fa passes all 13 jobs and all six execution logs. Delivery
+  through the combined current-main #458 candidate and fresh main remain pending.
   An earlier component failed after business completion at registration DELETE
   with lock-pressure 503, before later refusal/repair phases. That original
   remains failed without a current-release or historical-cause inference.
 - [#458](https://github.com/durable-workflow/server/pull/458): bound activity
   completion uploads. Actual PHP/native originals and strict readers pass
   SQLite/MySQL 8.4/PostgreSQL 17 locally; current all-six qualification is pending.
-  Full external transport discovery remains false.
+  The main-targeted stack includes reviewed #455. Strict up-to-date branch
+  protection remains in force. Full external transport discovery remains false.
 - [#460](https://github.com/durable-workflow/server/pull/460): read-only upgrade
   source inspection, independently prepared from published PHP 2.8.0. Exact
   known catalog checks and counts grant no backup, quiescence or takeover
   authority. SQLite WAL is refused before opening; rollback-journal inventory
   and network SELECT-only roles have separate actual source checks. Hosted
-  qualification and all actual migration/conversion gates remain ahead.
+  68's original SQLite gate failed the existing fresh-upload 100ms control
+  before inventory admission. A revised control keeps the stalled request's
+  100ms limit and checks shared capacity with a new normal-policy request;
+  the failed original remains failed. A CLI process control also refuses pipes
+  and directories without waiting for a writer. Current source and all actual
+  migration/conversion gates remain unqualified.
 
 Full transport discovery stays unadvertised. Complete batch workflow semantics,
 memo/query reference ingress, upload allowances, automatic result policy, S3,
