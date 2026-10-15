@@ -75,7 +75,9 @@ async def execute(input_data, namespace):
         client._http.event_hooks["request"] = [submitting]
         worker = Worker(client, task_queue="nexus-python-workflow",
                         worker_id=f"nexus-python-caller-{namespace}-{os.getpid()}",
-                        workflows=[PythonNexusCaller], activities=[])
+                        workflows=[PythonNexusCaller], activities=[],
+                        **({"capabilities": ["cooperative_cancellation"]}
+                           if input_data.get("scenario") == "caller_cancelled" else {}))
         polling = asyncio.create_task(worker.run())
         try:
             handle = await client.start_workflow(
@@ -93,7 +95,7 @@ async def execute(input_data, namespace):
                 "workflow_definition_fingerprint": worker.workflow_definition_fingerprints["nexus.fixture.python.caller"],
                 "public_method": "WorkflowContext.call_nexus_service",
             }
-            if input_data.get("scenario") == "cancelled":
+            if input_data.get("scenario") in ("cancelled", "caller_cancelled"):
                 async with Client("http://server:8080", namespace="shared", token=input_data["token"]) as service_client:
                     async def cancel_waiting_service():
                         while True:
@@ -106,12 +108,22 @@ async def execute(input_data, namespace):
                                 service_handle = service_client.get_workflow_handle(linked_id, run_id=linked_run)
                                 service_history = await service_handle.get_history()
                                 if any(event.get("event_type") == "TimerScheduled" for event in service_history.get("events", [])):
+                                    observation["service_call_before_cancellation"] = linked
+                                    if input_data.get("scenario") == "caller_cancelled":
+                                        return [await client.request_workflow_cancellation(
+                                            handle.workflow_id, run_id=handle.run_id,
+                                            reason="fixture waiting caller cancellation", cleanup_timeout_seconds=30),
+                                            await client.request_workflow_cancellation(
+                                            handle.workflow_id, run_id=handle.run_id,
+                                            reason="duplicate must not replace reason", cleanup_timeout_seconds=1)]
                                     return [await service_client.request_workflow_cancellation(
                                         linked_id, run_id=linked_run, reason="fixture service cancellation", cleanup_timeout_seconds=30),
                                         await service_client.request_workflow_cancellation(
                                         linked_id, run_id=linked_run, reason="duplicate must not replace reason", cleanup_timeout_seconds=1)]
                             await asyncio.sleep(.1)
-                    observation["linked_cancellation_requests"] = await asyncio.wait_for(cancel_waiting_service(), timeout=20)
+                    requests = await asyncio.wait_for(cancel_waiting_service(), timeout=20)
+                    observation["caller_cancellation_requests" if input_data.get("scenario") == "caller_cancelled"
+                                else "linked_cancellation_requests"] = requests
             finishing = asyncio.create_task(handle.result(timeout=30))
             refusal = asyncio.create_task(rejected.wait())
             try:
@@ -123,7 +135,7 @@ async def execute(input_data, namespace):
                         "type": "NexusAdmissionRefused",
                         "message": receipts[-1]["response"].get("reason"),
                     }
-            except Exception as error:
+            except (Exception, WorkflowCancelled) as error:
                 observation["failure"] = {"type": type(error).__name__, "message": str(error)}
             finally:
                 for pending in [finishing, refusal]:
@@ -202,6 +214,13 @@ async def execute(input_data, namespace):
                 recorded.get("status") == "cancelled"
                 and recorded.get("failure_class") == "NexusOperationFailed"
             )
+            if input_data.get("scenario") == "caller_cancelled":
+                observation["caller_status"] = (await client.describe_workflow_run(handle.workflow_id, handle.run_id)).status
+                observation["caller_cancellation_qualified"] = (
+                    observation["caller_status"].lower() == "cancelled"
+                    and sum(event.get("event_type") == "WorkflowCancelled"
+                            for event in observation.get("linked_service_history", {}).get("events", [])) == 1
+                )
             observation["deadline_qualified"] = (
                 recorded.get("status") == "failed"
                 and recorded.get("failure_class") == "NexusOperationFailed"
@@ -230,12 +249,15 @@ async def execute(input_data, namespace):
 async def main():
     with open(sys.argv[1], encoding="utf-8") as source:
         input_data = json.load(source)
+    if input_data.get("scenario") == "caller_cancelled":
+        os.environ["DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION"] = "1.20"
     observations = []
     for namespace in ["shared", "tenant-b"]:
         observations.append(await execute(input_data, namespace))
     print(json.dumps({
         "scope": f"python_caller_{input_data.get('service_language', 'php')}_workflow_service",
-        "outcome": "pass" if all(row[{"failed": "typed_failure_qualified", "cancelled": "cancellation_qualified", "deadline": "deadline_qualified"}
+        "outcome": "pass" if all(row[{"failed": "typed_failure_qualified", "cancelled": "cancellation_qualified", "deadline": "deadline_qualified",
+                                     "caller_cancelled": "caller_cancellation_qualified"}
                                      .get(input_data.get("scenario"), "completed")] for row in observations) else "fail",
         "observations": observations,
         "recovery_qualified": False,

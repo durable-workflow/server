@@ -41,12 +41,12 @@ jobs:
   callers:
     name: SDK client admissions and PHP/Python caller workflows
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     env:
-      DW_SERVER_IMAGE: durableworkflow/server@sha256:658ba2542d93cd982165391a7d50ef1bad769871e4e355428803060883e41906
-      DW_SERVER_VERSION: 2.5.23
+      DW_SERVER_IMAGE: durableworkflow/server@sha256:ef043e5c582761e486a64a2ab4226476e17ae4f71682ef59d6b9ddd784d246b6
+      DW_SERVER_VERSION: 2.6.1
       DW_WORKFLOW_PHP_VERSION: 2.5.12
-      DW_PHP_SDK_VERSION: 2.3.0-rc.1
+      DW_PHP_SDK_VERSION: 2.3.3
       DW_PYTHON_SDK_VERSION: 2.6.0rc2
       DW_CLI_VERSION: 2.2.3
       DW_WATERLINE_VERSION: 2.9.1
@@ -80,6 +80,7 @@ jobs:
             NEXUS_PYTHON_PYTHON_WORKFLOW_PROBE="$DW_NEXUS_RESULT_DIR/nexus-python-python-workflow-probe.json" \
             NEXUS_TYPED_FAILURE_PROBES="$DW_NEXUS_RESULT_DIR/nexus-typed-failure-probes.json" \
             NEXUS_CANCELLATION_PROBES="$DW_NEXUS_RESULT_DIR/nexus-cancellation-probes.json" \
+            NEXUS_WAITING_CALLER_CANCELLATION_PROBES="$DW_NEXUS_RESULT_DIR/nexus-waiting-caller-cancellation-probes.json" \
             NEXUS_CALLER_RECOVERY_PROBES="$DW_NEXUS_RESULT_DIR/nexus-caller-recovery-probes.json" \
             NEXUS_BACKEND_INTERRUPTION_PROBES="$DW_NEXUS_RESULT_DIR/nexus-backend-interruption-probes.json" \
             NEXUS_DEADLINE_PROBE="$DW_NEXUS_RESULT_DIR/nexus-deadline-probe.json" \
