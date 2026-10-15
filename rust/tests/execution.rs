@@ -256,6 +256,50 @@ impl TestDatabase {
         }
     }
 
+    async fn timer_task_states(&self, run: &Value) -> Vec<(String, String)> {
+        let query = "SELECT id,status FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='timer' ORDER BY id";
+        let run = run.as_str().unwrap();
+        match self {
+            Self::Sqlite(dir) => {
+                let pool = sqlx::SqlitePool::connect(&format!(
+                    "sqlite://{}",
+                    dir.path().join("runtime.sqlite").display()
+                ))
+                .await
+                .unwrap();
+                let rows = sqlx::query_as(query)
+                    .bind(run)
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+                rows
+            }
+            Self::Postgres { options, .. } => {
+                let pool = sqlx::postgres::PgPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
+                let rows = sqlx::query_as(query)
+                    .bind(run)
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+                rows
+            }
+            Self::MySql { options, .. } => {
+                let pool = sqlx::mysql::MySqlPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
+                let rows = sqlx::query_as("SELECT id,status FROM workflow_tasks WHERE workflow_run_id=? AND task_type='timer' ORDER BY id").bind(run).fetch_all(&pool).await.unwrap();
+                pool.close().await;
+                rows
+            }
+        }
+    }
+
     async fn update_failure_count(&self, command: &str, failure: &str) -> i64 {
         let query = "SELECT COUNT(*) FROM workflow_failures WHERE source_id=$1 AND id=$2 AND source_kind='workflow_command' AND propagation_kind='update' AND failure_category='application' AND non_retryable=true AND handled=false";
         match self {
@@ -3264,6 +3308,8 @@ async fn cooperative_delivery_cleanup_and_original_deadline_survive_fresh_runtim
             assert_eq!(completed.0, StatusCode::OK, "{}", completed.1);
         }
         let prefix = run_history(&app_b, &workflow, &run).await;
+        let timer_tasks = database.timer_task_states(&run).await;
+        assert_eq!(timer_tasks.len(), usize::from(phase == "pending_timer"));
         let control = format!(
             "/api/workflows/cleanup-root/runs/{}/request-cancellation",
             run.as_str().unwrap()
@@ -3302,6 +3348,14 @@ async fn cooperative_delivery_cleanup_and_original_deadline_survive_fresh_runtim
         let delivered = request_protocol(&app_a, "POST", &endpoint, delivery.clone(), "1.20").await;
         assert_eq!(delivered.0, StatusCode::OK, "{}", delivered.1);
         assert_eq!(delivered.1["delivered"], true);
+        assert_eq!(
+            database.timer_task_states(&run).await,
+            timer_tasks
+                .into_iter()
+                .map(|(id, _)| (id, "cancelled".to_owned()))
+                .collect::<Vec<_>>(),
+            "cancellation must retire the same original timer task at delivery"
+        );
         let canonical_history = run_history(&app_a, &workflow, &run).await;
         let worker_history = request_protocol(&app_a, "POST",
             &format!("/api/worker/workflow-tasks/{}/history", task["task_id"].as_str().unwrap()),
