@@ -180,17 +180,23 @@ where
         {
             return Ok(false);
         }
-        if summary.task_id.is_some() || summary.state == "workflow_replay_blocked" {
-            return Ok(true);
-        }
-        let open = rows
-            .iter()
-            .find(|row| DB::string(row, "status").is_ok_and(|status| status == "open"));
+        let open = if summary.task_id.is_none() {
+            rows.iter()
+                .find(|row| DB::string(row, "status").is_ok_and(|status| status == "open"))
+        } else {
+            None
+        };
         let pending = rows.iter().find(|row| {
             DB::string(row, "source_status").is_ok_and(|status| {
                 status == "cancelled" || (status == "completed" && open.is_none())
             })
         });
+        // PHP retains resolved-child problem evidence while the parent task is
+        // ready or leased. That evidence does not change task liveness priority.
+        summary.problem |= pending.is_some();
+        if summary.task_id.is_some() || summary.state == "workflow_replay_blocked" {
+            return Ok(true);
+        }
         let Some(row) = pending.or(open) else {
             return Ok(true);
         };
