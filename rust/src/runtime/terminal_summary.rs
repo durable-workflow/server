@@ -46,95 +46,21 @@ where
             .execute(&mut **tx)
             .await?;
         let last = DB::number(&run, "last_history_sequence")?;
-        let mut count = 0_i64;
-        let mut bytes = 0_i64;
-        let mut fan_out = 0_i64;
-        let mut groups = BTreeSet::new();
-        let mut failures = BTreeSet::new();
-        let mut started = None;
-        let mut active_history_supported = true;
-        let mut external_waits = ExternalWaitHistory::default();
-        let mut timers = TimerSummaryHistory::default();
-        let mut activities = ActivitySummaryHistory::default();
-        loop {
-            // Bound hydrated history to sixteen events. The transaction already
-            // owns this run; sequence continuity detects missing retained rows.
-            let page = Self::query(DB::SUMMARY_HISTORY_SQL)
-                .bind(run_id)
-                .bind(count)
-                .fetch_all(&mut **tx)
-                .await?;
-            if page.is_empty() {
-                break;
-            }
-            for event in page {
-                let sequence = DB::number(&event, "sequence")?;
-                if sequence != count + 1 {
-                    return Ok(());
-                }
-                let kind = DB::string(&event, "event_type")?;
-                let raw =
-                    DB::optional_string(&event, "payload_json")?.unwrap_or_else(|| "null".into());
-                bytes += history_budget::event_size(&kind, &raw)? as i64;
-                let payload: Value = serde_json::from_str(&raw)?;
-                if !closed {
-                    active_history_supported &= if matches!(
-                        kind.as_str(),
-                        "TimerScheduled" | "TimerFired" | "TimerCancelled"
-                    ) {
-                        timers.apply(&kind, &payload)
-                    } else if kind.starts_with("Activity") {
-                        activities.apply(&kind, &payload)
-                    } else {
-                        external_waits.apply(&kind, &payload)
-                    };
-                }
-                if kind == "WorkflowStarted" && started.is_none() {
-                    started = Some(payload.clone());
-                }
-                if let Some(group) = payload["parallel_group_id"]
-                    .as_str()
-                    .filter(|s| !s.is_empty())
-                {
-                    let size = payload["parallel_group_size"]
-                        .as_i64()
-                        .or_else(|| payload["parallel_group_size"].as_f64().map(|v| v as i64))
-                        .or_else(|| {
-                            payload["parallel_group_size"]
-                                .as_str()
-                                .and_then(|s| s.trim().parse::<f64>().ok())
-                                .filter(|v| v.is_finite())
-                                .map(|v| v as i64)
-                        });
-                    if let Some(size) = size {
-                        if groups.insert(group.to_owned()) {
-                            fan_out = fan_out.max(size);
-                        }
-                    }
-                }
-                if matches!(
-                    kind.as_str(),
-                    "ActivityFailed"
-                        | "ActivityTimedOut"
-                        | "ChildRunFailed"
-                        | "ChildRunCancelled"
-                        | "ChildRunTerminated"
-                        | "WorkflowFailed"
-                        | "WorkflowTimedOut"
-                        | "WorkflowCancelled"
-                        | "WorkflowTerminated"
-                        | "UpdateCompleted"
-                ) {
-                    if let Some(id) = payload["failure_id"].as_str().filter(|s| !s.is_empty()) {
-                        failures.insert(id.to_owned());
-                    }
-                }
-                count = sequence;
-            }
-        }
-        if count != last || count == 0 {
+        let Some(history) = Self::summary_history(tx, run_id, closed, last).await? else {
             return Ok(());
-        }
+        };
+        let SummaryHistory {
+            count,
+            bytes,
+            fan_out,
+            mut failures,
+            started,
+            active_history_supported,
+            external_waits,
+            timers,
+            activities,
+            ..
+        } = history;
         let active = if closed {
             None
         } else {
@@ -198,5 +124,121 @@ where
             Self::write_active_summary_fields(tx, run_id, &active).await?;
         }
         Ok(())
+    }
+    async fn summary_history(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        closed: bool,
+        last: i64,
+    ) -> Result<Option<SummaryHistory>> {
+        let mut history = SummaryHistory {
+            active_history_supported: true,
+            ..SummaryHistory::default()
+        };
+        loop {
+            // Bound hydrated history to sixteen events. The transaction already
+            // owns this run; sequence continuity detects missing retained rows.
+            let page = Self::query(DB::SUMMARY_HISTORY_SQL)
+                .bind(run_id)
+                .bind(history.count)
+                .fetch_all(&mut **tx)
+                .await?;
+            if page.is_empty() {
+                break;
+            }
+            for event in page {
+                let sequence = DB::number(&event, "sequence")?;
+                if sequence != history.count + 1 {
+                    return Ok(None);
+                }
+                let kind = DB::string(&event, "event_type")?;
+                let raw =
+                    DB::optional_string(&event, "payload_json")?.unwrap_or_else(|| "null".into());
+                history.record(&kind, &raw, closed)?;
+                history.count = sequence;
+            }
+        }
+        Ok((history.count == last && history.count != 0).then_some(history))
+    }
+}
+
+#[derive(Default)]
+struct SummaryHistory {
+    count: i64,
+    bytes: i64,
+    fan_out: i64,
+    groups: BTreeSet<String>,
+    failures: BTreeSet<String>,
+    started: Option<Value>,
+    active_history_supported: bool,
+    external_waits: ExternalWaitHistory,
+    timers: TimerSummaryHistory,
+    activities: ActivitySummaryHistory,
+}
+
+impl SummaryHistory {
+    fn record(&mut self, kind: &str, raw: &str, closed: bool) -> Result<()> {
+        self.bytes += history_budget::event_size(kind, raw)? as i64;
+        let payload: Value = serde_json::from_str(raw)?;
+        if !closed {
+            let supported = if matches!(kind, "TimerScheduled" | "TimerFired" | "TimerCancelled") {
+                self.timers.apply(kind, &payload)
+            } else if kind.starts_with("Activity") {
+                self.activities.apply(kind, &payload)
+            } else {
+                self.external_waits.apply(kind, &payload)
+            };
+            self.active_history_supported &= supported;
+        }
+        if kind == "WorkflowStarted" && self.started.is_none() {
+            self.started = Some(payload.clone());
+        }
+        self.record_fan_out(&payload);
+        self.record_failure(kind, &payload);
+        Ok(())
+    }
+
+    fn record_fan_out(&mut self, payload: &Value) {
+        let Some(group) = payload["parallel_group_id"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+        else {
+            return;
+        };
+        let size = payload["parallel_group_size"]
+            .as_i64()
+            .or_else(|| payload["parallel_group_size"].as_f64().map(|v| v as i64))
+            .or_else(|| {
+                payload["parallel_group_size"]
+                    .as_str()
+                    .and_then(|s| s.trim().parse::<f64>().ok())
+                    .filter(|v| v.is_finite())
+                    .map(|v| v as i64)
+            });
+        if let Some(size) = size {
+            if self.groups.insert(group.to_owned()) {
+                self.fan_out = self.fan_out.max(size);
+            }
+        }
+    }
+
+    fn record_failure(&mut self, kind: &str, payload: &Value) {
+        if matches!(
+            kind,
+            "ActivityFailed"
+                | "ActivityTimedOut"
+                | "ChildRunFailed"
+                | "ChildRunCancelled"
+                | "ChildRunTerminated"
+                | "WorkflowFailed"
+                | "WorkflowTimedOut"
+                | "WorkflowCancelled"
+                | "WorkflowTerminated"
+                | "UpdateCompleted"
+        ) {
+            if let Some(id) = payload["failure_id"].as_str().filter(|s| !s.is_empty()) {
+                self.failures.insert(id.to_owned());
+            }
+        }
     }
 }

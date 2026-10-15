@@ -105,61 +105,9 @@ where
         let task = Self::query("SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND status IN ('ready','leased') ORDER BY CASE WHEN status='leased' AND lease_expires_at<=$2 THEN 0 ELSE 1 END,CASE WHEN status='leased' THEN 0 ELSE 1 END,CASE WHEN available_at IS NULL THEN 1 ELSE 0 END,available_at,CASE WHEN created_at IS NULL THEN 1 ELSE 0 END,created_at,id LIMIT 1")
             .bind(&run_id).bind(DB::bind_time(at)).fetch_optional(&mut **tx).await?;
         if let Some(task) = task {
-            let kind = DB::string(&task, "task_type")?;
-            if !matches!(kind.as_str(), "workflow" | "timer" | "activity")
-                || DB::optional_string(&task, "compatibility")?
-                    .is_some_and(|v| !v.trim().is_empty())
-            {
+            if !Self::apply_summary_task(&mut summary, &task, at)? {
                 return Ok(None);
             }
-            let id = DB::string(&task, "id")?;
-            let status = DB::string(&task, "status")?;
-            let expires = DB::optional_instant(&task, "lease_expires_at")?;
-            let expired = status == "leased" && expires.is_some_and(|v| v <= at);
-            let label = match kind.as_str() {
-                "timer" => "Timer",
-                "activity" => "Activity",
-                _ => "Workflow",
-            };
-            summary.state = if expired {
-                "repair_needed".into()
-            } else {
-                format!("{kind}_task_{status}")
-            };
-            summary.reason = if expired {
-                format!(
-                    "{label} task {id} lease expired at {}.",
-                    expires.unwrap().format("%Y-%m-%dT%H:%M:%S%.6fZ")
-                )
-            } else if status == "leased" {
-                format!("{label} task {id} is leased to a worker.")
-            } else {
-                format!("{label} task {id} is ready to run.")
-            };
-            let wait_reason = if expired {
-                "Workflow task lease expired"
-            } else if status == "leased" {
-                "Workflow task leased to worker"
-            } else {
-                "Workflow task ready"
-            }
-            .into();
-            summary.available_at = DB::optional_instant(&task, "available_at")?;
-            summary.wait = (kind == "workflow").then_some(SummaryWait {
-                kind: "workflow-task",
-                id: format!("workflow-task:{id}"),
-                reason: wait_reason,
-                started_at: DB::optional_instant(&task, "leased_at")?.or(summary.available_at),
-                deadline_at: expires,
-                source_kind: "workflow_task",
-                source_id: Some(id.clone()),
-            });
-            summary.lease_expires_at = expires;
-            summary.task_id = Some(id);
-            summary.task_status = Some(status);
-            summary.problem |= expired && kind == "workflow";
-            summary.task_type = Some(kind);
-            summary.repair_blocked = (!expired).then_some("repair_not_needed");
         }
         if let Some(reason) = blocked {
             summary.state = "workflow_replay_blocked".into();
@@ -184,6 +132,68 @@ where
             summary.problem = true;
         }
         Ok(Some(summary))
+    }
+
+    fn apply_summary_task(
+        summary: &mut ActiveSummary,
+        task: &DB::Row,
+        at: DateTime<Utc>,
+    ) -> Result<bool> {
+        let kind = DB::string(task, "task_type")?;
+        if !matches!(kind.as_str(), "workflow" | "timer" | "activity")
+            || DB::optional_string(task, "compatibility")?.is_some_and(|v| !v.trim().is_empty())
+        {
+            return Ok(false);
+        }
+        let id = DB::string(task, "id")?;
+        let status = DB::string(task, "status")?;
+        let expires = DB::optional_instant(task, "lease_expires_at")?;
+        let expired = status == "leased" && expires.is_some_and(|v| v <= at);
+        let label = match kind.as_str() {
+            "timer" => "Timer",
+            "activity" => "Activity",
+            _ => "Workflow",
+        };
+        summary.state = if expired {
+            "repair_needed".into()
+        } else {
+            format!("{kind}_task_{status}")
+        };
+        summary.reason = if expired {
+            format!(
+                "{label} task {id} lease expired at {}.",
+                expires.unwrap().format("%Y-%m-%dT%H:%M:%S%.6fZ")
+            )
+        } else if status == "leased" {
+            format!("{label} task {id} is leased to a worker.")
+        } else {
+            format!("{label} task {id} is ready to run.")
+        };
+        let wait_reason = if expired {
+            "Workflow task lease expired"
+        } else if status == "leased" {
+            "Workflow task leased to worker"
+        } else {
+            "Workflow task ready"
+        }
+        .into();
+        summary.available_at = DB::optional_instant(task, "available_at")?;
+        summary.wait = (kind == "workflow").then_some(SummaryWait {
+            kind: "workflow-task",
+            id: format!("workflow-task:{id}"),
+            reason: wait_reason,
+            started_at: DB::optional_instant(task, "leased_at")?.or(summary.available_at),
+            deadline_at: expires,
+            source_kind: "workflow_task",
+            source_id: Some(id.clone()),
+        });
+        summary.lease_expires_at = expires;
+        summary.task_id = Some(id);
+        summary.task_status = Some(status);
+        summary.problem |= expired && kind == "workflow";
+        summary.task_type = Some(kind);
+        summary.repair_blocked = (!expired).then_some("repair_not_needed");
+        Ok(true)
     }
 
     pub(super) async fn write_active_summary_fields(

@@ -67,24 +67,14 @@ fn project<DB: Backend>(row: &DB::Row, now: DateTime<Utc>) -> Result<Value> {
     let task_type = DB::optional_string(row, "matched_task_type")?;
     let payload = DB::optional_document_row(row, "task_payload")?.unwrap_or(Value::Null);
     let mut task_matches = task_id.is_some() && task_id == DB::optional_string(row, "task_id")?;
-    task_matches &= if kind == "activity" {
-        source.is_some()
-            && task_type.as_deref() == Some("activity")
-            && payload["activity_execution_id"].as_str() == source.as_deref()
-    } else if kind == "timer" || source_kind.as_deref() == Some("timer") {
-        source.is_some()
-            && task_type.as_deref() == Some("timer")
-            && payload["timer_id"].as_str() == source.as_deref()
-    } else {
-        task_type.as_deref() == Some("workflow")
-            && (payload["open_wait_id"] == id
-                || (kind == "child"
-                    && ((source.is_some()
-                        && payload["child_workflow_run_id"].as_str() == source.as_deref())
-                        || payload["child_call_id"].as_str().is_some_and(|call| {
-                            !call.is_empty() && format!("child:{call}") == id
-                        }))))
-    };
+    task_matches &= task_payload_matches(
+        &kind,
+        &id,
+        source.as_deref(),
+        source_kind.as_deref(),
+        task_type.as_deref(),
+        &payload,
+    );
     let task_status = if task_matches {
         DB::optional_string(row, "matched_task_status")?
     } else {
@@ -98,55 +88,22 @@ fn project<DB: Backend>(row: &DB::Row, now: DateTime<Utc>) -> Result<Value> {
     } else {
         None
     };
-    let mut unavailable = DB::optional_string(row, "history_unsupported_reason")?;
-    if unavailable.is_none()
-        && DB::optional_string(row, "history_authority")?.as_deref()
-            == Some("mutable_open_fallback")
-    {
-        unavailable = Some("wait_without_typed_history".into());
-    }
-    if unavailable.is_none() && kind == "activity" {
-        if !activity_matches {
-            unavailable = Some("activity_metadata_unavailable".into());
-        } else if !matches!(activity_status.as_deref(), Some("pending" | "running")) {
-            unavailable = Some("activity_no_longer_open".into());
-        }
-    }
+    let unavailable =
+        unavailable_reason::<DB>(row, &kind, activity_matches, activity_status.as_deref())?;
     let retry_after = if task_open && kind == "activity" {
         positive(&payload["retry_after_attempt"])
     } else {
         None
     };
     let retry_ready = retry_after.is_some() && task_status.as_deref() == Some("ready");
-    let mut resume = if unavailable.is_none() && task_status.as_deref() == Some("ready") {
-        DB::optional_instant(row, "task_available_at")?
-    } else {
-        None
-    };
-    let mut deadline = None;
-    if unavailable.is_none() {
-        if kind == "timer" {
-            resume = resume.or(DB::optional_instant(row, "deadline_at")?);
-        } else if activity_matches {
-            let fields: &[&str] = if activity_status.as_deref() == Some("running") {
-                &[
-                    "close_deadline_at",
-                    "heartbeat_deadline_at",
-                    "schedule_to_close_deadline_at",
-                ]
-            } else {
-                &["schedule_deadline_at", "schedule_to_close_deadline_at"]
-            };
-            for field in fields {
-                if let Some(candidate) = DB::optional_instant(row, field)? {
-                    deadline =
-                        Some(deadline.map_or(candidate, |d: DateTime<Utc>| d.min(candidate)));
-                }
-            }
-        } else {
-            deadline = DB::optional_instant(row, "deadline_at")?;
-        }
-    }
+    let (resume, deadline) = wait_times::<DB>(
+        row,
+        &kind,
+        unavailable.is_none(),
+        task_status.as_deref(),
+        activity_matches,
+        activity_status.as_deref(),
+    )?;
     let state = if unavailable.is_some() {
         "unavailable"
     } else if deadline.is_some_and(|d| d <= now) {
@@ -200,6 +157,94 @@ fn project<DB: Backend>(row: &DB::Row, now: DateTime<Utc>) -> Result<Value> {
         "attempt_id":if attempt_matches && !retry_ready {attempt_id} else {None},"attempt_number":attempt_number,
         "attempt_limit":attempt_limit,"unavailable_reason":unavailable}),
     )
+}
+
+fn task_payload_matches(
+    kind: &str,
+    id: &str,
+    source: Option<&str>,
+    source_kind: Option<&str>,
+    task_type: Option<&str>,
+    payload: &Value,
+) -> bool {
+    if kind == "activity" {
+        source.is_some()
+            && task_type == Some("activity")
+            && payload["activity_execution_id"].as_str() == source
+    } else if kind == "timer" || source_kind == Some("timer") {
+        source.is_some() && task_type == Some("timer") && payload["timer_id"].as_str() == source
+    } else {
+        task_type == Some("workflow")
+            && (payload["open_wait_id"] == id
+                || (kind == "child"
+                    && ((source.is_some() && payload["child_workflow_run_id"].as_str() == source)
+                        || payload["child_call_id"].as_str().is_some_and(|call| {
+                            !call.is_empty() && format!("child:{call}") == id
+                        }))))
+    }
+}
+
+fn unavailable_reason<DB: Backend>(
+    row: &DB::Row,
+    kind: &str,
+    activity_matches: bool,
+    activity_status: Option<&str>,
+) -> Result<Option<String>> {
+    let mut unavailable = DB::optional_string(row, "history_unsupported_reason")?;
+    if unavailable.is_none()
+        && DB::optional_string(row, "history_authority")?.as_deref()
+            == Some("mutable_open_fallback")
+    {
+        unavailable = Some("wait_without_typed_history".into());
+    }
+    if unavailable.is_none() && kind == "activity" {
+        if !activity_matches {
+            unavailable = Some("activity_metadata_unavailable".into());
+        } else if !matches!(activity_status, Some("pending" | "running")) {
+            unavailable = Some("activity_no_longer_open".into());
+        }
+    }
+    Ok(unavailable)
+}
+
+fn wait_times<DB: Backend>(
+    row: &DB::Row,
+    kind: &str,
+    available: bool,
+    task_status: Option<&str>,
+    activity_matches: bool,
+    activity_status: Option<&str>,
+) -> Result<(Option<DateTime<Utc>>, Option<DateTime<Utc>>)> {
+    let mut resume = if available && task_status == Some("ready") {
+        DB::optional_instant(row, "task_available_at")?
+    } else {
+        None
+    };
+    let mut deadline = None;
+    if available {
+        if kind == "timer" {
+            resume = resume.or(DB::optional_instant(row, "deadline_at")?);
+        } else if activity_matches {
+            let fields: &[&str] = if activity_status == Some("running") {
+                &[
+                    "close_deadline_at",
+                    "heartbeat_deadline_at",
+                    "schedule_to_close_deadline_at",
+                ]
+            } else {
+                &["schedule_deadline_at", "schedule_to_close_deadline_at"]
+            };
+            for field in fields {
+                if let Some(candidate) = DB::optional_instant(row, field)? {
+                    deadline =
+                        Some(deadline.map_or(candidate, |d: DateTime<Utc>| d.min(candidate)));
+                }
+            }
+        } else {
+            deadline = DB::optional_instant(row, "deadline_at")?;
+        }
+    }
+    Ok((resume, deadline))
 }
 
 // Each join follows a unique stored identity within this run. Only the first 51

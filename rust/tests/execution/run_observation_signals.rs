@@ -127,72 +127,68 @@ async fn run_observation_signals_preserve_receipt_and_application_across_cold_no
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
     let mut originals = Vec::new();
-    for namespace in ["default"] {
-        register_signal_worker(&app, namespace).await;
-        for buffered in [false, true] {
-            let run = namespaces::start_scoped(
-                &app,
-                namespace,
-                &format!("signal-{namespace}-{buffered}"),
-            )
-            .await;
-            let task = claim(&app, namespace).await;
-            if buffered {
-                assert_eq!(signal(&app, namespace, &run).await.0, StatusCode::ACCEPTED);
-            }
-            let opened = finish(&app, namespace, &task, open_commands()).await;
-            assert_eq!(opened.0, StatusCode::OK, "{}", opened.1);
-            let duplicate = finish(&app, namespace, &task, open_commands()).await;
-            assert_eq!(duplicate.0, StatusCode::OK);
-            assert_eq!(duplicate.1["recorded"], false);
-            let history = read(&app, namespace, &run, "history").await;
-            let observation = read(&app, namespace, &run, "observation").await;
-            assert_eq!(observation["summary_state"], "observed", "{observation}");
-            assert_eq!(
-                observation["liveness_state"],
-                if buffered {
-                    "workflow_task_ready"
-                } else {
-                    "waiting_for_signal"
-                }
-            );
-            if !buffered {
-                assert_eq!(
-                    observation["liveness_reason"],
-                    "Waiting for signal payload."
-                );
-            }
-            run_observation_summaries::export_reference(&database, &observation, &history).await;
-            assert_eq!(
-                observation["current_waits"]["returned_count"], 1,
-                "{observation}"
-            );
-            let wait = observation["current_waits"]["waits"][0].clone();
-            let event = history["events"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|event| event["event_type"] == "SignalWaitOpened")
-                .unwrap();
-            assert_eq!(wait["id"], event["payload"]["signal_wait_id"]);
-            assert_eq!(wait["kind"], "signal");
-            assert_eq!(wait["target_name"], "payload");
-            assert_eq!(wait["reason"], "Waiting for signal payload.");
-            assert_eq!(wait["state"], "resume_time_unknown");
-            assert_eq!(wait["task_metadata_state"], "unavailable");
-            for field in [
-                "dependency_id",
-                "dependency_type",
-                "task_id",
-                "next_scheduled_resume_at",
-                "deadline_at",
-                "unavailable_reason",
-            ] {
-                assert!(wait[field].is_null(), "{field}: {wait}");
-            }
-            assert_eq!(read(&app, namespace, &run, "history").await, history);
-            originals.push((namespace, buffered, run, wait));
+    let namespace = "default";
+    register_signal_worker(&app, namespace).await;
+    for buffered in [false, true] {
+        let run =
+            namespaces::start_scoped(&app, namespace, &format!("signal-{namespace}-{buffered}"))
+                .await;
+        let task = claim(&app, namespace).await;
+        if buffered {
+            assert_eq!(signal(&app, namespace, &run).await.0, StatusCode::ACCEPTED);
         }
+        let opened = finish(&app, namespace, &task, open_commands()).await;
+        assert_eq!(opened.0, StatusCode::OK, "{}", opened.1);
+        let duplicate = finish(&app, namespace, &task, open_commands()).await;
+        assert_eq!(duplicate.0, StatusCode::OK);
+        assert_eq!(duplicate.1["recorded"], false);
+        let history = read(&app, namespace, &run, "history").await;
+        let observation = read(&app, namespace, &run, "observation").await;
+        assert_eq!(observation["summary_state"], "observed", "{observation}");
+        assert_eq!(
+            observation["liveness_state"],
+            if buffered {
+                "workflow_task_ready"
+            } else {
+                "waiting_for_signal"
+            }
+        );
+        if !buffered {
+            assert_eq!(
+                observation["liveness_reason"],
+                "Waiting for signal payload."
+            );
+        }
+        run_observation_summaries::export_reference(&database, &observation, &history).await;
+        assert_eq!(
+            observation["current_waits"]["returned_count"], 1,
+            "{observation}"
+        );
+        let wait = observation["current_waits"]["waits"][0].clone();
+        let event = history["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|event| event["event_type"] == "SignalWaitOpened")
+            .unwrap();
+        assert_eq!(wait["id"], event["payload"]["signal_wait_id"]);
+        assert_eq!(wait["kind"], "signal");
+        assert_eq!(wait["target_name"], "payload");
+        assert_eq!(wait["reason"], "Waiting for signal payload.");
+        assert_eq!(wait["state"], "resume_time_unknown");
+        assert_eq!(wait["task_metadata_state"], "unavailable");
+        for field in [
+            "dependency_id",
+            "dependency_type",
+            "task_id",
+            "next_scheduled_resume_at",
+            "deadline_at",
+            "unavailable_reason",
+        ] {
+            assert!(wait[field].is_null(), "{field}: {wait}");
+        }
+        assert_eq!(read(&app, namespace, &run, "history").await, history);
+        originals.push((namespace, buffered, run, wait));
     }
     runtime.close().await;
     let (a, b) = tokio::join!(database.open(), database.open());
