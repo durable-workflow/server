@@ -2,8 +2,9 @@
 
 This separate profile uses normally installed PHP SDK 2.4.2 and published Server
 2.8.0. It does not replace the frozen query actors. The earlier five-case profile
-passes on both targets using separate SQLite databases. The additional named
-waiting-workflow case is prepared and needs its own qualification. Earlier four-case
+passes on both targets using separate SQLite databases. A fresh six-case cohort,
+including the additional named waiting-workflow case, also passes on both
+SQLite targets. Earlier four-case
 MySQL observations are separate. The earlier active native termination-cleanup
 failure and PHP acknowledgement-observer race remain failed. All-six
 qualification is pending.

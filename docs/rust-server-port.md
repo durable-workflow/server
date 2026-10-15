@@ -88,14 +88,26 @@ The current integration order is:
   cleanup. The revised query-only observer delegates database retirement to
   the caller. Its revised five-case profile passes all ten fresh SQLite originals
   with the same four-second query and thirty-second observation budgets; all-six
-  execution remains pending. The first PHP SQLite observer raced the Worker's
+  execution remains pending. A later six-case SQLite cohort passes all twelve
+  fresh originals, including a query on a genuine waiting named timer workflow.
+  That new case uses the same installed SDK, reference image and original budgets.
+  The first PHP SQLite observer raced the Worker's
   acknowledgement and stays failed. The revised observer waits for that actual
   acknowledgement inside its original budget.
   Earlier worker-list and named-timer originals remain failed. Main
   keeps `query_task_authority=false`; the unpublished candidate advertises it
   for actual SDK qualification before promotion. Full namespace CRUD remains
-  open, including the absent native DELETE route. Worker listing, named timer
-  authoring and termination are also outside this query slice. See the
+  open, including the absent native DELETE route. Worker listing and termination
+  remain outside this query slice. The narrow named-timer correction admits the
+  existing timer command and carries its persisted namespace through global
+  maintenance and backend task lookup. Both new baseline tests fail at the
+  former namespace refusal; both corrected cases pass on SQLite, MySQL 8.4 and
+  PostgreSQL 17, including cold two-node recovery, duplicate identity, foreign
+  completion refusal, atomic invalid batches and zero-delay firing. Three
+  existing default timer/selection controls also pass per backend. The initial
+  MySQL regression database hit its 768 MiB memory limit and remains failed;
+  its separate fresh 1.5 GiB database run passes with unchanged test deadlines.
+  These local controls do not establish full namespace or timer parity. See the
   [exact installed checkpoint](https://github.com/durable-workflow/server/issues/433#issuecomment-6184509976).
   The query integration also preserves #455's opt-in poll hints and #458's
   completion uploads. Hint readiness now reads the same immutable UTC6 query
