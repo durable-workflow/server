@@ -118,13 +118,14 @@ async fn payload_cli_bounds_allocation_and_preserves_valid_and_malformed_origina
         .decode(codec.encode(&Value::String(String::new())).unwrap())
         .unwrap();
     assert_eq!(oversized.pop(), Some(0));
-    oversized.extend(
-        apache_avro::to_avro_datum(
-            &apache_avro::Schema::Long,
-            apache_avro::types::Value::Long(500 * 1024 * 1024),
+    apache_avro::GenericDatumWriter::new(&apache_avro::Schema::Long)
+        .build()
+        .unwrap()
+        .write_value_ref(
+            &mut oversized,
+            &apache_avro::types::Value::Long(500 * 1024 * 1024),
         )
-        .unwrap(),
-    );
+        .unwrap();
     connection.close().await.unwrap();
     for (blob, expected) in [
         (valid, "inspected"),
@@ -161,8 +162,9 @@ async fn payload_cli_bounds_allocation_and_preserves_valid_and_malformed_origina
             std::thread::sleep(Duration::from_millis(10));
         }
         let output = child.wait_with_output().unwrap();
-        assert!(
+        assert_eq!(
             output.status.success(),
+            expected == "inspected",
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
@@ -178,6 +180,10 @@ async fn payload_cli_bounds_allocation_and_preserves_valid_and_malformed_origina
             false
         );
         if expected == "unqualified" {
+            assert!(
+                String::from_utf8_lossy(&output.stderr)
+                    .contains("upgrade_source_payload_metadata_unqualified")
+            );
             assert_eq!(
                 report["payload_inspection"]["diagnostics"][0]["reason"],
                 "stored_inline_frame_unqualified"
