@@ -341,7 +341,14 @@ async fn run_observation_activity_summary_failure_rolls_back_original_claim() {
     );
     let unchanged = observe(&app, "default", &path).await.1;
     assert_eq!(unchanged["liveness_state"], "activity_task_ready");
-    assert_eq!(unchanged["current_waits"], before["current_waits"]);
+    assert_eq!(
+        unchanged["current_waits"]["waits"],
+        before["current_waits"]["waits"]
+    );
+    assert_eq!(
+        unchanged["summary_observed_at"],
+        before["summary_observed_at"]
+    );
     database
         .execute("DROP TRIGGER reject_activity_summary")
         .await;
