@@ -1091,6 +1091,10 @@ where
                 .bind(worker_id).bind(DB::bind_time(expires)).bind(attempt).bind(DB::bind_time(leased_at))
                 .bind(DB::document(&task_payload)).bind(&task_id).execute(&mut *tx).await?;
             // A lease is worker authority, not an authored lifecycle commit.
+            if kind == "workflow" {
+                Self::query("UPDATE workflow_run_waits SET task_status='leased',updated_at=$1 WHERE workflow_run_id=$2 AND task_id=$3 AND kind='child' AND status IN ('resolved','cancelled')")
+                    .bind(DB::bind_time(leased_at)).bind(&run_id).bind(&task_id).execute(&mut *tx).await?;
+            }
             tx.summary_changed(&run_id);
             // Published PHP keeps the admitted run pending until commands
             // change its state; the poll and description must agree.
@@ -2378,6 +2382,7 @@ where
         Self::project_timer_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
         Self::project_signal_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
         Self::project_condition_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
+        Self::project_child_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
         tx.summary_changed(run_id);
         Ok(())
     }

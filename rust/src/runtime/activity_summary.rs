@@ -77,11 +77,19 @@ impl ActivitySummaryHistory {
         } else {
             None
         };
+        let next = ExpectedActivity {
+            sequence,
+            kind: kind.into(),
+            status,
+            attempts,
+            attempt_id,
+            task_id,
+        };
         if event == "ActivityScheduled" {
             if self.open.len() >= 100
                 || self.open.contains_key(id)
                 || attempts != 0
-                || attempt_id.is_some()
+                || next.attempt_id.is_some()
             {
                 return false;
             }
@@ -89,50 +97,50 @@ impl ActivitySummaryHistory {
             let Some(previous) = self.open.get(id) else {
                 return false;
             };
-            if sequence != previous.sequence || kind != previous.kind {
-                return false;
-            }
-            if event == "ActivityStarted" {
-                if Some(attempts) != previous.attempts.checked_add(1)
-                    || attempt_id.is_none()
-                    || task_id.is_none()
-                {
-                    return false;
-                }
-            } else if attempts != previous.attempts || attempt_id != previous.attempt_id {
-                return false;
-            }
-            if matches!(
-                event,
-                "ActivityHeartbeatRecorded"
-                    | "ActivityRetryScheduled"
-                    | "ActivityCompleted"
-                    | "ActivityFailed"
-            ) && previous.status != "running"
-            {
-                return false;
-            }
-            if event == "ActivityRetryScheduled" && task_id.is_none() {
+            if !next.follows(previous, event) {
                 return false;
             }
         }
         if matches!(status, "completed" | "failed" | "cancelled") {
             self.open.remove(id);
         } else {
-            let task_id = task_id.or_else(|| self.open.get(id).and_then(|v| v.task_id.clone()));
-            self.open.insert(
-                id.into(),
-                ExpectedActivity {
-                    sequence,
-                    kind: kind.into(),
-                    status,
-                    attempts,
-                    attempt_id,
-                    task_id,
-                },
-            );
+            let task_id = next
+                .task_id
+                .clone()
+                .or_else(|| self.open.get(id).and_then(|v| v.task_id.clone()));
+            self.open
+                .insert(id.into(), ExpectedActivity { task_id, ..next });
         }
         true
+    }
+}
+
+impl ExpectedActivity {
+    fn follows(&self, previous: &Self, event: &str) -> bool {
+        if self.sequence != previous.sequence || self.kind != previous.kind {
+            return false;
+        }
+        if event == "ActivityStarted" {
+            if Some(self.attempts) != previous.attempts.checked_add(1)
+                || self.attempt_id.is_none()
+                || self.task_id.is_none()
+            {
+                return false;
+            }
+        } else if self.attempts != previous.attempts || self.attempt_id != previous.attempt_id {
+            return false;
+        }
+        if matches!(
+            event,
+            "ActivityHeartbeatRecorded"
+                | "ActivityRetryScheduled"
+                | "ActivityCompleted"
+                | "ActivityFailed"
+        ) && previous.status != "running"
+        {
+            return false;
+        }
+        event != "ActivityRetryScheduled" || self.task_id.is_some()
     }
 }
 

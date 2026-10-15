@@ -3,6 +3,7 @@ use super::{
     Result,
     activity_summary::ActivitySummaryHistory,
     backend::Backend,
+    child_summary::ChildSummaryHistory,
     external_wait_summary::ExternalWaitHistory,
     store::{Store, now},
     timer_summary::TimerSummaryHistory,
@@ -21,7 +22,7 @@ pub(super) struct ActiveSummary {
     lease_expires_at: Option<DateTime<Utc>>,
     pub(super) wait: Option<SummaryWait>,
     pub(super) repair_blocked: Option<&'static str>,
-    problem: bool,
+    pub(super) problem: bool,
 }
 
 pub(super) struct SummaryWait {
@@ -52,6 +53,7 @@ where
         external_waits: &ExternalWaitHistory,
         timers: &TimerSummaryHistory,
         activities: &ActivitySummaryHistory,
+        children: &ChildSummaryHistory,
     ) -> Result<Option<ActiveSummary>> {
         // Compatibility/fleet and task-backed wait classifiers are separate slices.
         // Leave an explicit unavailable summary instead of inventing liveness.
@@ -59,7 +61,7 @@ where
             return Ok(None);
         }
         let run_id = DB::string(run, "id")?;
-        if Self::scalar("SELECT COUNT(*) FROM workflow_run_waits WHERE workflow_run_id=$1 AND status='open' AND kind NOT IN ('condition','signal','timer','activity')")
+        if Self::scalar("SELECT COUNT(*) FROM workflow_run_waits WHERE workflow_run_id=$1 AND status='open' AND kind NOT IN ('condition','signal','timer','activity','child')")
             .bind(&run_id).fetch_one(&mut **tx).await? > 0 { return Ok(None); }
         // These native task transitions do not author queue-driver metadata.
         // Its presence needs the separately qualified transport classifier,
@@ -126,6 +128,9 @@ where
             return Ok(None);
         }
         if !Self::apply_activity_summary(tx, &run_id, activities, &mut summary).await? {
+            return Ok(None);
+        }
+        if !Self::apply_child_summary(tx, &run_id, children, &mut summary).await? {
             return Ok(None);
         }
         if summary.wait.is_none() && summary.task_id.is_none() {

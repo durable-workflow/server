@@ -11,6 +11,7 @@ mod activity_results;
 mod activity_summary;
 mod backend;
 mod cancellation;
+mod child_summary;
 mod children;
 mod continuations;
 mod control_plane;

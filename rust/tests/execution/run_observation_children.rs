@@ -1,7 +1,17 @@
 use super::*;
 
 async fn observe(app: &Router, run: &Value) -> Value {
-    let response = request(app, "GET", &format!("/api/workflows/{}/runs/{}/observation", run["workflow_id"].as_str().unwrap(), run["run_id"].as_str().unwrap()), Value::Null).await;
+    let response = request(
+        app,
+        "GET",
+        &format!(
+            "/api/workflows/{}/runs/{}/observation",
+            run["workflow_id"].as_str().unwrap(),
+            run["run_id"].as_str().unwrap()
+        ),
+        Value::Null,
+    )
+    .await;
     assert_eq!(response.0, StatusCode::OK, "{}", response.1);
     response.1
 }
@@ -45,16 +55,29 @@ async fn run_observation_children_preserve_identity_through_cold_completion_and_
         let observed = export(&database, &app, &run).await;
         assert_eq!(observed["summary_state"], "observed", "{observed}");
         assert_eq!(observed["liveness_state"], "waiting_for_child");
-        assert_eq!(observed["liveness_reason"], "Waiting for child workflow child.");
+        assert_eq!(
+            observed["liveness_reason"],
+            "Waiting for child workflow child."
+        );
         let wait = &observed["current_waits"]["waits"][0];
         assert_eq!(observed["current_waits"]["returned_count"], 1);
-        assert_eq!(wait["id"], format!("child:{}", scheduled["child_call_id"].as_str().unwrap()));
+        assert_eq!(
+            wait["id"],
+            format!("child:{}", scheduled["child_call_id"].as_str().unwrap())
+        );
         assert_eq!(wait["dependency_id"], scheduled["child_workflow_run_id"]);
-        assert_eq!(wait["dependency_type"], "child_workflow_run");
+        assert_eq!(wait["dependency_type"], "child");
         assert_eq!(wait["kind"], "child");
         assert_eq!(wait["reason"], "Waiting for child workflow child.");
         assert_eq!(wait["state"], "resume_time_unknown");
-        for field in ["task_id", "deadline_at", "next_scheduled_resume_at", "attempt_id", "attempt_number", "unavailable_reason"] {
+        for field in [
+            "task_id",
+            "deadline_at",
+            "next_scheduled_resume_at",
+            "attempt_id",
+            "attempt_number",
+            "unavailable_reason",
+        ] {
             assert!(wait[field].is_null(), "{field}: {wait}");
         }
         assert_eq!(history(&app, &run).await, before);
@@ -67,10 +90,23 @@ async fn run_observation_children_preserve_identity_through_cold_completion_and_
     for (cancelled, run, wait, before) in originals {
         assert_eq!(observe(&app_b, &run).await["current_waits"], wait);
         let child = poll(&app_a, "child-observer", "workflow").await;
-        assert_eq!(child["run_id"], before["events"][2]["payload"]["child_workflow_run_id"]);
+        assert_eq!(
+            child["run_id"],
+            before["events"][2]["payload"]["child_workflow_run_id"]
+        );
         assert_eq!(observe(&app_b, &run).await["current_waits"], wait);
         let resolved = if cancelled {
-            request(&app_a,"POST", &format!("/api/workflows/{}/runs/{}/cancel", child["workflow_id"].as_str().unwrap(),child["run_id"].as_str().unwrap()), json!({"reason":"child observation cancellation λ"})).await
+            request(
+                &app_a,
+                "POST",
+                &format!(
+                    "/api/workflows/{}/runs/{}/cancel",
+                    child["workflow_id"].as_str().unwrap(),
+                    child["run_id"].as_str().unwrap()
+                ),
+                json!({"reason":"child observation cancellation λ"}),
+            )
+            .await
         } else {
             finish_task(&app_a, &child, completed()).await
         };
@@ -82,10 +118,19 @@ async fn run_observation_children_preserve_identity_through_cold_completion_and_
         let resumed = poll(&app_a, "parent-observer", "workflow").await;
         assert_eq!(resumed["run_id"], run["run_id"]);
         assert_eq!(resumed["child_workflow_run_id"], child["run_id"]);
-        assert_eq!(export(&database,&app_b,&run).await["liveness_state"], "workflow_task_leased");
-        assert!(poll(&app_b,"parent-observer","workflow").await.is_null());
-        assert_eq!(finish_task(&app_a,&resumed,completed()).await.0,StatusCode::OK);
-        assert_eq!(export(&database,&app_b,&run).await["liveness_state"], "closed");
+        assert_eq!(
+            export(&database, &app_b, &run).await["liveness_state"],
+            "workflow_task_leased"
+        );
+        assert!(poll(&app_b, "parent-observer", "workflow").await.is_null());
+        assert_eq!(
+            finish_task(&app_a, &resumed, completed()).await.0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            export(&database, &app_b, &run).await["liveness_state"],
+            "closed"
+        );
     }
     a.close().await;
     b.close().await;
@@ -97,25 +142,36 @@ async fn run_observation_children_missing_wait_is_not_repaired_by_reads_or_resol
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
-    let (run, task) = parent(&app,"missing-child-wait").await;
-    assert_eq!(finish_task(&app,&task,json!([child_command(1)])).await.0,StatusCode::OK);
-    let original = observe(&app,&run).await;
+    let (run, task) = parent(&app, "missing-child-wait").await;
+    assert_eq!(
+        finish_task(&app, &task, json!([child_command(1)])).await.0,
+        StatusCode::OK
+    );
+    let original = observe(&app, &run).await;
     assert_eq!(original["summary_state"], "observed");
-    database.execute("DELETE FROM workflow_run_waits WHERE kind='child'").await;
-    let before = history(&app,&run).await;
+    database
+        .execute("DELETE FROM workflow_run_waits WHERE kind='child'")
+        .await;
+    let before = history(&app, &run).await;
     for _ in 0..2 {
-        let read = observe(&app,&run).await;
-        assert_eq!(read["current_waits"]["returned_count"],0);
-        assert_eq!(read["summary_observed_at"],original["summary_observed_at"]);
+        let read = observe(&app, &run).await;
+        assert_eq!(read["current_waits"]["returned_count"], 0);
+        assert_eq!(read["summary_observed_at"], original["summary_observed_at"]);
     }
-    assert_eq!(history(&app,&run).await,before);
-    let child = poll(&app,"child-observer","workflow").await;
-    assert_eq!(finish_task(&app,&child,completed()).await.0,StatusCode::OK);
-    let after = observe(&app,&run).await;
-    assert_eq!(after["summary_state"],"unavailable", "{after}");
-    assert_eq!(after["current_waits"]["returned_count"],0);
-    let resumed = poll(&app,"parent-observer","workflow").await;
-    assert_eq!(resumed["run_id"],run["run_id"],"observation loss does not suppress business resumption");
+    assert_eq!(history(&app, &run).await, before);
+    let child = poll(&app, "child-observer", "workflow").await;
+    assert_eq!(
+        finish_task(&app, &child, completed()).await.0,
+        StatusCode::OK
+    );
+    let after = observe(&app, &run).await;
+    assert_eq!(after["summary_state"], "unavailable", "{after}");
+    assert_eq!(after["current_waits"]["returned_count"], 0);
+    let resumed = poll(&app, "parent-observer", "workflow").await;
+    assert_eq!(
+        resumed["run_id"], run["run_id"],
+        "observation loss does not suppress business resumption"
+    );
     runtime.close().await;
     database.remove().await;
 }
@@ -125,17 +181,20 @@ async fn run_observation_children_projection_insert_failure_preserves_original_p
     let database = TestDatabase::Sqlite(tempfile::tempdir().unwrap());
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
-    let (run, task) = parent(&app,"child-projection-rollback").await;
-    let before = history(&app,&run).await;
+    let (run, task) = parent(&app, "child-projection-rollback").await;
+    let before = history(&app, &run).await;
     database.execute("CREATE TRIGGER reject_child_wait BEFORE INSERT ON workflow_run_waits WHEN NEW.kind='child' BEGIN SELECT RAISE(ABORT,'child wait insert failed'); END").await;
-    let commands=json!([child_command(1)]);
-    let failed=finish_task(&app,&task,commands.clone()).await;
-    assert_eq!(failed.0,StatusCode::SERVICE_UNAVAILABLE,"{}",failed.1);
-    assert_eq!(history(&app,&run).await,before);
-    assert!(poll(&app,"child-observer","workflow").await.is_null());
+    let commands = json!([child_command(1)]);
+    let failed = finish_task(&app, &task, commands.clone()).await;
+    assert_eq!(failed.0, StatusCode::SERVICE_UNAVAILABLE, "{}", failed.1);
+    assert_eq!(history(&app, &run).await, before);
+    assert!(poll(&app, "child-observer", "workflow").await.is_null());
     database.execute("DROP TRIGGER reject_child_wait").await;
-    assert_eq!(finish_task(&app,&task,commands).await.0,StatusCode::OK);
-    assert_eq!(observe(&app,&run).await["liveness_state"],"waiting_for_child");
+    assert_eq!(finish_task(&app, &task, commands).await.0, StatusCode::OK);
+    assert_eq!(
+        observe(&app, &run).await["liveness_state"],
+        "waiting_for_child"
+    );
     runtime.close().await;
 }
 
@@ -144,19 +203,30 @@ async fn run_observation_children_parent_summary_failure_rolls_back_child_resolu
     let database = TestDatabase::Sqlite(tempfile::tempdir().unwrap());
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
-    let (run,task)=parent(&app,"child-summary-rollback").await;
-    assert_eq!(finish_task(&app,&task,json!([child_command(1)])).await.0,StatusCode::OK);
-    let child=poll(&app,"child-observer","workflow").await;
-    let before=history(&app,&run).await;
-    let child_before=history(&app,&child).await;
+    let (run, task) = parent(&app, "child-summary-rollback").await;
+    assert_eq!(
+        finish_task(&app, &task, json!([child_command(1)])).await.0,
+        StatusCode::OK
+    );
+    let child = poll(&app, "child-observer", "workflow").await;
+    let before = history(&app, &run).await;
+    let child_before = history(&app, &child).await;
     database.execute("CREATE TRIGGER reject_child_parent_summary BEFORE INSERT ON workflow_run_summaries WHEN NEW.workflow_type='echo' AND NEW.liveness_state='workflow_task_ready' BEGIN SELECT RAISE(ABORT,'parent summary insert failed'); END").await;
-    let failed=finish_task(&app,&child,completed()).await;
-    assert_eq!(failed.0,StatusCode::SERVICE_UNAVAILABLE,"{}",failed.1);
-    assert_eq!(history(&app,&run).await,before);
-    assert_eq!(history(&app,&child).await,child_before);
-    assert!(poll(&app,"parent-observer","workflow").await.is_null());
-    database.execute("DROP TRIGGER reject_child_parent_summary").await;
-    assert_eq!(finish_task(&app,&child,completed()).await.0,StatusCode::OK);
-    assert_eq!(observe(&app,&run).await["liveness_state"],"workflow_task_ready");
+    let failed = finish_task(&app, &child, completed()).await;
+    assert_eq!(failed.0, StatusCode::SERVICE_UNAVAILABLE, "{}", failed.1);
+    assert_eq!(history(&app, &run).await, before);
+    assert_eq!(history(&app, &child).await, child_before);
+    assert!(poll(&app, "parent-observer", "workflow").await.is_null());
+    database
+        .execute("DROP TRIGGER reject_child_parent_summary")
+        .await;
+    assert_eq!(
+        finish_task(&app, &child, completed()).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        observe(&app, &run).await["liveness_state"],
+        "workflow_task_ready"
+    );
     runtime.close().await;
 }

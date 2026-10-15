@@ -18,6 +18,41 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
+    pub(super) async fn project_child_wait_event(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        event_type: &str,
+        payload: &Value,
+        at: DateTime<Utc>,
+    ) -> Result<()> {
+        if !matches!(
+            event_type,
+            "ChildWorkflowScheduled" | "ChildRunCompleted" | "ChildRunCancelled"
+        ) {
+            return Ok(());
+        }
+        let wait_id = format!("child:{}", super::text(payload, "child_call_id")?);
+        let label = super::text(payload, "child_workflow_type")?;
+        if event_type == "ChildWorkflowScheduled" {
+            let sequence = wait_sequence(payload)?;
+            Self::query("INSERT INTO workflow_run_waits(id,workflow_run_id,workflow_instance_id,wait_id,position,kind,sequence,status,source_status,summary,opened_at,target_name,target_type,task_backed,external_only,resume_source_kind,resume_source_id,history_authority,created_at,updated_at) SELECT $1,id,workflow_instance_id,$2,$3,'child',$4,'open','waiting',$5,$6,$7,$8,FALSE,FALSE,'child_workflow_run',$9,'typed_history',$10,$11 FROM workflow_runs WHERE id=$12")
+                .bind(projection_id(run_id, &wait_id)).bind(wait_id).bind(sequence-1).bind(sequence)
+                .bind(format!("Waiting for child workflow {label}."))
+                .bind(DB::bind_time(at)).bind(super::text(payload,"child_workflow_instance_id")?).bind(label)
+                .bind(super::text(payload,"child_workflow_run_id")?).bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(run_id)
+                .execute(&mut **tx).await?;
+        } else {
+            let cancelled = event_type == "ChildRunCancelled";
+            let source_status = if cancelled { "cancelled" } else { "completed" };
+            // Only scheduling creates a row. Resolution cannot repair a lost projection.
+            Self::query("UPDATE workflow_run_waits SET status=$1,source_status=$2,summary=$3,resolved_at=$4,updated_at=$5 WHERE workflow_run_id=$6 AND wait_id=$7 AND kind='child' AND status='open'")
+                .bind(if cancelled { "cancelled" } else { "resolved" }).bind(source_status)
+                .bind(format!("Child workflow {label} {source_status}."))
+                .bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(run_id).bind(wait_id).execute(&mut **tx).await?;
+        }
+        Ok(())
+    }
+
     pub(super) async fn create_activity_wait(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,

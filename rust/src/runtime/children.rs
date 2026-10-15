@@ -299,7 +299,9 @@ where
             }
         }
         Self::append(tx, &parent_run, event_type, payload, None, None).await?;
-        Self::create_task(tx, &parent_run, &DB::string(&parent,"queue")?, "workflow", json!({"workflow_wait_kind":"child","child_call_id":call_id,"child_workflow_run_id":child_run,"resume_source_kind":"child_workflow_run","resume_source_id":child_run,"workflow_sequence":sequence,"workflow_event_type":event_type,"open_wait_id":format!("child:{call_id}")})).await?;
+        let task_id = Self::create_task(tx, &parent_run, &DB::string(&parent,"queue")?, "workflow", json!({"workflow_wait_kind":"child","child_call_id":call_id,"child_workflow_run_id":child_run,"resume_source_kind":"child_workflow_run","resume_source_id":child_run,"workflow_sequence":sequence,"workflow_event_type":event_type,"open_wait_id":format!("child:{call_id}")})).await?;
+        Self::query("UPDATE workflow_run_waits SET task_backed=TRUE,task_id=$1,task_type='workflow',task_status='ready' WHERE workflow_run_id=$2 AND wait_id=$3 AND kind='child' AND status IN ('resolved','cancelled')")
+            .bind(task_id).bind(&parent_run).bind(format!("child:{call_id}")).execute(&mut **tx).await?;
         Ok(())
     }
 }
