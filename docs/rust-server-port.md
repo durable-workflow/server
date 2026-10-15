@@ -133,6 +133,19 @@ run in every existing database configuration with their original deadlines;
 their runtime artifacts are shared without compiler caches. Cleanup is owned by
 the existing unconditional workflow steps.
 
+Candidate `396a22e98` first failed during a pinned image pull before scenarios.
+Its identical-source retry exposed a missing third namespace binding in
+cooperative timer cancellation, producing protocol errors on network databases.
+SQLite silently left the original timer task ready at delivery. The
+[three-database counterfactual and correction](https://github.com/durable-workflow/server/pull/463#issuecomment-6185925195)
+fail before and pass after `a78956cd2`, checking the same original task reaches
+cancelled state while preserving cancellation history, deadlines and replay.
+Fresh corrected SQLite passes 75 library tests with eighteen existing ignores
+and all 125 execution tests. The separate older namespace test now retains its
+unqualified-command refusal using a child command, since timers have positive
+coverage. Hosted failures remain failed; neither correction qualifies a new
+combined matrix or explains historical PHP storage failures.
+
 Full transport discovery stays unadvertised. Complete batch workflow semantics,
 memo/query reference ingress, upload allowances, automatic result policy, S3,
 cleanup/backup/restart and full database/consumer qualification remain open.
