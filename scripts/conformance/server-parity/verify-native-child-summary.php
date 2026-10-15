@@ -21,6 +21,7 @@ $projector = Workflow\V2\Support\RunSummaryProjector::class;
 $openChild = new ReflectionMethod($projector, 'openChildWait');
 $pendingChild = new ReflectionMethod($projector, 'pendingChildResolutionWait');
 $liveness = new ReflectionMethod($projector, 'liveness');
+$taskProblem = new ReflectionMethod($projector, 'taskProblemDetected');
 $childWaits = new ReflectionMethod(Workflow\V2\Support\RunWaitView::class, 'childWaits');
 $count = 0;
 $waitCount = 0;
@@ -56,6 +57,7 @@ foreach (file($argv[2], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line)
         $nextTask = new Workflow\V2\Models\WorkflowTask();
         $nextTask->setRawAttributes($case['tasks'][0]);
     }
+    $run->setRelation('tasks', new Illuminate\Database\Eloquent\Collection($nextTask === null ? [] : [$nextTask]));
     $open = $nextTask === null ? $openChild->invoke(null, $run) : null;
     $pending = $pendingChild->invoke(null, $run, $open !== null);
     [$state, $reason] = $liveness->invoke(null,
@@ -64,6 +66,12 @@ foreach (file($argv[2], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line)
     );
     if ($state !== $summary['liveness_state'] || $reason !== $summary['liveness_reason']) {
         throw new RuntimeException($summary['run_id'].' differs from installed child liveness: '.$state.' / '.$reason);
+    }
+    $problem = $taskProblem->invoke(null, $run, $nextTask, null, null, null, null, null, $pending,
+        $nextTask === null ? 'child' : 'workflow-task', $state,
+    );
+    if ($problem !== $case['stored_task_problem']) {
+        throw new RuntimeException($summary['run_id'].' stored task_problem differs from installed PHP.');
     }
     $expected = array_values(array_filter($childWaits->invoke(null, $run, [], []),
         static fn (array $wait): bool => $wait['status'] === 'open',

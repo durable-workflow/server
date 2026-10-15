@@ -78,7 +78,7 @@ pub(super) async fn export_reference(database: &TestDatabase, summary: &Value, h
         let query = "SELECT event_type,CAST(payload AS TEXT),CAST(recorded_at AS TEXT) FROM workflow_history_events WHERE workflow_run_id=$1 ORDER BY sequence";
         let task_query = "SELECT id,task_type,status,CAST(available_at AS TEXT),CAST(leased_at AS TEXT),CAST(lease_expires_at AS TEXT),compatibility FROM workflow_tasks WHERE workflow_run_id=$1 AND status IN ('ready','leased') ORDER BY id";
         macro_rules! rows {
-            ($pool:expr,$query:expr,$tasks:expr) => {{
+            ($pool:expr,$query:expr,$tasks:expr,$problem:expr) => {{
                 let pool = $pool;
                 let rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as($query)
                     .bind(run)
@@ -98,11 +98,16 @@ pub(super) async fn export_reference(database: &TestDatabase, summary: &Value, h
                     .fetch_all(&pool)
                     .await
                     .unwrap();
+                let problem: i64 = sqlx::query_scalar($problem)
+                    .bind(run)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
                 pool.close().await;
-                (rows, tasks)
+                (rows, tasks, problem != 0)
             }};
         }
-        let (rows, tasks) = match database {
+        let (rows, tasks, task_problem) = match database {
             TestDatabase::Sqlite(dir) => rows!(
                 sqlx::SqlitePool::connect(&format!(
                     "sqlite://{}",
@@ -111,7 +116,8 @@ pub(super) async fn export_reference(database: &TestDatabase, summary: &Value, h
                 .await
                 .unwrap(),
                 query,
-                task_query
+                task_query,
+                "SELECT COUNT(*) FROM workflow_run_summaries WHERE id=$1 AND task_problem=TRUE"
             ),
             TestDatabase::Postgres { options, .. } => rows!(
                 sqlx::postgres::PgPoolOptions::new()
@@ -119,7 +125,8 @@ pub(super) async fn export_reference(database: &TestDatabase, summary: &Value, h
                     .await
                     .unwrap(),
                 query,
-                task_query
+                task_query,
+                "SELECT COUNT(*) FROM workflow_run_summaries WHERE id=$1 AND task_problem=TRUE"
             ),
             TestDatabase::MySql { options, .. } => rows!(
                 sqlx::mysql::MySqlPoolOptions::new()
@@ -127,7 +134,8 @@ pub(super) async fn export_reference(database: &TestDatabase, summary: &Value, h
                     .await
                     .unwrap(),
                 "SELECT event_type,CAST(payload AS CHAR),CAST(recorded_at AS CHAR) FROM workflow_history_events WHERE workflow_run_id=? ORDER BY sequence",
-                "SELECT id,task_type,status,CAST(available_at AS CHAR),CAST(leased_at AS CHAR),CAST(lease_expires_at AS CHAR),compatibility FROM workflow_tasks WHERE workflow_run_id=? AND status IN ('ready','leased') ORDER BY id"
+                "SELECT id,task_type,status,CAST(available_at AS CHAR),CAST(leased_at AS CHAR),CAST(lease_expires_at AS CHAR),compatibility FROM workflow_tasks WHERE workflow_run_id=? AND status IN ('ready','leased') ORDER BY id",
+                "SELECT COUNT(*) FROM workflow_run_summaries WHERE id=? AND task_problem=TRUE"
             ),
         };
         let raw:Vec<Value> = rows.into_iter().map(|(kind,payload,recorded)| json!({"event_type":kind,"payload_json":payload.unwrap_or_else(||"null".into()),"recorded_at":recorded})).collect();
@@ -149,7 +157,7 @@ pub(super) async fn export_reference(database: &TestDatabase, summary: &Value, h
         writeln!(
             file,
             "{}",
-            json!({"summary":summary,"history":history,"raw_history":raw,"tasks":tasks})
+            json!({"summary":summary,"history":history,"raw_history":raw,"tasks":tasks,"stored_task_problem":task_problem})
         )
         .unwrap();
     }
