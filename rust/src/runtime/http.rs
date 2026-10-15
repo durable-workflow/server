@@ -125,6 +125,10 @@ pub fn router(runtime: Runtime) -> Router {
             "/api/workflows/{workflow_id}/runs/{run_id}/activities",
             get(activities),
         )
+        .route(
+            "/api/workflows/{workflow_id}/runs/{run_id}/activities/{activity_id}/result",
+            get(activity_result),
+        )
         .route("/api/worker/register", post(register))
         .route("/api/worker/heartbeat", post(worker_heartbeat))
         .route("/api/worker/registrations/{worker_id}", delete(deregister))
@@ -395,6 +399,9 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
     }
     if let Some(path) = path.strip_prefix("/api/workflows/") {
         let parts: Vec<_> = path.split('/').collect();
+        if matches!(parts.as_slice(), [_, "runs", _, "activities", _, "result"]) {
+            return method == "GET";
+        }
         if matches!(
             parts.as_slice(),
             [_, "signal", _] | [_, "runs", _, "signal", _]
@@ -507,6 +514,17 @@ async fn cluster() -> Json<Value> {
         "auth_composition_contract": auth_composition,
         "payload_codec": "avro", "qualified_for_php_takeover": false}),
     )
+}
+
+async fn activity_result(
+    Extension(runtime): Extension<Runtime>,
+    Path((workflow_id, run_id, activity_id)): Path<(String, String, String)>,
+) -> Result<Json<Value>> {
+    Ok(Json(
+        runtime
+            .activity_result(&workflow_id, &run_id, &activity_id)
+            .await?,
+    ))
 }
 
 async fn start(

@@ -8,6 +8,7 @@ mod activity_failures;
 mod activity_heartbeats;
 mod activity_metadata;
 mod activity_metadata_read;
+mod activity_results;
 mod backend;
 mod cancellation;
 mod children;

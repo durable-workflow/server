@@ -3077,3 +3077,56 @@ WorkerController bytes match the qualified PHP handoff. This combined tree
 requires fresh normal and six-database qualification. The preceding `3409a776`
 component pass, its MySQL-only retry, and all failed originals remain their
 separate records; none qualifies this integration or a native release.
+
+The separate activity-result candidate now has installed consumer evidence on
+all three database families: 48 originals and 192 author/activity/reader/cold
+process phases match published PHP for null, false, typed int64/null/Unicode maps
+and a 2 MiB external value, in default and named namespaces. It reuses an audited
+optimized native binary without compiling locally. This is endpoint/client
+qualification, not a performance or discovery claim.
+
+The next installed retry probe initially required a terminal `ActivityFailed`
+event for a retry. That PHP original remains failed. Correcting the fixture to
+the canonical `ActivityRetryScheduled` event produces four fresh SQLite passes,
+two per implementation. Eight actual callbacks, four failure submissions and
+four completions preserve their original 30-second observation budgets and
+authored retry policies. Separate parent/cold readers preserve the scheduled
+history prefix and exact typed result. Stopped SQL states match: two completed
+runs, two completed activities at attempt2, eight completed tasks and sixteen
+events per implementation, with zero repairs. Both APIs exit0 without OOM.
+Listing, unrelated-object isolation, embedded outcome checks, all-database
+installed retry consumers and Waterline acceptance remain open; discovery stays
+unadvertised. Raw phase data and dependencies are deleted after immediate audit.
+
+The next operator read slice is the existing PHP targeted activity-result
+endpoint from #439/#440. Its [contract](contracts/workflow-activity-result-inspection.md)
+and separate fixture/profile define canonical history selection, exact ownership,
+null versus absence, explicit unavailable states and opaque external transport
+before native implementation. The selected published PHP reference is separate
+from every frozen actor. Native discovery and Waterline consumption remain pending.
+
+The native targeted route now reads one latest canonical activity snapshot after
+literal namespace/workflow/run binding. Its state and envelope projection never
+uses the mutable activity result. Focused HTTP tests preserve null, false, int64,
+Unicode and closed-parent results, refuse foreign identities and worker roles,
+distinguish missing/pruned history and follow genuine retry/failure/cancellation
+outcomes. All three original route controls fail the preceding runtime. Earlier
+fixture setup failures used a wrong retry field and a globally reserved workflow
+ID, and do not count as runtime counterfactuals. The first MySQL candidate exposed
+a missing dialect-template registration, corrected before its four passing
+controls. Those same four cases pass SQLite, MySQL 8.4 and PostgreSQL 17. The
+SQLite execution suite passes 117 cases. Library checks pass 72 cases with the
+existing 18 database/subprocess ignores.
+
+Separate normally installed PHP SDK 2.4.2 processes complete eight fresh originals
+per target on published PHP 2.8.3 and native SQLite. Default and named namespaces
+each preserve null, false, the typed map and a 2,796,296-byte external value.
+Every original completes one activity and its original parent within its initial
+30-second observation budget. Cold readers retain history sequence 5 and exact
+decoded values after the different parent output commits. Stopped-state audits
+find 48 events and 24 completed first-attempt tasks per target, zero repairs and
+no ready backlog. Both APIs stop with explicit SIGTERM, exit 0 and no OOM.
+The external producer uses explicit upload/protocol completion. This does not
+qualify automatic Worker uploads. Capability discovery, metadata-only listing,
+unrelated-object isolation, all-database installed consumers, embedded negative
+controls and Waterline acceptance remain open.
