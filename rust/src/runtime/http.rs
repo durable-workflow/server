@@ -235,21 +235,27 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         )
         .await;
     };
-    let allowed_roles: &[&str] =
-        if payload || path == "/api/worker/register" || path == "/api/cluster/info" {
-            &["worker", "operator", "admin"]
-        } else if worker {
-            &["worker"]
-        } else if path.starts_with("/api/workers/")
-            || path == "/api/namespaces" && request.method() == Method::POST
-            || path.starts_with("/api/namespaces/")
-                && path.ends_with("/external-storage")
-                && request.method() == Method::PUT
-        {
-            &["admin"]
-        } else {
-            &["operator", "admin"]
-        };
+    let allowed_roles: &[&str] = if path == "/api/external-payloads/v1"
+        && request.method() == Method::POST
+        && request
+            .headers()
+            .contains_key("x-durable-workflow-payload-completion")
+    {
+        &["worker"]
+    } else if payload || path == "/api/worker/register" || path == "/api/cluster/info" {
+        &["worker", "operator", "admin"]
+    } else if worker {
+        &["worker"]
+    } else if path.starts_with("/api/workers/")
+        || path == "/api/namespaces" && request.method() == Method::POST
+        || path.starts_with("/api/namespaces/")
+            && path.ends_with("/external-storage")
+            && request.method() == Method::PUT
+    {
+        &["admin"]
+    } else {
+        &["operator", "admin"]
+    };
     if !legacy_full_access && !allowed_roles.contains(&role) {
         return admission_error(request, worker, StatusCode::FORBIDDEN, json!({
             "reason":"forbidden", "message":"Authenticated role is not allowed to access this endpoint.",

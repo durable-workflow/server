@@ -7,6 +7,7 @@ use tokio::sync::Semaphore;
 #[derive(Clone)]
 pub struct ExternalPayloadConfig {
     pub max_bytes: u64,
+    pub completion_max_bytes: Option<u64>,
     pub timeout: Duration,
     pub abandoned_seconds: i64,
     pub max_bytes_per_namespace: Value,
@@ -27,6 +28,7 @@ impl Default for ExternalPayloadConfig {
     fn default() -> Self {
         Self {
             max_bytes: 64 * 1024 * 1024,
+            completion_max_bytes: None,
             timeout: Duration::from_secs(30),
             abandoned_seconds: 3600,
             max_bytes_per_namespace: Value::Null,
@@ -119,12 +121,15 @@ fn member<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
 
 impl ExternalPayloadConfig {
     pub(super) fn from_env() -> Result<Self> {
+        let completion = process_value("COMPLETION_MAX_BYTES", Value::Null)?;
         let overrides = process_value("NAMESPACE_OVERRIDES", Value::String("{}".into()))?;
         let overrides = overrides
             .as_str()
             .and_then(|value| serde_json::from_str(value).ok())
             .unwrap_or(Value::Null);
         Ok(Self {
+            completion_max_bytes: (!completion.is_null())
+                .then(|| integer(&completion).max(1) as u64),
             max_bytes: integer(&process_value(
                 "MAX_BYTES",
                 serde_json::json!(64 * 1024 * 1024),

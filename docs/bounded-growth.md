@@ -65,14 +65,18 @@ added without a TTL, admission, scan, or cardinality contract.
 `workflow_query_tasks` covers the query task, queue, lease, queue-lock,
 query-poller marker, and same-worker leased-task index keys under
 `server:workflow-query-task:`. Task and queue keys live for the configured
-query-task TTL window, lease keys live for the effective query-task lease
-timeout, leased-task index keys live for the query-task TTL window, and queue
-locks live for 10 seconds. The query-poller marker key is scoped to
+query-task TTL window, calculated as
+`max(60, server.query_tasks.ttl_seconds, server.query_tasks.timeout + max(1, server.query_tasks.lease_timeout) + 60)`
+seconds. Leased-task index keys use the same retention window. Each claim's
+lease expires at the earlier of claim time plus the configured lease timeout
+(minimum one second) and the original query deadline. A short lease can expire
+before the caller deadline, and retained records do not extend either bound.
+Queue locks live for 10 seconds. The query-poller marker key is scoped to
 `(namespace, task_queue, worker_id)` and lives for the worker's requested query
 poll timeout plus 5 seconds when `timeout_seconds` is supplied, otherwise for
 `max(server.workers.stale_after_seconds, server.query_tasks.timeout + 5)`
 seconds. The query timeout defaults to
-`max(server.polling.timeout + 15, server.lease.workflow_task_timeout + 5, 40)`
+`min(max(server.polling.timeout + 15, 40), 55)`
 and is runtime-clamped to 0 or greater. Markers are written only when a
 registered worker polls the query-task endpoint, are refreshed by the same
 worker's repeat polls, and are not retained in an index. Queue reads and writes

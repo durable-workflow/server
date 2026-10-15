@@ -293,6 +293,11 @@ where
             .filter(|v| *v <= 60)
             .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_poll_timeout"))?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
+        let mut cross_kind = if timeout > 0 {
+            self.poll_wake_snapshot(&body, "query").await?
+        } else {
+            None
+        };
         loop {
             let wake = self.wake.notified();
             if let Some(task) = self.claim_query(&body).await? {
@@ -303,6 +308,15 @@ where
             if tokio::time::Instant::now() >= deadline {
                 return Ok(
                     json!({"task":null,"poll_status":"timeout","server_capabilities":super::store::capabilities()}),
+                );
+            }
+            if self
+                .poll_queue_changed(&body, "query", &mut cross_kind)
+                .await?
+                && tokio::time::Instant::now() < deadline
+            {
+                return Ok(
+                    json!({"task":null,"poll_status":"task_queue_changed","server_capabilities":super::store::capabilities()}),
                 );
             }
             tokio::select! { _ = wake => {}, _ = tokio::time::sleep(Duration::from_millis(50)) => {} }

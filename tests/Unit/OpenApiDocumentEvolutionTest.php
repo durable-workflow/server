@@ -3,14 +3,40 @@
 namespace Tests\Unit;
 
 use DurableWorkflow\Server\Ci\OpenApiDocumentEvolution;
+use PHPUnit\Framework\AssertionFailedError;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use Symfony\Component\Yaml\Yaml;
+use Tests\Support\OpenApiSchema;
 
 require_once dirname(__DIR__, 2).'/scripts/ci/OpenApiDocumentEvolution.php';
 
 class OpenApiDocumentEvolutionTest extends TestCase
 {
+    public function test_empty_poll_schema_accepts_the_published_wake_and_ordinary_empty_replies(): void
+    {
+        $schema = OpenApiSchema::fromFile(dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-api.openapi.yaml');
+        foreach (['empty', 'timeout', 'task_queue_changed'] as $status) {
+            $schema->assertReferenceMatches('#/components/schemas/EmptyPoll/allOf/1', (object) ['task' => null, 'poll_status' => $status]);
+        }
+    }
+
+    public function test_empty_poll_wake_schema_does_not_grant_a_task(): void
+    {
+        $this->expectException(AssertionFailedError::class);
+        OpenApiSchema::fromFile(dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-api.openapi.yaml')
+            ->assertReferenceMatches('#/components/schemas/EmptyPoll/allOf/1', (object) [
+                'task' => (object) ['task_id' => 'not-a-wake'], 'poll_status' => 'task_queue_changed',
+            ]);
+    }
+
+    public function test_empty_poll_schema_preserves_unknown_status_refusal(): void
+    {
+        $this->expectException(AssertionFailedError::class);
+        OpenApiSchema::fromFile(dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-api.openapi.yaml')
+            ->assertReferenceMatches('#/components/schemas/EmptyPoll/allOf/1', (object) ['task' => null, 'poll_status' => 'unknown']);
+    }
+
     public function test_candidate_structure_and_feature_ci_compare_to_the_base_revision(): void
     {
         $workflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/phpunit-feature.yml');

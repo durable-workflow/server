@@ -2,6 +2,7 @@
 //! arguments use the official codec on a bounded blocking worker.
 //! Typed database adapters share transitions; existing PHP data requires qualification.
 
+mod activity_completion_uploads;
 mod activity_deadlines;
 mod activity_failures;
 mod activity_heartbeats;
@@ -11,6 +12,7 @@ mod children;
 mod continuations;
 mod control_plane;
 mod cooperative;
+mod cross_kind_poll;
 mod execution;
 mod external_config;
 mod external_registry;

@@ -1,4 +1,6 @@
 use super::*;
+#[path = "external_payloads/completion_uploads.rs"]
+mod completion_uploads;
 use axum::{body::Bytes, http::HeaderMap};
 use durable_workflow_server::runtime::ExternalPayloadConfig;
 use sha2::{Digest, Sha256};
@@ -1310,8 +1312,31 @@ async fn authentication_namespace_and_declared_limit_refuse_before_body_or_provi
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let body: Value =
         serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+    assert_eq!(body["reason"], "external_payload_completion_invalid");
+    let unsupported = json!({"schema":"durable-workflow.v2.payload-completion-context.v1",
+        "kind":"workflow","task_id":"task","attempt":1,"lease_owner":"owner",
+        "operation":"complete","slot":["commands",0,"result"]});
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/external-payloads/v1")
+                .header("authorization", "Bearer worker-token")
+                .header("content-type", "application/octet-stream")
+                .header(
+                    "x-durable-workflow-payload-completion",
+                    unsupported.to_string(),
+                )
+                .body(untouched(reads.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
     assert_eq!(
-        body["reason"],
+        serde_json::from_slice::<Value>(&bytes).unwrap()["reason"],
         "development_payload_completion_upload_unqualified"
     );
     assert_eq!(reads.load(Ordering::Relaxed), 0);
