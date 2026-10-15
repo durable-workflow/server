@@ -3148,5 +3148,22 @@ omitting the retained activity start and heartbeat timestamps. The correction
 preserves those timestamps, including the just-recorded heartbeat, rather than
 changing the released projector or expected count. The first failed original
 and the two intermediate retry disagreements remain failures. Final-source
-functional and whole-tree qualification are pending. Clock values and their
-reported fractional precision remain separate from business-field comparison.
+SQLite execution passes all 133 cases. The focused retry regression also passes
+MySQL 8.4 and PostgreSQL 17. Twelve fresh published-PHP/native SQLite originals
+pass through 52 separate PHP processes, preserving the original 30-second
+budgets, exact task/attempt binding, typed output, history prefixes and cold
+metadata. All six pairs agree across 44 metadata snapshots. The four external
+object-unavailability controls leave metadata unchanged and perform no payload
+GET. The actual published PHP image also passes all 31 projection cases with
+zero database queries and provider-policy calls.
+
+Stopped final-cohort states match per target: six completed runs and activities,
+eight attempts (six completed, two failed), twenty completed tasks, forty-eight
+events and zero repairs. These counts exclude the failed earlier originals.
+The first read-only SQL observer could not open the stopped WAL-mode database
+on its read-only mount. The corrected observer uses immutable reads only after
+both APIs stop and no WAL remains. This does not qualify live backup or upgrade.
+Both APIs exit 0 without OOM. Whole-tree hosted qualification, installed TCP
+consumers on other databases and Waterline acceptance remain pending. Clock
+values and their reported fractional precision remain separate from the
+business-field comparison, which does not claim identical timestamp formatting.
