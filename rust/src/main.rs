@@ -127,30 +127,64 @@ async fn main() -> Result<(), Box<dyn Error>> {
         if env::args().count() != 2
             || !matches!(
                 command.as_str(),
-                "schema-bootstrap" | "schema-check" | "upgrade-inspect"
+                "schema-bootstrap" | "schema-check" | "upgrade-inspect" | "upgrade-queue-inspect"
             )
         {
             return Err("unknown development command".into());
         }
         let backend = env::var("DB_CONNECTION").unwrap_or_default();
-        if command == "upgrade-inspect" {
+        if matches!(
+            command.as_str(),
+            "upgrade-inspect" | "upgrade-queue-inspect"
+        ) {
+            use durable_workflow_server::runtime::upgrade::{
+                self, queue_binding::QueueSourceConfig,
+            };
+            // These describe the original Laravel queue transport, not SDK
+            // task queues or a newly selected native execution destination.
+            let queue_options = if command == "upgrade-queue-inspect" {
+                Some((
+                    env::var("DW_RUST_UPGRADE_QUEUE_CONNECTION")
+                        .map_err(|_| "original queue connection is required")?,
+                    env::var("DW_RUST_UPGRADE_QUEUE_DEFAULT_CONNECTION")
+                        .map_err(|_| "original default queue connection is required")?,
+                    env::var("DW_RUST_UPGRADE_QUEUE_DEFAULT_QUEUE")
+                        .map_err(|_| "original default transport queue is required")?,
+                ))
+            } else {
+                None
+            };
+            let queues =
+                queue_options
+                    .as_ref()
+                    .map(
+                        |(connection, default_connection, default_queue)| QueueSourceConfig {
+                            connection,
+                            default_connection,
+                            default_queue,
+                        },
+                    );
             let result = match backend.as_str() {
                 "sqlite" => {
-                    durable_workflow_server::runtime::upgrade::inspect_sqlite(
-                        &env::var("DB_DATABASE").map_err(|_| "DB_DATABASE is required")?,
-                    )
-                    .await
+                    let path = env::var("DB_DATABASE").map_err(|_| "DB_DATABASE is required")?;
+                    match queues.as_ref() {
+                        Some(config) => upgrade::inspect_sqlite_queues(&path, config).await,
+                        None => upgrade::inspect_sqlite(&path).await,
+                    }
                 }
-                "mysql" | "mariadb" => {
-                    durable_workflow_server::runtime::upgrade::inspect_mysql(mysql_options()?).await
-                }
-                "pgsql" => {
-                    durable_workflow_server::runtime::upgrade::inspect_postgres(postgres_options()?)
-                        .await
-                }
+                "mysql" | "mariadb" => match queues.as_ref() {
+                    Some(config) => upgrade::inspect_mysql_queues(mysql_options()?, config).await,
+                    None => upgrade::inspect_mysql(mysql_options()?).await,
+                },
+                "pgsql" => match queues.as_ref() {
+                    Some(config) => {
+                        upgrade::inspect_postgres_queues(postgres_options()?, config).await
+                    }
+                    None => upgrade::inspect_postgres(postgres_options()?).await,
+                },
                 _ => {
                     return Err(
-                        "upgrade-inspect requires DB_CONNECTION=sqlite, pgsql, mysql or mariadb"
+                        "upgrade inspection requires DB_CONNECTION=sqlite, pgsql, mysql or mariadb"
                             .into(),
                     );
                 }

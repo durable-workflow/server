@@ -53,6 +53,164 @@ async fn php_layout() -> (tempfile::TempDir, String) {
     (directory, path)
 }
 
+fn queue_config() -> QueueSourceConfig<'static> {
+    QueueSourceConfig {
+        connection: "database",
+        default_connection: "database",
+        default_queue: "default",
+    }
+}
+
+async fn queued_layout(job_count: i64) -> (tempfile::TempDir, String) {
+    use super::queue_binding::{SourceQueueJob, SourceRun, SourceTask};
+    #[derive(Deserialize)]
+    struct Fixture {
+        jobs: Vec<SourceQueueJob>,
+        tasks: Vec<SourceTask>,
+        runs: Vec<SourceRun>,
+    }
+    // Reconstruct the selected synthetic rows for scanner controls. The
+    // committed JSON has a genuine PHP producer; this SQL layout is a unit
+    // control, not a new actual PHP installation or takeover.
+    let fixture: Fixture = serde_json::from_str(include_str!(
+        "../../../tests/Fixtures/ServerUpgrade/php-2.8.2-pending-queue.json"
+    ))
+    .unwrap();
+    let (directory, path) = php_layout().await;
+    let mut connection = SqliteConnection::connect_with(
+        &SqliteConnectOptions::new()
+            .filename(&path)
+            .foreign_keys(false),
+    )
+    .await
+    .unwrap();
+    connection.execute("DELETE FROM jobs").await.unwrap();
+    for run in fixture.runs {
+        sqlx::query("INSERT INTO workflow_runs(id,workflow_instance_id,run_number,workflow_class,workflow_type,namespace,queue,status) VALUES (?,?,1,?,?,?,?,?)")
+            .bind(run.id).bind(run.workflow_instance_id).bind(run.workflow_class).bind(run.workflow_type)
+            .bind(run.namespace).bind(run.queue).bind(run.status).execute(&mut connection).await.unwrap();
+    }
+    for task in fixture.tasks {
+        sqlx::query("INSERT INTO workflow_tasks(id,workflow_run_id,namespace,task_type,status,connection,queue,available_at,lease_owner,lease_expires_at,attempt_count) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+            .bind(task.id).bind(task.workflow_run_id).bind(task.namespace).bind(task.task_type).bind(task.status)
+            .bind(task.connection).bind(task.queue).bind(task.available_at).bind(task.lease_owner)
+            .bind(task.lease_expires_at).bind(task.attempt_count).execute(&mut connection).await.unwrap();
+    }
+    let job = &fixture.jobs[0];
+    for id in 1..=job_count {
+        sqlx::query("INSERT INTO jobs(id,queue,payload,attempts,reserved_at,available_at,created_at) VALUES (?,?,?,?,?,?,?)")
+            .bind(id).bind(&job.queue).bind(&job.payload).bind(job.attempts).bind(job.reserved_at)
+            .bind(job.available_at).bind(job.created_at).execute(&mut connection).await.unwrap();
+    }
+    connection.close().await.unwrap();
+    (directory, path)
+}
+
+#[tokio::test]
+async fn queue_scan_checks_every_page_without_mutating_original_tasks_or_jobs() {
+    let (_directory, path) = queued_layout(33).await;
+    let before = std::fs::read(&path).unwrap();
+    let report = inspect_sqlite_queues(&path, &queue_config()).await.unwrap();
+    assert_eq!(report["queue_inspection"]["jobs"], 33);
+    assert_eq!(report["queue_inspection"]["timer_jobs"], 33);
+    assert_eq!(report["queue_inspection"]["workflow_jobs"], 0);
+    assert_eq!(report["table_rows"]["workflow_tasks"], 4);
+    assert_eq!(report["takeover_allowed"], false);
+    assert_eq!(
+        report["stored_representation_compatibility_verified"],
+        false
+    );
+    assert!(!report.to_string().contains("08:16:21.566122"));
+    assert!(!report.to_string().contains("RunTimerTask"));
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    mutate(&path, "BEGIN EXCLUSIVE; ROLLBACK").await;
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
+#[tokio::test]
+async fn queue_scan_refuses_unknown_jobs_after_the_first_page_without_partial_success() {
+    let (_directory, path) = queued_layout(33).await;
+    mutate(&path, "INSERT INTO jobs(id,queue,payload,attempts,available_at,created_at) VALUES (34,'default','private-unknown-job',0,1,1)").await;
+    let before = std::fs::read(&path).unwrap();
+    reason(
+        inspect_sqlite_queues(&path, &queue_config()).await,
+        "upgrade_source_queue_representation_unqualified",
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    mutate(&path, "BEGIN EXCLUSIVE; ROLLBACK").await;
+}
+
+#[tokio::test]
+async fn queue_scan_refuses_missing_or_foreign_canonical_bindings() {
+    for (statement, expected) in [
+        (
+            "DELETE FROM workflow_tasks WHERE task_type='timer'",
+            "upgrade_source_queue_task_missing",
+        ),
+        (
+            "DELETE FROM workflow_runs WHERE workflow_type='parity.upgrade_timer'",
+            "upgrade_source_queue_run_missing",
+        ),
+        (
+            "UPDATE workflow_tasks SET namespace='foreign' WHERE task_type='timer'",
+            "upgrade_source_queue_binding_unqualified",
+        ),
+        (
+            "UPDATE jobs SET queue='foreign'",
+            "upgrade_source_queue_binding_unqualified",
+        ),
+    ] {
+        let (_directory, path) = queued_layout(1).await;
+        mutate(&path, statement).await;
+        let before = std::fs::read(&path).unwrap();
+        reason(
+            inspect_sqlite_queues(&path, &queue_config()).await,
+            expected,
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        mutate(&path, "BEGIN EXCLUSIVE; ROLLBACK").await;
+    }
+}
+
+#[tokio::test]
+async fn queue_scan_cannot_skip_nonpositive_ids_or_transfer_oversized_payloads() {
+    for (statement, expected) in [
+        (
+            "INSERT INTO jobs(id,queue,payload,attempts,available_at,created_at) VALUES (0,'default','unread',0,1,1)",
+            "upgrade_source_queue_binding_unqualified",
+        ),
+        (
+            "UPDATE jobs SET payload=CAST(zeroblob(131073) AS TEXT)",
+            "upgrade_source_queue_representation_unqualified",
+        ),
+    ] {
+        let (_directory, path) = queued_layout(1).await;
+        mutate(&path, statement).await;
+        let before = std::fs::read(&path).unwrap();
+        reason(
+            inspect_sqlite_queues(&path, &queue_config()).await,
+            expected,
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        mutate(&path, "BEGIN EXCLUSIVE; ROLLBACK").await;
+    }
+}
+
+#[tokio::test]
+async fn queue_scan_requires_explicit_transport_context_before_opening_source() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("missing.sqlite");
+    let invalid = QueueSourceConfig {
+        default_queue: "",
+        ..queue_config()
+    };
+    reason(
+        inspect_sqlite_queues(path.to_str().unwrap(), &invalid).await,
+        "upgrade_source_queue_config_required",
+    );
+    assert!(!path.exists());
+}
+
 async fn mutate(path: &str, statement: &'static str) {
     let mut connection = SqliteConnection::connect_with(
         &SqliteConnectOptions::new()

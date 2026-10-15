@@ -17,13 +17,21 @@ fn special_sqlite_sources_refuse_without_waiting_for_a_writer() {
     // The path belongs to this test's new private temporary directory.
     assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
 
-    for source in [fifo.as_path(), directory.path()] {
+    for (source, command) in [
+        (fifo.as_path(), "upgrade-inspect"),
+        (directory.path(), "upgrade-inspect"),
+        (fifo.as_path(), "upgrade-queue-inspect"),
+        (directory.path(), "upgrade-queue-inspect"),
+    ] {
         let mut child = Command::new(env!("CARGO_BIN_EXE_durable-workflow-server"))
             .env_clear()
             .env("DW_RUST_EXPERIMENTAL", "1")
             .env("DB_CONNECTION", "sqlite")
             .env("DB_DATABASE", source)
-            .arg("upgrade-inspect")
+            .env("DW_RUST_UPGRADE_QUEUE_CONNECTION", "database")
+            .env("DW_RUST_UPGRADE_QUEUE_DEFAULT_CONNECTION", "database")
+            .env("DW_RUST_UPGRADE_QUEUE_DEFAULT_QUEUE", "default")
+            .arg(command)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
