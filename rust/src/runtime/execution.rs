@@ -1,7 +1,7 @@
 //! Runtime database selection without duplicating durable transitions.
 use super::{Result, mysql::MySqlStorage, postgres::PostgresStorage, refuse, sqlite, store::Store};
 use axum::http::StatusCode;
-use serde_json::Value;
+use serde_json::{Value, json};
 use sqlx::{MySql, Postgres, Sqlite, mysql::MySqlConnectOptions, postgres::PgConnectOptions};
 use std::{
     sync::{
@@ -563,6 +563,40 @@ impl Runtime {
         self.finish_query(task_id, body, false).await
     }
     delegate!(finish_query(task_id: &str, body: Value, failed: bool) -> Result<Value>);
+    delegate!(
+        activity_metadata_input(
+            workflow_id: &str,
+            run_id: &str,
+        ) -> Result<(Vec<Value>, Vec<Value>)>
+    );
+    pub(crate) async fn activities(&self, workflow_id: &str, run_id: &str) -> Result<Value> {
+        let permit = self
+            .signal_codec
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| {
+                refuse(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "activity_metadata_unavailable",
+                )
+            })?;
+        let (events, executions) = self.activity_metadata_input(workflow_id, run_id).await?;
+        let workflow_id = workflow_id.to_owned();
+        let run_id = run_id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            json!({"workflow_id":workflow_id,"run_id":run_id,
+                "activities":super::activity_metadata::project(&events,&executions)})
+        })
+        .await
+        .map_err(|_| {
+            refuse(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "activity_metadata_unavailable",
+            )
+        })
+    }
     delegate!(
         history(
             workflow_id: &str,

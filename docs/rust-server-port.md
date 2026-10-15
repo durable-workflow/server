@@ -6,16 +6,13 @@ The unpublished Rust crate has an Avro foundation and an opt-in SQLite/PostgreSQ
 execution slice. Full runtime parity, migration, performance improvement and
 cutover remain unqualified.
 
-The delivered native foundation is [#450](https://github.com/durable-workflow/server/pull/450),
-following memo transactions, activity/continuation replay and SDK memo authoring
-in #445/#446/#448. Their exact fresh-main trees pass all 13 shared jobs across
-six databases. #446's first failed main query remains failed and unexplained;
-its unchanged second attempt reran all 13 jobs, rather than one database.
-The consumer runner [#457](https://github.com/durable-workflow/server/pull/457)
-is merged as `303ffc633` with its qualified candidate tree. All six candidate
-execution logs have 45 passing records; separate fresh-main qualification
-[38668891437](https://github.com/durable-workflow/server/actions/runs/38668891437)
-remains pending. No result is carried across changed trees.
+The delivered foundation combines [#455](https://github.com/durable-workflow/server/pull/455)
+and [#458](https://github.com/durable-workflow/server/pull/458) at `30137616`,
+whole tree `3be0ab68`, native tree `7d0287cd`. Exact fresh-main
+[38712683859](https://github.com/durable-workflow/server/actions/runs/38712683859)
+passes all 13 shared jobs across six databases; each execution summary has 25
+passing comparisons and 19 zero exit records. The consumer runner #457 is
+included in that tree. Earlier failed originals remain failed and distinct.
 The merged native development runtime enables memo upserts, while full external
 transport discovery stays unadvertised. Frozen published PHP, embedded and SDK tuples
 remain separate from current PHP release work. Representative timer, signal,
@@ -25,10 +22,27 @@ failed; later qualifying runs are separate observations.
 
 ## Work order and current status
 
-The pending #455/#458 stack will be promoted through #458 after its combined
-main candidate passes all required checks. This delivers the reviewed parent
-in the same tested main tree. Earlier admitted matrices remain separate
-observations and continue; strict branch protection is preserved.
+- Query authority [#463](https://github.com/durable-workflow/server/pull/463)
+  has an all-13 component result at `76c6d35a`. Its separate combined PHP source
+  `ee219c0b` includes qualified PHP `f7d1bfc7`; current-main qualification is
+  pending. No earlier pass is carried across that source integration.
+- Targeted activity result reads [#470](https://github.com/durable-workflow/server/pull/470)
+  have an all-13 component result at `8a7cffe4`. Later combined integration,
+  retry-consumer integration, unrelated-object isolation and Waterline remain
+  separate gates. Native inspection discovery stays unadvertised.
+- [Activity metadata listing](contracts/activity-metadata-listing.md) is a
+  separate current-PHP-source slice. Thirty-one released-PHP projection cases cover
+  typed history, attempt state, diagnostic fallback and timestamp rounding.
+  Native HTTP and database qualification is in progress; installed differential
+  consumers remain ahead.
+- Upgrade preparation remains read-only inspection. Source metadata, queue
+  encoding and root payload-reference checks do not establish takeover, backup,
+  quiescence or complete representation. Safe migration is still open.
+
+## Earlier foundation qualification stages
+
+These entries preserve the earlier component and failed-original scopes before
+the delivered `30137616` checkpoint above. They are not current promotion status.
 
 - [#455](https://github.com/durable-workflow/server/pull/455): opt-in,
   namespace/queue-scoped null-task poll hint without claim or lease authority.
