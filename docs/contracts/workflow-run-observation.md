@@ -102,6 +102,24 @@ This component covers the already admitted default and named-namespace commands.
 Condition timeouts and cancellation scopes remain separate qualification gates;
 their current command refusals are unchanged.
 
+Native completion, continuation and cancellation now write a terminal summary
+after their final run and task mutations, in the same transaction. Counters
+come from contiguous retained history read in bounded batches, using the stored
+JSON order and PHP's canonical byte encoding. Failure counts deduplicate retained
+failure IDs and supported typed failure events. Terminal rows clear active
+wait/task fields and record closed liveness, duration and the selected/current
+run relationship. Imported, pruned or incomplete histories are excluded from
+this producer; active summaries and configurable budget policy remain open.
+Observation reads never rebuild a missing summary.
+
+The execution controls can write synthetic reference input with
+`DW_TEST_SUMMARY_REFERENCE=/path/to/evidence.jsonl`. Run
+`scripts/conformance/server-parity/verify-native-history-budget.php` inside the
+published PHP image, passing its Composer autoloader and that file. It compares
+the actual installed `HistoryBudget::forRun` event, byte and fan-out counters
+without querying a reference database. This checks stored counters, separately
+from installed SDK/browser acceptance and shared differential qualification.
+
 Exercise current and selected runs, default and named namespaces, invalid
 current pointers, absent summaries, typed selected context, growing histories,
 pruned details, and bounded relationship/wait/failure collections. Separate
