@@ -2895,3 +2895,12 @@ final result; native keeps those inline under its unadvertised automatic policy.
 Both containers stop with 137 and no OOM. All local databases, provider objects,
 SDK dependencies, compiler output and task resources are removed after this
 audit. Hosted all-database external semantics remain pending.
+
+Upgrade preparation now includes a non-executing queue-command reader under
+`runtime::upgrade::queue`. The released token parser recognizes only the tested
+V2 job/Carbon subset under explicit byte, depth and token limits. Published
+class fixtures preserve original task IDs, a Unicode queue and microsecond
+delay fields. Malformed and unqualified representations are refused. This is
+an independently tested decoder, not a source-row migration or takeover path.
+The next migration gates remain canonical queue/task binding, complete stored
+value validation, restored backup verification and actual sequential takeover.

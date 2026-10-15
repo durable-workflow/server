@@ -1,4 +1,5 @@
 //! Read-only PHP source inventory. This command never grants takeover authority.
+pub mod queue;
 use super::{Result, mysql, postgres, refuse, schema};
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
