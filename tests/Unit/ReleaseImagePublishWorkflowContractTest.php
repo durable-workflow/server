@@ -86,6 +86,34 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertLessThan($buildOffset, $selectorOffset);
     }
 
+    public function test_php_security_audits_fail_before_release_publication(): void
+    {
+        $workflow = Yaml::parse($this->read('.github/workflows/release.yml'));
+        $steps = $workflow['jobs']['publish']['steps'];
+        $auditIndex = array_search('Audit immutable PHP release dependencies', array_column($steps, 'name'), true);
+        $loginIndex = array_search('Log in to Docker Hub', array_column($steps, 'name'), true);
+
+        $this->assertIsInt($auditIndex);
+        $this->assertIsInt($loginIndex);
+        $this->assertLessThan($loginIndex, $auditIndex);
+        $this->assertSame(
+            'composer audit --working-dir=release-source --locked --no-dev --no-interaction',
+            $steps[$auditIndex]['run'],
+        );
+        $this->assertArrayNotHasKey('continue-on-error', $steps[$auditIndex]);
+        $this->assertArrayNotHasKey('if', $steps[$auditIndex]);
+
+        $feature = Yaml::parse($this->read('.github/workflows/phpunit-feature.yml'));
+        $audits = array_values(array_filter(
+            $feature['jobs']['preflight']['steps'],
+            static fn (array $step): bool => ($step['name'] ?? null) === 'Audit locked PHP dependencies',
+        ));
+        $this->assertCount(1, $audits);
+        $this->assertSame('composer audit --locked --no-interaction', $audits[0]['run']);
+        $this->assertArrayNotHasKey('continue-on-error', $audits[0]);
+        $this->assertArrayNotHasKey('if', $audits[0]);
+    }
+
     public function test_release_workflow_passes_workflow_package_commit_to_image_and_evidence(): void
     {
         $workflow = $this->read('.github/workflows/release.yml');
