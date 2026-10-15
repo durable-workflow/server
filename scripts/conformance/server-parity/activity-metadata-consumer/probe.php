@@ -59,6 +59,19 @@ $metadata = static function (string $label, string $status, int $attempts) use (
     foreach (['arguments', 'result', 'exception', 'result_envelope'] as $field) {
         $check(! array_key_exists($field, $activity), 'Metadata exposed '.$field);
     }
+    if (isset($state['snapshots']['pending'])) {
+        $check($activity['created_at'] === $state['snapshots']['pending']['activities'][0]['created_at'],
+            'Original activity creation clock changed.');
+    }
+    foreach ($activity['attempts'] as $attempt) {
+        $started = new DateTimeImmutable($attempt['started_at']);
+        if ($attempt['last_heartbeat_at'] !== null) {
+            $check(new DateTimeImmutable($attempt['last_heartbeat_at']) >= $started, 'Heartbeat precedes its attempt.');
+        }
+        if ($attempt['closed_at'] !== null) {
+            $check(new DateTimeImmutable($attempt['closed_at']) >= $started, 'Closure precedes its attempt.');
+        }
+    }
     $state['snapshots'][$label] = $response;
     file_put_contents($state['identity_path'], json_encode($state, JSON_THROW_ON_ERROR));
 
@@ -116,6 +129,7 @@ if ($phase === 'author') {
         $check($observed['last_heartbeat_progress']['details']['integer'] === 9007199254740993
             && $observed['last_heartbeat_progress']['details']['optional'] === null
             && $observed['last_heartbeat_progress']['details']['text'] === '日本語 λ', 'Heartbeat details changed.');
+        $check($observed['last_heartbeat_at'] === $beat['last_heartbeat_at'], 'Metadata lost the acknowledged heartbeat clock.');
         if ($attempt < $attempts) {
             $client->failActivityTask($task['task_id'], $task['activity_attempt_id'], $task['lease_owner'], 'Authored metadata retry λ');
             $retry = $metadata('retry-pending', 'pending', 1);
