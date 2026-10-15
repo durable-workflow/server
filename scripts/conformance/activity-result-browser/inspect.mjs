@@ -96,9 +96,13 @@ try {
   assert.ok(!new URL(page.url()).pathname.startsWith('/login'), 'Use the isolated unauthenticated read-only fixture');
   const view = page.locator('#collapseActivities').getByRole('button', {name: 'View', exact: true});
   try {
+    const inspect = page.getByRole('button', {name: 'Inspect full details', exact: true});
+    await inspect.waitFor({timeout: Math.min(5000, remaining())});
+    assert.deepEqual(reads, [], 'Bounded observation must not select an activity result');
+    await inspect.click();
     await view.waitFor({timeout: Math.min(5000, remaining())});
   } catch (error) {
-    throw Error(`Actual run view unavailable: ${JSON.stringify(failures)}; ${error.message.slice(0, 256)}`);
+    throw Error(`Actual run view unavailable: ${JSON.stringify({failures, errors})}; ${error.message.slice(0, 256)}`);
   }
   assert.equal(await view.count(), 1, 'The original has exactly one activity');
   assert.deepEqual(reads, [], 'Metadata loading must not select an activity result');
@@ -139,7 +143,7 @@ try {
   const after = [await history(selected), await history(other)];
   assert.deepEqual(after, before, 'UI and wrong-selector reads must preserve both original histories');
   remaining();
-  Object.assign(record, {outcome: 'pass', history: before, selected_requests: reads.length,
+  Object.assign(record, {outcome: 'pass', history: before, full_detail_selections: 1, selected_requests: reads.length,
     rendered_bytes: Buffer.byteLength(rendered), rendered_sha256: createHash('sha256').update(rendered).digest('hex'),
     geometry, finished_at: new Date().toISOString()});
 } catch (error) {

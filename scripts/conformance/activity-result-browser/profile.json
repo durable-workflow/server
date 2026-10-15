@@ -8,7 +8,7 @@
   "waterline": {
     "version": "2.11.0",
     "source": "8f03bd6250c08dd96c49a674ccb0752feb6fd9fe",
-    "image": "ghcr.io/durable-workflow/waterline@sha256:55b2f75e2b1849defafa3a9525a2ff30159fe21177eef39bdce7aaea280d40bf",
+    "image": "durableworkflow/waterline@sha256:55b2f75e2b1849defafa3a9525a2ff30159fe21177eef39bdce7aaea280d40bf",
     "php_sdk": "2.4.0"
   },
   "author_php_sdk": {
@@ -16,6 +16,7 @@
     "source": "25d796ad2a55d0d114b58017c3ba23390b09e120"
   },
   "browser_package": "1.64.1",
+  "browser_image": "mcr.microsoft.com/playwright@sha256:7852dc5a7d72f5fe458a597d690f6c42fbc8e9e26ddfa95f8e6ef552558d9bbf",
   "widths": [390, 1440],
   "themes": ["light", "dark"],
   "original_observation_budget_seconds": 30,

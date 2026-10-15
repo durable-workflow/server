@@ -57,9 +57,11 @@ node scripts/conformance/activity-result-browser/inspect.mjs \
 ```
 
 Repeat independently at widths 390 and 1440 with light and dark themes.
-The fixture requires the canonical page to load without failed API requests,
-zero automatic targeted-result requests, one keyboard selection and one exact
-result request. It checks null/false, explicit int64 preview, Unicode and the
+The fixture requires the canonical bounded page to load without failed API
+requests, then uses its ordinary **Inspect full details** button to reveal the
+activity metadata. Neither page load may select a targeted activity result.
+One keyboard result selection must make one exact result request.
+It checks null/false, explicit int64 preview, Unicode and the
 complete large value, dialog geometry and restored focus. Both genuine wrong
 selectors must return 404. Raw histories for both originals must remain
 byte-identical. The summary contains only identities, counts, hashes, timings,
