@@ -1,8 +1,8 @@
 //! Run snapshots are written after the transition's final durable state.
 use super::transaction::Transaction;
 use super::{
-    Result, backend::Backend, history_budget, run_observation::command_contract,
-    run_observation_store::terminal, store::Store,
+    Result, backend::Backend, external_wait_summary::ExternalWaitHistory, history_budget,
+    run_observation::command_contract, run_observation_store::terminal, store::Store,
 };
 use serde_json::Value;
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
@@ -51,6 +51,7 @@ where
         let mut failures = BTreeSet::new();
         let mut started = None;
         let mut active_history_supported = true;
+        let mut external_waits = ExternalWaitHistory::default();
         loop {
             // Bound hydrated history to sixteen events. The transaction already
             // owns this run; sequence continuity detects missing retained rows.
@@ -68,14 +69,13 @@ where
                     return Ok(());
                 }
                 let kind = DB::string(&event, "event_type")?;
-                active_history_supported &= matches!(
-                    kind.as_str(),
-                    "StartAccepted" | "WorkflowStarted" | "RepairRequested"
-                );
                 let raw =
                     DB::optional_string(&event, "payload_json")?.unwrap_or_else(|| "null".into());
                 bytes += history_budget::event_size(&kind, &raw)? as i64;
                 let payload: Value = serde_json::from_str(&raw)?;
+                if !closed {
+                    active_history_supported &= external_waits.apply(&kind, &payload);
+                }
                 if kind == "WorkflowStarted" && started.is_none() {
                     started = Some(payload.clone());
                 }
@@ -128,7 +128,7 @@ where
             if !active_history_supported {
                 return Ok(());
             }
-            match Self::active_task_summary(tx, &run).await? {
+            match Self::active_task_summary(tx, &run, &external_waits).await? {
                 Some(summary) => Some(summary),
                 None => return Ok(()),
             }

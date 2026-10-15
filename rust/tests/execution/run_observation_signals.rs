@@ -148,9 +148,19 @@ async fn run_observation_signals_preserve_receipt_and_application_across_cold_no
             let history = read(&app, namespace, &run, "history").await;
             let observation = read(&app, namespace, &run, "observation").await;
             assert_eq!(observation["summary_state"], "observed", "{observation}");
-            assert_eq!(observation["liveness_state"], if buffered { "workflow_task_ready" } else { "waiting_for_signal" });
+            assert_eq!(
+                observation["liveness_state"],
+                if buffered {
+                    "workflow_task_ready"
+                } else {
+                    "waiting_for_signal"
+                }
+            );
             if !buffered {
-                assert_eq!(observation["liveness_reason"], "Waiting for signal payload.");
+                assert_eq!(
+                    observation["liveness_reason"],
+                    "Waiting for signal payload."
+                );
             }
             run_observation_summaries::export_reference(&database, &observation, &history).await;
             assert_eq!(
@@ -199,7 +209,8 @@ async fn run_observation_signals_preserve_receipt_and_application_across_cold_no
             assert_eq!(received.0, StatusCode::ACCEPTED, "{}", received.1);
             let summary = read(&app_b, namespace, &run, "observation").await;
             assert_eq!(summary["liveness_state"], "workflow_task_ready");
-            run_observation_summaries::export_reference(&database, &summary, &summary["history"]).await;
+            run_observation_summaries::export_reference(&database, &summary, &summary["history"])
+                .await;
             // Receipt resolves the visible signal wait before the worker applies it.
             assert_eq!(
                 read(&app_b, namespace, &run, "observation").await["current_waits"]["returned_count"],
@@ -208,7 +219,10 @@ async fn run_observation_signals_preserve_receipt_and_application_across_cold_no
         }
         let task = claim(&app_b, namespace).await;
         assert_eq!(task["run_id"], run["run_id"]);
-        assert_eq!(read(&app_a, namespace, &run, "observation").await["liveness_state"], "workflow_task_leased");
+        assert_eq!(
+            read(&app_a, namespace, &run, "observation").await["liveness_state"],
+            "workflow_task_leased"
+        );
         let done = finish(&app_a, namespace, &task, close_commands()).await;
         assert_eq!(done.0, StatusCode::OK, "{}", done.1);
         let duplicate = finish(&app_b, namespace, &task, close_commands()).await;

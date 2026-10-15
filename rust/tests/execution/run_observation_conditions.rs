@@ -147,8 +147,14 @@ async fn run_observation_conditions_follow_authored_occurrences_across_cold_node
         let observation = read(&app, namespace, &run, "observation").await;
         assert_eq!(observation["summary_state"], "observed", "{observation}");
         assert_eq!(observation["liveness_state"], "waiting_for_condition");
-        assert_eq!(observation["liveness_reason"], "Waiting for a condition-changing durable input.");
-        assert_eq!(observation["history_event_count"], history["events"].as_array().unwrap().len());
+        assert_eq!(
+            observation["liveness_reason"],
+            "Waiting for a condition-changing durable input."
+        );
+        assert_eq!(
+            observation["history_event_count"],
+            history["events"].as_array().unwrap().len()
+        );
         run_observation_summaries::export_reference(&database, &observation, &history).await;
         assert_eq!(
             observation["current_waits"]["returned_count"], 1,
@@ -189,14 +195,18 @@ async fn run_observation_conditions_follow_authored_occurrences_across_cold_node
         signal(&app_a, namespace, &run).await;
         let received = read(&app_b, namespace, &run, "observation").await;
         assert_eq!(received["liveness_state"], "waiting_for_condition");
-        run_observation_summaries::export_reference(&database, &received, &received["history"]).await;
+        run_observation_summaries::export_reference(&database, &received, &received["history"])
+            .await;
         // Receipt is external input; the worker has not yet satisfied the condition.
         assert_eq!(
             read(&app_b, namespace, &run, "observation").await["current_waits"]["waits"][0],
             wait
         );
         let task = claim(&app_b, namespace).await;
-        assert_eq!(read(&app_a, namespace, &run, "observation").await["liveness_state"], "waiting_for_condition");
+        assert_eq!(
+            read(&app_a, namespace, &run, "observation").await["liveness_state"],
+            "waiting_for_condition"
+        );
         let result = finish(&app_a, namespace, &task, open("occurrence-1")).await;
         assert_eq!(result.0, StatusCode::OK, "{}", result.1);
         assert_eq!(
@@ -294,7 +304,10 @@ async fn run_observation_conditions_missing_projection_is_not_recreated() {
     let rows = stored(&database).await;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].1, "open");
-    assert_eq!(read(&app, "default", &run, "observation").await["liveness_state"], "waiting_for_condition");
+    assert_eq!(
+        read(&app, "default", &run, "observation").await["liveness_state"],
+        "waiting_for_condition"
+    );
     runtime.close().await;
     database.remove().await;
 }

@@ -22,6 +22,7 @@ mod external_config;
 mod external_registry;
 mod external_resolution;
 mod external_transport;
+mod external_wait_summary;
 mod history_budget;
 mod http;
 mod memo_json;
