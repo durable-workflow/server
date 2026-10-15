@@ -6,13 +6,14 @@ The unpublished Rust crate has an Avro foundation and an opt-in SQLite/PostgreSQ
 execution slice. Full runtime parity, migration, performance improvement and
 cutover remain unqualified.
 
-The latest qualified merged foundation is [#457](https://github.com/durable-workflow/server/pull/457),
-at `303ffc633`, including #445's memo transaction preparation, #446's bounded
-continuation, #448's SDK memo authoring and #450's local external transport.
-Its separate fresh-main [38668891437](https://github.com/durable-workflow/server/actions/runs/38668891437)
-passes all 13 jobs across six databases; all six execution logs were read.
-Required PHP/source and boundary checks also pass. Earlier failed observations
-remain failed; this current-tree result is not carried across later changes.
+The delivered foundation is [#463](https://github.com/durable-workflow/server/pull/463),
+at `0934c46d`, whole tree `98775e68`, native tree `a633a639`. It includes the
+earlier #455/#458 foundation and #457 consumers. Exact fresh-main
+[38738455163](https://github.com/durable-workflow/server/actions/runs/38738455163)
+passes all 13 jobs across six databases. Each execution summary independently
+passes 29 comparisons, 20 exit records and 125 native HTTP tests. Required
+PHP/source and boundary checks pass. Earlier failed originals remain failed;
+these source results qualify no later tree, image or complete query family.
 The merged native development runtime enables memo upserts, while full external
 transport discovery stays unadvertised. Frozen published PHP, embedded and SDK tuples
 remain separate from current PHP release work. Representative timer, signal,
@@ -22,7 +23,33 @@ failed; later qualifying runs are separate observations.
 
 ## Work order and current status
 
-The current integration order is:
+The next independent qualification stages are:
+
+- [#460](https://github.com/durable-workflow/server/pull/460) is isolated on
+  query main with read-only inventory, queue binding, external-reference
+  metadata and bounded inline Avro inspection. Integration `870b733a`, native
+  tree `180e0104`, needs fresh exact-tree qualification. It includes no pending
+  metadata/result endpoint or worker capability change. Earlier combined
+  source `03b3bd3c` separately passes stopped published PHP 2.8.5 originals on
+  SQLite DELETE, MySQL 8.4 and PostgreSQL 17: six pending runs, nine inline
+  argument frames and three bound timer jobs. That component has no populated
+  workflow outputs or activity results. Backup, quiescence, complete
+  representation and takeover remain false. See the
+  [upgrade bounds and remaining gates](rust-server-upgrade.md).
+- Activity metadata #476 candidate `062ce91a` retains its original SQLite
+  recorder failure and five passing network originals. Exactly one same-SHA,
+  unchanged-budget SQLite-only repeat is running; the other five were not
+  rerun. Its original peer/poll phase/cause remain unknown.
+- Targeted result #470 candidate `d83a3cb9` retains a MySQL 8.4 preadmission
+  image-pull failure and a PostgreSQL 17 renewal observer failure. A separate
+  diagnostic runner `01046823` passes fresh local PostgreSQL originals using
+  the exact d83 binary. It does not reproduce, explain or replace the CI
+  failure. Both endpoint branches remain separate from this inspector.
+
+## Earlier qualification stages
+
+The following entries preserve earlier components and failed originals. Their
+pending descriptions are historical, not the current disposition above.
 
 - Merged [#445](https://github.com/durable-workflow/server/pull/445),
   [#446](https://github.com/durable-workflow/server/pull/446),
