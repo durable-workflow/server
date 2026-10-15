@@ -91,3 +91,25 @@ test('empty actor diagnostics cannot hide failed profile status or the actual er
   assert.equal(summary.omitted_files, 200);
   assert.equal(summary.retained[0].path, 'sdk-profile.status');
 });
+
+test('failed recorder diagnostic tails survive without retaining raw records or enlarging limits', t => {
+  const {source, output, root} = fixture(t);
+  const diagnostic = `${'x'.repeat(128 * 1024)}\nOriginal query observation failed\n`;
+  writeFileSync(join(source, 'sdk-queries-profile.log'), 'recorder exited 1\n');
+  writeFileSync(join(source, 'php-record.txt'), diagnostic);
+  writeFileSync(join(source, 'embedded-record.txt'), 'embedded observation failed\n');
+  writeFileSync(join(source, 'rust-record.txt'), 'native observation failed\n');
+  writeFileSync(join(source, 'php-record.json'), 'raw responses');
+  const summary = summarizeEvidence(source, output, {outcome: 'failure'});
+  assert.equal(readFileSync(join(output, 'php-record.txt')).length, 64 * 1024);
+  assert.equal(readFileSync(join(output, 'php-record.txt'), 'utf8').endsWith('Original query observation failed\n'), true);
+  for (const name of ['embedded-record.txt', 'rust-record.txt', 'sdk-queries-profile.log']) {
+    assert.equal(existsSync(join(output, name)), true, name);
+  }
+  assert.equal(existsSync(join(output, 'php-record.json')), false);
+  assert.equal(summary.limits.content_bytes, 2 * 1024 * 1024);
+  assert.equal(summary.limits.entries, 128);
+  const success = join(root, 'success');
+  summarizeEvidence(source, success, {outcome: 'success'});
+  assert.equal(existsSync(join(success, 'php-record.txt')), false);
+});
