@@ -96,6 +96,9 @@ jobs:
           fi
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
 
+      - name: Audit immutable PHP release dependencies
+        run: composer audit --working-dir=release-source --locked --no-dev --no-interaction
+
       - name: Validate release publish context and credentials
         id: release_publish
         env:
