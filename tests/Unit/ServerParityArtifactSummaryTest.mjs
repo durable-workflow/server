@@ -92,6 +92,27 @@ test('empty actor diagnostics cannot hide failed profile status or the actual er
   assert.equal(summary.retained[0].path, 'sdk-profile.status');
 });
 
+test('query client failure survives a full collection of earlier successful setup logs', t => {
+  const {source, output, root} = fixture(t);
+  for (let index = 0; index < 140; index++) {
+    writeFileSync(join(source, `completed-${index}-install.txt`), 'installed successfully\n');
+  }
+  const path = 'query-authority/clients/rust/python-late-poll-120';
+  mkdirSync(join(source, path), {recursive: true});
+  writeFileSync(join(source, path, 'client.stderr'), 'AssertionError: no original expiry reason\n');
+  writeFileSync(join(source, path, 'observer.log'), 'observer error: upstream response closed\n');
+  writeFileSync(join(source, 'query-authority/profile-status.txt'), '1\n');
+  const summary = summarizeEvidence(source, output, {outcome: 'failure'});
+  assert.equal(readFileSync(join(output, path, 'client.stderr'), 'utf8'), 'AssertionError: no original expiry reason\n');
+  assert.equal(readFileSync(join(output, path, 'observer.log'), 'utf8'), 'observer error: upstream response closed\n');
+  assert.equal(summary.retained.length, 128);
+  assert.equal(summary.limits.content_bytes, 2 * 1024 * 1024);
+  const success = join(root, 'success');
+  summarizeEvidence(source, success, {outcome: 'success'});
+  assert.equal(existsSync(join(success, path, 'client.stderr')), false);
+  assert.equal(existsSync(join(success, path, 'observer.log')), false);
+});
+
 test('failed recorder diagnostic tails survive without retaining raw records or enlarging limits', t => {
   const {source, output, root} = fixture(t);
   const diagnostic = `${'x'.repeat(128 * 1024)}\nOriginal query observation failed\n`;

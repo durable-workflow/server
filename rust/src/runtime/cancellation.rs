@@ -197,7 +197,7 @@ where
             let updates = Self::scalar("SELECT COUNT(*) FROM workflow_updates WHERE workflow_run_id=$1 AND status='accepted'")
                 .bind(&run_id).fetch_one(&mut *tx).await?;
             let pending_queries =
-                Self::query_entries(&mut tx)
+                self.query_entries(&mut tx)
                     .await?
                     .into_iter()
                     .any(|(_, task)| {

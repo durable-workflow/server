@@ -9,6 +9,7 @@ const ENTRY_LIMIT = 128;
 function priority(path, failed) {
   const name = basename(path);
   if (/\.status$/.test(name) || /-status\.txt$/.test(name)) return -1;
+  if (failed && /(?:^|\/)query-authority\/clients\/(?:php|rust)\/[^/]+\/(?:client\.stderr|observer\.log)$/.test(path)) return 0;
   if (/^(rust|mysql|postgres|comparator|codec-load|artifact-summary)(-execution)?-tests\.txt$/.test(name)) return 0;
   if (/^(comparison|compare)([-.].*)?\.json$/.test(name) || /-comparison\.json$/.test(name)) return 1;
   if (failed && (/^(?:php|embedded|rust)-record\.txt$/.test(name)
