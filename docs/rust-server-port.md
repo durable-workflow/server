@@ -43,7 +43,8 @@ Current checkpoint, October 15:
   96 matching metadata snapshots. These use public SDK task primitives, not
   workflow callbacks. The integrated `d30a7687` candidate has a separate
   [qualification run](https://github.com/durable-workflow/server/actions/runs/38787311689)
-  in progress. Earlier unsuccessful originals remain unsuccessful.
+  with all 13 jobs passing. Its independent retained-summary review remains
+  open. Earlier unsuccessful originals remain unsuccessful.
 - [Read-only upgrade inspection #460](https://github.com/durable-workflow/server/pull/460)
   remains a draft at `7066a50e`. Qualification and review are incomplete, so
   the candidate is not being promoted. No backup, migration or takeover
@@ -74,17 +75,30 @@ Current checkpoint, October 15:
   also asserts the zero ceiling and absence of a continuation token. The corrected
   local source passes all 134 MariaDB execution tests and five focused SQLite
   observation tests. This does not supply the missing original hosted assertion.
+  The corrected `ce8c8fd6` [hosted run](https://github.com/durable-workflow/server/actions/runs/38790367885)
+  failed at query-authority and existing-PHP-MySQL comparison steps; their
+  assertion logs remain unavailable. The later `a510043c`
+  [run](https://github.com/durable-workflow/server/actions/runs/38793158995)
+  passes all 13 jobs, without explaining or replacing those earlier failures.
   The separate [installed observation recipe](../scripts/conformance/server-parity/run-observation-consumer.md)
   now exercises nine real task lifecycle stages, current/selected reads,
   retry waits and fixed-window continuation with the pinned published SDK.
-  Two published-PHP originals retain a 152-byte terminal summary undercount
-  ([#479](https://github.com/durable-workflow/server/issues/479)); separate fresh
-  controls pass with the PHP attribution correction from
-  [#480](https://github.com/durable-workflow/server/pull/480) overlaid on the
-  image. This is source validation, not published delivery or native parity.
+  Published-PHP originals exposed a terminal summary undercount
+  ([#479](https://github.com/durable-workflow/server/issues/479)). The PHP
+  attribution correction is merged through
+  [#480](https://github.com/durable-workflow/server/pull/480). Release preparation
+  [#482](https://github.com/durable-workflow/server/pull/482) is merged at
+  `f2775db7`, matching the fully qualified candidate tree `493f4331`.
+  Immutable tag `2.8.6` points there; publication and installed verification
+  remain separate pending gates.
+  The separate recipe extension at `83bb5c35` verifies selected-run repair of
+  completed and failed originals on published PHP, retaining the original
+  failures and deadline. Four fresh completed/failed × default/named controls
+  pass with the corrected helper overlaid. This is source validation and repair
+  evidence, not published correction delivery or native parity.
   The exact native artifact download timed out before any installed native
-  original began. Hosted qualification, full differential reads, projection
-  production and native browser acceptance remain open. PHP-issued cursor
+  original began. Independent retained-artifact review, full differential reads,
+  projection production and native browser acceptance remain open. PHP-issued cursor
   compatibility remains an explicit migration gate.
 - The next observation slice produces activity wait rows in the authored
   scheduling transaction. Typed claim, retry, completion, failure, timeout and
@@ -99,10 +113,30 @@ Current checkpoint, October 15:
   refusal and unchanged history around observation. This source is not yet
   qualified through shared fixtures or an installed native artifact. Summary
   production, other wait families and complete observation parity remain open.
+- Ordinary authored timers now create their canonical wait alongside the timer
+  task, with the recorded schedule time and planned fire time. Typed fire and
+  cancellation events close the existing row in their own transaction. Missing
+  rows remain unavailable instead of being rebuilt by events or reads. The
+  initial real scheduling regression observed zero waits where one was required.
+  Before the fixture budget correction below, all 141 SQLite execution tests
+  pass. PostgreSQL 17 passes nine observation
+  controls, both existing timer tests and the cancellation recovery control.
+  These include cold two-node firing in both namespaces, unchanged history
+  around reads and missing-row behavior. Atomic scheduling/cancellation after
+  a failed projection write has separate SQLite controls. Initial MySQL timer
+  controls failed because initial schema creation consumed the execution budget,
+  with the failure recorded before the scheduled fire time. The fixtures now
+  start their unchanged 15/35-second budgets after initial database bootstrap;
+  admission, cold recovery and both namespaces retain the original deadline.
+  The final four new and two existing timer controls pass on SQLite. PostgreSQL
+  17 and MySQL 8 each pass the two applicable new controls, two existing timer
+  controls and cancellation recovery. The earlier full SQLite result is not a
+  repeat against the corrected fixture source. This does not
+  provide summary production, other wait families or installed native acceptance.
 
-Next, finish merged-main artifact readback and review the metadata candidate's
-current merge tree. Qualify bounded observation against published PHP and
-normally installed SDK readers. Native Waterline acceptance then needs
+Next, qualify the combined observation source and verify the published PHP
+correction with normally installed SDK readers. Independent retained-artifact
+reviews remain incomplete. Native Waterline acceptance then needs
 qualified discovery, followed by the same
 unmodified browser recipe. Keep the incomplete inspector review separate.
 No new release, database takeover or full-family parity is claimed.

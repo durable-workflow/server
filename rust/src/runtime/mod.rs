@@ -44,6 +44,7 @@ mod store;
 mod task_failures;
 mod task_repair;
 mod task_repair_http;
+mod timer_wait_projection;
 mod updates;
 mod visibility;
 mod worker_incarnations;

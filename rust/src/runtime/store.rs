@@ -1741,19 +1741,21 @@ where
                 let timer_id = id();
                 let delay = command["delay_seconds"].as_i64().unwrap();
                 let fire_at = timer_deadline(command)?;
+                let scheduled_at = now();
                 Self::query("INSERT INTO workflow_run_timers(id,workflow_run_id,sequence,status,delay_seconds,fire_at) VALUES ($1,$2,$3,'pending',$4,$5)")
                     .bind(&timer_id).bind(&run_id).bind(sequence).bind(delay).bind(DB::bind_time(fire_at)).execute(&mut *tx).await?;
                 let mut timer_payload = json!({"timer_id":timer_id,"sequence":sequence,"delay_seconds":delay,"fire_at":fire_at,
                     "task":{"id":task_id,"type":"workflow","status":"leased","lease_owner":DB::optional_string(&task,"lease_owner")?,
                         "lease_expires_at":DB::optional_instant(&task,"lease_expires_at")?,"attempt_count":DB::number(&task,"attempt_count")?}});
                 super::selections::merge(&mut timer_payload, &metadata);
-                Self::append(
+                Self::append_at(
                     &mut tx,
                     &run_id,
                     "TimerScheduled",
                     timer_payload,
                     Some(task_id),
                     None,
+                    Some(scheduled_at),
                 )
                 .await?;
                 let mut timer_task_payload = json!({"timer_id":timer_id});
@@ -1768,9 +1770,19 @@ where
                 .await?;
                 Self::query("UPDATE workflow_tasks SET available_at=$1 WHERE id=$2")
                     .bind(DB::bind_time(fire_at))
-                    .bind(timer_task)
+                    .bind(&timer_task)
                     .execute(&mut *tx)
                     .await?;
+                Self::create_timer_wait(
+                    &mut tx,
+                    &run_id,
+                    &timer_id,
+                    &timer_task,
+                    sequence,
+                    scheduled_at,
+                    fire_at,
+                )
+                .await?;
                 Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1")
                     .bind(&run_id)
                     .execute(&mut *tx)
@@ -2356,6 +2368,7 @@ where
         Self::query("INSERT INTO workflow_history_events(id,workflow_run_id,sequence,event_type,payload,workflow_task_id,workflow_command_id,recorded_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
         .bind(id()).bind(run_id).bind(sequence).bind(event_type).bind(DB::document(&payload)).bind(task_id).bind(command_id).bind(DB::bind_time(recorded_at)).execute(&mut **tx).await?;
         Self::project_activity_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
+        Self::project_timer_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
         Ok(())
     }
 

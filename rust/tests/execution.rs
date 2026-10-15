@@ -63,6 +63,8 @@ mod activity_results;
 
 #[path = "execution/run_observation.rs"]
 mod run_observation;
+#[path = "execution/run_observation_timers.rs"]
+mod run_observation_timers;
 
 #[path = "execution/waiting_history.rs"]
 mod waiting_history;
