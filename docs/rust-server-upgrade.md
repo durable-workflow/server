@@ -86,6 +86,22 @@ receipt. Current native SQLite timestamp reads and claim ordering already
 handle the supported PHP UTC SQL form and native UTC form; an actual sequential
 takeover must still prove pending work retains its original microseconds.
 
+The separate SQLite fixture reader
+`scripts/conformance/server-parity/upgrade-source-sqlite-representations.php`
+accepts only the source-author's two known fixture IDs through a read-only
+`/state` mount. A stopped published PHP 2.8.0 sample preserves exact Avro int64,
+null and Unicode arguments, JSON task/history documents, six-digit SQL times
+and the full activity retry snapshot. Its queued `RunTimerTask` contains a
+serialized Carbon object and references the original canonical timer task.
+The reader observes that property without deserializing queue objects; its
+pattern check is not a general PHP serialization validator or conversion path.
+The sample's six mounted file-cache entries are opaque serialized strings.
+The hosted recipe reports cache storage as unobserved when it is not mounted.
+No query/poll/receipt semantics, Redis state, legacy closures, completed results
+or external bytes are qualified. Exact database hashes before/after establish
+read-only observation, with backup, representation compatibility and takeover
+still explicitly false. The new hosted hook needs fresh combined qualification.
+
 The separate published PHP 2.8.0 profile prepares two genuine original runs:
 one leased activity and one pending timer. It explicitly stops PHP before
 inspection, compares source state and sequence positions before/after, and
