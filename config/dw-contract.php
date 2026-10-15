@@ -478,7 +478,7 @@ return [
             'legacy' => 'WORKFLOW_SERVER_QUERY_TASK_TIMEOUT',
         ],
         'DW_QUERY_TASK_LEASE_TIMEOUT' => [
-            'description' => 'Configured lease timeout (seconds) for ephemeral query tasks; nonzero query waits clamp effective leases to at least query timeout plus 5 seconds.',
+            'description' => 'Configured lease timeout (seconds) for ephemeral query tasks, with a runtime minimum of 1 second. Each claim expires at the earlier of claim time plus this timeout and the original query deadline.',
             'default' => 'DW_WORKFLOW_TASK_TIMEOUT',
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_QUERY_TASK_LEASE_TIMEOUT',
@@ -490,7 +490,7 @@ return [
             'legacy' => 'WORKFLOW_SERVER_QUERY_TASK_POLL_TIMEOUT',
         ],
         'DW_QUERY_TASK_TTL_SECONDS' => [
-            'description' => 'Configured retention floor for query-task result rows; effective retention is at least query timeout plus effective lease plus 60 seconds.',
+            'description' => 'Configured retention floor for query-task result rows. Effective retention is max(60, this floor, query timeout plus configured lease timeout (minimum 1) plus 60) seconds. Retention does not extend query execution authority.',
             'default' => '180',
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_QUERY_TASK_TTL_SECONDS',
