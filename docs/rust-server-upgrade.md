@@ -1,0 +1,56 @@
+# Native in-place upgrade preparation
+
+[Server #325](https://github.com/durable-workflow/server/issues/325) requires a
+backup-first, sequential upgrade of an existing PHP database. This document
+describes the first executable preparation step; production takeover remains
+unimplemented and unqualified.
+
+## Read-only source inspection contract
+
+The native `upgrade-inspect` command will inspect a configured existing PHP
+database using a dedicated read-only transaction, without constructing a runtime
+pool. It uses the same `DB_*` connection configuration as native schema checks
+and supports SQLite, MySQL/MariaDB and PostgreSQL. It requires the existing
+development opt-in. SQLite inspection never creates a missing database or runs
+recovery pragmas.
+
+Inspection must refuse a native ownership marker, an unknown catalog, missing
+permissions and unavailable storage before reporting durable-state counts.
+The known PHP catalog is the existing compiled physical schema with only the
+explicit native additions excluded. Database-generated next-ID counters remain
+data; no other catalog differences are discarded. Schema equality identifies a
+layout, not the installed PHP package version.
+
+A successful report contains the backend, visible-catalog fingerprint, counts
+for the known PHP tables, and explicit `takeover_allowed: false`,
+`backup_verified: false`, `php_quiescence_verified: false`. It contains no
+workflow payloads, credential digests, provider secrets or connection URL.
+Successful inspection means only that this read-only inventory completed under
+the configured role's visibility. It does not establish a verified backup,
+complete stored-representation compatibility, global writer quiescence or
+permission to apply migrations. Source inspection is a native operator tool;
+it adds no HTTP or worker capability.
+
+The whole inspection has a fixed 30-second observation budget. Timeout,
+unknown schema or access failure produces an explicit refusal, with no source
+DDL, ledger, marker, row, lease, sequence or provider mutation. Standalone
+connections close on both success and refusal; no cancelled connection returns
+to an application pool.
+
+## Qualification and next migration gates
+
+Use a separate cohort populated by the current published PHP artifact, record
+its actual identity, and stop every PHP writer before refusal/byte-preservation
+checks. Existing differential actors and frozen manifests remain unchanged.
+Cover real pending workflow/activity/timer state, select-only inspection,
+missing files, unknown schema, ownership markers and failures on all required
+database families. An inventory report is not an executed upgrade.
+
+The subsequent migration must validate stored PHP-specific representations and
+queued work, verify an independently restored consistent database/external-byte
+backup with reclamation held, establish writer quiescence, apply versioned
+native changes, and record ownership before PHP can resume. Interruptions must
+resume safely or refuse. Actual SDK workers must continue the same original
+pending work with preserved histories, credentials, deadlines and external
+bytes. The existing PHP guard must refuse all upgraded startup/bootstrap/
+worker/scheduler paths. There is no mixed fleet or post-upgrade PHP rollback.
