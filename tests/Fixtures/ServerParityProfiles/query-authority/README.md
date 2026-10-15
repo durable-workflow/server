@@ -1,9 +1,10 @@
 # Current query authority profile
 
 This separate profile uses normally installed PHP SDK 2.4.2 and published Server
-2.8.0. It does not replace the frozen query actors. It is prepared and has no
-passing HTTP qualification yet. Native discovery remains false until the new
-authority and consumer gates qualify.
+2.8.0. It does not replace the frozen query actors. The four published PHP cases
+pass locally on isolated MySQL 8.4. Native comparison and all-six qualification
+remain pending. Native discovery remains false until the new authority and
+consumer gates qualify.
 
 The owning contract is [Server #433](https://github.com/durable-workflow/server/issues/433).
 `artifacts.json` freezes the consumer, reference image and original budgets.

@@ -74,8 +74,11 @@ The current integration order is:
   expiry, preserving conflicting-payload refusal and the original receipt's
   bytes and expiry. The separate SQLite codec-and-writer counterfactual fails
   the prior implementation and passes the correction. Continuation expiry,
-  remaining pressure boundaries, combined ancestry and a separate published
-  PHP/SDK reference profile remain next. Discovery keeps
+  remaining pressure boundaries and combined ancestry remain next. A separate
+  published Server 2.8.0 / PHP SDK 2.4.2 profile now passes four actual PHP
+  controls on MySQL 8.4: timely 1.20/1.19, held poll reply and late synchronous
+  handler. It preserves the original clocks and history, with zero late
+  submissions. Native comparison and all-six integration remain pending. Discovery keeps
   `query_task_authority=false` until those gates pass.
 
 Full transport discovery stays unadvertised. Complete batch workflow semantics,
