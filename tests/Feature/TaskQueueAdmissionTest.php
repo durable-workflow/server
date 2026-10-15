@@ -238,6 +238,7 @@ class TaskQueueAdmissionTest extends TestCase
 
     public function test_workflow_task_polls_respect_server_side_dispatch_rate_caps(): void
     {
+        $this->freezeTime();
         Queue::fake();
 
         config([

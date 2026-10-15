@@ -4,11 +4,17 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Auth\Principal;
+use App\Http\Middleware\Authenticate;
 use App\Support\WorkerProtocol;
+use App\Support\WorkerTerminalEventAttribution;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use PHPUnit\Framework\Attributes\DataProvider;
+use RuntimeException;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\HeaderAuthProvider;
 use Tests\Fixtures\InteractiveCommandWorkflow;
@@ -19,8 +25,10 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimelineEntry;
+use Workflow\V2\Support\HistoryBudget;
 use Workflow\V2\Support\RunTimelineProjector;
 
 /**
@@ -677,7 +685,127 @@ class WorkflowHistoryPrincipalAttributionTest extends TestCase
             $this->assertSame('auth:token', $terminalEvent['principal']['type'] ?? null);
             $this->assertSame('worker:principal-attribution', $terminalEvent['principal']['id'] ?? null);
             $this->assertSame('Worker', $terminalEvent['principal']['label'] ?? null);
+
+            $run = WorkflowRun::query()->findOrFail($runId);
+            $summary = WorkflowRunSummary::query()->findOrFail($runId);
+            $budget = HistoryBudget::forRun($run);
+            $this->assertSame($budget['history_event_count'], $summary->history_event_count);
+            $this->assertSame($budget['history_size_bytes'], $summary->history_size_bytes);
         }
+    }
+
+    #[DataProvider('terminalBudgetCases')]
+    public function test_terminal_attribution_keeps_budget_atomic_and_bounded(string $commandType, string $projection): void
+    {
+        Queue::fake();
+        $this->registerWorker('budget-worker', 'budget-queue');
+        $start = $this->withHeaders($this->principalHeaders('operator'))
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'terminal-budget',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'budget-queue',
+            ])->assertCreated();
+        $runId = $start->json('run_id');
+        $task = WorkflowTask::query()->where('workflow_run_id', $runId)->firstOrFail();
+        $bridge = app(WorkflowTaskBridge::class);
+        $this->assertIsArray($bridge->claim($task->id, 'budget-worker'));
+        $command = $commandType === 'complete_workflow'
+            ? ['type' => $commandType, 'result' => Serializer::serializeWithCodec('avro', 'résultat / 作業')]
+            : ['type' => $commandType, 'message' => 'échec / 作業'];
+        $outcome = $bridge->complete($task->id, [$command]);
+        $this->assertTrue($outcome['completed']);
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $summary = WorkflowRunSummary::query()->findOrFail($runId);
+        $before = HistoryBudget::forRun($run);
+        $this->assertSame($before['history_size_bytes'], $summary->history_size_bytes);
+        $event = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+            ->where('event_type', $commandType === 'complete_workflow' ? 'WorkflowCompleted' : 'WorkflowFailed')
+            ->firstOrFail();
+
+        if ($projection === 'missing') {
+            $summary->delete();
+        } elseif ($projection === 'incomplete') {
+            $summary->forceFill(['history_size_bytes' => 0])->save();
+        } elseif ($projection === 'old-schema') {
+            $summary->forceFill(['projection_schema_version' => 0])->save();
+        }
+        $originalSummary = $summary->getAttributes();
+        config([
+            'workflows.v2.history_budget.size_bytes_warning_threshold' => $before['history_size_bytes'],
+            'workflows.v2.history_budget.continue_as_new_size_bytes_threshold' => $before['history_size_bytes'] + 1,
+        ]);
+
+        $request = Request::create('/worker-completion', 'POST');
+        $request->attributes->set(Authenticate::ATTRIBUTE_PRINCIPAL, new Principal(
+            'budget-worker', ['worker'], 'token', claims: ['name' => 'Opérateur / 作業'],
+        ));
+        $attribution = app(WorkerTerminalEventAttribution::class);
+        $historyReads = [];
+        $observing = true;
+        DB::listen(static function (QueryExecuted $query) use (&$historyReads, &$observing): void {
+            if ($observing && str_starts_with(strtolower($query->sql), 'select')
+                && str_contains($query->sql, 'workflow_history_events')) {
+                $historyReads[] = $query->sql;
+            }
+        });
+        DB::transaction(fn () => $attribution->record($request, $task->id, $outcome));
+        $observing = false;
+        $this->assertCount(2, $historyReads);
+        foreach ($historyReads as $sql) {
+            $this->assertStringContainsString('limit 1', $sql);
+        }
+        $this->assertSame('Opérateur / 作業', $event->fresh()->payload['command']['principal_label']);
+
+        if ($projection !== 'current') {
+            $this->assertSame($projection === 'missing' ? null : $originalSummary, $summary->fresh()?->getAttributes());
+
+            return;
+        }
+
+        $budget = HistoryBudget::forRun($run->fresh());
+        $summary->refresh();
+        $this->assertGreaterThan($before['history_size_bytes'], $budget['history_size_bytes']);
+        $this->assertSame($budget['history_size_bytes'], $summary->history_size_bytes);
+        $this->assertSame($before['history_event_count'], $summary->history_event_count);
+        $this->assertSame($before['history_fan_out'], $summary->history_fan_out);
+        $this->assertSame(HistoryBudget::PRESSURE_CONTINUE_AS_NEW_RECOMMENDED, $summary->history_budget_pressure);
+        $this->assertTrue($summary->continue_as_new_recommended);
+        $attributedSummary = $summary->getAttributes();
+        $attributedPayload = $event->fresh()->payload;
+        $timeline = WorkflowTimelineEntry::query()->where('history_event_id', $event->id)->firstOrFail();
+        $attributedTimeline = $timeline->getAttributes();
+
+        DB::transaction(fn () => $attribution->record($request, $task->id, $outcome));
+        $this->assertSame($attributedSummary, $summary->fresh()->getAttributes());
+        $this->assertSame($attributedPayload, $event->fresh()->payload);
+
+        $request->attributes->set(Authenticate::ATTRIBUTE_PRINCIPAL, new Principal(
+            'b', ['worker'], 'token', claims: ['name' => 'B'],
+        ));
+        try {
+            DB::transaction(function () use ($attribution, $request, $task, $outcome, $summary, $budget): void {
+                $attribution->record($request, $task->id, $outcome);
+                $this->assertLessThan($budget['history_size_bytes'], $summary->fresh()->history_size_bytes);
+                throw new RuntimeException('Rollback terminal attribution');
+            });
+            $this->fail('The transaction must roll back.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('Rollback terminal attribution', $exception->getMessage());
+        }
+        $this->assertSame($attributedSummary, $summary->fresh()->getAttributes());
+        $this->assertSame($attributedPayload, $event->fresh()->payload);
+        $this->assertSame($attributedTimeline, $timeline->fresh()->getAttributes());
+    }
+
+    public static function terminalBudgetCases(): array
+    {
+        return [
+            'completed' => ['complete_workflow', 'current'],
+            'failed' => ['fail_workflow', 'current'],
+            'missing summary' => ['complete_workflow', 'missing'],
+            'incomplete summary' => ['complete_workflow', 'incomplete'],
+            'old summary schema' => ['complete_workflow', 'old-schema'],
+        ];
     }
 
     /**
