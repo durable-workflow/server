@@ -2911,3 +2911,11 @@ WorkerController bytes match the qualified PHP handoff. This combined tree
 requires fresh normal and six-database qualification. The preceding `3409a776`
 component pass, its MySQL-only retry, and all failed originals remain their
 separate records; none qualifies this integration or a native release.
+
+The next operator read slice is the existing PHP targeted activity-result
+endpoint from #439/#440. Its [contract](contracts/workflow-activity-result-inspection.md)
+and separate fixture/profile define canonical history selection, exact ownership,
+null versus absence, explicit unavailable states and opaque external transport
+before native implementation. The selected published PHP reference is separate
+from every frozen actor. Native route/discovery, actual installed SDK reads,
+database qualification and Waterline consumption remain pending.

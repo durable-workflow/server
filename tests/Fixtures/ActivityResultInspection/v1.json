@@ -1,0 +1,25 @@
+{
+  "schema": "durable-workflow.activity-result-inspection-cases/v1",
+  "cases": [
+    {"id":"encoded-null","producer":"genuine_activity","typed_value":{"type":"null","value":null},"state":"available","available":true,"reason":null},
+    {"id":"encoded-false","producer":"genuine_activity","typed_value":{"type":"boolean","value":false},"state":"available","available":true,"reason":null},
+    {"id":"typed-map","producer":"genuine_activity","typed_value":{"type":"map","value":{"integer":{"type":"int64","value":"9007199254740993"},"optional":{"type":"null","value":null},"text":{"type":"string","value":"日本語 λ"}}},"state":"available","available":true,"reason":null},
+    {"id":"external-result","producer":"genuine_activity","encoded_size_minimum":2097152,"state":"available","available":true,"reason":null,"assertions":["opaque_reference","exact_bytes_and_sha256_after_client_fetch","no_unrelated_fetch"]},
+    {"id":"pending","producer":"genuine_activity_schedule","state":"pending","available":false,"reason":"activity_result_pending"},
+    {"id":"retry-pending","producer":"genuine_activity_failure_with_retry","state":"pending","available":false,"reason":"activity_result_pending"},
+    {"id":"retry-completed","producer":"genuine_second_activity_attempt","state":"available","available":true,"reason":null},
+    {"id":"failed","producer":"genuine_exhausted_activity","state":"failed","available":false,"reason":"activity_result_failed"},
+    {"id":"cancelled","producer":"genuine_activity_cancellation","state":"cancelled","available":false,"reason":"activity_result_cancelled"},
+    {"id":"closed-parent","producer":"genuine_parent_completion","state":"available","available":true,"reason":null,"assertions":["activity_value_differs_from_parent_output"]},
+    {"id":"missing-history","producer":"negative_database_control","state":"unsupported","available":false,"reason":"activity_result_history_unavailable"},
+    {"id":"pruned-history","producer":"negative_database_control","state":"pruned","available":false,"reason":"activity_result_history_unavailable"},
+    {"id":"local-activity","producer":"negative_database_control","state":"unsupported","available":false,"reason":"local_activity_result_inspection_unsupported"},
+    {"id":"identity-conflict","producer":"negative_database_control","state":"unsupported","available":false,"reason":"activity_result_history_identity_mismatch"},
+    {"id":"result-conflict","producer":"negative_database_control","state":"unsupported","available":false,"reason":"activity_result_history_value_mismatch"},
+    {"id":"missing-envelope","producer":"negative_database_control","state":"unavailable","available":false,"reason":"activity_result_envelope_unavailable"},
+    {"id":"unsupported-codec","producer":"negative_database_control","state":"unsupported","available":false,"reason":"activity_result_codec_unsupported"}
+  ],
+  "read_invariants": ["exact_namespace_workflow_run_activity","worker_role_refused_before_lookup","no_history_mutation","no_claim_or_lease_mutation","no_mutable_result_fallback","metadata_only_listing","no_unrelated_payload_resolution"],
+  "negative_identity_http_status": 404,
+  "worker_role_http_status": 403
+}
