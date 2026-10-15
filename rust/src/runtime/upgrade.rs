@@ -119,7 +119,9 @@ fn report(
         report["queue_inspection"] = queues;
     }
     if let Some(payloads) = payload_inspection {
-        if payloads["references_metadata_supported"] != true {
+        if payloads["references_metadata_supported"] != true
+            || payloads["inline_values_verified"] != true
+        {
             report["status"] = json!("unqualified");
         }
         report["payload_inspection"] = payloads;

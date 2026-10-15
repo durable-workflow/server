@@ -1,5 +1,5 @@
-//! Root-column reference metadata only. Inline values, nested history,
-//! provider bytes and registry ownership remain unqualified.
+//! Known root-column Avro frames and external-reference metadata only.
+//! Nested history, provider bytes and registry ownership remain unqualified.
 use super::external_reference::{ReferenceDecodeError, inspect_php_reference};
 use crate::runtime::{Result, backend::Backend, refuse};
 use axum::http::StatusCode;
@@ -84,6 +84,7 @@ struct Counts {
     rows: i64,
     absent: i64,
     other_unvalidated: i64,
+    avro_inline_values: i64,
     php_v1_references: i64,
     unqualified_references: i64,
 }
@@ -111,6 +112,14 @@ where
     let mut columns = Vec::new();
     let mut diagnostics = Vec::new();
     let mut omitted = 0_i64;
+    let mut references_supported = true;
+    let mut inline_supported = true;
+    let codec = crate::codec::ValueCodec::new().map_err(|_| {
+        refuse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "upgrade_source_inline_codec_unavailable",
+        )
+    })?;
     for column in COLUMNS {
         let sql = if DB::NAME == "SQLite" {
             column.sqlite_sql
@@ -145,7 +154,30 @@ where
                 if !prefix.starts_with("dw-external-payload:")
                     && !prefix.starts_with("dw-native-external-payload-")
                 {
-                    counts.other_unvalidated += 1;
+                    let invalid = if bytes > 65536 {
+                        Some("stored_inline_payload_too_large")
+                    } else if DB::optional_string(&row, "codec")?.as_deref() != Some("avro") {
+                        Some("stored_inline_codec_unqualified")
+                    } else if codec
+                        .validate_stored_inline(&DB::string(&row, "stored_value")?)
+                        .is_err()
+                    {
+                        Some("stored_inline_frame_unqualified")
+                    } else {
+                        None
+                    };
+                    if let Some(reason) = invalid {
+                        inline_supported = false;
+                        counts.other_unvalidated += 1;
+                        if diagnostics.len() < MAX_DIAGNOSTICS {
+                            diagnostics.push(json!({"table":column.table,"column":column.name,
+                                "record_id":cursor,"reason":reason}));
+                        } else {
+                            omitted += 1;
+                        }
+                    } else {
+                        counts.avro_inline_values += 1;
+                    }
                     continue;
                 }
                 let decoded = if bytes > 65536 {
@@ -159,6 +191,7 @@ where
                     Ok(Some(_)) => counts.php_v1_references += 1,
                     Ok(None) => unreachable!("reference prefixes were checked before decoding"),
                     Err(error) => {
+                        references_supported = false;
                         counts.unqualified_references += 1;
                         if diagnostics.len() < MAX_DIAGNOSTICS {
                             diagnostics.push(json!({"table":column.table,"column":column.name,
@@ -182,9 +215,11 @@ where
     }
     Ok(json!({
         "status":"known_columns_inspected", "columns":columns,
-        "references_metadata_supported":diagnostics.is_empty() && omitted==0,
+        "references_metadata_supported":references_supported,
         "diagnostics":diagnostics, "diagnostics_omitted":omitted,
-        "inline_values_verified":false, "nested_payloads_verified":false,
+        "inline_values_verified":inline_supported, "nested_payloads_verified":false,
+        "inline_validation_limits":{"encoded_frame_bytes":65536,"traversal_depth":64,
+            "traversal_visits":16384,"scalar_allocation_bytes":apache_avro::util::max_allocation_bytes(apache_avro::util::DEFAULT_MAX_ALLOCATION_BYTES)},
         "provider_bytes_verified":false, "registry_binding_verified":false,
         "source_mutated":false, "takeover_allowed":false
     }))
