@@ -93,7 +93,10 @@ impl ActivitySummaryHistory {
                 return false;
             }
             if event == "ActivityStarted" {
-                if attempts != previous.attempts + 1 || attempt_id.is_none() || task_id.is_none() {
+                if Some(attempts) != previous.attempts.checked_add(1)
+                    || attempt_id.is_none()
+                    || task_id.is_none()
+                {
                     return false;
                 }
             } else if attempts != previous.attempts || attempt_id != previous.attempt_id {
