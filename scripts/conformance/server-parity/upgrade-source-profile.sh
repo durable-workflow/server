@@ -11,6 +11,11 @@ resource="$RESOURCE_SCOPE-upgrade"
 state=parity-upgrade-source-state
 evidence=parity-evidence/upgrade-source
 test -f rust-target/debug/durable-workflow-server
+git diff --quiet
+git diff --cached --quiet
+revision=$(git rev-parse HEAD)
+native_tree=$(git rev-parse HEAD:rust)
+binary_sha256=$(sha256sum rust-target/debug/durable-workflow-server | cut -d ' ' -f1)
 test ! -e "$state"
 test ! -e "$evidence"
 mkdir -p "$state" "$evidence"
@@ -113,8 +118,12 @@ php_run /source/scripts/conformance/server-parity/upgrade-source-controls.php un
 refusal unknown upgrade_source_catalog_unqualified
 php_run /source/scripts/conformance/server-parity/upgrade-source-controls.php marker > "$evidence/marker-control.json"
 refusal marker upgrade_source_already_owned
-jq -n --arg revision "$(git rev-parse HEAD)" --arg native "$(git rev-parse HEAD:rust)" \
-  --arg image "$image" --arg backend "$backend" --arg binary "$(sha256sum rust-target/debug/durable-workflow-server | cut -d ' ' -f1)" \
+test "$(git rev-parse HEAD)" = "$revision"
+test "$(sha256sum rust-target/debug/durable-workflow-server | cut -d ' ' -f1)" = "$binary_sha256"
+git diff --quiet
+git diff --cached --quiet
+jq -n --arg revision "$revision" --arg native "$native_tree" \
+  --arg image "$image" --arg backend "$backend" --arg binary "$binary_sha256" \
   --slurpfile inventory "$evidence/inspection.json" --slurpfile originals "$evidence/originals.json" \
   '{outcome:"pass",scope:"read_only_source_inventory_and_refusals",backend:$backend,
     runner_revision:$revision,native_tree:$native,native_binary_sha256:$binary,php_image:$image,
