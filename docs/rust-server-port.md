@@ -6,13 +6,13 @@ The unpublished Rust crate has an Avro foundation and an opt-in SQLite/PostgreSQ
 execution slice. Full runtime parity, migration, performance improvement and
 cutover remain unqualified.
 
-The latest qualified merged foundation is [#457](https://github.com/durable-workflow/server/pull/457),
-at `303ffc633`, including #445's memo transaction preparation, #446's bounded
-continuation, #448's SDK memo authoring and #450's local external transport.
-Its separate fresh-main [38668891437](https://github.com/durable-workflow/server/actions/runs/38668891437)
-passes all 13 jobs across six databases; all six execution logs were read.
-Required PHP/source and boundary checks also pass. Earlier failed observations
-remain failed; this current-tree result is not carried across later changes.
+The delivered foundation combines [#455](https://github.com/durable-workflow/server/pull/455)
+and [#458](https://github.com/durable-workflow/server/pull/458) at `30137616`,
+whole tree `3be0ab68`, native tree `7d0287cd`. Exact fresh-main
+[38712683859](https://github.com/durable-workflow/server/actions/runs/38712683859)
+passes all 13 shared jobs across six databases; each execution summary has 25
+passing comparisons and 19 zero exit records. The consumer runner #457 is
+included in that tree. Earlier failed originals remain failed and distinct.
 The merged native development runtime enables memo upserts, while full external
 transport discovery stays unadvertised. Frozen published PHP, embedded and SDK tuples
 remain separate from current PHP release work. Representative timer, signal,
@@ -22,7 +22,27 @@ failed; later qualifying runs are separate observations.
 
 ## Work order and current status
 
-The current integration order is:
+- Query authority [#463](https://github.com/durable-workflow/server/pull/463)
+  has all-13 results at `76c6d35a` and separately at `ee219c0b` with qualified PHP
+  `f7d1bfc7`. The current release-guard integration `083419709` is qualifying
+  independently. No earlier pass is carried across changed trees.
+- Targeted activity result reads [#470](https://github.com/durable-workflow/server/pull/470)
+  have an all-13 component result at `8a7cffe4`. Later combined integration,
+  retry-consumer integration, unrelated-object isolation and Waterline remain
+  separate gates. Native inspection discovery stays unadvertised.
+- [Activity metadata listing](contracts/activity-metadata-listing.md) is a
+  separate current-PHP-source slice. Thirty-one released-PHP projection cases cover
+  typed history, attempt state, diagnostic fallback and timestamp rounding.
+  Local library and four in-process HTTP controls per SQLite/MySQL8.4/PG17 pass.
+  Hosted and installed differential consumers remain ahead.
+- Upgrade preparation remains read-only inspection. Source metadata, queue
+  encoding and root payload-reference checks do not establish takeover, backup,
+  quiescence or complete representation. Safe migration is still open.
+
+## Earlier foundation qualification stages
+
+These entries preserve the earlier component and failed-original scopes before
+the delivered `30137616` checkpoint above. They are not current promotion status.
 
 - Merged [#445](https://github.com/durable-workflow/server/pull/445),
   [#446](https://github.com/durable-workflow/server/pull/446),
