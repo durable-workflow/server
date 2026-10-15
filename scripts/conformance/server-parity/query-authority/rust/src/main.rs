@@ -183,7 +183,15 @@ async fn main() -> Result<()> {
                 }
             }
             wait(until, || match mode.as_str() {
-                "late-poll" => !named(&events(Path::new(journal)), "delivered").is_empty(),
+                "late-poll" => named(&events(Path::new(journal)), "status")
+                    .iter()
+                    .any(|entry| {
+                        entry["observation"]["can_continue"] == false
+                            && matches!(
+                                entry["observation"]["reason"].as_str(),
+                                Some("query_task_timed_out" | "query_lease_expired")
+                            )
+                    }),
                 "late-handler-async" => counters.cancelled.load(Ordering::SeqCst) == 1,
                 "late-handler-sync" => counters.returned.load(Ordering::SeqCst) == 1,
                 _ => false,
@@ -197,7 +205,11 @@ async fn main() -> Result<()> {
     tokio::time::timeout(until.saturating_duration_since(Instant::now()), runner).await???;
     let run_id = outcome?;
     let observed = events(Path::new(journal));
-    assert!(named(&observed, "observer-error").is_empty());
+    assert!(
+        named(&observed, "observer-error").is_empty(),
+        "{:?}",
+        named(&observed, "observer-error")
+    );
     assert_eq!(named(&observed, "claim").len(), 1);
     assert_eq!(named(&observed, "delivered").len(), 1);
     assert_eq!(named(&observed, "query-result").len(), 1);
@@ -224,7 +236,21 @@ async fn main() -> Result<()> {
     let claim = &claim_event["claim"];
     assert_eq!(claim_event["protocol"], protocol.as_str());
     let status = named(&observed, "status");
-    assert_eq!(!status.is_empty(), protocol == "1.20");
+    let discovery = named(&observed, "discovery");
+    if protocol == "1.20" {
+        assert!(!discovery.is_empty());
+        assert!(discovery
+            .iter()
+            .all(|entry| entry["status"] == 200 && entry["query_task_authority"] == true));
+        if status.is_empty() {
+            // Immediate expiry may legally skip status. This SDK exposes no
+            // public refusal reason, so this recipe cannot qualify that case
+            // from zero callbacks alone.
+            return Err("No retained Rust expiry disposition; observation is unqualified".into());
+        }
+    } else {
+        assert!(status.is_empty());
+    }
     for observation in &status {
         for field in [
             "query_task_id",
@@ -244,6 +270,7 @@ async fn main() -> Result<()> {
         "sdk_version":SDK_VERSION,"namespace":namespace,"run_id":run_id,"claim":claim,
         "calls":counters.calls.load(Ordering::SeqCst),"returned":counters.returned.load(Ordering::SeqCst),
         "cancelled":counters.cancelled.load(Ordering::SeqCst),"status_reads":status.len(),
+        "authority_discovery":discovery,
         "history_sha256":named(&observed,"query-result")[0]["history_sha256"],
         "original_budget_seconds":30,"elapsed_seconds":started.elapsed().as_secs_f64(),"worker_exit":0})
     );
