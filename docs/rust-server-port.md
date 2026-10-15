@@ -24,25 +24,28 @@ failed; later qualifying runs are separate observations.
 
 - Query authority [#463](https://github.com/durable-workflow/server/pull/463)
   has all-13 results at `76c6d35a` and separately at `ee219c0b` with qualified PHP
-  `f7d1bfc7`. The current release-guard integration `083419709` is qualifying
-  independently. No earlier pass is carried across changed trees.
+  `f7d1bfc7`. Release-guard integration `083419709` also passes all 13 jobs and
+  is merged at `0934c46d`, whole tree `98775e68`. Exact fresh-main qualification
+  remains pending; no earlier pass is carried across changed trees.
 - Targeted activity result reads [#470](https://github.com/durable-workflow/server/pull/470)
   have an all-13 component result at `8a7cffe4`. Later combined hosted acceptance,
   complete consumer coverage and Waterline remain
   separate gates. Native inspection discovery stays unadvertised.
 - [Activity metadata listing](contracts/activity-metadata-listing.md) is a
   separate current-PHP-source slice. All 31 projection cases pass on published
-  PHP 2.8.5. Corrected component `71bdf6bd` passes 133 SQLite execution cases
-  and the MySQL 8.4/PostgreSQL 17 retry regression. Twelve normally installed
-  PHP SDK originals pass on PHP/native SQLite, including four unavailable-object
-  metadata reads. The earlier `9da7b93b` hosted original is still separate;
-  corrected combined hosted and other-database TCP consumers remain pending.
+  PHP 2.8.5. Original `9da7b93b` passes all 13 jobs, while retry-corrected
+  candidate `062ce91a` is qualifying independently. Combined API preparation
+  `6720274c` passes 24 installed PHP/native originals and 88 metadata snapshot
+  comparisons on MySQL 8.4 and PostgreSQL 17. The earlier twelve SQLite
+  originals remain their own component result. Full database-version consumer
+  coverage, combined hosted acceptance and Waterline remain pending.
 - Upgrade preparation `b6df9cd8` integrates the read-only inspector with current
   API source `3211c65b`. All 109 library cases, the CLI filesystem-refusal test
   and 133 SQLite execution cases pass, with 18 existing library ignores.
-  This does not carry previous network-database observations to the new tree.
-  Source metadata, queue
-  encoding and root payload-reference checks do not establish takeover, backup,
+  Preparation `6720274c` separately recognizes the actual current-published PHP
+  PostgreSQL layout and two executed external-result references without changing
+  source data. Source metadata, queue encoding and root payload-reference checks
+  do not establish takeover, backup,
   quiescence or complete representation. Safe migration is still open.
 
 ## Earlier foundation qualification stages
@@ -3228,3 +3231,29 @@ The first MySQL fixture ID overflow and prototype reserved SQL alias remain fail
 observations. The fixture ID and alias are corrected, and the shared upgrade
 profile now exercises the new scan. Hosted integration and every takeover gate
 remain pending.
+
+Combined API preparation `6720274c`, native tree `3f4f20c3`, adds a per-target
+wrapper for the installed metadata probes and records merged query ancestry.
+It changes no native implementation. Separate PHP/native databases on MySQL
+8.4 and PostgreSQL 17 complete 24 fresh originals through 104 user-phase
+processes. All 88 snapshot pairs preserve business fields after actual task-ID
+binding and independent-clock validation. Eight unavailable-object metadata
+reads fetch no payload; subsequent explicit reads retain exact int64, null,
+Unicode, the 2 MiB result and original history prefixes. Per implementation and
+backend, stopped-state SQL has six completed workflows/activities, eight attempts,
+twenty completed tasks, 48 events and zero repairs. All four APIs exit 0 without
+OOM after explicit SIGTERM. PHP six-digit and native three/six-digit timestamp
+formats remain distinct; no formatting or performance parity is claimed.
+This uses SDK task methods and needs the separate targeted-result route, so it
+does not qualify the narrower metadata candidate by itself. See
+[the installed network outcome](https://github.com/durable-workflow/server/pull/476#issuecomment-6193036413).
+
+After the PHP PostgreSQL API stops, all three read-only inspection commands
+also recognize that actual published 2.8.5 layout through a SELECT-only role.
+The source contains two genuine external-result references; the inspector has
+no provider mount and fetches neither. Its 22 inline root values remain
+unvalidated. The queue is empty, so this adds no queue-binding proof. Before/after
+data-only PostgreSQL fingerprints match, without retaining a dump or claiming
+physical database-byte identity. No inspection connection remains. Backup,
+quiescence, complete representation and takeover flags stay false. See
+[the current-published source observation](https://github.com/durable-workflow/server/pull/460#issuecomment-6193036832).
