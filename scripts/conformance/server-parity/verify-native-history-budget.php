@@ -12,7 +12,7 @@ Illuminate\Container\Container::setInstance($container);
 $database = new Illuminate\Database\Capsule\Manager($container);
 $database->addConnection(['driver' => 'sqlite', 'database' => ':memory:']);
 $database->bootEloquent();
-$database->connection()->enableQueryLog();
+$database->getConnection()->enableQueryLog();
 $count = 0;
 
 foreach (file($argv[2], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
@@ -41,7 +41,7 @@ foreach (file($argv[2], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line)
     ++$count;
 }
 
-if ($count === 0 || $database->connection()->getQueryLog() !== []) {
+if ($count === 0 || $database->getConnection()->getQueryLog() !== []) {
     throw new RuntimeException('Expected nonempty native evidence and no reference database queries.');
 }
 
