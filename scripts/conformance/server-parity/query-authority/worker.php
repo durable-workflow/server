@@ -118,8 +118,19 @@ $record = static function (string $event, array $details = []) use ($journal): v
     file_put_contents($journal, json_encode(['event' => $event, 'observed_at' => microtime(true),
         'details' => $details], JSON_THROW_ON_ERROR)."\n", FILE_APPEND | LOCK_EX);
 };
-$read = static fn (): array => array_map(static fn (string $line): array => json_decode($line, true, flags: JSON_THROW_ON_ERROR),
-    file($journal, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES));
+$read = static function () use ($journal): array {
+    $file = fopen($journal, 'rb');
+    queryCheck(is_resource($file), 'Could not read the original Worker journal.');
+    try {
+        queryCheck(flock($file, LOCK_SH), 'Could not lock the original Worker journal.');
+        $bytes = stream_get_contents($file);
+    } finally {
+        flock($file, LOCK_UN);
+        fclose($file);
+    }
+    return array_map(static fn (string $line): array => json_decode($line, true, flags: JSON_THROW_ON_ERROR),
+        array_values(array_filter(explode("\n", $bytes), static fn (string $line): bool => $line !== '')));
+};
 $pid = 0;
 $handle = null;
 $result = null;
@@ -187,6 +198,16 @@ try {
     $expected = ['long' => 9007199254740993, 'nil' => null, 'text' => 'rangeλ'];
     if ($timely) {
         queryCheck($handle->query('value') === $expected, 'The actual typed query result changed.');
+        // The independent caller can observe the commit before the Worker
+        // receives its acknowledgement. Wait inside the original budget.
+        do {
+            $events = $read();
+            queryCheck(!in_array('actor-error', array_column($events, 'event'), true), 'The Worker refused the original outcome.');
+            if (in_array('acknowledgement', array_column($events, 'event'), true)) {
+                break;
+            }
+            usleep(20000);
+        } while (hrtime(true) / 1e9 < $until);
     } else {
         try {
             $handle->query('value');
@@ -227,7 +248,7 @@ try {
     queryCheck(($named('status') !== []) === ($protocol === '1.20'), 'Protocol status use does not match the declared boundary.');
     queryCheck(count($named('handler')) === ($mode === 'late-poll' ? 0 : 1), 'The callback dispatched outside its original authority.');
     queryCheck(count($named('submission')) === ($timely ? 1 : 0), 'An expired callback attempted a terminal submission.');
-    queryCheck(count($named('acknowledgement')) === ($timely ? 1 : 0), 'An expired callback submitted a terminal outcome.');
+    queryCheck(count($named('acknowledgement')) === ($timely ? 1 : 0), 'The original Worker acknowledgement count changed.');
     queryCheck($before === $client->workflowHistory($workflowId, $handle->selectedRunId), 'Query execution changed the original workflow history.');
     queryCheck($named('actor-error') === [] && hrtime(true) / 1e9 < $until, 'The original Worker observation failed.');
     $result = ['outcome' => 'pass', 'mode' => $mode, 'protocol' => $protocol, 'workflow_id' => $workflowId,
