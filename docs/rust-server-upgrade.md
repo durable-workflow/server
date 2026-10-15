@@ -102,6 +102,22 @@ or external bytes are qualified. Exact database hashes before/after establish
 read-only observation, with backup, representation compatibility and takeover
 still explicitly false. The new hosted hook needs fresh combined qualification.
 
+The native queue-command inspector uses the pinned `phpserz` token parser with
+its optional Serde feature disabled. It reads at most 64 KiB, eight nested
+levels, 256 tokens and 32 properties per object. The initial recognized subset
+is the published V2 workflow/activity/timer job with its original task ID,
+optional connection/queue and optional Carbon delay fields. Unknown classes,
+custom serialization, references, arrays/chains, duplicate or hidden property
+aliases, malformed lengths and trailing values are refused. Dates and timezone
+fields remain original strings, not recalculated task deadlines.
+
+The committed queue fixtures are produced by serializing the real classes in
+the pinned published image without dispatching them. This independently tested
+decoder does not yet consume source rows, validate the outer queue envelope or
+join a job to canonical task/run state. It grants no conversion, deletion,
+execution or takeover authority. Complete native integration and actual
+same-database queue qualification remain separate gates.
+
 The separate published PHP 2.8.0 profile prepares two genuine original runs:
 one leased activity and one pending timer. It explicitly stops PHP before
 inspection, compares source state and sequence positions before/after, and

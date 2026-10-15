@@ -3066,3 +3066,12 @@ WorkerController bytes match the qualified PHP handoff. This combined tree
 requires fresh normal and six-database qualification. The preceding `3409a776`
 component pass, its MySQL-only retry, and all failed originals remain their
 separate records; none qualifies this integration or a native release.
+
+Upgrade preparation now includes a non-executing queue-command reader under
+`runtime::upgrade::queue`. The released token parser recognizes only the tested
+V2 job/Carbon subset under explicit byte, depth and token limits. Published
+class fixtures preserve original task IDs, a Unicode queue and microsecond
+delay fields. Malformed and unqualified representations are refused. This is
+an independently tested decoder, not a source-row migration or takeover path.
+The next migration gates remain canonical queue/task binding, complete stored
+value validation, restored backup verification and actual sequential takeover.
