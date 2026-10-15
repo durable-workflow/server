@@ -11,7 +11,7 @@ const upstream = new URL(target);
 if (upstream.protocol !== 'http:') throw Error('Use only an isolated HTTP target');
 let count = 0, retainedBytes = 0, held = false;
 const authorityFields = ['query_task_id', 'query_task_attempt', 'lease_owner', 'task_queue', 'namespace',
-  'query_admitted_at', 'query_deadline_at', 'lease_expires_at', 'server_time', 'can_continue', 'reason'];
+  'workflow_id', 'run_id', 'query_admitted_at', 'query_deadline_at', 'lease_expires_at', 'server_time', 'can_continue', 'reason'];
 const select = value => Object.fromEntries(authorityFields.filter(key => key in value).map(key => [key, value[key]]));
 function record(event, details = {}) {
   const line = JSON.stringify({event, observed_at: Date.now() / 1000, ...details}) + '\n';
@@ -46,8 +46,8 @@ function json(reply) {
 }
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const server = http.createServer(async (request, response) => {
+  const path = new URL(request.url, upstream).pathname;
   try {
-    const path = new URL(request.url, upstream).pathname;
     const chunks = [];
     let size = 0;
     for await (const chunk of request) {
@@ -74,18 +74,32 @@ const server = http.createServer(async (request, response) => {
       before = sha(Buffer.from(JSON.stringify(json(snapshot))));
     }
     const reply = await exchange(request.method, request.url, headers, body);
+    if (path === '/api/cluster/info' && request.method === 'GET') {
+      record('discovery', {status: reply.status,
+        query_task_authority: json(reply).worker_protocol?.server_capabilities?.query_task_authority === true});
+    }
     if (path === '/api/worker/register' && request.method === 'POST') record('registered', {status: reply.status});
     if (path.endsWith('/query-tasks/poll') && reply.status === 200) {
       const task = json(reply).task;
       if (task && typeof task === 'object') {
         const utc6 = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$/;
         for (const key of ['query_admitted_at', 'query_deadline_at', 'lease_expires_at', 'server_time']) {
-          if (!utc6.test(task[key])) throw Error('Missing original UTC6 authority: ' + key);
+          if (!utc6.test(task[key]) || !Number.isFinite(Date.parse(task[key]))) throw Error('Missing original UTC6 authority: ' + key);
         }
+        const original = JSON.parse(body.toString('utf8'));
         if (Date.parse(task.query_deadline_at) - Date.parse(task.query_admitted_at) !== 4_000
+          || Date.parse(task.lease_expires_at) < Date.parse(task.query_admitted_at)
           || Date.parse(task.lease_expires_at) > Date.parse(task.query_deadline_at)
-          || task.query_task_attempt !== 1 || !task.lease_owner) throw Error('Changed original query authority');
-        record('claim', {protocol: request.headers['x-durable-workflow-protocol-version'], claim: select(task)});
+          || Date.parse(task.server_time) < Date.parse(task.query_admitted_at)
+          || task.query_task_attempt !== 1 || task.lease_owner !== original.worker_id
+          || task.task_queue !== original.task_queue
+          || typeof request.headers['x-namespace'] !== 'string' || !request.headers['x-namespace']
+          || (task.namespace !== undefined && task.namespace !== request.headers['x-namespace'])
+          || ['query_task_id', 'workflow_id', 'run_id'].some(key => typeof task[key] !== 'string' || !task[key])) {
+          throw Error('Changed original query authority');
+        }
+        record('claim', {protocol: request.headers['x-durable-workflow-protocol-version'],
+          namespace: request.headers['x-namespace'], claim: select(task)});
         if (mode === 'late-poll') {
           if (held) throw Error('Multiple poll responses invalidate this single-delivery fault control');
           held = true;
@@ -111,7 +125,9 @@ const server = http.createServer(async (request, response) => {
     response.writeHead(reply.status, reply.headers);
     response.end(reply.bytes);
   } catch (error) {
-    record('observer-error', {message: String(error)});
+    const details = {method: request.method, path, message: String(error).slice(0, 1024)};
+    record('observer-error', details);
+    console.error(JSON.stringify({event: 'observer-error', ...details}));
     response.destroy(error);
   }
 });

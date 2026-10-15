@@ -133,6 +133,34 @@ run in every existing database configuration with their original deadlines;
 their runtime artifacts are shared without compiler caches. Cleanup is owned by
 the existing unconditional workflow steps.
 
+Candidate `396a22e98` first failed during a pinned image pull before scenarios.
+Its identical-source retry exposed a missing third namespace binding in
+cooperative timer cancellation, producing protocol errors on network databases.
+SQLite silently left the original timer task ready at delivery. The
+[three-database counterfactual and correction](https://github.com/durable-workflow/server/pull/463#issuecomment-6185925195)
+fail before and pass after `a78956cd2`, checking the same original task reaches
+cancelled state while preserving cancellation history, deadlines and replay.
+Fresh corrected SQLite passes 75 library tests with eighteen existing ignores
+and all 125 execution tests. The separate older namespace test now retains its
+unqualified-command refusal using a child command, since timers have positive
+coverage. Hosted failures remain failed; neither correction qualifies a new
+combined matrix or explains historical PHP storage failures.
+
+The current client observer records delivery before a Worker can consume the
+response, so stopping immediately at that event does not prove expiry refusal.
+The follow-up recipe waits for Python's actual public authority-loss diagnostic
+or Rust's recorded expired authority observation. Proven original or monotonic
+expiry can legally omit redundant status HTTP; Python's no-status acceptance
+requires its actual expiry reason, exact claim identity/timing and affirmative
+discovery. Rust exposes no public reason for an immediate local refusal, so such
+a case stays unqualified rather than being called an SDK defect. Unexpired work
+still requires observation. Observer failures now retain bounded method/path
+diagnostics instead of an unexplained assertion. Five fresh installed Python
+2.5.15 controls pass against the pinned PHP 2.8.0 SQLite API, with the original
+four/thirty-second budgets; the held poll records an actual timeout refusal.
+The earlier PostgreSQL observer error remains unexplained, and native/Rust and
+full hosted qualification of these recipe changes remain ahead.
+
 Full transport discovery stays unadvertised. Complete batch workflow semantics,
 memo/query reference ingress, upload allowances, automatic result policy, S3,
 cleanup/backup/restart and full database/consumer qualification remain open.
