@@ -73,8 +73,20 @@ allocation cap, malformed declared lengths and exact source-byte preservation.
 The initial deep-fixture producer overflow and incorrect refusal-exit test
 expectation are preserved as failed test-development observations. The final
 deep producer uses a separate larger stack; validation stays on an ordinary
-test stack. This does not qualify deeply nested HTTP runtime payloads, actual
-current-PHP inline data, nested history, provider contents or takeover.
+test stack. This does not qualify deeply nested HTTP runtime payloads,
+nested history, provider contents or takeover.
+
+Separate source `03b3bd3c` passes the stopped published PHP 2.8.5 recipe on
+SQLite DELETE, MySQL 8.4 and PostgreSQL 17. The six actual pending originals
+contain nine inline argument frames and three queued timer jobs. The actual
+CLI allocation ceiling is 64 KiB; each source fingerprint is unchanged by
+inspection and each applicable refusal check passes. Network fingerprints
+cover logical rows/sequences, not physical database files. The three relevant
+loaded serializer/reference class hashes match published Core 2.5.22; its
+intentional Composer path reference remains distinct. Outputs and activity
+results are absent in these originals. No SDK continuation, full representation,
+backup, quiescence or takeover is qualified; the earlier 22 inline values are
+not retroactively verified. Full hosted acceptance remains pending.
 
 ## Earlier foundation qualification stages
 

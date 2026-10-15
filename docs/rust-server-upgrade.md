@@ -93,8 +93,24 @@ SQLite execution tests, with 18 existing library ignores. A malformed frame
 declaring a 500 MiB scalar is refused under the actual CLI ceiling without
 changing source bytes. These are constructed source controls; the earlier
 published-PHP PostgreSQL observation left 22 inline values unvalidated and is
-not retroactively qualified by this source change. Network-source validation,
-complete representation and every takeover gate remain open.
+not retroactively qualified by this source change.
+
+Source `03b3bd3c`, native tree `029ab981`, separately passes the actual stopped
+PHP 2.8.5 image `f6a6507a` recipe on SQLite DELETE, MySQL 8.4 and PostgreSQL 17.
+Each database has two original pending runs, three inline argument frames and
+one queued timer bound to its original canonical task. All three inspector
+commands pass, with the actual 64 KiB allocation ceiling. Source fingerprints
+remain exact: SQLite database bytes and network logical rows/sequences, not
+network physical files or backups. Denied readers, unknown catalogs, ownership
+markers and PostgreSQL row security refuse where applicable. APIs and databases
+exit 0 without OOM after the observation and owned cleanup.
+
+These six raw-protocol originals contain int64, null and Unicode arguments;
+their run outputs and activity results are absent. This does not add completed
+result, nested history, provider-byte or actual SDK continuation qualification.
+The 22 earlier inline values remain the earlier unvalidated observation.
+The full hosted database-version matrix, complete representation and every
+takeover gate remain open.
 
 The published-source recipe retains its immutable PHP 2.8.0 default. A separate
 observation may explicitly set `DW_PARITY_UPGRADE_PHP_IMAGE` to an official
