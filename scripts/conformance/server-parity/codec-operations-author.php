@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Composer\InstalledVersions;
 use DurableWorkflow\Client;
+use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Worker\CancellationDelivery;
 
 require getenv('DW_PARITY_SDK_AUTOLOAD');
@@ -147,5 +148,18 @@ try {
     $budget(); $state['phase']='complete'; $state['outcome']='observed';
 } catch (Throwable $error) {
     $state['outcome']='failed'; $state['error']=['type'=>$error::class, 'message'=>$error->getMessage()];
+    // The full temporary checkpoint may contain large task/capability values.
+    // Keep this small failure in the ordinary job log without copying them.
+    $diagnostic = ['role'=>$role, 'workflow_id'=>$id, 'run_id'=>$state['run_id'] ?? null,
+        'task_id'=>$state['task']['task_id'] ?? null, 'activity_task_id'=>$state['activity_task']['task_id'] ?? null,
+        'error'=>['type'=>$error::class], 'failed_call'=>isset($state['failed_call'])
+            ? array_intersect_key($state['failed_call'], array_flip(['name','submitted_at','observed_at'])) : null,
+        'completed_calls'=>array_column($state['calls'] ?? [], 'name')];
+    if ($error instanceof ServerException) {
+        $diagnostic['error'] += ['status'=>$error->status, 'reason'=>$error->reason];
+    } elseif ($error::class === RuntimeException::class) {
+        $diagnostic['error']['message'] = substr($error->getMessage(), 0, 256);
+    }
+    fwrite(STDERR, json_encode($diagnostic, JSON_UNESCAPED_UNICODE|JSON_INVALID_UTF8_SUBSTITUTE)."\n");
 } finally { $checkpoint(); }
 exit($state['outcome']==='observed'?0:1);
