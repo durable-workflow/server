@@ -94,8 +94,11 @@ The current integration order is:
   Its fifth active native original remains failed at unsupported termination
   cleanup. The revised query-only observer delegates database retirement to
   the caller. Its revised five-case profile passes all ten fresh SQLite originals
-  with the same four-second query and thirty-second observation budgets; all-six
-  execution remains pending. A later six-case SQLite cohort passes all twelve
+  with the same four-second query and thirty-second observation budgets. Its
+  [original all-six execution](https://github.com/durable-workflow/server/pull/463#issuecomment-6185577908)
+  passes all thirteen jobs at `8e4cb2efc`: sixty actual PHP SDK query originals
+  and 123 native execution tests per configuration. The separate boundary
+  cleanup check fails and remains failed. A later six-case SQLite cohort passes all twelve
   fresh originals, including a query on a genuine waiting named timer workflow.
   That new case uses the same installed SDK, reference image and original budgets.
   The first PHP SQLite observer raced the Worker's
@@ -121,6 +124,14 @@ The current integration order is:
   fields as execution, while the held query poll keeps its original registration
   proof. This combined source needs its own qualification; component passes do
   not qualify the merge.
+
+The next query qualification also includes the separately qualified PHP
+`7e215d29` metadata source and normally installed Python/Rust consumers described
+in the [local outcome](https://github.com/durable-workflow/server/issues/433#issuecomment-6185525047).
+The preceding sixty-case result does not qualify these additions. New consumers
+run in every existing database configuration with their original deadlines;
+their runtime artifacts are shared without compiler caches. Cleanup is owned by
+the existing unconditional workflow steps.
 
 Full transport discovery stays unadvertised. Complete batch workflow semantics,
 memo/query reference ingress, upload allowances, automatic result policy, S3,
