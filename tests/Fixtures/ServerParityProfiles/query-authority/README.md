@@ -1,10 +1,11 @@
 # Current query authority profile
 
 This separate profile uses normally installed PHP SDK 2.4.2 and published Server
-2.8.0. It does not replace the frozen query actors. Four completed-workflow cases
-pass on both targets using separate MySQL 8.4 databases. The earlier active
-native original failed during termination cleanup and remains failed. The
-revised five-case profile and all-six qualification remain pending.
+2.8.0. It does not replace the frozen query actors. The revised five-case profile
+passes on both targets using separate SQLite databases. Earlier four-case
+MySQL observations are separate. The earlier active native termination-cleanup
+failure and PHP acknowledgement-observer race remain failed. All-six
+qualification is pending.
 Main does not advertise native query authority. The unpublished
 candidate advertises it for installed-consumer qualification before promotion.
 

@@ -86,7 +86,11 @@ The current integration order is:
   and histories survive, with zero late submissions and eight zero-exit Workers.
   Its fifth active native original remains failed at unsupported termination
   cleanup. The revised query-only observer delegates database retirement to
-  the caller; its new five-case profile and all-six execution remain pending.
+  the caller. Its revised five-case profile passes all ten fresh SQLite originals
+  with the same four-second query and thirty-second observation budgets; all-six
+  execution remains pending. The first PHP SQLite observer raced the Worker's
+  acknowledgement and stays failed. The revised observer waits for that actual
+  acknowledgement inside its original budget.
   Earlier worker-list and named-timer originals remain failed. Main
   keeps `query_task_authority=false`; the unpublished candidate advertises it
   for actual SDK qualification before promotion. Full namespace CRUD remains
