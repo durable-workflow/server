@@ -48,14 +48,20 @@ terminal `ActivityFailed` event.
 
 Raw history before and after each read must agree. The four-value probe component
 passes 48 originals across independent SQLite, MySQL 8.4 and PostgreSQL 17
-PHP/native databases. The corrected retry probe separately passes four SQLite
-originals across PHP/native and default/named namespaces. Its first original
+PHP/native databases. The corrected retry probe separately passes twelve
+originals across the same three database families, PHP/native and default/named
+namespaces. Each original uses two actual callbacks, one failure submission and
+one completion. The result stays pending between attempts and survives parent
+closure with its exact typed bytes and history prefix. Stopped-API SQL inspection
+finds two completed runs, two attempt-two activities, eight completed tasks,
+sixteen events and zero repairs per implementation and database. All API
+processes stop with explicit SIGTERM and exit zero without OOM. Its first original
 remains failed because the probe required a terminal failure event for a retry;
 the corrected check follows the existing canonical retry event.
 
 Terminal outcomes, role/ownership refusals and malformed retained history have
 separate source tests. Metadata-only listing, unrelated-object isolation,
-all-database installed retry consumers and Waterline UI acceptance remain
+remaining database configurations and Waterline UI acceptance remain
 additional gates. Stop and
 remove every task-owned service, database, provider object, dependency tree and
 raw output after its immediate audit.
