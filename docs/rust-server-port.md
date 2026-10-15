@@ -228,6 +228,28 @@ Current checkpoint, October 15:
   and installed native/browser remain separate gates. Activity, timer, child,
   update, timeout, compatibility and transport summary classifiers remain open.
 
+- The following component adds ordinary timer summaries. Scheduling stores
+  timer liveness and counters in the same transaction as the timer, task and
+  retained wait. Actual firing across cold pools changes liveness to ready
+  workflow work, and claiming that work changes it to leased workflow work.
+  Default and named namespace controls preserve their original execution
+  deadline. A summary-write failure rolls back scheduling. Missing wait rows
+  or changed projection deadlines make a later summary refresh unavailable;
+  repeated observations do not repair the projection or add history.
+  The test-first source passed one existing timer control and failed four
+  summary assertions. The initial implementation passed five controls. An added
+  consistency fixture first failed compilation because it used formatted SQL
+  with the literal-SQL test helper. Its correction changes only fixture SQL.
+  At `b11a6daa3`, all 79 library tests pass with 18 existing ignores, and all
+  160 SQLite execution tests pass. Three focused timer controls pass on each
+  of PostgreSQL 17.11 and MySQL 8.0.46. Installed Server 2.8.6 / Workflow 2.5.22
+  independently matches 38 history-counter snapshots and 18 actual timer
+  classifications across the three databases, with zero reference queries.
+  Timeout, selection and parallel timer summaries remain separate work, as do
+  full published observation API, installed native/browser and shared
+  differential qualification. The native controls do not claim an externally
+  leased timer transition.
+
 The preserved `c0b14c15` [shared run](https://github.com/durable-workflow/server/actions/runs/38806818394)
 is terminal with 12 passing jobs and one failure in the existing-PHP PostgreSQL
 job at the published-query comparison step. The assertion and cause remain
