@@ -167,7 +167,7 @@ fn project(
         .or_else(|| payload(&body["result"]))
         .map(envelope)
         .unwrap_or(Value::Null);
-    if result.is_object() && result["codec"] != "avro" {
+    if (result.is_object() || result.is_array()) && result["codec"] != "avro" {
         return state(identity, "unsupported", "activity_result_codec_unsupported");
     }
     if result.as_object().is_none_or(|object| object.len() != 2)
@@ -248,6 +248,12 @@ mod tests {
             (
                 "ActivityCompleted",
                 json!({"payload_codec":"json"}),
+                "unsupported",
+                "activity_result_codec_unsupported",
+            ),
+            (
+                "ActivityCompleted",
+                json!({"result":[]}),
                 "unsupported",
                 "activity_result_codec_unsupported",
             ),
