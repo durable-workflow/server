@@ -2902,5 +2902,11 @@ V2 job/Carbon subset under explicit byte, depth and token limits. Published
 class fixtures preserve original task IDs, a Unicode queue and microsecond
 delay fields. Malformed and unqualified representations are refused. This is
 an independently tested decoder, not a source-row migration or takeover path.
-The next migration gates remain canonical queue/task binding, complete stored
-value validation, restored backup verification and actual sequential takeover.
+A pure binding validator now checks one genuine published PHP 2.8.2 pending
+timer envelope against its original task/run. Twelve focused decoder/binding
+controls pass. The source database has Laravel transport queue `default` and
+SDK queue `upgrade-source`; its rounded transport wakeup does not replace the
+canonical microsecond timer availability. Borrowed source rows retain their
+original state and a separate leased activity. Full native/CLI integration,
+complete source-row validation, restored backup verification and actual
+sequential takeover remain unqualified.

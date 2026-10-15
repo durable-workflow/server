@@ -113,10 +113,33 @@ fields remain original strings, not recalculated task deadlines.
 
 The committed queue fixtures are produced by serializing the real classes in
 the pinned published image without dispatching them. This independently tested
-decoder does not yet consume source rows, validate the outer queue envelope or
-join a job to canonical task/run state. It grants no conversion, deletion,
-execution or takeover authority. Complete native integration and actual
-same-database queue qualification remain separate gates.
+decoder grants no conversion, deletion, execution or takeover authority.
+Complete native integration and actual same-database queue qualification remain
+separate gates.
+
+A separate genuine published PHP 2.8.2 source fixture now contains one queued
+timer job, its original task/run, and a separate leased activity. Its outer
+Laravel handler, command class and default transport policy are checked before
+binding the exact canonical task ID, kind, run and namespace. Unknown or
+duplicate envelope fields, unsupported policies and changed identities refuse.
+The validator returns borrowed source rows, preserving their status, attempts,
+leases and availability without any execution/deletion action.
+
+The database job uses Laravel queue `default`, while its canonical timer task
+uses SDK queue `upgrade-source`. Those are distinct routing domains. The
+serialized Carbon wakeup and integer queue availability are rounded up to the
+next second, while the canonical timer keeps its original six fractional
+digits. A transport wakeup must never replace that deadline. The pure binding
+validator checks the parent SDK queue for workflow/timer tasks and the
+independent configured transport queue. It does not compare those two queues
+for equality. Activity destinations may differ from their parent's queue.
+
+The fixture is exported read-only after the sole source API exits. This proves
+only the recorded source/decoder/binding component. It does not yet scan every
+source row, establish full PHP/embedded data compatibility, validate all
+timestamp semantics, restore a backup or continue the original workflows in
+Rust. `upgrade-inspect` remains the earlier catalog/count inventory and its
+takeover flags remain false.
 
 The separate published PHP 2.8.0 profile prepares two genuine original runs:
 one leased activity and one pending timer. It explicitly stops PHP before
