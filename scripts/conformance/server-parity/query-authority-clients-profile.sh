@@ -76,7 +76,13 @@ for language in python rust; do
       http://parity-query-client-observer:8080 "$mode" "$protocol" /evidence/http.jsonl \
       >"$case_output/result.json" 2>"$case_output/client.stderr" || status=$?
     retire || status=1
-    test "$status" = 0
+    if test "$status" != 0; then
+      printf 'Query client failed: target=%s language=%s mode=%s protocol=%s exit=%s\n' \
+        "$target" "$language" "$mode" "$protocol" "$status" >&2
+      tail -c 8192 "$case_output/client.stderr" >&2
+      if test -f "$case_output/observer.log"; then tail -c 8192 "$case_output/observer.log" >&2; fi
+      exit "$status"
+    fi
     jq -e --arg language "$language" --arg mode "$mode" --arg protocol "$protocol" \
       '.outcome=="pass" and .language==$language and .mode==$mode and .protocol==$protocol
         and .worker_exit==0 and .original_budget_seconds==30 and .elapsed_seconds<30' "$case_output/result.json" >/dev/null
