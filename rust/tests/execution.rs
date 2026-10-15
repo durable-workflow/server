@@ -60,6 +60,8 @@ mod activity_deadlines;
 
 #[path = "execution/activity_metadata.rs"]
 mod activity_metadata;
+#[path = "execution/activity_results.rs"]
+mod activity_results;
 
 #[path = "execution/waiting_history.rs"]
 mod waiting_history;
