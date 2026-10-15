@@ -288,15 +288,23 @@ mod tests {
                 .is_err()
         );
         assert!(codec.validate_stored_inline("invalid!").is_err());
-        let mut deep = Value::Null;
-        for _ in 0..100 {
-            deep = Value::Array(vec![deep]);
-        }
-        assert!(
-            codec
-                .validate_stored_inline(&codec.encode(&deep).unwrap())
-                .is_err()
-        );
+        // Fixture encoding is a separate existing recursive path. Give that
+        // producer stack space; validation still runs on the ordinary test
+        // thread, against the unchanged hundred-level encoded original.
+        let deep = std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let codec = ValueCodec::new().unwrap();
+                let mut deep = Value::Null;
+                for _ in 0..100 {
+                    deep = Value::Array(vec![deep]);
+                }
+                codec.encode(&deep).unwrap()
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(codec.validate_stored_inline(&deep).is_err());
         let wide = codec
             .encode(&Value::Array(vec![Value::Null; 20000]))
             .unwrap();
