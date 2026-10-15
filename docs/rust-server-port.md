@@ -210,6 +210,24 @@ Current checkpoint, October 15:
   Full published-PHP observation, installed native/browser and shared differential
   qualification remain separate from this component.
 
+- Ordinary condition and direct-signal summaries are implemented on the next
+  component. Condition receipt and task claim retain waiting liveness until
+  application. Direct signal receipt produces ready task liveness, with buffered
+  receipt and cold-node application covered separately. Summary refresh compares
+  every open projection with complete typed history. Missing or inconsistent
+  projections stay unavailable without read repair. Summary-write failures roll
+  back both wait creation and signal receipt with their task/history mutations.
+  The three initial summary assertions failed on the preceding implementation.
+  At `2f8607398`, 79 library tests pass with 18 ignored and all 158 SQLite
+  execution tests pass. Five focused controls pass on each of PostgreSQL 17.11
+  and MySQL 8.0.46. Published Server 2.8.6 / Workflow 2.5.22 independently agrees
+  on 34 history-counter snapshots and 21 external-wait liveness snapshots across
+  the three databases, with zero reference queries. An initial reference-harness
+  timestamp omission was corrected using the original stored event timestamp.
+  These are counter/classifier comparisons; the full published observation API
+  and installed native/browser remain separate gates. Activity, timer, child,
+  update, timeout, compatibility and transport summary classifiers remain open.
+
 The preserved `c0b14c15` [shared run](https://github.com/durable-workflow/server/actions/runs/38806818394)
 is terminal with 12 passing jobs and one failure in the existing-PHP PostgreSQL
 job at the published-query comparison step. The assertion and cause remain

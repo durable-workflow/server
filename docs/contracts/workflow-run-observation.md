@@ -118,12 +118,20 @@ history. A summary persistence failure rolls back the owning transition,
 including its lease and attempt counter. Summaries retain the run's source
 timestamp, and active duration stays null until closure.
 
-The active classifier currently covers native task-only histories containing
-`StartAccepted`, `WorkflowStarted` and `RepairRequested`. Durable wait families,
-compatibility/fleet classification and queue transport diagnostics remain open.
-Those states remove the earlier task-only summary in the committing transaction
-and expose unavailable measurements until their classifier is implemented.
-Independent wait projections retain their existing qualification.
+The active classifier covers native task-only histories and ordinary condition
+and direct-signal waits. A condition remains waiting after signal receipt and
+claim, until the worker applies that input. Direct signal receipt makes its
+workflow task ready. The stored summary retains the current external wait's
+identity and source independently of task liveness.
+
+Each summary refresh checks open wait projections against complete typed
+history. A missing or inconsistent projection makes the summary unavailable
+in that committing transition. Observation reads neither rebuild nor audit it.
+Timeout-backed waits, task-backed wait families, compatibility/fleet
+classification and queue transport diagnostics remain open. These states
+remove the earlier summary in the committing transaction and expose unavailable
+measurements until their classifier is implemented. Independent wait projections
+retain their existing qualification.
 
 The execution controls can write synthetic reference input with
 `DW_TEST_SUMMARY_REFERENCE=/path/to/evidence.jsonl`. Run
@@ -139,6 +147,11 @@ installed PHP task-liveness classifier for ready and leased workflows, with
 the reference clock fixed to each observation. It compares state and reason
 without reference database queries. This is a classifier component check,
 separate from full published-PHP observation and installed native consumers.
+
+`scripts/conformance/server-parity/verify-native-external-summary.php` feeds the
+actual stored history, original timestamps and task metadata to the installed
+PHP condition/signal and liveness classifiers. It checks receipt and application
+as separate states without issuing reference database queries.
 
 Exercise current and selected runs, default and named namespaces, invalid
 current pointers, absent summaries, typed selected context, growing histories,
