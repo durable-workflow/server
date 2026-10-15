@@ -63,14 +63,14 @@ mod activity_results;
 
 #[path = "execution/run_observation.rs"]
 mod run_observation;
+#[path = "execution/run_observation_active_summaries.rs"]
+mod run_observation_active_summaries;
 #[path = "execution/run_observation_conditions.rs"]
 mod run_observation_conditions;
 #[path = "execution/run_observation_signals.rs"]
 mod run_observation_signals;
 #[path = "execution/run_observation_summaries.rs"]
 mod run_observation_summaries;
-#[path = "execution/run_observation_active_summaries.rs"]
-mod run_observation_active_summaries;
 #[path = "execution/run_observation_timers.rs"]
 mod run_observation_timers;
 

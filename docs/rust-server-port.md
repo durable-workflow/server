@@ -188,7 +188,34 @@ Current checkpoint, October 15:
   Active summaries, imported/pruned-history production, configurable budget
   policy, shared differential and installed native/browser acceptance stay open.
 
-Next, qualify the combined observation source and finish active native summary and
+- The next summary component commits workflow-task liveness after all mutations
+  in the owning transaction. Claims and lease renewal update summaries without
+  adding history; failure and explicit repair preserve the original task/run
+  identities. A failed summary write rolls back the lease and attempt counter.
+  Both initial regressions failed before implementation. The first implementation
+  passes 79 library tests with 18 explicit ignores and all 155 SQLite execution
+  tests. The first MySQL control rejected a test-only year-2099 timestamp;
+  replacing it with the admitted run deadline preserves production behavior and
+  timing budgets. The active classifier covers task-only native histories.
+  Wait families, compatibility/fleet and transport metadata remain unavailable
+  until their classifiers are qualified; the earlier ready summary is removed
+  atomically rather than retained as current liveness. Reads never repair it.
+  Final component `4d3a2468` passes 27 observation controls plus the original-task
+  repair control on SQLite, and four focused controls each on PostgreSQL 17.11
+  and MySQL 8.0.46. Published PHP independently matches 28 stored counter
+  snapshots and 12 actual ready/leased task classifications across those three
+  databases, with zero reference queries and the original observation clock.
+  This is not a repeated full 156-test execution run. The earlier full 155-test
+  result remains attached to `17657d04`.
+  Full published-PHP observation, installed native/browser and shared differential
+  qualification remain separate from this component.
+
+The preserved `c0b14c15` [shared run](https://github.com/durable-workflow/server/actions/runs/38806818394)
+is terminal with 12 passing jobs and one failure in the existing-PHP PostgreSQL
+job at the published-query comparison step. The assertion and cause remain
+unknown. The component checks above do not explain or replace that result.
+
+Next, qualify the combined observation source and finish active wait-summary and
 remaining wait production. Independent retained-artifact
 reviews remain incomplete. Native Waterline acceptance then needs
 qualified discovery, followed by the same

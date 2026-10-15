@@ -133,6 +133,13 @@ the actual installed `HistoryBudget::forRun` event, byte and fan-out counters
 without querying a reference database. This checks stored counters, separately
 from installed SDK/browser acceptance and shared differential qualification.
 
+The same synthetic output includes stored open-task metadata.
+`scripts/conformance/server-parity/verify-native-task-summary.php` invokes the
+installed PHP task-liveness classifier for ready and leased workflows, with
+the reference clock fixed to each observation. It compares state and reason
+without reference database queries. This is a classifier component check,
+separate from full published-PHP observation and installed native consumers.
+
 Exercise current and selected runs, default and named namespaces, invalid
 current pointers, absent summaries, typed selected context, growing histories,
 pruned details, and bounded relationship/wait/failure collections. Separate
