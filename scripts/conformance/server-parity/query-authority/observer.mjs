@@ -20,19 +20,39 @@ function record(event, details = {}) {
 }
 function exchange(method, path, headers, body = Buffer.alloc(0)) {
   return new Promise((resolve, reject) => {
+    const started = Date.now() / 1000;
+    let response, size = 0, timedOut = false, settled = false;
+    const fail = error => {
+      if (settled) return;
+      settled = true;
+      error.observerExchange = {
+        phase: response ? 'response' : 'request', started_at: started, failed_at: Date.now() / 1000,
+        headers_received: response !== undefined, status: response?.statusCode ?? null, received_bytes: size,
+        response_complete: response?.complete ?? null, response_aborted: response?.aborted ?? null,
+        timed_out: timedOut, error_name: String(error.name ?? '').slice(0, 64),
+        error_code: typeof error.code === 'string' ? error.code.slice(0, 64) : null,
+      };
+      reject(error);
+    };
     const request = http.request(new URL(path, upstream), {method, headers: {...headers, host: upstream.host}}, incoming => {
+      response = incoming;
       const chunks = [];
-      let size = 0;
       incoming.on('data', chunk => {
         size += chunk.length;
         if (size > 2 * 1024 * 1024) incoming.destroy(Error('Observer response limit exceeded'));
         else chunks.push(chunk);
       });
-      incoming.on('error', reject);
-      incoming.on('end', () => resolve({status: incoming.statusCode, headers: incoming.headers, bytes: Buffer.concat(chunks)}));
+      incoming.on('error', fail);
+      incoming.on('end', () => {
+        settled = true;
+        resolve({status: incoming.statusCode, headers: incoming.headers, bytes: Buffer.concat(chunks)});
+      });
     });
-    request.setTimeout(35_000, () => request.destroy(Error('Observer exchange timeout')));
-    request.on('error', reject);
+    request.setTimeout(35_000, () => {
+      timedOut = true;
+      request.destroy(Error('Observer exchange timeout'));
+    });
+    request.on('error', fail);
     request.end(body);
   });
 }
@@ -131,7 +151,10 @@ const server = http.createServer(async (request, response) => {
     response.writeHead(reply.status, reply.headers);
     response.end(reply.bytes);
   } catch (error) {
-    const details = {method: request.method, path, message: String(error).slice(0, 1024)};
+    const details = {method: request.method, path, message: String(error).slice(0, 1024),
+      ...(error.observerExchange ? {upstream: error.observerExchange} : {}),
+      downstream: {request_complete: request.complete, request_aborted: request.aborted,
+        response_destroyed: response.destroyed, response_ended: response.writableEnded}};
     record('observer-error', details);
     console.error(JSON.stringify({event: 'observer-error', ...details}));
     response.destroy(error);

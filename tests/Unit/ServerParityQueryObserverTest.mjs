@@ -8,12 +8,13 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
-test('observer preserves response bytes and refuses invalid dates and microsecond authority changes', {timeout: 5000}, async t => {
+test('observer preserves bytes and diagnoses refused dates and truncated upstream responses', {timeout: 5000}, async t => {
   const directory = mkdtempSync(join(tmpdir(), 'query-observer-'));
   t.after(() => rmSync(directory, {recursive: true, force: true}));
   const journal = join(directory, 'journal.jsonl');
   const date = '2026-02-28';
   let overrides = {};
+  let truncated = false;
   let original;
   const upstream = http.createServer(async (request, response) => {
     for await (const _chunk of request) { /* Drain this constructed poll body. */ }
@@ -27,7 +28,9 @@ test('observer preserves response bytes and refuses invalid dates and microsecon
       server_time: date + 'T00:00:00.123456Z',
       ...overrides,
     }});
-    response.writeHead(200, {'content-type': 'application/json'});
+    response.writeHead(200, {'content-type': 'application/json',
+      ...(truncated ? {'content-length': Buffer.byteLength(original) + 32,
+        connection: 'close', 'x-private-fixture': 'never-retain-this-header'} : {})});
     response.end(original);
   });
   upstream.listen(0, '127.0.0.1');
@@ -53,7 +56,8 @@ test('observer preserves response bytes and refuses invalid dates and microsecon
   assert.equal(ready.ready, true);
   const poll = () => new Promise((resolve, reject) => {
     const request = http.request(`http://127.0.0.1:${ready.port ?? 8080}/api/worker/query-tasks/poll`, {
-      method: 'POST', headers: {'X-Namespace': 'isolated', 'X-Durable-Workflow-Protocol-Version': '1.20'},
+      method: 'POST', headers: {'X-Namespace': 'isolated', 'X-Durable-Workflow-Protocol-Version': '1.20',
+        authorization: 'Bearer never-retain-this-token'},
     }, response => {
       let bytes = '';
       response.on('data', chunk => { bytes += chunk; });
@@ -80,4 +84,22 @@ test('observer preserves response bytes and refuses invalid dates and microsecon
   assert.equal(events.filter(event => event.event === 'delivered').length, 1);
   assert.equal(events.filter(event => event.event === 'observer-error').length, invalid.length);
   assert.match(events.find(event => event.event === 'observer-error').message, /query_admitted_at/);
+  overrides = {};
+  truncated = true;
+  await assert.rejects(poll(), /socket hang up|reset|aborted/i);
+  const failure = readFileSync(journal, 'utf8').trim().split('\n').map(JSON.parse).at(-1);
+  assert.equal(failure.event, 'observer-error');
+  assert.deepEqual(failure.upstream, {
+    phase: 'response', started_at: failure.upstream.started_at, failed_at: failure.upstream.failed_at,
+    headers_received: true, status: 200, received_bytes: Buffer.byteLength(original),
+    response_complete: false, response_aborted: true, timed_out: false,
+    error_name: 'Error', error_code: 'ECONNRESET',
+  });
+  assert.ok(failure.upstream.failed_at >= failure.upstream.started_at);
+  assert.equal(failure.downstream.request_complete, true);
+  assert.equal(failure.downstream.request_aborted, false);
+  assert.equal(failure.downstream.response_destroyed, false);
+  assert.equal(failure.downstream.response_ended, false);
+  assert.ok(JSON.stringify(failure).length < 2048);
+  assert.doesNotMatch(readFileSync(journal, 'utf8') + diagnostic, /never-retain-this/);
 });
