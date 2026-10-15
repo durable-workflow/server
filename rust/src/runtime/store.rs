@@ -1714,12 +1714,20 @@ where
                     None,
                 )
                 .await?;
-                Self::create_task(
+                let activity_task = Self::create_task(
                     &mut tx,
                     &run_id,
                     &queue,
                     "activity",
                     json!({"activity_execution_id": activity_id}),
+                )
+                .await?;
+                Self::create_activity_wait(
+                    &mut tx,
+                    &run_id,
+                    &activity_id,
+                    &activity_task,
+                    scheduled_at,
                 )
                 .await?;
                 Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1")
@@ -2344,8 +2352,10 @@ where
             .bind(run_id)
             .execute(&mut **tx)
             .await?;
+        let recorded_at = recorded_at.unwrap_or_else(now);
         Self::query("INSERT INTO workflow_history_events(id,workflow_run_id,sequence,event_type,payload,workflow_task_id,workflow_command_id,recorded_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
-        .bind(id()).bind(run_id).bind(sequence).bind(event_type).bind(DB::document(&payload)).bind(task_id).bind(command_id).bind(DB::bind_time(recorded_at.unwrap_or_else(now))).execute(&mut **tx).await?;
+        .bind(id()).bind(run_id).bind(sequence).bind(event_type).bind(DB::document(&payload)).bind(task_id).bind(command_id).bind(DB::bind_time(recorded_at)).execute(&mut **tx).await?;
+        Self::project_activity_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
         Ok(())
     }
 

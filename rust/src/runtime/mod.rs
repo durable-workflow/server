@@ -7,6 +7,7 @@ mod activity_deadlines;
 mod activity_failures;
 mod activity_heartbeats;
 mod activity_results;
+mod activity_wait_projection;
 mod backend;
 mod cancellation;
 mod children;

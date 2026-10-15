@@ -1,5 +1,250 @@
 use super::*;
 
+#[tokio::test]
+async fn run_observation_projects_actual_activity_retry_and_terminal_transitions() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    namespaces::create(&app, "projected").await;
+    for namespace in ["default", "projected"] {
+        let workflow = format!("projected-{namespace}");
+        let registered = namespaces::scoped(&app, namespace, "POST", "/api/worker/register",
+            json!({"worker_id":"projection-worker","task_queue":"test","runtime":"php",
+                "supported_workflow_types":["echo"],"supported_activity_types":["observed-activity"]})).await;
+        assert_eq!(registered.0, StatusCode::CREATED, "{}", registered.1);
+        let started = namespaces::start_scoped(&app, namespace, &workflow).await;
+        let path = format!(
+            "/api/workflows/{workflow}/runs/{}/observation",
+            started["run_id"].as_str().unwrap()
+        );
+        let task = projection_poll(&app, namespace, "workflow").await;
+        let completion_path = format!(
+            "/api/worker/workflow-tasks/{}/complete",
+            task["task_id"].as_str().unwrap()
+        );
+        let body = completion(
+            &task,
+            json!([{"type":"schedule_activity","activity_type":"observed-activity",
+            "arguments":envelope(Payload::Array(vec![Payload::Long(9007199254740993)])),
+            "retry_policy":{"max_attempts":2,"backoff_seconds":[]},
+            "start_to_close_timeout":120,"schedule_to_close_timeout":600}]),
+        );
+        let scheduled =
+            namespaces::scoped(&app, namespace, "POST", &completion_path, body.clone()).await;
+        assert_eq!(scheduled.0, StatusCode::OK, "{}", scheduled.1);
+        let read = observe(&app, namespace, &path).await;
+        assert_eq!(read.0, StatusCode::OK, "{}", read.1);
+        assert_eq!(read.1["current_waits"]["returned_count"], 1, "{}", read.1);
+        assert_eq!(read.1["summary_state"], "unavailable");
+        let wait = read.1["current_waits"]["waits"][0].clone();
+        assert_eq!(wait["kind"], "activity");
+        assert_eq!(wait["task_status"], "ready");
+        assert_eq!(wait["task_metadata_state"], "available");
+        let duplicate = namespaces::scoped(&app, namespace, "POST", &completion_path, body).await;
+        assert_eq!(duplicate.0, StatusCode::OK, "{}", duplicate.1);
+        assert_eq!(
+            observe(&app, namespace, &path).await.1["current_waits"]["returned_count"],
+            1
+        );
+        let first = projection_poll(&app, namespace, "activity").await;
+        assert_eq!(wait["task_id"], first["task_id"]);
+        let heartbeat = namespaces::scoped(&app, namespace, "POST",
+            &format!("/api/worker/activity-tasks/{}/heartbeat", first["task_id"].as_str().unwrap()),
+            json!({"lease_owner":first["lease_owner"],"activity_attempt_id":first["activity_attempt_id"],
+                "message":"日本語 λ","current":1,"total":2,"unit":"items"})).await;
+        assert_eq!(heartbeat.0, StatusCode::OK, "{}", heartbeat.1);
+        let claimed = observe(&app, namespace, &path).await;
+        let claimed_wait = &claimed.1["current_waits"]["waits"][0];
+        assert_eq!(claimed_wait["id"], wait["id"]);
+        assert_eq!(claimed_wait["attempt_id"], first["activity_attempt_id"]);
+        assert_eq!(claimed_wait["task_status"], "leased");
+        let history_path = format!(
+            "/api/workflows/{workflow}/runs/{}/history",
+            started["run_id"].as_str().unwrap()
+        );
+        let before_read =
+            namespaces::scoped(&app, namespace, "GET", &history_path, Value::Null).await;
+        assert_eq!(observe(&app, namespace, &path).await.0, StatusCode::OK);
+        assert_eq!(
+            namespaces::scoped(&app, namespace, "GET", &history_path, Value::Null).await,
+            before_read
+        );
+        let failed = namespaces::scoped(&app, namespace, "POST",
+            &format!("/api/worker/activity-tasks/{}/fail", first["task_id"].as_str().unwrap()),
+            json!({"lease_owner":first["lease_owner"],"activity_attempt_id":first["activity_attempt_id"],
+                "failure":{"type":"RuntimeException","message":"retry 日本語 λ","non_retryable":false}})).await;
+        assert_eq!(failed.0, StatusCode::OK, "{}", failed.1);
+        let retry_read = observe(&app, namespace, &path).await;
+        assert_eq!(retry_read.1["current_waits"]["returned_count"], 1);
+        let retry_wait = &retry_read.1["current_waits"]["waits"][0];
+        assert_eq!(retry_wait["id"], wait["id"]);
+        assert_eq!(retry_wait["kind"], "activity_retry");
+        assert_eq!(retry_wait["attempt_number"], 2);
+        assert_eq!(retry_wait["task_id"], failed.1["next_task_id"]);
+        assert_ne!(retry_wait["task_id"], wait["task_id"]);
+        let cold = database.open().await.unwrap();
+        let cold_read = observe(&router(cold.clone()), namespace, &path).await;
+        assert_eq!(
+            cold_read.1["current_waits"]["waits"],
+            retry_read.1["current_waits"]["waits"]
+        );
+        cold.close().await;
+        let retry = projection_poll(&app, namespace, "activity").await;
+        let action = if namespace == "default" {
+            "complete"
+        } else {
+            "fail"
+        };
+        let mut terminal = json!({"lease_owner":retry["lease_owner"],"activity_attempt_id":retry["activity_attempt_id"]});
+        if action == "complete" {
+            terminal["result"] = envelope(Payload::Null);
+        } else {
+            terminal["failure"] =
+                json!({"type":"RuntimeException","message":"terminal λ","non_retryable":true});
+        }
+        let terminal_path = format!(
+            "/api/worker/activity-tasks/{}/{action}",
+            retry["task_id"].as_str().unwrap()
+        );
+        let closed =
+            namespaces::scoped(&app, namespace, "POST", &terminal_path, terminal.clone()).await;
+        assert_eq!(closed.0, StatusCode::OK, "{}", closed.1);
+        assert_eq!(
+            observe(&app, namespace, &path).await.1["current_waits"]["returned_count"],
+            0
+        );
+        let duplicate = namespaces::scoped(&app, namespace, "POST", &terminal_path, terminal).await;
+        assert_eq!(duplicate.0, StatusCode::OK, "{}", duplicate.1);
+        assert_eq!(
+            observe(&app, namespace, &path).await.1["current_waits"]["returned_count"],
+            0
+        );
+        let other = if namespace == "default" {
+            "projected"
+        } else {
+            "default"
+        };
+        assert_eq!(observe(&app, other, &path).await.0, StatusCode::NOT_FOUND);
+    }
+    runtime.close().await;
+    database.remove().await;
+}
+
+async fn projection_poll(app: &Router, namespace: &str, kind: &str) -> Value {
+    let polled = namespaces::scoped(
+        app,
+        namespace,
+        "POST",
+        &format!("/api/worker/{kind}-tasks/poll"),
+        json!({"worker_id":"projection-worker","task_queue":"test","timeout_seconds":0}),
+    )
+    .await;
+    assert_eq!(polled.0, StatusCode::OK, "{}", polled.1);
+    assert!(polled.1["task"].is_object(), "{}", polled.1);
+    polled.1["task"].clone()
+}
+
+#[tokio::test]
+async fn run_observation_activity_projection_failure_rolls_back_sqlite_transition() {
+    let database = TestDatabase::Sqlite(tempfile::tempdir().unwrap());
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(
+        &app,
+        "projection-rollback",
+        json!(["echo"]),
+        json!(["observed-activity"]),
+    )
+    .await;
+    let started = start(&app, "projection-rollback").await;
+    let task = poll(&app, "projection-rollback", "workflow").await;
+    let scheduled = finish_task(
+        &app,
+        &task,
+        json!([{"type":"schedule_activity","activity_type":"observed-activity",
+        "arguments":envelope(Payload::Array(vec![]))}]),
+    )
+    .await;
+    assert_eq!(scheduled.0, StatusCode::OK, "{}", scheduled.1);
+    let activity = poll(&app, "projection-rollback", "activity").await;
+    let path = format!(
+        "/api/workflows/projection-rollback/runs/{}/observation",
+        started["run_id"].as_str().unwrap()
+    );
+    let before = observe(&app, "default", &path).await;
+    let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    database.execute("CREATE TRIGGER reject_wait_update BEFORE UPDATE ON workflow_run_waits BEGIN SELECT RAISE(ABORT, 'projection write failed'); END").await;
+    let body = json!({"lease_owner":activity["lease_owner"],"activity_attempt_id":activity["activity_attempt_id"],"result":envelope(Payload::Null)});
+    let terminal_path = format!(
+        "/api/worker/activity-tasks/{}/complete",
+        activity["task_id"].as_str().unwrap()
+    );
+    let refused = request(&app, "POST", &terminal_path, body.clone()).await;
+    assert_eq!(refused.0, StatusCode::SERVICE_UNAVAILABLE, "{}", refused.1);
+    assert_eq!(
+        run_history(&app, &started["workflow_id"], &started["run_id"]).await,
+        history
+    );
+    assert_eq!(
+        observe(&app, "default", &path).await.1["current_waits"]["waits"],
+        before.1["current_waits"]["waits"]
+    );
+    database.execute("DROP TRIGGER reject_wait_update").await;
+    let completed = request(&app, "POST", &terminal_path, body).await;
+    assert_eq!(completed.0, StatusCode::OK, "{}", completed.1);
+    assert_eq!(completed.1["recorded"], true);
+    assert_eq!(
+        observe(&app, "default", &path).await.1["current_waits"]["returned_count"],
+        0
+    );
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn run_observation_activity_events_do_not_repair_a_missing_wait() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(
+        &app,
+        "projection-missing",
+        json!(["echo"]),
+        json!(["observed-activity"]),
+    )
+    .await;
+    let started = start(&app, "projection-missing").await;
+    let task = poll(&app, "projection-missing", "workflow").await;
+    let scheduled = finish_task(&app, &task, json!([{"type":"schedule_activity","activity_type":"observed-activity",
+        "arguments":envelope(Payload::Array(vec![])),"retry_policy":{"max_attempts":2,"backoff_seconds":[]}}])).await;
+    assert_eq!(scheduled.0, StatusCode::OK, "{}", scheduled.1);
+    let path = format!(
+        "/api/workflows/projection-missing/runs/{}/observation",
+        started["run_id"].as_str().unwrap()
+    );
+    assert_eq!(
+        observe(&app, "default", &path).await.1["current_waits"]["returned_count"],
+        1
+    );
+    database.execute("DELETE FROM workflow_run_waits").await;
+    let activity = poll(&app, "projection-missing", "activity").await;
+    let failed = request(&app, "POST", &format!("/api/worker/activity-tasks/{}/fail", activity["task_id"].as_str().unwrap()),
+        json!({"lease_owner":activity["lease_owner"],"activity_attempt_id":activity["activity_attempt_id"],
+            "failure":{"type":"RuntimeException","message":"retry without projection","non_retryable":false}})).await;
+    assert_eq!(failed.0, StatusCode::OK, "{}", failed.1);
+    let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    let read = observe(&app, "default", &path).await;
+    assert_eq!(read.0, StatusCode::OK, "{}", read.1);
+    assert_eq!(read.1["current_waits"]["state"], "unavailable");
+    assert_eq!(read.1["current_waits"]["returned_count"], 0);
+    assert_eq!(
+        run_history(&app, &started["workflow_id"], &started["run_id"]).await,
+        history
+    );
+    runtime.close().await;
+    database.remove().await;
+}
+
 async fn observe(app: &Router, namespace: &str, path: &str) -> (StatusCode, Value) {
     let response = app
         .clone()
@@ -465,8 +710,9 @@ async fn run_observation_waits_use_matching_live_retry_metadata_and_preserve_fai
         json!({"lease_owner":activity["lease_owner"],"activity_attempt_id":activity["activity_attempt_id"],
             "failure":{"type":"RuntimeException","message":"observe retained retry","non_retryable":false}})).await;
     assert_eq!(failed.0, StatusCode::OK, "{}", failed.1);
-    // The failure and next task are produced by execution. Only the missing
-    // wait projection is supplied as a retained PHP-style row for this control.
+    // Replace the generated row with an older, independently retained identity.
+    // This control deliberately exercises a mismatched/stale projection.
+    database.execute("DELETE FROM workflow_run_waits").await;
     database.execute("INSERT INTO workflow_run_waits(id,workflow_run_id,workflow_instance_id,wait_id,position,kind,status,summary,target_type,resume_source_kind,resume_source_id,task_id,history_authority) SELECT 'observed-retry-wait',a.workflow_run_id,r.workflow_instance_id,'observed-retry',0,'activity','open','activity retry',a.activity_type,'activity',a.id,t.id,'typed_history' FROM activity_executions a JOIN workflow_runs r ON r.id=a.workflow_run_id JOIN workflow_tasks t ON t.workflow_run_id=a.workflow_run_id AND t.task_type='activity' AND t.status='ready'").await;
     let path = format!(
         "/api/workflows/observation-retry/runs/{}/observation",

@@ -86,6 +86,19 @@ Current checkpoint, October 15:
   original began. Hosted qualification, full differential reads, projection
   production and native browser acceptance remain open. PHP-issued cursor
   compatibility remains an explicit migration gate.
+- The next observation slice produces activity wait rows in the authored
+  scheduling transaction. Typed claim, retry, completion, failure, timeout and
+  cancellation events update the same wait identity; retry follows its new
+  task. Reads and later events do not recreate a missing wait. The initial
+  HTTP regression failed with zero waits after a real schedule. The correction
+  passes 136 SQLite execution tests, including projection-write rollback, and
+  then eight focused SQLite controls after adding the absent-projection case.
+  Seven focused controls also pass on PostgreSQL 17 and MySQL 8.0; the separate
+  forced-write rollback control is SQLite-specific. These checks cover actual
+  retry/heartbeat/terminal execution, duplicate requests, cold reads, namespace
+  refusal and unchanged history around observation. This source is not yet
+  qualified through shared fixtures or an installed native artifact. Summary
+  production, other wait families and complete observation parity remain open.
 
 Next, finish merged-main artifact readback and review the metadata candidate's
 current merge tree. Qualify bounded observation against published PHP and
