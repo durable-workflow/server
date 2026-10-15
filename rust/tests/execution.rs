@@ -72,6 +72,9 @@ mod query_arguments;
 #[path = "execution/query_authority.rs"]
 mod query_authority;
 
+#[path = "execution/cross_kind_poll.rs"]
+mod cross_kind_poll;
+
 #[path = "execution/external_payloads.rs"]
 mod external_payloads;
 

@@ -93,10 +93,17 @@ The current integration order is:
   open, including the absent native DELETE route. Worker listing, named timer
   authoring and termination are also outside this query slice. See the
   [exact installed checkpoint](https://github.com/durable-workflow/server/issues/433#issuecomment-6184509976).
+  The query integration also preserves #455's opt-in poll hints and #458's
+  completion uploads. Hint readiness now reads the same immutable UTC6 query
+  fields as execution, while the held query poll keeps its original registration
+  proof. This combined source needs its own qualification; component passes do
+  not qualify the merge.
 
 Full transport discovery stays unadvertised. Complete batch workflow semantics,
 memo/query reference ingress, upload allowances, automatic result policy, S3,
 cleanup/backup/restart and full database/consumer qualification remain open.
+Current PHP 2.8 query-authority and activity-result-inspection parity also
+require separate native qualification.
 Broader runtime/operational parity, safe sequential PHP database takeover,
 matched performance measurements and release/cutover preparation remain #325
 requirements. No native release or deployment is qualified.
@@ -355,8 +362,17 @@ exact outputs and zero task repairs. They do not qualify a performance gain:
 PHP has two idle API timeouts and a forced scheduler shutdown, while native
 workflow tails vary. The original idle reader also rejects protocol-permitted
 `timeout` replies. Separate reader and scheduler controls pass, with original
-failures preserved. Next diagnose native tails with a bounded published-worker
-control, then repeat the corrected matched profile before a gain claim.
+failures preserved. Separate installed-worker controls identify a native poll
+wake gap: published PHP interrupts an opted-in activity/query wait when new
+workflow work arrives, while the native baseline consumes the remaining waits.
+This does not establish the cause of every earlier tail. The
+[scoped correction in #455](../scripts/conformance/server-parity/CROSS-KIND-POLL-WAKE.md)
+keeps task/lease authority in ordinary claims. Its five focused HTTP test groups
+pass locally on SQLite, PostgreSQL 17 and MySQL 8.4; the unchanged native baseline
+fails all three positive groups. Installed-worker activity/query controls also
+pass on PHP and native SQLite with the original workflow/run identities.
+Six-cell qualification of the new combined tree remains required before
+repeating the corrected matched profile or claiming a gain.
 
 The #444 original MySQL 8.4 matrix on `95cd4efa` exposed a native activity
 clock disagreement: a retry was recorded 101 ms before its durable

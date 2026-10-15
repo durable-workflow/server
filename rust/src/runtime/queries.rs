@@ -348,6 +348,11 @@ where
         else {
             return Ok(poll_result(None, "stale_worker_registration"));
         };
+        let mut cross_kind = if timeout > 0 {
+            self.poll_wake_snapshot(&body, "query").await?
+        } else {
+            None
+        };
         loop {
             let wake = self.wake.notified();
             match self.claim_query(&body, config, &proof).await? {
@@ -359,6 +364,15 @@ where
             }
             if tokio::time::Instant::now() >= deadline {
                 return Ok(poll_result(None, "timeout"));
+            }
+            if self
+                .poll_queue_changed(&body, "query", &mut cross_kind)
+                .await?
+                && tokio::time::Instant::now() < deadline
+            {
+                return Ok(
+                    json!({"task":null,"poll_status":"task_queue_changed","server_capabilities":super::store::capabilities()}),
+                );
             }
             tokio::select! { _ = wake => {}, _ = tokio::time::sleep(Duration::from_millis(50)) => {} }
         }

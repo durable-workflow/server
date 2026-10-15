@@ -402,6 +402,7 @@ jobs:
             -v "$PWD:/source:ro" -w /source "$image" \
             scripts/conformance/server-parity/mysql-schema.php compare php_ref native_ref > parity-evidence/catalog-comparison.json
       - name: Compare three runtimes, recover killed native nodes and refuse published PHP takeover
+        id: prepare_runtime_comparison
         run: |
           set -euo pipefail
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
@@ -627,7 +628,7 @@ jobs:
       - name: Compare separate configured role-token cohort
         run: bash scripts/conformance/server-parity/role-profile.sh mysql
       - name: Compare corrected markers, ranges, clocks and activity expiry
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.prepare_runtime_comparison.outcome == 'success' }}
         # The preceding process-loss case deliberately kills native-a.
         run: bash scripts/conformance/server-parity/corrected-marker-shared-profile.sh mysql http://parity-native-b:8080
       - name: Retire corrected cohort resources
@@ -847,6 +848,7 @@ jobs:
             -v "$PWD:/source:ro" -w /source "$image" \
             scripts/conformance/server-parity/postgres-schema.php compare php_ref native_ref > parity-evidence/catalog-comparison.json
       - name: Compare three runtimes, recover killed native nodes and refuse published PHP takeover
+        id: prepare_runtime_comparison
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
         run: |
@@ -1075,7 +1077,7 @@ jobs:
           POSTGRES_IMAGE: ${{ matrix.image }}
         run: bash scripts/conformance/server-parity/role-profile.sh pgsql
       - name: Compare corrected markers, ranges, clocks and activity expiry
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.prepare_runtime_comparison.outcome == 'success' }}
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
         # The preceding process-loss case deliberately kills native-a.
@@ -1292,6 +1294,7 @@ jobs:
             cargo run --locked --offline --example codec-fixtures -- \
             ../tests/Fixtures/ServerParity/Codec/v1.json /evidence/php-codec.json > parity-evidence/cross-decode.json
       - name: Execute and compare Rust, published PHP and embedded fixtures
+        id: prepare_runtime_comparison
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: |
@@ -1511,7 +1514,7 @@ jobs:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: bash scripts/conformance/server-parity/role-profile.sh sqlite
       - name: Compare corrected markers, ranges, clocks and activity expiry
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.prepare_runtime_comparison.outcome == 'success' }}
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: bash scripts/conformance/server-parity/corrected-marker-shared-profile.sh sqlite http://parity-recovered:8080

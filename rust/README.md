@@ -294,8 +294,9 @@ The development external-payload routes upload/fetch verified encoded bytes at
 `/api/external-payloads/v1`, with authenticated namespace binding, local policy,
 object/byte quota admission and an independent request size/timeout bound.
 `PUT /api/namespaces/{namespace}/external-storage` is admin-only and currently
-supports the local driver. Completion-upload allowance headers refuse until
-their original task/lease authority is implemented. Full transport discovery
+supports the local driver. Version-1 activity-result completion uploads require
+the original task/attempt/owner and preserve a bounded allowance without renewing
+the lease. Workflow/query/prepared completion contexts remain refused. Full transport discovery
 stays unadvertised pending real workflow resolution/retention, cleanup/backup,
 restart, all database families and S3 qualification. The actual byte probe is
 `scripts/conformance/server-parity/external-payload-http.py`; run it only against
@@ -311,8 +312,10 @@ result-upload/public task-completion recipe and separate cold SDK reader are in
 `scripts/conformance/server-parity/external-result-client.php`. Its
 `activity-author` and `activity-reader` phases use explicit activity-result HTTP
 completion and a separate installed SDK workflow-history reader. These recipes
-do not establish automatic SDK upload discovery. Memo/query ingress,
-completion-upload allowances and automatic external result policy remain
+do not establish automatic SDK upload discovery. The separate raw HTTP recipe
+`scripts/conformance/server-parity/activity-completion-upload-probe.php` covers
+the activity completion-upload context, including real UTF-8 JSON. Memo/query
+ingress, broader completion contexts and automatic external result policy remain
 unqualified. Apache's schema-aware validation patch is recorded in
 `vendor/apache-avro/PATCHES.md`.
 
