@@ -262,13 +262,9 @@ try {
         }
         $drained = pcntl_wifexited($status) && pcntl_wexitstatus($status) === 0;
     }
-    try {
-        if ($handle !== null && $active) {
-            $client->terminateWorkflow($workflowId, 'query authority qualification complete', $handle->selectedRunId);
-        }
-    } finally {
-        unlink($journal);
-    }
+    // The caller destroys this profile's isolated database. Query authority
+    // does not depend on a separate workflow-termination capability.
+    unlink($journal);
     queryCheck($pid > 0 && $drained, 'The real Worker did not exit zero and deregister within the original observation.');
 }
 queryCheck(hrtime(true) / 1e9 < $until, 'Cleanup exceeded the original observation budget.');

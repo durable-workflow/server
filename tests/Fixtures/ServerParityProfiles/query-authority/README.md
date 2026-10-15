@@ -1,9 +1,11 @@
 # Current query authority profile
 
 This separate profile uses normally installed PHP SDK 2.4.2 and published Server
-2.8.0. It does not replace the frozen query actors. The four published PHP cases
-pass locally on isolated MySQL 8.4. Native comparison and all-six qualification
-remain pending. Main does not advertise native query authority. The unpublished
+2.8.0. It does not replace the frozen query actors. Four completed-workflow cases
+pass on both targets using separate MySQL 8.4 databases. The earlier active
+native original failed during termination cleanup and remains failed. The
+revised five-case profile and all-six qualification remain pending.
+Main does not advertise native query authority. The unpublished
 candidate advertises it for installed-consumer qualification before promotion.
 
 The owning contract is [Server #433](https://github.com/durable-workflow/server/issues/433).
@@ -18,16 +20,26 @@ where `TARGET` is `php` or `rust`. Set a unique `RESOURCE_SCOPE` and the isolate
 token before invoking it. It refuses an existing case output instead of
 overwriting a failed original.
 
+The hosted entry point `query-authority-cohort.sh BACKEND` creates separate PHP
+and native databases, installs the locked SDK normally, and runs all five cases
+against each target. `BACKEND` is `sqlite`, `mysql` or `pgsql`; the existing six
+database jobs provide their pinned database images and isolated network. It
+reuses the job's compiled native binary. Its separate always-step invokes
+`query-authority-cleanup.sh BACKEND`, which checks ownership, stops both APIs,
+records their actual exit states, and removes the two databases and SDK state.
+The small comparison keeps original run identities and history hashes; raw
+query snapshots are excluded from retained job summaries.
+
 Both services must use separate disposable databases, shared process-visible
 polling caches and `DW_QUERY_TASK_TIMEOUT=4`. The caller owns bootstrap,
 readiness and cleanup. Run each declared case once against each target. Every
 original has one unchanged 30-second observation budget covering setup, query,
 Worker drain and deregistration. The caller must also bound container lifetime
 and remove its resources after success or failure.
-The Worker and workflow stop within each original budget. The caller destroys
-the entire isolated database afterward, including its task namespaces. This
-profile does not qualify namespace DELETE, which is still absent in native
-source. It makes the same cleanup calls on both targets.
+The Worker stops within each original budget. The caller destroys the entire
+isolated database afterward, including its active workflow and task namespaces.
+This profile does not qualify workflow termination or namespace DELETE, which
+are still absent in native source. It makes the same cleanup calls on both targets.
 Startup waits for the installed Worker's `worker.registered` diagnostic, emitted
 after its actual registration acknowledgement. It does not depend on worker
 listing, which is also outside the current native slice.
@@ -45,7 +57,9 @@ renewal. Protocol 1.19 makes no status request. Every query preserves the exact
 workflow history and the Worker must exit zero.
 The raw delivery is retained. PHP may omit its namespace member, as supported
 by the published SDK, in which case the authenticated Client namespace applies.
-An explicit conflicting namespace still fails.
+An explicit conflicting namespace still fails. The earlier failed originals and
+the exact four-case match are recorded in
+[the owning query checkpoint](https://github.com/durable-workflow/server/issues/433#issuecomment-6184509976).
 
 External query loading, Python/Rust consumers, remaining route/pressure and
 continuation boundaries, all-six integration and capability qualification remain

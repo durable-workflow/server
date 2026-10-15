@@ -49,9 +49,13 @@ The current integration order is:
 - [#458](https://github.com/durable-workflow/server/pull/458): completion-bound
   local activity-result uploads, including exact PHP Unicode context hashing,
   original live authority and durable allowances. Combined head `93368d2ae`
-  includes #455 and passes its own 13-job, six-database matrix. Promotion awaits
-  the coordinated PHP dependency window and a fresh combined-tree qualification.
-  Earlier component passes are not carried across that integration.
+  includes #455 and passes its own 13-job, six-database matrix. The later
+  `3a268200` incorporates qualified PHP `ed803519`, but its PostgreSQL 17 cell
+  fails the fresh upload capacity control under the preceding stalled request's
+  100 ms test policy. The next fixture revision keeps that stalled deadline and
+  shared semaphore while giving the separate fresh upload normal policy.
+  Promotion needs fresh combined-tree qualification. Earlier passes are not
+  carried across that integration.
 - [#460](https://github.com/durable-workflow/server/pull/460): read-only PHP
   catalog/data inventory. Head `4459140cd` adds actual FIFO/directory refusal
   and a separately budgeted fresh-upload capacity control. Its matrix is
@@ -73,15 +77,22 @@ The current integration order is:
   HTTP controls pass on SQLite, MySQL 8.4 and PostgreSQL 17 before and after
   expiry, preserving conflicting-payload refusal and the original receipt's
   bytes and expiry. The separate SQLite codec-and-writer counterfactual fails
-  the prior implementation and passes the correction. Continuation expiry,
-  remaining pressure boundaries and combined ancestry remain next. A separate
-  published Server 2.8.0 / PHP SDK 2.4.2 profile now passes four actual PHP
-  controls on MySQL 8.4: timely 1.20/1.19, held poll reply and late synchronous
-  handler. It preserves the original clocks and history, with zero late
-  submissions. Native comparison and all-six integration remain pending. Main
+  the prior implementation and passes the correction. Genuine query/continuation
+  controls now pass on SQLite, MySQL 8.4 and PostgreSQL 17: live original queries
+  still block continuation, while expired retained snapshots do not.
+  A separate published Server 2.8.0 / PHP SDK 2.4.2 profile matches four actual
+  named-namespace completed-workflow controls on PHP and native MySQL 8.4:
+  timely 1.20/1.19, held poll reply and late synchronous handler. Original clocks
+  and histories survive, with zero late submissions and eight zero-exit Workers.
+  Its fifth active native original remains failed at unsupported termination
+  cleanup. The revised query-only observer delegates database retirement to
+  the caller; its new five-case profile and all-six execution remain pending.
+  Earlier worker-list and named-timer originals remain failed. Main
   keeps `query_task_authority=false`; the unpublished candidate advertises it
   for actual SDK qualification before promotion. Full namespace CRUD remains
-  open, including the absent native DELETE route.
+  open, including the absent native DELETE route. Worker listing, named timer
+  authoring and termination are also outside this query slice. See the
+  [exact installed checkpoint](https://github.com/durable-workflow/server/issues/433#issuecomment-6184509976).
 
 Full transport discovery stays unadvertised. Complete batch workflow semantics,
 memo/query reference ingress, upload allowances, automatic result policy, S3,
