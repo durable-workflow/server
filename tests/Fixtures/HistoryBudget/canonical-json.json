@@ -1,0 +1,114 @@
+[
+    {
+        "name": "null-root",
+        "event_type": "WorkflowStarted",
+        "payload_json": "null",
+        "canonical_payload": "[]",
+        "history_size_bytes": 17
+    },
+    {
+        "name": "empty-object",
+        "event_type": "WorkflowStarted",
+        "payload_json": "{}",
+        "canonical_payload": "[]",
+        "history_size_bytes": 17
+    },
+    {
+        "name": "empty-array",
+        "event_type": "WorkflowStarted",
+        "payload_json": "[]",
+        "canonical_payload": "[]",
+        "history_size_bytes": 17
+    },
+    {
+        "name": "unicode-slashes-controls",
+        "event_type": "SignalReceived",
+        "payload_json": "{\"message\":\"日本語 λ 😀 / \\t\\r\\n\\b\\f\\u0000\\u000b\\u2028\\u2029\",\"literal\":\"\\\\u2028\"}",
+        "canonical_payload": "{\"message\":\"日本語 λ 😀 / \\t\\r\\n\\b\\f\\u0000\\u000b\\u2028\\u2029\",\"literal\":\"\\\\u2028\"}",
+        "history_size_bytes": 102
+    },
+    {
+        "name": "signed-integers",
+        "event_type": "WorkflowStarted",
+        "payload_json": "{\"values\":[-9223372036854775808,9007199254740993,9223372036854775807]}",
+        "canonical_payload": "{\"values\":[-9223372036854775808,9007199254740993,9223372036854775807]}",
+        "history_size_bytes": 85
+    },
+    {
+        "name": "unsigned-overflow",
+        "event_type": "WorkflowStarted",
+        "payload_json": "{\"values\":[9223372036854775808,18446744073709551615]}",
+        "canonical_payload": "{\"values\":[9.223372036854776e+18,1.8446744073709552e+19]}",
+        "history_size_bytes": 72
+    },
+    {
+        "name": "whole-doubles",
+        "event_type": "WorkflowStarted",
+        "payload_json": "{\"values\":[0.0,-0.0,1.0,-1.0,1000000.0]}",
+        "canonical_payload": "{\"values\":[0,-0,1,-1,1000000]}",
+        "history_size_bytes": 45
+    },
+    {
+        "name": "decimal-thresholds",
+        "event_type": "WorkflowStarted",
+        "payload_json": "{\"values\":[1e-4,1e-5,1e16,1e17,1e20,1e21]}",
+        "canonical_payload": "{\"values\":[0.0001,1.0e-5,10000000000000000,1.0e+17,1.0e+20,1.0e+21]}",
+        "history_size_bytes": 83
+    },
+    {
+        "name": "fractional-exponents",
+        "event_type": "WorkflowStarted",
+        "payload_json": "{\"values\":[1.25e-5,-1.25e-5,1.2345678901234567,1.2345678901234567e17,1.0000000000000002]}",
+        "canonical_payload": "{\"values\":[1.25e-5,-1.25e-5,1.2345678901234567,1.2345678901234566e+17,1.0000000000000002]}",
+        "history_size_bytes": 105
+    },
+    {
+        "name": "double-extremes",
+        "event_type": "WorkflowStarted",
+        "payload_json": "{\"values\":[1.7976931348623157e308,2.2250738585072014e-308,5e-324,-5e-324]}",
+        "canonical_payload": "{\"values\":[1.7976931348623157e+308,2.2250738585072014e-308,5.0e-324,-5.0e-324]}",
+        "history_size_bytes": 94
+    },
+    {
+        "name": "ordered-numeric-object",
+        "event_type": "WorkflowStarted",
+        "payload_json": "{\"0\":\"zero\",\"1\":{\"0\":false,\"1\":null}}",
+        "canonical_payload": "[\"zero\",[false,null]]",
+        "history_size_bytes": 36
+    },
+    {
+        "name": "non-list-numeric-object",
+        "event_type": "WorkflowStarted",
+        "payload_json": "{\"0\":1,\"2\":2}",
+        "canonical_payload": "{\"0\":1,\"2\":2}",
+        "history_size_bytes": 28
+    },
+    {
+        "name": "lexical-numeric-order",
+        "event_type": "WorkflowStarted",
+        "payload_json": "{\"0\":0,\"1\":1,\"10\":10,\"2\":2,\"3\":3,\"4\":4,\"5\":5,\"6\":6,\"7\":7,\"8\":8,\"9\":9}",
+        "canonical_payload": "{\"0\":0,\"1\":1,\"10\":10,\"2\":2,\"3\":3,\"4\":4,\"5\":5,\"6\":6,\"7\":7,\"8\":8,\"9\":9}",
+        "history_size_bytes": 84
+    },
+    {
+        "name": "leading-zero-and-negative-keys",
+        "event_type": "WorkflowStarted",
+        "payload_json": "{\"-1\":1,\"00\":0,\"01\":1}",
+        "canonical_payload": "{\"-1\":1,\"00\":0,\"01\":1}",
+        "history_size_bytes": 37
+    },
+    {
+        "name": "nested-empty-shapes",
+        "event_type": "WorkflowStarted",
+        "payload_json": "{\"array\":[{},[],{\"0\":{}}],\"empty\":{},\"false\":false}",
+        "canonical_payload": "{\"array\":[[],[],[[]]],\"empty\":[],\"false\":false}",
+        "history_size_bytes": 62
+    },
+    {
+        "name": "escaped-keys",
+        "event_type": "WorkflowStarted",
+        "payload_json": "{\"line\\u2028/\\t\":\"value\",\"quote\\\"\\\\\":\"value\"}",
+        "canonical_payload": "{\"line\\u2028/\\t\":\"value\",\"quote\\\"\\\\\":\"value\"}",
+        "history_size_bytes": 60
+    }
+]
