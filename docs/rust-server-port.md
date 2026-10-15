@@ -250,6 +250,28 @@ Current checkpoint, October 15:
   differential qualification. The native controls do not claim an externally
   leased timer transition.
 
+- Ordinary activity summaries are the next component. Complete typed history
+  identifies the activity, attempt and retry task, and every open retained wait
+  must match those identities and the mutable source state. Scheduling, claim,
+  heartbeat, retry and terminal activity transitions refresh the stored summary
+  in their owning transaction. A failed summary write rolls back the original
+  claim and attempt creation. Missing or inconsistent retained waits remain
+  unavailable after refresh, without read repair. Positive controls cover both
+  namespaces and real completion and failure after a retry, with cold readback.
+  Both added summary assertions fail on preceding source `5cd374587`; the
+  initial implementation `c0d3a9910` passes all nine observation controls.
+  Final source `988d36f38` includes the inconsistent-metadata assertion and
+  bounded attempt arithmetic. Its exact native tree
+  `83bc3ff4b0362724860a35831affbda99ecd570e` passes 79 library checks with
+  18 existing ignores and all 161 SQLite execution checks. Three activity
+  controls pass on each of PostgreSQL 17.11 and MySQL 8.0.46. Installed
+  Server 2.8.6 / Workflow 2.5.22 agrees with 54 counter snapshots and 24
+  activity classifications across the three databases, with zero reference
+  queries (SQLite 34/8; PostgreSQL and MySQL 10/8 each).
+  Local, parallel, timeout and concurrent open-family activity summaries remain
+  unavailable pending their own controls. Published observation API, installed
+  native/browser, hosted combined-source and performance gates stay separate.
+
 The preserved `c0b14c15` [shared run](https://github.com/durable-workflow/server/actions/runs/38806818394)
 is terminal with 12 passing jobs and one failure in the existing-PHP PostgreSQL
 job at the published-query comparison step. The assertion and cause remain
