@@ -7,7 +7,7 @@ unimplemented and unqualified.
 
 ## Read-only source inspection contract
 
-The native `upgrade-inspect` command will inspect a configured existing PHP
+The native `upgrade-inspect` command inspects a configured existing PHP
 database using a dedicated read-only transaction, without constructing a runtime
 pool. It uses the same `DB_*` connection configuration as native schema checks
 and supports SQLite, MySQL/MariaDB and PostgreSQL. It requires the existing
@@ -20,6 +20,15 @@ path accepts rollback-journal databases only and does not change their journal
 mode. WAL inventory requires a separately qualified consistent snapshot path.
 Use a read-only filesystem mount as an additional boundary and stop writers
 before inspection; the report does not certify that they have stopped.
+
+With the development binary and existing connection environment configured,
+run `DW_RUST_EXPERIMENTAL=1 durable-workflow-server upgrade-inspect`.
+For SQLite, set `DB_CONNECTION=sqlite` and `DB_DATABASE` to the existing file
+inside a read-only mount. Network databases use the existing `DB_HOST`,
+`DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD` and TLS settings. Use a
+SELECT-only inspection role. Success prints one JSON inventory; refusal exits
+nonzero with a bounded reason, without printing a connection URL or password.
+No successful result authorizes a subsequent write or upgrade command.
 
 Inspection must refuse a native ownership marker, an unknown catalog, missing
 permissions and unavailable storage before reporting durable-state counts.
@@ -57,6 +66,16 @@ version from schema equality. PostgreSQL row-security policies require separate
 qualification and refuse this first inventory path.
 
 ## Qualification and next migration gates
+
+The separate published PHP 2.8.0 profile prepares two genuine original runs:
+one leased activity and one pending timer. It explicitly stops PHP before
+inspection, compares source state and sequence positions before/after, and
+checks denied access, changed catalog, ownership markers and PostgreSQL row
+security. SQLite uses the explicitly selected DELETE journal profile. Its raw
+public-protocol author does not establish SDK continuation or workload
+completion. The independent SQLite WAL refusal remains a separate observation.
+The CI profile adds an eight-minute phase and separate three-minute cleanup
+ceiling; existing scenario, transaction and job budgets remain unchanged.
 
 Use a separate cohort populated by the current published PHP artifact, record
 its actual identity, and stop every PHP writer before refusal/byte-preservation
