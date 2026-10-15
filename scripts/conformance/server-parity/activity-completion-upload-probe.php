@@ -8,6 +8,7 @@ use Workflow\Serializers\Avro;
 require '/app/vendor/autoload.php';
 
 [$script, $url, $prefix] = $argv;
+$workerId = $prefix.':workerλ😀';
 $started = microtime(true);
 $deadline = $started + 30;
 $http = new Client(['base_uri' => rtrim($url, '/'), 'http_errors' => false,
@@ -42,7 +43,7 @@ if ($request('GET', '/api/namespaces/default')[0] === 404) {
 }
 $expect($request('PUT', '/api/namespaces/default/external-storage', ['driver' => 'local', 'enabled' => true,
     'threshold_bytes' => 16, 'config' => ['uri' => 'file:///state/objects']]), 200, 'policy');
-$expect($request('POST', '/api/worker/register', ['worker_id' => $prefix, 'task_queue' => $prefix,
+$expect($request('POST', '/api/worker/register', ['worker_id' => $workerId, 'task_queue' => $prefix,
     'runtime' => 'php', 'sdk_version' => 'raw-http-control',
     'supported_workflow_types' => ['parity.completion_upload'], 'supported_activity_types' => ['parity.completion_activity'],
     'capabilities' => [], 'capability_manifest' => array_fill_keys(
@@ -54,7 +55,7 @@ $original = $expect($request('POST', '/api/workflows', ['workflow_id' => $prefix
     'run_timeout_seconds' => 120, 'execution_timeout_seconds' => 600]), 201, 'original admission');
 fwrite(STDERR, json_encode(['phase' => 'admitted', 'run_id' => $original['run_id'],
     'started_at' => $started, 'original_deadline' => $deadline], JSON_THROW_ON_ERROR)."\n");
-$poll = ['worker_id' => $prefix, 'task_queue' => $prefix, 'timeout_seconds' => 0];
+$poll = ['worker_id' => $workerId, 'task_queue' => $prefix, 'timeout_seconds' => 0];
 $task = $expect($request('POST', '/api/worker/workflow-tasks/poll', $poll), 200, 'workflow claim')['task'];
 $require($task['run_id'] === $original['run_id'], 'Original workflow claim changed');
 $expect($request('POST', '/api/worker/workflow-tasks/'.$task['task_id'].'/complete', [
@@ -72,6 +73,7 @@ $require($beforeUpload['can_continue'] === true, 'Original activity lacks upload
 $context = ['schema' => 'durable-workflow.v2.payload-completion-context.v1', 'kind' => 'activity',
     'task_id' => $activity['task_id'], 'attempt' => $activity['activity_attempt_id'],
     'lease_owner' => $activity['lease_owner'], 'operation' => 'complete', 'slot' => ['result']];
+$require(str_contains($context['lease_owner'], 'λ😀'), 'Completion owner lost actual UTF-8');
 $expected = [9007199254740993, null, 'rangeλ'];
 $bytes = Avro::serialize($expected);
 $upload = static function (array $context, string $bytes) use ($http, $headers, $deadline): array {
@@ -82,7 +84,7 @@ $upload = static function (array $context, string $bytes) use ($http, $headers, 
         'Content-Type' => 'application/octet-stream', 'X-Durable-Workflow-Payload-Codec' => 'avro',
         'X-Durable-Workflow-Payload-Size' => (string) strlen($bytes),
         'X-Durable-Workflow-Payload-SHA256' => hash('sha256', $bytes),
-        'X-Durable-Workflow-Payload-Completion' => json_encode($context, JSON_THROW_ON_ERROR),
+        'X-Durable-Workflow-Payload-Completion' => json_encode($context, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE),
     ], 'body' => $bytes, 'timeout' => min(5, max(0.001, $deadline - microtime(true)))]);
 
     return [$response->getStatusCode(), json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR)];
@@ -137,13 +139,14 @@ $expect($request('POST', '/api/worker/workflow-tasks/'.$parent['task_id'].'/comp
 ]), 200, 'parent completion');
 $describe = $expect($request('GET', '/api/workflows/'.$prefix.'/runs/'.$original['run_id']), 200, 'original result');
 $require($describe['status'] === 'completed' && microtime(true) < $deadline, 'Original did not complete within its budget');
-$expect($request('DELETE', '/api/worker/registrations/'.rawurlencode($prefix)), 200, 'registration retirement');
+$expect($request('DELETE', '/api/worker/registrations/'.rawurlencode($workerId)), 200, 'registration retirement');
 $finished = microtime(true);
 echo json_encode(['outcome' => 'pass', 'scope' => 'raw_http_activity_completion_upload',
     'run_id' => $original['run_id'], 'task_id' => $activity['task_id'], 'activity_attempt_id' => $activity['activity_attempt_id'],
+    'lease_owner' => $activity['lease_owner'],
     'parent_run_id' => $parent['run_id'], 'parent_task_id' => $parent['task_id'], 'result' => $expected,
     'activity_completion_count' => count($completed), 'workflow_status' => $describe['status'],
     'lease_expires_before' => $beforeUpload['lease_expires_at'], 'lease_expires_after' => $afterUpload['lease_expires_at'],
     'reference' => $reference, 'original_budget_seconds' => 30, 'elapsed_seconds' => $finished - $started,
     'started_at' => $started, 'original_deadline' => $deadline, 'finished_at' => $finished,
-    'controls' => ['identical_upload', 'conflicting_slot', 'foreign_owner', 'closed_upload_reconciliation', 'cold_parent']], JSON_THROW_ON_ERROR)."\n";
+    'controls' => ['identical_upload', 'conflicting_slot', 'foreign_owner', 'closed_upload_reconciliation', 'cold_parent', 'utf8_completion_context']], JSON_THROW_ON_ERROR)."\n";

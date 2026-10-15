@@ -223,17 +223,11 @@ async fn upload_inner(runtime: Runtime, request: Request, deadline: Instant) -> 
             "external_payload_unsupported",
         ));
     }
-    let context = if request
+    let context = request
         .headers()
-        .contains_key("x-durable-workflow-payload-completion")
-    {
-        Some(super::activity_completion_uploads::Context::parse(header(
-            request.headers(),
-            "x-durable-workflow-payload-completion",
-        )?)?)
-    } else {
-        None
-    };
+        .get("x-durable-workflow-payload-completion")
+        .map(|header| super::activity_completion_uploads::Context::parse_bytes(header.as_bytes()))
+        .transpose()?;
     if declared_size(request.headers())? as u64 > runtime.external.max_bytes.max(1) {
         return Err(refuse(
             StatusCode::PAYLOAD_TOO_LARGE,

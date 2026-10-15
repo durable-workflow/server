@@ -65,7 +65,7 @@ async fn original(
         "/api/worker/register",
         "worker-token",
         json!({
-            "worker_id":"completion-worker", "task_queue":"test", "runtime":"php",
+            "worker_id":"completion-worker/λ😀", "task_queue":"test", "runtime":"php",
             "supported_workflow_types":["echo"], "supported_activity_types":["echo_activity"]
         }),
     )
@@ -76,7 +76,8 @@ async fn original(
         "input":envelope(Payload::Array(vec![])), "run_timeout_seconds":120, "execution_timeout_seconds":600
     })).await;
     assert_eq!(admitted.0, StatusCode::CREATED, "{}", admitted.1);
-    let poll = json!({"worker_id":"completion-worker", "task_queue":"test", "timeout_seconds":0});
+    let poll =
+        json!({"worker_id":"completion-worker/λ😀", "task_queue":"test", "timeout_seconds":0});
     let task = json_request(
         &app,
         "POST",
@@ -126,6 +127,19 @@ fn context(task: &Value) -> Value {
 async fn activity_completion_uploads_preserve_authority_allowance_reference_and_cold_parent() {
     let (_provider, database, runtime, app, task, bytes) = original(120).await;
     let context = context(&task);
+    let mut utf8 = context.clone();
+    utf8["lease_owner"] = json!("foreign/λ😀");
+    let refused = upload(&app, "worker-token", "default", &utf8, bytes.clone(), None).await;
+    assert_eq!(
+        refused.0,
+        StatusCode::CONFLICT,
+        "valid UTF-8 context: {}",
+        refused.2
+    );
+    assert_eq!(
+        refused.2["reason"],
+        "external_payload_completion_lease_rejected"
+    );
     let named = json_request(
         &app,
         "POST",

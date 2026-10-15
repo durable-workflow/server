@@ -79,6 +79,12 @@ fn identity(value: &Value) -> String {
 }
 
 impl Context {
+    pub(super) fn parse_bytes(header: &[u8]) -> Result<Self> {
+        if header.len() > 4096 {
+            return Err(invalid());
+        }
+        Self::parse(std::str::from_utf8(header).map_err(|_| invalid())?)
+    }
     pub(super) fn parse(header: &str) -> Result<Self> {
         if header.len() > 4096 {
             return Err(invalid());
@@ -410,5 +416,26 @@ mod tests {
             identity(&json!(["complete", ["result"]])),
             "be37893a3312755fa3826ca9282c3bd053521dc77235d9024c4c58de6e49dcd0"
         );
+    }
+    #[test]
+    fn completion_header_accepts_utf8_and_preserves_escaped_identity() {
+        let raw = json!({"schema":"durable-workflow.v2.payload-completion-context.v1",
+            "kind":"activity", "task_id":"task", "attempt":"attempt",
+            "lease_owner":"owner/λ😀", "operation":"complete", "slot":["result"]})
+        .to_string();
+        let escaped = raw.replace('λ', "\\u03bb").replace('😀', "\\ud83d\\ude00");
+        let raw = Context::parse_bytes(raw.as_bytes()).unwrap();
+        let escaped = Context::parse_bytes(escaped.as_bytes()).unwrap();
+        assert_eq!(raw.owner, "owner/λ😀");
+        assert_eq!(raw.scope("default"), escaped.scope("default"));
+        for malformed in [vec![0xff], vec![b' '; 4097]] {
+            assert!(matches!(
+                Context::parse_bytes(&malformed),
+                Err(RuntimeError::Refused {
+                    reason: "external_payload_completion_invalid",
+                    ..
+                })
+            ));
+        }
     }
 }

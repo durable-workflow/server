@@ -81,6 +81,7 @@ function checkExternalConsumers(array $records, array $artifacts): array
             $runs[$case] = $author['run_id'];
         }
         $completion = $data['completion-upload'];
+        $require(str_contains($completion['lease_owner'] ?? '', 'λ😀'), "$target actual UTF-8 completion owner");
         $require($completion['scope'] === 'raw_http_activity_completion_upload'
             && $completion['parent_run_id'] === $completion['run_id']
             && $completion['task_id'] !== $completion['parent_task_id']
@@ -98,7 +99,7 @@ function checkExternalConsumers(array $records, array $artifacts): array
             && $completion['reference']['sha256'] === '72f7246e42b2f948968398c4718ce8567ad4417aee4901f8975eefd5963b9ba5',
             "$target completion byte identity");
         $require($completion['controls'] === ['identical_upload', 'conflicting_slot', 'foreign_owner',
-            'closed_upload_reconciliation', 'cold_parent'], "$target completion controls");
+            'closed_upload_reconciliation', 'cold_parent', 'utf8_completion_context'], "$target completion controls");
         $runs['completion-upload'] = $completion['run_id'];
         $require(count(array_unique($runs)) === 6, "$target distinct originals");
         $joinedRuns[$target] = $runs;
