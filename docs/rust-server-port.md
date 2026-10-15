@@ -47,6 +47,13 @@ observations and continue; strict branch protection is preserved.
   payload hashes and cold parent completion. Full current-main/all-six
   qualification and promotion remain pending. Initial Unicode, MySQL identity,
   JSON member-order and 100ms control failures stay recorded in the PR.
+  The fresh combined `3a268200` run includes qualified PHP `ed803519`, but
+  its PostgreSQL 17 cell fails the independent fresh upload still using the
+  preceding stalled request's 100 ms test policy. That original remains failed.
+  The next fixture revision keeps the stalled deadline and shared semaphore,
+  then uses normal policy for the separate fresh upload. Recovered-target
+  checks will require their actual preparation step to succeed, preventing
+  dependent absence from looking like an execution failure.
   No workflow/query/prepared
   context, pressure-bypass or full transport capability is advertised.
 - [#460](https://github.com/durable-workflow/server/pull/460): read-only upgrade

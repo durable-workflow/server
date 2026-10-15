@@ -1348,14 +1348,17 @@ async fn authentication_namespace_and_declared_limit_refuse_before_body_or_provi
 #[tokio::test]
 async fn stalled_upload_keeps_original_timeout_and_releases_capacity_for_next_original() {
     let temp = tempfile::tempdir().unwrap();
-    let mut config = ExternalPayloadConfig::default();
+    let recovery_config = ExternalPayloadConfig::default();
+    // The clone shares the one-slot worker semaphore. Keep the stalled
+    // request's deadline separate from fresh durable filesystem/SQL work.
+    let mut config = recovery_config.clone();
     config.timeout = Duration::from_millis(100);
-    let (database, runtime, router) = setup(config, temp.path()).await;
+    let (database, runtime, stalled_router) = setup(config, temp.path()).await;
     let meta = metadata(b"abc");
     let start = tokio::time::Instant::now();
     let body = Body::from_stream(futures_util::stream::pending::<Result<Bytes, std::io::Error>>());
     let (status, _, _) = request(
-        &router,
+        &stalled_router,
         "POST",
         "/api/external-payloads/v1",
         "worker-token",
@@ -1366,8 +1369,15 @@ async fn stalled_upload_keeps_original_timeout_and_releases_capacity_for_next_or
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert!(start.elapsed() < Duration::from_secs(1));
+    // This fresh request uses the normal policy with the same capacity pool.
+    // A leaked permit still times out; slow durable I/O is not a leak proof.
+    let recovery_router = router(
+        runtime
+            .clone()
+            .with_external_payload_config(recovery_config),
+    );
     let (status, _, body) = request(
-        &router,
+        &recovery_router,
         "POST",
         "/api/external-payloads/v1",
         "worker-token",
