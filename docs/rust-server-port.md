@@ -220,8 +220,9 @@ requirements. No native release or deployment is qualified.
 
 Activity-metadata candidate `062ce91a` has two failed SQLite observations in
 run `38738644671`. The original stopped at frozen PHP waiting-history polling.
-The one SQLite-only repeat passed that phase, then refused an aborted upstream
-query-poll response in the installed Python late synchronous-handler case.
+The one SQLite-only repeat passed that phase, then refused an aborted query-poll
+exchange in the installed Python late synchronous-handler case. That original
+does not retain enough detail to identify which connection aborted.
 Its later acceptance assertions did not execute. Neither failure establishes
 a PHP, native or SDK cause. The next runner keeps both failures and all original
 budgets, records the waiting-history phase and query response progress, and
@@ -230,6 +231,19 @@ truncated HTTP response still fails, now with byte count, upstream completion
 and downstream state; headers, tokens and response bodies stay excluded.
 Seven observer/artifact controls pass. This diagnostic revision needs its own
 full qualification and carries no earlier database passes.
+
+The separate diagnostic head `21de52bf` passes twelve jobs but fails MySQL 8.4
+at another poll after the late-handler expiry. Its bounded trace shows an
+incomplete inbound request aborted before any upstream exchange. This new
+observation does not explain the older SQLite failures. The observer now
+classifies only an incomplete, aborted query-poll body with `ECONNRESET` and
+no forwarding as `poll-disconnected`. Such a request cannot claim a task.
+Complete requests, forwarded exchanges and interrupted terminal submissions
+still fail the observation. Actual TCP counterfactuals fail the previous
+observer and pass the correction, including unchanged upstream request counts
+and fatal truncated-response/result-submission controls. Canonical claim,
+expiry, callback, result and history assertions remain unchanged. This runner
+correction and its next combined source require fresh full qualification.
 
 Completed local raw archives, transport journals and databases have been deleted.
 Historical retention descriptions below do not guarantee that those bytes are
