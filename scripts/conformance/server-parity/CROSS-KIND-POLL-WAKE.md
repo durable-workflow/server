@@ -1,0 +1,94 @@
+# Optional worker poll wake
+
+Published PHP already supports the worker registration capability
+`cross_kind_poll_wake`. The current OpenAPI documents its existing
+`task=null, poll_status=task_queue_changed` response. This is a capability-only
+opt-in. It adds no worker-protocol floor and changes no frozen schema or actor.
+The agreed boundary and actual published/native observations are recorded in
+[Server #325](https://github.com/durable-workflow/server/issues/325#issuecomment-6178479885)
+and the [PHP contract acknowledgment](https://github.com/durable-workflow/server/issues/325#issuecomment-6178506403).
+
+The response asks the worker to sweep its task kinds again. It supplies no
+task, creates no lease, accepts no command and grants no execution authority.
+Normal authentication, registration, namespace, queue, routing and claim fences
+still apply to each subsequent request. A wake does not guarantee that a task
+remains available when that worker polls again. It does not renew a poll,
+workflow, activity, query or cleanup deadline.
+
+The hint is scoped to the registered namespace and task queue. An unrelated
+namespace, queue or global notification grants no authority to emit it.
+Workers that do not opt in retain their existing behavior, including other
+already-defined empty or blocked statuses.
+
+The first real worker controls use the explicit default namespace. They park an
+ordinary installed mixed worker in an activity poll or a query poll, then admit
+one normal one-activity workflow while
+that request remains unanswered. The PHP reference interrupts the held request
+with the explicit hint. Its worker follows with a workflow sweep and completes
+the original. The unchanged native source instead consumes the remaining
+other-kind waits. Both still complete exact outputs and ordered histories.
+These observations identify the controlled parity gap. They are not a matched
+latency comparison and do not explain every prior performance tail.
+
+The reusable observer uses the unchanged capacity definitions and normal
+installed SDK selected by `benchmarks/server-port/v2/matched.json`. Set
+`DW_PARITY_SDK_AUTOLOAD` to that installation's autoloader and
+`DW_PARITY_TOKEN` to the isolated target's test token. Give each backend a
+separate fresh database and owned output directory. Then run in the repository
+runtime:
+
+```sh
+profile=benchmarks/server-port/v2/matched.json
+php scripts/conformance/server-parity/cross-kind-poll-observe.php \
+  "$runtime_url" "$unique_prefix" "$profile" "$output_directory" \
+  > "$output_directory/observations.ndjson"
+node scripts/conformance/server-parity/cross-kind-poll-check.mjs \
+  "$profile" "$output_directory/observations.ndjson"
+```
+
+Observer exit 0 proves completed observations, not wake acceptance. The separate
+reader requires the actual null-task hint, same worker/queue/namespace, a
+zero-timeout first-attempt claim of the original workflow/run, exact output/history and the original 35-second
+budget. Constructed reader controls refuse ordinary timeout completion and
+other malformed observations. Current qualification is recorded in
+[PR #455](https://github.com/durable-workflow/server/pull/455).
+These controls are not selected in default fixtures.
+
+Native qualification must cover those two cases, opt-in refusal boundaries,
+namespace/queue isolation, ordinary same-kind claims and all database families.
+Matched installed-worker controls for other task-kind pairs and registration
+replacement remain explicit follow-up gates. Preserve raw statuses, request/response ordering, durable identities and
+original deadlines. Completion alone does not prove the wake behavior. A reader
+must verify the actual null-task hint and the subsequent workflow poll.
+
+The native correction observes newly ready task/query IDs in the exact
+namespace and queue. It returns a hint only after the ordinary same-kind claim
+finds no task. Database probes cover independent nodes; the global in-process
+notification merely schedules another probe. Initial availability is the
+baseline, so preexisting work cannot create a busy loop of hints. Zero-timeout
+polls keep their original behavior. A changed registration incarnation or
+removed opt-in disables hints for that held request. No lease, task status,
+receipt, history or deadline is mutated by these observations.
+
+MySQL task candidates keep the indexed scope predicate and then compare exact
+routing bytes. The preserved collation otherwise treats `test`, `Test` and
+`tést` as equal. Query metadata uses binary namespace/queue comparisons.
+
+Task observations keep at most 100 IDs; query observations keep at most 65.
+The query projection reads metadata inside the database and does not transfer
+history snapshots to the HTTP executor. These are conservative availability
+hints. An admission already consumed by another worker need not interrupt the
+held poll. The hint never promises eligibility or a remaining claimable task.
+
+Five focused native HTTP test groups cover all six task-kind directions,
+same-kind claim precedence, default 1.19 and named-namespace 1.20 polls,
+independent pools, exact queue/namespace isolation, absent opt-in, replacement,
+preexisting work and zero timeout. They pass locally on SQLite, PostgreSQL 17
+and MySQL 8.4. Against unchanged
+native tree `696130d7`, the three positive groups fail with ordinary timeouts;
+the two refusal/zero-timeout groups pass. The complete six-cell matrix and
+installed-worker coverage of other task-kind directions remain acceptance gates.
+
+This is a service-mode worker HTTP contract. Embedded execution has no such
+worker HTTP wait and is inapplicable to this specific observation. It retains
+its independent workflow/activity/replay qualification.

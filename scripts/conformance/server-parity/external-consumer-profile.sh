@@ -82,6 +82,7 @@ for target in php native; do
     docker run --rm --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m --network "$RESOURCE_SCOPE" \
       --entrypoint php -v "$PWD:/source:ro" -v "$PWD/$evidence:/evidence" -w /source \
       -e DW_PARITY_SDK_AUTOLOAD="/source/$sdk/vendor/autoload.php" \
+      -e DW_PARITY_TOKEN=external-fixture-token \
       -e DW_PARITY_EXTERNAL_ACTIVITY_COUNT "${image}" "scripts/conformance/server-parity/$script.php" \
       "$url" "$@" > "$evidence/$target/$label.json" 2> "$evidence/$target/$label.stderr"
   }
@@ -96,6 +97,7 @@ for target in php native; do
     consumer "arguments-$count-activity" external-arguments-worker "external-arguments-$count" activity "/evidence/$target/arguments-$count-author.json"
     consumer "arguments-$count-reader" external-arguments-worker "external-arguments-$count" reader "/evidence/$target/arguments-$count-author.json"
   done
+  consumer completion-upload activity-completion-upload-probe external-completion-upload
 done
 docker run --rm --user=1000:1000 --cpus=1 --memory=256m --memory-swap=256m --network=none --entrypoint php \
   -v "$PWD:/source:ro" -v "$PWD/$evidence:/evidence:ro" -w /source "$image" \
