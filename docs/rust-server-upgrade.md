@@ -27,6 +27,9 @@ The known PHP catalog is the existing compiled physical schema with only the
 explicit native additions excluded. Database-generated next-ID counters remain
 data; no other catalog differences are discarded. Schema equality identifies a
 layout, not the installed PHP package version.
+MySQL/MariaDB source catalog rows use exact table-name byte ordering so that
+server metadata collations cannot change comparison order. All names and
+complete definitions remain exact; business row/event order is not transformed.
 
 The separate exact PHP 2.8.0 catalog variant records the published service-call
 deadline and worker incarnation additions. It is compared as a complete

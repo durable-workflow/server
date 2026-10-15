@@ -59,7 +59,7 @@ docker run --rm --name "$resource-author" --user=1000:1000 --cpus=1 --memory=512
   --network "$RESOURCE_SCOPE" -e DW_PARITY_TOKEN=upgrade-fixture-token -v "$PWD:/source:ro" --entrypoint php "$image" \
   /source/scripts/conformance/server-parity/upgrade-source-author.php http://parity-upgrade-php:8080 upgrade-source \
   > "$evidence/originals.json" 2> "$evidence/author.stderr"
-docker stop --signal SIGTERM --time 10 "$resource-php" > "$evidence/stop.txt"
+docker stop --signal SIGTERM --time 10 "$resource-php" >/dev/null
 docker inspect --format '{{json .State}}' "$resource-php" > "$evidence/stopped-state.json"
 jq -e '.Running==false and .ExitCode==0 and .OOMKilled==false' "$evidence/stopped-state.json" >/dev/null
 if test "$backend" != sqlite; then

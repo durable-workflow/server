@@ -174,12 +174,16 @@ pub(super) async fn php_source_catalog(connection: &mut MySqlConnection) -> Resu
         }
     }
     let flavor = Flavor::detect(connection).await?;
-    let expected: Catalog = flavor.expected()?.into_iter()
+    let mut expected: Catalog = flavor.expected()?.into_iter()
         .filter(|(table, _)| !super::upgrade::native_relation(table))
         .map(|(table, ddl)| (table, ddl.replace(
             ",\n  KEY `dw_workflow_tasks_poll` (`namespace`(64),`queue`(64),`task_type`(16),`status`(16),`available_at`)", "")))
         .collect();
-    let actual = catalog(connection).await?;
+    let mut actual = catalog(connection).await?;
+    // MariaDB's information_schema collation ignores some underscores. Only
+    // canonicalize catalog presentation; preserve every full definition.
+    expected.sort_by(|left, right| left.0.cmp(&right.0));
+    actual.sort_by(|left, right| left.0.cmp(&right.0));
     if actual != expected {
         let delta = match flavor {
             Flavor::MySql => include_str!("../../upgrade/php-2.8.0/mysql.json"),
