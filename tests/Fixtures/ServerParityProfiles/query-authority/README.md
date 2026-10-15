@@ -28,6 +28,9 @@ The Worker and workflow stop within each original budget. The caller destroys
 the entire isolated database afterward, including its task namespaces. This
 profile does not qualify namespace DELETE, which is still absent in native
 source. It makes the same cleanup calls on both targets.
+Startup waits for the installed Worker's `worker.registered` diagnostic, emitted
+after its actual registration acknowledgement. It does not depend on worker
+listing, which is also outside the current native slice.
 
 The actual Worker creates a waiting timer workflow, then serves its query.
 Timely 1.20 and 1.19 controls retain the exact int64/null/Unicode result.

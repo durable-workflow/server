@@ -131,6 +131,8 @@ try {
                 }, diagnosticListener: static function (string $event, array $details) use ($record): void {
                     if ($event === 'worker.claim_aborted') {
                         $record('aborted', $details);
+                    } elseif ($event === 'worker.registered') {
+                        $record('registered', $details);
                     }
                 }, requireQueryTaskAuthority: $protocol === '1.20');
             $worker->registerWorkflow('parity.query-authority.v1', static function (WorkflowContext $context): int {
@@ -158,7 +160,7 @@ try {
     do {
         $events = $read();
         queryCheck(!in_array('actor-error', array_column($events, 'event'), true), 'The Worker refused startup: '.json_encode($events));
-        if ($client->listWorkers($namespace) !== []) {
+        if (in_array('registered', array_column($events, 'event'), true)) {
             break;
         }
         usleep(20000);
