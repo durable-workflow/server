@@ -46,5 +46,13 @@ case "$backend" in
   sqlite) ;;
   *) exit 2 ;;
 esac
-if test -d "$state"; then rm -r -- "$state" || result=1; fi
+if test -d "$state"; then
+  # Hosted runner UID differs from the explicit application UID. Retire only
+  # this guarded task mount using its writer UID, then its host-owned root.
+  image=$(jq -r '.artifacts.php_server' benchmarks/server-port/v2/matched.json)
+  docker run --rm --user=1000:1000 --network=none --cpus=1 --memory=128m --memory-swap=128m \
+    --entrypoint sh -v "$PWD/$state:/state" "$image" \
+    -c 'find /state -mindepth 1 -depth -delete' || result=1
+  rmdir -- "$state" || result=1
+fi
 exit "$result"
