@@ -1,5 +1,6 @@
 //! Read-only PHP source inventory. This command never grants takeover authority.
 pub mod external_reference;
+mod payload_scan;
 pub mod queue;
 pub mod queue_binding;
 mod queue_scan;
@@ -101,6 +102,7 @@ fn report(
     catalog: &impl Serialize,
     counts: BTreeMap<String, i64>,
     queue_inspection: Option<Value>,
+    payload_inspection: Option<Value>,
 ) -> Result<Value> {
     let digest = Sha256::digest(serde_json::to_vec(catalog)?)
         .iter()
@@ -115,6 +117,12 @@ fn report(
     });
     if let Some(queues) = queue_inspection {
         report["queue_inspection"] = queues;
+    }
+    if let Some(payloads) = payload_inspection {
+        if payloads["references_metadata_supported"] != true {
+            report["status"] = json!("unqualified");
+        }
+        report["payload_inspection"] = payloads;
     }
     Ok(report)
 }
@@ -158,14 +166,22 @@ macro_rules! count_tables {
 }
 
 pub async fn inspect_sqlite(path: &str) -> Result<Value> {
-    inspect_sqlite_inner(path, None).await
+    inspect_sqlite_inner(path, None, false).await
 }
 
 pub async fn inspect_sqlite_queues(path: &str, config: &QueueSourceConfig<'_>) -> Result<Value> {
-    inspect_sqlite_inner(path, Some(config)).await
+    inspect_sqlite_inner(path, Some(config), false).await
 }
 
-async fn inspect_sqlite_inner(path: &str, queues: Option<&QueueSourceConfig<'_>>) -> Result<Value> {
+pub async fn inspect_sqlite_payloads(path: &str) -> Result<Value> {
+    inspect_sqlite_inner(path, None, true).await
+}
+
+async fn inspect_sqlite_inner(
+    path: &str,
+    queues: Option<&QueueSourceConfig<'_>>,
+    payloads: bool,
+) -> Result<Value> {
     queue_config(queues)?;
     let deadline = Instant::now() + BUDGET;
     if path.is_empty() || path.contains(['?', ':']) {
@@ -245,8 +261,19 @@ async fn inspect_sqlite_inner(path: &str, queues: Option<&QueueSourceConfig<'_>>
             }
             None => None,
         };
+        let payload_inspection = if payloads {
+            Some(payload_scan::inspect::<sqlx::Sqlite>(&mut *tx, &counts).await?)
+        } else {
+            None
+        };
         tx.rollback().await?;
-        report("sqlite", &catalog, counts, queue_inspection)
+        report(
+            "sqlite",
+            &catalog,
+            counts,
+            queue_inspection,
+            payload_inspection,
+        )
     })
     .await
     .map_err(|_| expired())
@@ -256,19 +283,24 @@ async fn inspect_sqlite_inner(path: &str, queues: Option<&QueueSourceConfig<'_>>
 }
 
 pub async fn inspect_mysql(options: MySqlConnectOptions) -> Result<Value> {
-    inspect_mysql_inner(options, None).await
+    inspect_mysql_inner(options, None, false).await
 }
 
 pub async fn inspect_mysql_queues(
     options: MySqlConnectOptions,
     config: &QueueSourceConfig<'_>,
 ) -> Result<Value> {
-    inspect_mysql_inner(options, Some(config)).await
+    inspect_mysql_inner(options, Some(config), false).await
+}
+
+pub async fn inspect_mysql_payloads(options: MySqlConnectOptions) -> Result<Value> {
+    inspect_mysql_inner(options, None, true).await
 }
 
 async fn inspect_mysql_inner(
     options: MySqlConnectOptions,
     queues: Option<&QueueSourceConfig<'_>>,
+    payloads: bool,
 ) -> Result<Value> {
     queue_config(queues)?;
     let deadline = Instant::now() + BUDGET;
@@ -303,6 +335,11 @@ async fn inspect_mysql_inner(
             }
             None => None,
         };
+        let payload_inspection = if payloads {
+            Some(payload_scan::inspect::<sqlx::MySql>(&mut *tx, &counts).await?)
+        } else {
+            None
+        };
         // MySQL's metadata is not an MVCC snapshot. Refuse a changed visible
         // catalog rather than joining counts to a different schema.
         if mysql::php_source_catalog(&mut tx).await? != catalog {
@@ -312,7 +349,13 @@ async fn inspect_mysql_inner(
             ));
         }
         tx.rollback().await?;
-        report(backend, &catalog, counts, queue_inspection)
+        report(
+            backend,
+            &catalog,
+            counts,
+            queue_inspection,
+            payload_inspection,
+        )
     })
     .await
     .map_err(|_| expired())
@@ -322,19 +365,24 @@ async fn inspect_mysql_inner(
 }
 
 pub async fn inspect_postgres(options: PgConnectOptions) -> Result<Value> {
-    inspect_postgres_inner(options, None).await
+    inspect_postgres_inner(options, None, false).await
 }
 
 pub async fn inspect_postgres_queues(
     options: PgConnectOptions,
     config: &QueueSourceConfig<'_>,
 ) -> Result<Value> {
-    inspect_postgres_inner(options, Some(config)).await
+    inspect_postgres_inner(options, Some(config), false).await
+}
+
+pub async fn inspect_postgres_payloads(options: PgConnectOptions) -> Result<Value> {
+    inspect_postgres_inner(options, None, true).await
 }
 
 async fn inspect_postgres_inner(
     options: PgConnectOptions,
     queues: Option<&QueueSourceConfig<'_>>,
+    payloads: bool,
 ) -> Result<Value> {
     queue_config(queues)?;
     let deadline = Instant::now() + BUDGET;
@@ -361,8 +409,19 @@ async fn inspect_postgres_inner(
             }
             None => None,
         };
+        let payload_inspection = if payloads {
+            Some(payload_scan::inspect::<sqlx::Postgres>(&mut *tx, &counts).await?)
+        } else {
+            None
+        };
         tx.rollback().await?;
-        report("pgsql", &catalog, counts, queue_inspection)
+        report(
+            "pgsql",
+            &catalog,
+            counts,
+            queue_inspection,
+            payload_inspection,
+        )
     })
     .await
     .map_err(|_| expired())

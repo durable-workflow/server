@@ -40,3 +40,14 @@ The Rust reader tests distinguish this prefix from inline Avro and the native
 opaque-reference prefix. Duplicate/unknown fields and unsupported versions
 refuse. The reader returns metadata only, keeps provider locations out of
 inspection reports, and is not yet wired to source-row conversion or takeover.
+
+The optional `upgrade-payload-inspect` command applies that reader to the four
+root run/activity columns listed in the storage audit. Use the normal inspection
+database configuration and a SELECT-only role; SQLite still requires the supported
+DELETE-journal source. `scripts/conformance/server-parity/upgrade-payload-source.php`
+provides `seed`, `unsupported`, `malformed`, `oversized` and `restore` controls for
+a new disposable PHP-bootstrapped schema. These are constructed rows using the
+installed released serializer, not executed workflows. No provider object exists.
+Compare source fingerprints before and after each inspection. An unqualified
+metadata report must exit nonzero and identify its affected row without exposing
+the stored reference. A successful metadata inspection still permits no takeover.

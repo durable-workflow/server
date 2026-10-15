@@ -54,10 +54,21 @@ base64/JSON, invalid digests and invalid integer sizes. It bounds the complete
 stored string to 64 KiB before decoding. Only canonical padded base64 and the
 tested object fields are supported; other representations refuse explicitly.
 
-This decoder is not yet connected to source-row scanning or execution. It
-cannot establish registry ownership, object availability, restored bytes,
-reclamation holds or takeover readiness. The existing inspection reports and
-their false compatibility/backup/quiescence/takeover flags are unchanged.
+The separate `upgrade-payload-inspect` command now scans only
+`workflow_runs.arguments/output` and `activity_executions.arguments/result`
+inside the same read-only snapshot as the schema inventory. It reports per-column
+counts and at most sixteen affected row IDs with static diagnostics. It never
+reports reference locations, hashes or payload contents. A malformed or unsupported
+reference produces an `unqualified` report and nonzero exit. The existing inventory
+and queue commands keep their behavior.
+
+The scan uses primary-key pages of 32 and bounds transferred values to 64 KiB
+before driver allocation. Large inline values remain explicitly unvalidated.
+The original 30-second inspection deadline covers the complete operation.
+No object is fetched. This does not establish nested history/command/memo
+compatibility, registry ownership, object availability, restored bytes,
+reclamation holds or takeover readiness. Every compatibility, backup, quiescence
+and takeover flag stays false.
 
 ## Backup-first, sequential upgrade gates
 
