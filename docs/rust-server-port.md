@@ -1021,8 +1021,21 @@ The [query-authority proposal](https://github.com/durable-workflow/server/issues
 and [native/shared acknowledgment](https://github.com/durable-workflow/server/issues/433#issuecomment-6138337171)
 agree on immutable original timing, six-digit UTC fields, inclusive authority
 expiry, non-renewing protocol-1.20 observation and committed-receipt ordering.
-Native implementation and separate shared qualification remain pending; current
-internal timing does not establish compliance with the proposed wire contract.
+Native implementation is in [#463](https://github.com/durable-workflow/server/pull/463).
+Candidate `76c6d35a` passes all thirteen shared jobs in run `38713356493`,
+including six execution and six codec/deadline-health database cells. All six
+execution artifacts independently match the tested native tree and binary,
+with 29 passing comparisons and 20 successful profile statuses each. The
+query profiles include normally installed PHP, Python and Rust SDKs, original
+timing, delayed poll delivery and late handlers. Conditional prepared-local
+and cancellation source qualification remains skipped.
+
+The next combined candidate incorporates qualified PHP security source
+`f7d1bfc7` through merge `500299d6`, preserving the native tree and all shared
+fixtures. This requires fresh whole-tree qualification. The PHP registry tag
+was rebuilt after its earlier installed check; that earlier check belongs to
+its original immutable image only. No current image adoption, complete query
+capability, performance, migration or release qualification follows here.
 
 The later [installed-consumer observation](https://github.com/durable-workflow/server/issues/433#issuecomment-6185525047)
 passes twenty Python 2.5.15 / Rust 3.5.5 originals across separate PHP 2.8.0 and
