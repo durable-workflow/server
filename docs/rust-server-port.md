@@ -6,39 +6,64 @@ The unpublished Rust crate has an Avro foundation and an opt-in SQLite/PostgreSQ
 execution slice. Full runtime parity, migration, performance improvement and
 cutover remain unqualified.
 
-The latest qualified merged foundation is [#457](https://github.com/durable-workflow/server/pull/457),
-at `303ffc633`, including #445's memo transaction preparation, #446's bounded
-continuation, #448's SDK memo authoring and #450's local external transport.
-Its separate fresh-main [38668891437](https://github.com/durable-workflow/server/actions/runs/38668891437)
-passes all 13 jobs across six databases; all six execution logs were read.
-Required PHP/source and boundary checks also pass. Earlier failed observations
-remain failed; this current-tree result is not carried across later changes.
-The merged native development runtime enables memo upserts, while full external
-transport discovery stays unadvertised. Frozen published PHP, embedded and SDK tuples
-remain separate from current PHP release work. Representative timer, signal,
-query, update, activity, cancellation, namespace and recovery checks do not
-establish complete parity for those families. The original failed records remain
-failed; later qualifying runs are separate observations.
+The latest merged API slice is targeted activity-result inspection in
+[#470](https://github.com/durable-workflow/server/pull/470), at `6194913f`.
+Its candidate passed all 13 shared jobs across six database configurations and
+the applicable PHP/source and public-boundary checks. The separate
+[merged-main run](https://github.com/durable-workflow/server/actions/runs/38773062581)
+is still pending. Native result discovery remains unadvertised.
+Earlier failed observations remain failed, and a candidate pass does not qualify
+a later tree. Frozen published PHP, embedded and SDK tuples remain separate
+from current PHP release work. Representative family checks do not establish
+complete parity or release readiness.
 
 ## Work order and current status
 
-Query authority is merged at `0934c46d`, whole tree `98775e68`, after the
-candidate's all-13 qualification. Its separate fresh-main run remains pending.
-Targeted activity-result preparation `004feb726` integrates that main source,
-the installed retry-reader follow-through and bounded waiting-history failure
-diagnostics. Its 77 library cases pass with the existing 18 explicit ignores;
-all 129 SQLite execution cases pass without ignores. Normal installed SDK
-2.4.2 separately completes ten fresh native originals across both namespaces:
-null, false, exact typed values, external results and a genuine two-attempt
-retry. Forty separate processes preserve original budgets, prefixes and
-closed-parent reads. Stopped state has ten completed runs/activities, 32
-completed tasks, twelve attempts, 64 events and zero repairs. API SIGTERM exits
-zero without OOM. This source has no new paired PHP observation or hosted
-acceptance yet. Earlier `8a7cffe4` all-13 and installed consumer observations apply to
-their own source only. Metadata candidate `062ce91a` has a failed frozen-PHP
-waiting-history original on SQLite and five other database originals in progress;
-the diagnostic-only change preserves the original ten-second poll budget.
-No metadata, migration or broader capability is imported by the result branch.
+Current checkpoint, October 15:
+
+- Query authority is merged at `0934c46d`, whole tree `98775e68`. Its separate
+  [merged-main qualification](https://github.com/durable-workflow/server/actions/runs/38738455163)
+  passes. That result applies to the query tree.
+- Targeted activity-result inspection is merged through #470. Candidate
+  `512ba635c`, whole tree `9249997b`, matches the tested synthetic merge tree.
+  [All 13 shared jobs](https://github.com/durable-workflow/server/actions/runs/38762453794)
+  pass. The recorded six-artifact audit confirms 29 passing comparisons,
+  20 successful profile statuses and 129 native execution tests per database
+  configuration. SQLite also records 77 library passes with the existing
+  18 explicit ignores. The separate main run above remains its own gate.
+- [Metadata-only activity listing #476](https://github.com/durable-workflow/server/pull/476)
+  is still a draft at `4b9384b3`. Its current database qualification is pending.
+  Earlier unsuccessful originals remain unsuccessful.
+- [Read-only upgrade inspection #460](https://github.com/durable-workflow/server/pull/460)
+  remains a draft at `7066a50e`. Qualification and review are incomplete, so
+  the candidate is not being promoted. No backup, migration or takeover
+  authority follows from inspection.
+- [Waterline consumer #477](https://github.com/durable-workflow/server/pull/477)
+  provides the separate real-backend browser recipe. Forty published-PHP
+  selections pass across five values, two namespaces, two widths and both
+  themes. Its [profile](../scripts/conformance/activity-result-browser/profile.json)
+  pins the published Server, Waterline, SDK and browser identities. The
+  observation includes forty selected result requests, eighty wrong-selector
+  refusals, exact typed dialogs, restored focus and unchanged histories. The
+  viewer stopped with exit 137 and no OOM; graceful viewer shutdown is not
+  established. Native bounded run observation, discovery and positive native
+  browser acceptance remain open.
+
+Next, complete the independent merged-main result qualification and review the
+metadata candidate's actual outcomes. Native Waterline acceptance then needs
+the canonical bounded run page and qualified discovery, followed by the same
+unmodified browser recipe. Keep the incomplete inspector review separate.
+No new release, database takeover or full-family parity is claimed.
+
+The earlier installed result checkpoint at `d83a3cb9` remains separate:
+normally installed SDK 2.4.2 completed ten fresh native originals across both
+namespaces, covering null, false, exact typed values, external results and a
+genuine two-attempt retry. Forty processes preserved the original budgets,
+history prefixes and closed-parent reads. Stopped state had ten completed
+runs/activities, 32 completed tasks, twelve attempts, 64 events and zero repairs.
+API SIGTERM exited zero without OOM. Its original hosted MySQL image-pull and
+PostgreSQL renewal-observer failures remain failed; later observations do not
+explain or replace them.
 
 The earlier foundation stages remain separately qualified as follows:
 
