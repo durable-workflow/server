@@ -308,7 +308,7 @@ async fn activity_completion_uploads_preserve_authority_allowance_reference_and_
         "/api/worker/workflow-tasks/poll",
         "worker-token",
         json!({
-            "worker_id":"completion-worker", "task_queue":"test", "timeout_seconds":0
+            "worker_id":"completion-worker/λ😀", "task_queue":"test", "timeout_seconds":0
         }),
     )
     .await
