@@ -57,7 +57,8 @@ async fn run_observation_projects_actual_activity_retry_and_terminal_transitions
         assert_eq!(heartbeat.0, StatusCode::OK, "{}", heartbeat.1);
         let claimed = observe(&app, namespace, &path).await;
         assert_eq!(claimed.1["liveness_state"], "activity_task_leased");
-        run_observation_summaries::export_reference(&database, &claimed.1, &claimed.1["history"]).await;
+        run_observation_summaries::export_reference(&database, &claimed.1, &claimed.1["history"])
+            .await;
         let claimed_wait = &claimed.1["current_waits"]["waits"][0];
         assert_eq!(claimed_wait["id"], wait["id"]);
         assert_eq!(claimed_wait["attempt_id"], first["activity_attempt_id"]);
@@ -80,7 +81,12 @@ async fn run_observation_projects_actual_activity_retry_and_terminal_transitions
         assert_eq!(failed.0, StatusCode::OK, "{}", failed.1);
         let retry_read = observe(&app, namespace, &path).await;
         assert_eq!(retry_read.1["liveness_state"], "activity_task_ready");
-        run_observation_summaries::export_reference(&database, &retry_read.1, &retry_read.1["history"]).await;
+        run_observation_summaries::export_reference(
+            &database,
+            &retry_read.1,
+            &retry_read.1["history"],
+        )
+        .await;
         assert_eq!(retry_read.1["current_waits"]["returned_count"], 1);
         let retry_wait = &retry_read.1["current_waits"]["waits"][0];
         assert_eq!(retry_wait["id"], wait["id"]);
@@ -118,7 +124,8 @@ async fn run_observation_projects_actual_activity_retry_and_terminal_transitions
         assert_eq!(closed.0, StatusCode::OK, "{}", closed.1);
         let resumed = observe(&app, namespace, &path).await;
         assert_eq!(resumed.1["liveness_state"], "workflow_task_ready");
-        run_observation_summaries::export_reference(&database, &resumed.1, &resumed.1["history"]).await;
+        run_observation_summaries::export_reference(&database, &resumed.1, &resumed.1["history"])
+            .await;
         assert_eq!(
             observe(&app, namespace, &path).await.1["current_waits"]["returned_count"],
             0
@@ -287,29 +294,68 @@ async fn run_observation_activity_summary_failure_rolls_back_original_claim() {
     let database = TestDatabase::Sqlite(tempfile::tempdir().unwrap());
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
-    register(&app, "activity-summary-rollback", json!(["echo"]), json!(["observed-activity"])).await;
+    register(
+        &app,
+        "activity-summary-rollback",
+        json!(["echo"]),
+        json!(["observed-activity"]),
+    )
+    .await;
     let run = start(&app, "activity-summary-rollback").await;
     let task = poll(&app, "activity-summary-rollback", "workflow").await;
-    assert_eq!(finish_task(&app, &task, json!([{"type":"schedule_activity",
-        "activity_type":"observed-activity","arguments":envelope(Payload::Array(vec![]))}])).await.0, StatusCode::OK);
-    let path = format!("/api/workflows/activity-summary-rollback/runs/{}/observation", run["run_id"].as_str().unwrap());
+    assert_eq!(
+        finish_task(
+            &app,
+            &task,
+            json!([{"type":"schedule_activity",
+        "activity_type":"observed-activity","arguments":envelope(Payload::Array(vec![]))}])
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let path = format!(
+        "/api/workflows/activity-summary-rollback/runs/{}/observation",
+        run["run_id"].as_str().unwrap()
+    );
     let before = observe(&app, "default", &path).await.1;
     let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
     database.execute("CREATE TRIGGER reject_activity_summary BEFORE INSERT ON workflow_run_summaries WHEN NEW.liveness_state='activity_task_leased' BEGIN SELECT RAISE(ABORT, 'summary write failed'); END").await;
-    let input = json!({"worker_id":"activity-summary-rollback","task_queue":"test","timeout_seconds":0});
-    let refused = request(&app, "POST", "/api/worker/activity-tasks/poll", input.clone()).await;
+    let input =
+        json!({"worker_id":"activity-summary-rollback","task_queue":"test","timeout_seconds":0});
+    let refused = request(
+        &app,
+        "POST",
+        "/api/worker/activity-tasks/poll",
+        input.clone(),
+    )
+    .await;
     assert_eq!(refused.0, StatusCode::SERVICE_UNAVAILABLE, "{}", refused.1);
-    assert_eq!(run_history(&app, &run["workflow_id"], &run["run_id"]).await, history);
-    assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM activity_attempts").await, 0);
+    assert_eq!(
+        run_history(&app, &run["workflow_id"], &run["run_id"]).await,
+        history
+    );
+    assert_eq!(
+        task_retry::rows(&database, "SELECT COUNT(*) FROM activity_attempts").await,
+        0
+    );
     let unchanged = observe(&app, "default", &path).await.1;
     assert_eq!(unchanged["liveness_state"], "activity_task_ready");
     assert_eq!(unchanged["current_waits"], before["current_waits"]);
-    database.execute("DROP TRIGGER reject_activity_summary").await;
+    database
+        .execute("DROP TRIGGER reject_activity_summary")
+        .await;
     let claimed = request(&app, "POST", "/api/worker/activity-tasks/poll", input).await;
     assert_eq!(claimed.0, StatusCode::OK);
-    assert_eq!(claimed.1["task"]["task_id"], before["current_waits"]["waits"][0]["task_id"]);
+    assert_eq!(
+        claimed.1["task"]["task_id"],
+        before["current_waits"]["waits"][0]["task_id"]
+    );
     assert_eq!(claimed.1["task"]["attempt_number"], 1);
-    assert_eq!(observe(&app, "default", &path).await.1["liveness_state"], "activity_task_leased");
+    assert_eq!(
+        observe(&app, "default", &path).await.1["liveness_state"],
+        "activity_task_leased"
+    );
     runtime.close().await;
     database.remove().await;
 }

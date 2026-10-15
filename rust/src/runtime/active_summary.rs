@@ -1,6 +1,7 @@
 //! Workflow-task liveness for native runs with a complete, supported history.
 use super::{
     Result,
+    activity_summary::ActivitySummaryHistory,
     backend::Backend,
     external_wait_summary::ExternalWaitHistory,
     store::{Store, now},
@@ -50,6 +51,7 @@ where
         run: &DB::Row,
         external_waits: &ExternalWaitHistory,
         timers: &TimerSummaryHistory,
+        activities: &ActivitySummaryHistory,
     ) -> Result<Option<ActiveSummary>> {
         // Compatibility/fleet and task-backed wait classifiers are separate slices.
         // Leave an explicit unavailable summary instead of inventing liveness.
@@ -57,7 +59,7 @@ where
             return Ok(None);
         }
         let run_id = DB::string(run, "id")?;
-        if Self::scalar("SELECT COUNT(*) FROM workflow_run_waits WHERE workflow_run_id=$1 AND status='open' AND kind NOT IN ('condition','signal','timer')")
+        if Self::scalar("SELECT COUNT(*) FROM workflow_run_waits WHERE workflow_run_id=$1 AND status='open' AND kind NOT IN ('condition','signal','timer','activity')")
             .bind(&run_id).fetch_one(&mut **tx).await? > 0 { return Ok(None); }
         // These native task transitions do not author queue-driver metadata.
         // Its presence needs the separately qualified transport classifier,
@@ -104,7 +106,7 @@ where
             .bind(&run_id).bind(DB::bind_time(at)).fetch_optional(&mut **tx).await?;
         if let Some(task) = task {
             let kind = DB::string(&task, "task_type")?;
-            if !matches!(kind.as_str(), "workflow" | "timer")
+            if !matches!(kind.as_str(), "workflow" | "timer" | "activity")
                 || DB::optional_string(&task, "compatibility")?
                     .is_some_and(|v| !v.trim().is_empty())
             {
@@ -114,7 +116,11 @@ where
             let status = DB::string(&task, "status")?;
             let expires = DB::optional_instant(&task, "lease_expires_at")?;
             let expired = status == "leased" && expires.is_some_and(|v| v <= at);
-            let label = if kind == "timer" { "Timer" } else { "Workflow" };
+            let label = match kind.as_str() {
+                "timer" => "Timer",
+                "activity" => "Activity",
+                _ => "Workflow",
+            };
             summary.state = if expired {
                 "repair_needed".into()
             } else {
@@ -169,6 +175,9 @@ where
             return Ok(None);
         }
         if !Self::apply_timer_summary(tx, &run_id, timers, &mut summary).await? {
+            return Ok(None);
+        }
+        if !Self::apply_activity_summary(tx, &run_id, activities, &mut summary).await? {
             return Ok(None);
         }
         if summary.wait.is_none() && summary.task_id.is_none() {

@@ -1,4 +1,5 @@
 //! Run snapshots are written after the transition's final durable state.
+use super::activity_summary::ActivitySummaryHistory;
 use super::transaction::Transaction;
 use super::{
     Result, backend::Backend, external_wait_summary::ExternalWaitHistory, history_budget,
@@ -54,6 +55,7 @@ where
         let mut active_history_supported = true;
         let mut external_waits = ExternalWaitHistory::default();
         let mut timers = TimerSummaryHistory::default();
+        let mut activities = ActivitySummaryHistory::default();
         loop {
             // Bound hydrated history to sixteen events. The transaction already
             // owns this run; sequence continuity detects missing retained rows.
@@ -81,6 +83,8 @@ where
                         "TimerScheduled" | "TimerFired" | "TimerCancelled"
                     ) {
                         timers.apply(&kind, &payload)
+                    } else if kind.starts_with("Activity") {
+                        activities.apply(&kind, &payload)
                     } else {
                         external_waits.apply(&kind, &payload)
                     };
@@ -137,7 +141,8 @@ where
             if !active_history_supported {
                 return Ok(());
             }
-            match Self::active_task_summary(tx, &run, &external_waits, &timers).await? {
+            match Self::active_task_summary(tx, &run, &external_waits, &timers, &activities).await?
+            {
                 Some(summary) => Some(summary),
                 None => return Ok(()),
             }
