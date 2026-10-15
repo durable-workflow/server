@@ -36,4 +36,4 @@ annotations:
   # Free-form changelog for the current chart release shown by Artifact Hub.
   artifacthub.io/changes: |
     - kind: changed
-      description: Update the default Server image to 2.7.2 with Workflow 2.5.20 for database cache throttle ownership and idle-wakeup contention recovery.
+      description: Update the default Server image to 2.8.0 with original query deadlines, non-renewing query-task status, and completion receipt reconciliation.
