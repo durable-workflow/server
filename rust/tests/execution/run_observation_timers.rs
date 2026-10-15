@@ -314,6 +314,74 @@ async fn run_observation_timers_do_not_recreate_a_missing_projection() {
 }
 
 #[tokio::test]
+async fn run_observation_timer_summary_refresh_requires_retained_matching_wait() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let registered = request(
+        &app,
+        "POST",
+        "/api/worker/register",
+        json!({
+            "worker_id":"timer-summary-authority","task_queue":"test","runtime":"php",
+            "supported_workflow_types":["echo"],"supported_activity_types":[],
+            "workflow_command_contracts":{"echo":{"signals":["payload"],"signal_contracts":[{
+                "name":"payload","parameters":[{"name":"value","position":0,"type":"array",
+                "required":true,"variadic":false,"default_available":false,"allows_null":false}]}]}}
+        }),
+    )
+    .await;
+    assert_eq!(registered.0, StatusCode::CREATED, "{}", registered.1);
+    for missing in [false, true] {
+        let workflow = format!("timer-summary-authority-{missing}");
+        let run = start(&app, &workflow).await;
+        let task = poll(&app, "timer-summary-authority", "workflow").await;
+        assert_eq!(
+            finish_task(
+                &app,
+                &task,
+                json!([{"type":"start_timer","delay_seconds":120}])
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        let path = format!(
+            "/api/workflows/{workflow}/runs/{}/signal/payload",
+            run["run_id"].as_str().unwrap()
+        );
+        let input = json!({"input":envelope(Payload::Array(vec![Payload::Array(vec![])]))});
+        assert_eq!(
+            request(&app, "POST", &path, input.clone()).await.0,
+            StatusCode::ACCEPTED
+        );
+        let valid = observe(&app, "default", &run).await;
+        assert_eq!(valid["liveness_state"], "timer_scheduled", "{valid}");
+        run_observation_summaries::export_reference(&database, &valid, &valid["history"]).await;
+        let run_id = run["run_id"].as_str().unwrap();
+        database.execute(if missing {
+            format!("DELETE FROM workflow_run_waits WHERE workflow_run_id='{run_id}'")
+        } else {
+            format!("UPDATE workflow_run_waits SET deadline_at=NULL WHERE workflow_run_id='{run_id}'")
+        }).await;
+        assert_eq!(
+            request(&app, "POST", &path, input).await.0,
+            StatusCode::ACCEPTED
+        );
+        let before = history(&app, "default", &run).await;
+        for _ in 0..2 {
+            let unknown = observe(&app, "default", &run).await;
+            assert_eq!(unknown["summary_state"], "unavailable");
+            assert!(unknown["liveness_state"].is_null());
+            assert!(unknown["history_event_count"].is_null());
+        }
+        assert_eq!(history(&app, "default", &run).await, before);
+    }
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
 async fn run_observation_timers_cancel_atomically_with_projection_failure() {
     let database = TestDatabase::Sqlite(tempfile::tempdir().unwrap());
     let runtime = database.open().await.unwrap();
