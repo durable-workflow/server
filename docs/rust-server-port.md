@@ -168,8 +168,27 @@ Current checkpoint, October 15:
   satisfaction, duplicate completion, missing rows, persisted cancellation and
   unchanged history. Projection-write rollback is a separate SQLite control.
   Condition timeouts and scope cancellation remain outside this component.
+- Terminal completion, continuation and cancellation now store closed summaries
+  in their owning transaction. A failed summary write rolls back completion.
+  History counters use contiguous retained events in bounded batches, with
+  PHP-compatible JSON accounting that preserves database key order. Eighteen
+  fixed encoding cases pass against the actual published PHP 2.8.6 image and
+  its installed Workflow 2.5.22 counter. The first native byte-count baseline
+  and both initial terminal regressions failed before implementation.
+  An initial continuation fixture combined commands outside the existing
+  admitted contract; replacing those commands with supported memo upserts
+  preserves that refusal. Final native source passes all 153 SQLite execution
+  tests and four focused controls each on PostgreSQL 17 and MySQL 8.0.46.
+  These include completion/cancellation in both namespaces, cold connections,
+  duplicate completion and refused repeat cancellation, continuation across
+  history pages, activity failures and fan-out. Published PHP independently
+  agrees with event, byte and fan-out counters for nine actual native originals
+  per database, 27 total. Reference verification issues no database queries.
+  Earlier library checks passed 79 with 18 ignored; their source is unchanged.
+  Active summaries, imported/pruned-history production, configurable budget
+  policy, shared differential and installed native/browser acceptance stay open.
 
-Next, qualify the combined observation source and finish native summary and
+Next, qualify the combined observation source and finish active native summary and
 remaining wait production. Independent retained-artifact
 reviews remain incomplete. Native Waterline acceptance then needs
 qualified discovery, followed by the same
