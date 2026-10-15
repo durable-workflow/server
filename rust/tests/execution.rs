@@ -61,6 +61,9 @@ mod activity_deadlines;
 #[path = "execution/activity_results.rs"]
 mod activity_results;
 
+#[path = "execution/run_observation.rs"]
+mod run_observation;
+
 #[path = "execution/waiting_history.rs"]
 mod waiting_history;
 
