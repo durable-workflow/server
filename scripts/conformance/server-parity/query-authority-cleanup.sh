@@ -13,22 +13,22 @@ result=0
 profile_status=$(cat "$evidence/profile-status.txt" 2>/dev/null || printf incomplete)
 for target in php rust; do
   while IFS=$'\t' read -r mode protocol; do
-    name="$RESOURCE_SCOPE-query-$target-$mode-${protocol//./}"
-    if docker inspect "$name" >/dev/null 2>&1; then docker rm -f "$name" >/dev/null || result=1; fi
+    if docker inspect "$RESOURCE_SCOPE-query-$target-$mode-${protocol//./}" >/dev/null 2>&1; then
+      docker rm -f "$RESOURCE_SCOPE-query-$target-$mode-${protocol//./}" >/dev/null || result=1
+    fi
   done < <(jq -r '.cases[]|[.mode,.protocol]|@tsv' "$profile")
 done
 for target in php native; do
-  name="$RESOURCE_SCOPE-query-authority-$target"
-  if docker inspect "$name" >/dev/null 2>&1; then
-    docker stop --signal=SIGTERM --timeout=10 "$name" > "$evidence/$target-stop.txt" 2>&1 || true
-    docker logs "$name" > "$evidence/$target-server.log" 2>&1
-    docker inspect --format '{{json .State}}' "$name" > "$evidence/$target-state.json"
+  if docker inspect "$RESOURCE_SCOPE-query-authority-$target" >/dev/null 2>&1; then
+    docker stop --signal=SIGTERM --timeout=10 "$RESOURCE_SCOPE-query-authority-$target" >"$evidence/$target-stop.txt" 2>&1 || true
+    docker logs "$RESOURCE_SCOPE-query-authority-$target" > "$evidence/$target-server.log" 2>&1
+    docker inspect --format '{{json .State}}' "$RESOURCE_SCOPE-query-authority-$target" > "$evidence/$target-state.json"
     if ! jq -e '.ExitCode==0 and .OOMKilled==false and .Running==false' "$evidence/$target-state.json" >/dev/null; then
       cat "$evidence/$target-state.json"
       result=1
     fi
-    docker rm -f "$name" >/dev/null || result=1
-    if docker inspect "$name" >/dev/null 2>&1; then result=1; fi
+    docker rm -f "$RESOURCE_SCOPE-query-authority-$target" >/dev/null || result=1
+    if docker inspect "$RESOURCE_SCOPE-query-authority-$target" >/dev/null 2>&1; then result=1; fi
   elif test "$profile_status" = 0; then
     if ! jq -e '.ExitCode==0 and .OOMKilled==false and .Running==false' "$evidence/$target-state.json" >/dev/null 2>&1; then
       printf '%s\n' "Completed query profile has no successful $target shutdown receipt" >&2
