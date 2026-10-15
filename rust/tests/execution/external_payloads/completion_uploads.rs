@@ -126,6 +126,11 @@ fn context(task: &Value) -> Value {
 async fn activity_completion_uploads_preserve_authority_allowance_reference_and_cold_parent() {
     let (_provider, database, runtime, app, task, bytes) = original(120).await;
     let context = context(&task);
+    let named = json_request(&app,"POST","/api/namespaces","admin-token",json!({"name":"other"})).await;
+    assert_eq!(named.0,StatusCode::CREATED,"{}",named.1);
+    let foreign = upload(&app,"worker-token","other",&context,bytes.clone(),None).await;
+    assert_eq!(foreign.0,StatusCode::CONFLICT,"{}",foreign.2);
+    assert_eq!(foreign.2["reason"],"external_payload_completion_lease_rejected");
     for role in ["operator-token", "admin-token"] {
         assert_eq!(
             upload(&app, role, "default", &context, bytes.clone(), None)
@@ -164,6 +169,17 @@ async fn activity_completion_uploads_preserve_authority_allowance_reference_and_
         );
     }
     assert_eq!(unclaimed(&database).await, 0);
+    for field in ["task_id","attempt"] {
+        let mut alias = context.clone();
+        let original = alias[field].as_str().unwrap();
+        let lower = original.to_ascii_lowercase();
+        let changed = if lower == original { original.to_ascii_uppercase() } else { lower };
+        assert_ne!(changed,original);
+        alias[field] = json!(changed);
+        let response = upload(&app,"worker-token","default",&alias,bytes.clone(),None).await;
+        assert_eq!(response.0,StatusCode::CONFLICT,"noncanonical {field}: {}",response.2);
+        assert_eq!(response.2["reason"],"external_payload_completion_lease_rejected");
+    }
     let budget = upload(
         &app,
         "worker-token",
