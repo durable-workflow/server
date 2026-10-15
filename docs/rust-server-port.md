@@ -218,6 +218,19 @@ Broader runtime/operational parity, safe sequential PHP database takeover,
 matched performance measurements and release/cutover preparation remain #325
 requirements. No native release or deployment is qualified.
 
+Activity-metadata candidate `062ce91a` has two failed SQLite observations in
+run `38738644671`. The original stopped at frozen PHP waiting-history polling.
+The one SQLite-only repeat passed that phase, then refused an aborted upstream
+query-poll response in the installed Python late synchronous-handler case.
+Its later acceptance assertions did not execute. Neither failure establishes
+a PHP, native or SDK cause. The next runner keeps both failures and all original
+budgets, records the waiting-history phase and query response progress, and
+prints bounded client lifecycle/authority metadata on failure. A constructed
+truncated HTTP response still fails, now with byte count, upstream completion
+and downstream state; headers, tokens and response bodies stay excluded.
+Seven observer/artifact controls pass. This diagnostic revision needs its own
+full qualification and carries no earlier database passes.
+
 Completed local raw archives, transport journals and databases have been deleted.
 Historical retention descriptions below do not guarantee that those bytes are
 still available. Code, readable owning outcomes and bounded temporary job
