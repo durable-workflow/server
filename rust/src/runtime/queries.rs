@@ -1,5 +1,6 @@
 //! Bounded transient queries over an immutable, quiescent history snapshot.
 //! These cache entries are native-owned; PHP cache values are never decoded.
+use super::transaction::Transaction;
 use super::{
     Result,
     backend::Backend,
@@ -12,7 +13,6 @@ use super::{
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
-use super::transaction::Transaction;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 

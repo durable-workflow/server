@@ -70,25 +70,39 @@ pub(super) async fn check_completed(
     export_reference(database, &summary, &events).await;
 }
 
-async fn export_reference(database: &TestDatabase, summary: &Value, history: &Value) {
+pub(super) async fn export_reference(database: &TestDatabase, summary: &Value, history: &Value) {
     // Preserve database JSON order for the independent published PHP counter.
     if let Ok(path) = std::env::var("DW_TEST_SUMMARY_REFERENCE") {
         use std::io::Write;
         let run = summary["run_id"].as_str().unwrap();
         let query = "SELECT event_type,CAST(payload AS TEXT) FROM workflow_history_events WHERE workflow_run_id=$1 ORDER BY sequence";
+        let task_query = "SELECT id,task_type,status,CAST(available_at AS TEXT),CAST(leased_at AS TEXT),CAST(lease_expires_at AS TEXT),compatibility FROM workflow_tasks WHERE workflow_run_id=$1 AND status IN ('ready','leased') ORDER BY id";
         macro_rules! rows {
-            ($pool:expr,$query:expr) => {{
+            ($pool:expr,$query:expr,$tasks:expr) => {{
                 let pool = $pool;
                 let rows: Vec<(String, Option<String>)> = sqlx::query_as($query)
                     .bind(run)
                     .fetch_all(&pool)
                     .await
                     .unwrap();
+                let tasks: Vec<(
+                    String,
+                    String,
+                    String,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                )> = sqlx::query_as($tasks)
+                    .bind(run)
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
                 pool.close().await;
-                rows
+                (rows, tasks)
             }};
         }
-        let rows = match database {
+        let (rows, tasks) = match database {
             TestDatabase::Sqlite(dir) => rows!(
                 sqlx::SqlitePool::connect(&format!(
                     "sqlite://{}",
@@ -96,24 +110,37 @@ async fn export_reference(database: &TestDatabase, summary: &Value, history: &Va
                 ))
                 .await
                 .unwrap(),
-                query
+                query,
+                task_query
             ),
             TestDatabase::Postgres { options, .. } => rows!(
                 sqlx::postgres::PgPoolOptions::new()
                     .connect_with(options.as_ref().clone())
                     .await
                     .unwrap(),
-                query
+                query,
+                task_query
             ),
             TestDatabase::MySql { options, .. } => rows!(
                 sqlx::mysql::MySqlPoolOptions::new()
                     .connect_with(options.as_ref().clone())
                     .await
                     .unwrap(),
-                "SELECT event_type,CAST(payload AS CHAR) FROM workflow_history_events WHERE workflow_run_id=? ORDER BY sequence"
+                "SELECT event_type,CAST(payload AS CHAR) FROM workflow_history_events WHERE workflow_run_id=? ORDER BY sequence",
+                "SELECT id,task_type,status,CAST(available_at AS CHAR),CAST(leased_at AS CHAR),CAST(lease_expires_at AS CHAR),compatibility FROM workflow_tasks WHERE workflow_run_id=? AND status IN ('ready','leased') ORDER BY id"
             ),
         };
         let raw:Vec<Value> = rows.into_iter().map(|(kind,payload)| json!({"event_type":kind,"payload_json":payload.unwrap_or_else(||"null".into())})).collect();
+        let tasks: Vec<Value> = tasks
+            .into_iter()
+            .map(
+                |(id, kind, status, available, leased, expires, compatibility)| {
+                    json!({
+            "id":id,"workflow_run_id":run,"task_type":kind,"status":status,"available_at":available,
+            "leased_at":leased,"lease_expires_at":expires,"compatibility":compatibility})
+                },
+            )
+            .collect();
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -122,7 +149,7 @@ async fn export_reference(database: &TestDatabase, summary: &Value, history: &Va
         writeln!(
             file,
             "{}",
-            json!({"summary":summary,"history":history,"raw_history":raw})
+            json!({"summary":summary,"history":history,"raw_history":raw,"tasks":tasks})
         )
         .unwrap();
     }
@@ -342,7 +369,10 @@ async fn run_observation_terminal_summary_write_failure_rolls_back_completion() 
         observation(&app, "default", &run).await["summary_state"],
         "observed"
     );
-    assert_eq!(observation(&app, "default", &run).await["liveness_state"], "workflow_task_leased");
+    assert_eq!(
+        observation(&app, "default", &run).await["liveness_state"],
+        "workflow_task_leased"
+    );
     database.execute("DROP TRIGGER reject_summary").await;
     assert_eq!(finish_task(&app, &task, commands).await.0, StatusCode::OK);
     assert_terminal(

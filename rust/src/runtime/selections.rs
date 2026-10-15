@@ -1,9 +1,9 @@
 //! Bounded mixed activity/timer selection, with a durable first committed winner.
+use super::transaction::Transaction;
 use super::{Result, backend::Backend, refuse, store::Store};
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
-use super::transaction::Transaction;
 
 const FIELDS: [&str; 11] = [
     "parallel_group_id",

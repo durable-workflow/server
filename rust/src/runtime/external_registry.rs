@@ -1,6 +1,7 @@
 //! Recoverable registry transitions for the development byte transport.
 //! Provider writes must occur between prepare and promote under the same
 //! object lock as cleanup. Completion admission/lease fencing remains separate.
+use super::transaction::Transaction;
 use super::{
     Result,
     backend::Backend,
@@ -13,7 +14,6 @@ use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
-use super::transaction::Transaction;
 
 pub(crate) struct RegisteredPayload {
     pub(super) reference: Reference,

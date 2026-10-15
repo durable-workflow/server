@@ -1,6 +1,7 @@
 //! Sequential child completion and direct cancellation retain the original call.
 //! Retry, other failure, parallel groups and parent-close actions remain
 //! unqualified and are refused at admission rather than silently discarded.
+use super::transaction::Transaction;
 use super::{
     Result,
     backend::Backend,
@@ -12,7 +13,6 @@ use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
-use super::transaction::Transaction;
 
 #[derive(Clone, Copy)]
 pub(super) enum ChildResolution<'a> {

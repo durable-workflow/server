@@ -1,4 +1,5 @@
 //! The published v1 activity-result upload allowance grants no task completion.
+use super::transaction::Transaction;
 use super::{
     Result, RuntimeError,
     backend::Backend,
@@ -11,7 +12,6 @@ use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
-use super::transaction::Transaction;
 
 #[derive(Clone)]
 pub(crate) struct Context {

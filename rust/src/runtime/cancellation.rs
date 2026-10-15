@@ -1,5 +1,6 @@
 //! Immediate cancellation of root or direct child runs. Propagation trees and
 //! update dependencies remain refused until their separate fixtures qualify.
+use super::transaction::Transaction;
 use super::{
     Result, RuntimeError,
     backend::Backend,
@@ -10,7 +11,6 @@ use super::{
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
-use super::transaction::Transaction;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 

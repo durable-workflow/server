@@ -1,4 +1,5 @@
 //! Namespace metadata in a verified native database.
+use super::transaction::Transaction;
 use super::{
     Result, RuntimeError,
     backend::Backend,
@@ -10,7 +11,6 @@ use axum::http::StatusCode;
 use chrono::SecondsFormat;
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
-use super::transaction::Transaction;
 
 impl<DB: Backend> Store<DB>
 where

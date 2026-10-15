@@ -1,4 +1,5 @@
 //! Registration authority, original-task recovery and immutable shutdown receipts.
+use super::transaction::Transaction;
 use super::{
     Result, RuntimeError,
     backend::Backend,
@@ -9,7 +10,6 @@ use super::{
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
-use super::transaction::Transaction;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 

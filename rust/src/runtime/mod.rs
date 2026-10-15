@@ -2,13 +2,13 @@
 //! arguments use the official codec on a bounded blocking worker.
 //! Typed database adapters share transitions; existing PHP data requires qualification.
 
+mod active_summary;
 mod activity_completion_uploads;
 mod activity_deadlines;
 mod activity_failures;
 mod activity_heartbeats;
 mod activity_results;
 mod activity_wait_projection;
-mod active_summary;
 mod backend;
 mod cancellation;
 mod children;

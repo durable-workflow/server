@@ -351,10 +351,17 @@ async fn worker_reported_range_failure_requires_explicit_original_task_repair_ac
     assert_eq!(accepted.0, StatusCode::OK, "{}", accepted.1);
     assert_eq!(accepted.1["recorded"], true);
     assert_eq!(accepted.1["next_task_id"], Value::Null);
-    let blocked_summary = run_observation_active_summaries::observe(&app, "default", &started).await;
+    let blocked_summary =
+        run_observation_active_summaries::observe(&app, "default", &started).await;
     assert_eq!(blocked_summary["liveness_state"], "workflow_replay_blocked");
-    assert_eq!(blocked_summary["liveness_reason"], "Recorded version 1 is outside supported range 2..2.");
-    assert_eq!(blocked_summary["history_event_count"], prefix.as_array().unwrap().len());
+    assert_eq!(
+        blocked_summary["liveness_reason"],
+        "Recorded version 1 is outside supported range 2..2."
+    );
+    assert_eq!(
+        blocked_summary["history_event_count"],
+        prefix.as_array().unwrap().len()
+    );
     assert_eq!(rows(&database, "SELECT COUNT(*) FROM workflow_tasks WHERE status='failed' AND attempt_count=1 AND repair_count=0 AND lease_expires_at IS NULL").await, 1);
     assert_eq!(
         rows(
@@ -501,7 +508,8 @@ async fn worker_reported_range_failure_requires_explicit_original_task_repair_ac
     )
     .unwrap();
     assert_eq!(repaired["outcome"], "repair_dispatched");
-    let repaired_summary = run_observation_active_summaries::observe(&app, "default", &started).await;
+    let repaired_summary =
+        run_observation_active_summaries::observe(&app, "default", &started).await;
     assert_eq!(repaired_summary["liveness_state"], "workflow_task_ready");
     assert_eq!(rows(&database, "SELECT COUNT(*) FROM workflow_run_summaries WHERE task_problem=TRUE AND repair_blocked_reason='repair_not_needed' AND next_task_status='ready'").await, 1);
     assert_eq!(repaired["target_scope"], "instance");

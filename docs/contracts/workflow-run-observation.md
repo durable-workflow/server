@@ -109,8 +109,21 @@ JSON order and PHP's canonical byte encoding. Failure counts deduplicate retaine
 failure IDs and supported typed failure events. Terminal rows clear active
 wait/task fields and record closed liveness, duration and the selected/current
 run relationship. Imported, pruned or incomplete histories are excluded from
-this producer; active summaries and configurable budget policy remain open.
+this producer; configurable budget policy remains open.
 Observation reads never rebuild a missing summary.
+
+Workflow-task summaries now commit with starts, claims, lease renewal, task
+failure and explicit repair. A claim changes stored liveness without appending
+history. A summary persistence failure rolls back the owning transition,
+including its lease and attempt counter. Summaries retain the run's source
+timestamp, and active duration stays null until closure.
+
+The active classifier currently covers native task-only histories containing
+`StartAccepted`, `WorkflowStarted` and `RepairRequested`. Durable wait families,
+compatibility/fleet classification and queue transport diagnostics remain open.
+Those states remove the earlier task-only summary in the committing transaction
+and expose unavailable measurements until their classifier is implemented.
+Independent wait projections retain their existing qualification.
 
 The execution controls can write synthetic reference input with
 `DW_TEST_SUMMARY_REFERENCE=/path/to/evidence.jsonl`. Run

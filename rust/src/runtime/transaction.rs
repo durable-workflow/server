@@ -1,7 +1,10 @@
 //! Commit derived run summaries after all authoritative mutations in a transition.
 use super::{Result, backend::Backend, store::Store};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
-use std::{collections::BTreeSet, ops::{Deref, DerefMut}};
+use std::{
+    collections::BTreeSet,
+    ops::{Deref, DerefMut},
+};
 
 pub(super) struct Transaction<'a, DB: Backend> {
     inner: sqlx::Transaction<'a, DB>,
@@ -10,7 +13,10 @@ pub(super) struct Transaction<'a, DB: Backend> {
 
 impl<'a, DB: Backend> Transaction<'a, DB> {
     pub(super) fn new(inner: sqlx::Transaction<'a, DB>) -> Self {
-        Self { inner, summaries: BTreeSet::new() }
+        Self {
+            inner,
+            summaries: BTreeSet::new(),
+        }
     }
 
     pub(super) fn summary_changed(&mut self, run_id: &str) {
@@ -25,11 +31,15 @@ impl<'a, DB: Backend> Transaction<'a, DB> {
 
 impl<DB: Backend> Deref for Transaction<'_, DB> {
     type Target = DB::Connection;
-    fn deref(&self) -> &Self::Target { &self.inner }
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
 }
 
 impl<DB: Backend> DerefMut for Transaction<'_, DB> {
-    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.inner }
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
 }
 
 impl<DB: Backend> Transaction<'_, DB>

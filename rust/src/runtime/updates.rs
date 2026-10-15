@@ -1,5 +1,6 @@
 //! Durable updates admitted at a quiescent wait, with original request receipts.
 //! Concurrent queued control routing and validator tasks are not qualified.
+use super::transaction::Transaction;
 use super::{
     Result, RuntimeError,
     backend::Backend,
@@ -10,7 +11,6 @@ use super::{
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
-use super::transaction::Transaction;
 use std::time::Duration;
 
 const MAX_UPDATES_PER_RUN: i64 = 64;

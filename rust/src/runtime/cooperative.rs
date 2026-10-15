@@ -1,5 +1,6 @@
 //! Root cancellation keeps one durable request, budget and claim-time proof.
 //! Unsupported propagation remains explicit while the wider corpus is pending.
+use super::transaction::Transaction;
 use super::{
     Result, RuntimeError,
     backend::Backend,
@@ -11,7 +12,6 @@ use axum::http::StatusCode;
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
-use super::transaction::Transaction;
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::Semaphore;
 

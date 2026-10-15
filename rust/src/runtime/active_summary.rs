@@ -1,5 +1,10 @@
 //! Workflow-task liveness for native runs with a complete, supported history.
-use super::{Result, backend::Backend, store::{Store, now}, transaction::Transaction};
+use super::{
+    Result,
+    backend::Backend,
+    store::{Store, now},
+    transaction::Transaction,
+};
 use chrono::{DateTime, Utc};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 
@@ -29,7 +34,8 @@ where
     usize: ColumnIndex<DB::Row>,
 {
     pub(super) async fn active_task_summary(
-        tx: &mut Transaction<'_, DB>, run: &DB::Row,
+        tx: &mut Transaction<'_, DB>,
+        run: &DB::Row,
     ) -> Result<Option<ActiveSummary>> {
         // Compatibility/fleet and durable wait classifiers are separate slices.
         // Leave an explicit unavailable summary instead of inventing liveness.
@@ -41,18 +47,33 @@ where
         let mut summary = ActiveSummary {
             state: "repair_needed".into(),
             reason: "Run is non-terminal but has no durable next-resume source.".into(),
-            task_id: None, task_status: None, available_at: None, wait_started_at: None,
-            lease_expires_at: None, wait_reason: None, repair_blocked: None, problem: true,
+            task_id: None,
+            task_status: None,
+            available_at: None,
+            wait_started_at: None,
+            lease_expires_at: None,
+            wait_reason: None,
+            repair_blocked: None,
+            problem: true,
         };
         let failed = Self::query("SELECT payload,last_error FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status='failed' ORDER BY id LIMIT 101")
             .bind(&run_id).fetch_all(&mut **tx).await?;
-        if failed.len() == 101 { return Ok(None); }
+        if failed.len() == 101 {
+            return Ok(None);
+        }
         let mut blocked = None;
         for task in failed {
             let payload = DB::document_row(&task, "payload")?;
             if payload["replay_blocked"].as_bool() == Some(true) {
-                if payload["replay_blocked_reason"] != "worker_reported_replay_failure" { return Ok(None); }
-                blocked = Some(DB::optional_string(&task, "last_error")?.unwrap_or_else(|| "Workflow replay is blocked.".into()).trim().to_owned());
+                if payload["replay_blocked_reason"] != "worker_reported_replay_failure" {
+                    return Ok(None);
+                }
+                blocked = Some(
+                    DB::optional_string(&task, "last_error")?
+                        .unwrap_or_else(|| "Workflow replay is blocked.".into())
+                        .trim()
+                        .to_owned(),
+                );
                 break;
             }
         }
@@ -60,24 +81,46 @@ where
             .bind(&run_id).bind(DB::bind_time(at)).fetch_optional(&mut **tx).await?;
         if let Some(task) = task {
             if DB::string(&task, "task_type")? != "workflow"
-                || DB::optional_string(&task, "compatibility")?.is_some_and(|v| !v.trim().is_empty())
+                || DB::optional_string(&task, "compatibility")?
+                    .is_some_and(|v| !v.trim().is_empty())
                 || DB::optional_instant(&task, "last_dispatch_attempt_at")?.is_some()
                 || DB::optional_instant(&task, "last_claim_failed_at")?.is_some()
                 || DB::optional_instant(&task, "last_dispatched_at")?.is_some()
-            { return Ok(None); }
+            {
+                return Ok(None);
+            }
             let id = DB::string(&task, "id")?;
             let status = DB::string(&task, "status")?;
             let expires = DB::optional_instant(&task, "lease_expires_at")?;
             let expired = status == "leased" && expires.is_some_and(|v| v <= at);
-            summary.state = if expired { "repair_needed".into() } else { format!("workflow_task_{status}") };
+            summary.state = if expired {
+                "repair_needed".into()
+            } else {
+                format!("workflow_task_{status}")
+            };
             summary.reason = if expired {
-                format!("Workflow task {id} lease expired at {}.", expires.unwrap().format("%Y-%m-%dT%H:%M:%S%.6fZ"))
+                format!(
+                    "Workflow task {id} lease expired at {}.",
+                    expires.unwrap().format("%Y-%m-%dT%H:%M:%S%.6fZ")
+                )
             } else if status == "leased" {
                 format!("Workflow task {id} is leased to a worker.")
-            } else { format!("Workflow task {id} is ready to run.") };
-            summary.wait_reason = Some(if expired { "Workflow task lease expired" } else if status == "leased" { "Workflow task leased to worker" } else { "Workflow task ready" }.into());
+            } else {
+                format!("Workflow task {id} is ready to run.")
+            };
+            summary.wait_reason = Some(
+                if expired {
+                    "Workflow task lease expired"
+                } else if status == "leased" {
+                    "Workflow task leased to worker"
+                } else {
+                    "Workflow task ready"
+                }
+                .into(),
+            );
             summary.available_at = DB::optional_instant(&task, "available_at")?;
-            summary.wait_started_at = DB::optional_instant(&task, "leased_at")?.or(summary.available_at);
+            summary.wait_started_at =
+                DB::optional_instant(&task, "leased_at")?.or(summary.available_at);
             summary.lease_expires_at = expires;
             summary.task_id = Some(id);
             summary.task_status = Some(status);
@@ -93,8 +136,15 @@ where
         Ok(Some(summary))
     }
 
-    pub(super) async fn write_active_summary_fields(tx: &mut Transaction<'_, DB>, run_id: &str, summary: &ActiveSummary) -> Result<()> {
-        let wait_id = summary.task_id.as_ref().map(|id| format!("workflow-task:{id}"));
+    pub(super) async fn write_active_summary_fields(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        summary: &ActiveSummary,
+    ) -> Result<()> {
+        let wait_id = summary
+            .task_id
+            .as_ref()
+            .map(|id| format!("workflow-task:{id}"));
         Self::query("UPDATE workflow_run_summaries SET wait_kind=$1,wait_reason=$2,wait_started_at=$3,wait_deadline_at=$4,open_wait_id=$5,resume_source_kind=$6,resume_source_id=$7,next_task_at=$8,next_task_id=$9,next_task_type=$10,next_task_status=$11,next_task_lease_expires_at=$12,repair_attention=CASE WHEN $13=1 THEN TRUE ELSE FALSE END,task_problem=CASE WHEN $14=1 THEN TRUE ELSE FALSE END WHERE id=$15")
             .bind(summary.task_id.as_ref().map(|_| "workflow-task")).bind(summary.wait_reason.as_deref())
             .bind(DB::optional_time(summary.wait_started_at)).bind(DB::optional_time(summary.lease_expires_at)).bind(wait_id.as_deref())

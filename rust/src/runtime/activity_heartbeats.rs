@@ -1,4 +1,5 @@
 //! Fenced heartbeat progress used by real cleanup activities.
+use super::transaction::Transaction;
 use super::{
     Result,
     backend::Backend,
@@ -9,7 +10,6 @@ use super::{
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
-use super::transaction::Transaction;
 
 impl<DB: Backend> Store<DB>
 where
