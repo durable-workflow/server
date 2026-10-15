@@ -10,8 +10,8 @@ use GuzzleHttp\HandlerStack;
 use Psr\Http\Message\RequestInterface;
 
 // Public SDK operations only. No Server models, database writes or projection repair.
-if ($argc !== 4 || ! in_array($argv[2], ['execute', 'cold-read'], true)) {
-    throw new InvalidArgumentException('Usage: run-observation-consumer.php URL execute|cold-read IDENTITY_JSON');
+if ($argc !== 4 || ! in_array($argv[2], ['execute', 'cold-read', 'recovered-read'], true)) {
+    throw new InvalidArgumentException('Usage: run-observation-consumer.php URL execute|cold-read|recovered-read IDENTITY_JSON');
 }
 $autoload = getenv('DW_PARITY_SDK_AUTOLOAD');
 if (! is_string($autoload) || $autoload === '' || ! is_file($autoload)) {
@@ -28,6 +28,10 @@ if (InstalledVersions::getPrettyVersion('durable-workflow/sdk') !== $sdk['versio
 $state = json_decode(file_get_contents($identityPath), true, flags: JSON_THROW_ON_ERROR);
 $workflow = $state['workflow_id'];
 $namespace = $state['namespace'];
+$terminalOutcome = $state['terminal_outcome'] ?? 'completed';
+if (! in_array($terminalOutcome, ['completed', 'failed'], true)) {
+    throw new InvalidArgumentException('terminal_outcome must be completed or failed.');
+}
 $require = static function (bool $condition, string $message): void {
     if (! $condition) {
         throw new RuntimeException($message);
@@ -53,6 +57,13 @@ $client = new Client($url, namespace: $namespace, token: 'observation-fixture-to
     transport: new Psr18Transport(client: $http));
 $stable = static function (array $value): array {
     unset($value['observed_at'], $value['current_waits']['observed_at']);
+    foreach ($value['recent_failures']['failures'] ?? [] as $index => $failure) {
+        if (is_string($failure['supporting_event']['next_page_token'] ?? null)) {
+            // PHP encrypts the same cursor with a fresh IV. The capture consumes
+            // each original token and checks its exact event and window first.
+            $value['recent_failures']['failures'][$index]['supporting_event']['next_page_token'] = 'verified';
+        }
+    }
 
     return $value;
 };
@@ -64,6 +75,28 @@ $capture = static function (string $stage, string $status) use (
     $before = $client->workflowHistory($workflow, $run);
     $current = $client->workflowObservation($workflow);
     $selected = $client->workflowObservation($workflow, $run);
+    $supportingPages = [];
+    foreach (['current' => $current, 'selected' => $selected] as $selection => $observed) {
+        foreach ($observed['recent_failures']['failures'] ?? [] as $failure) {
+            $event = $failure['supporting_event'];
+            $token = $event['next_page_token'] ?? null;
+            if ($token === null) {
+                continue;
+            }
+            $require(is_string($token) && $token !== '', $stage.': invalid failure cursor.');
+            $page = $client->workflowObservation($workflow, $run, historyPageSize: 1,
+                historyPageToken: $token)['history'];
+            $require($page['after_sequence'] === $event['after_sequence']
+                && $page['returned_count'] === 1 && $page['has_more'] === false
+                && $page['next_page_token'] === null && $page['through_sequence'] === $event['sequence'],
+                $stage.': failure cursor selected a different history window.');
+            foreach (['id', 'sequence', 'event_type'] as $field) {
+                $require($page['events'][0][$field] === $event[$field],
+                    $stage.': failure cursor selected a different '.$field.'.');
+            }
+            $supportingPages[$selection][] = $page;
+        }
+    }
     $after = $client->workflowHistory($workflow, $run);
     $require($before === $after, $stage.': observation changed history.');
     $require($payloadGets === 0, $stage.': observation fetched external payload bytes.');
@@ -98,7 +131,8 @@ $capture = static function (string $stage, string $status) use (
         $state['product_gaps'][] = $stage.': summary_state='.$selected['summary_state'];
     } else {
         $require($selected['history_event_count'] === count($before['events']), $stage.': stale summary event count.');
-        $require($selected['exception_count'] === 0, $stage.': retry became a terminal failure.');
+        $require($selected['exception_count'] === ($status === 'failed' ? 1 : 0),
+            $stage.': terminal failure count differs.');
         $require(is_int($selected['history_size_bytes']) && $selected['history_size_bytes'] >= 0,
             $stage.': missing history size counter.');
         // The published fresh-start shortcut stores zero. Later full projections
@@ -116,11 +150,12 @@ $capture = static function (string $stage, string $status) use (
         && ($selected['current_waits']['state'] !== 'partial' || $selected['current_waits']['returned_count'] !== 1)) {
         $state['product_gaps'][] = $stage.': activity wait projection missing';
     }
-    if ($status === 'completed') {
+    if (in_array($status, ['completed', 'failed'], true)) {
         $require($selected['current_waits']['state'] === 'available'
             && $selected['current_waits']['total_count'] === 0, $stage.': closed run retains current waits.');
     }
-    $state['snapshots'][$stage] = ['current' => $current, 'selected' => $selected];
+    $state['snapshots'][$stage] = ['current' => $current, 'selected' => $selected,
+        'supporting_event_pages' => $supportingPages];
     $state['history_counts'] = array_count_values(array_column($after['events'], 'event_type'));
     $budget();
 };
@@ -181,12 +216,15 @@ if ($phase === 'execute') {
     $parent = $client->pollWorkflowTask($worker, $workflow, 0);
     $require($parent !== null && $parent['run_id'] === $state['run_id'], 'Original parent continuation missing.');
     $state['parent_claim'] = $parent;
-    $client->completeWorkflowTask($parent['task_id'], $parent['lease_owner'], $parent['workflow_task_attempt'], [[
-        'type' => 'complete_workflow', 'result' => $client->payloadCodec()->envelope('separate parent output'),
-    ]]);
-    $capture('closed', 'completed');
+    $terminal = $terminalOutcome === 'failed'
+        ? ['type' => 'fail_workflow', 'message' => 'separate parent failure 日本語 λ']
+        : ['type' => 'complete_workflow', 'result' => $client->payloadCodec()->envelope('separate parent output')];
+    $client->completeWorkflowTask($parent['task_id'], $parent['lease_owner'], $parent['workflow_task_attempt'], [$terminal]);
+    $capture('closed', $terminalOutcome);
     foreach (['ActivityScheduled' => 1, 'ActivityStarted' => 2, 'ActivityHeartbeatRecorded' => 1,
-        'ActivityRetryScheduled' => 1, 'ActivityCompleted' => 1, 'ActivityFailed' => 0, 'WorkflowCompleted' => 1] as $kind => $count) {
+        'ActivityRetryScheduled' => 1, 'ActivityCompleted' => 1, 'ActivityFailed' => 0,
+        'WorkflowCompleted' => (int) ($terminalOutcome === 'completed'),
+        'WorkflowFailed' => (int) ($terminalOutcome === 'failed')] as $kind => $count) {
         $require(($state['history_counts'][$kind] ?? 0) === $count, 'Wrong original event count: '.$kind);
     }
     foreach (['scheduled', 'claimed', 'heartbeat', 'retry', 'resumed'] as $stage) {
@@ -210,7 +248,7 @@ if ($phase === 'execute') {
     }
 } elseif ($phase === 'cold-read') {
     $budget();
-    $capture('cold', 'completed');
+    $capture('cold', $terminalOutcome);
     $require($stable($state['snapshots']['closed']['selected']) === $stable($state['snapshots']['cold']['selected']),
         'Fresh client changed retained closed observation.');
     $window = $state['window'];
@@ -238,6 +276,23 @@ if ($phase === 'execute') {
         'Original history continuation lost or added events.');
     $require($before === $client->workflowHistory($workflow, $state['run_id']), 'Cold page read changed history.');
     $state['continued_window'] = $pages;
+} elseif ($phase === 'recovered-read') {
+    // The caller runs the existing selected-run repair command explicitly.
+    // Keep the original failure evidence; a repaired read is a separate result.
+    $require(isset($state['snapshots']['cold']), 'Recovery requires the original cold read first.');
+    $originalGapCount = count($state['product_gaps']);
+    $require($originalGapCount > 0, 'Recovery requires an original product failure.');
+    $capture('recovered', $terminalOutcome);
+    $require(count($state['product_gaps']) === $originalGapCount, 'Recovery did not restore exact summary bytes.');
+    $original = $stable($state['snapshots']['cold']['selected']);
+    $recovered = $stable($state['snapshots']['recovered']['selected']);
+    $require($original['history_size_bytes'] !== $recovered['history_size_bytes'], 'Recovery did not change the affected counter.');
+    // Repair may replace the projected counter and its timestamp. Every other
+    // field, including complete original history and failure identities, stays.
+    unset($original['history_size_bytes'], $original['summary_observed_at']);
+    unset($recovered['history_size_bytes'], $recovered['summary_observed_at']);
+    $require($original === $recovered, 'Recovery changed more than summary bytes and projection time.');
+    $state['recovery_verified'] = true;
 } else {
     throw new RuntimeException('Unknown observation consumer phase.');
 }
@@ -247,9 +302,10 @@ $state['metadata_payload_gets'] = $payloadGets;
 if (file_put_contents($identityPath, json_encode($state, JSON_THROW_ON_ERROR)) === false) {
     throw new RuntimeException('Cannot retain the original observation evidence.');
 }
-echo json_encode(['outcome' => $state['product_gaps'] === [] ? 'pass' : 'product-fail',
+$passed = $phase === 'recovered-read' ? ($state['recovery_verified'] ?? false) : $state['product_gaps'] === [];
+echo json_encode(['outcome' => $passed ? 'pass' : 'product-fail',
     'phase' => $phase, 'workflow_id' => $workflow, 'run_id' => $state['run_id'], 'namespace' => $namespace,
     'snapshots' => array_keys($state['snapshots']), 'product_gaps' => $state['product_gaps'],
     'history_unchanged_by_reads' => true, 'metadata_payload_gets' => $payloadGets,
     'elapsed_seconds' => microtime(true) - $state['started_at']], JSON_THROW_ON_ERROR)."\n";
-exit($state['product_gaps'] === [] ? 0 : 1);
+exit($passed ? 0 : 1);
