@@ -82,6 +82,11 @@ where
             {
                 let contracts = DB::document_row(&worker, "workflow_command_contracts")?;
                 if let Some(contract) = contracts.get(workflow_type) {
+                    // Older development registrations may predate validation.
+                    // Never turn a malformed entry into authoritative empties.
+                    let Ok(contract) = super::worker_contracts::declaration(contract) else {
+                        continue;
+                    };
                     for (source, target) in [
                         ("signals", "declared_signals"),
                         ("signal_contracts", "declared_signal_contracts"),
@@ -91,7 +96,9 @@ where
                         ("update_contracts", "declared_update_contracts"),
                         ("update_validators", "declared_update_validators"),
                     ] {
-                        started[target] = contract[source].clone();
+                        if let Some(value) = contract.get(source) {
+                            started[target] = value.clone();
+                        }
                     }
                     break;
                 }

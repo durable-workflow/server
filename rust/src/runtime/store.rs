@@ -780,27 +780,29 @@ where
             }
         }
         let runtime = text(&body, "runtime")?;
-        let contracts = body
+        let supplied_contracts = body
             .get("workflow_command_contracts")
-            .cloned()
-            .unwrap_or_else(|| json!({}));
-        // PHP encodes an empty associative map as []; activity-only published
-        // workers send this shape. Preserve a map internally for lookups.
-        let contracts = if contracts.as_array().is_some_and(|values| values.is_empty()) {
-            json!({})
-        } else {
-            contracts
-        };
-        if !contracts.is_object() {
-            return Err(refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "invalid_worker_definition",
-            ));
-        }
+            .map(|contracts| {
+                super::worker_contracts::normalize(contracts, &body["supported_workflow_types"])
+            })
+            .transpose()?;
         let token = super::worker_incarnations::token().await?;
         let mut tx = self.begin().await?;
-        let previous = Self::query("SELECT worker_id FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2")
+        let previous = Self::query("SELECT worker_id,workflow_command_contracts FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2")
             .bind(self.namespace.as_ref()).bind(worker_id).fetch_optional(&mut *tx).await?;
+        let contracts = match supplied_contracts {
+            Some(contracts) => contracts,
+            None => {
+                let existing = match &previous {
+                    Some(worker) => {
+                        DB::optional_document_row(worker, "workflow_command_contracts")?
+                            .unwrap_or(Value::Null)
+                    }
+                    None => Value::Null,
+                };
+                super::worker_contracts::normalize(&existing, &body["supported_workflow_types"])?
+            }
+        };
         if previous.is_some() {
             // Match PHP's registration boundary: return original workflow leases
             // to ready without a repair command/history event. Token rotation

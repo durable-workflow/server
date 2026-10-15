@@ -140,6 +140,18 @@ Current PHP 2.8 query-authority and activity-result-inspection parity also
 require separate native qualification. PHP's #436 empty-declaration correction
 is incorporated as qualified source; native empty/omitted/malformed declaration
 and selected-build-cohort parity remains a separate open gate.
+A separate native registration/history slice now normalizes explicit empty
+declarations into six durable lists, rejects malformed entries before rotating
+registration or releasing an original lease, and preserves original snapshots
+across later registrations and cold reads. Its three regressions fail the
+previous implementation and pass SQLite, MySQL 8.4 and PostgreSQL 17 locally.
+The broader first SQLite check passes 75 library tests with eighteen existing
+ignores and 127 execution tests, but fails the older expectation that named
+timers remain unqualified. That failed record is preserved. The corrected
+namespace refusal control uses a still-unqualified child command and keeps its
+original atomicity and isolation assertions. Exact combined qualification,
+installed shared consumers, build-cohort routing and bounded observations
+remain open for #436; this slice does not qualify the complete boundary.
 Broader runtime/operational parity, safe sequential PHP database takeover,
 matched performance measurements and release/cutover preparation remain #325
 requirements. No native release or deployment is qualified.

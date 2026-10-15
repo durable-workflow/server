@@ -41,6 +41,7 @@ mod task_repair;
 mod task_repair_http;
 mod updates;
 mod visibility;
+mod worker_contracts;
 mod worker_incarnations;
 
 pub use execution::Runtime;
