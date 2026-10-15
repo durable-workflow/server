@@ -19,6 +19,7 @@ $count = 0;
 foreach (file($argv[2], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
     $case = json_decode($line, true, 512, JSON_THROW_ON_ERROR);
     $summary = $case['summary'];
+    Illuminate\Support\Carbon::setTestNow($summary['observed_at']);
 
     if (! in_array($summary['liveness_state'], ['workflow_task_ready', 'workflow_task_leased'], true)) {
         continue;
@@ -40,6 +41,8 @@ foreach (file($argv[2], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line)
 
     ++$count;
 }
+
+Illuminate\Support\Carbon::setTestNow();
 
 if ($count === 0 || $database->getConnection()->getQueryLog() !== []) {
     throw new RuntimeException('Expected nonempty task evidence and no reference database queries.');

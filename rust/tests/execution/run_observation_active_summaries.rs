@@ -147,3 +147,26 @@ async fn run_observation_active_summary_failure_rolls_back_claim_and_missing_rea
     runtime.close().await;
     database.remove().await;
 }
+
+#[tokio::test]
+async fn run_observation_active_summary_keeps_unqualified_transport_state_unavailable() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "default").await;
+    let run = namespaces::start_scoped(&app, "default", "summary-transport").await;
+    assert_eq!(
+        observe(&app, "default", &run).await["liveness_state"],
+        "workflow_task_ready"
+    );
+    database.execute("UPDATE workflow_tasks SET created_at=available_at,last_dispatch_attempt_at=available_at,last_dispatch_error='retained transport failure'").await;
+    let claimed = claim(&app, "default").await;
+    assert_eq!(claimed.0, StatusCode::OK, "{}", claimed.1);
+    assert!(claimed.1["task"].is_object());
+    let unknown = observe(&app, "default", &run).await;
+    assert_eq!(unknown["summary_state"], "unavailable");
+    assert!(unknown["liveness_state"].is_null());
+    assert!(unknown["history_event_count"].is_null());
+    runtime.close().await;
+    database.remove().await;
+}

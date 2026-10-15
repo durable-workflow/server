@@ -43,6 +43,13 @@ where
             return Ok(None);
         }
         let run_id = DB::string(run, "id")?;
+        // These native task transitions do not author queue-driver metadata.
+        // Its presence needs the separately qualified transport classifier,
+        // including historical task problems and redispatch configuration.
+        if Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$1 AND (created_at IS NOT NULL OR last_dispatch_attempt_at IS NOT NULL OR last_claim_failed_at IS NOT NULL OR last_dispatched_at IS NOT NULL)")
+            .bind(&run_id).fetch_one(&mut **tx).await? > 0 {
+            return Ok(None);
+        }
         let at = now();
         let mut summary = ActiveSummary {
             state: "repair_needed".into(),
@@ -83,9 +90,6 @@ where
             if DB::string(&task, "task_type")? != "workflow"
                 || DB::optional_string(&task, "compatibility")?
                     .is_some_and(|v| !v.trim().is_empty())
-                || DB::optional_instant(&task, "last_dispatch_attempt_at")?.is_some()
-                || DB::optional_instant(&task, "last_claim_failed_at")?.is_some()
-                || DB::optional_instant(&task, "last_dispatched_at")?.is_some()
             {
                 return Ok(None);
             }
