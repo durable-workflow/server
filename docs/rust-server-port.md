@@ -2914,9 +2914,15 @@ inside the existing read-only observation. Bounded pages and transfer limits
 precede canonical joins. Unknown representations, orphaned/foreign bindings
 and skipped nonpositive IDs refuse before a success report. Local native checks
 pass 93 library cases with 18 existing database/subprocess ignores and the
-process refusal control for both inspection commands. Actual published-source
-CLI and fresh all-database integration remain pending. Complete stored-state
-validation, restored backup verification and sequential takeover stay open.
+process refusal control for both inspection commands. Source `5d54f25e` then
+passes actual published PHP 2.8.0 preparation and stopped-source CLI inspection
+on SQLite DELETE, MySQL 8.4 and PostgreSQL 17: six original pending runs, three
+canonical timer jobs and nine distinct refusal controls. Each source state is
+unchanged by inspection and every source API exits 0 without OOM. This is a
+raw-protocol author, not SDK continuation or Rust execution of those originals.
+Fresh hosted integration across all six database versions remains pending.
+Complete stored-state validation, restored backup verification and sequential
+takeover stay open.
 
 The upload/poll-hint candidate now incorporates exact qualified PHP source
 `1f994962` and its `applyStickyCacheClaim` primary-key correction, including

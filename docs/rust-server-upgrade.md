@@ -114,8 +114,8 @@ fields remain original strings, not recalculated task deadlines.
 The committed queue fixtures are produced by serializing the real classes in
 the pinned published image without dispatching them. This independently tested
 decoder grants no conversion, deletion, execution or takeover authority.
-Complete native integration and actual same-database queue qualification remain
-separate gates.
+The read-only source-row binding below is a separate check; actual replacement
+of PHP queue execution remains unqualified.
 
 A separate genuine published PHP 2.8.2 source fixture now contains one queued
 timer job, its original task/run, and a separate leased activity. Its outer
@@ -162,8 +162,13 @@ disagreements refuse without a partial success report. The output adds only
 job-kind counts, not payloads or identities. No jobs are deleted or executed,
 and all takeover, backup, quiescence and complete representation flags remain
 false. An empty database queue does not establish the state of Redis, another
-queue connection or another transport. The hosted published-source recipe now
-requires this separate component; its fresh all-database execution is pending.
+queue connection or another transport. The published-source recipe now requires
+this separate component. Local source `5d54f25e` passes the actual recipe on
+SQLite DELETE, MySQL 8.4 and PostgreSQL 17, with two original pending runs and
+one timer job per database. Inspection preserves each source snapshot, and
+denied access, unknown catalogs, ownership markers and PostgreSQL row security
+remain explicit refusals where applicable. The full hosted database-version
+matrix and subsequent migration gates remain pending.
 
 The separate published PHP 2.8.0 profile prepares two genuine original runs:
 one leased activity and one pending timer. It explicitly stops PHP before
