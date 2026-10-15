@@ -87,7 +87,7 @@ const server = http.createServer(async (request, response) => {
           || task.query_task_attempt !== 1 || !task.lease_owner) throw Error('Changed original query authority');
         record('claim', {protocol: request.headers['x-durable-workflow-protocol-version'], claim: select(task)});
         if (mode === 'late-poll') {
-          if (held) throw Error('A second original query was claimed');
+          if (held) throw Error('Multiple poll responses invalidate this single-delivery fault control');
           held = true;
           record('held');
           await new Promise(resolve => setTimeout(resolve, 6_000));

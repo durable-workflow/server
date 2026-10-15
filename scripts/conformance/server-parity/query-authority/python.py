@@ -66,7 +66,7 @@ async def main():
             await admin.create_namespace(namespace)
         async with Client(URL, token=os.environ['DW_PARITY_TOKEN'], namespace=namespace) as client:
             worker = Worker(client, workflows=[QueryWorkflow], task_queue=namespace,
-                            worker_id=namespace, poll_timeout=.2, shutdown_timeout=5,
+                            worker_id=namespace, poll_timeout=8, shutdown_timeout=5,
                             require_query_task_authority=PROTOCOL == '1.20')
             runner = asyncio.create_task(worker.run())
             try:

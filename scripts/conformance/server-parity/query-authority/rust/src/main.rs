@@ -57,7 +57,7 @@ async fn main() -> Result<()> {
     let client = builder.build()?;
     let counters = Arc::new(Counters::default());
     let mut worker = Worker::new(client.clone(), &namespace).worker_id(&namespace)
-        .poll_timeout(Duration::from_millis(200)).require_query_task_authority(protocol == "1.20");
+        .poll_timeout(Duration::from_secs(8)).require_query_task_authority(protocol == "1.20");
     worker.register_workflow(TYPE, |context, arguments| async move {
         if arguments != json!([7]) { return Err(Error::WorkerLoop("Original input changed".into())); }
         context.sleep(Duration::from_secs(60)).await?;
