@@ -6,10 +6,13 @@ The unpublished Rust crate has an Avro foundation and an opt-in SQLite/PostgreSQ
 execution slice. Full runtime parity, migration, performance improvement and
 cutover remain unqualified.
 
-The latest delivered main foundation is [#444](https://github.com/durable-workflow/server/pull/444),
-including initial portable memo and the earlier corrected marker/clock/retry
-profiles. Its exact merged main passes [all 13 shared jobs across six databases](https://github.com/durable-workflow/server/actions/runs/38599251632)
-and normal source/boundary checks. Frozen published PHP, embedded and SDK tuples
+The latest delivered native foundation is [#450](https://github.com/durable-workflow/server/pull/450),
+including memo transactions, actual SDK memo authoring and activity/continuation
+replay from #445/#446/#448. Its exact merged main passes
+[all 13 shared jobs across six databases](https://github.com/durable-workflow/server/actions/runs/38652717748)
+and normal source/boundary checks. #446's first failed query observation remains
+failed and unexplained; its unchanged second attempt reran all 13 jobs.
+Frozen published PHP, embedded and SDK tuples
 remain separate from current PHP release work. Representative timer, signal,
 query, update, activity, cancellation, namespace and recovery checks do not
 establish complete parity for those families. The original failed records remain
@@ -19,24 +22,23 @@ failed; later qualifying runs are separate observations.
 
 The active integration order is:
 
-- [#445](https://github.com/durable-workflow/server/pull/445): canonical memo
-  transaction foundation, with public updates still disabled. Its current-main
-  combined [qualification](https://github.com/durable-workflow/server/actions/runs/38608723068)
-  is pending; the older source's pass is separate.
-- [#446](https://github.com/durable-workflow/server/pull/446): cold continue-as-new
-  after a genuine activity. Prior candidate qualification passes; exact current-main
-  integration, promotion and fresh-main acceptance remain ahead.
-- [#448](https://github.com/durable-workflow/server/pull/448): actual SDK memo
-  authoring and continuation inheritance. Its candidate passes all 13 shared
-  jobs across six databases; promotion and external-memo policy remain pending.
-- [#450](https://github.com/durable-workflow/server/pull/450): verified local
-  external input, workflow/activity results and activity arguments. Installed
-  PHP/native originals, including a two-activity batch and cold parent, complete.
-  Two-reference atomic rollback/cold delivery controls pass. Latest-source hosted
-  qualification is pending. The older byte-only and input-only sources pass
-  their own full matrices. One local 100 ms transfer control
-  failed; three isolated controls and an unchanged full repeat pass, with the
-  original cause still unknown.
+- [#457](https://github.com/durable-workflow/server/pull/457): run the existing
+  installed external-payload consumers on every required database, including
+  byte-preserving cold readers. Exact current-main qualification is pending.
+- [#455](https://github.com/durable-workflow/server/pull/455): opt-in cross-kind
+  null-task poll wake hint with exact namespace/queue isolation and no delivery
+  authority. Current PHP query documentation is preserved at combined revision
+  55. Hosted integration follows #457.
+- [#458](https://github.com/durable-workflow/server/pull/458): bound activity
+  completion uploads. Actual PHP/native originals and strict readers pass
+  SQLite/MySQL 8.4/PostgreSQL 17 locally; current all-six qualification is pending.
+  Full external transport discovery remains false.
+- [#460](https://github.com/durable-workflow/server/pull/460): read-only upgrade
+  source inspection, independently prepared from published PHP 2.8.0. Exact
+  known catalog checks and counts grant no backup, quiescence or takeover
+  authority. SQLite WAL is refused before opening; rollback-journal inventory
+  and network SELECT-only roles have separate actual source checks. Hosted
+  qualification and all actual migration/conversion gates remain ahead.
 
 Full transport discovery stays unadvertised. Complete batch workflow semantics,
 memo/query reference ingress, upload allowances, automatic result policy, S3,

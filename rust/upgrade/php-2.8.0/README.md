@@ -14,7 +14,7 @@ objects still refuse. Nothing is applied to a source database, and native
 migrations, their checksums and the frozen differential catalog stay unchanged.
 
 SQLite definitions were read from an actual published-image database. MySQL
-8.4.5 and PostgreSQL 17 definitions were collected after successful raw public
+8.4.5, MariaDB 10.11.19 and PostgreSQL 17 definitions were collected after successful raw public
 protocol preparation and explicit PHP SIGTERM/exit 0. The earlier partial MySQL
 catalog read during bootstrap was discarded and is not fixture provenance.
 Catalog inspection records no application row values or credentials.

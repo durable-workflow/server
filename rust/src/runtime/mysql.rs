@@ -183,12 +183,7 @@ pub(super) async fn php_source_catalog(connection: &mut MySqlConnection) -> Resu
     if actual != expected {
         let delta = match flavor {
             Flavor::MySql => include_str!("../../upgrade/php-2.8.0/mysql.json"),
-            Flavor::MariaDb => {
-                return Err(refuse(
-                    StatusCode::CONFLICT,
-                    "upgrade_source_catalog_unqualified",
-                ));
-            }
+            Flavor::MariaDb => include_str!("../../upgrade/php-2.8.0/mariadb.json"),
         };
         let mut current = super::upgrade::source_catalog_variant(&expected, delta)?;
         current.sort_by(|left, right| left.0.cmp(&right.0));
