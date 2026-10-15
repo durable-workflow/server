@@ -65,6 +65,8 @@ mod activity_results;
 mod run_observation;
 #[path = "execution/run_observation_active_summaries.rs"]
 mod run_observation_active_summaries;
+#[path = "execution/run_observation_children.rs"]
+mod run_observation_children;
 #[path = "execution/run_observation_conditions.rs"]
 mod run_observation_conditions;
 #[path = "execution/run_observation_signals.rs"]
@@ -73,8 +75,6 @@ mod run_observation_signals;
 mod run_observation_summaries;
 #[path = "execution/run_observation_timers.rs"]
 mod run_observation_timers;
-#[path = "execution/run_observation_children.rs"]
-mod run_observation_children;
 
 #[path = "execution/waiting_history.rs"]
 mod waiting_history;
