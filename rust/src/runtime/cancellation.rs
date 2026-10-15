@@ -10,6 +10,7 @@ use super::{
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
+use super::transaction::Transaction;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
@@ -320,14 +321,14 @@ where
         )
         .await?;
         Self::resolve_child(&mut tx, &run, ChildResolution::Cancelled(&terminal), at).await?;
-        Self::project_terminal_summary(&mut tx, &run_id).await?;
+        tx.summary_changed(&run_id);
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok((StatusCode::OK, response))
     }
 
     pub(super) async fn cancel_open_activities(
-        tx: &mut sqlx::Transaction<'_, DB>,
+        tx: &mut Transaction<'_, DB>,
         run_id: &str,
         command_id: &str,
         activities: Vec<DB::Row>,
@@ -375,7 +376,7 @@ where
     }
 
     pub(super) async fn cancelled_activity_outcome(
-        tx: &mut sqlx::Transaction<'_, DB>,
+        tx: &mut Transaction<'_, DB>,
         task: &DB::Row,
         body: &Value,
     ) -> Result<()> {

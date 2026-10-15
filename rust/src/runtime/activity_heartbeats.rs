@@ -8,7 +8,8 @@ use super::{
 };
 use axum::http::StatusCode;
 use serde_json::{Value, json};
-use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Transaction, Type};
+use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
+use super::transaction::Transaction;
 
 impl<DB: Backend> Store<DB>
 where
@@ -266,6 +267,7 @@ where
             .bind(task_id)
             .execute(&mut *tx)
             .await?;
+        tx.summary_changed(&run_id);
         Self::query("UPDATE workflow_runs SET last_progress_at=$1 WHERE id=$2")
             .bind(DB::bind_time(at))
             .bind(&run_id)

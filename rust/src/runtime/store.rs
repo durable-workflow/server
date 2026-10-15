@@ -3,7 +3,8 @@ use super::{Result, backend::Backend, envelope, refuse, text, wire};
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
-use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Pool, Transaction, Type};
+use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Pool, Type};
+use super::transaction::Transaction;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::{Notify, Semaphore};
 use ulid::Ulid;
@@ -113,7 +114,7 @@ where
         self.pool.close().await;
     }
     pub(super) async fn begin(&self) -> Result<Transaction<'static, DB>> {
-        DB::begin(&self.pool).await
+        DB::begin(&self.pool).await.map(Transaction::new)
     }
     pub(crate) async fn start(
         &self,
@@ -1090,6 +1091,7 @@ where
                 .bind(worker_id).bind(DB::bind_time(expires)).bind(attempt).bind(DB::bind_time(leased_at))
                 .bind(DB::document(&task_payload)).bind(&task_id).execute(&mut *tx).await?;
             // A lease is worker authority, not an authored lifecycle commit.
+            tx.summary_changed(&run_id);
             // Published PHP keeps the admitted run pending until commands
             // change its state; the poll and description must agree.
             let mut claim = json!({"task_id": task_id, "workflow_id": DB::string(&run,"workflow_instance_id")?,
@@ -1194,6 +1196,7 @@ where
         }
         let run = Self::active_run(&mut tx, &DB::string(&task, "workflow_run_id")?).await?;
         let expires = Self::cancellation_lease_expiry(&run)?;
+        tx.summary_changed(&DB::string(&run, "id")?);
         Self::query("UPDATE workflow_tasks SET lease_expires_at=$1 WHERE id=$2")
             .bind(DB::bind_time(expires))
             .bind(task_id)
@@ -1335,6 +1338,7 @@ where
             ));
         }
         if !waiting {
+            tx.summary_changed(&run_id);
             // Do not append history or create a new run. A failed lease and
             // its optional fresh retry commit together under the backend lock.
             for (field, target) in [("type", "failure_type"), ("reason", "failure_reason")] {
@@ -1415,6 +1419,7 @@ where
             );
         }
         payload["waiting_for_history_acknowledged"] = json!(true);
+        tx.summary_changed(&run_id);
         payload["waiting_for_history_message"] = json!(message);
         if !kind.is_empty() {
             payload["waiting_for_history_failure_type"] = json!(kind);
@@ -1897,7 +1902,7 @@ where
             .fetch_one(&mut *tx)
             .await?;
         let run_status = DB::string(&current, "status")?;
-        Self::project_terminal_summary(&mut tx, &run_id).await?;
+        tx.summary_changed(&run_id);
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok(
@@ -2320,6 +2325,7 @@ where
         kind: &str,
         payload: Value,
     ) -> Result<String> {
+        tx.summary_changed(run_id);
         let task_id = id();
         let run = Self::query("SELECT namespace FROM workflow_runs WHERE id=$1")
             .bind(run_id)
@@ -2372,6 +2378,7 @@ where
         Self::project_timer_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
         Self::project_signal_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
         Self::project_condition_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
+        tx.summary_changed(run_id);
         Ok(())
     }
 

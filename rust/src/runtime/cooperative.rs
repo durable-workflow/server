@@ -10,7 +10,8 @@ use super::{
 use axum::http::StatusCode;
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde_json::{Value, json};
-use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Transaction, Type};
+use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
+use super::transaction::Transaction;
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::Semaphore;
 
@@ -467,7 +468,7 @@ where
                 .is_some_and(|deadline| deadline <= now())
             {
                 Self::finish_root_cancellation(&mut tx, &run, None).await?;
-                Self::project_terminal_summary(&mut tx, &DB::string(&run, "id")?).await?;
+                tx.summary_changed(&DB::string(&run, "id")?);
             }
         }
         tx.commit().await?;

@@ -308,6 +308,7 @@ async fn run_observation_reads_current_and_selected_metadata_without_hydration_o
         ("observation-named", "observation-named-run"),
     ] {
         let original = namespaces::start_scoped(&app, namespace, name).await;
+        database.execute("DELETE FROM workflow_run_summaries").await;
         let run = original["run_id"].as_str().unwrap();
         if namespace == "default" {
             default_run = run.into();
@@ -458,6 +459,7 @@ async fn run_observation_selects_typed_context_without_decoding_application_payl
     let run = started["run_id"].as_str().unwrap();
     let path = format!("/api/workflows/observation-context/runs/{run}/observation");
     database.execute("UPDATE workflow_runs SET arguments='not-an-application-envelope',output='also-not-an-envelope' WHERE workflow_instance_id='observation-context'").await;
+    database.execute("DELETE FROM workflow_run_summaries WHERE workflow_instance_id='observation-context'").await;
     database.execute("INSERT INTO workflow_run_summaries(id,workflow_instance_id,run_number,class,workflow_type,namespace,status,status_bucket,duration_ms,exception_count,history_event_count,history_size_bytes,history_fan_out,liveness_state,liveness_reason,updated_at) SELECT id,workflow_instance_id,run_number,workflow_class,workflow_type,namespace,status,'running',321,2,17,999,4,'waiting','retained reason','2026-10-15 01:02:03' FROM workflow_runs WHERE workflow_instance_id='observation-context'").await;
     let key_column = if matches!(database, TestDatabase::MySql { .. }) {
         "`key`"

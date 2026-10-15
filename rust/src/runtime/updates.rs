@@ -9,7 +9,8 @@ use super::{
 };
 use axum::http::StatusCode;
 use serde_json::{Value, json};
-use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Transaction, Type};
+use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
+use super::transaction::Transaction;
 use std::time::Duration;
 
 const MAX_UPDATES_PER_RUN: i64 = 64;

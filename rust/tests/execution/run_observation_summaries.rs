@@ -155,7 +155,7 @@ async fn run_observation_terminal_summaries_survive_cold_nodes_and_duplicate_com
             let run = created.1;
             assert_eq!(
                 observation(&app, namespace, &run).await["summary_state"],
-                "unavailable"
+                "observed"
             );
             let (path, body) = if cancelled {
                 (
@@ -292,7 +292,7 @@ async fn run_observation_terminal_summary_continuation_counts_all_history_pages(
     let successor = json!({"workflow_id":original["workflow_id"],"run_id":next["run_id"]});
     assert_eq!(
         observation(&app, "default", &successor).await["summary_state"],
-        "unavailable"
+        "observed"
     );
     assert_eq!(
         finish_task(
@@ -340,8 +340,9 @@ async fn run_observation_terminal_summary_write_failure_rolls_back_completion() 
     assert_eq!(history(&app, "default", &run).await, before);
     assert_eq!(
         observation(&app, "default", &run).await["summary_state"],
-        "unavailable"
+        "observed"
     );
+    assert_eq!(observation(&app, "default", &run).await["liveness_state"], "workflow_task_leased");
     database.execute("DROP TRIGGER reject_summary").await;
     assert_eq!(finish_task(&app, &task, commands).await.0, StatusCode::OK);
     assert_terminal(

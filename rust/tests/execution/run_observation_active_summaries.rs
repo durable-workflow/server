@@ -1,6 +1,6 @@
 use super::*;
 
-async fn observe(app: &Router, namespace: &str, run: &Value) -> Value {
+pub(super) async fn observe(app: &Router, namespace: &str, run: &Value) -> Value {
     let response = namespaces::scoped(app, namespace, "GET", &format!(
         "/api/workflows/{}/runs/{}/observation", run["workflow_id"].as_str().unwrap(), run["run_id"].as_str().unwrap()), Value::Null).await;
     assert_eq!(response.0, StatusCode::OK, "{}", response.1);
@@ -44,9 +44,17 @@ async fn run_observation_active_summary_tracks_claim_without_history_and_cold_re
         for field in ["history_event_count", "history_size_bytes", "exception_count", "status"] {
             assert_eq!(leased[field], ready[field], "{field}");
         }
+        // A distinct stored expiry makes the renewal projection observable
+        // without a wall-clock sleep or a timing-sensitive assertion.
+        database.execute(if namespace == "default" {
+            "UPDATE workflow_tasks SET lease_expires_at='2099-01-01 00:00:00' WHERE status='leased' AND namespace='default'"
+        } else {
+            "UPDATE workflow_tasks SET lease_expires_at='2099-01-01 00:00:00' WHERE status='leased' AND namespace='active-summary'"
+        }).await;
         let heartbeat = namespaces::scoped(&app, namespace, "POST", &format!("/api/worker/workflow-tasks/{}/heartbeat", task["task_id"].as_str().unwrap()), json!({
             "lease_owner":task["lease_owner"], "workflow_task_attempt":task["workflow_task_attempt"]})).await;
         assert_eq!(heartbeat.0, StatusCode::OK, "{}", heartbeat.1);
+        assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_run_summaries s JOIN workflow_tasks t ON t.id=s.next_task_id WHERE t.status='leased' AND s.next_task_lease_expires_at<>t.lease_expires_at").await, 0);
         assert_eq!(observe(&app, namespace, &run).await["liveness_state"], "workflow_task_leased");
         originals.push((namespace, run, leased));
     }
@@ -60,12 +68,12 @@ async fn run_observation_active_summary_tracks_claim_without_history_and_cold_re
         }
     }
     cold.close().await;
+    database.remove().await;
 }
 
 #[tokio::test]
 async fn run_observation_active_summary_failure_rolls_back_claim_and_missing_reads_stay_missing() {
-    let database = TestDatabase::new().await;
-    if !matches!(database, TestDatabase::Sqlite(_)) { return; }
+    let database = TestDatabase::Sqlite(tempfile::tempdir().unwrap());
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
     register(&app, "default").await;
@@ -87,4 +95,5 @@ async fn run_observation_active_summary_failure_rolls_back_claim_and_missing_rea
         assert!(missing["liveness_state"].is_null());
     }
     runtime.close().await;
+    database.remove().await;
 }

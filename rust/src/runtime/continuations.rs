@@ -8,7 +8,8 @@ use super::{
 };
 use axum::http::StatusCode;
 use serde_json::{Value, json};
-use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Transaction, Type};
+use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
+use super::transaction::Transaction;
 
 pub(super) fn validate(command: &Value) -> Result<()> {
     reject_fields(command, &["type", "arguments", "workflow_type", "queue"])?;
