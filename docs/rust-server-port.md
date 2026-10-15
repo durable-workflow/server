@@ -1030,12 +1030,20 @@ query profiles include normally installed PHP, Python and Rust SDKs, original
 timing, delayed poll delivery and late handlers. Conditional prepared-local
 and cancellation source qualification remains skipped.
 
-The next combined candidate incorporates qualified PHP security source
-`f7d1bfc7` through merge `500299d6`, preserving the native tree and all shared
-fixtures. This requires fresh whole-tree qualification. The PHP registry tag
-was rebuilt after its earlier installed check; that earlier check belongs to
-its original immutable image only. No current image adoption, complete query
-capability, performance, migration or release qualification follows here.
+Combined candidate `ee219c0b` incorporates qualified PHP security source
+`f7d1bfc7` through merge `500299d6`. Its exact whole tree now passes all thirteen
+shared jobs in `38721415410` and every applicable ordinary check. Each of the
+six independently audited execution archives has 29 passing comparisons and
+20 zero exit records, with exact merge/native/binary identities. The
+[qualified checkpoint](https://github.com/durable-workflow/server/pull/463#issuecomment-6191285509)
+retains all six digests and earlier failed-original limits.
+
+The next integration includes qualified release-workflow-only main `28914d25`
+through `c7e81c24`. Native, shared, runner and OpenAPI bytes remain unchanged;
+that whole tree still requires its own qualification before promotion. The
+published PHP image acceptance remains separate from these frozen reference
+profiles. No current image adoption, complete query capability, performance,
+migration or release qualification follows here.
 
 The later [installed-consumer observation](https://github.com/durable-workflow/server/issues/433#issuecomment-6185525047)
 passes twenty Python 2.5.15 / Rust 3.5.5 originals across separate PHP 2.8.0 and
