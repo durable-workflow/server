@@ -320,6 +320,7 @@ where
         )
         .await?;
         Self::resolve_child(&mut tx, &run, ChildResolution::Cancelled(&terminal), at).await?;
+        Self::project_terminal_summary(&mut tx, &run_id).await?;
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok((StatusCode::OK, response))

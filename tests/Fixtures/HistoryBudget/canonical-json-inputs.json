@@ -14,5 +14,7 @@
   {"name":"lexical-numeric-order","event_type":"WorkflowStarted","payload_json":"{\"0\":0,\"1\":1,\"10\":10,\"2\":2,\"3\":3,\"4\":4,\"5\":5,\"6\":6,\"7\":7,\"8\":8,\"9\":9}"},
   {"name":"leading-zero-and-negative-keys","event_type":"WorkflowStarted","payload_json":"{\"-1\":1,\"00\":0,\"01\":1}"},
   {"name":"nested-empty-shapes","event_type":"WorkflowStarted","payload_json":"{\"array\":[{},[],{\"0\":{}}],\"empty\":{},\"false\":false}"},
-  {"name":"escaped-keys","event_type":"WorkflowStarted","payload_json":"{\"line\\u2028/\\t\":\"value\",\"quote\\\"\\\\\":\"value\"}"}
+  {"name":"escaped-keys","event_type":"WorkflowStarted","payload_json":"{\"line\\u2028/\\t\":\"value\",\"quote\\\"\\\\\":\"value\"}"},
+  {"name":"storage-numeric-order","event_type":"WorkflowStarted","payload_json":"{\"0\":0,\"1\":1,\"2\":2,\"3\":3,\"4\":4,\"5\":5,\"6\":6,\"7\":7,\"8\":8,\"9\":9,\"10\":10}"},
+  {"name":"repeated-key-position","event_type":"WorkflowStarted","payload_json":"{\"0\":\"old\",\"1\":\"kept\",\"0\":\"replacement\"}"}
 ]

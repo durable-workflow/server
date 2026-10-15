@@ -467,6 +467,7 @@ where
                 .is_some_and(|deadline| deadline <= now())
             {
                 Self::finish_root_cancellation(&mut tx, &run, None).await?;
+                Self::project_terminal_summary(&mut tx, &DB::string(&run, "id")?).await?;
             }
         }
         tx.commit().await?;

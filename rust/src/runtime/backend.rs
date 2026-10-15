@@ -11,6 +11,7 @@ pub(super) trait Backend: Database {
     type EncodedOptionalTime: for<'q> Encode<'q, Self> + Type<Self> + Send + Sync + 'static;
     type EncodedDocument: for<'q> Encode<'q, Self> + Type<Self> + Send + Sync + 'static;
     const HISTORY_PAGE: &'static str;
+    const SUMMARY_HISTORY_SQL: &'static str = "SELECT sequence,event_type,CAST(payload AS TEXT) AS payload_json FROM workflow_history_events WHERE workflow_run_id=$1 AND sequence>$2 ORDER BY sequence LIMIT 16";
     const OBSERVATION_FAILURE_EVENT: &'static str = "SELECT id,sequence,event_type,recorded_at FROM workflow_history_events WHERE workflow_run_id=$1 AND payload->>'failure_id'=$2 AND event_type IN ('ActivityFailed','ActivityTimedOut','ChildRunFailed','ChildRunCancelled','ChildRunTerminated','WorkflowFailed','WorkflowTimedOut','WorkflowCancelled','WorkflowTerminated','UpdateCompleted') ORDER BY sequence DESC LIMIT 1";
     const OBSERVATION_ATTRIBUTES: &'static str = "SELECT \"key\" AS attribute_key,type,value_string,value_keyword,value_int,value_float,CASE WHEN value_bool IS NULL THEN NULL WHEN value_bool THEN 1 ELSE 0 END AS value_bool,value_datetime,value_keyword_list FROM workflow_search_attributes WHERE workflow_run_id=$1 AND workflow_instance_id=$2 AND \"key\" IN ($3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) ORDER BY \"key\" LIMIT 20";
     const ACTIVITY_RESULT_EVENT_SQL: &'static str = "SELECT sequence,event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('ActivityScheduled','ActivityStarted','ActivityHeartbeatRecorded','ActivityRetryScheduled','ActivityCompleted','ActivityFailed','ActivityTimedOut','ActivityCancelled') AND (payload->>'activity_execution_id'=$2 OR payload->'activity'->>'id'=$3) ORDER BY sequence DESC LIMIT 1";
@@ -321,6 +322,7 @@ impl Backend for Postgres {
 }
 
 impl Backend for MySql {
+    const SUMMARY_HISTORY_SQL: &'static str = "SELECT sequence,event_type,CAST(payload AS CHAR) AS payload_json FROM workflow_history_events WHERE workflow_run_id=$1 AND sequence>$2 ORDER BY sequence LIMIT 16";
     const OBSERVATION_FAILURE_EVENT: &'static str = "SELECT id,sequence,event_type,recorded_at FROM workflow_history_events WHERE workflow_run_id=? AND CAST(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.failure_id')) AS BINARY)=CAST(? AS BINARY) AND event_type IN ('ActivityFailed','ActivityTimedOut','ChildRunFailed','ChildRunCancelled','ChildRunTerminated','WorkflowFailed','WorkflowTimedOut','WorkflowCancelled','WorkflowTerminated','UpdateCompleted') ORDER BY sequence DESC LIMIT 1";
     const OBSERVATION_ATTRIBUTES: &'static str = "SELECT `key` AS attribute_key,type,value_string,value_keyword,value_int,value_float,CASE WHEN value_bool IS NULL THEN NULL WHEN value_bool THEN 1 ELSE 0 END AS value_bool,value_datetime,value_keyword_list FROM workflow_search_attributes WHERE workflow_run_id=$1 AND workflow_instance_id=$2 AND `key` IN ($3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) ORDER BY `key` LIMIT 20";
     fn optional_float(row: &Self::Row, field: &str) -> Result<Option<f64>> {

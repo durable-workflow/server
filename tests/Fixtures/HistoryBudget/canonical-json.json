@@ -110,5 +110,19 @@
         "payload_json": "{\"line\\u2028/\\t\":\"value\",\"quote\\\"\\\\\":\"value\"}",
         "canonical_payload": "{\"line\\u2028/\\t\":\"value\",\"quote\\\"\\\\\":\"value\"}",
         "history_size_bytes": 60
+    },
+    {
+        "name": "storage-numeric-order",
+        "event_type": "WorkflowStarted",
+        "payload_json": "{\"0\":0,\"1\":1,\"2\":2,\"3\":3,\"4\":4,\"5\":5,\"6\":6,\"7\":7,\"8\":8,\"9\":9,\"10\":10}",
+        "canonical_payload": "[0,1,2,3,4,5,6,7,8,9,10]",
+        "history_size_bytes": 39
+    },
+    {
+        "name": "repeated-key-position",
+        "event_type": "WorkflowStarted",
+        "payload_json": "{\"0\":\"old\",\"1\":\"kept\",\"0\":\"replacement\"}",
+        "canonical_payload": "[\"replacement\",\"kept\"]",
+        "history_size_bytes": 37
     }
 ]

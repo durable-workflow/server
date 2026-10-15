@@ -1897,6 +1897,7 @@ where
             .fetch_one(&mut *tx)
             .await?;
         let run_status = DB::string(&current, "status")?;
+        Self::project_terminal_summary(&mut tx, &run_id).await?;
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok(
