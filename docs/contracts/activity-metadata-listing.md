@@ -40,4 +40,8 @@ released PHP projector bytes. It includes PHP timestamp rounding, retry attempts
 terminal lease clearing, diagnostic fallback and external metadata without
 provider access. These cases do not claim genuine history production. Native
 HTTP tests separately exercise execution and constructed damaged/pruned-reader
-controls; installed published PHP/native consumer comparisons remain required.
+controls. The installed SDK consumer additionally compares eight metadata states
+from genuine retry/heartbeat/completion workflows against separate published PHP
+and native databases. Its initial SQLite, PostgreSQL 17 and MySQL 8.0 comparisons
+pass in two namespaces. Remaining database configurations, browser acceptance and
+capability promotion remain separate gates.

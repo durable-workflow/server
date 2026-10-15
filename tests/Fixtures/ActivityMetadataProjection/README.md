@@ -44,3 +44,53 @@ before changing the pinned hashes or expected outputs.
 The Rust library test compares the complete JSON output of every case. Actual
 authenticated HTTP reads, namespace/run isolation, database variants and live
 workflow/attempt transitions remain separate qualification requirements.
+
+## Installed consumer
+
+`consumer.json` selects a separate published Server and PHP SDK tuple. It does
+not update the earlier frozen parity profiles. Install the normal Composer lock
+from `scripts/conformance/server-parity/activity-result-inspection` in a disposable
+directory and set `DW_PARITY_SDK_AUTOLOAD` to its `vendor/autoload.php`.
+
+Run `activity-metadata-consumer.php URL execute IDENTITY.json`, followed immediately
+by `activity-metadata-consumer.php URL cold-read IDENTITY.json` in a fresh PHP
+process. Both commands are in `scripts/conformance/server-parity`. Initially the
+identity file contains only `namespace` and a unique `workflow_id`. Each original
+workflow has one immutable 30-second observation budget covering both processes.
+The runtime uses the disposable `metadata-fixture-token` credential. Run each
+target against its own database and repeat for both namespaces in the profile.
+
+The installed SDK registers types, starts an actual workflow, schedules an
+activity, claims it, verifies decoded arguments, heartbeats, reports a retryable
+failure, claims a distinct second attempt and completes it with an exact
+int64/null/Unicode result. It then completes the original parent with a different
+output. These are public SDK task primitives; the fixture does not claim that
+an authored `Worker` workflow callback ran.
+
+Eight snapshots cover pending, running, heartbeat, retry pending, resumed,
+activity completed, parent closed and fresh-client reads. Every listing is
+bracketed by equal raw history reads, binds its original activity and attempt
+claims and must omit payload columns and external object fetches. Genuine event
+counts and a decoded canonical activity result establish completed execution.
+
+Compare the two retained identity files with:
+
+```sh
+php scripts/conformance/server-parity/activity-metadata-compare.php php.json native.json
+```
+
+The comparator compares every response field, preserving nulls, collection
+order, types, policy, event kinds, attempt flags and relationships. It substitutes
+only known generated run/activity/attempt/task IDs and non-null UTC timestamps.
+Distinct retry task IDs remain distinct. Timestamps must parse, fall within the
+authored lifecycle bounds and follow their own attempt start. Fractional-second
+precision is not fixed; both millisecond and microsecond RFC 3339 strings are
+valid. This normalization does not qualify deadline accuracy or latency.
+
+The first exact hosted binary comparison passed six pairs: SQLite, PostgreSQL 17
+and MySQL 8.0, each in default and named namespaces. That is twelve completed
+original workflows and 48 full metadata comparisons, with a fresh client on
+each original. The qualification receipt and exact binary identity are linked
+from PR #476. MariaDB and the other database configurations still need this
+installed-consumer fixture, independently of the existing full source matrix.
+This fixture does not qualify run observation, Waterline or discovery promotion.
