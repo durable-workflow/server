@@ -2364,6 +2364,13 @@ where
             "parallel_group_path",
         )?)?;
         super::selections::merge(&mut payload, &metadata);
+        // Released history readers retain the first claim and heartbeat across
+        // a retry even while the next attempt has not produced new progress.
+        for field in ["started_at", "last_heartbeat_at"] {
+            if let Some(value) = DB::optional_instant(activity, field)? {
+                payload["activity"][field] = json!(value);
+            }
+        }
         if payload["activity"]["retry_policy"].is_null() {
             // A legacy absent snapshot stays absent in its durable history.
             // The activity claim may still advertise a nullable policy.

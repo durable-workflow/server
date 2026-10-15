@@ -23,18 +23,22 @@ failed; later qualifying runs are separate observations.
 ## Work order and current status
 
 - Query authority [#463](https://github.com/durable-workflow/server/pull/463)
-  has an all-13 component result at `76c6d35a`. Its separate combined PHP source
-  `ee219c0b` includes qualified PHP `f7d1bfc7`; current-main qualification is
-  pending. No earlier pass is carried across that source integration.
+  has all-13 results at `76c6d35a` and separately at `ee219c0b` with qualified
+  PHP `f7d1bfc7`. Its release-guard integration `083419709` is qualifying
+  independently. No earlier pass is carried across changed trees.
 - Targeted activity result reads [#470](https://github.com/durable-workflow/server/pull/470)
   have an all-13 component result at `8a7cffe4`. Later combined integration,
   retry-consumer integration, unrelated-object isolation and Waterline remain
   separate gates. Native inspection discovery stays unadvertised.
 - [Activity metadata listing](contracts/activity-metadata-listing.md) is a
-  separate current-PHP-source slice. Thirty-one released-PHP projection cases cover
-  typed history, attempt state, diagnostic fallback and timestamp rounding.
-  Native HTTP and database qualification is in progress; installed differential
-  consumers remain ahead.
+  separate current-PHP-source slice. Original `9da7b93b` passes all 13 jobs
+  across six databases, with 25 passing comparisons and 19 zero status records
+  per execution archive. All 31 projection cases also pass on published PHP
+  2.8.5. The separate installed consumer preparation exposed missing claim and
+  heartbeat clocks during retries. Its producer correction and stronger
+  lifecycle regression are now being qualified on this narrow branch; the
+  original all-13 result does not qualify that correction. Installed TCP
+  coverage on the corrected combined preparation remains a separate result.
 - Upgrade preparation remains read-only inspection. Source metadata, queue
   encoding and root payload-reference checks do not establish takeover, backup,
   quiescence or complete representation. Safe migration is still open.
