@@ -1,0 +1,41 @@
+{
+  "schema": "durable-workflow.php-stored-reference-fixture.v1",
+  "producer": {
+    "workflow_version": "2.5.20",
+    "composer_reference": "9bdcd3eee11ccf6afa4635c57b2b3a9adb332429",
+    "loaded_class_hashes": {
+      "Workflow\\V2\\Support\\ExternalPayloads": "035b8d1ba80bacfa16282145ddcaebfccd93f7579bcc9cd0ba2ff98975928707",
+      "Workflow\\V2\\Support\\ExternalPayloadReference": "c742263ff985d8f28485eef1404ad70c124802464fcae0577cacc2eaad29a8be",
+      "Workflow\\Serializers\\CodecRegistry": "f17911a01c6bb8cb436a9ada79e134d13738eb72ca7f834219e0ac3607352773"
+    },
+    "scope": "Released PHP serializer only; fictional provider locations, no stored object or provider fetch."
+  },
+  "cases": [
+    {
+      "stored": "dw-external-payload:v1:eyJjb2RlYyI6ImF2cm8iLCJleHRlcm5hbF9zdG9yYWdlIjp7ImNvZGVjIjoiYXZybyIsInNjaGVtYSI6ImR1cmFibGUtd29ya2Zsb3cudjIuZXh0ZXJuYWwtcGF5bG9hZC1yZWZlcmVuY2UudjEiLCJzaGEyNTYiOiJkZjhhOWViMzA4NmM4ZGUyNTI5NGYyYWNmYWU0ODllMTJlMTJmNjQ0YWJiZGQwNzhkY2NjMTM1NmZiZDdiOWJkIiwic2l6ZV9ieXRlcyI6MTQsInVyaSI6InMzOi8vbWlncmF0aW9uLWZpeHR1cmUvcmVzdWx0LyVDRSVCQj92ZXJzaW9uSWQ9b3JpZ2luYWwtMTcifX0=",
+      "envelope": {
+        "codec": "avro",
+        "external_storage": {
+          "schema": "durable-workflow.v2.external-payload-reference.v1",
+          "uri": "s3://migration-fixture/result/%CE%BB?versionId=original-17",
+          "sha256": "df8a9eb3086c8de25294f2acfae489e12e12f644abbdd078dccc1356fbd7b9bd",
+          "size_bytes": 14,
+          "codec": "avro"
+        }
+      }
+    },
+    {
+      "stored": "dw-external-payload:v1:eyJjb2RlYyI6ImF2cm8iLCJleHRlcm5hbF9zdG9yYWdlIjp7ImNvZGVjIjoiYXZybyIsInNjaGVtYSI6ImR1cmFibGUtd29ya2Zsb3cudjIuZXh0ZXJuYWwtcGF5bG9hZC1yZWZlcmVuY2UudjEiLCJzaGEyNTYiOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1Iiwic2l6ZV9ieXRlcyI6MCwidXJpIjoiZmlsZTovLy9taWdyYXRpb24tZml4dHVyZS9cdTY1ZTVcdTY3MmNcdThhOWUvZW1wdHkifX0=",
+      "envelope": {
+        "codec": "avro",
+        "external_storage": {
+          "schema": "durable-workflow.v2.external-payload-reference.v1",
+          "uri": "file:///migration-fixture/日本語/empty",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "size_bytes": 0,
+          "codec": "avro"
+        }
+      }
+    }
+  ]
+}

@@ -19,12 +19,16 @@ sqlx = { version = "=0.9.0", default-features = false, features = ["runtime-toki
 subtle = "=2.6.1"
 getrandom = "=0.3.4"
 regex-lite = "0.1"
+phpserz = { version = "=0.3.0", default-features = false }
 tempfile = "3"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 tokio-util = { version = "=0.7.19", features = ["io", "io-util"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time", "fs", "io-util"] }
 ulid = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

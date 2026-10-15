@@ -2,9 +2,9 @@
 
 [Server #325](https://github.com/durable-workflow/server/issues/325) owns the
 rewrite and its acceptance evidence. PHP remains the default published runtime.
-The unpublished Rust crate has an Avro foundation and an opt-in SQLite/PostgreSQL/MySQL HTTP
-execution slice. Full runtime parity, migration, performance improvement and
-cutover remain unqualified.
+The unpublished Rust crate has an Avro foundation and an opt-in
+SQLite/PostgreSQL/MySQL HTTP execution slice. Full runtime parity, migration,
+performance improvement and cutover remain unqualified.
 
 The delivered foundation combines [#455](https://github.com/durable-workflow/server/pull/455)
 and [#458](https://github.com/durable-workflow/server/pull/458) at `30137616`,
@@ -3070,6 +3070,34 @@ Both containers stop with 137 and no OOM. All local databases, provider objects,
 SDK dependencies, compiler output and task resources are removed after this
 audit. Hosted all-database external semantics remain pending.
 
+Upgrade preparation now includes a non-executing queue-command reader under
+`runtime::upgrade::queue`. The released token parser recognizes only the tested
+V2 job/Carbon subset under explicit byte, depth and token limits. Published
+class fixtures preserve original task IDs, a Unicode queue and microsecond
+delay fields. Malformed and unqualified representations are refused. This is
+an independently tested decoder, not a source-row migration or takeover path.
+A pure binding validator now checks one genuine published PHP 2.8.2 pending
+timer envelope against its original task/run. Twelve focused decoder/binding
+controls pass. The source database has Laravel transport queue `default` and
+SDK queue `upgrade-source`; its rounded transport wakeup does not replace the
+canonical microsecond timer availability. Borrowed source rows retain their
+original state and a separate leased activity.
+
+The separate `upgrade-queue-inspect` command now scans every database-queue row
+inside the existing read-only observation. Bounded pages and transfer limits
+precede canonical joins. Unknown representations, orphaned/foreign bindings
+and skipped nonpositive IDs refuse before a success report. Local native checks
+pass 93 library cases with 18 existing database/subprocess ignores and the
+process refusal control for both inspection commands. Source `5d54f25e` then
+passes actual published PHP 2.8.0 preparation and stopped-source CLI inspection
+on SQLite DELETE, MySQL 8.4 and PostgreSQL 17: six original pending runs, three
+canonical timer jobs and nine distinct refusal controls. Each source state is
+unchanged by inspection and every source API exits 0 without OOM. This is a
+raw-protocol author, not SDK continuation or Rust execution of those originals.
+Fresh hosted integration across all six database versions remains pending.
+Complete stored-state validation, restored backup verification and sequential
+takeover stay open.
+
 The upload/poll-hint candidate now incorporates exact qualified PHP source
 `1f994962` and its `applyStickyCacheClaim` primary-key correction, including
 the current PHP release metadata and numeric declaration normalization. Its
@@ -3167,3 +3195,30 @@ Both APIs exit 0 without OOM. Whole-tree hosted qualification, installed TCP
 consumers on other databases and Waterline acceptance remain pending. Clock
 values and their reported fractional precision remain separate from the
 business-field comparison, which does not claim identical timestamp formatting.
+
+The separate #460 source preparation now recognizes canonical PHP stored
+external-reference metadata under a 64 KiB bound, using a fixture emitted by
+released Workflow 2.5.20 serializer classes. Four focused groups cover preserved
+fields, format separation, malformed/duplicate fields, codec and integer bounds.
+All 97 local library tests pass, with 18 existing database/subprocess cases
+explicitly ignored. This reader is not yet wired to source-row scanning or
+conversion and fetches no object. Registry/provider binding, restored backup
+bytes, complete representation coverage and sequential takeover remain open.
+
+The next preparation connects that decoder to `upgrade-payload-inspect`, a
+separate read-only root-column scan. It reports bounded counts and affected row
+IDs for unsupported metadata, with no provider fetch, payload/URI output or
+takeover authority. New controls cover all four columns, pagination, omitted
+diagnostics, oversized values, source identity and byte preservation. Existing
+inventory and queue inspection behavior is unchanged. Exact local and hosted
+qualification belongs to #460; constructed source rows are not executed workflows.
+
+The corrected preparation passes 101 library cases and the CLI filesystem
+refusal test, with 18 existing database/subprocess ignores. Fifteen separate CLI
+controls on SQLite DELETE, MySQL 8.4 and PostgreSQL 17 inspect metadata, refuse
+unsupported/malformed/oversized references and accept explicit restoration.
+Network readers have SELECT-only authority; each source fingerprint is unchanged.
+The first MySQL fixture ID overflow and prototype reserved SQL alias remain failed
+observations. The fixture ID and alias are corrected, and the shared upgrade
+profile now exercises the new scan. Hosted integration and every takeover gate
+remain pending.

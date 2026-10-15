@@ -1,0 +1,204 @@
+{
+  "remove": [],
+  "add": [
+    [
+      "column",
+      "workflow_service_calls.51",
+      {
+        "name": "call_deadline_at",
+        "type": "timestamp(6) without time zone",
+        "default": null,
+        "identity": "",
+        "not_null": false,
+        "collation": null,
+        "generated": ""
+      }
+    ],
+    [
+      "column",
+      "workflow_worker_registration_incarnations.1",
+      {
+        "name": "token",
+        "type": "character varying(32)",
+        "default": null,
+        "identity": "",
+        "not_null": true,
+        "collation": "default",
+        "generated": ""
+      }
+    ],
+    [
+      "column",
+      "workflow_worker_registration_incarnations.2",
+      {
+        "name": "namespace",
+        "type": "character varying(255)",
+        "default": null,
+        "identity": "",
+        "not_null": true,
+        "collation": "default",
+        "generated": ""
+      }
+    ],
+    [
+      "column",
+      "workflow_worker_registration_incarnations.3",
+      {
+        "name": "worker_id",
+        "type": "character varying(255)",
+        "default": null,
+        "identity": "",
+        "not_null": true,
+        "collation": "default",
+        "generated": ""
+      }
+    ],
+    [
+      "column",
+      "workflow_worker_registration_incarnations.4",
+      {
+        "name": "status",
+        "type": "character varying(32)",
+        "default": null,
+        "identity": "",
+        "not_null": true,
+        "collation": "default",
+        "generated": ""
+      }
+    ],
+    [
+      "column",
+      "workflow_worker_registration_incarnations.5",
+      {
+        "name": "recovered_workflow_task_count",
+        "type": "integer",
+        "default": "0",
+        "identity": "",
+        "not_null": true,
+        "collation": null,
+        "generated": ""
+      }
+    ],
+    [
+      "column",
+      "workflow_worker_registration_incarnations.6",
+      {
+        "name": "finished_at",
+        "type": "timestamp(6) without time zone",
+        "default": null,
+        "identity": "",
+        "not_null": false,
+        "collation": null,
+        "generated": ""
+      }
+    ],
+    [
+      "column",
+      "workflow_worker_registration_incarnations.7",
+      {
+        "name": "created_at",
+        "type": "timestamp(6) without time zone",
+        "default": null,
+        "identity": "",
+        "not_null": false,
+        "collation": null,
+        "generated": ""
+      }
+    ],
+    [
+      "column",
+      "workflow_worker_registration_incarnations.8",
+      {
+        "name": "updated_at",
+        "type": "timestamp(6) without time zone",
+        "default": null,
+        "identity": "",
+        "not_null": false,
+        "collation": null,
+        "generated": ""
+      }
+    ],
+    [
+      "column",
+      "workflow_worker_registrations.26",
+      {
+        "name": "registration_token",
+        "type": "character varying(32)",
+        "default": null,
+        "identity": "",
+        "not_null": false,
+        "collation": "default",
+        "generated": ""
+      }
+    ],
+    [
+      "constraint",
+      "workflow_worker_registration_incarnations.workflow_worker_registration_incarnations_pkey",
+      {
+        "deferred": false,
+        "validated": true,
+        "deferrable": false,
+        "definition": "PRIMARY KEY (token)"
+      }
+    ],
+    [
+      "index",
+      "dw_worker_incarnation_scope_idx",
+      {
+        "ready": true,
+        "valid": true,
+        "unique": false,
+        "primary": false,
+        "definition": "CREATE INDEX dw_worker_incarnation_scope_idx ON public.workflow_worker_registration_incarnations USING btree (namespace, worker_id)"
+      }
+    ],
+    [
+      "index",
+      "wf_service_calls_deadline_idx",
+      {
+        "ready": true,
+        "valid": true,
+        "unique": false,
+        "primary": false,
+        "definition": "CREATE INDEX wf_service_calls_deadline_idx ON public.workflow_service_calls USING btree (status, call_deadline_at)"
+      }
+    ],
+    [
+      "index",
+      "workflow_worker_registration_incarnations_finished_at_index",
+      {
+        "ready": true,
+        "valid": true,
+        "unique": false,
+        "primary": false,
+        "definition": "CREATE INDEX workflow_worker_registration_incarnations_finished_at_index ON public.workflow_worker_registration_incarnations USING btree (finished_at)"
+      }
+    ],
+    [
+      "index",
+      "workflow_worker_registration_incarnations_pkey",
+      {
+        "ready": true,
+        "valid": true,
+        "unique": true,
+        "primary": true,
+        "definition": "CREATE UNIQUE INDEX workflow_worker_registration_incarnations_pkey ON public.workflow_worker_registration_incarnations USING btree (token)"
+      }
+    ],
+    [
+      "relation",
+      "workflow_worker_registration_incarnations",
+      {
+        "kind": "r",
+        "view": null,
+        "options": null,
+        "partition": false,
+        "persistence": "p",
+        "row_security": false,
+        "access_method": "heap",
+        "partition_key": null,
+        "force_row_security": false
+      }
+    ]
+  ]
+}
