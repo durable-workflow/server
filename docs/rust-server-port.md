@@ -74,8 +74,17 @@ Current checkpoint, October 15:
   also asserts the zero ceiling and absence of a continuation token. The corrected
   local source passes all 134 MariaDB execution tests and five focused SQLite
   observation tests. This does not supply the missing original hosted assertion.
-  Hosted qualification, published PHP/SDK differential reads, projection
-  production and native browser acceptance are still open. PHP-issued cursor
+  The separate [installed observation recipe](../scripts/conformance/server-parity/run-observation-consumer.md)
+  now exercises nine real task lifecycle stages, current/selected reads,
+  retry waits and fixed-window continuation with the pinned published SDK.
+  Two published-PHP originals retain a 152-byte terminal summary undercount
+  ([#479](https://github.com/durable-workflow/server/issues/479)); separate fresh
+  controls pass with the PHP attribution correction from
+  [#480](https://github.com/durable-workflow/server/pull/480) overlaid on the
+  image. This is source validation, not published delivery or native parity.
+  The exact native artifact download timed out before any installed native
+  original began. Hosted qualification, full differential reads, projection
+  production and native browser acceptance remain open. PHP-issued cursor
   compatibility remains an explicit migration gate.
 
 Next, finish merged-main artifact readback and review the metadata candidate's
