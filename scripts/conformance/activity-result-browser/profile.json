@@ -1,0 +1,23 @@
+{
+  "schema": "durable-workflow.waterline-activity-result-consumer/v1",
+  "php_reference": {
+    "version": "2.8.5",
+    "source": "f7d1bfc78ffaf32848aeb48bd736356cc44501c8",
+    "image": "ghcr.io/durable-workflow/server@sha256:f6a6507a5a424dfad03e636ec690b0f1e813d385be9940691c59116446dfd1cc"
+  },
+  "waterline": {
+    "version": "2.11.0",
+    "source": "8f03bd6250c08dd96c49a674ccb0752feb6fd9fe",
+    "image": "ghcr.io/durable-workflow/waterline@sha256:55b2f75e2b1849defafa3a9525a2ff30159fe21177eef39bdce7aaea280d40bf",
+    "php_sdk": "2.4.0"
+  },
+  "author_php_sdk": {
+    "version": "2.4.2",
+    "source": "25d796ad2a55d0d114b58017c3ba23390b09e120"
+  },
+  "browser_package": "1.64.1",
+  "widths": [390, 1440],
+  "themes": ["light", "dark"],
+  "original_observation_budget_seconds": 30,
+  "scope": "Separate optional consumer profile. No frozen tuple or native discovery adoption."
+}
