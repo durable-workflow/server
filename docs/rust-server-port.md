@@ -12,7 +12,8 @@ replay from #445/#446/#448. Its exact merged main passes
 [all 13 shared jobs across six databases](https://github.com/durable-workflow/server/actions/runs/38652717748)
 and normal source/boundary checks. #446's first failed query observation remains
 failed and unexplained; its unchanged second attempt reran all 13 jobs.
-Frozen published PHP, embedded and SDK tuples
+The merged native development runtime enables memo upserts, while full external
+transport discovery stays unadvertised. Frozen published PHP, embedded and SDK tuples
 remain separate from current PHP release work. Representative timer, signal,
 query, update, activity, cancellation, namespace and recovery checks do not
 establish complete parity for those families. The original failed records remain
@@ -24,11 +25,16 @@ The active integration order is:
 
 - [#457](https://github.com/durable-workflow/server/pull/457): run the existing
   installed external-payload consumers on every required database, including
-  byte-preserving cold readers. Exact current-main qualification is pending.
+  byte-preserving cold readers. Candidate 2159 passes all 13 jobs and each
+  execution log has 45 passing records. Merged 303ffc633 has the identical
+  qualified tree; its separate fresh-main qualification is pending.
 - [#455](https://github.com/durable-workflow/server/pull/455): opt-in cross-kind
   null-task poll wake hint with exact namespace/queue isolation and no delivery
   authority. Current PHP query documentation is preserved at combined revision
   55. Hosted integration follows #457.
+  An earlier component failed after business completion at registration DELETE
+  with lock-pressure 503, before later refusal/repair phases. That original
+  remains failed without a current-release or historical-cause inference.
 - [#458](https://github.com/durable-workflow/server/pull/458): bound activity
   completion uploads. Actual PHP/native originals and strict readers pass
   SQLite/MySQL 8.4/PostgreSQL 17 locally; current all-six qualification is pending.
@@ -46,6 +52,11 @@ cleanup/backup/restart and full database/consumer qualification remain open.
 Broader runtime/operational parity, safe sequential PHP database takeover,
 matched performance measurements and release/cutover preparation remain #325
 requirements. No native release or deployment is qualified.
+
+Completed local raw archives, transport journals and databases have been deleted.
+Historical retention descriptions below do not guarantee that those bytes are
+still available. Code, readable owning outcomes and bounded temporary job
+summaries are the current evidence surfaces.
 
 ### Earlier external input and byte milestones
 
