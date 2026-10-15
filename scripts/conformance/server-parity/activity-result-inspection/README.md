@@ -22,7 +22,7 @@ php scripts/conformance/server-parity/activity-result-inspection/probe.php "$SER
 ```
 
 Repeat with fresh workflow identities for `encoded-false`, `typed-map` and
-`external-result`, in both profile namespaces. Every original retains the first
+`external-result` and `retry-completed`, in both profile namespaces. Every original retains the first
 author phase's 30-second observation deadline. Activity/run budgets are authored
 before admission. A later phase never restarts the original or extends its budget.
 
@@ -36,10 +36,26 @@ A separate raw response check confirms that selecting the envelope fetches no
 object bytes. The first reader completes the original parent with a different
 output, and the second reads the retained activity result after closure.
 
-Raw history before and after each read must agree. This profile covers the four
-positive values and cold parent completion. Genuine retry/terminal outcomes,
-role/ownership refusals and malformed retained history have separate source
-tests. Metadata-only listing, unrelated-object isolation, all-database installed
-consumer execution and Waterline UI acceptance remain additional gates. Stop and
+The retry case explicitly authors two attempts with an empty backoff list and
+the same 120/600-second activity timeouts before admission. Its actual installed
+Worker throws on the first callback. After the successful failure submission,
+the probe reads a pending result and one canonical `ActivityRetryScheduled`
+event before the second attempt is polled. The second callback uses a distinct
+attempt identity and returns the typed map. Separate reader processes require
+one original schedule, two starts, one retry and one completion, and preserve
+the exact history prefix captured by the author. A retry does not append a
+terminal `ActivityFailed` event.
+
+Raw history before and after each read must agree. The four-value probe component
+passes 48 originals across independent SQLite, MySQL 8.4 and PostgreSQL 17
+PHP/native databases. The corrected retry probe separately passes four SQLite
+originals across PHP/native and default/named namespaces. Its first original
+remains failed because the probe required a terminal failure event for a retry;
+the corrected check follows the existing canonical retry event.
+
+Terminal outcomes, role/ownership refusals and malformed retained history have
+separate source tests. Metadata-only listing, unrelated-object isolation,
+all-database installed retry consumers and Waterline UI acceptance remain
+additional gates. Stop and
 remove every task-owned service, database, provider object, dependency tree and
 raw output after its immediate audit.

@@ -2912,6 +2912,26 @@ requires fresh normal and six-database qualification. The preceding `3409a776`
 component pass, its MySQL-only retry, and all failed originals remain their
 separate records; none qualifies this integration or a native release.
 
+The separate activity-result candidate now has installed consumer evidence on
+all three database families: 48 originals and 192 author/activity/reader/cold
+process phases match published PHP for null, false, typed int64/null/Unicode maps
+and a 2 MiB external value, in default and named namespaces. It reuses an audited
+optimized native binary without compiling locally. This is endpoint/client
+qualification, not a performance or discovery claim.
+
+The next installed retry probe initially required a terminal `ActivityFailed`
+event for a retry. That PHP original remains failed. Correcting the fixture to
+the canonical `ActivityRetryScheduled` event produces four fresh SQLite passes,
+two per implementation. Eight actual callbacks, four failure submissions and
+four completions preserve their original 30-second observation budgets and
+authored retry policies. Separate parent/cold readers preserve the scheduled
+history prefix and exact typed result. Stopped SQL states match: two completed
+runs, two completed activities at attempt2, eight completed tasks and sixteen
+events per implementation, with zero repairs. Both APIs exit0 without OOM.
+Listing, unrelated-object isolation, embedded outcome checks, all-database
+installed retry consumers and Waterline acceptance remain open; discovery stays
+unadvertised. Raw phase data and dependencies are deleted after immediate audit.
+
 The next operator read slice is the existing PHP targeted activity-result
 endpoint from #439/#440. Its [contract](contracts/workflow-activity-result-inspection.md)
 and separate fixture/profile define canonical history selection, exact ownership,
