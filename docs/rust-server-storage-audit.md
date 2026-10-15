@@ -44,6 +44,21 @@ preserve the original URI, reference identity, codec, size, hash and object
 bytes before a qualified read path or one-time conversion can be used. No such
 conversion or external backup/restore is qualified by the queue inspection.
 
+`runtime::upgrade::external_reference` now prepares a separate metadata reader
+for the canonical PHP v1 format. Its fixture uses released Workflow 2.5.20
+serializer classes whose loaded hashes also match 2.5.21. The locations are
+fictional; no external object was created or fetched. The reader preserves the
+URI, integer size and digest text, requires matching Avro codecs, and refuses
+unknown versions, native opaque references, duplicate/unknown fields, malformed
+base64/JSON, invalid digests and invalid integer sizes. It bounds the complete
+stored string to 64 KiB before decoding. Only canonical padded base64 and the
+tested object fields are supported; other representations refuse explicitly.
+
+This decoder is not yet connected to source-row scanning or execution. It
+cannot establish registry ownership, object availability, restored bytes,
+reclamation holds or takeover readiness. The existing inspection reports and
+their false compatibility/backup/quiescence/takeover flags are unchanged.
+
 ## Backup-first, sequential upgrade gates
 
 1. Run a read-only preflight against a consistent PHP reference installation.

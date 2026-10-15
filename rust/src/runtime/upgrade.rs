@@ -1,4 +1,5 @@
 //! Read-only PHP source inventory. This command never grants takeover authority.
+pub mod external_reference;
 pub mod queue;
 pub mod queue_binding;
 mod queue_scan;
