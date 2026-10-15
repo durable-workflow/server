@@ -92,6 +92,7 @@ final class QueryAuthorityTransport implements Transport, BoundedTransport,
 [$script, $url, $mode, $protocol] = $argv;
 queryCheck(in_array([$mode, $protocol], [
     ['timely', '1.20'], ['timely', '1.19'], ['late-poll', '1.20'], ['late-handler', '1.20'], ['timely-active', '1.20'],
+    ['timely-named-active', '1.20'],
 ], true), 'Unknown query authority case.');
 $artifacts = json_decode(file_get_contents(__DIR__.'/../../../../tests/Fixtures/ServerParityProfiles/query-authority/artifacts.json'), true, flags: JSON_THROW_ON_ERROR);
 queryCheck(InstalledVersions::getPrettyVersion('durable-workflow/sdk') === $artifacts['sdk_php']['version']
@@ -104,12 +105,12 @@ queryCheck(function_exists('pcntl_fork') && function_exists('posix_kill'), 'This
 $started = hrtime(true) / 1e9;
 $until = $started + $artifacts['original_observation_seconds'];
 $workflowId = 'parity-query-authority-'.bin2hex(random_bytes(6));
-$active = $mode === 'timely-active';
-$timely = in_array($mode, ['timely', 'timely-active'], true);
-$namespace = $active ? 'default' : $workflowId;
+$active = in_array($mode, ['timely-active', 'timely-named-active'], true);
+$timely = in_array($mode, ['timely', 'timely-active', 'timely-named-active'], true);
+$namespace = $mode === 'timely-active' ? 'default' : $workflowId;
 $token = getenv('DW_PARITY_TOKEN') ?: 'query-authority-fixture-token';
 $admin = new Client($url, token: $token);
-if (!$active) {
+if ($namespace !== 'default') {
     $admin->createNamespace($namespace);
 }
 $client = new Client($url, namespace: $namespace, token: $token);

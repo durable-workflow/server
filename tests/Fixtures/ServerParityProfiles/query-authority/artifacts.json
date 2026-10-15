@@ -24,7 +24,8 @@
     {"mode": "timely", "protocol": "1.19"},
     {"mode": "late-poll", "protocol": "1.20"},
     {"mode": "late-handler", "protocol": "1.20"},
-    {"mode": "timely-active", "protocol": "1.20"}
+    {"mode": "timely-active", "protocol": "1.20"},
+    {"mode": "timely-named-active", "protocol": "1.20"}
   ],
   "embedded": "inapplicable: service query claims and status have no embedded worker lease",
   "performance": "not_measured"

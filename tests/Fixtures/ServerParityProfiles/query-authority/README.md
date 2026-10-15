@@ -1,8 +1,9 @@
 # Current query authority profile
 
 This separate profile uses normally installed PHP SDK 2.4.2 and published Server
-2.8.0. It does not replace the frozen query actors. The revised five-case profile
-passes on both targets using separate SQLite databases. Earlier four-case
+2.8.0. It does not replace the frozen query actors. The earlier five-case profile
+passes on both targets using separate SQLite databases. The additional named
+waiting-workflow case is prepared and needs its own qualification. Earlier four-case
 MySQL observations are separate. The earlier active native termination-cleanup
 failure and PHP acknowledgement-observer race remain failed. All-six
 qualification is pending.
@@ -22,7 +23,7 @@ token before invoking it. It refuses an existing case output instead of
 overwriting a failed original.
 
 The hosted entry point `query-authority-cohort.sh BACKEND` creates separate PHP
-and native databases, installs the locked SDK normally, and runs all five cases
+and native databases, installs the locked SDK normally, and runs every declared case
 against each target. `BACKEND` is `sqlite`, `mysql` or `pgsql`; the existing six
 database jobs provide their pinned database images and isolated network. It
 reuses the job's compiled native binary. Its separate always-step invokes
@@ -46,9 +47,10 @@ after its actual registration acknowledgement. It does not depend on worker
 listing, which is also outside the current native slice.
 
 The four deadline cases use completed workflows in distinct named namespaces.
-The additional timely-active case uses a genuine waiting timer workflow in the
-default namespace. Native named-timer authoring still refuses explicitly and is
-not qualified by this profile. Earlier waiting named originals remain failed.
+The timely-active and timely-named-active cases use genuine waiting timer
+workflows in the default namespace and a distinct named namespace respectively.
+The latter covers named-timer admission and query delivery together. Earlier
+waiting named originals remain failed; this new case cannot rescue them.
 Timely 1.20 and 1.19 controls retain the exact int64/null/Unicode result.
 Separate late controls hold a genuine poll reply for six seconds or let a
 synchronous callback return after six seconds. They require the original caller
