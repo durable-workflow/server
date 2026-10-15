@@ -59,6 +59,49 @@ class WorkerCommandContractAdmissionTest extends TestCase
         ];
     }
 
+    #[DataProvider('numericStringDeclarations')]
+    public function test_numeric_string_workflow_types_retain_their_declarations(string $type, array $contract): void
+    {
+        $this->registerDeclaration([
+            'supported_workflow_types' => [$type],
+            'workflow_definition_fingerprints' => [$type => 'numeric-name-fingerprint'],
+            'workflow_command_contracts' => [$type => $contract],
+        ]);
+
+        $observation = $this->startAndObserve('numeric-name-original', $type);
+        $this->assertSame('durable_history', $observation['command_contract']['source']);
+        $this->assertFalse($observation['command_contract']['backfill_needed']);
+        $this->assertSame($contract['queries'] ?? [], $observation['command_contract']['queries']);
+        $this->assertSame('numeric-name-fingerprint', WorkerRegistration::query()->sole()->workflow_definition_fingerprints[$type]);
+    }
+
+    public static function numericStringDeclarations(): array
+    {
+        return [
+            'zero empty' => ['0', []],
+            'zero named' => ['0', ['queries' => ['current'], 'query_contracts' => [['name' => 'current', 'parameters' => []]]]],
+            'integer empty' => ['17', []],
+            'integer named' => ['17', ['queries' => ['current'], 'query_contracts' => [['name' => 'current', 'parameters' => []]]]],
+            'leading zero empty' => ['017', []],
+            'leading zero named' => ['017', ['queries' => ['current'], 'query_contracts' => [['name' => 'current', 'parameters' => []]]]],
+        ];
+    }
+
+    #[DataProvider('numericStringWorkflowTypes')]
+    public function test_numeric_string_keys_do_not_bypass_contract_validation(string $type): void
+    {
+        $this->postJson('/api/worker/register', $this->registrationPayload([
+            'supported_workflow_types' => [$type],
+            'workflow_command_contracts' => [$type => null],
+        ]), $this->workerHeaders())->assertUnprocessable();
+        $this->assertSame(0, WorkerRegistration::query()->count());
+    }
+
+    public static function numericStringWorkflowTypes(): array
+    {
+        return ['zero' => ['0'], 'integer' => ['17']];
+    }
+
     #[DataProvider('missingDeclarations')]
     public function test_missing_legacy_declaration_stays_unavailable(array $extra): void
     {
@@ -163,10 +206,10 @@ class WorkerCommandContractAdmissionTest extends TestCase
             $this->workerHeaders($namespace))->assertCreated();
     }
 
-    private function startAndObserve(string $workflowId): array
+    private function startAndObserve(string $workflowId, string $type = self::TYPE): array
     {
         $start = $this->postJson('/api/workflows', [
-            'workflow_id' => $workflowId, 'workflow_type' => self::TYPE, 'task_queue' => self::QUEUE,
+            'workflow_id' => $workflowId, 'workflow_type' => $type, 'task_queue' => self::QUEUE,
         ], $this->apiHeaders())->assertCreated();
 
         return $this->getJson('/api/workflows/'.$workflowId.'/runs/'.$start->json('run_id').'/observation',
