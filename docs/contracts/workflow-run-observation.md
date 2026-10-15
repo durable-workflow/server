@@ -76,6 +76,13 @@ bounded history window. A missing event remains unavailable. Cursor transport
 is opaque; interoperability with previously issued PHP cursors remains an
 explicit migration qualification requirement.
 
+The native draft authenticates its versioned cursor with HMAC-SHA256 using the
+existing `DW_AUTH_TOKEN` and a cursor-specific domain. The token binds namespace,
+workflow, run and both sequence bounds. Native nodes sharing that configured key
+can continue the same window after a process restart. Rotating the key invalidates
+outstanding cursors; restart the observation from its first page. PHP cursor
+compatibility is still unimplemented and remains a migration gate.
+
 ## Qualification
 
 Exercise current and selected runs, default and named namespaces, invalid

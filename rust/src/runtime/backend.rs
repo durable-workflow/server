@@ -11,6 +11,8 @@ pub(super) trait Backend: Database {
     type EncodedOptionalTime: for<'q> Encode<'q, Self> + Type<Self> + Send + Sync + 'static;
     type EncodedDocument: for<'q> Encode<'q, Self> + Type<Self> + Send + Sync + 'static;
     const HISTORY_PAGE: &'static str;
+    const OBSERVATION_FAILURE_EVENT: &'static str = "SELECT id,sequence,event_type,recorded_at FROM workflow_history_events WHERE workflow_run_id=$1 AND payload->>'failure_id'=$2 AND event_type IN ('ActivityFailed','ActivityTimedOut','ChildRunFailed','ChildRunCancelled','ChildRunTerminated','WorkflowFailed','WorkflowTimedOut','WorkflowCancelled','WorkflowTerminated','UpdateCompleted') ORDER BY sequence DESC LIMIT 1";
+    const OBSERVATION_ATTRIBUTES: &'static str = "SELECT \"key\" AS attribute_key,type,value_string,value_keyword,value_int,value_float,CASE WHEN value_bool IS NULL THEN NULL WHEN value_bool THEN 1 ELSE 0 END AS value_bool,value_datetime,value_keyword_list FROM workflow_search_attributes WHERE workflow_run_id=$1 AND workflow_instance_id=$2 AND \"key\" IN ($3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) ORDER BY \"key\" LIMIT 20";
     const ACTIVITY_RESULT_EVENT_SQL: &'static str = "SELECT sequence,event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('ActivityScheduled','ActivityStarted','ActivityHeartbeatRecorded','ActivityRetryScheduled','ActivityCompleted','ActivityFailed','ActivityTimedOut','ActivityCancelled') AND (payload->>'activity_execution_id'=$2 OR payload->'activity'->>'id'=$3) ORDER BY sequence DESC LIMIT 1";
     const EXTERNAL_PAYLOAD_BYTES: &'static str = "SELECT CAST(COALESCE(SUM(size_bytes),0) AS BIGINT) FROM runtime_external_payloads WHERE namespace=$1";
     const VISIBILITY_PAGE: &'static str = super::visibility::VISIBILITY_PAGE;
@@ -54,6 +56,7 @@ pub(super) trait Backend: Database {
     fn optional_string(row: &Self::Row, field: &str) -> Result<Option<String>>;
     fn number(row: &Self::Row, field: &str) -> Result<i64>;
     fn optional_number(row: &Self::Row, field: &str) -> Result<Option<i64>>;
+    fn optional_float(row: &Self::Row, field: &str) -> Result<Option<f64>>;
     fn affected(result: Self::QueryResult) -> u64;
     fn instant(row: &Self::Row, field: &str) -> Result<DateTime<Utc>>;
     fn optional_instant(row: &Self::Row, field: &str) -> Result<Option<DateTime<Utc>>>;
@@ -87,6 +90,7 @@ fn sqlite_instant(value: String) -> Result<DateTime<Utc>> {
 }
 
 impl Backend for Sqlite {
+    const OBSERVATION_FAILURE_EVENT: &'static str = "SELECT id,sequence,event_type,recorded_at FROM workflow_history_events WHERE workflow_run_id=$1 AND json_extract(payload,'$.failure_id') COLLATE BINARY=$2 AND event_type IN ('ActivityFailed','ActivityTimedOut','ChildRunFailed','ChildRunCancelled','ChildRunTerminated','WorkflowFailed','WorkflowTimedOut','WorkflowCancelled','WorkflowTerminated','UpdateCompleted') ORDER BY sequence DESC LIMIT 1";
     const ACTIVITY_RESULT_EVENT_SQL: &'static str = "SELECT sequence,event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('ActivityScheduled','ActivityStarted','ActivityHeartbeatRecorded','ActivityRetryScheduled','ActivityCompleted','ActivityFailed','ActivityTimedOut','ActivityCancelled') AND (json_extract(payload,'$.activity_execution_id') COLLATE BINARY=$2 OR json_extract(payload,'$.activity.id') COLLATE BINARY=$3) ORDER BY sequence DESC LIMIT 1";
     const QUERY_CACHE_SCAN: &'static str = "SELECT \"key\",value,expiration FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' AND json_extract(value,'$.namespace')=$1 ORDER BY \"key\" LIMIT 65";
     const QUERY_CACHE_PENDING_FOR_RUN: &'static str = "SELECT json_extract(value,'$.query_admitted_at') AS query_admitted_at,json_extract(value,'$.query_deadline_at') AS query_deadline_at,json_extract(value,'$.receipt_expires_at') AS receipt_expires_at FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' AND expiration>$2 AND json_extract(value,'$.run_id')=$1 AND json_extract(value,'$.status') IN ('pending','leased') ORDER BY \"key\" LIMIT 65";
@@ -174,6 +178,9 @@ DELETE FROM dw_poll_receipts WHERE (namespace,worker_id,kind,request_id) IN (
     fn optional_number(row: &Self::Row, field: &str) -> Result<Option<i64>> {
         Ok(row.try_get(field)?)
     }
+    fn optional_float(row: &Self::Row, field: &str) -> Result<Option<f64>> {
+        Ok(row.try_get(field)?)
+    }
     fn affected(result: Self::QueryResult) -> u64 {
         result.rows_affected()
     }
@@ -233,6 +240,9 @@ impl Encode<'_, Postgres> for PostgresDocument {
 }
 
 impl Backend for Postgres {
+    fn optional_float(row: &Self::Row, field: &str) -> Result<Option<f64>> {
+        Ok(row.try_get(field)?)
+    }
     type EncodedTime = NaiveDateTime;
     type EncodedOptionalTime = Option<NaiveDateTime>;
     type EncodedDocument = PostgresDocument;
@@ -311,6 +321,11 @@ impl Backend for Postgres {
 }
 
 impl Backend for MySql {
+    const OBSERVATION_FAILURE_EVENT: &'static str = "SELECT id,sequence,event_type,recorded_at FROM workflow_history_events WHERE workflow_run_id=? AND CAST(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.failure_id')) AS BINARY)=CAST(? AS BINARY) AND event_type IN ('ActivityFailed','ActivityTimedOut','ChildRunFailed','ChildRunCancelled','ChildRunTerminated','WorkflowFailed','WorkflowTimedOut','WorkflowCancelled','WorkflowTerminated','UpdateCompleted') ORDER BY sequence DESC LIMIT 1";
+    const OBSERVATION_ATTRIBUTES: &'static str = "SELECT `key` AS attribute_key,type,value_string,value_keyword,value_int,value_float,CASE WHEN value_bool IS NULL THEN NULL WHEN value_bool THEN 1 ELSE 0 END AS value_bool,value_datetime,value_keyword_list FROM workflow_search_attributes WHERE workflow_run_id=$1 AND workflow_instance_id=$2 AND `key` IN ($3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) ORDER BY `key` LIMIT 20";
+    fn optional_float(row: &Self::Row, field: &str) -> Result<Option<f64>> {
+        Ok(row.try_get(field)?)
+    }
     const ACTIVITY_RESULT_EVENT_SQL: &'static str = "SELECT sequence,event_type,payload FROM workflow_history_events WHERE CAST(workflow_run_id AS BINARY)=CAST(? AS BINARY) AND event_type IN ('ActivityScheduled','ActivityStarted','ActivityHeartbeatRecorded','ActivityRetryScheduled','ActivityCompleted','ActivityFailed','ActivityTimedOut','ActivityCancelled') AND (CAST(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.activity_execution_id')) AS BINARY)=CAST(? AS BINARY) OR CAST(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.activity.id')) AS BINARY)=CAST(? AS BINARY)) ORDER BY sequence DESC LIMIT 1";
     const QUERY_CACHE_SCAN: &'static str = "SELECT `key`,value,expiration FROM dw_query_cache WHERE `key` LIKE 'dw-native-query:%' AND BINARY JSON_UNQUOTE(JSON_EXTRACT(value,'$.namespace'))=BINARY ? ORDER BY `key` LIMIT 65";
     const POLL_WAKE_QUERIES_SQL: &'static str = "SELECT `key` AS id FROM dw_query_cache WHERE `key` LIKE 'dw-native-query:%' AND expiration>? AND CAST(JSON_UNQUOTE(JSON_EXTRACT(value,'$.namespace')) AS BINARY)=CAST(? AS BINARY) AND CAST(JSON_UNQUOTE(JSON_EXTRACT(value,'$.task_queue')) AS BINARY)=CAST(? AS BINARY) AND CAST(JSON_UNQUOTE(JSON_EXTRACT(value,'$.query_deadline_at')) AS BINARY)>CAST(? AS BINARY) AND (JSON_UNQUOTE(JSON_EXTRACT(value,'$.status'))='pending' OR (JSON_UNQUOTE(JSON_EXTRACT(value,'$.status'))='leased' AND CAST(JSON_UNQUOTE(JSON_EXTRACT(value,'$.lease_expires_at')) AS BINARY)<=CAST(? AS BINARY))) ORDER BY `key` LIMIT 65";
@@ -351,6 +366,7 @@ impl Backend for MySql {
             || sql == Self::SELECTION_RESOLUTION_SQL
             || sql == Self::ACTIVITY_OPEN_TASK_SQL
             || sql == Self::ACTIVITY_RESULT_EVENT_SQL
+            || sql == Self::OBSERVATION_FAILURE_EVENT
             || sql == Self::POLL_WAKE_QUERIES_SQL
             || sql == Self::QUERY_CACHE_PENDING_FOR_RUN
             || sql == Self::QUERY_CACHE_SCAN

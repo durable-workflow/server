@@ -65,6 +65,14 @@ pub fn router(runtime: Runtime) -> Router {
             post(super::schedule_http::trigger),
         )
         .route("/api/workflows/{workflow_id}", get(describe_current))
+        .route(
+            "/api/workflows/{workflow_id}/observation",
+            get(super::run_observation::current),
+        )
+        .route(
+            "/api/workflows/{workflow_id}/runs/{run_id}/observation",
+            get(super::run_observation::selected),
+        )
         .route("/api/workflows/{workflow_id}/runs", get(list_runs))
         .route("/api/workflows/{workflow_id}/cancel", post(cancel_current))
         .route("/api/workflows/{workflow_id}/repair", post(repair_current))
@@ -395,6 +403,12 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
     }
     if let Some(path) = path.strip_prefix("/api/workflows/") {
         let parts: Vec<_> = path.split('/').collect();
+        if matches!(
+            parts.as_slice(),
+            [_, "observation"] | [_, "runs", _, "observation"]
+        ) {
+            return method == "GET";
+        }
         if matches!(parts.as_slice(), [_, "runs", _, "activities", _, "result"]) {
             return method == "GET";
         }

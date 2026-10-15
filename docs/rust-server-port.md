@@ -11,7 +11,8 @@ The latest merged API slice is targeted activity-result inspection in
 Its candidate passed all 13 shared jobs across six database configurations and
 the applicable PHP/source and public-boundary checks. The separate
 [merged-main run](https://github.com/durable-workflow/server/actions/runs/38773062581)
-is still pending. Native result discovery remains unadvertised.
+now passes all 13 jobs. Its artifact download timed out, so the independent
+bounded-summary readback is still pending. Native result discovery remains unadvertised.
 Earlier failed observations remain failed, and a candidate pass does not qualify
 a later tree. Frozen published PHP, embedded and SDK tuples remain separate
 from current PHP release work. Representative family checks do not establish
@@ -32,8 +33,13 @@ Current checkpoint, October 15:
   configuration. SQLite also records 77 library passes with the existing
   18 explicit ignores. The separate main run above remains its own gate.
 - [Metadata-only activity listing #476](https://github.com/durable-workflow/server/pull/476)
-  is still a draft at `4b9384b3`. Its current database qualification is pending.
-  Earlier unsuccessful originals remain unsuccessful.
+  is still a draft at `4b9384b3`. Its [13-job qualification](https://github.com/durable-workflow/server/actions/runs/38773360007)
+  passes at tested merge `146e27a6`, tree `34a0caeb`. Independent readback of
+  all six retained summaries confirms 29 passing comparisons, 20 zero-exit
+  profile statuses and 133 native execution tests per database configuration.
+  SQLite also records 78 library passes with 18 explicit ignores. Source and
+  current merge-tree review remain open. Earlier unsuccessful originals remain
+  unsuccessful.
 - [Read-only upgrade inspection #460](https://github.com/durable-workflow/server/pull/460)
   remains a draft at `7066a50e`. Qualification and review are incomplete, so
   the candidate is not being promoted. No backup, migration or takeover
@@ -48,10 +54,21 @@ Current checkpoint, October 15:
   viewer stopped with exit 137 and no OOM; graceful viewer shutdown is not
   established. Native bounded run observation, discovery and positive native
   browser acceptance remain open.
+- [Bounded run observation #478](https://github.com/durable-workflow/server/pull/478)
+  now implements current and selected reads under the
+  [existing PHP contract](contracts/workflow-run-observation.md). Local SQLite
+  validation passes 78 library and 134 execution tests, with the existing
+  18 library ignores; five focused HTTP controls also pass on PostgreSQL 17
+  and MySQL 8.0. Missing summaries/waits remain explicit, and constructed
+  retained projections are separate from genuine retry/failure execution.
+  Hosted qualification, published PHP/SDK differential reads, projection
+  production and native browser acceptance are still open. PHP-issued cursor
+  compatibility remains an explicit migration gate.
 
-Next, complete the independent merged-main result qualification and review the
-metadata candidate's actual outcomes. Native Waterline acceptance then needs
-the canonical bounded run page and qualified discovery, followed by the same
+Next, finish merged-main artifact readback and review the metadata candidate's
+current merge tree. Qualify bounded observation against published PHP and
+normally installed SDK readers. Native Waterline acceptance then needs
+qualified discovery, followed by the same
 unmodified browser recipe. Keep the incomplete inspector review separate.
 No new release, database takeover or full-family parity is claimed.
 
