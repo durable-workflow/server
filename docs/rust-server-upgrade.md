@@ -69,6 +69,54 @@ qualification and refuse this first inventory path.
 
 ## Qualification and next migration gates
 
+The separate `upgrade-payload-inspect` command now also checks recorded `avro`
+frames in `workflow_runs.arguments`, `workflow_runs.output`,
+`activity_executions.arguments` and `activity_executions.result`. It uses Apache
+Avro's schema traversal without retaining decoded arrays or maps. It reads
+32 rows per primary-key page, caps encoded frames at 64 KiB, and refuses unknown
+or missing codecs, malformed/trailing frames, more than 64 traversal levels or
+16,384 visits. Before any decoder is created, this standalone command sets and
+verifies Apache's process-wide scalar allocation ceiling of 64 KiB; HTTP runtime
+allocation policy is unchanged. Oversized stored values are masked in SQL
+before transfer to the client.
+
+The report distinguishes validated inline counts from unsupported values and
+external-reference metadata. `inline_values_verified` applies only to these
+enumerated root columns; nested history, provider bytes, registry ownership and
+complete representation remain unverified. Refusal prints the bounded report
+and exits nonzero, preserving source data. Known valid frames retain exact
+int64, null, Unicode and byte-string semantics; PHP-looking text in a byte
+string is never deserialized as an object.
+
+Preparation `c12fe089` passes 112 library tests, two actual CLI tests and 133
+SQLite execution tests, with 18 existing library ignores. A malformed frame
+declaring a 500 MiB scalar is refused under the actual CLI ceiling without
+changing source bytes. These are constructed source controls; the earlier
+published-PHP PostgreSQL observation left 22 inline values unvalidated and is
+not retroactively qualified by this source change.
+
+Source `03b3bd3c`, native tree `029ab981`, separately passes the actual stopped
+PHP 2.8.5 image `f6a6507a` recipe on SQLite DELETE, MySQL 8.4 and PostgreSQL 17.
+Each database has two original pending runs, three inline argument frames and
+one queued timer bound to its original canonical task. All three inspector
+commands pass, with the actual 64 KiB allocation ceiling. Source fingerprints
+remain exact: SQLite database bytes and network logical rows/sequences, not
+network physical files or backups. Denied readers, unknown catalogs, ownership
+markers and PostgreSQL row security refuse where applicable. APIs and databases
+exit 0 without OOM after the observation and owned cleanup.
+
+These six raw-protocol originals contain int64, null and Unicode arguments;
+their run outputs and activity results are absent. This does not add completed
+result, nested history, provider-byte or actual SDK continuation qualification.
+The 22 earlier inline values remain the earlier unvalidated observation.
+The full hosted database-version matrix, complete representation and every
+takeover gate remain open.
+
+The published-source recipe retains its immutable PHP 2.8.0 default. A separate
+observation may explicitly set `DW_PARITY_UPGRADE_PHP_IMAGE` to an official
+`ghcr.io/durable-workflow/server@sha256:...` image; the exact selected digest is
+recorded in its outcome. This does not change any frozen differential actor.
+
 Catalog recognition does not decode stored values. The source audit identifies
 these separate compatibility boundaries:
 
@@ -114,8 +162,8 @@ fields remain original strings, not recalculated task deadlines.
 The committed queue fixtures are produced by serializing the real classes in
 the pinned published image without dispatching them. This independently tested
 decoder grants no conversion, deletion, execution or takeover authority.
-Complete native integration and actual same-database queue qualification remain
-separate gates.
+The read-only source-row binding below is a separate check; actual replacement
+of PHP queue execution remains unqualified.
 
 A separate genuine published PHP 2.8.2 source fixture now contains one queued
 timer job, its original task/run, and a separate leased activity. Its outer
@@ -162,8 +210,13 @@ disagreements refuse without a partial success report. The output adds only
 job-kind counts, not payloads or identities. No jobs are deleted or executed,
 and all takeover, backup, quiescence and complete representation flags remain
 false. An empty database queue does not establish the state of Redis, another
-queue connection or another transport. The hosted published-source recipe now
-requires this separate component; its fresh all-database execution is pending.
+queue connection or another transport. The published-source recipe now requires
+this separate component. Local source `5d54f25e` passes the actual recipe on
+SQLite DELETE, MySQL 8.4 and PostgreSQL 17, with two original pending runs and
+one timer job per database. Inspection preserves each source snapshot, and
+denied access, unknown catalogs, ownership markers and PostgreSQL row security
+remain explicit refusals where applicable. The full hosted database-version
+matrix and subsequent migration gates remain pending.
 
 The separate published PHP 2.8.0 profile prepares two genuine original runs:
 one leased activity and one pending timer. It explicitly stops PHP before
