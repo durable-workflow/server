@@ -272,6 +272,24 @@ impl Runtime {
             expected: &crate::external_payload::Reference,
         ) -> Result<super::external_registry::RegisteredPayload>
     );
+    delegate!(
+        authorize_completion_upload(
+            context: &super::activity_completion_uploads::Context,
+            expected: &crate::external_payload::Reference,
+        ) -> Result<Option<crate::external_payload::Reference>>
+    );
+    delegate!(
+        upload_activity_completion(
+            local: crate::external_payload::LocalStorage,
+            expected: crate::external_payload::Reference,
+            snapshot: crate::external_payload::Snapshot,
+            expires: chrono::DateTime<chrono::Utc>,
+            quota: super::external_config::Quota,
+            context: super::activity_completion_uploads::Context,
+            max_bytes: u64,
+            retention: i64,
+        ) -> Result<crate::external_payload::Reference>
+    );
     delegate!(mark_external_fetched(expected: &crate::external_payload::Reference) -> Result<()>);
     delegate!(database_live() -> bool);
     pub(crate) async fn start(&self, body: Value) -> Result<Value> {

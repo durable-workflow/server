@@ -121,6 +121,19 @@ where
         expires: DateTime<Utc>,
         quota: Quota,
     ) -> Result<Reference> {
+        self.upload_external_local_guarded(local, expected, snapshot, expires, quota, None)
+            .await
+    }
+
+    pub(super) async fn upload_external_local_guarded(
+        &self,
+        local: crate::external_payload::LocalStorage,
+        expected: Reference,
+        snapshot: crate::external_payload::Snapshot,
+        expires: DateTime<Utc>,
+        quota: Quota,
+        completion: Option<&super::activity_completion_uploads::Context>,
+    ) -> Result<Reference> {
         let uri = local
             .uri_for(&expected)
             .map_err(super::external_transport::snapshot_error)?;
@@ -136,10 +149,16 @@ where
             .fetch_one(&mut *tx).await? != 1 {
             return Err(refuse(StatusCode::SERVICE_UNAVAILABLE, "external_payload_unavailable"));
         }
+        if let Some(context) = completion {
+            self.completion_upload_lease(&mut tx, context).await?;
+        }
         local
             .put(reference.clone(), snapshot)
             .await
             .map_err(super::external_transport::snapshot_error)?;
+        if let Some(context) = completion {
+            self.completion_upload_lease(&mut tx, context).await?;
+        }
         self.promote_external_upload(&mut tx, &reference, &uri)
             .await?;
         tx.commit().await?;

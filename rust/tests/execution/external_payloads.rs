@@ -1,4 +1,6 @@
 use super::*;
+#[path = "external_payloads/completion_uploads.rs"]
+mod completion_uploads;
 use axum::{body::Bytes, http::HeaderMap};
 use durable_workflow_server::runtime::ExternalPayloadConfig;
 use sha2::{Digest, Sha256};
@@ -1310,8 +1312,31 @@ async fn authentication_namespace_and_declared_limit_refuse_before_body_or_provi
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let body: Value =
         serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+    assert_eq!(body["reason"], "external_payload_completion_invalid");
+    let unsupported = json!({"schema":"durable-workflow.v2.payload-completion-context.v1",
+        "kind":"workflow","task_id":"task","attempt":1,"lease_owner":"owner",
+        "operation":"complete","slot":["commands",0,"result"]});
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/external-payloads/v1")
+                .header("authorization", "Bearer worker-token")
+                .header("content-type", "application/octet-stream")
+                .header(
+                    "x-durable-workflow-payload-completion",
+                    unsupported.to_string(),
+                )
+                .body(untouched(reads.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
     assert_eq!(
-        body["reason"],
+        serde_json::from_slice::<Value>(&bytes).unwrap()["reason"],
         "development_payload_completion_upload_unqualified"
     );
     assert_eq!(reads.load(Ordering::Relaxed), 0);
@@ -1323,14 +1348,17 @@ async fn authentication_namespace_and_declared_limit_refuse_before_body_or_provi
 #[tokio::test]
 async fn stalled_upload_keeps_original_timeout_and_releases_capacity_for_next_original() {
     let temp = tempfile::tempdir().unwrap();
-    let mut config = ExternalPayloadConfig::default();
+    let recovery_config = ExternalPayloadConfig::default();
+    // The clone shares the one-slot worker semaphore. Keep the stalled
+    // request's deadline separate from fresh durable filesystem/SQL work.
+    let mut config = recovery_config.clone();
     config.timeout = Duration::from_millis(100);
-    let (database, runtime, router) = setup(config, temp.path()).await;
+    let (database, runtime, stalled_router) = setup(config, temp.path()).await;
     let meta = metadata(b"abc");
     let start = tokio::time::Instant::now();
     let body = Body::from_stream(futures_util::stream::pending::<Result<Bytes, std::io::Error>>());
     let (status, _, _) = request(
-        &router,
+        &stalled_router,
         "POST",
         "/api/external-payloads/v1",
         "worker-token",
@@ -1341,8 +1369,15 @@ async fn stalled_upload_keeps_original_timeout_and_releases_capacity_for_next_or
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert!(start.elapsed() < Duration::from_secs(1));
+    // This fresh request uses the normal policy with the same capacity pool.
+    // A leaked permit still times out; slow durable I/O is not a leak proof.
+    let recovery_router = router(
+        runtime
+            .clone()
+            .with_external_payload_config(recovery_config),
+    );
     let (status, _, body) = request(
-        &router,
+        &recovery_router,
         "POST",
         "/api/external-payloads/v1",
         "worker-token",

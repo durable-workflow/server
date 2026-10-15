@@ -70,6 +70,9 @@ mod condition_occurrences;
 #[path = "execution/query_arguments.rs"]
 mod query_arguments;
 
+#[path = "execution/cross_kind_poll.rs"]
+mod cross_kind_poll;
+
 #[path = "execution/external_payloads.rs"]
 mod external_payloads;
 
