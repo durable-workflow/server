@@ -2931,3 +2931,12 @@ WorkerController bytes match the qualified PHP handoff. This combined tree
 requires fresh normal and six-database qualification. The preceding `3409a776`
 component pass, its MySQL-only retry, and all failed originals remain their
 separate records; none qualifies this integration or a native release.
+
+The separate #460 source preparation now recognizes canonical PHP stored
+external-reference metadata under a 64 KiB bound, using a fixture emitted by
+released Workflow 2.5.20 serializer classes. Four focused groups cover preserved
+fields, format separation, malformed/duplicate fields, codec and integer bounds.
+All 97 local library tests pass, with 18 existing database/subprocess cases
+explicitly ignored. This reader is not yet wired to source-row scanning or
+conversion and fetches no object. Registry/provider binding, restored backup
+bytes, complete representation coverage and sequential takeover remain open.
