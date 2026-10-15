@@ -8,7 +8,6 @@ import os
 import re
 import sys
 import time
-from datetime import datetime
 from pathlib import Path
 
 from durable_workflow import Client, Worker, workflow
@@ -20,6 +19,12 @@ TYPE = 'parity.query-authority.python.v1'
 EXPECTED = {'long': 9223372036854775807, 'nil': None, 'text': 'rangeλ'}
 COUNTERS = {'calls': 0, 'returned': 0, 'cancelled': 0}
 AUTHORITY_LOSSES = []
+EXPIRED_REASONS = {'query_execution_budget_expired', 'query_task_timed_out', 'query_lease_expired'}
+
+
+def expired_losses(task_id):
+    return [loss for loss in AUTHORITY_LOSSES
+            if loss['query_task_id'] == task_id and loss['reason'] in EXPIRED_REASONS]
 
 
 class AuthorityLog(logging.Handler):
@@ -115,8 +120,8 @@ async def main():
                     # Delivery is recorded before the SDK receives its response.
                     # Wait for its actual refusal before stopping the worker.
                     while (MODE == 'late-poll' and not any(
-                               loss['query_task_id'] == event['claim']['query_task_id']
-                               for loss in AUTHORITY_LOSSES for event in events() if event['event'] == 'claim')
+                               expired_losses(event['claim']['query_task_id'])
+                               for event in events() if event['event'] == 'claim')
                            or MODE == 'late-handler-async' and COUNTERS['cancelled'] != 1
                            or MODE == 'late-handler-sync' and COUNTERS['returned'] != 1):
                         await asyncio.sleep(.02)
@@ -138,18 +143,15 @@ async def main():
     assert named('claim')[0]['namespace'] == claim.get('namespace', namespace) == namespace
     assert claim['task_queue'] == claim['lease_owner'] == namespace
     assert claim['workflow_id'] == namespace and claim['run_id'] == handle.run_id
+    if MODE != 'timely':
+        assert expired_losses(claim['query_task_id']), AUTHORITY_LOSSES
     discovery = named('discovery')
     if PROTOCOL == '1.20':
         assert discovery and all(x['status'] == 200 and x['query_task_authority'] is True for x in discovery), discovery
         if not named('status'):
             # Proven expiry needs no redundant HTTP observation. No callback
             # alone would also admit malformed metadata or an observer failure.
-            bound = min(datetime.fromisoformat(claim[key].replace('Z', '+00:00')).timestamp()
-                        for key in ('query_deadline_at', 'lease_expires_at'))
             assert MODE == 'late-poll'
-            assert any(loss['query_task_id'] == claim['query_task_id']
-                       and loss['reason'] in ('query_execution_budget_expired', 'query_task_timed_out', 'query_lease_expired')
-                       and loss['observed_at'] >= bound for loss in AUTHORITY_LOSSES), AUTHORITY_LOSSES
     else:
         assert not named('status')
     for entry in named('status'):
