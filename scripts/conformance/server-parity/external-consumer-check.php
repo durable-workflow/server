@@ -98,6 +98,16 @@ function checkExternalConsumers(array $records, array $artifacts): array
         $require($completion['reference']['codec'] === 'avro' && $completion['reference']['size_bytes'] === 44
             && $completion['reference']['sha256'] === '72f7246e42b2f948968398c4718ce8567ad4417aee4901f8975eefd5963b9ba5',
             "$target completion byte identity");
+        $require(count($completion['reference']) === 5 && count($completion['duplicate_reference']) === 5,
+            "$target exact reference members");
+        foreach (['schema', 'reference_id', 'codec', 'size_bytes', 'sha256'] as $field) {
+            $require(array_key_exists($field, $completion['reference'])
+                && array_key_exists($field, $completion['duplicate_reference'])
+                && $completion['reference'][$field] === $completion['duplicate_reference'][$field],
+                "$target duplicate reference $field identity/type");
+        }
+        $require($completion['duplicate_key_order_changed'] === (array_keys($completion['reference']) !== array_keys($completion['duplicate_reference'])),
+            "$target reference member order observation");
         $require($completion['controls'] === ['identical_upload', 'conflicting_slot', 'foreign_owner',
             'closed_upload_reconciliation', 'cold_parent', 'utf8_completion_context'], "$target completion controls");
         $runs['completion-upload'] = $completion['run_id'];
@@ -138,6 +148,8 @@ $mutations = [
     'completion_other_parent' => static function (array &$bad): void { $bad['native']['completion-upload']['parent_run_id'] = 'other'; },
     'completion_lease_renewal' => static function (array &$bad): void { $bad['php']['completion-upload']['lease_expires_after'] .= 'changed'; },
     'completion_rounded_int64' => static function (array &$bad): void { $bad['native']['completion-upload']['result'][0] = 9007199254740992; },
+    'completion_duplicate_reference' => static function (array &$bad): void { $bad['php']['completion-upload']['duplicate_reference']['reference_id'] = 'other'; },
+    'completion_duplicate_size_type' => static function (array &$bad): void { $bad['native']['completion-upload']['duplicate_reference']['size_bytes'] = '44'; },
 ];
 foreach ($mutations as $label => $mutate) {
     $bad = $records;

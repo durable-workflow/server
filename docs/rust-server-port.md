@@ -66,9 +66,12 @@ The active integration order is:
   result completion uploads. The separate published PHP original passes upload,
   conflict/owner checks, post-closure upload reconciliation and cold parent
   consumption. The unchanged native control explicitly refuses the header.
-  A native prototype passes 69 library tests (18 explicit ignores) and three
-  actual HTTP authority/race cases on SQLite. Full regression, installed recipe,
-  all-database execution and promotion remain pending. No workflow/query/prepared
+  The native prototype has 70 passing library tests (18 explicit ignores) and
+  three actual HTTP authority/race controls passing on SQLite, MySQL 8.4 and
+  PostgreSQL 17. Genuine Unicode PHP/native SQLite consumer originals pass;
+  the MySQL probe's JSON member-order disposition and unchanged 100ms regression
+  refusal are recorded separately in the PR. Final-head full regression,
+  all-six consumer execution and promotion remain pending. No workflow/query/prepared
   context, pressure-bypass or full transport capability is advertised.
 
 Full transport discovery stays unadvertised. Complete batch workflow semantics,

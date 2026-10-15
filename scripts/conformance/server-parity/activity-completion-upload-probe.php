@@ -38,6 +38,18 @@ $expect = static function (array $response, int $status, string $operation) use 
     return $response[1];
 };
 $envelope = static fn (mixed $value): array => ['codec' => 'avro', 'blob' => Avro::serialize($value)];
+$sameReference = static function (array $left, array $right): bool {
+    if (count($left) !== 5 || count($right) !== 5) {
+        return false;
+    }
+    foreach (['schema', 'reference_id', 'codec', 'size_bytes', 'sha256'] as $field) {
+        if (! array_key_exists($field, $left) || ! array_key_exists($field, $right) || $left[$field] !== $right[$field]) {
+            return false;
+        }
+    }
+
+    return true;
+};
 if ($request('GET', '/api/namespaces/default')[0] === 404) {
     $expect($request('POST', '/api/namespaces', ['name' => 'default']), 201, 'namespace');
 }
@@ -99,7 +111,7 @@ if ($first[0] === 422 && ($first[1]['reason'] ?? null) === 'development_payload_
 $reference = $expect($first, 201, 'completion upload')['reference'];
 $require($reference['sha256'] === hash('sha256', $bytes) && $reference['size_bytes'] === strlen($bytes), 'Upload bytes changed');
 $duplicate = $expect($upload($context, $bytes), 201, 'identical upload')['reference'];
-$require($duplicate === $reference, 'Duplicate upload identity changed');
+$require($sameReference($duplicate, $reference), 'Duplicate upload identity changed: '.json_encode([$reference, $duplicate], JSON_THROW_ON_ERROR));
 $conflict = $upload($context, Avro::serialize('different'));
 $expect($conflict, 409, 'conflicting upload');
 $require($conflict[1]['reason'] === 'external_payload_completion_conflict', 'Unexpected conflict disposition');
@@ -116,7 +128,7 @@ $completion = $expect($request('POST', '/api/worker/activity-tasks/'.$activity['
     'result' => ['codec' => 'avro', 'external_payload' => $reference],
 ]), 200, 'activity completion');
 $require($completion['recorded'] === true, 'Activity outcome was not committed');
-$require($expect($upload($context, $bytes), 201, 'closed upload reconciliation')['reference'] === $reference,
+$require($sameReference($expect($upload($context, $bytes), 201, 'closed upload reconciliation')['reference'], $reference),
     'Closed upload retry changed its reference');
 $parent = $expect($request('POST', '/api/worker/workflow-tasks/poll', $poll), 200, 'parent claim')['task'];
 $require($parent['run_id'] === $original['run_id'], 'Cold parent changed original');
@@ -126,7 +138,7 @@ $result = $completed[0]['payload']['result'];
 if (isset($result['blob'])) {
     $require(Avro::unserialize($result['blob']) === $expected, 'Cold inline result changed');
 } else {
-    $require(($result['external_payload'] ?? null) === $reference, 'Cold external result changed');
+    $require($sameReference($result['external_payload'] ?? [], $reference), 'Cold external result changed');
     $response = $http->get('/api/external-payloads/v1/'.$reference['reference_id'], ['headers' => $headers + [
         'X-Durable-Workflow-Payload-Codec' => 'avro', 'X-Durable-Workflow-Payload-Size' => (string) strlen($bytes),
         'X-Durable-Workflow-Payload-SHA256' => hash('sha256', $bytes),
@@ -147,6 +159,8 @@ echo json_encode(['outcome' => 'pass', 'scope' => 'raw_http_activity_completion_
     'parent_run_id' => $parent['run_id'], 'parent_task_id' => $parent['task_id'], 'result' => $expected,
     'activity_completion_count' => count($completed), 'workflow_status' => $describe['status'],
     'lease_expires_before' => $beforeUpload['lease_expires_at'], 'lease_expires_after' => $afterUpload['lease_expires_at'],
-    'reference' => $reference, 'original_budget_seconds' => 30, 'elapsed_seconds' => $finished - $started,
+    'reference' => $reference, 'duplicate_reference' => $duplicate,
+    'duplicate_key_order_changed' => array_keys($reference) !== array_keys($duplicate),
+    'original_budget_seconds' => 30, 'elapsed_seconds' => $finished - $started,
     'started_at' => $started, 'original_deadline' => $deadline, 'finished_at' => $finished,
     'controls' => ['identical_upload', 'conflicting_slot', 'foreign_owner', 'closed_upload_reconciliation', 'cold_parent', 'utf8_completion_context']], JSON_THROW_ON_ERROR)."\n";
