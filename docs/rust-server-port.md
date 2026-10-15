@@ -22,7 +22,25 @@ failed; later qualifying runs are separate observations.
 
 ## Work order and current status
 
-The current integration order is:
+Query authority is merged at `0934c46d`, whole tree `98775e68`, after the
+candidate's all-13 qualification. Its separate fresh-main run remains pending.
+Targeted activity-result preparation `004feb726` integrates that main source,
+the installed retry-reader follow-through and bounded waiting-history failure
+diagnostics. Its 77 library cases pass with the existing 18 explicit ignores;
+all 129 SQLite execution cases pass without ignores. Normal installed SDK
+2.4.2 separately completes ten fresh native originals across both namespaces:
+null, false, exact typed values, external results and a genuine two-attempt
+retry. Forty separate processes preserve original budgets, prefixes and
+closed-parent reads. Stopped state has ten completed runs/activities, 32
+completed tasks, twelve attempts, 64 events and zero repairs. API SIGTERM exits
+zero without OOM. This source has no new paired PHP observation or hosted
+acceptance yet. Earlier `8a7cffe4` all-13 and installed consumer observations apply to
+their own source only. Metadata candidate `062ce91a` has a failed frozen-PHP
+waiting-history original on SQLite and five other database originals in progress;
+the diagnostic-only change preserves the original ten-second poll budget.
+No metadata, migration or broader capability is imported by the result branch.
+
+The earlier foundation stages remain separately qualified as follows:
 
 - Merged [#445](https://github.com/durable-workflow/server/pull/445),
   [#446](https://github.com/durable-workflow/server/pull/446),
