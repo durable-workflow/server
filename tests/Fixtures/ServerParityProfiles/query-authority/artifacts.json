@@ -1,0 +1,30 @@
+{
+  "schema": "durable-workflow.server-query-authority/v1",
+  "qualification": "prepared-not-qualified",
+  "server": {
+    "version": "2.8.0",
+    "source": "dd720e6b51844707be2885f8873c23de98c847a7",
+    "image": "durableworkflow/server@sha256:cba7c4c6732529293ef6c2625a64785dcb21b4f7fe0013fdc74f1af466f534ac"
+  },
+  "sdk_php": {
+    "version": "2.4.2",
+    "source": "25d796ad2a55d0d114b58017c3ba23390b09e120",
+    "loaded_sha256": {
+      "DurableWorkflow\\Worker": "eb59fde750a37c755b551a63f93c3882039310673fe9538eec63b5f68bfd0891",
+      "DurableWorkflow\\Client": "5b53ceaa2aca9a4f33cd680f1786f642436fe06874a76efcc8987669b33fcc4c",
+      "DurableWorkflow\\Worker\\QueryTaskAuthority": "264df07849d2ba8343238b12ad9eef89920d370d61b6a4bd26a3b4895bc858b5",
+      "DurableWorkflow\\Transport\\Psr18Transport": "0857170cf128876338040f197ba469c5c6431cbb020da0453705c3798c60883a"
+    }
+  },
+  "query_timeout_seconds": 4,
+  "original_observation_seconds": 30,
+  "delayed_response_seconds": 6,
+  "cases": [
+    {"mode": "timely", "protocol": "1.20"},
+    {"mode": "timely", "protocol": "1.19"},
+    {"mode": "late-poll", "protocol": "1.20"},
+    {"mode": "late-handler", "protocol": "1.20"}
+  ],
+  "embedded": "inapplicable: service query claims and status have no embedded worker lease",
+  "performance": "not_measured"
+}
