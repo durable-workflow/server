@@ -8,11 +8,12 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
-test('observer forwards valid canonical metadata bytes and refuses normalized invalid calendar dates', {timeout: 5000}, async t => {
+test('observer preserves response bytes and refuses invalid dates and microsecond authority changes', {timeout: 5000}, async t => {
   const directory = mkdtempSync(join(tmpdir(), 'query-observer-'));
   t.after(() => rmSync(directory, {recursive: true, force: true}));
   const journal = join(directory, 'journal.jsonl');
-  let date = '2026-02-28';
+  const date = '2026-02-28';
+  let overrides = {};
   let original;
   const upstream = http.createServer(async (request, response) => {
     for await (const _chunk of request) { /* Drain this constructed poll body. */ }
@@ -24,6 +25,7 @@ test('observer forwards valid canonical metadata bytes and refuses normalized in
       query_deadline_at: date + 'T00:00:04.123456Z',
       lease_expires_at: date + 'T00:00:04.123456Z',
       server_time: date + 'T00:00:00.123456Z',
+      ...overrides,
     }});
     response.writeHead(200, {'content-type': 'application/json'});
     response.end(original);
@@ -62,10 +64,20 @@ test('observer forwards valid canonical metadata bytes and refuses normalized in
     request.end(JSON.stringify({worker_id: 'worker', task_queue: 'queue'}));
   });
   assert.deepEqual(await poll(), {status: 200, bytes: original});
-  date = '2026-02-30';
-  await assert.rejects(poll(), /socket hang up|reset|aborted/i);
+  const invalid = [
+    Object.fromEntries(['query_admitted_at', 'query_deadline_at', 'lease_expires_at', 'server_time'].map(key =>
+      [key, `2026-02-30T00:00:${key === 'query_deadline_at' || key === 'lease_expires_at' ? '04' : '00'}.123456Z`])),
+    {query_deadline_at: date + 'T00:00:04.123457Z'},
+    {lease_expires_at: date + 'T00:00:04.123457Z'},
+    {server_time: date + 'T00:00:00.123455Z'},
+  ];
+  for (const fields of invalid) {
+    overrides = fields;
+    await assert.rejects(poll(), /socket hang up|reset|aborted/i, JSON.stringify(fields));
+  }
   const events = readFileSync(journal, 'utf8').trim().split('\n').map(line => JSON.parse(line));
   assert.equal(events.filter(event => event.event === 'claim').length, 1);
   assert.equal(events.filter(event => event.event === 'delivered').length, 1);
+  assert.equal(events.filter(event => event.event === 'observer-error').length, invalid.length);
   assert.match(events.find(event => event.event === 'observer-error').message, /query_admitted_at/);
 });

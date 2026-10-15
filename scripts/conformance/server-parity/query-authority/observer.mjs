@@ -83,18 +83,20 @@ const server = http.createServer(async (request, response) => {
       const task = json(reply).task;
       if (task && typeof task === 'object') {
         const utc6 = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$/;
+        const times = {};
         for (const key of ['query_admitted_at', 'query_deadline_at', 'lease_expires_at', 'server_time']) {
           const parsed = Date.parse(task[key]);
           if (!utc6.test(task[key]) || !Number.isFinite(parsed)
             || new Date(parsed).toISOString() !== task[key].slice(0, 23) + 'Z') {
             throw Error('Missing original UTC6 authority: ' + key);
           }
+          times[key] = BigInt(parsed) * 1000n + BigInt(task[key].slice(23, 26));
         }
         const original = JSON.parse(body.toString('utf8'));
-        if (Date.parse(task.query_deadline_at) - Date.parse(task.query_admitted_at) !== 4_000
-          || Date.parse(task.lease_expires_at) < Date.parse(task.query_admitted_at)
-          || Date.parse(task.lease_expires_at) > Date.parse(task.query_deadline_at)
-          || Date.parse(task.server_time) < Date.parse(task.query_admitted_at)
+        if (times.query_deadline_at - times.query_admitted_at !== 4_000_000n
+          || times.lease_expires_at < times.query_admitted_at
+          || times.lease_expires_at > times.query_deadline_at
+          || times.server_time < times.query_admitted_at
           || task.query_task_attempt !== 1 || task.lease_owner !== original.worker_id
           || task.task_queue !== original.task_queue
           || typeof request.headers['x-namespace'] !== 'string' || !request.headers['x-namespace']
