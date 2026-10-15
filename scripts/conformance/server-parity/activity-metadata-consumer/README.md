@@ -46,3 +46,20 @@ precision, while excluding independent clock values from the comparison. This
 does not establish identical timestamp formatting or precision between servers.
 This is functional qualification and does not establish performance, callback
 Worker behavior, a discovery capability or release readiness.
+
+`profile.sh NETWORK SERVER URL SDK OUTPUT TARGET STATE` runs all six originals
+for one caller-owned server. Set a unique `RESOURCE_SCOPE` shared by the two
+separate PHP/native targets, so their workflow names match across isolated
+databases. `TARGET` is `php` or `native`. `STATE` must be the server's writable
+`/state` mount, with an existing `objects` directory; the wrapper verifies that
+mount before temporarily renaming only that provider directory. An exit trap
+restores it on failure. The caller must still retire the isolated servers,
+databases, transient client containers and output after immediate comparison.
+
+The native target needs both activity metadata and the separate targeted result
+read implementation, because the original reader verifies the typed result
+before parent completion. This wrapper does not qualify a metadata-only branch
+that lacks that result route. It checks the normal installed SDK lock and pinned
+PHP image, records source/binary identities, and preserves each probe's original
+30-second budget. Compare corresponding `*.original.json` files with
+`compare.php`; compare only originals that completed all phases successfully.
