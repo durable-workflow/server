@@ -96,6 +96,11 @@ published-PHP PostgreSQL observation left 22 inline values unvalidated and is
 not retroactively qualified by this source change. Network-source validation,
 complete representation and every takeover gate remain open.
 
+The published-source recipe retains its immutable PHP 2.8.0 default. A separate
+observation may explicitly set `DW_PARITY_UPGRADE_PHP_IMAGE` to an official
+`ghcr.io/durable-workflow/server@sha256:...` image; the exact selected digest is
+recorded in its outcome. This does not change any frozen differential actor.
+
 Catalog recognition does not decode stored values. The source audit identifies
 these separate compatibility boundaries:
 

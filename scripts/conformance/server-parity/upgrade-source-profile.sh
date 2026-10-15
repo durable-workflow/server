@@ -5,7 +5,11 @@ test "$#" = 1 || exit 2
 backend=$1
 test -n "${RESOURCE_SCOPE:?Set the owning isolated network}"
 docker network inspect "$RESOURCE_SCOPE" >/dev/null
-image=ghcr.io/durable-workflow/server@sha256:cba7c4c6732529293ef6c2625a64785dcb21b4f7fe0013fdc74f1af466f534ac
+# The frozen default remains PHP 2.8.0. A separate published-source observation
+# may explicitly select another immutable official image; its identity is
+# recorded in the outcome and does not retuple the default differential actors.
+image=${DW_PARITY_UPGRADE_PHP_IMAGE:-ghcr.io/durable-workflow/server@sha256:cba7c4c6732529293ef6c2625a64785dcb21b4f7fe0013fdc74f1af466f534ac}
+[[ "$image" =~ ^ghcr.io/durable-workflow/server@sha256:[0-9a-f]{64}$ ]] || exit 2
 rust_image=mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
 resource="$RESOURCE_SCOPE-upgrade"
 state=parity-upgrade-source-state
@@ -119,7 +123,11 @@ inspect_source upgrade-payload-inspect > "$evidence/payload-inspection.json" 2> 
 jq -e '.status=="inspected" and (.payload_inspection.columns|length)==4
   and .payload_inspection.references_metadata_supported==true
   and ([.payload_inspection.columns[].counts.php_v1_references]|add)==0
-  and ([.payload_inspection.columns[].counts.other_unvalidated]|add)==3
+  and ([.payload_inspection.columns[].counts.avro_inline_values]|add)==3
+  and ([.payload_inspection.columns[].counts.other_unvalidated]|add)==0
+  and .payload_inspection.inline_values_verified==true
+  and .payload_inspection.inline_validation_limits=={encoded_frame_bytes:65536,traversal_depth:64,traversal_visits:16384,scalar_allocation_bytes:65536}
+  and .payload_inspection.nested_payloads_verified==false
   and .payload_inspection.provider_bytes_verified==false
   and .payload_inspection.registry_binding_verified==false
   and .source_mutated==false and .takeover_allowed==false and .backup_verified==false
