@@ -461,10 +461,9 @@ async fn expired_original_refuses_before_decoding_and_status_does_not_extend_it(
     };
     let original = configured_original("query-authority-expired-original", Some(config)).await;
     let id = original.claim["query_task_id"].as_str().unwrap();
-    assert_eq!(
-        original.waiting.await.unwrap().0,
-        StatusCode::GATEWAY_TIMEOUT
-    );
+    let caller = original.waiting.await.unwrap();
+    assert_eq!(caller.0, StatusCode::GATEWAY_TIMEOUT);
+    assert_eq!(caller.1["reason"], "query_worker_execution_timeout");
     let snapshot = cache_snapshot(&original.database, id).await;
     let status = observation(&original.app, id, "authority-worker", 1).await;
     assert_eq!(status.0, StatusCode::OK, "{}", status.1);
@@ -746,6 +745,118 @@ async fn identical_committed_result_reconciles_before_and_after_original_expiry(
 }
 
 #[tokio::test]
+async fn original_query_deadline_releases_continuation_without_consuming_its_snapshot() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap().with_query_task_config(
+        durable_workflow_server::runtime::QueryTaskConfig {
+            timeout_seconds: 4,
+            lease_timeout_seconds: 4,
+            ..Default::default()
+        },
+    );
+    let app = router(runtime.clone());
+    query_worker(&app, "authority-worker").await;
+    let started = start(&app, "query-authority-continuation").await;
+    let initial = poll(&app, "authority-worker", "workflow").await;
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            &format!(
+                "/api/worker/workflow-tasks/{}/complete",
+                initial["task_id"].as_str().unwrap()
+            ),
+            completion(&initial, json!([{"type":"start_timer","delay_seconds":1}])),
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let waiting = {
+        let app = app.clone();
+        tokio::spawn(async move {
+            request(
+                &app,
+                "POST",
+                "/api/workflows/query-authority-continuation/query/state",
+                json!({"input":envelope(Payload::Array(vec![Payload::Long(7)]))}),
+            )
+            .await
+        })
+    };
+    let claim = await_query(&app, "authority-worker").await;
+    let id = claim["query_task_id"].as_str().unwrap();
+    let snapshot = cache_snapshot(&database, id).await;
+    let resumed = loop {
+        let resumed = poll(&app, "authority-worker", "workflow").await;
+        if !resumed.is_null() {
+            break resumed;
+        }
+        assert!(
+            Utc::now() < instant(&claim["query_deadline_at"]),
+            "timer did not produce a genuine workflow lease within the original query deadline"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let path = format!(
+        "/api/worker/workflow-tasks/{}/complete",
+        resumed["task_id"].as_str().unwrap()
+    );
+    let body = completion(&resumed, json!([{"type":"continue_as_new"}]));
+    let live = request(&app, "POST", &path, body.clone()).await;
+    assert_eq!(live.0, StatusCode::CONFLICT, "{}", live.1);
+    assert_eq!(live.1["reason"], "continue_as_new_transfer_unqualified");
+    assert_eq!(cache_snapshot(&database, id).await, snapshot);
+    let caller = waiting.await.unwrap();
+    assert_eq!(caller.0, StatusCode::GATEWAY_TIMEOUT);
+    // No query poll or outcome has swept the retained claim. Its exact bytes
+    // and SQL expiry must survive continuation on the same workflow lease.
+    assert_eq!(cache_snapshot(&database, id).await, snapshot);
+    let continued = request(&app, "POST", &path, body).await;
+    assert_eq!(continued.0, StatusCode::OK, "{}", continued.1);
+    assert_eq!(cache_snapshot(&database, id).await, snapshot);
+    let runs = request(
+        &app,
+        "GET",
+        "/api/workflows/query-authority-continuation/runs",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(runs.1["runs"].as_array().unwrap().len(), 2);
+    assert_eq!(runs.1["runs"][0]["run_id"], started["run_id"]);
+    let late = request(
+        &app,
+        "POST",
+        &format!("/api/worker/query-tasks/{id}/complete"),
+        submitted(&claim),
+    )
+    .await;
+    assert_eq!(late.0, StatusCode::CONFLICT, "{}", late.1);
+    assert_eq!(late.1["reason"], "query_task_timed_out");
+    let successor = poll(&app, "authority-worker", "workflow").await;
+    assert_ne!(successor["run_id"], started["run_id"]);
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            &format!(
+                "/api/worker/workflow-tasks/{}/complete",
+                successor["task_id"].as_str().unwrap()
+            ),
+            completion(
+                &successor,
+                json!([{"type":"complete_workflow","result":envelope(Payload::Long(7))}])
+            )
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
 async fn zero_is_immediate_and_later_policy_does_not_rebase_an_existing_query() {
     let original = original("query-authority-policy").await;
     let changed = router(original.runtime.clone().with_query_task_config(
@@ -763,7 +874,7 @@ async fn zero_is_immediate_and_later_policy_does_not_rebase_an_existing_query() 
     )
     .await;
     assert_eq!(expired.0, StatusCode::GATEWAY_TIMEOUT, "{}", expired.1);
-    assert_eq!(expired.1["reason"], "query_task_timed_out");
+    assert_eq!(expired.1["reason"], "query_task_not_claimed");
     assert_query_replay(
         &original.claim,
         poll(&changed, "authority-worker", "query").await,

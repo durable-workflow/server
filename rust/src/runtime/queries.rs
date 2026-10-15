@@ -17,7 +17,7 @@ use tokio::sync::Semaphore;
 
 const PREFIX: &str = "dw-native-query:";
 const MAX_PENDING: usize = 16;
-const MAX_ENTRIES: usize = 64;
+pub(super) const MAX_ENTRIES: usize = 64;
 const SNAPSHOT_BYTES: usize = 1024 * 1024;
 pub(super) const ARGUMENT_BYTES: usize = 64 * 1024;
 pub(super) const RESULT_BYTES: usize = 256 * 1024;
@@ -258,11 +258,13 @@ where
         self.wake.notify_waiters();
         // Never hold the transition lock or a pooled connection across the wait.
         // Periodic probes observe results committed by another server process.
-        let timed_out = || super::RuntimeError::Protocol {
+        let timed_out = |claimed| super::RuntimeError::Protocol {
             status: StatusCode::GATEWAY_TIMEOUT,
             response: json!({"workflow_id":workflow_id,"run_id":run_id,"query_name":name,
-                "reason":"query_task_timed_out","message":"Timed out waiting for the original query result."}),
+                "reason":if claimed { "query_worker_execution_timeout" } else { "query_task_not_claimed" },
+                "message":"Timed out waiting for the original query result."}),
         };
+        let mut claimed = false;
         loop {
             let wake = self.wake.notified();
             let remaining = (deadline - authority::now()).to_std().unwrap_or_default();
@@ -271,9 +273,10 @@ where
                 .fetch_optional(&self.pool);
             let row = tokio::time::timeout(remaining, read)
                 .await
-                .map_err(|_| timed_out())??
+                .map_err(|_| timed_out(claimed))??
                 .ok_or_else(|| refuse(StatusCode::CONFLICT, "query_task_timed_out"))?;
             let task: Value = serde_json::from_str(&DB::string(&row, "value")?)?;
+            claimed = task["query_task_attempt"].as_i64().unwrap_or(0) > 0;
             match task["status"].as_str() {
                 Some("completed") => {
                     return Ok((
@@ -295,14 +298,14 @@ where
                     return Ok((status, body));
                 }
                 Some("timed_out") => {
-                    return Err(timed_out());
+                    return Err(timed_out(claimed));
                 }
                 _ if authority::deadline(&task)
                     .is_some_and(|deadline| authority::now() >= deadline) =>
                 {
                     // The stored deadline already fences every new outcome.
                     // Cleanup must not delay the caller behind a busy writer.
-                    return Err(timed_out());
+                    return Err(timed_out(claimed));
                 }
                 _ if authority::deadline(&task).is_none() => {
                     let mut tx = self.begin().await?;

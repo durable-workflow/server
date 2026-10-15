@@ -23,7 +23,7 @@ pub(super) trait Backend: Database {
     const RANGE_REPAIR_TASK_SQL: &'static str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND namespace=$2 AND task_type='workflow' AND status='failed' AND payload->>'replay_blocked'='true' ORDER BY CASE WHEN available_at IS NULL THEN 1 ELSE 0 END,available_at,created_at,id LIMIT 1";
     const ACTIVITY_OPEN_TASK_SQL: &'static str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='activity' AND status IN ('ready','leased') AND payload->>'activity_execution_id'=$2 ORDER BY id LIMIT 1";
     const QUERY_CACHE_SCAN: &'static str = "SELECT \"key\",value,expiration FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' AND value::jsonb->>'namespace'=$1 ORDER BY \"key\" LIMIT 65";
-    const QUERY_CACHE_PENDING_FOR_RUN: &'static str = "SELECT COUNT(*) FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' AND expiration>$2 AND value::jsonb->>'run_id'=$1 AND value::jsonb->>'status' IN ('pending','leased')";
+    const QUERY_CACHE_PENDING_FOR_RUN: &'static str = "SELECT value::jsonb->>'query_admitted_at' AS query_admitted_at,value::jsonb->>'query_deadline_at' AS query_deadline_at,value::jsonb->>'receipt_expires_at' AS receipt_expires_at FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' AND expiration>$2 AND value::jsonb->>'run_id'=$1 AND value::jsonb->>'status' IN ('pending','leased') ORDER BY \"key\" LIMIT 65";
     const QUERY_CACHE_GET: &'static str =
         "SELECT value,expiration FROM dw_query_cache WHERE \"key\"=$1";
     const QUERY_CACHE_INSERT: &'static str =
@@ -85,7 +85,7 @@ fn sqlite_instant(value: String) -> Result<DateTime<Utc>> {
 
 impl Backend for Sqlite {
     const QUERY_CACHE_SCAN: &'static str = "SELECT \"key\",value,expiration FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' AND json_extract(value,'$.namespace')=$1 ORDER BY \"key\" LIMIT 65";
-    const QUERY_CACHE_PENDING_FOR_RUN: &'static str = "SELECT COUNT(*) FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' AND expiration>$2 AND json_extract(value,'$.run_id')=$1 AND json_extract(value,'$.status') IN ('pending','leased')";
+    const QUERY_CACHE_PENDING_FOR_RUN: &'static str = "SELECT json_extract(value,'$.query_admitted_at') AS query_admitted_at,json_extract(value,'$.query_deadline_at') AS query_deadline_at,json_extract(value,'$.receipt_expires_at') AS receipt_expires_at FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' AND expiration>$2 AND json_extract(value,'$.run_id')=$1 AND json_extract(value,'$.status') IN ('pending','leased') ORDER BY \"key\" LIMIT 65";
     const SELECTION_RESOLUTION_SQL: &'static str = "SELECT id,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SelectionResolved' AND json_extract(payload,'$.selection_group_id')=$2 ORDER BY sequence LIMIT 1";
     const REPAIR_COUNTER_MAX: i64 = i64::MAX;
     const RANGE_REPAIR_TASK_SQL: &'static str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND namespace=$2 AND task_type='workflow' AND status='failed' AND json_extract(payload,'$.replay_blocked')=1 ORDER BY CASE WHEN available_at IS NULL THEN 1 ELSE 0 END,available_at,created_at,id LIMIT 1";
@@ -303,7 +303,7 @@ impl Backend for MySql {
     type EncodedTime = DateTime<Utc>;
     type EncodedOptionalTime = Option<DateTime<Utc>>;
     type EncodedDocument = Json<Value>;
-    const QUERY_CACHE_PENDING_FOR_RUN: &'static str = "SELECT COUNT(*) FROM dw_query_cache WHERE `key` LIKE 'dw-native-query:%' AND JSON_UNQUOTE(JSON_EXTRACT(value,'$.run_id'))=? AND expiration>? AND JSON_UNQUOTE(JSON_EXTRACT(value,'$.status')) IN ('pending','leased')";
+    const QUERY_CACHE_PENDING_FOR_RUN: &'static str = "SELECT JSON_UNQUOTE(JSON_EXTRACT(value,'$.query_admitted_at')) AS query_admitted_at,JSON_UNQUOTE(JSON_EXTRACT(value,'$.query_deadline_at')) AS query_deadline_at,JSON_UNQUOTE(JSON_EXTRACT(value,'$.receipt_expires_at')) AS receipt_expires_at FROM dw_query_cache WHERE `key` LIKE 'dw-native-query:%' AND JSON_UNQUOTE(JSON_EXTRACT(value,'$.run_id'))=? AND expiration>? AND JSON_UNQUOTE(JSON_EXTRACT(value,'$.status')) IN ('pending','leased') ORDER BY `key` LIMIT 65";
     const QUERY_CACHE_GET: &'static str =
         "SELECT value,expiration FROM dw_query_cache WHERE `key`=$1";
     const QUERY_CACHE_INSERT: &'static str =

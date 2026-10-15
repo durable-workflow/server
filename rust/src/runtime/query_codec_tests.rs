@@ -164,8 +164,8 @@ async fn query_outcome_rechecks_original_deadline_after_codec_wait_without_holdi
             caller,
             RuntimeError::Protocol {
                 status: StatusCode::GATEWAY_TIMEOUT,
-                ..
-            }
+                ref response
+            } if response["reason"] == "query_worker_execution_timeout"
         ),
         "{caller:?}"
     );
