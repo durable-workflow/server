@@ -50,14 +50,21 @@ The current integration order is:
   local activity-result uploads, including exact PHP Unicode context hashing,
   original live authority and durable allowances. Combined head `93368d2ae`
   includes #455 and passes its own 13-job, six-database matrix. The later
-  `3a268200` incorporates qualified PHP `ed803519`, but its PostgreSQL 17 cell
-  fails the fresh upload capacity control under the preceding stalled request's
-  100 ms test policy. The next fixture revision keeps that stalled deadline and
-  shared semaphore while giving the separate fresh upload normal policy.
+  `3a268200` incorporates qualified PHP `ed803519`. Its complete run
+  `38680689284` passes twelve jobs and fails PostgreSQL 17 at the independent
+  fresh upload still using the preceding stalled request's 100 ms test policy.
+  All six small execution summaries were independently read: five cells pass
+  113 execution tests; PostgreSQL 17 has 112 passes and that one failure.
+  New candidate `3409a776e` keeps that stalled deadline and shared semaphore,
+  gives the separate fresh upload normal policy, gates dependent recovered
+  readers on successful target preparation and incorporates qualified PHP
+  empty-command-contract source `35cd3642`.
   Promotion needs fresh combined-tree qualification. Earlier passes are not
   carried across that integration.
 - [#460](https://github.com/durable-workflow/server/pull/460): read-only PHP
-  catalog/data inventory. Head `4459140cd` adds actual FIFO/directory refusal
+  catalog/data inventory. Four actual published PHP 2.8.0 profiles pass locally,
+  with eight original pending runs, twelve refusals and unchanged source state.
+  Head `4459140cd` adds actual FIFO/directory refusal
   and a separately budgeted fresh-upload capacity control. Its matrix is
   incomplete. The SQLite job failed in frozen PHP restart preparation before
   creating the recovered native target. Its later empty response therefore
@@ -119,7 +126,9 @@ Full transport discovery stays unadvertised. Complete batch workflow semantics,
 memo/query reference ingress, upload allowances, automatic result policy, S3,
 cleanup/backup/restart and full database/consumer qualification remain open.
 Current PHP 2.8 query-authority and activity-result-inspection parity also
-require separate native qualification.
+require separate native qualification. PHP's #436 empty-declaration correction
+is incorporated as qualified source; native empty/omitted/malformed declaration
+and selected-build-cohort parity remains a separate open gate.
 Broader runtime/operational parity, safe sequential PHP database takeover,
 matched performance measurements and release/cutover preparation remain #325
 requirements. No native release or deployment is qualified.
