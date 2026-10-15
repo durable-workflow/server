@@ -152,6 +152,22 @@ Current checkpoint, October 15:
   recovery, selected-run guards and waiting-history behavior.
   Named signal-wait admission, signal timeouts, other wait families and complete
   native observation remain open.
+- Ordinary condition waits now follow the existing opening and satisfaction
+  events in the same transaction. Receipt alone leaves the condition open;
+  application resolves its authored identity. A later occurrence retains its
+  own identity, and missing projections are not recreated. Both already admitted
+  namespaces are covered; timeout admission is unchanged. The initial regression
+  failed with a retained opening event and zero observed waits. The first full
+  SQLite batch passed 149 of 150 execution tests, and PostgreSQL passed seven
+  of eight component controls. Both failures came from the new fixture reusing
+  a globally reserved workflow ID across namespaces. Giving the originals
+  distinct IDs preserves that refusal and all runtime code. Final source passes
+  all four new SQLite controls and eight controls each on PostgreSQL 17 and
+  MySQL 8.0.46. No final full 150-test SQLite repeat is claimed.
+  The controls cover repeated occurrences across cold runtime pools, receipt versus
+  satisfaction, duplicate completion, missing rows, persisted cancellation and
+  unchanged history. Projection-write rollback is a separate SQLite control.
+  Condition timeouts and scope cancellation remain outside this component.
 
 Next, qualify the combined observation source and finish native summary and
 remaining wait production. Independent retained-artifact
