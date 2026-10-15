@@ -22,10 +22,16 @@ if test "$target" = php; then
   docker inspect "$server" | jq -e --arg revision "$(jq -r '.server.source' "$profile")" \
     '.[0].Config.Labels["org.opencontainers.image.revision"] == $revision' >/dev/null
 fi
+native_binary_sha256=''
+if test "$target" = rust; then
+  native_binary_sha256=$(docker exec "$server" sha256sum /target/debug/durable-workflow-server | cut -d ' ' -f1)
+fi
 jq -n --arg revision "$(git rev-parse HEAD)" --arg native_tree "$(git rev-parse HEAD:rust)" \
   --arg server_image "$(docker inspect "$server" --format '{{.Image}}')" \
+  --arg native_binary_sha256 "$native_binary_sha256" \
   --arg target "$target" --arg profile_sha256 "$(sha256sum "$profile" | cut -d ' ' -f1)" \
-  '{runner_revision:$revision,native_tree:$native_tree,target:$target,server_image:$server_image,
+  '{runner_revision:$revision,native_tree:$native_tree,native_binary_sha256:$native_binary_sha256,
+    target:$target,server_image:$server_image,
     profile_sha256:$profile_sha256,performance:"not_measured"}' > "$output/identity.json"
 while IFS=$'\t' read -r mode protocol; do
   name="$mode-${protocol//./}"
