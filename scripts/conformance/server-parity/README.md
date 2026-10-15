@@ -19,6 +19,10 @@ assertions. Reproduce a failed scenario with its original profile and limits
 when omitted raw details are needed, and keep only the useful failure trace in
 its owning issue.
 
+Query client failures print a bounded error tail in the job log. Their client
+and observer diagnostics take precedence over completed setup logs in failed
+artifacts, within the same file, byte and entry limits.
+
 Native cluster discovery publishes the same carrier auth-composition v1
 contract as the frozen PHP reference. Published workers validate this manifest
 before registration; it declares client setting precedence and secret redaction,

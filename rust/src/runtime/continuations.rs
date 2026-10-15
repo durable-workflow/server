@@ -158,20 +158,34 @@ where
                 "continue_as_new_transfer_unqualified",
             ));
         }
-        // A bounded cache prefix cannot prove that this run has no pending
-        // query. Check the complete native-owned scope without loading or
-        // parsing its history snapshots on the executor.
-        if Self::scalar(DB::QUERY_CACHE_PENDING_FOR_RUN)
+        // Select this run before applying the bound. Receipt retention does
+        // not extend original query execution, and unrelated cache prefixes
+        // cannot hide a live claim. Read timing only, never history snapshots.
+        let queries = Self::query(DB::QUERY_CACHE_PENDING_FOR_RUN)
             .bind(&old)
             .bind(now().timestamp())
-            .fetch_one(&mut **tx)
-            .await?
-            != 0
-        {
+            .fetch_all(&mut **tx)
+            .await?;
+        if queries.len() > super::queries::MAX_ENTRIES {
             return Err(refuse(
                 StatusCode::CONFLICT,
                 "continue_as_new_transfer_unqualified",
             ));
+        }
+        let observed = super::query_authority::now();
+        for query in queries {
+            let timing = json!({
+                "query_admitted_at":DB::optional_string(&query,"query_admitted_at")?,
+                "query_deadline_at":DB::optional_string(&query,"query_deadline_at")?,
+                "receipt_expires_at":DB::optional_string(&query,"receipt_expires_at")?,
+            });
+            if super::query_authority::deadline(&timing).is_none_or(|deadline| observed < deadline)
+            {
+                return Err(refuse(
+                    StatusCode::CONFLICT,
+                    "continue_as_new_transfer_unqualified",
+                ));
+            }
         }
         let rows = Self::query(DB::MEMO_READ)
             .bind(&old)

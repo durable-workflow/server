@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "ff852220f5884c12119443e341e4f20b",
+    "content-hash": "935e151dccdd83d4484fb95acfed6914",
     "packages": [
         {
             "name": "apache/avro",
@@ -655,16 +655,16 @@
         },
         {
             "name": "durable-workflow/workflow",
-            "version": "2.5.21",
+            "version": "2.5.22",
             "source": {
                 "type": "git",
                 "url": "https://github.com/durable-workflow/workflow.git",
-                "reference": "fbccb54b8f52e8724847296ee5b89d093b4a91d7"
+                "reference": "908e2db9b4337ceae52ebe5fc5e64f3de8e5338b"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/durable-workflow/workflow/zipball/fbccb54b8f52e8724847296ee5b89d093b4a91d7",
-                "reference": "fbccb54b8f52e8724847296ee5b89d093b4a91d7",
+                "url": "https://api.github.com/repos/durable-workflow/workflow/zipball/908e2db9b4337ceae52ebe5fc5e64f3de8e5338b",
+                "reference": "908e2db9b4337ceae52ebe5fc5e64f3de8e5338b",
                 "shasum": ""
             },
             "require": {
@@ -697,7 +697,7 @@
                     "dev-main": "2.0.x-dev"
                 },
                 "durable-workflow": {
-                    "product-train": "2.5.21",
+                    "product-train": "2.5.22",
                     "laravel-embedded-upgrade-contract": "resources/laravel-embedded-upgrade-contract.json",
                     "laravel-dependency-security-policy": "resources/laravel-dependency-security-policy.json"
                 }
@@ -724,9 +724,9 @@
             "description": "Embedded durable workflow runtime and orchestration engine for Laravel applications.",
             "support": {
                 "issues": "https://github.com/durable-workflow/workflow/issues",
-                "source": "https://github.com/durable-workflow/workflow/tree/2.5.21"
+                "source": "https://github.com/durable-workflow/workflow/tree/2.5.22"
             },
-            "time": "2026-10-15T03:20:47+00:00"
+            "time": "2026-10-15T09:07:57+00:00"
         },
         {
             "name": "egulias/email-validator",
@@ -4496,16 +4496,16 @@
         },
         {
             "name": "symfony/http-foundation",
-            "version": "v7.4.14",
+            "version": "v7.4.21",
             "source": {
                 "type": "git",
                 "url": "https://github.com/symfony/http-foundation.git",
-                "reference": "06db5ae1552177bf8572f8908839f12e3c06aed3"
+                "reference": "58c89144c7a36dd89c3d01917e9fa3a72d8aaf31"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/symfony/http-foundation/zipball/06db5ae1552177bf8572f8908839f12e3c06aed3",
-                "reference": "06db5ae1552177bf8572f8908839f12e3c06aed3",
+                "url": "https://api.github.com/repos/symfony/http-foundation/zipball/58c89144c7a36dd89c3d01917e9fa3a72d8aaf31",
+                "reference": "58c89144c7a36dd89c3d01917e9fa3a72d8aaf31",
                 "shasum": ""
             },
             "require": {
@@ -4554,7 +4554,7 @@
             "description": "Defines an object-oriented layer for the HTTP specification",
             "homepage": "https://symfony.com",
             "support": {
-                "source": "https://github.com/symfony/http-foundation/tree/v7.4.14"
+                "source": "https://github.com/symfony/http-foundation/tree/v7.4.21"
             },
             "funding": [
                 {
@@ -4574,7 +4574,7 @@
                     "type": "tidelift"
                 }
             ],
-            "time": "2026-06-11T07:31:44+00:00"
+            "time": "2026-10-08T16:56:12+00:00"
         },
         {
             "name": "symfony/http-kernel",
@@ -6454,16 +6454,16 @@
         },
         {
             "name": "symfony/yaml",
-            "version": "v7.4.17",
+            "version": "v7.4.21",
             "source": {
                 "type": "git",
                 "url": "https://github.com/symfony/yaml.git",
-                "reference": "0b040d7b66ceb10b7bb24c8e6656257932693a12"
+                "reference": "044907929c7999814378be22da34722c7a86bad4"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/symfony/yaml/zipball/0b040d7b66ceb10b7bb24c8e6656257932693a12",
-                "reference": "0b040d7b66ceb10b7bb24c8e6656257932693a12",
+                "url": "https://api.github.com/repos/symfony/yaml/zipball/044907929c7999814378be22da34722c7a86bad4",
+                "reference": "044907929c7999814378be22da34722c7a86bad4",
                 "shasum": ""
             },
             "require": {
@@ -6506,7 +6506,7 @@
             "description": "Loads and dumps YAML files",
             "homepage": "https://symfony.com",
             "support": {
-                "source": "https://github.com/symfony/yaml/tree/v7.4.17"
+                "source": "https://github.com/symfony/yaml/tree/v7.4.21"
             },
             "funding": [
                 {
@@ -6526,7 +6526,7 @@
                     "type": "tidelift"
                 }
             ],
-            "time": "2026-08-21T12:09:28+00:00"
+            "time": "2026-10-12T12:34:30+00:00"
         },
         {
             "name": "tijsverkoyen/css-to-inline-styles",
