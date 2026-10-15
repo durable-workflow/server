@@ -46,6 +46,9 @@ mod selected_run_signals;
 #[path = "execution/worker_incarnations.rs"]
 mod worker_incarnations;
 
+#[path = "execution/worker_contracts.rs"]
+mod worker_contracts;
+
 #[path = "execution/worker_deregistration.rs"]
 mod worker_deregistration;
 
