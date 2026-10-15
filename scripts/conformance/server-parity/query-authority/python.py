@@ -19,6 +19,7 @@ TYPE = 'parity.query-authority.python.v1'
 EXPECTED = {'long': 9223372036854775807, 'nil': None, 'text': 'rangeλ'}
 COUNTERS = {'calls': 0, 'returned': 0, 'cancelled': 0}
 AUTHORITY_LOSSES = []
+PHASE = 'installation'
 EXPIRED_REASONS = {'query_execution_budget_expired', 'query_task_timed_out', 'query_lease_expired'}
 
 
@@ -75,6 +76,7 @@ class QueryWorkflow:
 
 
 async def main():
+    global PHASE
     artifacts = json.loads(Path(os.environ['DW_PARITY_QUERY_PROFILE']).read_text())
     identity = artifacts['sdk_python']
     assert importlib.metadata.version('durable-workflow') == identity['version']
@@ -87,6 +89,7 @@ async def main():
     os.environ['DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION'] = PROTOCOL
     started = time.monotonic()
     namespace = 'query-python-' + os.urandom(6).hex()
+    PHASE = 'namespace'
     async with asyncio.timeout(30):
         async with Client(URL, token=os.environ['DW_PARITY_TOKEN']) as admin:
             await admin.create_namespace(namespace)
@@ -96,11 +99,13 @@ async def main():
                             require_query_task_authority=PROTOCOL == '1.20')
             runner = asyncio.create_task(worker.run())
             try:
+                PHASE = 'registration'
                 while not any(x['event'] == 'registered' and x['status'] == 201 for x in events()):
                     if runner.done():
                         await runner
                         raise RuntimeError('Worker stopped before registration')
                     await asyncio.sleep(.02)
+                PHASE = 'workflow-admission'
                 handle = await client.start_workflow(workflow_type=TYPE, task_queue=namespace,
                                                      workflow_id=namespace, input=[7])
                 while (await handle.describe()).status.lower() != 'waiting':
@@ -108,6 +113,7 @@ async def main():
                         await runner
                         raise RuntimeError('Worker stopped before timer admission')
                     await asyncio.sleep(.02)
+                PHASE = 'query'
                 if MODE == 'timely':
                     result = await client.query_workflow(namespace, 'value', args=[])
                     assert result['result'] == EXPECTED and type(result['result']['long']) is int
@@ -119,6 +125,7 @@ async def main():
                         assert error.status == 504 and error.reason == 'query_worker_execution_timeout'
                     # Delivery is recorded before the SDK receives its response.
                     # Wait for its actual refusal before stopping the worker.
+                    PHASE = 'expiry-observation'
                     while (MODE == 'late-poll' and not any(
                                expired_losses(event['claim']['query_task_id'])
                                for event in events() if event['event'] == 'claim')
@@ -126,8 +133,11 @@ async def main():
                            or MODE == 'late-handler-sync' and COUNTERS['returned'] != 1):
                         await asyncio.sleep(.02)
             finally:
+                PHASE = 'worker-stop'
                 await worker.stop()
+                PHASE = 'worker-join'
                 await runner
+    PHASE = 'assertions'
     assert time.monotonic() - started < 30
     observed = events()
     named = lambda name: [x for x in observed if x['event'] == name]
@@ -169,5 +179,28 @@ async def main():
                       'worker_exit': 0}))
 
 
-asyncio.run(main())
+try:
+    asyncio.run(main())
+except BaseException as error:
+    # Failure metadata is bounded and never includes business values or HTTP
+    # headers. Preserve the original exception and every acceptance assertion.
+    details = {'event': 'query-client-failure', 'phase': PHASE, 'mode': MODE,
+               'protocol': PROTOCOL, 'error_class': type(error).__name__, 'counters': COUNTERS,
+               'authority_losses': AUTHORITY_LOSSES}
+    try:
+        observed = events()
+        details['event_counts'] = {name: sum(event['event'] == name for event in observed)
+                                  for name in sorted({event['event'] for event in observed})}
+        fields = ('query_task_id', 'query_task_attempt', 'query_admitted_at',
+                  'query_deadline_at', 'lease_expires_at', 'server_time')
+        details['claims'] = [{key: event['claim'][key] for key in fields if key in event['claim']}
+                             for event in observed if event['event'] == 'claim'][:8]
+    except Exception as diagnostic_error:
+        details['diagnostic_error_class'] = type(diagnostic_error).__name__
+    encoded = json.dumps(details)
+    if len(encoded.encode()) > 8192:
+        encoded = json.dumps({key: details[key] for key in
+                              ('event', 'phase', 'mode', 'protocol', 'error_class', 'counters')})
+    print(encoded, file=sys.stderr)
+    raise
 
