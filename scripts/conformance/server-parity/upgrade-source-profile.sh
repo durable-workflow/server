@@ -67,6 +67,19 @@ docker run --rm --name "$resource-author" --user=1000:1000 --cpus=1 --memory=512
 docker stop --signal SIGTERM --time 10 "$resource-php" >/dev/null
 docker inspect --format '{{json .State}}' "$resource-php" > "$evidence/stopped-state.json"
 jq -e '.Running==false and .ExitCode==0 and .OOMKilled==false' "$evidence/stopped-state.json" >/dev/null
+if test "$backend" = sqlite; then
+  docker run --rm --name "$resource-control" --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
+    --network=none -v "$PWD/$state:/state:ro" -v "$PWD:/source:ro" --entrypoint php "$image" \
+    /source/scripts/conformance/server-parity/upgrade-source-sqlite-representations.php upgrade-source \
+    > "$evidence/representations-comparison.json"
+  jq -e '.outcome=="pass" and .source_mutated==false and .php_objects_executed==false
+    and (.runs|length)==2 and (.tasks|length)==4 and (.activities|length)==1
+    and (.history|length)==7 and (.queue_jobs|length)==1
+    and .queue_jobs[0].canonical_timer_task_match==true
+    and all(.runs[]; .typed_arguments_match==true)
+    and .backup_verified==false and .stored_representation_compatibility_verified==false
+    and .takeover_allowed==false' "$evidence/representations-comparison.json" >/dev/null
+fi
 if test "$backend" != sqlite; then
   php_run /source/scripts/conformance/server-parity/upgrade-source-controls.php roles > "$evidence/roles.txt"
   printf '%s\n' "$RESOURCE_SCOPE" > "$evidence/roles-owned.txt"
