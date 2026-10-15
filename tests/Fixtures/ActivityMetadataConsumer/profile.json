@@ -1,0 +1,13 @@
+{
+  "schema": "durable-workflow.activity-metadata-consumer-profile/v1",
+  "php_server": {
+    "version": "2.8.5",
+    "source": "f7d1bfc78ffaf32848aeb48bd736356cc44501c8",
+    "image": "ghcr.io/durable-workflow/server@sha256:f6a6507a5a424dfad03e636ec690b0f1e813d385be9940691c59116446dfd1cc"
+  },
+  "php_sdk": {"version": "2.4.2", "source": "25d796ad2a55d0d114b58017c3ba23390b09e120"},
+  "namespaces": ["default", "activity-metadata-consumer"],
+  "original_observation_budget_seconds": 30,
+  "activity_command_options": {"start_to_close_timeout": 120, "schedule_to_close_timeout": 600},
+  "scope": "Separate metadata cohort. Explicit retry policy is authored before each admission. Existing frozen profiles remain unchanged."
+}

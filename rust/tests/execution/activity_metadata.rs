@@ -95,11 +95,18 @@ async fn activity_metadata_tracks_retry_attempts_and_closed_history_without_payl
     assert_eq!(failed.0, StatusCode::OK, "{}", failed.1);
     let retry = listed(&app, &path).await;
     assert_eq!(retry[0]["status"], "pending");
+    assert_eq!(retry[0]["attempt_count"], 1);
     assert_eq!(retry[0]["attempts"][0]["status"], "failed");
     assert_eq!(retry[0]["attempts"][0]["lease_expires_at"], Value::Null);
     assert_eq!(retry[0]["attempts"][0]["stop_reason"], "attempt_closed");
     let second = poll(&app, "metadata-worker", "activity").await;
     assert_ne!(second["activity_attempt_id"], first["activity_attempt_id"]);
+    let resumed = listed(&app, &path).await;
+    assert_eq!(resumed[0]["attempt_count"], 2);
+    assert_eq!(
+        resumed[0]["last_heartbeat_at"],
+        beat[0]["last_heartbeat_at"]
+    );
     let complete = request(&app,"POST",
         &format!("/api/worker/activity-tasks/{}/complete",second["task_id"].as_str().unwrap()),
         json!({"lease_owner":second["lease_owner"],"activity_attempt_id":second["activity_attempt_id"],
