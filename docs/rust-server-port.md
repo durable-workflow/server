@@ -59,8 +59,11 @@ The current integration order is:
   gives the separate fresh upload normal policy, gates dependent recovered
   readers on successful target preparation and incorporates qualified PHP
   empty-command-contract source `35cd3642`.
-  Promotion needs fresh combined-tree qualification. Earlier passes are not
-  carried across that integration.
+  That component's six execution and six health cells pass in run
+  `38686850381`. Attempt 2 reran only MySQL 8.0, with unchanged source and
+  limits. Its original query transport failure remains failed and unexplained.
+  The tested merge tree equals the candidate tree; later combined promotion
+  still needs fresh qualification.
 - [#460](https://github.com/durable-workflow/server/pull/460): read-only PHP
   catalog/data inventory. Four actual published PHP 2.8.0 profiles pass locally,
   with eight original pending runs, twelve refusals and unchanged source state.
@@ -158,8 +161,26 @@ still requires observation. Observer failures now retain bounded method/path
 diagnostics instead of an unexplained assertion. Five fresh installed Python
 2.5.15 controls pass against the pinned PHP 2.8.0 SQLite API, with the original
 four/thirty-second budgets; the held poll records an actual timeout refusal.
-The earlier PostgreSQL observer error remains unexplained, and native/Rust and
-full hosted qualification of these recipe changes remain ahead.
+The earlier PostgreSQL observer error remains unexplained. Run `38692717327`
+at unchanged `17382228` then passes four execution cells and all six health
+cells, while MySQL 8.4 and PostgreSQL 17 fail in the installed-client phase
+without a retained client error. Those originals remain failed.
+
+Prepared fixture `c184f28da` preserves bounded client errors ahead of completed
+setup logs, refuses invalid calendar dates and compares UTC6 timing using
+integer microseconds. Seven focused fixture/exporter controls pass. The old
+observer accepts February 30; its calendar-corrected successor still accepts a
+one-microsecond deadline change. The corresponding constructed HTTP controls
+fail those parents and pass the corrected observer without rewriting bytes.
+Five fresh Python 2.5.15 originals also pass against the hosted native binary
+from `17382228` / tested merge `3c05f817`, using this revised fixture. The held
+poll records `query_task_timed_out` with no callback; async cancellation and
+late sync return record their original budget-expiry reasons with no result
+submission. Timely 1.20 and 1.19 return exact typed values. All five histories
+remain unchanged through their queries and all five Workers exit zero. This
+does not qualify the no-status expiry branch, revised Rust consumer or a new
+all-database combined tree. Earlier PHP component checks remain scoped to
+their original fixture source.
 
 Full transport discovery stays unadvertised. Complete batch workflow semantics,
 memo/query reference ingress, upload allowances, automatic result policy, S3,
