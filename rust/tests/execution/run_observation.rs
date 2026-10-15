@@ -865,6 +865,9 @@ async fn run_observation_waits_use_matching_live_retry_metadata_and_preserve_fai
     assert!(wait["next_scheduled_resume_at"].is_null());
     assert!(wait["task_id"].is_null());
     let retry = poll(&app, "observation-retry-worker", "activity").await;
+    let unknown_summary = observe(&app, "default", &path).await.1;
+    assert_eq!(unknown_summary["summary_state"], "unavailable");
+    assert!(unknown_summary["liveness_state"].is_null());
     let failed = request(&app,"POST",&format!("/api/worker/activity-tasks/{}/fail",retry["task_id"].as_str().unwrap()),
         json!({"lease_owner":retry["lease_owner"],"activity_attempt_id":retry["activity_attempt_id"],
             "failure":{"type":"RuntimeException","message":"terminal observed failure","non_retryable":true}})).await;
