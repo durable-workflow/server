@@ -35,8 +35,8 @@ The current integration order is:
   policy, complete continuation transfer and full external transport remain open.
 - [#455](https://github.com/durable-workflow/server/pull/455): opt-in,
   namespace/queue-scoped null-task poll wake. Component `1fa1cc2e6` passes all
-  13 jobs and all six databases; promotion is through the combined #458 tree,
-  whose own matrix remains pending. An earlier component's SQLite PHP target failed after an activity
+  13 jobs and all six databases; promotion is through the separately qualified
+  combined #458 tree. An earlier component's SQLite PHP target failed after an activity
   completion response when the Rust actor's registration DELETE returned
   lock-pressure 503; later refusal/repair phases were not reached. That original
   stays failed. Idle/query cost and matched performance remain open.
@@ -49,12 +49,16 @@ The current integration order is:
 - [#458](https://github.com/durable-workflow/server/pull/458): completion-bound
   local activity-result uploads, including exact PHP Unicode context hashing,
   original live authority and durable allowances. Combined head `93368d2ae`
-  includes #455 and the current PHP source; its exact matrix remains pending.
-  Earlier component passes do not establish acceptance for this whole tree.
+  includes #455 and passes its own 13-job, six-database matrix. Promotion awaits
+  the coordinated PHP dependency window and a fresh combined-tree qualification.
+  Earlier component passes are not carried across that integration.
 - [#460](https://github.com/durable-workflow/server/pull/460): read-only PHP
   catalog/data inventory. Head `4459140cd` adds actual FIFO/directory refusal
   and a separately budgeted fresh-upload capacity control. Its matrix is
-  pending; the earlier SQLite 100 ms upload failure remains failed. Inspection
+  incomplete. The SQLite job failed in frozen PHP restart preparation before
+  creating the recovered native target. Its later empty response therefore
+  reflects an absent prerequisite, not a demonstrated native crash. The earlier
+  SQLite 100 ms upload failure also remains failed. Inspection
   does not establish backup consistency, PHP quiescence, stored-representation
   compatibility or takeover authority. All those qualification flags stay false.
 - Native [query authority](https://github.com/durable-workflow/server/issues/433)
@@ -64,9 +68,14 @@ The current integration order is:
   and PostgreSQL 17. The corrected waiter preserves the original deadline under
   a held writer and refuses a result delayed by codec capacity. This is not a
   clean full-suite or matched PHP/SDK qualification: the earlier complete
-  SQLite run still has its failed fresh-upload control. Receipt reconciliation
-  under writer pressure, continuation expiry, remaining pressure boundaries,
-  combined ancestry and installed consumers remain next. Discovery keeps
+  SQLite run still has its failed fresh-upload control. Retained receipts
+  now reconcile before writer admission and codec work. Actual held-writer
+  HTTP controls pass on SQLite, MySQL 8.4 and PostgreSQL 17 before and after
+  expiry, preserving conflicting-payload refusal and the original receipt's
+  bytes and expiry. The separate SQLite codec-and-writer counterfactual fails
+  the prior implementation and passes the correction. Continuation expiry,
+  remaining pressure boundaries, combined ancestry and a separate published
+  PHP/SDK reference profile remain next. Discovery keeps
   `query_task_authority=false` until those gates pass.
 
 Full transport discovery stays unadvertised. Complete batch workflow semantics,

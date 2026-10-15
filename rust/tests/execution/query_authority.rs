@@ -194,6 +194,77 @@ async fn observation(app: &Router, id: &str, owner: &str, attempt: i64) -> (Stat
     (response.0, response.2)
 }
 
+enum HeldWriter {
+    Sqlite(sqlx::SqliteConnection),
+    Postgres(sqlx::PgConnection),
+    MySql(sqlx::MySqlConnection),
+}
+
+impl HeldWriter {
+    async fn acquire(database: &TestDatabase) -> Self {
+        use sqlx::Connection;
+        match database {
+            TestDatabase::Sqlite(directory) => {
+                let mut connection = sqlx::SqliteConnection::connect(&format!(
+                    "sqlite://{}",
+                    directory.path().join("runtime.sqlite").display()
+                ))
+                .await
+                .unwrap();
+                sqlx::query("BEGIN IMMEDIATE")
+                    .execute(&mut connection)
+                    .await
+                    .unwrap();
+                Self::Sqlite(connection)
+            }
+            TestDatabase::Postgres { options, .. } => {
+                let mut connection = sqlx::PgConnection::connect_with(options).await.unwrap();
+                sqlx::query("BEGIN").execute(&mut connection).await.unwrap();
+                sqlx::query("SELECT pg_advisory_xact_lock(4924501473315676163)")
+                    .execute(&mut connection)
+                    .await
+                    .unwrap();
+                Self::Postgres(connection)
+            }
+            TestDatabase::MySql { options, .. } => {
+                let mut connection = sqlx::MySqlConnection::connect_with(options).await.unwrap();
+                sqlx::raw_sql("START TRANSACTION")
+                    .execute(&mut connection)
+                    .await
+                    .unwrap();
+                sqlx::query("SELECT engine FROM dw_server_schema FOR UPDATE")
+                    .execute(&mut connection)
+                    .await
+                    .unwrap();
+                Self::MySql(connection)
+            }
+        }
+    }
+
+    async fn release(self) {
+        match self {
+            Self::Sqlite(mut connection) => {
+                sqlx::query("ROLLBACK")
+                    .execute(&mut connection)
+                    .await
+                    .unwrap();
+            }
+            Self::Postgres(mut connection) => {
+                sqlx::query("ROLLBACK")
+                    .execute(&mut connection)
+                    .await
+                    .unwrap();
+            }
+            Self::MySql(mut connection) => {
+                sqlx::raw_sql("ROLLBACK")
+                    .execute(&mut connection)
+                    .await
+                    .unwrap();
+            }
+        }
+    }
+}
+
 #[tokio::test]
 async fn concurrent_identical_failure_has_one_decision_and_conflicts_stay_refused() {
     let original = original("query-authority-failed-receipt").await;
@@ -613,22 +684,57 @@ async fn identical_committed_result_reconciles_before_and_after_original_expiry(
     assert_eq!(first.0, StatusCode::OK, "{}", first.1);
     assert_eq!(first.1["recorded"], true);
     assert_eq!(original.waiting.await.unwrap().0, StatusCode::OK);
-    let before = request(&original.app, "POST", &path, body.clone()).await;
+    let cache_before = cache_snapshot(
+        &original.database,
+        original.claim["query_task_id"].as_str().unwrap(),
+    )
+    .await;
+    let writer = HeldWriter::acquire(&original.database).await;
+    let before = tokio::time::timeout(
+        Duration::from_millis(500),
+        request(&original.app, "POST", &path, body.clone()),
+    )
+    .await
+    .expect("retained query receipt must reconcile without writer admission");
     assert_eq!(before.0, StatusCode::OK, "{}", before.1);
     assert_eq!(before.1["recorded"], false);
     let mut conflicting = body.clone();
     conflicting["result_envelope"] = json!({"codec":"avro","blob":"not-the-committed-bytes"});
-    let refused = request(&original.app, "POST", &path, conflicting.clone()).await;
+    let refused = tokio::time::timeout(
+        Duration::from_millis(500),
+        request(&original.app, "POST", &path, conflicting.clone()),
+    )
+    .await
+    .expect("conflicting receipt must refuse without writer admission");
     assert_eq!(refused.0, StatusCode::CONFLICT, "{}", refused.1);
     assert_eq!(refused.1["reason"], "query_completion_conflict");
     let remaining = instant(&original.claim["query_deadline_at"]) - Utc::now();
     tokio::time::sleep(remaining.to_std().unwrap_or_default() + Duration::from_millis(20)).await;
-    let after = request(&original.app, "POST", &path, body).await;
+    let after = tokio::time::timeout(
+        Duration::from_millis(500),
+        request(&original.app, "POST", &path, body),
+    )
+    .await
+    .expect("original expiry must not add writer admission to a retained receipt");
     assert_eq!(after.0, StatusCode::OK, "{}", after.1);
     assert_eq!(after.1["recorded"], false);
-    let refused = request(&original.app, "POST", &path, conflicting).await;
+    let refused = tokio::time::timeout(
+        Duration::from_millis(500),
+        request(&original.app, "POST", &path, conflicting),
+    )
+    .await
+    .expect("expired conflicting receipt must also refuse without writer admission");
     assert_eq!(refused.0, StatusCode::CONFLICT, "{}", refused.1);
     assert_eq!(refused.1["reason"], "query_completion_conflict");
+    assert_eq!(
+        cache_snapshot(
+            &original.database,
+            original.claim["query_task_id"].as_str().unwrap()
+        )
+        .await,
+        cache_before
+    );
+    writer.release().await;
     assert_eq!(
         request(&original.app, "GET", &original.history_path, Value::Null)
             .await
