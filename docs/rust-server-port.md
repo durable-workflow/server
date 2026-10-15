@@ -2917,5 +2917,30 @@ endpoint from #439/#440. Its [contract](contracts/workflow-activity-result-inspe
 and separate fixture/profile define canonical history selection, exact ownership,
 null versus absence, explicit unavailable states and opaque external transport
 before native implementation. The selected published PHP reference is separate
-from every frozen actor. Native route/discovery, actual installed SDK reads,
-database qualification and Waterline consumption remain pending.
+from every frozen actor. Native discovery and Waterline consumption remain pending.
+
+The native targeted route now reads one latest canonical activity snapshot after
+literal namespace/workflow/run binding. Its state and envelope projection never
+uses the mutable activity result. Focused HTTP tests preserve null, false, int64,
+Unicode and closed-parent results, refuse foreign identities and worker roles,
+distinguish missing/pruned history and follow genuine retry/failure/cancellation
+outcomes. All three original route controls fail the preceding runtime. Earlier
+fixture setup failures used a wrong retry field and a globally reserved workflow
+ID, and do not count as runtime counterfactuals. The first MySQL candidate exposed
+a missing dialect-template registration, corrected before its four passing
+controls. Those same four cases pass SQLite, MySQL 8.4 and PostgreSQL 17. The
+SQLite execution suite passes 117 cases. Library checks pass 72 cases with the
+existing 18 database/subprocess ignores.
+
+Separate normally installed PHP SDK 2.4.2 processes complete eight fresh originals
+per target on published PHP 2.8.3 and native SQLite. Default and named namespaces
+each preserve null, false, the typed map and a 2,796,296-byte external value.
+Every original completes one activity and its original parent within its initial
+30-second observation budget. Cold readers retain history sequence 5 and exact
+decoded values after the different parent output commits. Stopped-state audits
+find 48 events and 24 completed first-attempt tasks per target, zero repairs and
+no ready backlog. Both APIs stop with explicit SIGTERM, exit 0 and no OOM.
+The external producer uses explicit upload/protocol completion. This does not
+qualify automatic Worker uploads. Capability discovery, metadata-only listing,
+unrelated-object isolation, all-database installed consumers, embedded negative
+controls and Waterline acceptance remain open.

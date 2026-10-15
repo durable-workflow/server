@@ -1,6 +1,5 @@
 {
   "schema": "durable-workflow.activity-result-inspection-profile/v1",
-  "status": "prepared_not_executed",
   "php_server": {
     "version": "2.8.3",
     "source": "1f994962b597e4cd24a4121a8a5c21b9c5ba1d27",
