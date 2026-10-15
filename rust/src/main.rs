@@ -144,6 +144,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
             use durable_workflow_server::runtime::upgrade::{
                 self, queue_binding::QueueSourceConfig,
             };
+            // Apache's allocation setting is process-global and write-once.
+            // This standalone command sets its small ceiling before any Avro
+            // decoder is constructed; the HTTP runtime keeps its own policy.
+            if command == "upgrade-payload-inspect"
+                && apache_avro::util::max_allocation_bytes(65536) != 65536
+            {
+                return Err("upgrade_inline_codec_budget_unavailable".into());
+            }
             // These describe the original Laravel queue transport, not SDK
             // task queues or a newly selected native execution destination.
             let queue_options = if command == "upgrade-queue-inspect" {

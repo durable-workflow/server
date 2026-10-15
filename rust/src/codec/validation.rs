@@ -8,7 +8,7 @@ use base64::{
 };
 use serde::{
     Deserialize, Deserializer,
-    de::{self, MapAccess, SeqAccess, Visitor},
+    de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor},
 };
 use std::{
     fmt,
@@ -17,6 +17,90 @@ use std::{
 
 struct Validated;
 struct Key;
+
+// Operator inspection has a smaller input/CPU envelope than runtime payload
+// transport. Apache still owns framing and schema traversal; this seed only
+// bounds visits and stack depth, without retaining or rewriting user values.
+struct InlineValidated;
+struct InlineSeed<'a> {
+    remaining: &'a mut usize,
+    depth: usize,
+}
+
+impl<'de> Deserialize<'de> for InlineValidated {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut remaining = 16384;
+        InlineSeed {
+            remaining: &mut remaining,
+            depth: 0,
+        }
+        .deserialize(deserializer)?;
+        Ok(Self)
+    }
+}
+
+impl<'de> DeserializeSeed<'de> for InlineSeed<'_> {
+    type Value = ();
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        if self.depth > 64 || *self.remaining == 0 {
+            return Err(de::Error::custom("stored_inline_payload_traversal_limit"));
+        }
+        *self.remaining -= 1;
+        deserializer.deserialize_ignored_any(self)
+    }
+}
+
+impl<'de> Visitor<'de> for InlineSeed<'_> {
+    type Value = ();
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a bounded finite Avro Value")
+    }
+    fn visit_unit<E: de::Error>(self) -> Result<(), E> {
+        Ok(())
+    }
+    fn visit_bool<E: de::Error>(self, _: bool) -> Result<(), E> {
+        Ok(())
+    }
+    fn visit_i64<E: de::Error>(self, _: i64) -> Result<(), E> {
+        Ok(())
+    }
+    fn visit_f64<E: de::Error>(self, value: f64) -> Result<(), E> {
+        if value.is_finite() {
+            Ok(())
+        } else {
+            Err(E::custom("non_finite_float"))
+        }
+    }
+    fn visit_str<E: de::Error>(self, _: &str) -> Result<(), E> {
+        Ok(())
+    }
+    fn visit_string<E: de::Error>(self, _: String) -> Result<(), E> {
+        Ok(())
+    }
+    fn visit_byte_buf<E: de::Error>(self, _: Vec<u8>) -> Result<(), E> {
+        Ok(())
+    }
+    fn visit_seq<A: SeqAccess<'de>>(self, mut values: A) -> Result<(), A::Error> {
+        while values
+            .next_element_seed(InlineSeed {
+                remaining: self.remaining,
+                depth: self.depth + 1,
+            })?
+            .is_some()
+        {}
+        Ok(())
+    }
+    fn visit_map<A: MapAccess<'de>>(self, mut values: A) -> Result<(), A::Error> {
+        while values.next_key::<Key>()?.is_some() {
+            values.next_value_seed(InlineSeed {
+                remaining: self.remaining,
+                depth: self.depth + 1,
+            })?;
+        }
+        Ok(())
+    }
+}
 impl<'de> Deserialize<'de> for Key {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct Identifier;
@@ -109,6 +193,30 @@ impl<R: Read> Read for WhitespaceReader<R> {
 }
 
 impl ValueCodec {
+    /// Inspect one stored inline frame without constructing arrays/maps. The
+    /// standalone upgrade command sets Apache's allocation ceiling before use.
+    pub fn validate_stored_inline(&self, blob: &str) -> Result<(), CodecError> {
+        use super::CompleteInput;
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        if blob.len() > 65536 {
+            return Err(CodecError::InvalidValue);
+        }
+        let bytes = STANDARD.decode(blob)?;
+        let mut input = CompleteInput {
+            remaining: bytes.as_slice(),
+            truncated: false,
+        };
+        let result = self.reader.read_deser::<InlineValidated>(&mut input);
+        if input.truncated {
+            return Err(CodecError::Truncated);
+        }
+        result?;
+        if !input.remaining.is_empty() {
+            return Err(CodecError::TrailingBytes);
+        }
+        Ok(())
+    }
+
     /// The external PHP boundary permits whitespace, omitted padding and
     /// noncanonical padding bits. Integrity measures original encoded bytes;
     /// this adapter never rewrites the stored object or its reference hash.
@@ -137,6 +245,65 @@ mod tests {
     use crate::codec::Value;
     use base64::{Engine, engine::general_purpose::STANDARD};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn stored_inline_validation_preserves_all_value_branches_without_materializing_collections() {
+        let codec = ValueCodec::new().unwrap();
+        for value in [
+            Value::Null,
+            Value::Boolean(false),
+            Value::Long(9007199254740993),
+            Value::Double(-0.0),
+            Value::Bytes(b"O:6:\"Sample\":0:{}".to_vec()),
+            Value::String("日本語 λ".into()),
+            Value::Array(vec![Value::Null]),
+            Value::Map(BTreeMap::from([("0".into(), Value::Long(i64::MIN))])),
+        ] {
+            let blob = codec.encode(&value).unwrap();
+            let original = blob.clone();
+            codec.validate_stored_inline(&blob).unwrap();
+            assert_eq!(blob, original);
+            assert_eq!(codec.decode(&blob).unwrap(), value);
+        }
+    }
+
+    #[test]
+    fn stored_inline_validation_refuses_corrupt_deep_and_excessive_values() {
+        let codec = ValueCodec::new().unwrap();
+        let bytes = STANDARD
+            .decode(codec.encode(&Value::Long(7)).unwrap())
+            .unwrap();
+        for length in 0..bytes.len() {
+            assert!(
+                codec
+                    .validate_stored_inline(&STANDARD.encode(&bytes[..length]))
+                    .is_err()
+            );
+        }
+        let mut trailing = bytes;
+        trailing.push(0);
+        assert!(
+            codec
+                .validate_stored_inline(&STANDARD.encode(trailing))
+                .is_err()
+        );
+        assert!(codec.validate_stored_inline("invalid!").is_err());
+        let mut deep = Value::Null;
+        for _ in 0..100 {
+            deep = Value::Array(vec![deep]);
+        }
+        assert!(
+            codec
+                .validate_stored_inline(&codec.encode(&deep).unwrap())
+                .is_err()
+        );
+        let wide = codec
+            .encode(&Value::Array(vec![Value::Null; 20000]))
+            .unwrap();
+        assert!(wide.len() < 65536);
+        assert!(codec.validate_stored_inline(&wide).is_err());
+        assert!(codec.validate_stored_inline(&"A".repeat(65537)).is_err());
+    }
 
     #[test]
     fn schema_traversal_validates_nested_types_and_external_base64_without_collections() {

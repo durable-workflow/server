@@ -352,6 +352,97 @@ fn column_counts<'a>(report: &'a Value, table: &str, column: &str) -> &'a Value 
 }
 
 #[tokio::test]
+async fn payload_scan_validates_inline_pages_and_reports_late_bad_values_without_rewriting() {
+    use crate::codec::{Value as Payload, ValueCodec};
+    let (_directory, path) = php_layout().await;
+    let codec = ValueCodec::new().unwrap();
+    let arguments = codec
+        .encode(&Payload::Array(vec![
+            Payload::Long(9007199254740993),
+            Payload::Null,
+            Payload::String("日本語 λ".into()),
+            Payload::Bytes(b"O:6:\"Sample\":0:{}".to_vec()),
+        ]))
+        .unwrap();
+    let result = codec.encode(&Payload::Boolean(false)).unwrap();
+    let mut connection = SqliteConnection::connect_with(
+        &SqliteConnectOptions::new()
+            .filename(&path)
+            .foreign_keys(false),
+    )
+    .await
+    .unwrap();
+    for index in 0..33 {
+        payload_run(
+            &mut connection,
+            &format!("run-{index:02}"),
+            Some(&arguments),
+            Some(&result),
+            "avro",
+        )
+        .await;
+    }
+    sqlx::query("INSERT INTO activity_executions(id,workflow_run_id,sequence,activity_class,activity_type,status,payload_codec,arguments,result) VALUES ('inline-activity','run-00',1,'SourceFixture','source.fixture','completed','avro',?,?)")
+        .bind(&arguments).bind(codec.encode(&Payload::Null).unwrap()).execute(&mut connection).await.unwrap();
+    connection.close().await.unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let report = inspect_sqlite_payloads(&path).await.unwrap();
+    assert_eq!(report["status"], "inspected");
+    assert_eq!(report["payload_inspection"]["inline_values_verified"], true);
+    assert_eq!(report["payload_inspection"]["diagnostics"], json!([]));
+    for (table, column, count) in [
+        ("workflow_runs", "arguments", 33),
+        ("workflow_runs", "output", 33),
+        ("activity_executions", "arguments", 1),
+        ("activity_executions", "result", 1),
+    ] {
+        assert_eq!(
+            column_counts(&report, table, column)["avro_inline_values"],
+            count
+        );
+    }
+    assert_eq!(
+        report["stored_representation_compatibility_verified"],
+        false
+    );
+    assert_eq!(report["takeover_allowed"], false);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    for (sql, expected) in [
+        (
+            "UPDATE workflow_runs SET arguments='private-invalid-inline' WHERE id='run-32'",
+            "stored_inline_frame_unqualified",
+        ),
+        (
+            "UPDATE workflow_runs SET payload_codec='legacy' WHERE id='run-32'",
+            "stored_inline_codec_unqualified",
+        ),
+        (
+            "UPDATE workflow_runs SET payload_codec=NULL WHERE id='run-32'",
+            "stored_inline_codec_unqualified",
+        ),
+    ] {
+        mutate(&path, sql).await;
+        let before = std::fs::read(&path).unwrap();
+        let report = inspect_sqlite_payloads(&path).await.unwrap();
+        assert_eq!(report["status"], "unqualified");
+        assert_eq!(
+            report["payload_inspection"]["inline_values_verified"],
+            false
+        );
+        assert_eq!(
+            report["payload_inspection"]["diagnostics"][0]["record_id"],
+            "run-32"
+        );
+        assert_eq!(
+            report["payload_inspection"]["diagnostics"][0]["reason"],
+            expected
+        );
+        assert!(!report.to_string().contains("private-invalid-inline"));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+}
+
+#[tokio::test]
 async fn payload_scan_checks_all_four_columns_and_every_page_without_mutation_or_locations() {
     let (_directory, path) = php_layout().await;
     let mut connection = SqliteConnection::connect_with(
@@ -383,14 +474,14 @@ async fn payload_scan_checks_all_four_columns_and_every_page_without_mutation_or
     connection.close().await.unwrap();
     let before = std::fs::read(&path).unwrap();
     let report = inspect_sqlite_payloads(&path).await.unwrap();
-    assert_eq!(report["status"], "inspected");
+    assert_eq!(report["status"], "unqualified");
     assert_eq!(
         report["payload_inspection"]["references_metadata_supported"],
         true
     );
     assert_eq!(
         column_counts(&report, "workflow_runs", "arguments"),
-        &json!({"rows":33,"absent":1,"other_unvalidated":31,"php_v1_references":1,"unqualified_references":0})
+        &json!({"rows":33,"absent":1,"other_unvalidated":31,"avro_inline_values":0,"php_v1_references":1,"unqualified_references":0})
     );
     assert_eq!(
         column_counts(&report, "workflow_runs", "output")["php_v1_references"],
@@ -402,7 +493,18 @@ async fn payload_scan_checks_all_four_columns_and_every_page_without_mutation_or
             1
         );
     }
-    assert_eq!(report["payload_inspection"]["diagnostics"], json!([]));
+    assert_eq!(
+        report["payload_inspection"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .len(),
+        16
+    );
+    assert_eq!(report["payload_inspection"]["diagnostics_omitted"], 15);
+    assert_eq!(
+        report["payload_inspection"]["diagnostics"][0]["reason"],
+        "stored_inline_payload_too_large"
+    );
     for flag in [
         "inline_values_verified",
         "nested_payloads_verified",
