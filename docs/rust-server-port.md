@@ -26,7 +26,11 @@ failed; later qualifying runs are separate observations.
   has all-13 results at `76c6d35a` and separately at `ee219c0b` with qualified PHP
   `f7d1bfc7`. Release-guard integration `083419709` also passes all 13 jobs and
   is merged at `0934c46d`, whole tree `98775e68`. Exact fresh-main qualification
-  remains pending; no earlier pass is carried across changed trees.
+  [38738455163](https://github.com/durable-workflow/server/actions/runs/38738455163)
+  passes all 13 jobs and all six databases, with independent artifact checks of
+  29 comparisons and 20 zero exit records per database. Feature and boundary
+  checks also pass. This delivers the source slice, without a runtime image,
+  complete query-family or takeover claim.
 - Targeted activity result reads [#470](https://github.com/durable-workflow/server/pull/470)
   have an all-13 component result at `8a7cffe4`. Later combined hosted acceptance,
   complete consumer coverage and Waterline remain
@@ -38,7 +42,9 @@ failed; later qualifying runs are separate observations.
   [38738644671](https://github.com/durable-workflow/server/actions/runs/38738644671).
   Its frozen PHP recorder timed out waiting for a pending-history task before
   embedded/native comparison. The original peer, poll phase and cause are
-  unestablished; the other five database originals remain in progress.
+  unestablished. The other five database originals pass; exactly one separate
+  same-SHA, unchanged-budget SQLite-only repeat is now running. They are not
+  five new network executions, and the first SQLite failure remains failed.
   Shared diagnostic preparation `e6c56de3` identifies the failed poll phase,
   original workflow/run/worker/queue and final status/reason, preserving the
   ten-second budget and excluding headers and business payloads. PHP syntax,
@@ -58,6 +64,17 @@ failed; later qualifying runs are separate observations.
   source data. Source metadata, queue encoding and root payload-reference checks
   do not establish takeover, backup,
   quiescence or complete representation. Safe migration is still open.
+
+New inline inspection preparation `c12fe089`, native tree `029ab981`, validates
+the recorded Avro codec and bounded frames in the four enumerated root columns.
+All 112 library tests, both CLI tests and 133 SQLite execution tests pass, with
+18 existing library ignores. CLI children check the actual 64 KiB Apache
+allocation cap, malformed declared lengths and exact source-byte preservation.
+The initial deep-fixture producer overflow and incorrect refusal-exit test
+expectation are preserved as failed test-development observations. The final
+deep producer uses a separate larger stack; validation stays on an ordinary
+test stack. This does not qualify deeply nested HTTP runtime payloads, actual
+current-PHP inline data, nested history, provider contents or takeover.
 
 ## Earlier foundation qualification stages
 

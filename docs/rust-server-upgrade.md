@@ -69,6 +69,33 @@ qualification and refuse this first inventory path.
 
 ## Qualification and next migration gates
 
+The separate `upgrade-payload-inspect` command now also checks recorded `avro`
+frames in `workflow_runs.arguments`, `workflow_runs.output`,
+`activity_executions.arguments` and `activity_executions.result`. It uses Apache
+Avro's schema traversal without retaining decoded arrays or maps. It reads
+32 rows per primary-key page, caps encoded frames at 64 KiB, and refuses unknown
+or missing codecs, malformed/trailing frames, more than 64 traversal levels or
+16,384 visits. Before any decoder is created, this standalone command sets and
+verifies Apache's process-wide scalar allocation ceiling of 64 KiB; HTTP runtime
+allocation policy is unchanged. Oversized stored values are masked in SQL
+before transfer to the client.
+
+The report distinguishes validated inline counts from unsupported values and
+external-reference metadata. `inline_values_verified` applies only to these
+enumerated root columns; nested history, provider bytes, registry ownership and
+complete representation remain unverified. Refusal prints the bounded report
+and exits nonzero, preserving source data. Known valid frames retain exact
+int64, null, Unicode and byte-string semantics; PHP-looking text in a byte
+string is never deserialized as an object.
+
+Preparation `c12fe089` passes 112 library tests, two actual CLI tests and 133
+SQLite execution tests, with 18 existing library ignores. A malformed frame
+declaring a 500 MiB scalar is refused under the actual CLI ceiling without
+changing source bytes. These are constructed source controls; the earlier
+published-PHP PostgreSQL observation left 22 inline values unvalidated and is
+not retroactively qualified by this source change. Network-source validation,
+complete representation and every takeover gate remain open.
+
 Catalog recognition does not decode stored values. The source audit identifies
 these separate compatibility boundaries:
 
