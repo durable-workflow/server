@@ -109,6 +109,7 @@ generic "workflows per second" number cannot hide the workload being measured.
 - [Self-hosting, HTTP API, authentication, and configuration](docs/server-reference.md)
 - [Control-plane OpenAPI contract](resources/platform-protocol-specs/control-plane-api.openapi.yaml)
 - [Worker protocol OpenAPI contract](resources/platform-protocol-specs/worker-protocol-api.openapi.yaml)
+- [Worker command declarations and durable snapshots](docs/worker-command-contracts.md)
 - [Worker stream AsyncAPI contract](resources/platform-protocol-specs/worker-protocol-stream.asyncapi.yaml)
 - [Capacity definitions and benchmark suite](benchmarks/capacity/README.md)
 - [Bounded-growth policy](docs/bounded-growth.md)
