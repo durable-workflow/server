@@ -648,6 +648,9 @@ endpoint to load a page starting at the event. A missing reference reports
 `recent_failures_truncated` indicates that more than ten failure records exist.
 These references load event metadata without decoding the complete run history.
 
+For a terminal run whose projected history-size counter disagrees with its
+retained events, use the [selected-run summary repair procedure](terminal-summary-recovery.md).
+
 For a ready workflow task, debug findings also explain delivery eligibility.
 `workflow_build_draining` identifies the required drained build and queue.
 Resume that build and start or restart a compatible workflow worker. Resume
