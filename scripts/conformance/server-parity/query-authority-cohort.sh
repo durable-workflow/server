@@ -95,3 +95,20 @@ jq -s --arg backend "$backend" \
   done) > "$evidence/comparison.json"
 test "$(jq -r .originals "$evidence/comparison.json")" = "$(jq '.cases|length*2' "$profile")"
 cat "$evidence/comparison.json"
+# Current Python/Rust consumers are separate from every frozen SDK actor.
+(cd query-authority-adapters; sha256sum -c SHA256SUMS >/dev/null)
+sha256sum -c query-authority-adapters/source-hashes.sha256 >/dev/null
+test "$(cat query-authority-adapters/runner-revision.txt)" = "$(git rev-parse HEAD)"
+test "$(jq -r .outcome query-authority-adapters/identity.json)" = pass
+chmod +x query-authority-adapters/rust-client
+export DW_PARITY_QUERY_CLIENT_BIN="$PWD/query-authority-adapters/rust-client"
+for target in php rust; do
+  server_target=$target
+  if test "$target" = rust; then server_target=native; fi
+  bash scripts/conformance/server-parity/query-authority-clients-profile.sh "$RESOURCE_SCOPE" \
+    "http://parity-query-authority-$server_target:8080" query-authority-adapters/python "$evidence/clients/$target" "$target" \
+    >"$evidence/$target-clients-tests.txt"
+done
+jq -s '{outcome:"pass",originals:(map(.originals)|add),targets:.}' \
+  "$evidence/clients/php/comparison.json" "$evidence/clients/rust/comparison.json" >"$evidence/clients-comparison.json"
+test "$(jq -r .originals "$evidence/clients-comparison.json")" = "$(jq '.client_cases|length*4' "$profile")"

@@ -132,6 +132,15 @@ jobs:
           DW_PARITY_CORRECTED_CARGO: sdk-cargo
           DW_PARITY_CORRECTED_TARGET: sdk-target
         run: bash scripts/conformance/server-parity/corrected-marker-adapters.sh
+      - name: Build the separate current query consumers once
+        run: bash scripts/conformance/server-parity/query-authority-adapters.sh
+      - name: Share current query consumers without compiler caches
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: query-authority-adapters
+          path: query-authority-adapters
+          retention-days: 1
+          if-no-files-found: error
       - name: Share the corrected cohort without compiler caches or target trees
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -193,6 +202,8 @@ jobs:
             corrected-marker-adapters/*-build.txt
             corrected-marker-adapters/*-install.txt
             codec-native-build/build.txt
+            query-authority-adapters/*-build.txt
+            query-authority-adapters/*-install.txt
           retention-days: 1
           if-no-files-found: ignore
 
@@ -301,6 +312,12 @@ jobs:
         with:
           name: published-sdk-patch-adapters
           path: published-sdk-adapters
+          digest-mismatch: error
+      - name: Fetch this run's current query consumers
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: query-authority-adapters
+          path: query-authority-adapters
           digest-mismatch: error
       - name: Fetch this run's genuine legacy-marker adapters
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -772,6 +789,12 @@ jobs:
         with:
           name: published-sdk-patch-adapters
           path: published-sdk-adapters
+          digest-mismatch: error
+      - name: Fetch this run's current query consumers
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: query-authority-adapters
+          path: query-authority-adapters
           digest-mismatch: error
       - name: Fetch this run's genuine legacy-marker adapters
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -1252,6 +1275,12 @@ jobs:
         with:
           name: published-sdk-patch-adapters
           path: published-sdk-adapters
+          digest-mismatch: error
+      - name: Fetch this run's current query consumers
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: query-authority-adapters
+          path: query-authority-adapters
           digest-mismatch: error
       - name: Fetch this run's genuine legacy-marker adapters
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8

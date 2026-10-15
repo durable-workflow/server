@@ -964,6 +964,15 @@ expiry, non-renewing protocol-1.20 observation and committed-receipt ordering.
 Native implementation and separate shared qualification remain pending; current
 internal timing does not establish compliance with the proposed wire contract.
 
+The later [installed-consumer observation](https://github.com/durable-workflow/server/issues/433#issuecomment-6185525047)
+passes twenty Python 2.5.15 / Rust 3.5.5 originals across separate PHP 2.8.0 and
+candidate native SQLite APIs. Timely 1.20/1.19 and expired poll/async/sync
+delivery preserve original four-second query and thirty-second whole budgets,
+typed values, history and claim identity without late submissions. The earlier
+short poll-transport observer failure stays failed. Subsequent fixture/build
+sharing edits and the combined source require fresh hosted qualification;
+external loading, pressure and full capability qualification remain open.
+
 Earlier MariaDB/MySQL failure causes remain
 unestablished; the new lookup site does not retroactively establish them.
 Full namespace authorization, other families, consumers,

@@ -12,6 +12,34 @@ test "$(jq -r .backend "$evidence/identity.json")" = "$backend" || exit 1
 result=0
 profile_status=$(cat "$evidence/profile-status.txt" 2>/dev/null || printf incomplete)
 for target in php rust; do
+  for language in python rust; do
+    while IFS=$'\t' read -r mode protocol; do
+      if docker inspect "$RESOURCE_SCOPE-query-client-$target-$language-$mode-${protocol//./}" >/dev/null 2>&1; then
+        if docker inspect "$RESOURCE_SCOPE-query-client-$target-$language-$mode-${protocol//./}" | \
+          jq -e --arg scope "$RESOURCE_SCOPE" '.[0].Config.Labels["durable-workflow.query-authority-client"]==$scope' >/dev/null; then
+          docker rm -f "$RESOURCE_SCOPE-query-client-$target-$language-$mode-${protocol//./}" >/dev/null || result=1
+        else result=1; fi
+      fi
+      if docker inspect "$RESOURCE_SCOPE-query-client-observer-$target-$language-$mode-${protocol//./}" >/dev/null 2>&1; then
+        if docker inspect "$RESOURCE_SCOPE-query-client-observer-$target-$language-$mode-${protocol//./}" | \
+          jq -e --arg scope "$RESOURCE_SCOPE" '.[0].Config.Labels["durable-workflow.query-authority-client"]==$scope' >/dev/null; then
+          docker stop --signal=SIGTERM --timeout=10 "$RESOURCE_SCOPE-query-client-observer-$target-$language-$mode-${protocol//./}" >/dev/null 2>&1 || true
+          docker rm -f "$RESOURCE_SCOPE-query-client-observer-$target-$language-$mode-${protocol//./}" >/dev/null || result=1
+        else result=1; fi
+      fi
+    done < <(jq -r '.client_cases[]|[.mode,.protocol]|@tsv' "$profile")
+  done
+done
+if docker inspect "$RESOURCE_SCOPE-query-client-observer" >/dev/null 2>&1; then
+  if docker inspect "$RESOURCE_SCOPE-query-client-observer" | \
+    jq -e --arg scope "$RESOURCE_SCOPE" '.[0].Config.Labels["durable-workflow.query-authority-client"]==$scope' >/dev/null; then
+    docker stop --signal=SIGTERM --timeout=10 "$RESOURCE_SCOPE-query-client-observer" >"$evidence/client-observer-stop.txt" 2>&1 || true
+    docker inspect --format '{{json .State}}' "$RESOURCE_SCOPE-query-client-observer" >"$evidence/client-observer-state.json"
+    jq -e '.ExitCode==0 and .OOMKilled==false and .Running==false' "$evidence/client-observer-state.json" >/dev/null || result=1
+    docker rm -f "$RESOURCE_SCOPE-query-client-observer" >/dev/null || result=1
+  else result=1; fi
+fi
+for target in php rust; do
   while IFS=$'\t' read -r mode protocol; do
     if docker inspect "$RESOURCE_SCOPE-query-$target-$mode-${protocol//./}" >/dev/null 2>&1; then
       docker rm -f "$RESOURCE_SCOPE-query-$target-$mode-${protocol//./}" >/dev/null || result=1

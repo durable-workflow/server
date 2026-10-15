@@ -14,9 +14,10 @@ profile=tests/Fixtures/ServerParityProfiles/query-authority/artifacts.json
 image=$(jq -r '.server.image' "$profile")
 test ! -e "$output"
 test -f "$python_sdk/durable_workflow/__init__.py"
-test -f rust-target/debug/server-parity-query-authority-client
+client_binary=$(realpath "${DW_PARITY_QUERY_CLIENT_BIN:-rust-target/debug/server-parity-query-authority-client}")
+test -f "$client_binary"
 mkdir -p "$output"
-jq -n --arg revision "$(git rev-parse HEAD)" --arg binary "$(sha256sum rust-target/debug/server-parity-query-authority-client | cut -d ' ' -f1)" \
+jq -n --arg revision "$(git rev-parse HEAD)" --arg binary "$(sha256sum "$client_binary" | cut -d ' ' -f1)" \
   --arg observer "$(sha256sum scripts/conformance/server-parity/query-authority/observer.mjs | cut -d ' ' -f1)" \
   --arg profile "$(sha256sum "$profile" | cut -d ' ' -f1)" \
   '{runner_revision:$revision,consumer_binary_sha256:$binary,observer_sha256:$observer,profile_sha256:$profile}' >"$output/identity.json"
@@ -27,15 +28,14 @@ retire() {
   local result=0
   if test -f "$case_output/client-container.id" && docker inspect "$RESOURCE_SCOPE-query-client-$target-$language-$name" >/dev/null 2>&1; then
     test "$(docker inspect --format '{{.Id}}' "$RESOURCE_SCOPE-query-client-$target-$language-$name")" = "$(cat "$case_output/client-container.id")" || return 1
-    docker rm -f "$RESOURCE_SCOPE-query-client-$target-$language-$name" >/dev/null || result=1
+    docker stop --signal=SIGTERM --timeout=5 "$RESOURCE_SCOPE-query-client-$target-$language-$name" >/dev/null || result=1
   fi
-  if test -f "$case_output/observer-container.id" && docker inspect "$RESOURCE_SCOPE-query-client-observer" >/dev/null 2>&1; then
-    test "$(docker inspect --format '{{.Id}}' "$RESOURCE_SCOPE-query-client-observer")" = "$(cat "$case_output/observer-container.id")" || return 1
-    docker stop --signal=SIGTERM --timeout=10 "$RESOURCE_SCOPE-query-client-observer" >"$case_output/observer-stop.txt" 2>&1 || true
-    docker logs "$RESOURCE_SCOPE-query-client-observer" >"$case_output/observer.log" 2>&1
-    docker inspect --format '{{json .State}}' "$RESOURCE_SCOPE-query-client-observer" >"$case_output/observer-state.json"
+  if test -f "$case_output/observer-container.id" && docker inspect "$RESOURCE_SCOPE-query-client-observer-$target-$language-$name" >/dev/null 2>&1; then
+    test "$(docker inspect --format '{{.Id}}' "$RESOURCE_SCOPE-query-client-observer-$target-$language-$name")" = "$(cat "$case_output/observer-container.id")" || return 1
+    docker stop --signal=SIGTERM --timeout=10 "$RESOURCE_SCOPE-query-client-observer-$target-$language-$name" >"$case_output/observer-stop.txt" 2>&1 || true
+    docker logs "$RESOURCE_SCOPE-query-client-observer-$target-$language-$name" >"$case_output/observer.log" 2>&1
+    docker inspect --format '{{json .State}}' "$RESOURCE_SCOPE-query-client-observer-$target-$language-$name" >"$case_output/observer-state.json"
     jq -e '.ExitCode==0 and .OOMKilled==false and .Running==false' "$case_output/observer-state.json" >/dev/null || result=1
-    docker rm -f "$RESOURCE_SCOPE-query-client-observer" >/dev/null || result=1
   fi
   return "$result"
 }
@@ -45,8 +45,9 @@ for language in python rust; do
     name="$mode-${protocol//./}"
     case_output="$output/$language-$name"
     mkdir "$case_output"
-    if docker inspect "$RESOURCE_SCOPE-query-client-observer" >/dev/null 2>&1; then exit 1; fi
-    docker run -d --name "$RESOURCE_SCOPE-query-client-observer" --network "$network" \
+    if docker inspect "$RESOURCE_SCOPE-query-client-observer-$target-$language-$name" >/dev/null 2>&1; then exit 1; fi
+    docker run -d --name "$RESOURCE_SCOPE-query-client-observer-$target-$language-$name" --network "$network" \
+      --label "durable-workflow.query-authority-client=$RESOURCE_SCOPE" \
       --network-alias=parity-query-client-observer --user="$(id -u):$(id -g)" \
       --cpus=1 --memory=256m --memory-swap=256m --entrypoint node \
       -v "$source_root:/source:ro" -v "$case_output:/evidence" "$image" \
@@ -54,7 +55,7 @@ for language in python rust; do
       >"$case_output/observer-container.id"
     ready=0
     for attempt in $(seq 1 50); do
-      if docker logs "$RESOURCE_SCOPE-query-client-observer" 2>/dev/null | jq -e '.ready==true' >/dev/null; then ready=1; break; fi
+      if docker logs "$RESOURCE_SCOPE-query-client-observer-$target-$language-$name" 2>/dev/null | jq -e '.ready==true' >/dev/null; then ready=1; break; fi
       sleep .05
     done
     test "$ready" = 1
@@ -63,11 +64,12 @@ for language in python rust; do
       actor=(--entrypoint python -e PYTHONPATH=/sdk -e PYTHONDONTWRITEBYTECODE=1 \
         -v "$python_sdk:/sdk:ro" "$client_image" /source/scripts/conformance/server-parity/query-authority/python.py)
     else
-      actor=(--entrypoint /target/debug/server-parity-query-authority-client -v "$PWD/rust-target:/target:ro" "$client_image")
+      actor=(--entrypoint /client -v "$client_binary:/client:ro" "$client_image")
     fi
     status=0
     timeout --signal=TERM --kill-after=5s 40s docker run --rm --cidfile "$case_output/client-container.id" \
       --name "$RESOURCE_SCOPE-query-client-$target-$language-$name" --network "$network" --user="$(id -u):$(id -g)" \
+      --label "durable-workflow.query-authority-client=$RESOURCE_SCOPE" \
       --cpus=1 --memory=512m --memory-swap=512m -e DW_PARITY_TOKEN \
       -e DW_PARITY_QUERY_PROFILE=/source/tests/Fixtures/ServerParityProfiles/query-authority/artifacts.json \
       -v "$source_root:/source:ro" -v "$case_output:/evidence:ro" "${actor[@]}" \

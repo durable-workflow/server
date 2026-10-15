@@ -65,6 +65,24 @@ An explicit conflicting namespace still fails. The earlier failed originals and
 the exact four-case match are recorded in
 [the owning query checkpoint](https://github.com/durable-workflow/server/issues/433#issuecomment-6184509976).
 
-External query loading, Python/Rust consumers, remaining route/pressure and
-continuation boundaries, all-six integration and capability qualification remain
-ahead. These are correctness controls and establish no performance result.
+The separate installed Python 2.5.15 and Rust 3.5.5 consumers pass twenty actual
+SQLite originals across PHP and native targets at runner `a72c63277`. Both
+languages cover timely 1.20/1.19, a six-second held poll response, async expiry
+and blocking-handler expiry. Original query/whole budgets remain four/thirty
+seconds. Typed results, unchanged history, original claim/timing, no late
+submission and successful Worker/observer shutdown are checked. The
+[local outcome](https://github.com/durable-workflow/server/issues/433#issuecomment-6185525047)
+preserves the earlier failed observer control and exact installed identities.
+
+`query-authority-adapters.sh` installs the hash-locked Python wheel and builds
+the normal registry Rust consumer once. It shares only checked runtime files
+with the database jobs. `query-authority-clients-profile.sh` executes both
+languages through a bounded byte-preserving observer; its per-case observers
+stop after observation and the workflow's always-step removes them. Changes
+after the local outcome still require an exact combined hosted qualification.
+
+External query loading, remaining route/pressure and continuation boundaries,
+all-six consumer integration and capability qualification remain ahead. These
+are correctness controls and establish no performance result. Completed raw
+observations and build caches are deleted after audit; readable outcomes and
+reproduction code remain.
