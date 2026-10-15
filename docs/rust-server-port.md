@@ -30,13 +30,15 @@ release work.
 - [#458](https://github.com/durable-workflow/server/pull/458): activity-result
   completion uploads with exact Unicode ownership hashing, original authority
   and durable allowances. Separate local PHP/native originals pass on three
-  database families. The earlier combined `93368d2ae` passes all 13 jobs and
-  six databases. Later `3a268200`, incorporating qualified PHP `ed803519`,
-  fails PostgreSQL 17's fresh upload control under the stalled request's
-  100 ms test policy. That original remains failed. Revision `8af001ffc`
-  preserves the stalled deadline and same semaphore, then tests the separate
-  fresh upload under normal policy. Its source is integrated here, without
-  inheriting qualification. Full transport discovery remains false.
+  database families. Combined `3409a776e`, including qualified PHP `35cd3642`,
+  passes all six health jobs and five database jobs with 113 execution tests
+  each. MySQL 8.0 fails at a frozen native query transport observation; cause
+  remains unknown and one identical-head/limits MySQL-only retry is live in
+  [38686850381](https://github.com/durable-workflow/server/actions/runs/38686850381).
+  The older PostgreSQL 17 100 ms fresh-upload failure remains failed; its
+  separate normal-policy correction preserves the stalled deadline and shared
+  semaphore. Current source is integrated here without inheriting qualification.
+  No workflow/query/prepared context or full transport capability is advertised.
 - [#460](https://github.com/durable-workflow/server/pull/460): read-only upgrade
   source inventory. Four actual published PHP 2.8.0 profiles pass locally with
   unchanged source state. The earlier `4459140cd` hosted run passes all five
@@ -56,7 +58,7 @@ release work.
   on published PHP 2.8.0 and native. Earlier cleanup, observer, worker-list and
   named-timer failures remain failed. All-six qualification and remaining
   consumer/pressure/transport gates are pending. Its source is separate from
-  this inventory branch. Main does not advertise query authority.
+  this inventory branch. Native main does not advertise query authority.
 
 Full transport discovery stays unadvertised. Complete batch workflow semantics,
 memo/query reference ingress, upload allowances, automatic result policy, S3,
