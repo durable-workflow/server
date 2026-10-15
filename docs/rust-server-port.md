@@ -27,15 +27,21 @@ failed; later qualifying runs are separate observations.
   `f7d1bfc7`. The current release-guard integration `083419709` is qualifying
   independently. No earlier pass is carried across changed trees.
 - Targeted activity result reads [#470](https://github.com/durable-workflow/server/pull/470)
-  have an all-13 component result at `8a7cffe4`. Later combined integration,
-  retry-consumer integration, unrelated-object isolation and Waterline remain
+  have an all-13 component result at `8a7cffe4`. Later combined hosted acceptance,
+  complete consumer coverage and Waterline remain
   separate gates. Native inspection discovery stays unadvertised.
 - [Activity metadata listing](contracts/activity-metadata-listing.md) is a
-  separate current-PHP-source slice. Thirty-one released-PHP projection cases cover
-  typed history, attempt state, diagnostic fallback and timestamp rounding.
-  Local library and four in-process HTTP controls per SQLite/MySQL8.4/PG17 pass.
-  Hosted and installed differential consumers remain ahead.
-- Upgrade preparation remains read-only inspection. Source metadata, queue
+  separate current-PHP-source slice. All 31 projection cases pass on published
+  PHP 2.8.5. Corrected component `71bdf6bd` passes 133 SQLite execution cases
+  and the MySQL 8.4/PostgreSQL 17 retry regression. Twelve normally installed
+  PHP SDK originals pass on PHP/native SQLite, including four unavailable-object
+  metadata reads. The earlier `9da7b93b` hosted original is still separate;
+  corrected combined hosted and other-database TCP consumers remain pending.
+- Upgrade preparation `b6df9cd8` integrates the read-only inspector with current
+  API source `3211c65b`. All 109 library cases, the CLI filesystem-refusal test
+  and 133 SQLite execution cases pass, with 18 existing library ignores.
+  This does not carry previous network-database observations to the new tree.
+  Source metadata, queue
   encoding and root payload-reference checks do not establish takeover, backup,
   quiescence or complete representation. Safe migration is still open.
 
@@ -3180,7 +3186,7 @@ SQLite execution passes all 133 cases. The focused retry regression also passes
 MySQL 8.4 and PostgreSQL 17. Twelve fresh published-PHP/native SQLite originals
 pass through 52 separate PHP processes, preserving the original 30-second
 budgets, exact task/attempt binding, typed output, history prefixes and cold
-metadata. All six pairs agree across 44 metadata snapshots. The four external
+metadata. All six pairs agree across 44 metadata snapshot pairs. The four external
 object-unavailability controls leave metadata unchanged and perform no payload
 GET. The actual published PHP image also passes all 31 projection cases with
 zero database queries and provider-policy calls.
