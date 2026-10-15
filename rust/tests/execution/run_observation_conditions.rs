@@ -122,7 +122,9 @@ async fn run_observation_conditions_follow_authored_occurrences_across_cold_node
     let mut originals = Vec::new();
     for namespace in ["default", "condition-observation"] {
         register_observer(&app, namespace).await;
-        let run = namespaces::start_scoped(&app, namespace, "condition-original").await;
+        let run =
+            namespaces::start_scoped(&app, namespace, &format!("condition-original-{namespace}"))
+                .await;
         let task = claim(&app, namespace).await;
         let refused_history = read(&app, namespace, &run, "history").await;
         let mut timeout = open("occurrence-0");
