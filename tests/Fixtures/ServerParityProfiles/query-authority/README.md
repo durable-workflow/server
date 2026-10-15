@@ -3,8 +3,8 @@
 This separate profile uses normally installed PHP SDK 2.4.2 and published Server
 2.8.0. It does not replace the frozen query actors. The four published PHP cases
 pass locally on isolated MySQL 8.4. Native comparison and all-six qualification
-remain pending. Native discovery remains false until the new authority and
-consumer gates qualify.
+remain pending. Main does not advertise native query authority. The unpublished
+candidate advertises it for installed-consumer qualification before promotion.
 
 The owning contract is [Server #433](https://github.com/durable-workflow/server/issues/433).
 `artifacts.json` freezes the consumer, reference image and original budgets.
@@ -24,6 +24,10 @@ readiness and cleanup. Run each declared case once against each target. Every
 original has one unchanged 30-second observation budget covering setup, query,
 Worker drain and deregistration. The caller must also bound container lifetime
 and remove its resources after success or failure.
+The Worker and workflow stop within each original budget. The caller destroys
+the entire isolated database afterward, including its task namespaces. This
+profile does not qualify namespace DELETE, which is still absent in native
+source. It makes the same cleanup calls on both targets.
 
 The actual Worker creates a waiting timer workflow, then serves its query.
 Timely 1.20 and 1.19 controls retain the exact int64/null/Unicode result.

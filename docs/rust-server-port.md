@@ -78,8 +78,10 @@ The current integration order is:
   published Server 2.8.0 / PHP SDK 2.4.2 profile now passes four actual PHP
   controls on MySQL 8.4: timely 1.20/1.19, held poll reply and late synchronous
   handler. It preserves the original clocks and history, with zero late
-  submissions. Native comparison and all-six integration remain pending. Discovery keeps
-  `query_task_authority=false` until those gates pass.
+  submissions. Native comparison and all-six integration remain pending. Main
+  keeps `query_task_authority=false`; the unpublished candidate advertises it
+  for actual SDK qualification before promotion. Full namespace CRUD remains
+  open, including the absent native DELETE route.
 
 Full transport discovery stays unadvertised. Complete batch workflow semantics,
 memo/query reference ingress, upload allowances, automatic result policy, S3,

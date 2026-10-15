@@ -255,7 +255,6 @@ try {
         if ($handle !== null) {
             $client->terminateWorkflow($namespace, 'query authority qualification complete', $handle->selectedRunId);
         }
-        $admin->deleteNamespace($namespace);
     } finally {
         unlink($journal);
     }
