@@ -169,6 +169,10 @@ pub fn router(runtime: Runtime) -> Router {
         )
         .route("/api/worker/query-tasks/poll", post(poll_query))
         .route(
+            "/api/worker/query-tasks/{task_id}/status",
+            get(query_status),
+        )
+        .route(
             "/api/worker/query-tasks/{task_id}/complete",
             post(complete_query),
         )
@@ -235,21 +239,27 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         )
         .await;
     };
-    let allowed_roles: &[&str] =
-        if payload || path == "/api/worker/register" || path == "/api/cluster/info" {
-            &["worker", "operator", "admin"]
-        } else if worker {
-            &["worker"]
-        } else if path.starts_with("/api/workers/")
-            || path == "/api/namespaces" && request.method() == Method::POST
-            || path.starts_with("/api/namespaces/")
-                && path.ends_with("/external-storage")
-                && request.method() == Method::PUT
-        {
-            &["admin"]
-        } else {
-            &["operator", "admin"]
-        };
+    let allowed_roles: &[&str] = if path == "/api/external-payloads/v1"
+        && request.method() == Method::POST
+        && request
+            .headers()
+            .contains_key("x-durable-workflow-payload-completion")
+    {
+        &["worker"]
+    } else if payload || path == "/api/worker/register" || path == "/api/cluster/info" {
+        &["worker", "operator", "admin"]
+    } else if worker {
+        &["worker"]
+    } else if path.starts_with("/api/workers/")
+        || path == "/api/namespaces" && request.method() == Method::POST
+        || path.starts_with("/api/namespaces/")
+            && path.ends_with("/external-storage")
+            && request.method() == Method::PUT
+    {
+        &["admin"]
+    } else {
+        &["operator", "admin"]
+    };
     if !legacy_full_access && !allowed_roles.contains(&role) {
         return admission_error(request, worker, StatusCode::FORBIDDEN, json!({
             "reason":"forbidden", "message":"Authenticated role is not allowed to access this endpoint.",
@@ -387,6 +397,12 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
         ) {
             return method == "POST";
         }
+        if matches!(
+            parts.as_slice(),
+            [_, "query", _] | [_, "runs", _, "query", _]
+        ) {
+            return method == "POST";
+        }
         return matches!(
             parts.as_slice(),
             [_] | [_, "cancel"] | [_, "runs", _] | [_, "runs", _, "history" | "cancel"]
@@ -401,6 +417,7 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
                 | ["registrations", _, "deregister"]
                 | ["workflow-tasks" | "activity-tasks", "poll"]
                 | ["query-tasks", "poll"]
+                | ["query-tasks", _, "complete" | "fail" | "status"]
                 | ["workflow-tasks", _, "complete" | "history" | "heartbeat"]
                 | [
                     "activity-tasks",
@@ -1073,6 +1090,42 @@ async fn complete_query(
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
     runtime.complete_query(&task_id, body).await.map(Json)
+}
+#[derive(Deserialize)]
+struct QueryStatusRequest {
+    lease_owner: String,
+    query_task_attempt: i64,
+}
+async fn query_status(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_id): Path<String>,
+    request: Request,
+) -> Result<Json<Value>> {
+    let minor = request
+        .headers()
+        .get("x-durable-workflow-protocol-version")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .and_then(|version| version.split_once('.'))
+        .and_then(|(_, minor)| minor.parse::<u8>().ok());
+    if minor.is_none_or(|minor| minor < 20) {
+        return Err(super::RuntimeError::Protocol {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            response: json!({"reason":"query_task_status_unavailable","error":"Query task observation requires worker protocol 1.20.","minimum_protocol_version":"1.20"}),
+        });
+    }
+    let Query(claim) = Query::<QueryStatusRequest>::try_from_uri(request.uri())
+        .map_err(|_| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_query_status"))?;
+    if claim.lease_owner.is_empty() || claim.query_task_attempt < 1 {
+        return Err(refuse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_query_status",
+        ));
+    }
+    runtime
+        .query_status(&task_id, &claim.lease_owner, claim.query_task_attempt)
+        .await
+        .map(Json)
 }
 async fn fail_query(
     Extension(runtime): Extension<Runtime>,

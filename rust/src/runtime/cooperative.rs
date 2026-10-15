@@ -306,7 +306,7 @@ where
                     "cancellation_delivery_not_eligible",
                 ));
             }
-            Self::cancel_root_timer(&mut tx, &run_id, request_id, &timer, Some(task_id), now())
+            Self::cancel_root_timer(&mut tx, &run, request_id, &timer, Some(task_id), now())
                 .await?;
         }
         let at = now();
@@ -338,20 +338,23 @@ where
 
     async fn cancel_root_timer(
         tx: &mut Transaction<'_, DB>,
-        run_id: &str,
+        run: &DB::Row,
         request_id: &str,
         timer: &DB::Row,
         task_id: Option<&str>,
         at: DateTime<Utc>,
     ) -> Result<()> {
+        let run_id = DB::string(run, "id")?;
+        let namespace = DB::string(run, "namespace")?;
         let timer_id = DB::string(timer, "id")?;
         Self::query("UPDATE workflow_run_timers SET status='cancelled' WHERE id=$1")
             .bind(&timer_id)
             .execute(&mut **tx)
             .await?;
         for timer_task in Self::query(DB::TIMER_TASK_SQL)
-            .bind(run_id)
+            .bind(&run_id)
             .bind(&timer_id)
+            .bind(&namespace)
             .fetch_all(&mut **tx)
             .await?
         {
@@ -362,7 +365,7 @@ where
             .execute(&mut **tx)
             .await?;
         }
-        Self::append(tx,run_id,"TimerCancelled",json!({"timer_id":timer_id,"sequence":DB::number(timer,"sequence")?,
+        Self::append(tx,&run_id,"TimerCancelled",json!({"timer_id":timer_id,"sequence":DB::number(timer,"sequence")?,
             "delay_seconds":DB::number(timer,"delay_seconds")?,"fire_at":DB::instant(timer,"fire_at")?,"cancelled_at":at}),task_id,Some(request_id)).await
     }
 
@@ -427,7 +430,7 @@ where
             .bind(&run_id).execute(&mut **tx).await?;
         Self::cancel_open_activities(tx, &run_id, &request_id, activities, at).await?;
         for timer in timers {
-            Self::cancel_root_timer(tx, &run_id, &request_id, &timer, task_id, at).await?;
+            Self::cancel_root_timer(tx, run, &request_id, &timer, task_id, at).await?;
         }
         let failure_id = id();
         let message = format!("Workflow cancelled: {reason}");

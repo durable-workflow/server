@@ -260,19 +260,30 @@ worker as signals. Other missing paths return
 Starts, ordered history, task claims and outcomes are transactional. Expired or
 revoked owner/attempt fences cannot commit. Identical completion retries return
 the existing receipt without another outcome; conflicting retries are refused.
-Query completion follows the PHP broker's terminal lease refusal on repetition.
+The separate native query-authority slice retains content-bound completion and
+failure decisions for the original owner and attempt. Matching retries return
+the committed decision with `recorded=false`, including after the original
+deadline; conflicting operations or payloads remain refused. This does not
+change the activity or workflow receipt contract.
 Query poll-request receipt idempotency is explicitly advertised as false;
 repeat polling by the active owner retains its existing attempt and snapshot.
 Transient query entries use a native prefix in a separate `dw_query_cache` table, with
-16 pending requests and 64 pending/results combined per default-namespace
+16 pending requests and 64 pending/results combined per namespace in the
 development database. Arguments are capped at 64 KiB, each complete task and
 snapshot at one MiB, result blobs at 256 KiB, and completion bodies at 512 KiB.
-The query deadline is 30 seconds, leases last at most ten seconds, and recent
-results expire after 60 seconds. Admission/polling reclaim expired entries;
-abandoned requests occupy a bounded slot until their deadline plus 60 seconds.
-Results discard replay snapshots. These are development bounds, not qualified
-customer limits. Full query failures, worker compatibility, busy routing and
-request-id receipts still need reviewed fixtures.
+Admission snapshots UTC timestamps with six fractional digits. Query timing
+uses the PHP configuration aliases: the default result duration is 45 seconds,
+the configured 60-second lease is capped by the original result deadline, and
+the default retention is 180 seconds, with a minimum of the configured result
+duration plus lease duration plus 60 seconds. Policy changes and polls preserve
+those original snapshots; zero expires immediately. Missing legacy timing
+gets a fixed refusal without a fresh execution budget. Results discard replay
+snapshots. Protocol 1.20 status reads observe the original claim without
+renewing it; 1.19 receives an explicit unavailable response. Discovery keeps
+`query_task_authority=false` until separate current-PHP and installed-consumer
+qualification. These are development bounds, not qualified customer limits.
+Queue-lock pressure, full query failures, worker compatibility, busy routing,
+request-id receipts and cross-runtime adoption still need reviewed fixtures.
 Poll IDs retain the original task/snapshot across process boundaries, with
 expired receipts reclaimed. Worker/control-plane history is paginated, capped
 at 1000 records and eight MiB of encoded payloads per page. Requests are capped
@@ -283,8 +294,9 @@ The development external-payload routes upload/fetch verified encoded bytes at
 `/api/external-payloads/v1`, with authenticated namespace binding, local policy,
 object/byte quota admission and an independent request size/timeout bound.
 `PUT /api/namespaces/{namespace}/external-storage` is admin-only and currently
-supports the local driver. Completion-upload allowance headers refuse until
-their original task/lease authority is implemented. Full transport discovery
+supports the local driver. Version-1 activity-result completion uploads require
+the original task/attempt/owner and preserve a bounded allowance without renewing
+the lease. Workflow/query/prepared completion contexts remain refused. Full transport discovery
 stays unadvertised pending real workflow resolution/retention, cleanup/backup,
 restart, all database families and S3 qualification. The actual byte probe is
 `scripts/conformance/server-parity/external-payload-http.py`; run it only against
@@ -300,8 +312,10 @@ result-upload/public task-completion recipe and separate cold SDK reader are in
 `scripts/conformance/server-parity/external-result-client.php`. Its
 `activity-author` and `activity-reader` phases use explicit activity-result HTTP
 completion and a separate installed SDK workflow-history reader. These recipes
-do not establish automatic SDK upload discovery. Memo/query ingress,
-completion-upload allowances and automatic external result policy remain
+do not establish automatic SDK upload discovery. The separate raw HTTP recipe
+`scripts/conformance/server-parity/activity-completion-upload-probe.php` covers
+the activity completion-upload context, including real UTF-8 JSON. Memo/query
+ingress, broader completion contexts and automatic external result policy remain
 unqualified. Apache's schema-aware validation patch is recorded in
 `vendor/apache-avro/PATCHES.md`.
 

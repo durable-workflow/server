@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {checkObservation, compareRecords as compareCorpusRecords} from '../../scripts/conformance/server-parity/contract.mjs';
 import {parseDatabaseResourceLimits} from '../../scripts/conformance/server-parity/database-resource-contract.mjs';
+import './ServerParityCrossKindPollWakeTest.mjs';
 
 const fixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/one-activity.json', import.meta.url)));
 const reviewed = {'one-activity.json': fixture};

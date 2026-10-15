@@ -37,6 +37,9 @@ mod role_tokens;
 #[path = "execution/namespaces.rs"]
 mod namespaces;
 
+#[path = "execution/named_timers.rs"]
+mod named_timers;
+
 #[path = "execution/selected_run_signals.rs"]
 mod selected_run_signals;
 
@@ -69,6 +72,11 @@ mod condition_occurrences;
 
 #[path = "execution/query_arguments.rs"]
 mod query_arguments;
+#[path = "execution/query_authority.rs"]
+mod query_authority;
+
+#[path = "execution/cross_kind_poll.rs"]
+mod cross_kind_poll;
 
 #[path = "execution/external_payloads.rs"]
 mod external_payloads;
@@ -241,6 +249,50 @@ impl TestDatabase {
                     .bind(run).bind(run).bind(failure).fetch_one(&pool).await.unwrap();
                 pool.close().await;
                 count
+            }
+        }
+    }
+
+    async fn timer_task_states(&self, run: &Value) -> Vec<(String, String)> {
+        let query = "SELECT id,status FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='timer' ORDER BY id";
+        let run = run.as_str().unwrap();
+        match self {
+            Self::Sqlite(dir) => {
+                let pool = sqlx::SqlitePool::connect(&format!(
+                    "sqlite://{}",
+                    dir.path().join("runtime.sqlite").display()
+                ))
+                .await
+                .unwrap();
+                let rows = sqlx::query_as(query)
+                    .bind(run)
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+                rows
+            }
+            Self::Postgres { options, .. } => {
+                let pool = sqlx::postgres::PgPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
+                let rows = sqlx::query_as(query)
+                    .bind(run)
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+                rows
+            }
+            Self::MySql { options, .. } => {
+                let pool = sqlx::mysql::MySqlPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
+                let rows = sqlx::query_as("SELECT id,status FROM workflow_tasks WHERE workflow_run_id=? AND task_type='timer' ORDER BY id").bind(run).fetch_all(&pool).await.unwrap();
+                pool.close().await;
+                rows
             }
         }
     }
@@ -2069,6 +2121,19 @@ async fn await_query(app: &Router, worker: &str) -> Value {
     .expect("query must be admitted without holding the database pool")
 }
 
+fn assert_query_replay(first: &Value, repeated: Value) {
+    let initial =
+        chrono::DateTime::parse_from_rfc3339(first["server_time"].as_str().unwrap()).unwrap();
+    let current =
+        chrono::DateTime::parse_from_rfc3339(repeated["server_time"].as_str().unwrap()).unwrap();
+    assert!(current >= initial);
+    let mut replay = repeated;
+    // Only this observation clock is nondeterministic. Original query timing,
+    // lease, identities, values and every business-history field remain exact.
+    replay["server_time"] = first["server_time"].clone();
+    assert_eq!(replay, *first);
+}
+
 #[tokio::test]
 async fn queries_fence_recovered_leases_across_pools_without_mutating_the_run() {
     let database = TestDatabase::new().await;
@@ -2165,7 +2230,7 @@ async fn queries_fence_recovered_leases_across_pools_without_mutating_the_run() 
     );
     assert_eq!(projected, before["events"]);
     assert_eq!(claim["query_arguments"], input["input"]);
-    assert_eq!(poll(&a, "query-a", "query").await, claim);
+    assert_query_replay(&claim, poll(&a, "query-a", "query").await);
     assert!(poll(&b, "query-b", "query").await.is_null());
     let finish_path = format!(
         "/api/worker/query-tasks/{}/complete",
@@ -2177,7 +2242,7 @@ async fn queries_fence_recovered_leases_across_pools_without_mutating_the_run() 
     wrong["lease_owner"] = json!("query-b");
     assert_eq!(
         request(&b, "POST", &finish_path, wrong).await.1["reason"],
-        "query_task_lease_owner_mismatch"
+        "lease_owner_mismatch"
     );
     let mut invalid = completion.clone();
     invalid["result_envelope"]["blob"] = json!("not-avro");
@@ -2186,15 +2251,15 @@ async fn queries_fence_recovered_leases_across_pools_without_mutating_the_run() 
         "invalid_query_result"
     );
     match &database {
-        TestDatabase::Sqlite(_) => database.execute("UPDATE dw_query_cache SET value=json_set(value,'$.lease_until',0) WHERE value LIKE '%\"status\":\"leased\"%'").await,
-        TestDatabase::Postgres{..} => database.execute("UPDATE dw_query_cache SET value=jsonb_set(value::jsonb,'{lease_until}','0')::text WHERE value LIKE '%\"status\":\"leased\"%'").await,
-        TestDatabase::MySql{..} => database.execute("UPDATE dw_query_cache SET value=JSON_SET(value,'$.lease_until',0) WHERE value LIKE '%\"status\":\"leased\"%'").await,
+        TestDatabase::Sqlite(_) => database.execute("UPDATE dw_query_cache SET value=json_set(value,'$.lease_expires_at','2000-01-01T00:00:00.000000Z') WHERE value LIKE '%\"status\":\"leased\"%'").await,
+        TestDatabase::Postgres{..} => database.execute("UPDATE dw_query_cache SET value=jsonb_set(value::jsonb,'{lease_expires_at}','\"2000-01-01T00:00:00.000000Z\"')::text WHERE value LIKE '%\"status\":\"leased\"%'").await,
+        TestDatabase::MySql{..} => database.execute("UPDATE dw_query_cache SET value=JSON_SET(value,'$.lease_expires_at','2000-01-01T00:00:00.000000Z') WHERE value LIKE '%\"status\":\"leased\"%'").await,
     }
     assert_eq!(
         request(&a, "POST", &finish_path, completion.clone())
             .await
             .1["reason"],
-        "query_task_lease_expired"
+        "lease_expired"
     );
     let recovered = await_query(&a, "query-b").await;
     assert_eq!(recovered["query_task_id"], claim["query_task_id"]);
@@ -2204,7 +2269,7 @@ async fn queries_fence_recovered_leases_across_pools_without_mutating_the_run() 
         request(&a, "POST", &finish_path, completion.clone())
             .await
             .1["reason"],
-        "query_task_lease_owner_mismatch"
+        "lease_owner_mismatch"
     );
     let mut current = completion.clone();
     current["lease_owner"] = json!("query-b");
@@ -2220,10 +2285,9 @@ async fn queries_fence_recovered_leases_across_pools_without_mutating_the_run() 
     let outcome = waiting.await.unwrap();
     assert_eq!(outcome.0, StatusCode::OK, "{}", outcome.1);
     assert_eq!(outcome.1["result_envelope"], result);
-    assert_eq!(
-        request(&b, "POST", &finish_path, current).await.1["reason"],
-        "query_task_not_leased"
-    );
+    let duplicate = request(&b, "POST", &finish_path, current).await;
+    assert_eq!(duplicate.0, StatusCode::OK, "{}", duplicate.1);
+    assert_eq!(duplicate.1["recorded"], false);
     assert_eq!(
         request(&a, "GET", &history_path, Value::Null).await.1,
         before
@@ -3241,6 +3305,8 @@ async fn cooperative_delivery_cleanup_and_original_deadline_survive_fresh_runtim
             assert_eq!(completed.0, StatusCode::OK, "{}", completed.1);
         }
         let prefix = run_history(&app_b, &workflow, &run).await;
+        let timer_tasks = database.timer_task_states(&run).await;
+        assert_eq!(timer_tasks.len(), usize::from(phase == "pending_timer"));
         let control = format!(
             "/api/workflows/cleanup-root/runs/{}/request-cancellation",
             run.as_str().unwrap()
@@ -3279,6 +3345,14 @@ async fn cooperative_delivery_cleanup_and_original_deadline_survive_fresh_runtim
         let delivered = request_protocol(&app_a, "POST", &endpoint, delivery.clone(), "1.20").await;
         assert_eq!(delivered.0, StatusCode::OK, "{}", delivered.1);
         assert_eq!(delivered.1["delivered"], true);
+        assert_eq!(
+            database.timer_task_states(&run).await,
+            timer_tasks
+                .into_iter()
+                .map(|(id, _)| (id, "cancelled".to_owned()))
+                .collect::<Vec<_>>(),
+            "cancellation must retire the same original timer task at delivery"
+        );
         let canonical_history = run_history(&app_a, &workflow, &run).await;
         let worker_history = request_protocol(&app_a, "POST",
             &format!("/api/worker/workflow-tasks/{}/history", task["task_id"].as_str().unwrap()),
