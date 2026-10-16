@@ -117,7 +117,9 @@ where
         self.pool.close().await;
     }
     pub(super) async fn begin(&self) -> Result<Transaction<'static, DB>> {
-        DB::begin(&self.pool).await.map(|inner| Transaction::new(inner, self.history_budget))
+        DB::begin(&self.pool)
+            .await
+            .map(|inner| Transaction::new(inner, self.history_budget))
     }
     pub(crate) async fn start(
         &self,
@@ -1179,7 +1181,12 @@ where
                 let page_size = body["history_page_size"].as_i64().unwrap_or(100);
                 let (events, next) =
                     Self::history_page_connection(&mut tx, &run_id, 0, page_size).await?;
-                let budget = Self::workflow_history_budget(&mut tx, &run_id, DB::number(&run, "last_history_sequence")?).await?;
+                let budget = Self::workflow_history_budget(
+                    &mut tx,
+                    &run_id,
+                    DB::number(&run, "last_history_sequence")?,
+                )
+                .await?;
                 budget.write_task(&mut claim);
                 claim["history_events"] = json!(events);
                 claim["next_history_page_token"] = json!(next);
@@ -1229,7 +1236,10 @@ where
         Self::fence(&task, &body)?;
         let run_id = DB::string(&task, "workflow_run_id")?;
         let (events, next) = Self::history_page_connection(&mut tx, &run_id, after, 100).await?;
-        let last = Self::scalar("SELECT last_history_sequence FROM workflow_runs WHERE id=$1").bind(&run_id).fetch_one(&mut *tx).await?;
+        let last = Self::scalar("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
+            .bind(&run_id)
+            .fetch_one(&mut *tx)
+            .await?;
         let budget = Self::workflow_history_budget(&mut tx, &run_id, last).await?;
         let mut response = json!({"task_id":task_id,"workflow_task_attempt":body["workflow_task_attempt"],"history_events":events,"next_history_page_token":next});
         budget.write_task(&mut response);

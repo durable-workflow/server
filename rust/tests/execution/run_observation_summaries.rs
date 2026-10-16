@@ -74,7 +74,11 @@ pub(super) async fn check_completed(
 
 pub(super) async fn export_reference(database: &TestDatabase, summary: &Value, history: &Value) {
     // Preserve database JSON order for the independent published PHP counter.
-    let destination = if summary.get("budget_env").is_some() { "DW_TEST_BUDGET_REFERENCE" } else { "DW_TEST_SUMMARY_REFERENCE" };
+    let destination = if summary.get("budget_env").is_some() {
+        "DW_TEST_BUDGET_REFERENCE"
+    } else {
+        "DW_TEST_SUMMARY_REFERENCE"
+    };
     if let Ok(path) = std::env::var(destination) {
         use std::io::Write;
         let run = summary["run_id"].as_str().unwrap();

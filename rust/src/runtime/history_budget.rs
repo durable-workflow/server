@@ -19,7 +19,9 @@ pub(super) struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { thresholds: SETTINGS.map(|(_, default)| default) }
+        Self {
+            thresholds: SETTINGS.map(|(_, default)| default),
+        }
     }
 }
 
@@ -62,12 +64,18 @@ impl Config {
         for (index, (suffix, default)) in SETTINGS.iter().enumerate() {
             let primary = read(&format!("DW_V2_{suffix}"))?;
             let value = match primary {
-                Some(value) if !matches!(value.to_ascii_lowercase().as_str(), "null" | "(null)") => Some(value),
+                Some(value)
+                    if !matches!(value.to_ascii_lowercase().as_str(), "null" | "(null)") =>
+                {
+                    Some(value)
+                }
                 _ => read(&format!("WORKFLOW_V2_{suffix}"))?,
             };
             // The published package casts its Env::dw result before applying
             // HistoryBudget's nonnegative thresholds. A nonnumeric value is 0.
-            config.thresholds[index] = value.map_or(*default, |value| super::memo_limits::cast_integer(&value)).max(0);
+            config.thresholds[index] = value
+                .map_or(*default, |value| super::memo_limits::cast_integer(&value))
+                .max(0);
         }
         Ok(config)
     }
@@ -76,20 +84,34 @@ impl Config {
         let values = [count.max(0), bytes.max(0), fan_out.max(0)];
         let labels = ["event_count", "size_bytes", "fan_out"];
         let hard = &self.thresholds[..3];
-        let dimensions: Vec<_> = (0..3).filter(|&index| hard[index] > 0 && values[index] >= hard[index]).map(|index| labels[index]).collect();
+        let dimensions: Vec<_> = (0..3)
+            .filter(|&index| hard[index] > 0 && values[index] >= hard[index])
+            .map(|index| labels[index])
+            .collect();
         let recommended = !dimensions.is_empty();
-        let dimensions = if recommended { dimensions } else {
-            (0..3).filter(|&index| {
-                let warning = self.thresholds[index + 3].min(hard[index]);
-                hard[index] > 0 && warning > 0 && values[index] >= warning
-            }).map(|index| labels[index]).collect()
+        let dimensions = if recommended {
+            dimensions
+        } else {
+            (0..3)
+                .filter(|&index| {
+                    let warning = self.thresholds[index + 3].min(hard[index]);
+                    hard[index] > 0 && warning > 0 && values[index] >= warning
+                })
+                .map(|index| labels[index])
+                .collect()
         };
         Budget {
             history_event_count: values[0],
             history_size_bytes: values[1],
             history_fan_out: values[2],
             continue_as_new_recommended: recommended,
-            pressure: if recommended { "continue_as_new_recommended" } else if !dimensions.is_empty() { "approaching" } else { "ok" },
+            pressure: if recommended {
+                "continue_as_new_recommended"
+            } else if !dimensions.is_empty() {
+                "approaching"
+            } else {
+                "ok"
+            },
             pressure_dimensions: dimensions,
         }
     }
@@ -245,14 +267,30 @@ mod tests {
 
     #[test]
     fn configured_pressure_matches_reviewed_published_boundaries() {
-        let cases: Vec<Value> = serde_json::from_str(include_str!("../../../tests/Fixtures/HistoryBudget/pressure.json")).unwrap();
+        let cases: Vec<Value> = serde_json::from_str(include_str!(
+            "../../../tests/Fixtures/HistoryBudget/pressure.json"
+        ))
+        .unwrap();
         for case in cases {
-            let config = Config::read(|key| Ok(case["env"][key].as_str().map(str::to_owned))).unwrap();
+            let config =
+                Config::read(|key| Ok(case["env"][key].as_str().map(str::to_owned))).unwrap();
             let counters = case["counters"].as_array().unwrap();
-            let budget = config.summarize(counters[0].as_i64().unwrap(), counters[1].as_i64().unwrap(), counters[2].as_i64().unwrap());
+            let budget = config.summarize(
+                counters[0].as_i64().unwrap(),
+                counters[1].as_i64().unwrap(),
+                counters[2].as_i64().unwrap(),
+            );
             assert_eq!(budget.pressure, case["pressure"], "{}", case["name"]);
-            assert_eq!(serde_json::json!(budget.pressure_dimensions), case["dimensions"], "{}", case["name"]);
-            assert_eq!(budget.continue_as_new_recommended, case["pressure"] == "continue_as_new_recommended");
+            assert_eq!(
+                serde_json::json!(budget.pressure_dimensions),
+                case["dimensions"],
+                "{}",
+                case["name"]
+            );
+            assert_eq!(
+                budget.continue_as_new_recommended,
+                case["pressure"] == "continue_as_new_recommended"
+            );
         }
     }
 

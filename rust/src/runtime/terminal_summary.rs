@@ -143,15 +143,28 @@ where
             let count = DB::number(&summary, "history_event_count")?;
             let bytes = DB::number(&summary, "history_size_bytes")?;
             let fan_out = DB::number(&summary, "history_fan_out")?;
-            if count == last && count >= 0 && bytes >= 0 && fan_out >= 0 && ((count == 0 && bytes == 0 && fan_out == 0) || (count > 0 && bytes > 0)) {
+            if count == last
+                && count >= 0
+                && bytes >= 0
+                && fan_out >= 0
+                && ((count == 0 && bytes == 0 && fan_out == 0) || (count > 0 && bytes > 0))
+            {
                 return Ok(tx.history_budget.summarize(count, bytes, fan_out));
             }
         }
         // Missing/incomplete summaries use the same bounded canonical scan.
         // This calculation does not persist or repair any projection.
-        let history = Self::summary_history(tx, run_id, true, last).await?
-            .ok_or_else(|| super::refuse(axum::http::StatusCode::CONFLICT, "history_budget_unavailable"))?;
-        Ok(tx.history_budget.summarize(history.count, history.bytes, history.fan_out))
+        let history = Self::summary_history(tx, run_id, true, last)
+            .await?
+            .ok_or_else(|| {
+                super::refuse(
+                    axum::http::StatusCode::CONFLICT,
+                    "history_budget_unavailable",
+                )
+            })?;
+        Ok(tx
+            .history_budget
+            .summarize(history.count, history.bytes, history.fan_out))
     }
 
     async fn summary_history(

@@ -13,7 +13,10 @@ pub(super) struct Transaction<'a, DB: Backend> {
 }
 
 impl<'a, DB: Backend> Transaction<'a, DB> {
-    pub(super) fn new(inner: sqlx::Transaction<'a, DB>, history_budget: super::history_budget::Config) -> Self {
+    pub(super) fn new(
+        inner: sqlx::Transaction<'a, DB>,
+        history_budget: super::history_budget::Config,
+    ) -> Self {
         Self {
             inner,
             summaries: BTreeSet::new(),
