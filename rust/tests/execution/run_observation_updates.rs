@@ -26,8 +26,12 @@ fn complete(update: &Value, failed: bool) -> Value {
 }
 
 fn update_wait(summary: &Value) -> &Value {
-    summary["current_waits"]["waits"].as_array().unwrap().iter()
-        .find(|wait| wait["kind"] == "update").expect("accepted update has its retained wait")
+    summary["current_waits"]["waits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|wait| wait["kind"] == "update")
+        .expect("accepted update has its retained wait")
 }
 
 #[tokio::test]
@@ -39,7 +43,10 @@ async fn run_observation_updates_preserve_ready_leased_and_resolved_identity_acr
     let run = start(&app, "observed-updates").await;
     open_update_wait(&app, "update-observer").await;
     let path = "/api/workflows/observed-updates/update/set";
-    assert_eq!(export(&database, &app, &run).await["liveness_state"], "waiting_for_signal");
+    assert_eq!(
+        export(&database, &app, &run).await["liveness_state"],
+        "waiting_for_signal"
+    );
     runtime.close().await;
     for failed in [false, true] {
         let runtime = database.open().await.unwrap();
@@ -51,7 +58,10 @@ async fn run_observation_updates_preserve_ready_leased_and_resolved_identity_acr
         assert_eq!(ready["summary_state"], "observed", "{ready}");
         assert_eq!(ready["liveness_state"], "workflow_task_ready");
         let wait = update_wait(&ready);
-        assert_eq!(wait["id"], format!("update:{}", accepted.1["update_id"].as_str().unwrap()));
+        assert_eq!(
+            wait["id"],
+            format!("update:{}", accepted.1["update_id"].as_str().unwrap())
+        );
         assert_eq!(wait["dependency_id"], accepted.1["update_id"]);
         assert_eq!(wait["dependency_type"], "update");
         assert_eq!(wait["target_name"], "set");
@@ -62,27 +72,51 @@ async fn run_observation_updates_preserve_ready_leased_and_resolved_identity_acr
         assert!(wait["deadline_at"].is_null());
         assert!(wait["attempt_id"].is_null());
         let task_id = wait["task_id"].clone();
-        assert_eq!(ready["liveness_reason"], format!("Update task {} is ready to run.", task_id.as_str().unwrap()));
+        assert_eq!(
+            ready["liveness_reason"],
+            format!("Update task {} is ready to run.", task_id.as_str().unwrap())
+        );
         let before = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
-        assert_eq!(request(&app, "POST", path, original.clone()).await.1["update_id"], accepted.1["update_id"]);
-        assert_eq!(run_history(&app, &run["workflow_id"], &run["run_id"]).await, before);
+        assert_eq!(
+            request(&app, "POST", path, original.clone()).await.1["update_id"],
+            accepted.1["update_id"]
+        );
+        assert_eq!(
+            run_history(&app, &run["workflow_id"], &run["run_id"]).await,
+            before
+        );
         runtime.close().await;
         let cold = database.open().await.unwrap();
         let app = router(cold.clone());
-        assert_eq!(observe(&app, &run).await["current_waits"]["waits"], ready["current_waits"]["waits"]);
+        assert_eq!(
+            observe(&app, &run).await["current_waits"]["waits"],
+            ready["current_waits"]["waits"]
+        );
         let task = poll(&app, "update-observer", "workflow").await;
         assert_eq!(task["task_id"], task_id);
         assert_eq!(task["workflow_update_id"], accepted.1["update_id"]);
         let leased = export(&database, &app, &run).await;
         assert_eq!(leased["liveness_state"], "workflow_task_leased");
-        assert_eq!(leased["liveness_reason"], format!("Update task {} is leased to a worker.", task_id.as_str().unwrap()));
+        assert_eq!(
+            leased["liveness_reason"],
+            format!(
+                "Update task {} is leased to a worker.",
+                task_id.as_str().unwrap()
+            )
+        );
         assert_eq!(update_wait(&leased)["task_status"], "leased");
         assert_eq!(update_wait(&leased)["id"], wait["id"]);
-        assert_eq!(run_history(&app, &run["workflow_id"], &run["run_id"]).await, before);
+        assert_eq!(
+            run_history(&app, &run["workflow_id"], &run["run_id"]).await,
+            before
+        );
         let commands = complete(&accepted.1, failed);
         let completed = finish_task(&app, &task, commands.clone()).await;
         assert_eq!(completed.0, StatusCode::OK, "{}", completed.1);
-        assert_eq!(finish_task(&app, &task, commands).await.1["recorded"], false);
+        assert_eq!(
+            finish_task(&app, &task, commands).await.1["recorded"],
+            false
+        );
         let resolved = export(&database, &app, &run).await;
         assert_eq!(resolved["summary_state"], "observed", "{resolved}");
         assert_eq!(resolved["liveness_state"], "waiting_for_signal");
@@ -90,7 +124,10 @@ async fn run_observation_updates_preserve_ready_leased_and_resolved_identity_acr
         assert_eq!(resolved["exception_count"], u64::from(failed));
         let receipt = request(&app, "POST", path, original).await;
         assert_eq!(receipt.1["update_id"], accepted.1["update_id"]);
-        assert_eq!(receipt.1["update_status"], if failed {"failed"} else {"completed"});
+        assert_eq!(
+            receipt.1["update_status"],
+            if failed { "failed" } else { "completed" }
+        );
         cold.close().await;
     }
     assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_run_waits WHERE kind='update' AND status='resolved' AND task_id IS NULL AND task_type IS NULL AND task_status IS NULL AND task_backed=FALSE").await, 2);
@@ -105,19 +142,51 @@ async fn run_observation_updates_missing_wait_is_not_rebuilt_by_reads_claim_or_r
     update_worker(&app, "missing-update-observer").await;
     let run = start(&app, "missing-update-wait").await;
     open_update_wait(&app, "missing-update-observer").await;
-    let accepted = request(&app, "POST", "/api/workflows/missing-update-wait/update/set", input("missing")).await;
+    let accepted = request(
+        &app,
+        "POST",
+        "/api/workflows/missing-update-wait/update/set",
+        input("missing"),
+    )
+    .await;
     assert_eq!(accepted.0, StatusCode::ACCEPTED);
     assert_eq!(observe(&app, &run).await["summary_state"], "observed");
-    database.execute("DELETE FROM workflow_run_waits WHERE kind='update'").await;
+    database
+        .execute("DELETE FROM workflow_run_waits WHERE kind='update'")
+        .await;
     let before = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
-    for _ in 0..2 { observe(&app, &run).await; }
-    assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_run_waits WHERE kind='update'").await, 0);
+    for _ in 0..2 {
+        observe(&app, &run).await;
+    }
+    assert_eq!(
+        task_retry::rows(
+            &database,
+            "SELECT COUNT(*) FROM workflow_run_waits WHERE kind='update'"
+        )
+        .await,
+        0
+    );
     let task = poll(&app, "missing-update-observer", "workflow").await;
     assert_eq!(observe(&app, &run).await["summary_state"], "unavailable");
-    assert_eq!(run_history(&app, &run["workflow_id"], &run["run_id"]).await, before);
-    assert_eq!(finish_task(&app, &task, complete(&accepted.1, false)).await.0, StatusCode::OK);
+    assert_eq!(
+        run_history(&app, &run["workflow_id"], &run["run_id"]).await,
+        before
+    );
+    assert_eq!(
+        finish_task(&app, &task, complete(&accepted.1, false))
+            .await
+            .0,
+        StatusCode::OK
+    );
     assert_eq!(observe(&app, &run).await["summary_state"], "unavailable");
-    assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_run_waits WHERE kind='update'").await, 0);
+    assert_eq!(
+        task_retry::rows(
+            &database,
+            "SELECT COUNT(*) FROM workflow_run_waits WHERE kind='update'"
+        )
+        .await,
+        0
+    );
     runtime.close().await;
     database.remove().await;
 }
@@ -133,9 +202,18 @@ async fn run_observation_updates_projection_failures_rollback_admission_and_orig
     let before = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
     database.execute("CREATE TRIGGER reject_update_wait BEFORE INSERT ON workflow_run_waits WHEN NEW.kind='update' BEGIN SELECT RAISE(ABORT, 'update wait rejected'); END").await;
     let path = "/api/workflows/atomic-update-wait/update/set";
-    assert_eq!(request(&app, "POST", path, input("atomic")).await.0, StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_updates").await, 0);
-    assert_eq!(run_history(&app, &run["workflow_id"], &run["run_id"]).await, before);
+    assert_eq!(
+        request(&app, "POST", path, input("atomic")).await.0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_updates").await,
+        0
+    );
+    assert_eq!(
+        run_history(&app, &run["workflow_id"], &run["run_id"]).await,
+        before
+    );
     database.execute("DROP TRIGGER reject_update_wait").await;
     let accepted = request(&app, "POST", path, input("atomic")).await;
     assert_eq!(accepted.0, StatusCode::ACCEPTED);
@@ -143,12 +221,37 @@ async fn run_observation_updates_projection_failures_rollback_admission_and_orig
     let before = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
     let observed = observe(&app, &run).await;
     database.execute("CREATE TRIGGER reject_resolved_summary BEFORE INSERT ON workflow_run_summaries WHEN NEW.liveness_state='waiting_for_signal' BEGIN SELECT RAISE(ABORT, 'update summary rejected'); END").await;
-    assert_eq!(finish_task(&app, &task, complete(&accepted.1, false)).await.0, StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(run_history(&app, &run["workflow_id"], &run["run_id"]).await, before);
-    assert_eq!(observe(&app, &run).await["current_waits"]["waits"], observed["current_waits"]["waits"]);
-    assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_updates WHERE status='accepted'").await, 1);
-    database.execute("DROP TRIGGER reject_resolved_summary").await;
-    assert_eq!(finish_task(&app, &task, complete(&accepted.1, false)).await.0, StatusCode::OK);
+    assert_eq!(
+        finish_task(&app, &task, complete(&accepted.1, false))
+            .await
+            .0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        run_history(&app, &run["workflow_id"], &run["run_id"]).await,
+        before
+    );
+    assert_eq!(
+        observe(&app, &run).await["current_waits"]["waits"],
+        observed["current_waits"]["waits"]
+    );
+    assert_eq!(
+        task_retry::rows(
+            &database,
+            "SELECT COUNT(*) FROM workflow_updates WHERE status='accepted'"
+        )
+        .await,
+        1
+    );
+    database
+        .execute("DROP TRIGGER reject_resolved_summary")
+        .await;
+    assert_eq!(
+        finish_task(&app, &task, complete(&accepted.1, false))
+            .await
+            .0,
+        StatusCode::OK
+    );
     runtime.close().await;
     database.remove().await;
 }

@@ -1,8 +1,8 @@
 //! Run snapshots are written after the transition's final durable state.
 use super::activity_summary::ActivitySummaryHistory;
 use super::child_summary::ChildSummaryHistory;
-use super::update_summary::UpdateSummaryHistory;
 use super::transaction::Transaction;
+use super::update_summary::UpdateSummaryHistory;
 use super::{
     Result, backend::Backend, external_wait_summary::ExternalWaitHistory, history_budget,
     run_observation::command_contract, run_observation_store::terminal, store::Store,

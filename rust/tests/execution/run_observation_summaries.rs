@@ -78,7 +78,7 @@ pub(super) async fn export_reference(database: &TestDatabase, summary: &Value, h
         use std::io::Write;
         let run = summary["run_id"].as_str().unwrap();
         let query = "SELECT event_type,CAST(payload AS TEXT),CAST(recorded_at AS TEXT) FROM workflow_history_events WHERE workflow_run_id=$1 ORDER BY sequence";
-        let task_query = "SELECT id,task_type,status,CAST(available_at AS TEXT),CAST(leased_at AS TEXT),CAST(lease_expires_at AS TEXT),compatibility FROM workflow_tasks WHERE workflow_run_id=$1 AND status IN ('ready','leased') ORDER BY id";
+        let task_query = "SELECT id,task_type,status,CAST(available_at AS TEXT),CAST(leased_at AS TEXT),CAST(lease_expires_at AS TEXT),compatibility,CAST(payload AS TEXT) FROM workflow_tasks WHERE workflow_run_id=$1 AND status IN ('ready','leased') ORDER BY id";
         macro_rules! rows {
             ($pool:expr,$query:expr,$tasks:expr,$problem:expr) => {{
                 let pool = $pool;
@@ -91,6 +91,7 @@ pub(super) async fn export_reference(database: &TestDatabase, summary: &Value, h
                     String,
                     String,
                     String,
+                    Option<String>,
                     Option<String>,
                     Option<String>,
                     Option<String>,
@@ -136,7 +137,7 @@ pub(super) async fn export_reference(database: &TestDatabase, summary: &Value, h
                     .await
                     .unwrap(),
                 "SELECT event_type,CAST(payload AS CHAR),CAST(recorded_at AS CHAR) FROM workflow_history_events WHERE workflow_run_id=? ORDER BY sequence",
-                "SELECT id,task_type,status,CAST(available_at AS CHAR),CAST(leased_at AS CHAR),CAST(lease_expires_at AS CHAR),compatibility FROM workflow_tasks WHERE workflow_run_id=? AND status IN ('ready','leased') ORDER BY id",
+                "SELECT id,task_type,status,CAST(available_at AS CHAR),CAST(leased_at AS CHAR),CAST(lease_expires_at AS CHAR),compatibility,CAST(payload AS CHAR) FROM workflow_tasks WHERE workflow_run_id=? AND status IN ('ready','leased') ORDER BY id",
                 "SELECT COUNT(*) FROM workflow_run_summaries WHERE id=? AND task_problem=TRUE"
             ),
         };
@@ -144,10 +145,10 @@ pub(super) async fn export_reference(database: &TestDatabase, summary: &Value, h
         let tasks: Vec<Value> = tasks
             .into_iter()
             .map(
-                |(id, kind, status, available, leased, expires, compatibility)| {
+                |(id, kind, status, available, leased, expires, compatibility, payload)| {
                     json!({
             "id":id,"workflow_run_id":run,"task_type":kind,"status":status,"available_at":available,
-            "leased_at":leased,"lease_expires_at":expires,"compatibility":compatibility})
+            "leased_at":leased,"lease_expires_at":expires,"compatibility":compatibility,"payload":payload})
                 },
             )
             .collect();
