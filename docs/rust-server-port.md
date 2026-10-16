@@ -20,7 +20,7 @@ complete parity or release readiness.
 
 ## Work order and current status
 
-Current checkpoint, October 15:
+Current checkpoint, October 16:
 
 - Query authority is merged at `0934c46d`, whole tree `98775e68`. Its separate
   [merged-main qualification](https://github.com/durable-workflow/server/actions/runs/38738455163)
@@ -285,8 +285,46 @@ Current checkpoint, October 15:
   Installed Server 2.8.6 / Workflow 2.5.22 agrees on 100 history-counter
   comparisons (34 SQLite, 33 per network database) and 93 classifier comparisons
   (30 task, 21 external wait, 18 timer and 24 activity), all with zero reference
-  queries. Formatting and diff checks pass. A fresh combined-source Sonar
-  analysis is still required before claiming those findings resolved.
+  queries. Formatting and diff checks pass. The integrated `fbeb03408` analysis
+  passes at 2.2% new duplication under the unchanged 3% threshold, and the eleven
+  previous findings are closed as fixed. One activity-summary complexity finding
+  remains at that head. Its transition-validation helper is extracted in the
+  following child component; a fresh analyzer result remains required.
+
+- Ordinary sequential child waits now retain the original call, child instance,
+  run and link identities in the scheduling transaction. Completion and direct
+  cancellation resolve that same row and associate it with the original parent
+  task through ready and leased states. Summary refresh validates complete typed
+  history and retained identities; missing or mismatched rows become unavailable
+  without changing business resumption or repairing projections on reads.
+  Published child-result precedence and the stored task-problem flag are retained,
+  including a cancelled earlier child followed by a new child. Existing child
+  admission remains default-only, sequential and without retry/timeout options.
+  The classifier bounds retained child snapshots to 100; broader child families
+  and concurrent wait-family precedence remain unqualified.
+  Four initial controls fail against the preceding runtime. The expanded installed
+  PHP check separately reproduces a task-problem flag mismatch at `0a7aa238a`;
+  `2e7195c12` corrects it without changing task liveness priority. Two observation
+  fixtures incorrectly compared the read timestamp across separate reads; their
+  failures remain recorded and the corrected assertions preserve durable wait
+  fields and the stored summary timestamp. The optional reference collector also
+  needed serialized writes after ten of 46 records interleaved during concurrent
+  tests. This was an evidence-collection failure, not a native execution pass for
+  the reference comparison.
+  Final tested source `dc8a1467e`, native tree
+  `8e3617c1cc185b43856b033130b6b455300bcc32`, passes 79 library checks with
+  18 existing ignores and all 167 SQLite execution checks. PostgreSQL 17.11 passes
+  38 observation selections: 25 use PostgreSQL and 13 are explicit SQLite
+  fixtures. MySQL 8.0.46 passes the six changed child controls: four use MySQL
+  and two are explicit SQLite fixtures. The preceding `93cd9e30c` MySQL selection
+  separately passes all 38 controls; it does not qualify the later flag correction.
+  Installed Server 2.8.6 / Workflow 2.5.22 agrees on 103 history-counter snapshots
+  and 110 classifier comparisons (38 task, 14 external, 12 timer, 16 activity and
+  30 child), including twelve open-child-wait comparisons. Child checks execute
+  62 reference queries per database against empty in-memory mutable-child tables;
+  the other classifiers execute zero queries. Formatting and diff checks pass.
+  These component results do not establish full published observation API,
+  installed native/browser or fresh combined-head qualification.
 
 The preserved `c0b14c15` [shared run](https://github.com/durable-workflow/server/actions/runs/38806818394)
 is terminal with 12 passing jobs and one failure in the existing-PHP PostgreSQL
