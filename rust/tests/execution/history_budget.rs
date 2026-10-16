@@ -69,7 +69,7 @@ fn history_budget_profiles_preserve_claim_and_cold_summary_contracts() {
 }
 
 async fn stored(database: &TestDatabase, run: &Value) -> Value {
-    let query = "SELECT history_event_count,history_size_bytes,history_fan_out,CASE WHEN continue_as_new_recommended THEN 1 ELSE 0 END,history_budget_pressure FROM workflow_run_summaries WHERE id=$1";
+    let query = "SELECT CAST(history_event_count AS BIGINT),CAST(history_size_bytes AS BIGINT),CAST(history_fan_out AS BIGINT),CAST(CASE WHEN continue_as_new_recommended THEN 1 ELSE 0 END AS BIGINT),history_budget_pressure FROM workflow_run_summaries WHERE id=$1";
     macro_rules! read {
         ($pool:expr, $query:expr) => {{
             let pool = $pool;
@@ -100,7 +100,7 @@ async fn stored(database: &TestDatabase, run: &Value) -> Value {
                 .connect_with(options.as_ref().clone())
                 .await
                 .unwrap(),
-            "SELECT history_event_count,history_size_bytes,history_fan_out,CASE WHEN continue_as_new_recommended THEN 1 ELSE 0 END,history_budget_pressure FROM workflow_run_summaries WHERE id=?"
+            "SELECT CAST(history_event_count AS SIGNED),CAST(history_size_bytes AS SIGNED),CAST(history_fan_out AS SIGNED),CAST(CASE WHEN continue_as_new_recommended THEN 1 ELSE 0 END AS SIGNED),history_budget_pressure FROM workflow_run_summaries WHERE id=?"
         ),
     }
 }
