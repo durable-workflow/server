@@ -117,13 +117,7 @@ where
                 DB::optional_string(&run, "closed_reason")?.unwrap_or(status)
             ),
         };
-        let pressure = if count >= 10000 || bytes >= 5242880 || fan_out >= 200 {
-            "continue_as_new_recommended"
-        } else if count >= 8000 || bytes >= 4194304 || fan_out >= 160 {
-            "approaching"
-        } else {
-            "ok"
-        };
+        let pressure = tx.history_budget.summarize(count, bytes, fan_out).pressure;
         let state = active
             .as_ref()
             .map_or("closed", |summary| summary.state.as_str());
@@ -138,6 +132,28 @@ where
         }
         Ok(())
     }
+    pub(super) async fn workflow_history_budget(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        last: i64,
+    ) -> Result<history_budget::Budget> {
+        let summary = Self::query("SELECT history_event_count,history_size_bytes,history_fan_out FROM workflow_run_summaries WHERE id=$1")
+            .bind(run_id).fetch_optional(&mut **tx).await?;
+        if let Some(summary) = summary {
+            let count = DB::number(&summary, "history_event_count")?;
+            let bytes = DB::number(&summary, "history_size_bytes")?;
+            let fan_out = DB::number(&summary, "history_fan_out")?;
+            if count == last && count >= 0 && bytes >= 0 && fan_out >= 0 && ((count == 0 && bytes == 0 && fan_out == 0) || (count > 0 && bytes > 0)) {
+                return Ok(tx.history_budget.summarize(count, bytes, fan_out));
+            }
+        }
+        // Missing/incomplete summaries use the same bounded canonical scan.
+        // This calculation does not persist or repair any projection.
+        let history = Self::summary_history(tx, run_id, true, last).await?
+            .ok_or_else(|| super::refuse(axum::http::StatusCode::CONFLICT, "history_budget_unavailable"))?;
+        Ok(tx.history_budget.summarize(history.count, history.bytes, history.fan_out))
+    }
+
     async fn summary_history(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,

@@ -9,13 +9,15 @@ use std::{
 pub(super) struct Transaction<'a, DB: Backend> {
     inner: sqlx::Transaction<'a, DB>,
     summaries: BTreeSet<String>,
+    pub(super) history_budget: super::history_budget::Config,
 }
 
 impl<'a, DB: Backend> Transaction<'a, DB> {
-    pub(super) fn new(inner: sqlx::Transaction<'a, DB>) -> Self {
+    pub(super) fn new(inner: sqlx::Transaction<'a, DB>, history_budget: super::history_budget::Config) -> Self {
         Self {
             inner,
             summaries: BTreeSet::new(),
+            history_budget,
         }
     }
 

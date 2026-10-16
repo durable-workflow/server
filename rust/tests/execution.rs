@@ -77,6 +77,8 @@ mod run_observation_summaries;
 mod run_observation_timers;
 #[path = "execution/run_observation_updates.rs"]
 mod run_observation_updates;
+#[path = "execution/history_budget.rs"]
+mod history_budget;
 
 #[path = "execution/waiting_history.rs"]
 mod waiting_history;

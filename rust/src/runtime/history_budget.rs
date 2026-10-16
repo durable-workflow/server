@@ -3,6 +3,98 @@ use serde::de::{Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::Number;
 use std::fmt;
 
+const SETTINGS: [(&str, i64); 6] = [
+    ("CONTINUE_AS_NEW_EVENT_THRESHOLD", 10_000),
+    ("CONTINUE_AS_NEW_SIZE_BYTES_THRESHOLD", 5_242_880),
+    ("CONTINUE_AS_NEW_FAN_OUT_THRESHOLD", 200),
+    ("HISTORY_EVENT_WARNING_THRESHOLD", 8_000),
+    ("HISTORY_SIZE_BYTES_WARNING_THRESHOLD", 4_194_304),
+    ("HISTORY_FAN_OUT_WARNING_THRESHOLD", 160),
+];
+
+#[derive(Clone, Copy)]
+pub(super) struct Config {
+    thresholds: [i64; 6],
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self { thresholds: SETTINGS.map(|(_, default)| default) }
+    }
+}
+
+#[derive(serde::Serialize)]
+pub(super) struct Budget {
+    pub(super) history_event_count: i64,
+    pub(super) history_size_bytes: i64,
+    pub(super) history_fan_out: i64,
+    pub(super) continue_as_new_recommended: bool,
+    pub(super) pressure: &'static str,
+    pub(super) pressure_dimensions: Vec<&'static str>,
+}
+
+impl Budget {
+    pub(super) fn write_task(&self, task: &mut serde_json::Value) {
+        task["last_history_sequence"] = self.history_event_count.into();
+        task["total_history_events"] = self.history_event_count.into();
+        task["history_size_bytes"] = self.history_size_bytes.into();
+        task["history_fan_out"] = self.history_fan_out.into();
+        task["continue_as_new_recommended"] = self.continue_as_new_recommended.into();
+        task["history_budget_pressure"] = self.pressure.into();
+        task["history_budget_pressure_dimensions"] = serde_json::json!(self.pressure_dimensions);
+    }
+}
+
+impl Config {
+    pub(super) fn from_env() -> super::Result<Self> {
+        Self::read(|key| match std::env::var(key) {
+            Ok(value) => Ok(Some(value)),
+            Err(std::env::VarError::NotPresent) => Ok(None),
+            Err(_) => Err(super::refuse(
+                axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_history_budget_configuration",
+            )),
+        })
+    }
+
+    fn read(mut read: impl FnMut(&str) -> super::Result<Option<String>>) -> super::Result<Self> {
+        let mut config = Self::default();
+        for (index, (suffix, default)) in SETTINGS.iter().enumerate() {
+            let primary = read(&format!("DW_V2_{suffix}"))?;
+            let value = match primary {
+                Some(value) if !matches!(value.to_ascii_lowercase().as_str(), "null" | "(null)") => Some(value),
+                _ => read(&format!("WORKFLOW_V2_{suffix}"))?,
+            };
+            // The published package casts its Env::dw result before applying
+            // HistoryBudget's nonnegative thresholds. A nonnumeric value is 0.
+            config.thresholds[index] = value.map_or(*default, |value| super::memo_limits::cast_integer(&value)).max(0);
+        }
+        Ok(config)
+    }
+
+    pub(super) fn summarize(self, count: i64, bytes: i64, fan_out: i64) -> Budget {
+        let values = [count.max(0), bytes.max(0), fan_out.max(0)];
+        let labels = ["event_count", "size_bytes", "fan_out"];
+        let hard = &self.thresholds[..3];
+        let dimensions: Vec<_> = (0..3).filter(|&index| hard[index] > 0 && values[index] >= hard[index]).map(|index| labels[index]).collect();
+        let recommended = !dimensions.is_empty();
+        let dimensions = if recommended { dimensions } else {
+            (0..3).filter(|&index| {
+                let warning = self.thresholds[index + 3].min(hard[index]);
+                hard[index] > 0 && warning > 0 && values[index] >= warning
+            }).map(|index| labels[index]).collect()
+        };
+        Budget {
+            history_event_count: values[0],
+            history_size_bytes: values[1],
+            history_fan_out: values[2],
+            continue_as_new_recommended: recommended,
+            pressure: if recommended { "continue_as_new_recommended" } else if !dimensions.is_empty() { "approaching" } else { "ok" },
+            pressure_dimensions: dimensions,
+        }
+    }
+}
+
 pub(super) fn event_size(event_type: &str, payload: &str) -> Result<usize, serde_json::Error> {
     let payload: Encoded = serde_json::from_str(payload)?;
     Ok(event_type.len() + if payload.null { 2 } else { payload.len })
@@ -150,6 +242,19 @@ fn number(value: &Number) -> String {
 mod tests {
     use super::*;
     use serde_json::Value;
+
+    #[test]
+    fn configured_pressure_matches_reviewed_published_boundaries() {
+        let cases: Vec<Value> = serde_json::from_str(include_str!("../../../tests/Fixtures/HistoryBudget/pressure.json")).unwrap();
+        for case in cases {
+            let config = Config::read(|key| Ok(case["env"][key].as_str().map(str::to_owned))).unwrap();
+            let counters = case["counters"].as_array().unwrap();
+            let budget = config.summarize(counters[0].as_i64().unwrap(), counters[1].as_i64().unwrap(), counters[2].as_i64().unwrap());
+            assert_eq!(budget.pressure, case["pressure"], "{}", case["name"]);
+            assert_eq!(serde_json::json!(budget.pressure_dimensions), case["dimensions"], "{}", case["name"]);
+            assert_eq!(budget.continue_as_new_recommended, case["pressure"] == "continue_as_new_recommended");
+        }
+    }
 
     #[test]
     fn history_bytes_match_the_php_reference_for_native_json_shapes() {

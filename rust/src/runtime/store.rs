@@ -24,6 +24,7 @@ pub(super) struct Store<DB: Backend> {
     pub(super) namespace: Arc<str>,
     pub(super) memo_codec: Arc<Semaphore>,
     pub(super) memo_size_limit: Option<usize>,
+    pub(super) history_budget: super::history_budget::Config,
 }
 pub(super) fn id() -> String {
     Ulid::new().to_string()
@@ -64,6 +65,7 @@ where
             namespace: "default".into(),
             memo_codec: Arc::new(Semaphore::new(1)),
             memo_size_limit: Some(262_144),
+            history_budget: super::history_budget::Config::default(),
         }
     }
     pub(super) fn in_namespace(&self, namespace: &str) -> Self {
@@ -73,6 +75,7 @@ where
             namespace: namespace.into(),
             memo_codec: self.memo_codec.clone(),
             memo_size_limit: self.memo_size_limit,
+            history_budget: self.history_budget,
         }
     }
     pub(super) async fn database_live(&self) -> bool {
@@ -114,7 +117,7 @@ where
         self.pool.close().await;
     }
     pub(super) async fn begin(&self) -> Result<Transaction<'static, DB>> {
-        DB::begin(&self.pool).await.map(Transaction::new)
+        DB::begin(&self.pool).await.map(|inner| Transaction::new(inner, self.history_budget))
     }
     pub(crate) async fn start(
         &self,
@@ -1176,7 +1179,8 @@ where
                 let page_size = body["history_page_size"].as_i64().unwrap_or(100);
                 let (events, next) =
                     Self::history_page_connection(&mut tx, &run_id, 0, page_size).await?;
-                claim["total_history_events"] = json!(DB::number(&run, "last_history_sequence")?);
+                let budget = Self::workflow_history_budget(&mut tx, &run_id, DB::number(&run, "last_history_sequence")?).await?;
+                budget.write_task(&mut claim);
                 claim["history_events"] = json!(events);
                 claim["next_history_page_token"] = json!(next);
             }
@@ -1225,10 +1229,12 @@ where
         Self::fence(&task, &body)?;
         let run_id = DB::string(&task, "workflow_run_id")?;
         let (events, next) = Self::history_page_connection(&mut tx, &run_id, after, 100).await?;
+        let last = Self::scalar("SELECT last_history_sequence FROM workflow_runs WHERE id=$1").bind(&run_id).fetch_one(&mut *tx).await?;
+        let budget = Self::workflow_history_budget(&mut tx, &run_id, last).await?;
+        let mut response = json!({"task_id":task_id,"workflow_task_attempt":body["workflow_task_attempt"],"history_events":events,"next_history_page_token":next});
+        budget.write_task(&mut response);
         tx.commit().await?;
-        Ok(
-            json!({"task_id":task_id,"workflow_task_attempt":body["workflow_task_attempt"],"history_events":events,"next_history_page_token":next}),
-        )
+        Ok(response)
     }
 
     pub(crate) async fn fail_workflow_task(&self, task_id: &str, body: Value) -> Result<Value> {
