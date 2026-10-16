@@ -1,5 +1,7 @@
 use super::*;
 
+static REFERENCE_WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 async fn observation(app: &Router, namespace: &str, run: &Value) -> Value {
     let response = namespaces::scoped(
         app,
@@ -149,6 +151,9 @@ pub(super) async fn export_reference(database: &TestDatabase, summary: &Value, h
                 },
             )
             .collect();
+        // Concurrent test cases share this optional JSONL output. Formatting a
+        // Value emits multiple writes, so append the complete record under one lock.
+        let _write = REFERENCE_WRITE.lock().unwrap();
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
