@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-// Compare synthetic native task snapshots with the installed PHP classifier.
+// Compare actual native task snapshots with the installed PHP classifier.
 // php verify-native-task-summary.php /app/vendor/autoload.php /evidence.jsonl
 require $argv[1];
 
@@ -33,7 +33,9 @@ foreach (file($argv[2], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line)
     $task->setRawAttributes($case['tasks'][0]);
     $run = new Workflow\V2\Models\WorkflowRun();
     $run->setRawAttributes(['id' => $summary['run_id'], 'status' => $summary['status'], 'compatibility' => null]);
-    [$state, $reason] = $classifier->invoke(null, $task, $run, 'Workflow');
+    $payload = json_decode($case['tasks'][0]['payload'] ?? 'null', true, 512, JSON_THROW_ON_ERROR);
+    $label = isset($payload['workflow_update_id']) ? 'Update' : 'Workflow';
+    [$state, $reason] = $classifier->invoke(null, $task, $run, $label);
 
     if ($state !== $summary['liveness_state'] || $reason !== $summary['liveness_reason']) {
         throw new RuntimeException($summary['run_id'].' liveness differs from the installed PHP classifier.');
