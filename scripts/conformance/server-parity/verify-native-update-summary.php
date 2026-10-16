@@ -66,12 +66,13 @@ foreach (file($argv[2], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line)
         $task->setRawAttributes($raw);
         return $task;
     }, $case['tasks']);
-    if (count($tasks) > 1) {
+    $openTasks = array_values(array_filter($tasks, static fn (Workflow\V2\Models\WorkflowTask $task): bool => in_array($task->status, [Workflow\V2\Enums\TaskStatus::Ready, Workflow\V2\Enums\TaskStatus::Leased], true)));
+    if (count($openTasks) > 1) {
         throw new RuntimeException('Expected at most one original update task.');
     }
     $run->setRelation('tasks', new Illuminate\Database\Eloquent\Collection($tasks));
     $open = $openUpdate->invoke(null, $run);
-    $task = $tasks[0] ?? null;
+    $task = $openTasks[0] ?? null;
     $condition = $open === null ? $openCondition->invoke(null, $run) : null;
     $signal = $open === null && $condition === null ? $openSignal->invoke(null, $run) : null;
     [$state, $reason] = $liveness->invoke(null,

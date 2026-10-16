@@ -399,6 +399,37 @@ Current checkpoint, October 16:
   queries respectively; the counter/budget and other classifiers perform zero.
   Formatting and changed PHP syntax checks pass. Full network matrices,
   published-HTTP/native SDK/browser qualification and performance remain open.
+- The admitted mixed activity/timer selection now retains an active summary
+  through either winner, a pending or leased loser, workflow replay blocking,
+  repair and activity deadline retries. The summary reader binds
+  `SelectionResolved` to the member's physical event ID, typed identity and
+  original selection metadata. Invalid winner attribution or a missing wait
+  removes summary availability without read repair. Retained open waits follow
+  the published timestamp/identity order. Published activity-first liveness
+  remains independent of which member wins. No admission or schema changes.
+  Three augmented existing selection controls fail against `a121f95e5` with
+  unavailable summaries; its invalid-batch control still passes. Implementation
+  `58112fa7a`, native tree `6b240b24b8bdf99db53b83bf00937d0af9086785`, passes
+  80 library tests with 18 existing ignores and all 177 SQLite execution tests.
+  Seven focused selection controls pass on SQLite; six pass on each of
+  PostgreSQL 17.11 and MySQL 8.0.46. The explicit SQLite fixture additionally
+  checks projection-write rollback, physical winner corruption and missing
+  loser waits. Real deadline controls retain their original one-second activity
+  limits and three/four-second timers.
+  Installed Server 2.8.6 / Workflow 2.5.22 agrees on 125 counter snapshots
+  (81 SQLite and 22 per network database), 64 existing SQLite classifiers and
+  69 selection snapshots with 69 open waits. Selection checks include liveness,
+  task-problem state, wait identity, order and labels, separately from complete
+  current-wait deadline/API comparison. Selection references execute zero
+  queries; existing child/update references retain 62/twelve queries.
+  Initial reference fixtures lacked empty update/failure relations and handled
+  only ready retry labels. Exporting all retained tasks also exposed old
+  single-open-task fixture assumptions. The corrected comparators distinguish
+  retained tasks from open tasks and match the installed ready/leased retry
+  behavior. Full Rust formatting, all seven comparator syntax checks and diff
+  checks pass. The separate README-only main `384578ef` is included without
+  changing the tested native tree. Full hosted/installed qualification remains
+  pending, and wider parallel/timeout shapes remain separate.
 
 The preserved `c0b14c15` [shared run](https://github.com/durable-workflow/server/actions/runs/38806818394)
 is terminal with 12 passing jobs and one failure in the existing-PHP PostgreSQL

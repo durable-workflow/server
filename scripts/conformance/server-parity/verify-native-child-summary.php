@@ -49,13 +49,14 @@ foreach (file($argv[2], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line)
     }
     $run->setRelation('historyEvents', new Illuminate\Database\Eloquent\Collection($events));
     $run->setRelation('childLinks', new Illuminate\Database\Eloquent\Collection());
-    if (count($case['tasks']) > 1) {
+    $openTasks = array_values(array_filter($case['tasks'], static fn (array $task): bool => in_array($task['status'], ['ready', 'leased'], true)));
+    if (count($openTasks) > 1) {
         throw new RuntimeException('Expected at most one original open parent task.');
     }
     $nextTask = null;
-    if ($case['tasks'] !== []) {
+    if ($openTasks !== []) {
         $nextTask = new Workflow\V2\Models\WorkflowTask();
-        $nextTask->setRawAttributes($case['tasks'][0]);
+        $nextTask->setRawAttributes($openTasks[0]);
     }
     $run->setRelation('tasks', new Illuminate\Database\Eloquent\Collection($nextTask === null ? [] : [$nextTask]));
     $open = $nextTask === null ? $openChild->invoke(null, $run) : null;

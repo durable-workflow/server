@@ -146,17 +146,32 @@ history. A summary persistence failure rolls back the owning transition,
 including its lease and attempt counter. Summaries retain the run's source
 timestamp, and active duration stays null until closure.
 
-The active classifier covers native task-only histories and ordinary condition
-and direct-signal waits. A condition remains waiting after signal receipt and
-claim, until the worker applies that input. Direct signal receipt makes its
-workflow task ready. The stored summary retains the current external wait's
-identity and source independently of task liveness.
+The active classifier covers native task-only histories, ordinary condition and
+direct-signal waits, activity/timer waits, admitted sequential children and
+accepted updates. A condition remains waiting after signal receipt and claim,
+until the worker applies that input. Direct signal receipt makes its workflow
+task ready. The stored summary retains the current external wait's identity and
+source independently of task liveness. Each family's component qualification
+remains distinct from full observation API acceptance.
+
+The already admitted two-member mixed activity/timer selection uses its
+individual waits. Activity liveness takes precedence while an authoritative
+activity remains open, followed by timer liveness and the selected workflow
+task. The first terminal member must have an immediately following
+`SelectionResolved` that binds its physical event ID, event type, durable
+operation identity and original selection metadata. A later loser cannot
+author a second winner. The bounded history reader checks these relationships
+across its sixteen-event pages. Open waits are ordered by original opening
+timestamp and wait identity in the committing transaction. Activity start can
+therefore move the activity behind an earlier timer. Missing rows stay absent.
+Broader parallel groups, nested selection and other timeout-backed wait shapes
+remain unqualified.
 
 Each summary refresh checks open wait projections against complete typed
 history. A missing or inconsistent projection makes the summary unavailable
 in that committing transition. Observation reads neither rebuild nor audit it.
-Timeout-backed waits, task-backed wait families, compatibility/fleet
-classification and queue transport diagnostics remain open. These states
+Other timeout-backed waits, unsupported concurrent wait families,
+compatibility/fleet classification and queue transport diagnostics remain open. These states
 remove the earlier summary in the committing transaction and expose unavailable
 measurements until their classifier is implemented. Independent wait projections
 retain their existing qualification.
@@ -179,7 +194,9 @@ its Composer autoloader and the fixture path as arguments. The profile control
 uses separate processes for startup settings, so tests never mutate another
 runtime's process environment.
 
-The same synthetic output includes stored open-task metadata.
+The same synthetic output includes all retained task metadata. Comparators
+select ready/leased tasks when they require an open task, while repair and
+replay diagnostics retain their original task evidence.
 `scripts/conformance/server-parity/verify-native-task-summary.php` invokes the
 installed PHP task-liveness classifier for ready and leased workflows, with
 the reference clock fixed to each observation. It compares state and reason
@@ -190,6 +207,14 @@ separate from full published-PHP observation and installed native consumers.
 actual stored history, original timestamps and task metadata to the installed
 PHP condition/signal and liveness classifiers. It checks receipt and application
 as separate states without issuing reference database queries.
+
+`scripts/conformance/server-parity/verify-native-selection-summary.php` compares
+actual selection histories, physical event identities and retained tasks with
+the installed activity, timer, wait and liveness projectors. It checks liveness,
+task-problem state and open-wait count, identity, order, kind and reason.
+Ready/leased retry labels follow the published current-wait refinement.
+This component comparison does not compare current-wait deadline refinement or
+establish full published observation API equivalence.
 
 Exercise current and selected runs, default and named namespaces, invalid
 current pointers, absent summaries, typed selected context, growing histories,

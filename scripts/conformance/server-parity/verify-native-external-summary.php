@@ -52,13 +52,14 @@ foreach (file($argv[2], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line)
     $run->setRelation('historyEvents', new Illuminate\Database\Eloquent\Collection($events));
     $nextTask = null;
 
-    if (count($case['tasks']) > 1) {
+    $openTasks = array_values(array_filter($case['tasks'], static fn (array $task): bool => in_array($task['status'], ['ready', 'leased'], true)));
+    if (count($openTasks) > 1) {
         throw new RuntimeException('This external-wait component expects at most one actual open task.');
     }
 
-    if ($case['tasks'] !== []) {
+    if ($openTasks !== []) {
         $nextTask = new Workflow\V2\Models\WorkflowTask();
-        $nextTask->setRawAttributes($case['tasks'][0]);
+        $nextTask->setRawAttributes($openTasks[0]);
     }
 
     [$state, $reason] = $liveness->invoke(null,
