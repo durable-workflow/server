@@ -108,7 +108,7 @@ where
         }
         let task = Self::query("SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND status IN ('ready','leased') ORDER BY CASE WHEN status='leased' AND lease_expires_at<=$2 THEN 0 ELSE 1 END,CASE WHEN status='leased' THEN 0 ELSE 1 END,CASE WHEN available_at IS NULL THEN 1 ELSE 0 END,available_at,CASE WHEN created_at IS NULL THEN 1 ELSE 0 END,created_at,id LIMIT 1")
             .bind(&run_id).bind(DB::bind_time(at)).fetch_optional(&mut **tx).await?;
-        if let Some(task) = task {
+        if let Some(task) = task.as_ref() {
             if !Self::apply_summary_task(&mut summary, &task, at, None)? {
                 return Ok(None);
             }
@@ -131,6 +131,21 @@ where
         }
         if !Self::apply_activity_summary(tx, &run_id, activities, &mut summary).await? {
             return Ok(None);
+        }
+        if summary
+            .wait
+            .as_ref()
+            .is_some_and(|wait| wait.kind == "activity")
+            && summary.state != "workflow_replay_blocked"
+            && let Some(task) = task.as_ref()
+        {
+            // Published PHP labels the selected task Activity while an activity
+            // remains open, including the workflow task from a selection winner.
+            let wait = summary.wait.take();
+            if !Self::apply_summary_task(&mut summary, task, at, Some("Activity"))? {
+                return Ok(None);
+            }
+            summary.wait = wait;
         }
         if !Self::apply_child_summary(tx, &run_id, children, &mut summary).await? {
             return Ok(None);

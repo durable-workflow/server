@@ -38,7 +38,11 @@ impl ExternalWaitHistory {
                 self.open.remove(id);
                 return true;
             }
-            "StartAccepted" | "WorkflowStarted" | "RepairRequested" | "MessageCursorAdvanced" => {
+            "StartAccepted"
+            | "WorkflowStarted"
+            | "RepairRequested"
+            | "MessageCursorAdvanced"
+            | "VersionMarkerRecorded" => {
                 return true;
             }
             _ => return false,

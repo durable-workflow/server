@@ -196,10 +196,11 @@ where
                 let kind = DB::string(&event, "event_type")?;
                 let raw =
                     DB::optional_string(&event, "payload_json")?.unwrap_or_else(|| "null".into());
-                history.record(&kind, &raw, closed)?;
+                history.record(&DB::string(&event, "id")?, &kind, &raw, closed)?;
                 history.count = sequence;
             }
         }
+        history.active_history_supported &= history.selections.complete();
         Ok((history.count == last && history.count != 0).then_some(history))
     }
 }
@@ -218,14 +219,18 @@ struct SummaryHistory {
     activities: ActivitySummaryHistory,
     children: ChildSummaryHistory,
     updates: UpdateSummaryHistory,
+    selections: super::selection_summary::SelectionHistory,
 }
 
 impl SummaryHistory {
-    fn record(&mut self, kind: &str, raw: &str, closed: bool) -> Result<()> {
+    fn record(&mut self, id: &str, kind: &str, raw: &str, closed: bool) -> Result<()> {
         self.bytes += history_budget::event_size(kind, raw)? as i64;
         let payload: Value = serde_json::from_str(raw)?;
         if !closed {
-            let supported = if matches!(kind, "TimerScheduled" | "TimerFired" | "TimerCancelled") {
+            self.active_history_supported &= self.selections.apply(id, kind, &payload);
+            let supported = if kind == "SelectionResolved" {
+                true
+            } else if matches!(kind, "TimerScheduled" | "TimerFired" | "TimerCancelled") {
                 self.timers.apply(kind, &payload)
             } else if kind.starts_with("Activity") {
                 self.activities.apply(kind, &payload)

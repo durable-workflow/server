@@ -19,21 +19,23 @@ $count = 0;
 foreach (file($argv[2], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
     $case = json_decode($line, true, 512, JSON_THROW_ON_ERROR);
     $summary = $case['summary'];
+    if (array_filter($case['raw_history'], static fn (array $event): bool => isset(json_decode($event['payload_json'], true, 512, JSON_THROW_ON_ERROR)['parallel_group_id']))) { continue; }
     Illuminate\Support\Carbon::setTestNow($summary['observed_at']);
 
     if (! in_array($summary['liveness_state'], ['workflow_task_ready', 'workflow_task_leased'], true)) {
         continue;
     }
 
-    if (count($case['tasks']) !== 1) {
+    $tasks = array_values(array_filter($case['tasks'], static fn (array $task): bool => in_array($task['status'], ['ready', 'leased'], true)));
+    if (count($tasks) !== 1) {
         throw new RuntimeException('Expected one actual open workflow task.');
     }
 
     $task = new Workflow\V2\Models\WorkflowTask();
-    $task->setRawAttributes($case['tasks'][0]);
+    $task->setRawAttributes($tasks[0]);
     $run = new Workflow\V2\Models\WorkflowRun();
     $run->setRawAttributes(['id' => $summary['run_id'], 'status' => $summary['status'], 'compatibility' => null]);
-    $payload = json_decode($case['tasks'][0]['payload'] ?? 'null', true, 512, JSON_THROW_ON_ERROR);
+    $payload = json_decode($tasks[0]['payload'] ?? 'null', true, 512, JSON_THROW_ON_ERROR);
     $label = isset($payload['workflow_update_id']) ? 'Update' : 'Workflow';
     [$state, $reason] = $classifier->invoke(null, $task, $run, $label);
 

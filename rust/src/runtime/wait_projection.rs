@@ -18,6 +18,31 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
+    pub(super) async fn order_open_waits(tx: &mut Transaction<'_, DB>, run: &str) -> Result<()> {
+        let mut position = 0_i64;
+        loop {
+            // Match the published projector's open-wait order without
+            // rebuilding missing rows or hydrating the complete collection.
+            let rows = Self::query("SELECT id FROM workflow_run_waits WHERE workflow_run_id=$1 AND status='open' ORDER BY CASE WHEN opened_at IS NULL THEN 1 ELSE 0 END,opened_at,wait_id LIMIT 100 OFFSET $2")
+                .bind(run).bind(position).fetch_all(&mut **tx).await?;
+            if rows.is_empty() {
+                break;
+            }
+            for row in rows {
+                Self::query(
+                    "UPDATE workflow_run_waits SET position=$1 WHERE id=$2 AND workflow_run_id=$3",
+                )
+                .bind(position)
+                .bind(DB::string(&row, "id")?)
+                .bind(run)
+                .execute(&mut **tx)
+                .await?;
+                position += 1;
+            }
+        }
+        Ok(())
+    }
+
     pub(super) async fn project_update_wait_event(
         tx: &mut Transaction<'_, DB>,
         run: &str,

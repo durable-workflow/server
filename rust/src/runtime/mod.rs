@@ -42,6 +42,7 @@ mod schedule_http;
 mod schedule_storage;
 mod schedules;
 mod schema;
+mod selection_summary;
 mod selections;
 mod sqlite;
 mod store;

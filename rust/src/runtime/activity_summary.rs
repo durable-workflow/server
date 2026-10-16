@@ -22,6 +22,7 @@ struct ExpectedActivity {
     attempts: i64,
     attempt_id: Option<String>,
     task_id: Option<String>,
+    metadata: Value,
 }
 
 impl ActivitySummaryHistory {
@@ -37,15 +38,24 @@ impl ActivitySummaryHistory {
         ) else {
             return false;
         };
-        // Local, parallel and timeout paths retain their separate qualification.
+        let timeout = payload["timeout_kind"].as_str();
+        if event == "ActivityTimedOut" && timeout.is_none() {
+            return false;
+        }
+        if !payload["timeout_kind"].is_null()
+            && !matches!(
+                timeout,
+                Some("schedule_to_start" | "start_to_close" | "schedule_to_close" | "heartbeat")
+            )
+        {
+            return false;
+        }
+        // Local execution still requires its separately qualified history.
         if snapshot["id"] != id
             || payload["sequence"] != sequence
             || payload["activity_type"] != kind
             || snapshot["local_activity"] == true
             || snapshot["execution_mode"] == "local"
-            || !payload["parallel_group_id"].is_null()
-            || !payload["timeout_kind"].is_null()
-            || event == "ActivityTimedOut"
         {
             return false;
         }
@@ -53,7 +63,7 @@ impl ActivitySummaryHistory {
             "ActivityScheduled" | "ActivityRetryScheduled" => "pending",
             "ActivityStarted" | "ActivityHeartbeatRecorded" => "running",
             "ActivityCompleted" => "completed",
-            "ActivityFailed" => "failed",
+            "ActivityFailed" | "ActivityTimedOut" => "failed",
             "ActivityCancelled" => "cancelled",
             _ => return false,
         };
@@ -84,6 +94,10 @@ impl ActivitySummaryHistory {
             attempts,
             attempt_id,
             task_id,
+            metadata: match super::selections::metadata(payload, "activity") {
+                Ok(metadata) => metadata,
+                Err(_) => return false,
+            },
         };
         if event == "ActivityScheduled" {
             if self.open.len() >= 100
@@ -97,7 +111,7 @@ impl ActivitySummaryHistory {
             let Some(previous) = self.open.get(id) else {
                 return false;
             };
-            if !next.follows(previous, event) {
+            if !next.follows(previous, event, timeout) {
                 return false;
             }
         }
@@ -116,8 +130,11 @@ impl ActivitySummaryHistory {
 }
 
 impl ExpectedActivity {
-    fn follows(&self, previous: &Self, event: &str) -> bool {
-        if self.sequence != previous.sequence || self.kind != previous.kind {
+    fn follows(&self, previous: &Self, event: &str, timeout: Option<&str>) -> bool {
+        if self.sequence != previous.sequence
+            || self.kind != previous.kind
+            || self.metadata != previous.metadata
+        {
             return false;
         }
         if event == "ActivityStarted" {
@@ -137,6 +154,9 @@ impl ExpectedActivity {
                 | "ActivityCompleted"
                 | "ActivityFailed"
         ) && previous.status != "running"
+            && !(event == "ActivityRetryScheduled"
+                && timeout == Some("schedule_to_start")
+                && previous.status == "pending")
         {
             return false;
         }
@@ -162,7 +182,7 @@ where
         history: &ActivitySummaryHistory,
         summary: &mut ActiveSummary,
     ) -> Result<bool> {
-        let rows = Self::query("SELECT w.*,a.id AS activity_id,a.sequence AS activity_sequence,a.activity_type,a.status AS activity_status,a.attempt_count,a.current_attempt_id,q.id AS matched_task_id,q.task_type AS matched_task_type,q.payload AS matched_task_payload FROM workflow_run_waits w LEFT JOIN activity_executions a ON a.id=w.resume_source_id AND a.workflow_run_id=w.workflow_run_id LEFT JOIN workflow_tasks q ON q.id=w.task_id AND q.workflow_run_id=w.workflow_run_id WHERE w.workflow_run_id=$1 AND w.kind='activity' AND w.status='open' ORDER BY w.sequence,w.opened_at,w.resume_source_id LIMIT 101")
+        let rows = Self::query("SELECT w.*,a.id AS activity_id,a.sequence AS activity_sequence,a.activity_type,a.status AS activity_status,a.attempt_count,a.current_attempt_id,a.parallel_group_path AS activity_group_path,q.id AS matched_task_id,q.task_type AS matched_task_type,q.payload AS matched_task_payload FROM workflow_run_waits w LEFT JOIN activity_executions a ON a.id=w.resume_source_id AND a.workflow_run_id=w.workflow_run_id LEFT JOIN workflow_tasks q ON q.id=w.task_id AND q.workflow_run_id=w.workflow_run_id WHERE w.workflow_run_id=$1 AND w.kind='activity' AND w.status='open' ORDER BY w.sequence,w.opened_at,w.resume_source_id LIMIT 101")
             .bind(run_id).fetch_all(&mut **tx).await?;
         if rows.len() != history.open.len() || rows.len() > 100 {
             return Ok(false);
@@ -187,6 +207,13 @@ where
                 || DB::optional_string(row, "source_status")?.as_deref() != Some(expected.status)
                 || DB::optional_number(row, "attempt_count")? != Some(expected.attempts)
                 || DB::optional_string(row, "current_attempt_id")? != expected.attempt_id
+                || super::selections::activity_metadata(DB::optional_document_row(
+                    row,
+                    "activity_group_path",
+                )?)
+                .ok()
+                .as_ref()
+                    != Some(&expected.metadata)
                 || DB::optional_string(row, "history_authority")?.as_deref()
                     != Some("typed_history")
                 || DB::optional_string(row, "history_unsupported_reason")?.is_some()
@@ -215,11 +242,15 @@ where
         };
         // Concurrent open families and a different selected task need their
         // own precedence controls before this classifier can advertise them.
-        if summary.wait.is_some()
-            || summary
-                .task_type
-                .as_deref()
-                .is_some_and(|kind| kind != "activity")
+        if !history
+            .open
+            .values()
+            .any(|activity| activity.metadata["parallel_group_id"].is_string())
+            && (summary.wait.is_some()
+                || summary
+                    .task_type
+                    .as_deref()
+                    .is_some_and(|kind| kind != "activity"))
         {
             return Ok(false);
         }

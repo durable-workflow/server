@@ -20,6 +20,7 @@ struct ExpectedTimer {
     sequence: i64,
     delay: i64,
     fire_at: DateTime<Utc>,
+    metadata: Value,
 }
 
 impl TimerSummaryHistory {
@@ -27,7 +28,7 @@ impl TimerSummaryHistory {
         let Some(id) = payload["timer_id"].as_str().filter(|id| !id.is_empty()) else {
             return false;
         };
-        if !payload["timer_kind"].is_null() || !payload["parallel_group_id"].is_null() {
+        if !payload["timer_kind"].is_null() {
             return false;
         }
         if matches!(kind, "TimerFired" | "TimerCancelled") {
@@ -52,6 +53,10 @@ impl TimerSummaryHistory {
                 sequence,
                 delay,
                 fire_at,
+                metadata: match super::selections::metadata(payload, "timer") {
+                    Ok(metadata) => metadata,
+                    Err(_) => return false,
+                },
             },
         );
         true
@@ -108,7 +113,14 @@ where
             if DB::optional_string(row, "matched_task_id")?.is_some()
                 && (DB::optional_string(row, "matched_task_type")?.as_deref() != Some("timer")
                     || DB::document_row(row, "matched_task_payload")?["timer_id"].as_str()
-                        != Some(id.as_str()))
+                        != Some(id.as_str())
+                    || super::selections::metadata(
+                        &DB::document_row(row, "matched_task_payload")?,
+                        "timer",
+                    )
+                    .ok()
+                    .as_ref()
+                        != Some(&expected.metadata))
             {
                 return Ok(false);
             }

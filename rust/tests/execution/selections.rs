@@ -1,5 +1,13 @@
 use super::*;
 
+async fn observe_selection(database: &TestDatabase, app: &Router, started: &Value) -> Value {
+    let summary = run_observation_active_summaries::observe(app, "default", started).await;
+    assert_eq!(summary["summary_state"], "observed", "{summary}");
+    assert!(summary["history_fan_out"].as_i64().unwrap() >= 2);
+    run_observation_summaries::export_reference(database, &summary, &summary["history"]).await;
+    summary
+}
+
 impl TestDatabase {
     async fn selection_history_id(&self, run: &str, sequence: i64) -> String {
         // Public HTTP history intentionally omits the internal event ID.
@@ -129,6 +137,10 @@ async fn timer_winner_and_pending_activity_survive_original_task_repair_and_rest
     );
     let prefix = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
     assert_eq!(prefix.as_array().unwrap().len(), 5);
+    assert_eq!(
+        observe_selection(&database, &app, &started).await["current_waits"]["returned_count"],
+        2
+    );
     let pending = debug(&app, &started).await["pending_activities"].clone();
     assert_eq!(pending[0]["attempt_count"], 0);
     drop(app);
@@ -145,6 +157,10 @@ async fn timer_winner_and_pending_activity_survive_original_task_repair_and_rest
     assert_eq!(selected[5]["event_type"], "TimerFired");
     assert_eq!(selected[6]["event_type"], "SelectionResolved");
     assert_eq!(selected[6]["payload"]["operation_kind"], "timer");
+    assert_eq!(
+        observe_selection(&database, &app, &started).await["current_waits"]["returned_count"],
+        1
+    );
     assert_eq!(
         selected[6]["payload"]["resolution_event_id"],
         database
@@ -168,6 +184,7 @@ async fn timer_winner_and_pending_activity_survive_original_task_repair_and_rest
     );
     register(&app, "incompatible", json!(["echo"]), json!([])).await;
     let blocked = poll(&app, "incompatible", "workflow").await;
+    observe_selection(&database, &app, &started).await;
     let failure = json!({"lease_owner":blocked["lease_owner"],"workflow_task_attempt":blocked["workflow_task_attempt"],
         "failure":{"type":"DurableWorkflow\\Exception\\NonDeterministicWorkflow","message":"version marker outside supported range",
             "reason":"version_marker_incompatible_range","sequence":1}});
@@ -180,6 +197,10 @@ async fn timer_winner_and_pending_activity_survive_original_task_repair_and_rest
         StatusCode::OK
     );
     assert_eq!(debug(&app, &started).await["pending_activities"], pending);
+    assert_eq!(
+        observe_selection(&database, &app, &started).await["liveness_state"],
+        "workflow_replay_blocked"
+    );
     assert_eq!(
         run_history(&app, &started["workflow_id"], &started["run_id"]).await,
         selected
@@ -206,6 +227,7 @@ async fn timer_winner_and_pending_activity_survive_original_task_repair_and_rest
         blocked["task_id"]
     );
     assert_eq!(after["pending_workflow_tasks"][0]["repair_count"], 1);
+    observe_selection(&database, &app, &started).await;
     let repaired_history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
     let repair = &repaired_history[7]["payload"];
     assert_eq!(repair["task_id"], blocked["task_id"]);
@@ -234,6 +256,7 @@ async fn timer_winner_and_pending_activity_survive_original_task_repair_and_rest
     let repaired = poll(&app, "restored", "workflow").await;
     assert_eq!(repaired["task_id"], blocked["task_id"]);
     assert_eq!(repaired["workflow_task_attempt"], 2);
+    observe_selection(&database, &app, &started).await;
     assert_eq!(
         finish_task(
             &app,
@@ -343,6 +366,10 @@ async fn activity_winner_survives_restart_and_losing_timer_without_another_wakeu
         StatusCode::OK
     );
     let activity = poll(&app, "activity-first", "activity").await;
+    assert_eq!(
+        observe_selection(&database, &app, &started).await["current_waits"]["returned_count"],
+        2
+    );
     assert!(
         activity["activity_execution_id"].is_string(),
         "activity lease: {activity}"
@@ -377,6 +404,10 @@ async fn activity_winner_survives_restart_and_losing_timer_without_another_wakeu
     assert_eq!(winner[7]["event_type"], "SelectionResolved");
     assert_eq!(winner[7]["payload"]["operation_kind"], "activity");
     assert_eq!(
+        observe_selection(&database, &app, &started).await["current_waits"]["returned_count"],
+        1
+    );
+    assert_eq!(
         winner[7]["payload"]["operation_identity"],
         activity["activity_execution_id"]
     );
@@ -408,6 +439,7 @@ async fn activity_winner_survives_restart_and_losing_timer_without_another_wakeu
         winner.as_array().unwrap()
     );
     assert_eq!(after_timer[8]["event_type"], "TimerFired");
+    observe_selection(&database, &app, &started).await;
     let (left, right) = tokio::join!(
         poll(&app, "activity-first", "workflow"),
         poll(&other, "activity-first", "workflow")
@@ -463,8 +495,10 @@ async fn losing_activity_preserves_a_later_wakeup_while_winner_workflow_is_lease
     );
     wait_for_events(&app, &started, 7).await;
     let winner_task = poll(&app, "leased-selection", "workflow").await;
+    observe_selection(&database, &app, &started).await;
     assert_eq!(winner_task["history_events"].as_array().unwrap().len(), 7);
     let activity = poll(&app, "leased-selection", "activity").await;
+    observe_selection(&database, &app, &started).await;
     assert!(
         activity["activity_execution_id"].is_string(),
         "activity lease: {activity}"
@@ -474,6 +508,7 @@ async fn losing_activity_preserves_a_later_wakeup_while_winner_workflow_is_lease
             "result":envelope(Payload::Long(9007199254740993))})).await;
     assert_eq!(completed.0, StatusCode::OK);
     assert_ne!(completed.1["next_task_id"], winner_task["task_id"]);
+    observe_selection(&database, &app, &started).await;
     let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
     assert_eq!(history.as_array().unwrap().len(), 9);
     let waiting = request(&app, "POST", &format!("/api/worker/workflow-tasks/{}/fail", winner_task["task_id"].as_str().unwrap()),
@@ -553,6 +588,248 @@ async fn invalid_or_partial_selection_batches_leave_history_and_original_lease_u
         prefix
     );
     assert_eq!(finish_task(&app, &task, valid).await.0, StatusCode::OK);
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn selection_observation_timeout_winner_keeps_original_waits_and_failure() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(
+        &app,
+        "timeout-select",
+        json!(["echo"]),
+        json!(["echo_activity"]),
+    )
+    .await;
+    let run = start(&app, "timeout-select").await;
+    let task = poll(&app, "timeout-select", "workflow").await;
+    let mut commands = mixed_commands(2);
+    commands[1]["schedule_to_start_timeout"] = json!(1);
+    commands[2]["delay_seconds"] = json!(3);
+    assert_eq!(finish_task(&app, &task, commands).await.0, StatusCode::OK);
+    observe_selection(&database, &app, &run).await;
+    let first = request(
+        &app,
+        "POST",
+        "/api/worker/workflow-tasks/poll",
+        json!({"worker_id":"timeout-select","task_queue":"test","timeout_seconds":5}),
+    )
+    .await;
+    assert_eq!(first.0, StatusCode::OK, "{}", first.1);
+    let first = first.1["task"].clone();
+    assert_eq!(first["history_events"][5]["event_type"], "ActivityTimedOut");
+    assert_eq!(
+        first["history_events"][6]["event_type"],
+        "SelectionResolved"
+    );
+    assert_eq!(first["history_events"][6]["payload"]["outcome"], "failed");
+    let selected = observe_selection(&database, &app, &run).await;
+    assert_eq!(selected["current_waits"]["returned_count"], 1);
+    let history = wait_for_events(&app, &run, 8).await;
+    assert_eq!(history[7]["event_type"], "TimerFired");
+    assert_eq!(
+        history
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["event_type"] == "SelectionResolved")
+            .count(),
+        1
+    );
+    observe_selection(&database, &app, &run).await;
+    assert_eq!(
+        finish_task(
+            &app,
+            &first,
+            json!([{"type":"complete_workflow","result":envelope(Payload::Long(9007199254740993))}])
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    run_observation_summaries::check_completed(&database, &app, "default", &run, 1, 2).await;
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn selection_observation_deadline_retry_keeps_member_until_actual_completion() {
+    let database = TestDatabase::new().await;
+    let first = database.open().await.unwrap();
+    let app = router(first.clone());
+    register(
+        &app,
+        "retry-select",
+        json!(["echo"]),
+        json!(["echo_activity"]),
+    )
+    .await;
+    let run = start(&app, "retry-select").await;
+    let task = poll(&app, "retry-select", "workflow").await;
+    let mut commands = mixed_commands(2);
+    commands[1]["start_to_close_timeout"] = json!(1);
+    commands[1]["retry_policy"] = json!({"max_attempts":2,"backoff_seconds":[0]});
+    commands[2]["delay_seconds"] = json!(4);
+    assert_eq!(finish_task(&app, &task, commands).await.0, StatusCode::OK);
+    let activity = poll(&app, "retry-select", "activity").await;
+    observe_selection(&database, &app, &run).await;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        let events = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+        if events
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["event_type"] == "ActivityRetryScheduled")
+        {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "{events}");
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    let retry = observe_selection(&database, &app, &run).await;
+    assert_eq!(
+        retry["current_waits"]["waits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|wait| wait["kind"] == "activity_retry")
+            .count(),
+        1
+    );
+    drop(app);
+    first.close().await;
+    let second = database.open().await.unwrap();
+    let app = router(second.clone());
+    let retried = poll(&app, "retry-select", "activity").await;
+    assert_ne!(retried["task_id"], activity["task_id"]);
+    assert_eq!(retried["attempt_number"], 2);
+    observe_selection(&database, &app, &run).await;
+    let response = request(&app,"POST",&format!("/api/worker/activity-tasks/{}/complete",retried["task_id"].as_str().unwrap()),json!({"lease_owner":retried["lease_owner"],"activity_attempt_id":retried["activity_attempt_id"],"result":envelope(Payload::Long(9007199254740993))})).await;
+    assert_eq!(response.0, StatusCode::OK, "{}", response.1);
+    observe_selection(&database, &app, &run).await;
+    let resumed = poll(&app, "retry-select", "workflow").await;
+    let events = wait_for_events(&app, &run, 11).await;
+    assert_eq!(
+        events
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["event_type"] == "SelectionResolved")
+            .count(),
+        1
+    );
+    assert_eq!(
+        finish_task(
+            &app,
+            &resumed,
+            json!([{"type":"complete_workflow","result":envelope(Payload::Long(9007199254740993))}])
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    run_observation_summaries::check_completed(&database, &app, "default", &run, 0, 2).await;
+    second.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn selection_observation_sqlite_failures_keep_original_selection_and_no_read_repair() {
+    let database = TestDatabase::Sqlite(tempfile::tempdir().unwrap());
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(
+        &app,
+        "atomic-select",
+        json!(["echo"]),
+        json!(["echo_activity"]),
+    )
+    .await;
+    let run = start(&app, "atomic-select").await;
+    let task = poll(&app, "atomic-select", "workflow").await;
+    database.execute("CREATE TRIGGER refuse_select_timer_wait BEFORE INSERT ON workflow_run_waits WHEN NEW.kind='timer' BEGIN SELECT RAISE(ABORT,'selection wait failure'); END").await;
+    assert_eq!(
+        finish_task(&app, &task, mixed_commands(2)).await.0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        task_retry::rows(&database, "SELECT COUNT(*) FROM activity_executions").await,
+        0
+    );
+    assert_eq!(
+        task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_run_timers").await,
+        0
+    );
+    assert_eq!(
+        task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_history_events").await,
+        2
+    );
+    database
+        .execute("DROP TRIGGER refuse_select_timer_wait")
+        .await;
+    assert_eq!(
+        finish_task(&app, &task, mixed_commands(2)).await.0,
+        StatusCode::OK
+    );
+    observe_selection(&database, &app, &run).await;
+    let events = wait_for_events(&app, &run, 7).await;
+    database.execute("CREATE TABLE saved_resolution AS SELECT payload FROM workflow_history_events WHERE event_type='SelectionResolved'").await;
+    database.execute("UPDATE workflow_history_events SET payload=json_set(payload,'$.resolution_event_id','unrelated') WHERE event_type='SelectionResolved'").await;
+    let claimed = poll(&app, "atomic-select", "workflow").await;
+    for _ in 0..2 {
+        assert_eq!(
+            run_observation_active_summaries::observe(&app, "default", &run).await["summary_state"],
+            "unavailable"
+        );
+    }
+    assert_eq!(
+        task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_run_summaries").await,
+        0
+    );
+    database.execute("UPDATE workflow_history_events SET payload=(SELECT payload FROM saved_resolution) WHERE event_type='SelectionResolved'").await;
+    let renewed = request(&app,"POST",&format!("/api/worker/workflow-tasks/{}/heartbeat",claimed["task_id"].as_str().unwrap()),json!({"lease_owner":claimed["lease_owner"],"workflow_task_attempt":claimed["workflow_task_attempt"]})).await;
+    assert_eq!(renewed.0, StatusCode::OK, "{}", renewed.1);
+    observe_selection(&database, &app, &run).await;
+    assert_eq!(
+        &run_history(&app, &run["workflow_id"], &run["run_id"])
+            .await
+            .as_array()
+            .unwrap()[..7],
+        events.as_array().unwrap()
+    );
+    database
+        .execute("DELETE FROM workflow_run_waits WHERE kind='activity'")
+        .await;
+    let activity = poll(&app, "atomic-select", "activity").await;
+    assert_eq!(
+        run_observation_active_summaries::observe(&app, "default", &run).await["summary_state"],
+        "unavailable"
+    );
+    assert_eq!(
+        task_retry::rows(
+            &database,
+            "SELECT COUNT(*) FROM workflow_run_waits WHERE kind='activity'"
+        )
+        .await,
+        0
+    );
+    let complete = request(&app,"POST",&format!("/api/worker/activity-tasks/{}/complete",activity["task_id"].as_str().unwrap()),json!({"lease_owner":activity["lease_owner"],"activity_attempt_id":activity["activity_attempt_id"],"result":envelope(Payload::Long(9007199254740993))})).await;
+    assert_eq!(complete.0, StatusCode::OK, "{}", complete.1);
+    assert_eq!(
+        finish_task(
+            &app,
+            &claimed,
+            json!([{"type":"complete_workflow","result":envelope(Payload::Long(9007199254740993))}])
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    run_observation_summaries::check_completed(&database, &app, "default", &run, 0, 2).await;
     runtime.close().await;
     database.remove().await;
 }

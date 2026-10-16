@@ -22,6 +22,7 @@ $count = 0;
 foreach (file($argv[2], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
     $case = json_decode($line, true, 512, JSON_THROW_ON_ERROR);
     $summary = $case['summary'];
+    if (array_filter($case['raw_history'], static fn (array $event): bool => isset(json_decode($event['payload_json'], true, 512, JSON_THROW_ON_ERROR)['parallel_group_id']))) { continue; }
     if ($summary['is_terminal'] || ! array_filter($case['raw_history'],
         static fn (array $event): bool => $event['event_type'] === 'TimerScheduled',
     )) {
