@@ -277,9 +277,12 @@ async fn history_budget_profile_child() {
         );
         let completed = namespaces::scoped(&app, namespace, "POST", &path, body.clone()).await;
         assert_eq!(completed.0, StatusCode::OK, "{}", completed.1);
+        let mut duplicate = completed.clone();
+        duplicate.1["recorded"] = json!(false);
+        duplicate.1["reason"] = json!("already_completed");
         assert_eq!(
             namespaces::scoped(&app, namespace, "POST", &path, body).await,
-            completed
+            duplicate
         );
         let observation = run_observation_active_summaries::observe(&app, namespace, run).await;
         let budget = stored(&database, run).await;
