@@ -255,3 +255,102 @@ async fn run_observation_updates_projection_failures_rollback_admission_and_orig
     runtime.close().await;
     database.remove().await;
 }
+
+#[tokio::test]
+async fn run_observation_updates_validate_retained_command_and_task_identity() {
+    for mutation in [
+        "UPDATE workflow_run_waits SET command_id='unrelated-command' WHERE kind='update'",
+        "UPDATE workflow_run_waits SET task_id=(SELECT MIN(id) FROM workflow_tasks WHERE status='completed') WHERE kind='update'",
+    ] {
+        let database = TestDatabase::new().await;
+        let runtime = database.open().await.unwrap();
+        let app = router(runtime.clone());
+        update_worker(&app, "update-identity").await;
+        let run = start(&app, "update-identity").await;
+        open_update_wait(&app, "update-identity").await;
+        let accepted = request(
+            &app,
+            "POST",
+            "/api/workflows/update-identity/update/set",
+            input("identity"),
+        )
+        .await;
+        assert_eq!(accepted.0, StatusCode::ACCEPTED);
+        assert_eq!(observe(&app, &run).await["summary_state"], "observed");
+        database.execute(mutation).await;
+        let task = poll(&app, "update-identity", "workflow").await;
+        assert_eq!(task["workflow_update_id"], accepted.1["update_id"]);
+        let observed = observe(&app, &run).await;
+        assert_eq!(
+            observed["summary_state"], "unavailable",
+            "{mutation}: {observed}"
+        );
+        assert_eq!(
+            finish_task(&app, &task, complete(&accepted.1, false))
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            task_retry::rows(
+                &database,
+                "SELECT COUNT(*) FROM workflow_updates WHERE status='completed'"
+            )
+            .await,
+            1
+        );
+        runtime.close().await;
+        database.remove().await;
+    }
+}
+
+#[tokio::test]
+async fn run_observation_updates_take_precedence_over_condition_and_restore_original_wait() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    update_worker(&app, "condition-update").await;
+    let run = start(&app, "condition-update").await;
+    let task = poll(&app, "condition-update", "workflow").await;
+    let opened = finish_task(
+        &app,
+        &task,
+        json!([{"type":"open_condition_wait","condition_key":"ready 日本語",
+        "condition_definition_fingerprint":format!("sha256:{}", "a".repeat(64)),
+        "condition_wait_occurrence_id":"original-condition"}]),
+    )
+    .await;
+    assert_eq!(opened.0, StatusCode::OK, "{}", opened.1);
+    let original = export(&database, &app, &run).await;
+    assert_eq!(original["liveness_state"], "waiting_for_condition");
+    let accepted = request(
+        &app,
+        "POST",
+        "/api/workflows/condition-update/update/set",
+        input("condition"),
+    )
+    .await;
+    assert_eq!(accepted.0, StatusCode::ACCEPTED);
+    let ready = export(&database, &app, &run).await;
+    assert_eq!(ready["summary_state"], "observed", "{ready}");
+    assert_eq!(ready["liveness_state"], "workflow_task_ready");
+    assert_eq!(ready["current_waits"]["returned_count"], 2);
+    let task = poll(&app, "condition-update", "workflow").await;
+    let leased = export(&database, &app, &run).await;
+    assert_eq!(leased["liveness_state"], "workflow_task_leased");
+    assert_eq!(update_wait(&leased)["task_id"], task["task_id"]);
+    assert_eq!(
+        finish_task(&app, &task, complete(&accepted.1, false))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let restored = export(&database, &app, &run).await;
+    assert_eq!(restored["liveness_state"], "waiting_for_condition");
+    assert_eq!(
+        restored["current_waits"]["waits"],
+        original["current_waits"]["waits"]
+    );
+    runtime.close().await;
+    database.remove().await;
+}

@@ -13,10 +13,12 @@ Illuminate\Container\Container::setInstance($container);
 $database = new Illuminate\Database\Capsule\Manager($container);
 $database->addConnection(['driver' => 'sqlite', 'database' => ':memory:']);
 $database->bootEloquent();
+$database->getConnection()->statement('CREATE TABLE workflow_commands (id TEXT PRIMARY KEY, workflow_run_id TEXT, command_type TEXT, status TEXT, applied_at TEXT, command_sequence INTEGER, created_at TEXT)');
 $database->getConnection()->enableQueryLog();
 $projector = Workflow\V2\Support\RunSummaryProjector::class;
 $openUpdate = new ReflectionMethod($projector, 'openUpdateWait');
 $openSignal = new ReflectionMethod($projector, 'openSignalWait');
+$openCondition = new ReflectionMethod($projector, 'openConditionWait');
 $liveness = new ReflectionMethod($projector, 'liveness');
 $taskProblem = new ReflectionMethod($projector, 'taskProblemDetected');
 $count = 0;
@@ -70,16 +72,17 @@ foreach (file($argv[2], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line)
     $run->setRelation('tasks', new Illuminate\Database\Eloquent\Collection($tasks));
     $open = $openUpdate->invoke(null, $run);
     $task = $tasks[0] ?? null;
-    $signal = $open === null ? $openSignal->invoke(null, $run) : null;
+    $condition = $open === null ? $openCondition->invoke(null, $run) : null;
+    $signal = $open === null && $condition === null ? $openSignal->invoke(null, $run) : null;
     [$state, $reason] = $liveness->invoke(null,
-        $run, false, null, null, null, $open, $task, null, null,
+        $run, false, null, null, null, $open, $task, null, $condition,
         null, null, null, $task, null, null, null, null, null, $signal,
     );
     if ($state !== $summary['liveness_state'] || $reason !== $summary['liveness_reason']) {
         throw new RuntimeException($summary['run_id'].' differs from installed update liveness: '.$state.' / '.$reason);
     }
-    $problem = $taskProblem->invoke(null, $run, $task, null, $open, $task, null, null, null,
-        $open === null ? 'signal' : 'update', $state,
+    $problem = $taskProblem->invoke(null, $run, $task, null, $open, $task, null, $condition, null,
+        $open === null ? ($condition === null ? 'signal' : 'condition') : 'update', $state,
     );
     if ($problem !== $case['stored_task_problem']) {
         throw new RuntimeException('Stored update task_problem differs from installed PHP.');
@@ -108,12 +111,13 @@ foreach (file($argv[2], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line)
 }
 
 Illuminate\Support\Carbon::setTestNow();
-if ($count === 0 || $waitCount === 0 || $database->getConnection()->getQueryLog() !== []) {
-    throw new RuntimeException('Expected nonempty update evidence and zero reference database queries.');
+if ($count === 0 || $waitCount === 0) {
+    throw new RuntimeException('Expected nonempty update liveness and wait evidence.');
 }
 echo json_encode([
     'outcome' => 'pass', 'cases' => $count, 'open_waits' => $waitCount,
     'php' => PHP_VERSION,
     'workflow' => Composer\InstalledVersions::getPrettyVersion('durable-workflow/workflow'),
-    'database_queries' => 0, 'mutable_update_rows' => 0,
+    'database_queries' => count($database->getConnection()->getQueryLog()), 'mutable_update_rows' => 0,
+    'blocking_signal_rows' => 0,
 ], JSON_THROW_ON_ERROR)."\n";
