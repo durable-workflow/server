@@ -27,6 +27,11 @@ foreach (file($argv[2], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line)
     )) {
         continue;
     }
+    // Accepted-update histories, including restoration of an external wait,
+    // are compared by verify-native-update-summary.php with update precedence.
+    if (array_filter($case['raw_history'], static fn (array $event): bool => $event['event_type'] === 'UpdateAccepted')) {
+        continue;
+    }
     Illuminate\Support\Carbon::setTestNow($summary['observed_at']);
     $run = new Workflow\V2\Models\WorkflowRun();
     $run->setRawAttributes(['id' => $summary['run_id'], 'status' => $summary['status'], 'compatibility' => null]);
