@@ -1,7 +1,6 @@
 # Durable Workflow Server
 
 [![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=durable-workflow_server&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=durable-workflow_server)
-
 [![Tests](https://github.com/durable-workflow/server/actions/workflows/phpunit-feature.yml/badge.svg?branch=main)](https://github.com/durable-workflow/server/actions/workflows/phpunit-feature.yml)
 [![Release](https://img.shields.io/github/v/release/durable-workflow/server)](https://github.com/durable-workflow/server/releases/latest)
 [![Docker Pulls](https://img.shields.io/docker/pulls/durableworkflow/server)](https://hub.docker.com/r/durableworkflow/server)
