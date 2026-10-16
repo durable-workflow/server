@@ -362,11 +362,54 @@ Current checkpoint, October 16:
   has zero open PR issues at 2.2% duplication under the unchanged 3% threshold.
   The remaining activity complexity finding is fixed on that head. Fresh checks
   of the combined update component remain required.
+- The next observation component preserves the existing configurable history
+  budget in stored summaries, workflow-task delivery and subsequent task-history
+  pages. All six settings use the published DW-primary/legacy resolution and
+  integer casts. Disabled dimensions, warning clamps, recommendation precedence
+  and ordered dimensions share one classifier. Task delivery uses complete
+  stored counters or a canonical paged fallback, independently of page size or
+  active-liveness support. Missing retained history refuses the original claim
+  atomically. No schema, history, admission or enforced execution limit is added.
+  The preceding `e64b1ba44` runtime fails both the configured-warning control and
+  the missing task-budget metadata control. Its separate Sonar check passes at
+  2.1% duplication with no new issues under the unchanged 3% threshold.
+  Initial local fixtures incorrectly used a named version marker and expected
+  an identical duplicate-completion acknowledgement. They now preserve the
+  existing named timer scope and `already_completed` receipt. A mixed local
+  build linked the earlier counterfactual library; its 172-pass/two-failure
+  selection is not candidate qualification. Cleaning only this task's native
+  package artifacts produces the new runtime library. The first PostgreSQL
+  fixture exposed an integer-width mismatch in its own reader. Once that reader
+  was corrected, `15bc99ded` also exposed the assumption in the new task-history
+  route: 503 on pagination. `a939b2dc8` uses the existing database adapter for that
+  sequence without changing schema. Final `a939b2dc8`, native tree
+  `01813fcd25c1300edf9156c01f7a6c8c7f253833`, passes 80 library tests with the
+  18 existing ignores and all 174 SQLite execution tests. Both focused budget
+  controls pass on PostgreSQL 17.11 and MySQL 8.0.46. The profile control invokes
+  six isolated configuration processes per database; its child entry is ignored
+  only when invoked independently. Twelve workflows complete per database in
+  default and named namespaces, retaining complete counters across restart,
+  single-event task pages, missing/incomplete summaries and duplicate receipts.
+  Installed Server 2.8.6 / Workflow 2.5.22 agrees on 22 policy fixtures and
+  201 counter/budget snapshots: 144 configured snapshots across three databases
+  plus 57 existing SQLite counters. Configured snapshots include 72 task
+  deliveries and 72 stored summaries. All 64 SQLite liveness classifications
+  also agree: 22 task, nine external, six timer, eight activity, ten child and
+  nine update. Child and update classifiers perform 62 and twelve reference
+  queries respectively; the counter/budget and other classifiers perform zero.
+  Formatting and changed PHP syntax checks pass. Full network matrices,
+  published-HTTP/native SDK/browser qualification and performance remain open.
 
 The preserved `c0b14c15` [shared run](https://github.com/durable-workflow/server/actions/runs/38806818394)
 is terminal with 12 passing jobs and one failure in the existing-PHP PostgreSQL
 job at the published-query comparison step. The assertion and cause remain
 unknown. The component checks above do not explain or replace that result.
+The preserved `fbeb03408` [shared run](https://github.com/durable-workflow/server/actions/runs/38824463438)
+also ends with twelve passing jobs and one MariaDB 10.11 failure, at the
+published-query/installed-Worker comparison. Its assertion and cause remain
+unknown. The older `0551089c3` [shared run](https://github.com/durable-workflow/server/actions/runs/38820665798)
+has twelve passing jobs and one failure at the markers/ranges/clocks/activity
+expiry comparison, likewise without an established assertion or cause.
 
 Next, qualify the combined observation source and finish active wait-summary and
 remaining wait production. Independent retained-artifact

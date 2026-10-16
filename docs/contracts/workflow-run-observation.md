@@ -109,8 +109,36 @@ JSON order and PHP's canonical byte encoding. Failure counts deduplicate retaine
 failure IDs and supported typed failure events. Terminal rows clear active
 wait/task fields and record closed liveness, duration and the selected/current
 run relationship. Imported, pruned or incomplete histories are excluded from
-this producer; configurable budget policy remains open.
+this producer.
 Observation reads never rebuild a missing summary.
+
+The native producer and workflow-task delivery share the published history-budget
+policy. Configuration is captured when the runtime opens. Each dimension has a
+continue-as-new recommendation threshold and a warning threshold:
+
+| Dimension | Recommendation setting | Warning setting |
+| --- | --- | --- |
+| Events | `DW_V2_CONTINUE_AS_NEW_EVENT_THRESHOLD` | `DW_V2_HISTORY_EVENT_WARNING_THRESHOLD` |
+| Bytes | `DW_V2_CONTINUE_AS_NEW_SIZE_BYTES_THRESHOLD` | `DW_V2_HISTORY_SIZE_BYTES_WARNING_THRESHOLD` |
+| Fan-out | `DW_V2_CONTINUE_AS_NEW_FAN_OUT_THRESHOLD` | `DW_V2_HISTORY_FAN_OUT_WARNING_THRESHOLD` |
+
+Each setting accepts its existing `WORKFLOW_V2_` alias. The `DW_V2_` value takes
+precedence, including a value that disables a dimension. A typed null falls
+back to the legacy name. Values retain the package's integer-cast behavior and
+negative values become zero. A zero recommendation threshold disables that
+dimension entirely; a zero warning threshold disables only its warning. A
+warning above its recommendation threshold clamps to that threshold. These
+are advisory measurements and never force a workflow to continue as new.
+
+Initial task delivery and subsequent task-history pages include complete event,
+byte and fan-out counters, the recommendation boolean, pressure and ordered
+pressure dimensions. Page size does not reduce these counters. A complete
+stored summary supplies the counters; an absent or incomplete summary uses a
+canonical scan in batches of sixteen events without persisting a projection.
+An incomplete retained sequence refuses the native claim and rolls back its
+lease, attempt and receipt. Observation reads retain their existing unavailable
+behavior. Full published-HTTP comparison of corrupted/pruned histories remains
+separate.
 
 Workflow-task summaries now commit with starts, claims, lease renewal, task
 failure and explicit repair. A claim changes stored liveness without appending
@@ -140,6 +168,16 @@ published PHP image, passing its Composer autoloader and that file. It compares
 the actual installed `HistoryBudget::forRun` event, byte and fan-out counters
 without querying a reference database. This checks stored counters, separately
 from installed SDK/browser acceptance and shared differential qualification.
+
+`DW_TEST_BUDGET_REFERENCE=/path/to/budget.jsonl` collects the separate configured
+budget controls, including actual task payloads and stored summary fields.
+Pass that file to the same PHP verifier to compare pressure, recommendation and
+dimensions as well as counters. The fixture
+`tests/Fixtures/HistoryBudget/pressure.json` defines reviewed policy boundaries;
+`verify-history-pressure.php` runs them against the installed PHP package using
+its Composer autoloader and the fixture path as arguments. The profile control
+uses separate processes for startup settings, so tests never mutate another
+runtime's process environment.
 
 The same synthetic output includes stored open-task metadata.
 `scripts/conformance/server-parity/verify-native-task-summary.php` invokes the
