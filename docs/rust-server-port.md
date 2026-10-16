@@ -326,6 +326,43 @@ Current checkpoint, October 16:
   These component results do not establish full published observation API,
   installed native/browser or fresh combined-head qualification.
 
+- Accepted updates now create a retained wait in their admission transaction,
+  binding the original update, command and workflow task. Claims expose that
+  task's actual metadata. Successful and failed application resolve the same
+  wait, clear its task association, and restore the original external wait.
+  Active summaries validate typed update history and retained identities before
+  applying the published update precedence over signal and condition waits.
+  Missing or inconsistent projections become unavailable after refresh without
+  read repair or loss of the business completion. Admission and completion
+  projection failures roll back the original transition and leave its retry
+  usable. Existing default-only update admission and its 64-update bound remain
+  unchanged; broader queued, validator, timeout and namespace behavior is separate.
+  Three initial controls at `5af485643` fail against the preceding runtime.
+  The first implementation `0fe347fbf` fails admission by referencing a column
+  absent from the retained-wait schema; `ab762266d` corrects the query without a
+  schema change. The reference fixture initially lacked the empty command table
+  needed by PHP's ordering query, and the prior external-only comparator omitted
+  update precedence. Those failed comparisons remain separate from the corrected
+  update comparator, which also checks restoration of the external wait.
+  The expanded final native source `28d4af66a`, tree
+  `3a644a6bd97f65cc1870d9a88ec120429b5195bc`, passes 79 library tests with
+  18 existing ignores and all 172 SQLite execution tests. Five focused controls
+  pass on each of PostgreSQL 17.11 and MySQL 8.0.46: four use the network database
+  and one is an explicit SQLite rollback fixture. Final comparison source
+  `0c2605dac` has the same native tree. Installed Server 2.8.6 / Workflow 2.5.22
+  agrees on 79 counter snapshots (57 SQLite, 11 per network database) and 94
+  classifier comparisons: 34 task, nine external wait, six timer, eight activity,
+  ten child and 27 update. Update comparisons also cover 18 open waits and execute
+  twelve reference queries per database against empty mutable command tables;
+  mutable update rows are absent. The child comparison executes 62 queries;
+  the other classifiers execute zero. Formatting, PHP syntax and diff checks pass.
+  These are source/component results, not full observation API equivalence,
+  installed native/browser acceptance or a performance claim. The preceding
+  `8a0b244b3` PHP/source and Sonar checks pass independently; its Sonar analysis
+  has zero open PR issues at 2.2% duplication under the unchanged 3% threshold.
+  The remaining activity complexity finding is fixed on that head. Fresh checks
+  of the combined update component remain required.
+
 The preserved `c0b14c15` [shared run](https://github.com/durable-workflow/server/actions/runs/38806818394)
 is terminal with 12 passing jobs and one failure in the existing-PHP PostgreSQL
 job at the published-query comparison step. The assertion and cause remain
