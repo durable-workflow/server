@@ -1236,10 +1236,11 @@ where
         Self::fence(&task, &body)?;
         let run_id = DB::string(&task, "workflow_run_id")?;
         let (events, next) = Self::history_page_connection(&mut tx, &run_id, after, 100).await?;
-        let last = Self::scalar("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
+        let run = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
             .bind(&run_id)
             .fetch_one(&mut *tx)
             .await?;
+        let last = DB::number(&run, "last_history_sequence")?;
         let budget = Self::workflow_history_budget(&mut tx, &run_id, last).await?;
         let mut response = json!({"task_id":task_id,"workflow_task_attempt":body["workflow_task_attempt"],"history_events":events,"next_history_page_token":next});
         budget.write_task(&mut response);
