@@ -176,6 +176,9 @@ fn task_payload_matches(
     } else {
         task_type == Some("workflow")
             && (payload["open_wait_id"] == id
+                || (kind == "update"
+                    && source.is_some()
+                    && payload["workflow_update_id"].as_str() == source)
                 || (kind == "child"
                     && ((source.is_some() && payload["child_workflow_run_id"].as_str() == source)
                         || payload["child_call_id"].as_str().is_some_and(|call| {

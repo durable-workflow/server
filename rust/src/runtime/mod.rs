@@ -52,6 +52,7 @@ mod terminal_summary;
 mod timer_summary;
 mod transaction;
 mod updates;
+mod update_summary;
 mod visibility;
 mod wait_projection;
 mod worker_incarnations;

@@ -412,9 +412,11 @@ where
                     "type":"update","target_scope":"instance","resolved_run_id":run_id,"status":"accepted","outcome":null}
             }), None, Some(&command_id)).await
                 .map_err(|error| at_update_lookup(error, UpdateLookup::HistoryAppend))?;
-            Self::create_task(&mut tx, &run_id, &DB::string(&run, "queue")?, "workflow",
+            let task_id = Self::create_task(&mut tx, &run_id, &DB::string(&run, "queue")?, "workflow",
                 json!({"resume_source_kind":"workflow_update","workflow_update_id":update_id,"workflow_command_id":command_id})).await
                 .map_err(|error| at_update_lookup(error, UpdateLookup::TaskEnqueue))?;
+            Self::query("UPDATE workflow_run_waits SET task_id=$1,task_type='workflow',task_status='ready',task_backed=TRUE WHERE workflow_run_id=$2 AND wait_id=$3 AND kind='update' AND status='open'")
+                .bind(task_id).bind(&run_id).bind(format!("update:{update_id}")).execute(&mut *tx).await?;
             update_id
         };
         // A completion wait owns neither the transaction nor a pool connection.

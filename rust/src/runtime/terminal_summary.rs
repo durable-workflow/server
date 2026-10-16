@@ -1,6 +1,7 @@
 //! Run snapshots are written after the transition's final durable state.
 use super::activity_summary::ActivitySummaryHistory;
 use super::child_summary::ChildSummaryHistory;
+use super::update_summary::UpdateSummaryHistory;
 use super::transaction::Transaction;
 use super::{
     Result, backend::Backend, external_wait_summary::ExternalWaitHistory, history_budget,
@@ -61,6 +62,7 @@ where
             timers,
             activities,
             children,
+            updates,
             ..
         } = history;
         let active = if closed {
@@ -76,6 +78,7 @@ where
                 &timers,
                 &activities,
                 &children,
+                &updates,
             )
             .await?
             {
@@ -185,6 +188,7 @@ struct SummaryHistory {
     timers: TimerSummaryHistory,
     activities: ActivitySummaryHistory,
     children: ChildSummaryHistory,
+    updates: UpdateSummaryHistory,
 }
 
 impl SummaryHistory {
@@ -198,6 +202,8 @@ impl SummaryHistory {
                 self.activities.apply(kind, &payload)
             } else if kind.starts_with("Child") {
                 self.children.apply(kind, &payload)
+            } else if kind.starts_with("Update") {
+                self.updates.apply(kind, &payload)
             } else {
                 self.external_waits.apply(kind, &payload)
             };

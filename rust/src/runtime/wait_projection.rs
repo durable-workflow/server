@@ -18,6 +18,31 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
+    pub(super) async fn project_update_wait_event(
+        tx: &mut Transaction<'_, DB>, run: &str, kind: &str, payload: &Value, at: DateTime<Utc>,
+    ) -> Result<()> {
+        if !matches!(kind, "UpdateAccepted" | "UpdateCompleted") { return Ok(()); }
+        let update = super::text(payload, "update_id")?;
+        let name = super::text(payload, "update_name")?;
+        let wait = format!("update:{update}");
+        if kind == "UpdateAccepted" {
+            let sequence = wait_sequence(&payload["command"])?;
+            Self::query("INSERT INTO workflow_run_waits(id,workflow_run_id,workflow_instance_id,wait_id,position,kind,status,source_status,summary,opened_at,target_name,target_type,task_backed,external_only,resume_source_kind,resume_source_id,command_id,command_sequence,command_status,ordering_state,history_authority,created_at,updated_at) SELECT $1,id,workflow_instance_id,$2,$3,'update','open','accepted',$4,$5,$6,'update',FALSE,FALSE,'workflow_update',$7,$8,$9,'accepted','ready','typed_history',$10,$11 FROM workflow_runs WHERE id=$12")
+                .bind(projection_id(run, &wait)).bind(wait).bind(sequence - 1).bind(format!("Waiting for update {name}."))
+                .bind(DB::bind_time(at)).bind(name).bind(update).bind(super::text(payload, "workflow_command_id")?)
+                .bind(sequence).bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(run).execute(&mut **tx).await?;
+        } else {
+            let failed = payload["failure_id"].as_str().is_some_and(|id| !id.is_empty());
+            let status = if failed {"failed"} else {"completed"};
+            // Resolution updates only the admitted row. Missing historical
+            // projections never reappear as a side effect of observation.
+            Self::query("UPDATE workflow_run_waits SET sequence=$1,status='resolved',source_status=$2,summary=$3,resolved_at=$4,task_backed=FALSE,task_id=NULL,task_type=NULL,task_status=NULL,command_outcome=$5,updated_at=$6 WHERE workflow_run_id=$7 AND wait_id=$8 AND kind='update' AND status='open'")
+                .bind(wait_sequence(payload)?).bind(status).bind(format!("Update {name} {status}."))
+                .bind(DB::bind_time(at)).bind(format!("update_{status}")).bind(DB::bind_time(at)).bind(run).bind(wait).execute(&mut **tx).await?;
+        }
+        Ok(())
+    }
+
     pub(super) async fn project_child_wait_event(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,

@@ -1092,7 +1092,7 @@ where
                 .bind(DB::document(&task_payload)).bind(&task_id).execute(&mut *tx).await?;
             // A lease is worker authority, not an authored lifecycle commit.
             if kind == "workflow" {
-                Self::query("UPDATE workflow_run_waits SET task_status='leased',updated_at=$1 WHERE workflow_run_id=$2 AND task_id=$3 AND kind='child' AND status IN ('resolved','cancelled')")
+                Self::query("UPDATE workflow_run_waits SET task_status='leased',updated_at=$1 WHERE workflow_run_id=$2 AND task_id=$3 AND ((kind='child' AND status IN ('resolved','cancelled')) OR (kind='update' AND status='open'))")
                     .bind(DB::bind_time(leased_at)).bind(&run_id).bind(&task_id).execute(&mut *tx).await?;
             }
             tx.summary_changed(&run_id);
@@ -2383,6 +2383,7 @@ where
         Self::project_signal_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
         Self::project_condition_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
         Self::project_child_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
+        Self::project_update_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
         tx.summary_changed(run_id);
         Ok(())
     }

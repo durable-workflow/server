@@ -8,6 +8,7 @@ use super::{
     store::{Store, now},
     timer_summary::TimerSummaryHistory,
     transaction::Transaction,
+    update_summary::UpdateSummaryHistory,
 };
 use chrono::{DateTime, Utc};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
@@ -54,6 +55,7 @@ where
         timers: &TimerSummaryHistory,
         activities: &ActivitySummaryHistory,
         children: &ChildSummaryHistory,
+        updates: &UpdateSummaryHistory,
     ) -> Result<Option<ActiveSummary>> {
         // Compatibility/fleet and task-backed wait classifiers are separate slices.
         // Leave an explicit unavailable summary instead of inventing liveness.
@@ -61,7 +63,7 @@ where
             return Ok(None);
         }
         let run_id = DB::string(run, "id")?;
-        if Self::scalar("SELECT COUNT(*) FROM workflow_run_waits WHERE workflow_run_id=$1 AND status='open' AND kind NOT IN ('condition','signal','timer','activity','child')")
+        if Self::scalar("SELECT COUNT(*) FROM workflow_run_waits WHERE workflow_run_id=$1 AND status='open' AND kind NOT IN ('condition','signal','timer','activity','child','update')")
             .bind(&run_id).fetch_one(&mut **tx).await? > 0 { return Ok(None); }
         // These native task transitions do not author queue-driver metadata.
         // Its presence needs the separately qualified transport classifier,
@@ -107,7 +109,7 @@ where
         let task = Self::query("SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND status IN ('ready','leased') ORDER BY CASE WHEN status='leased' AND lease_expires_at<=$2 THEN 0 ELSE 1 END,CASE WHEN status='leased' THEN 0 ELSE 1 END,CASE WHEN available_at IS NULL THEN 1 ELSE 0 END,available_at,CASE WHEN created_at IS NULL THEN 1 ELSE 0 END,created_at,id LIMIT 1")
             .bind(&run_id).bind(DB::bind_time(at)).fetch_optional(&mut **tx).await?;
         if let Some(task) = task {
-            if !Self::apply_summary_task(&mut summary, &task, at)? {
+            if !Self::apply_summary_task(&mut summary, &task, at, None)? {
                 return Ok(None);
             }
         }
@@ -133,16 +135,20 @@ where
         if !Self::apply_child_summary(tx, &run_id, children, &mut summary).await? {
             return Ok(None);
         }
+        if !Self::apply_update_summary(tx, &run_id, updates, &mut summary).await? {
+            return Ok(None);
+        }
         if summary.wait.is_none() && summary.task_id.is_none() {
             summary.problem = true;
         }
         Ok(Some(summary))
     }
 
-    fn apply_summary_task(
+    pub(super) fn apply_summary_task(
         summary: &mut ActiveSummary,
         task: &DB::Row,
         at: DateTime<Utc>,
+        label: Option<&str>,
     ) -> Result<bool> {
         let kind = DB::string(task, "task_type")?;
         if !matches!(kind.as_str(), "workflow" | "timer" | "activity")
@@ -154,11 +160,11 @@ where
         let status = DB::string(task, "status")?;
         let expires = DB::optional_instant(task, "lease_expires_at")?;
         let expired = status == "leased" && expires.is_some_and(|v| v <= at);
-        let label = match kind.as_str() {
+        let label = label.unwrap_or(match kind.as_str() {
             "timer" => "Timer",
             "activity" => "Activity",
             _ => "Workflow",
-        };
+        });
         summary.state = if expired {
             "repair_needed".into()
         } else {
