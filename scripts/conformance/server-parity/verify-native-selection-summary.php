@@ -35,7 +35,7 @@ foreach (file($argv[2], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line)
         $events[] = $event;
     }
     $run->setRelation('historyEvents', new Illuminate\Database\Eloquent\Collection($events));
-    foreach (['activityExecutions', 'timers', 'commands', 'childLinks'] as $relation) {
+    foreach (['activityExecutions', 'timers', 'commands', 'childLinks', 'updates', 'failures'] as $relation) {
         $run->setRelation($relation, new Illuminate\Database\Eloquent\Collection());
     }
     $tasks = [];
@@ -63,9 +63,19 @@ foreach (file($argv[2], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line)
     $actual = $summary['current_waits']['waits'];
     if (count($expected) !== count($actual)) { throw new RuntimeException('Selection open wait count differs.'); }
     foreach ($expected as $index => $wait) {
+        // RunCurrentWaits refines a retained activity row to activity_retry
+        // for its matching open retry task. Keep that label separate from
+        // RunWaitView's stored wait kind.
+        $task = $run->tasks->firstWhere('id', $wait['task_id']);
+        if ($wait['kind'] === 'activity' && in_array($task?->status, [Workflow\V2\Enums\TaskStatus::Ready, Workflow\V2\Enums\TaskStatus::Leased], true)
+            && is_numeric($task->payload['retry_after_attempt'] ?? null) && (int) $task->payload['retry_after_attempt'] > 0) {
+            $wait['kind'] = 'activity_retry';
+        }
         foreach (['id' => 'id', 'kind' => 'kind', 'summary' => 'reason', 'resume_source_id' => 'dependency_id',
             'target_type' => 'dependency_type', 'target_name' => 'target_name', 'history_unsupported_reason' => 'unavailable_reason'] as $source => $target) {
-            if ($wait[$source] !== $actual[$index][$target]) { throw new RuntimeException('Selection wait '.$target.' differs at '.$index); }
+            if ($wait[$source] !== $actual[$index][$target]) {
+                throw new RuntimeException($summary['run_id'].' selection wait '.$target.' differs at '.$index.': '.json_encode([$wait, $actual[$index]], JSON_THROW_ON_ERROR));
+            }
         }
         ++$waitCount;
     }
