@@ -278,9 +278,17 @@ where
             let name = super::text(payload, "signal_name")?;
             let sequence = wait_sequence(payload)?;
             let projection_id = projection_id(run_id, wait_id);
+            let summary = if let Some(seconds) = payload["timeout_seconds"].as_i64() {
+                format!(
+                    "Waiting for signal {name} or timeout after {}.",
+                    signal_duration(seconds)
+                )
+            } else {
+                format!("Waiting for signal {name}.")
+            };
             Self::query("INSERT INTO workflow_run_waits(id,workflow_run_id,workflow_instance_id,wait_id,position,kind,sequence,status,source_status,summary,opened_at,target_name,task_backed,external_only,resume_source_kind,history_authority,created_at,updated_at) SELECT $1,id,workflow_instance_id,$2,$3,'signal',$4,'open','waiting',$5,$6,$7,FALSE,TRUE,'signal','typed_history',$8,$9 FROM workflow_runs WHERE id=$10")
                 .bind(projection_id).bind(wait_id).bind(sequence - 1).bind(sequence)
-                .bind(format!("Waiting for signal {name}."))
+                .bind(summary)
                 .bind(DB::bind_time(at)).bind(name).bind(DB::bind_time(at)).bind(DB::bind_time(at))
                 .bind(run_id).execute(&mut **tx).await?;
         } else if payload["timer_kind"] == "signal_timeout"
@@ -306,6 +314,11 @@ where
                     .bind(DB::bind_time(at)).bind(run_id).bind(wait_id).execute(&mut **tx).await?;
             } else {
                 let fired = event_type == "TimerFired";
+                // A receipt has already resolved the visible wait, but its
+                // associated timer task still transitions on fire/cancellation.
+                Self::query("UPDATE workflow_run_waits SET task_backed=FALSE,task_status=$1,updated_at=$2 WHERE workflow_run_id=$3 AND wait_id=$4 AND kind='signal' AND resume_source_id=$5")
+                    .bind(if fired {"completed"} else {"cancelled"}).bind(DB::bind_time(at)).bind(run_id).bind(wait_id)
+                    .bind(super::text(payload,"timer_id")?).execute(&mut **tx).await?;
                 let summary = if fired {
                     format!(
                         "Signal {name} timed out after {}.",

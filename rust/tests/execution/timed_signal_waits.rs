@@ -276,6 +276,7 @@ async fn received_input_cancels_only_on_application_with_original_metadata() {
         1
     );
     assert!(!kinds.contains(&"TimerFired"));
+    assert_eq!(task_retry::rows(&database,"SELECT COUNT(*) FROM workflow_run_waits WHERE kind='signal' AND source_status='applied' AND task_status='cancelled' AND task_backed=FALSE").await,1);
     cold.close().await;
     database.remove().await;
 }
@@ -297,6 +298,20 @@ async fn buffered_input_wins_over_zero_positive_and_null_timeouts() {
         )
         .await;
         assert_eq!(result.0, StatusCode::OK, "{}", result.1);
+        let observed = observation(&app, &run).await;
+        assert_eq!(observed["current_waits"]["returned_count"], 1);
+        assert_eq!(
+            observed["current_waits"]["waits"][0]["reason"],
+            if timeout.is_null() {
+                "Waiting for signal payload.".into()
+            } else {
+                format!(
+                    "Waiting for signal payload or timeout after {} second{}.",
+                    timeout.as_i64().unwrap(),
+                    if timeout == 1 { "" } else { "s" }
+                )
+            }
+        );
         let task = poll(&app, "signal-buffer", "workflow").await;
         let done = finish_task(&app, &task, close()).await;
         assert_eq!(done.0, StatusCode::OK, "{}", done.1);
@@ -531,7 +546,7 @@ async fn receipt_before_fire_stays_received_when_application_is_later() {
         );
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    assert_eq!(task_retry::rows(&database,"SELECT COUNT(*) FROM workflow_run_waits WHERE kind='signal' AND source_status='received'").await,1);
+    assert_eq!(task_retry::rows(&database,"SELECT COUNT(*) FROM workflow_run_waits WHERE kind='signal' AND source_status='received' AND task_status='completed' AND task_backed=FALSE").await,1);
     let done = finish_task(&app, &input_task, close()).await;
     assert_eq!(done.0, StatusCode::OK, "{}", done.1);
     let events = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
