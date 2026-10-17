@@ -20,7 +20,7 @@ complete parity or release readiness.
 
 ## Work order and current status
 
-Current checkpoint, October 16:
+Current checkpoint, October 17:
 
 - Query authority is merged at `0934c46d`, whole tree `98775e68`. Its separate
   [merged-main qualification](https://github.com/durable-workflow/server/actions/runs/38738455163)
@@ -442,6 +442,38 @@ Current checkpoint, October 16:
   formatting. The only runtime change adds the two command names; admission,
   task execution, schema and package/catalog identities are unchanged. This is
   a focused source result. Full matrices and consumer acceptance remain separate.
+- Direct signal waits now implement the [published timeout contract](contracts/timed-signal-waits.md)
+  within their existing default-namespace admission. Null/absent, immediate zero
+  and positive durable timeouts retain their distinct behavior. Buffered input
+  wins before timer creation. Firing retains the original wait/timer identities,
+  authored sequence and planned deadline; input application cancels a pending
+  matching timeout between cursor advancement and `SignalApplied`. Late input
+  receives a new occurrence, and receipt before firing remains received even
+  when application happens later. One retained signal wait supplies the timeout
+  and timer-task metadata. Condition timeouts remain separate.
+  The shared cancellation payload now copies original scheduled timer-kind,
+  wait/group metadata and planned time for immediate and cooperative cancellation.
+  Prior-source controls `00e658050` fail twice at timeout-field admission and
+  once at missing selection metadata, with runtime unchanged from `3f72750f1`.
+  Implementation `cb5f6226a`, runtime source tree
+  `5bfb3d9d27d6347ef42639c055803ba9b0f7fdd4`, passes 80 library tests with the
+  existing 18 ignores and 192 SQLite execution tests. The one marked-ignored
+  history-budget helper is invoked by its passing isolated-process parent.
+  Fourteen timed-signal controls cover cold expiry, buffered/delivered input,
+  competing drivers, original identity/deadline, unrelated timers, whole-batch
+  validation, lease fencing, cancellation, missing projections and projection
+  rollback. Twelve non-SQLite-specific controls plus the shared cancellation
+  regression pass on each of PostgreSQL 17.11 and MySQL 8.0.46.
+  Published Server 2.8.6 / Workflow 2.5.22 agrees on nine three-database liveness
+  and history-counter snapshots, and nine current-wait snapshots containing
+  three open waits. Those reference checks execute zero queries. The new
+  [wait comparator](../rust/tests/reference/timed_signal_waits.php) calls the
+  published current-wait projector, preserving its seconds-formatted wire dates;
+  its initial handwritten microsecond-date expectation failed and was corrected
+  without a runtime change. Existing SQLite references still pass 81 counters
+  and the task/external/timer/activity/child/update/selection classifiers.
+  No schema, package, catalog, frozen tuple or shared-runner change is included.
+  Hosted whole-source, installed-consumer and native browser gates remain open.
 
 The separate installed-SDK observation
 [checkpoint](https://github.com/durable-workflow/server/pull/478#issuecomment-6205832785)
