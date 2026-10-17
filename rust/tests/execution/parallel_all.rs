@@ -167,11 +167,16 @@ async fn complete_history(app: &Router, run: &Value) -> Value {
     }
 }
 
-async fn seed_wait_clock(database: &TestDatabase, clocks: &[(i64, chrono::DateTime<chrono::Utc>)]) {
+async fn seed_wait_clock(
+    database: &TestDatabase,
+    clocks: &[(i64, chrono::DateTime<chrono::Utc>)],
+    task: &Value,
+    started_sequence: i64,
+) {
     // Isolated source fixture: retain the same physical IDs and authored order,
     // while controlling recorded/projected opening times down to a half-ms tie.
     macro_rules! seed {
-        ($pool:expr,$wait:expr,$history:expr,$encode:expr) => {{
+        ($pool:expr,$wait:expr,$history:expr,$started:expr,$encode:expr) => {{
             let pool = $pool;
             for (sequence, at) in clocks {
                 sqlx::query($wait)
@@ -187,6 +192,17 @@ async fn seed_wait_clock(database: &TestDatabase, clocks: &[(i64, chrono::DateTi
                     .await
                     .unwrap();
             }
+            let at = clocks
+                .iter()
+                .find(|(sequence, _)| *sequence == started_sequence)
+                .unwrap()
+                .1;
+            sqlx::query($started)
+                .bind(($encode)(at))
+                .bind(task["task_id"].as_str().unwrap())
+                .execute(&pool)
+                .await
+                .unwrap();
             pool.close().await;
         }};
     }
@@ -200,6 +216,7 @@ async fn seed_wait_clock(database: &TestDatabase, clocks: &[(i64, chrono::DateTi
             .unwrap(),
             "UPDATE workflow_run_waits SET opened_at=$1 WHERE kind='activity' AND sequence=$2",
             "UPDATE workflow_history_events SET recorded_at=$1 WHERE event_type='ActivityScheduled' AND sequence=$2",
+            "UPDATE workflow_history_events SET recorded_at=$1 WHERE event_type='ActivityStarted' AND workflow_task_id=$2",
             |at: chrono::DateTime<chrono::Utc>| at
                 .to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
         ),
@@ -210,6 +227,7 @@ async fn seed_wait_clock(database: &TestDatabase, clocks: &[(i64, chrono::DateTi
                 .unwrap(),
             "UPDATE workflow_run_waits SET opened_at=$1 WHERE kind='activity' AND sequence=$2",
             "UPDATE workflow_history_events SET recorded_at=$1 WHERE event_type='ActivityScheduled' AND sequence=$2",
+            "UPDATE workflow_history_events SET recorded_at=$1 WHERE event_type='ActivityStarted' AND workflow_task_id=$2",
             |at: chrono::DateTime<chrono::Utc>| at.naive_utc()
         ),
         TestDatabase::MySql { options, .. } => seed!(
@@ -219,6 +237,7 @@ async fn seed_wait_clock(database: &TestDatabase, clocks: &[(i64, chrono::DateTi
                 .unwrap(),
             "UPDATE workflow_run_waits SET opened_at=? WHERE kind='activity' AND sequence=?",
             "UPDATE workflow_history_events SET recorded_at=? WHERE event_type='ActivityScheduled' AND sequence=?",
+            "UPDATE workflow_history_events SET recorded_at=? WHERE event_type='ActivityStarted' AND workflow_task_id=?",
             |at: chrono::DateTime<chrono::Utc>| at
         ),
     }
@@ -271,9 +290,17 @@ async fn current_wait_order_uses_published_millisecond_ties_and_original_ids() {
             )
         })
         .collect::<Vec<_>>();
-    seed_wait_clock(&database, &clocks).await;
     let activity = poll(&app, "clock-all", "activity").await;
     assert!(activity.is_object());
+    let sequence = members
+        .iter()
+        .find(|(id, _)| Some(id.as_str()) == activity["activity_execution_id"].as_str())
+        .unwrap()
+        .1;
+    seed_wait_clock(&database, &clocks, &activity, sequence).await;
+    let heartbeat=request(&app,"POST",&format!("/api/worker/activity-tasks/{}/heartbeat",activity["task_id"].as_str().unwrap()),
+        json!({"lease_owner":activity["lease_owner"],"activity_attempt_id":activity["activity_attempt_id"]})).await;
+    assert_eq!(heartbeat.0, StatusCode::OK, "{}", heartbeat.1);
     let summary = observe(&database, &app, &run).await;
     let actual = summary["current_waits"]["waits"]
         .as_array()
