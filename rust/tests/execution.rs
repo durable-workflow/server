@@ -1492,7 +1492,7 @@ async fn mismatched_child_cancellation_rolls_back_original_child_and_parent() {
     }
 }
 
-async fn update_worker(app: &Router, worker: &str) {
+async fn update_worker(app: &Router, worker: &str) -> Value {
     let (status, body) = request(app, "POST", "/api/worker/register", json!({
         "worker_id":worker,"task_queue":"test","runtime":"php","supported_workflow_types":["echo"],
         "supported_activity_types":[],"capabilities":["workflow_updates"],"workflow_command_contracts":{"echo":{
@@ -1500,6 +1500,7 @@ async fn update_worker(app: &Router, worker: &str) {
             "updates":["set"],"update_validators":[],"update_contracts":[{"name":"set","parameters":[{"name":"value","type":"int","required":true,"variadic":false,"default_available":false,"allows_null":false}]}]
         }}})).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
+    body["server_capabilities"].clone()
 }
 
 async fn open_update_wait(app: &Router, worker: &str) {
@@ -1536,7 +1537,17 @@ async fn updates_preserve_original_receipts_and_fence_recovered_tasks_across_poo
         json!(["accepted", "completed"]),
         "ordinary published clients discover the implemented update wait stages"
     );
-    update_worker(&a, "update-a").await;
+    let capabilities = update_worker(&a, "update-a").await;
+    assert_eq!(
+        capabilities,
+        discovery.1["worker_protocol"]["server_capabilities"]
+    );
+    let complete_command = capabilities["supported_workflow_task_commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|command| command.as_str() == Some("complete_update"))
+        .expect("worker discovery must permit the accepted update's completion");
     update_worker(&b, "update-b").await;
     let started = start(&a, "durable-update").await;
     let path = format!(
@@ -1613,14 +1624,23 @@ async fn updates_preserve_original_receipts_and_fence_recovered_tasks_across_poo
             .await
             .is_null()
     );
-    let old = poll(&a, "update-a", "workflow").await;
+    let polled = request(
+        &a,
+        "POST",
+        "/api/worker/workflow-tasks/poll",
+        json!({"worker_id":"update-a","task_queue":"test","timeout_seconds":0}),
+    )
+    .await;
+    assert_eq!(polled.0, StatusCode::OK);
+    assert_eq!(polled.1["server_capabilities"], capabilities);
+    let old = polled.1["task"].clone();
     assert_eq!(old["workflow_update_id"], admitted.1["update_id"]);
     assert_eq!(old["history_events"].as_array().unwrap().len(), 4);
     let complete_path = format!(
         "/api/worker/workflow-tasks/{}/complete",
         old["task_id"].as_str().unwrap()
     );
-    let commands = json!([{"type":"complete_update","update_id":admitted.1["update_id"],"result":envelope(Payload::Long(9007199254740993))}]);
+    let commands = json!([{"type":complete_command,"update_id":admitted.1["update_id"],"result":envelope(Payload::Long(9007199254740993))}]);
     let original = completion(&old, commands.clone());
     for (field, value) in [
         ("lease_owner", json!("wrong")),
@@ -1819,7 +1839,19 @@ async fn failed_updates_preserve_terminal_identity_and_parent_continuation_after
     let second = database.open().await.unwrap();
     let a = router(first.clone());
     let b = router(second.clone());
-    update_worker(&a, "failure-author").await;
+    let capabilities = update_worker(&a, "failure-author").await;
+    let discovery = request(&b, "GET", "/api/cluster/info", Value::Null).await;
+    assert_eq!(discovery.0, StatusCode::OK);
+    assert_eq!(
+        capabilities,
+        discovery.1["worker_protocol"]["server_capabilities"]
+    );
+    let fail_command = capabilities["supported_workflow_task_commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|command| command.as_str() == Some("fail_update"))
+        .expect("worker discovery must permit the accepted update's failure");
     let started = start(&a, "failed-update-parent").await;
     open_update_wait(&a, "failure-author").await;
     let path = "/api/workflows/failed-update-parent/update/set";
@@ -1851,7 +1883,7 @@ async fn failed_updates_preserve_terminal_identity_and_parent_continuation_after
     );
     let failed = completion(
         &task,
-        json!([{"type":"fail_update","update_id":admitted.1["update_id"],
+        json!([{"type":fail_command,"update_id":admitted.1["update_id"],
         "message":"original failure λ","exception_type":"ValueError","exception_class":"builtins.ValueError","non_retryable":true,
         "result":"ignored by PHP failure normalization","extra":{"ignored":true}}]),
     );
