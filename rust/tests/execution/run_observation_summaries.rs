@@ -79,6 +79,15 @@ pub(super) async fn export_reference(database: &TestDatabase, summary: &Value, h
     } else {
         "DW_TEST_SUMMARY_REFERENCE"
     };
+    export_reference_for(database, summary, history, destination).await;
+}
+
+pub(super) async fn export_reference_for(
+    database: &TestDatabase,
+    summary: &Value,
+    history: &Value,
+    destination: &str,
+) {
     if let Ok(path) = std::env::var(destination) {
         use std::io::Write;
         let run = summary["run_id"].as_str().unwrap();

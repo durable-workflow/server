@@ -283,6 +283,42 @@ where
                 .bind(format!("Waiting for signal {name}."))
                 .bind(DB::bind_time(at)).bind(name).bind(DB::bind_time(at)).bind(DB::bind_time(at))
                 .bind(run_id).execute(&mut **tx).await?;
+        } else if payload["timer_kind"] == "signal_timeout"
+            && matches!(
+                event_type,
+                "TimerScheduled" | "TimerFired" | "TimerCancelled"
+            )
+        {
+            let wait_id = super::text(payload, "signal_wait_id")?;
+            let name = super::text(payload, "signal_name")?;
+            if event_type == "TimerScheduled" {
+                let fire_at = payload["fire_at"]
+                    .as_str()
+                    .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                    .map(|value| value.with_timezone(&Utc))
+                    .ok_or_else(|| {
+                        super::refuse(axum::http::StatusCode::CONFLICT, "invalid_stored_wait")
+                    })?;
+                let delay = payload["delay_seconds"].as_i64().unwrap_or(0);
+                Self::query("UPDATE workflow_run_waits SET deadline_at=$1,resume_source_kind='timer',resume_source_id=$2,external_only=FALSE,summary=$3,updated_at=$4 WHERE workflow_run_id=$5 AND wait_id=$6 AND kind='signal' AND status='open'")
+                    .bind(DB::bind_time(fire_at)).bind(super::text(payload,"timer_id")?)
+                    .bind(format!("Waiting for signal {name} or timeout after {}.", signal_duration(delay)))
+                    .bind(DB::bind_time(at)).bind(run_id).bind(wait_id).execute(&mut **tx).await?;
+            } else {
+                let fired = event_type == "TimerFired";
+                let summary = if fired {
+                    format!(
+                        "Signal {name} timed out after {}.",
+                        signal_duration(payload["delay_seconds"].as_i64().unwrap_or(0))
+                    )
+                } else {
+                    format!("Signal {name} timeout was cancelled.")
+                };
+                Self::query("UPDATE workflow_run_waits SET status=$1,source_status=$2,summary=$3,resolved_at=$4,task_backed=FALSE,task_status=$5,updated_at=$6 WHERE workflow_run_id=$7 AND wait_id=$8 AND kind='signal' AND status='open'")
+                    .bind(if fired {"resolved"} else {"cancelled"}).bind(if fired {"timed_out"} else {"timeout_cancelled"})
+                    .bind(summary).bind(DB::bind_time(at)).bind(if fired {"completed"} else {"cancelled"})
+                    .bind(DB::bind_time(at)).bind(run_id).bind(wait_id).execute(&mut **tx).await?;
+            }
         } else if matches!(event_type, "SignalReceived" | "SignalApplied") {
             let wait_id = super::text(payload, "signal_wait_id")?;
             let name = super::text(payload, "signal_name")?;
@@ -292,7 +328,7 @@ where
             let outcome = DB::optional_string(&command, "outcome")?;
             // A buffered receipt can precede the opening event. Application then
             // resolves that authored wait. Neither event creates a missing row.
-            Self::query("UPDATE workflow_run_waits SET status='resolved',source_status=$1,summary=$2,resolved_at=$3,resume_source_id=$4,command_id=$5,command_sequence=$6,command_status=$7,command_outcome=$8,updated_at=$9 WHERE workflow_run_id=$10 AND wait_id=$11 AND kind='signal' AND (status='open' OR (status='resolved' AND source_status='received'))")
+            Self::query("UPDATE workflow_run_waits SET status='resolved',source_status=$1,summary=$2,resolved_at=$3,resume_source_id=CASE WHEN resume_source_kind='timer' THEN resume_source_id ELSE $4 END,command_id=$5,command_sequence=$6,command_status=$7,command_outcome=$8,updated_at=$9 WHERE workflow_run_id=$10 AND wait_id=$11 AND kind='signal' AND (status='open' OR (status='resolved' AND source_status='received'))")
                 .bind(if event_type == "SignalApplied" { "applied" } else { "received" })
                 .bind(format!("Signal {name} received.")).bind(DB::bind_time(at))
                 .bind(command_id).bind(command_id).bind(DB::number(&command, "command_sequence")?)
@@ -324,6 +360,9 @@ where
             .bind(run_id).bind(kind).execute(&mut **tx).await?;
         Ok(())
     }
+}
+fn signal_duration(seconds: i64) -> String {
+    format!("{seconds} second{}", if seconds == 1 { "" } else { "s" })
 }
 fn projection_id(run_id: &str, wait_id: &str) -> String {
     Sha256::digest(format!("{run_id}|{wait_id}"))

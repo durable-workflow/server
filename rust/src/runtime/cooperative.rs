@@ -366,8 +366,16 @@ where
             .execute(&mut **tx)
             .await?;
         }
-        Self::append(tx,&run_id,"TimerCancelled",json!({"timer_id":timer_id,"sequence":DB::number(timer,"sequence")?,
-            "delay_seconds":DB::number(timer,"delay_seconds")?,"fire_at":DB::instant(timer,"fire_at")?,"cancelled_at":at}),task_id,Some(request_id)).await
+        let payload = Self::timer_cancellation_payload(tx, &run_id, timer, at).await?;
+        Self::append(
+            tx,
+            &run_id,
+            "TimerCancelled",
+            payload,
+            task_id,
+            Some(request_id),
+        )
+        .await
     }
 
     pub(super) async fn finish_root_cancellation(

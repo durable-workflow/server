@@ -5,25 +5,53 @@ async fn cancellation_retains_original_timer_selection_metadata_across_reopen() 
     let database = TestDatabase::new().await;
     let first = database.open().await.unwrap();
     let app = router(first.clone());
-    register(&app, "selection-cancel", json!(["echo"]), json!(["echo_activity"])).await;
+    register(
+        &app,
+        "selection-cancel",
+        json!(["echo"]),
+        json!(["echo_activity"]),
+    )
+    .await;
     let started = start(&app, "selection-cancel-metadata").await;
     let task = poll(&app, "selection-cancel", "workflow").await;
     let mut commands = mixed_commands(2);
     commands[2]["delay_seconds"] = json!(60);
     assert_eq!(finish_task(&app, &task, commands).await.0, StatusCode::OK);
     let before = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
-    let original = before.as_array().unwrap().iter().find(|e| e["event_type"] == "TimerScheduled").unwrap()["payload"].clone();
+    let original = before
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["event_type"] == "TimerScheduled")
+        .unwrap()["payload"]
+        .clone();
     assert!(original["parallel_group_path"].is_array());
-    let cancelled = request(&app, "POST", &format!("/api/workflows/{}/cancel", started["workflow_id"].as_str().unwrap()),
-        json!({"reason":"retain authored timer identity"})).await;
+    let cancelled = request(
+        &app,
+        "POST",
+        &format!(
+            "/api/workflows/{}/cancel",
+            started["workflow_id"].as_str().unwrap()
+        ),
+        json!({"reason":"retain authored timer identity"}),
+    )
+    .await;
     assert!(cancelled.0.is_success(), "{}", cancelled.1);
     drop(app);
     first.close().await;
     let second = database.open().await.unwrap();
     let app = router(second.clone());
     let after = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
-    assert_eq!(&after.as_array().unwrap()[..before.as_array().unwrap().len()], before.as_array().unwrap());
-    let events = after.as_array().unwrap().iter().filter(|e| e["event_type"] == "TimerCancelled").collect::<Vec<_>>();
+    assert_eq!(
+        &after.as_array().unwrap()[..before.as_array().unwrap().len()],
+        before.as_array().unwrap()
+    );
+    let events = after
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["event_type"] == "TimerCancelled")
+        .collect::<Vec<_>>();
     assert_eq!(events.len(), 1);
     let actual = &events[0]["payload"];
     for field in ["timer_id", "sequence", "delay_seconds", "fire_at"] {

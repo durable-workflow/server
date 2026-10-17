@@ -634,7 +634,11 @@ where
             .bind(run_id).bind(resolution).bind(DB::number(&row, "sequence")?).fetch_optional(&mut **tx).await?.is_some() {
             return Ok(None);
         }
-        Ok(Some(DB::document_row(&row, "payload")?))
+        let payload = DB::document_row(&row, "payload")?;
+        if Self::signal_timeout_finished(tx, run_id, &payload).await? {
+            return Ok(None);
+        }
+        Ok(Some(payload))
     }
 
     async fn enqueue_pending_signal(
@@ -738,6 +742,10 @@ where
             .execute(&mut **tx)
             .await?;
         Self::append(tx, run_id, "MessageCursorAdvanced", json!({"stream_key":format!("instance:{}",DB::string(&run,"workflow_instance_id")?),"previous_position":previous,"new_position":position}), Some(task_id), None).await?;
+        if direct {
+            Self::cancel_signal_timeout(tx, run_id, &wait, task_id, &command_id, applied_at)
+                .await?;
+        }
         let mut applied = json!({"workflow_command_id":command_id,"signal_id":signal_id,"signal_name":name,"signal_wait_id":wait_id,"value":wire(&prepared.value)});
         if direct {
             applied["sequence"] = wait["sequence"].clone();
@@ -1173,6 +1181,10 @@ where
                     "workflow_sequence",
                     "workflow_event_type",
                     "open_wait_id",
+                    "timer_id",
+                    "timer_kind",
+                    "signal_wait_id",
+                    "signal_name",
                 ] {
                     if let Some(value) = task_payload.get(field) {
                         claim[field] = value.clone();
@@ -1572,8 +1584,9 @@ where
                     }
                 }
                 "open_signal_wait" => {
-                    reject_fields(command, &["type", "signal_name"])?;
+                    reject_fields(command, &["type", "signal_name", "timeout_seconds"])?;
                     text(command, "signal_name")?;
+                    super::timed_signals::timeout(command)?;
                 }
                 "complete_update" if commands.len() == 1 => {
                     reject_fields(command, &["type", "update_id", "result"])?;
@@ -1835,17 +1848,20 @@ where
                         .unwrap()
                         .remove("condition_wait_occurrence_id");
                 }
-                let wait_id = if direct {
+                let pending_wait_id = if direct {
                     let pending = Self::query("SELECT signal_wait_id FROM workflow_signal_records WHERE workflow_run_id=$1 AND signal_name=$2 AND status='received' ORDER BY command_sequence,id LIMIT 1")
                         .bind(&run_id).bind(text(command, "signal_name")?).fetch_optional(&mut *tx).await?;
                     pending
                         .as_ref()
                         .map(|row| DB::string(row, "signal_wait_id"))
                         .transpose()?
-                        .unwrap_or_else(id)
                 } else {
-                    id()
+                    None
                 };
+                let wait_id = pending_wait_id.clone().unwrap_or_else(id);
+                if payload["timeout_seconds"].is_null() {
+                    payload.as_object_mut().unwrap().remove("timeout_seconds");
+                }
                 payload[if direct {
                     "signal_wait_id"
                 } else {
@@ -1860,11 +1876,14 @@ where
                     } else {
                         "ConditionWaitOpened"
                     },
-                    payload,
+                    payload.clone(),
                     Some(task_id),
                     None,
                 )
                 .await?;
+                if direct && pending_wait_id.is_none() {
+                    Self::schedule_signal_timeout(&mut tx, &run, &payload, task_id).await?;
+                }
                 Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1")
                     .bind(&run_id)
                     .execute(&mut *tx)
@@ -2203,9 +2222,19 @@ where
                 .fetch_one(&mut *tx)
                 .await?;
             let task_id = DB::string(&task, "id")?;
-            let metadata =
-                super::selections::metadata(&DB::document_row(&task, "payload")?, "timer")?;
+            let task_payload = DB::document_row(&task, "payload")?;
+            let metadata = super::selections::metadata(&task_payload, "timer")?;
             let mut payload = json!({"timer_id":timer_id,"sequence":DB::number(&timer,"sequence")?,"delay_seconds":DB::number(&timer,"delay_seconds")?,"fire_at":fire_at,"fired_at":fired_at});
+            if task_payload.get("signal_wait_id").is_some() {
+                payload["timer_kind"] = json!("signal_timeout");
+                payload["signal_wait_id"] = task_payload["signal_wait_id"].clone();
+                payload["signal_name"] = task_payload["signal_name"].clone();
+            }
+            let resume = if payload["timer_kind"] == "signal_timeout" {
+                super::timed_signals::resolution(&payload)
+            } else {
+                json!({"timer_id":timer_id})
+            };
             super::selections::merge(&mut payload, &metadata);
             Self::append(
                 &mut tx,
@@ -2238,7 +2267,7 @@ where
                 &mut tx,
                 &run_id,
                 &DB::string(&timer, "queue")?,
-                json!({"timer_id":timer_id}),
+                resume,
                 &metadata,
             )
             .await?;

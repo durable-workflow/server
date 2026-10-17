@@ -251,6 +251,13 @@ workers replay the persisted activity result and complete the workflow normally.
 Discovery marks the runtime as development, advertises the admitted commands
 and sets the major unimplemented worker capabilities to false. Accepted protocol
 headers identify transport shapes, not a full protocol conformance claim.
+Direct signal waits in the default namespace accept an optional
+`timeout_seconds`: null/absence waits indefinitely, zero resolves immediately,
+and a positive integer retains a durable timer and its original deadline.
+Buffered input wins before scheduling; application cancels a pending timeout
+with the original timer/wait metadata. The [timed-signal contract](../docs/contracts/timed-signal-waits.md)
+describes resume identities and retained waits. Named-namespace admission,
+condition timeouts and installed-consumer acceptance remain separate gates.
 Queries admit a quiescent committed snapshot, including completed runs, through
 the published worker query protocol. An active/ready workflow task returns
 `query_snapshot_busy`; concurrent workflow/query routing remains unqualified.

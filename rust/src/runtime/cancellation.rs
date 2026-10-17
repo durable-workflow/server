@@ -274,8 +274,7 @@ where
                 .bind(&timer_id)
                 .execute(&mut *tx)
                 .await?;
-            let payload = json!({"timer_id":timer_id,"sequence":DB::number(&timer,"sequence")?,
-                "delay_seconds":DB::number(&timer,"delay_seconds")?,"fire_at":DB::instant(&timer,"fire_at")?,"cancelled_at":at});
+            let payload = Self::timer_cancellation_payload(&mut tx, &run_id, &timer, at).await?;
             Self::append(
                 &mut tx,
                 &run_id,
@@ -325,6 +324,53 @@ where
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok((StatusCode::OK, response))
+    }
+
+    pub(super) async fn timer_cancellation_payload(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        timer: &DB::Row,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Value> {
+        let timer_id = DB::string(timer, "id")?;
+        let scheduled = Self::query(DB::TIMER_SCHEDULE_SQL)
+            .bind(run_id)
+            .bind(&timer_id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .map(|row| DB::document_row(&row, "payload"))
+            .transpose()?
+            .unwrap_or(Value::Null);
+        let mut payload = json!({"timer_id":timer_id,"sequence":DB::number(timer,"sequence")?,
+            "delay_seconds":DB::number(timer,"delay_seconds")?,"fire_at":DB::instant(timer,"fire_at")?,"cancelled_at":at});
+        for key in ["sequence", "delay_seconds"] {
+            if let Some(value) = scheduled[key]
+                .as_i64()
+                .or_else(|| scheduled[key].as_str()?.parse().ok())
+            {
+                payload[key] = json!(value);
+            }
+        }
+        for key in [
+            "fire_at",
+            "timer_kind",
+            "condition_wait_id",
+            "condition_wait_occurrence_id",
+            "condition_key",
+            "condition_definition_fingerprint",
+            "signal_wait_id",
+            "signal_name",
+        ] {
+            if scheduled[key]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+            {
+                payload[key] = scheduled[key].clone();
+            }
+        }
+        let metadata = super::selections::metadata(&scheduled, "timer")?;
+        super::selections::merge(&mut payload, &metadata);
+        Ok(payload)
     }
 
     pub(super) async fn cancel_open_activities(

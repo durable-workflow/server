@@ -231,7 +231,11 @@ impl SummaryHistory {
             let supported = if kind == "SelectionResolved" {
                 true
             } else if matches!(kind, "TimerScheduled" | "TimerFired" | "TimerCancelled") {
-                self.timers.apply(kind, &payload)
+                if payload["timer_kind"] == "signal_timeout" {
+                    self.external_waits.apply(kind, &payload)
+                } else {
+                    self.timers.apply(kind, &payload)
+                }
             } else if kind.starts_with("Activity") {
                 self.activities.apply(kind, &payload)
             } else if kind.starts_with("Child") {

@@ -126,13 +126,17 @@ where
             }
             selected_timer_task |= DB::optional_string(row, "task_id")? == summary.task_id;
         }
-        if summary.task_type.as_deref() == Some("timer") && !selected_timer_task {
+        let signal_timer = summary
+            .wait
+            .as_ref()
+            .is_some_and(|wait| wait.kind == "signal" && wait.source_kind == "timer");
+        if summary.task_type.as_deref() == Some("timer") && !selected_timer_task && !signal_timer {
             return Ok(false);
         }
         let Some(first) = rows.first() else {
             // An open timer task with no pending typed timer is not a workflow
             // resume source, even if an older mutable task row remains.
-            return Ok(summary.task_type.as_deref() != Some("timer"));
+            return Ok(summary.task_type.as_deref() != Some("timer") || signal_timer);
         };
         let id = DB::string(first, "timer_id")?;
         let fire_at = DB::instant(first, "fire_at")?;
