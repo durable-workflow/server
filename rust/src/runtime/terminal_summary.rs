@@ -201,6 +201,7 @@ where
             }
         }
         history.active_history_supported &= history.selections.complete();
+        history.active_history_supported &= history.barriers.complete();
         Ok((history.count == last && history.count != 0).then_some(history))
     }
 }
@@ -220,6 +221,7 @@ struct SummaryHistory {
     children: ChildSummaryHistory,
     updates: UpdateSummaryHistory,
     selections: super::selection_summary::SelectionHistory,
+    barriers: super::all_groups::AllHistory,
 }
 
 impl SummaryHistory {
@@ -227,6 +229,7 @@ impl SummaryHistory {
         self.bytes += history_budget::event_size(kind, raw)? as i64;
         let payload: Value = serde_json::from_str(raw)?;
         if !closed {
+            self.active_history_supported &= self.barriers.apply(kind, &payload);
             self.active_history_supported &= self.selections.apply(id, kind, &payload);
             let supported = if kind == "SelectionResolved" {
                 true

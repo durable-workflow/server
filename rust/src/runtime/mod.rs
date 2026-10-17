@@ -9,6 +9,7 @@ mod activity_failures;
 mod activity_heartbeats;
 mod activity_results;
 mod activity_summary;
+mod all_groups;
 mod backend;
 mod cancellation;
 mod child_summary;

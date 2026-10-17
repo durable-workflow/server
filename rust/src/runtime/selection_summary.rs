@@ -43,6 +43,9 @@ impl SelectionHistory {
         let Ok(metadata) = super::selections::metadata(payload, kind) else {
             return false;
         };
+        if !super::selections::is_selection(&metadata) {
+            return true;
+        }
         let Some(group_id) = metadata["parallel_group_id"].as_str() else {
             return true;
         };
