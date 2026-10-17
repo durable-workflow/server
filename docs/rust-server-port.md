@@ -11,7 +11,8 @@ The latest merged API slice is targeted activity-result inspection in
 Its candidate passed all 13 shared jobs across six database configurations and
 the applicable PHP/source and public-boundary checks. The separate
 [merged-main run](https://github.com/durable-workflow/server/actions/runs/38773062581)
-is still pending. Native result discovery remains unadvertised.
+passes all 13 jobs. Its independent main-artifact readback remains open after
+download timeouts. Native result discovery remains unadvertised.
 Earlier failed observations remain failed, and a candidate pass does not qualify
 a later tree. Frozen published PHP, embedded and SDK tuples remain separate
 from current PHP release work. Representative family checks do not establish
@@ -32,8 +33,17 @@ Current checkpoint, October 15:
   configuration. SQLite also records 77 library passes with the existing
   18 explicit ignores. The separate main run above remains its own gate.
 - [Metadata-only activity listing #476](https://github.com/durable-workflow/server/pull/476)
-  is still a draft at `4b9384b3`. Its current database qualification is pending.
-  Earlier unsuccessful originals remain unsuccessful.
+  remains a draft. Source `4b9384b3`, whole tree `34a0caeb`, passes all 13 jobs
+  in [38773360007](https://github.com/durable-workflow/server/actions/runs/38773360007).
+  Independent six-archive readback confirms 29 comparisons, 20 successful
+  profile statuses and 133 execution tests per database; SQLite also has
+  78 library passes and 18 existing ignores. Its exact hosted binary then
+  passed the separate [installed metadata consumer](../tests/Fixtures/ActivityMetadataProjection/README.md)
+  on SQLite, PostgreSQL 17 and MySQL 8.0 in two namespaces: twelve completed
+  originals, 48 full metadata comparisons and fresh-client reads after closure.
+  The new consumer source and current-main integration need their own hosted
+  checks. Other database configurations still need this consumer, and native
+  Waterline/discovery remain open. Earlier unsuccessful originals stay failed.
 - [Read-only upgrade inspection #460](https://github.com/durable-workflow/server/pull/460)
   remains a draft at `7066a50e`. Qualification and review are incomplete, so
   the candidate is not being promoted. No backup, migration or takeover
@@ -49,8 +59,8 @@ Current checkpoint, October 15:
   established. Native bounded run observation, discovery and positive native
   browser acceptance remain open.
 
-Next, complete the independent merged-main result qualification and review the
-metadata candidate's actual outcomes. Native Waterline acceptance then needs
+Next, finish the independent merged-main artifact readback and qualify the
+metadata consumer's current-main integration. Native Waterline acceptance needs
 the canonical bounded run page and qualified discovery, followed by the same
 unmodified browser recipe. Keep the incomplete inspector review separate.
 No new release, database takeover or full-family parity is claimed.
@@ -65,7 +75,10 @@ API SIGTERM exited zero without OOM. Its original hosted MySQL image-pull and
 PostgreSQL renewal-observer failures remain failed; later observations do not
 explain or replace them.
 
-The earlier foundation stages remain separately qualified as follows:
+## Earlier foundation qualification stages
+
+These entries preserve the earlier component and failed-original scopes before
+the delivered `30137616` checkpoint above. They are not current promotion status.
 
 - Merged [#445](https://github.com/durable-workflow/server/pull/445),
   [#446](https://github.com/durable-workflow/server/pull/446),
@@ -235,6 +248,35 @@ and selected-build-cohort parity remains a separate open gate.
 Broader runtime/operational parity, safe sequential PHP database takeover,
 matched performance measurements and release/cutover preparation remain #325
 requirements. No native release or deployment is qualified.
+
+Activity-metadata candidate `062ce91a` has two failed SQLite observations in
+run `38738644671`. The original stopped at frozen PHP waiting-history polling.
+The one SQLite-only repeat passed that phase, then refused an aborted query-poll
+exchange in the installed Python late synchronous-handler case. That original
+does not retain enough detail to identify which connection aborted.
+Its later acceptance assertions did not execute. Neither failure establishes
+a PHP, native or SDK cause. The next runner keeps both failures and all original
+budgets, records the waiting-history phase and query response progress, and
+prints bounded client lifecycle/authority metadata on failure. A constructed
+truncated HTTP response still fails, now with byte count, upstream completion
+and downstream state; headers, tokens and response bodies stay excluded.
+Seven observer/artifact controls pass. This diagnostic revision needs its own
+full qualification and carries no earlier database passes.
+
+The separate diagnostic head `21de52bf` passes twelve jobs but fails MySQL 8.4
+at another poll after the late-handler expiry. Its bounded trace shows an
+incomplete inbound request aborted before any upstream exchange. This new
+observation does not explain the older SQLite failures. The observer now
+classifies only an incomplete, aborted query-poll body with `ECONNRESET` and
+no forwarding as `poll-disconnected`. Such a request cannot claim a task.
+Complete requests, forwarded exchanges and interrupted terminal submissions
+still fail the observation. Actual TCP counterfactuals fail the previous
+observer and pass the correction, including unchanged upstream request counts
+and fatal truncated-response/result-submission controls. Canonical claim,
+expiry, callback, result and history assertions remain unchanged. This runner
+correction and its next combined source require fresh full qualification.
+This metadata branch now integrates the exact merged result source
+`6194913f`; that new combination carries neither parent's acceptance.
 
 Targeted-result candidate `d83a3cb9` fails two independent hosted boundaries in
 run `38746470760`: MySQL 8.4 image pull times out before admission, and the
