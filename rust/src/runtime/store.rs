@@ -2809,7 +2809,7 @@ pub(super) fn reject_fields(body: &Value, allowed: &[&str]) -> Result<()> {
 }
 
 pub(crate) fn capabilities() -> Value {
-    let mut value = json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "start_child_workflow", "open_condition_wait", "open_signal_wait", "record_version_marker", "complete_workflow", "continue_as_new"],
+    let mut value = json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "start_child_workflow", "open_condition_wait", "open_signal_wait", "record_version_marker", "complete_workflow", "continue_as_new", "complete_update", "fail_update"],
         "worker_deregistration_fencing":{"schema":"durable-workflow.v2.worker-deregistration.v1","supported":true,"receipt_retention_seconds":600,"endpoint":"/worker/registrations/{workerId}/deregister"},
         "workflow_memo_updates": false, "cooperative_cancellation": true, "prepared_local_activities": false,
         "worker_sessions": false, "sticky_execution": false, "local_activities": false, "message_streams": false,

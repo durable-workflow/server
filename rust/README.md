@@ -48,6 +48,9 @@ remain acceptance gates in the [port log](../docs/rust-server-port.md).
 The development update slice supports original declarations and primitive
 positional contracts, immutable request-ID receipts, routed SDK update tasks,
 normal lease/attempt and registration fences, and durable exact Avro results.
+Registration, polling and cluster discovery advertise `complete_update` and
+`fail_update` so workers can negotiate those already admitted commands before
+completing an accepted update.
 Updates require a quiescent committed wait; busy workflow/control queues are
 refused explicitly. Each run is bounded to 64 updates, arguments to 64 KiB,
 results to 256 KiB and completion waits to 30 seconds. A timed-out wait leaves
