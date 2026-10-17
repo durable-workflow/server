@@ -28,6 +28,38 @@ fn string(value: &Value) -> Option<&str> {
         .filter(|v| !v.is_empty())
 }
 
+pub(super) fn validate_batch(commands: &[Value]) -> Result<()> {
+    if commands
+        .iter()
+        .filter(|command| {
+            matches!(
+                command["type"].as_str(),
+                Some("complete_workflow" | "fail_workflow" | "continue_as_new")
+            )
+        })
+        .count()
+        > 1
+    {
+        return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_commands"));
+    }
+    // PHP parseCommands removes terminal commands before group validation.
+    let members: std::borrow::Cow<'_, [Value]> = if commands
+        .iter()
+        .any(|command| command["type"] == "fail_workflow")
+    {
+        std::borrow::Cow::Owned(
+            commands
+                .iter()
+                .filter(|command| command["type"] != "fail_workflow")
+                .cloned()
+                .collect(),
+        )
+    } else {
+        std::borrow::Cow::Borrowed(commands)
+    };
+    super::selections::validate_batch(&members)
+}
+
 pub(super) fn validate(command: &Value) -> Result<WorkflowFailure> {
     let exception = &command["exception"];
     let message = string(&exception["message"])

@@ -193,7 +193,7 @@ where
                     .bind(&run_id)
                     .fetch_one(&mut *tx)
                     .await?;
-            let pending_children = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled')")
+            let pending_children = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled','failed')")
                 .bind(&run_id).fetch_one(&mut *tx).await?;
             let updates = Self::scalar("SELECT COUNT(*) FROM workflow_updates WHERE workflow_run_id=$1 AND status='accepted'")
                 .bind(&run_id).fetch_one(&mut *tx).await?;

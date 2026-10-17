@@ -1498,20 +1498,7 @@ where
             .as_array()
             .filter(|c| !c.is_empty() && c.len() <= 100)
             .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_commands"))?;
-        super::selections::validate_batch(commands)?;
-        if commands
-            .iter()
-            .filter(|command| {
-                matches!(
-                    command["type"].as_str(),
-                    Some("complete_workflow" | "fail_workflow" | "continue_as_new")
-                )
-            })
-            .count()
-            > 1
-        {
-            return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_commands"));
-        }
+        super::workflow_failures::validate_batch(commands)?;
         // Validate the entire batch before mutation. Unknown commands and
         // options cannot be silently accepted as unsupported durable effects.
         for (index, command) in commands.iter().enumerate() {

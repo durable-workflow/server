@@ -414,6 +414,6 @@ where
             );
             summary.repair_blocked = None;
         }
-        return Ok(true);
+        Ok(true)
     }
 }

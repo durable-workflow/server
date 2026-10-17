@@ -136,6 +136,14 @@ async fn workflow_failure_resolves_original_child_failure_and_one_parent_wakeup(
     assert_eq!(resumed["child_workflow_run_id"], child["run_id"]);
     snapshot(&database, &app, &parent).await;
     assert!(poll(&app, "failure-parent", "workflow").await.is_null());
+    let restarted = finish_task(&app, &resumed, json!([child_command(9007199254740994_i64)])).await;
+    assert_eq!(restarted.0, StatusCode::OK, "{}", restarted.1);
+    snapshot(&database, &app, &parent).await;
+    let next_child = poll(&app, "failure-child", "workflow").await;
+    assert_ne!(next_child["run_id"], child["run_id"]);
+    assert_eq!(finish_task(&app,&next_child,json!([{"type":"complete_workflow","result":envelope(Payload::Long(9007199254740994_i64))}])).await.0,StatusCode::OK);
+    let resumed = poll(&app, "failure-parent", "workflow").await;
+    assert_eq!(resumed["run_id"], parent["run_id"]);
     let completed = finish_task(
         &app,
         &resumed,
@@ -418,7 +426,10 @@ async fn workflow_failure_yields_to_original_cooperative_cancellation() {
         terminal["cancellation_cleanup"]["request_id"],
         requested.1["cancellation_request"]["request_id"]
     );
-    assert_eq!(terminal["cancellation_cleanup"]["cleanup_deadline_at"],requested.1["cancellation_request"]["cleanup_deadline_at"]);
+    assert_eq!(
+        terminal["cancellation_cleanup"]["cleanup_deadline_at"],
+        requested.1["cancellation_request"]["cleanup_deadline_at"]
+    );
     assert_eq!(
         task_retry::rows(
             &database,
@@ -433,21 +444,49 @@ async fn workflow_failure_yields_to_original_cooperative_cancellation() {
 
 #[tokio::test]
 async fn workflow_failure_terminal_position_does_not_split_authored_selection_members() {
-    let database=TestDatabase::new().await;let runtime=database.open().await.unwrap();let app=router(runtime.clone());
-    register(&app,"failure-worker",json!(["echo"]),json!(["echo_activity"])).await;
-    let run=start(&app,"failure-selection-terminal-position").await;let task=poll(&app,"failure-worker","workflow").await;
-    let mut commands=selections::mixed_commands(2);
-    commands[2]["delay_seconds"]=json!(60);
-    commands.as_array_mut().unwrap().insert(2,command());
-    let accepted=finish_task(&app,&task,commands).await;
-    assert_eq!(accepted.0,StatusCode::OK,"{}",accepted.1);
-    let events=history(&app,&run).await;
-    assert_eq!(events.as_array().unwrap().iter().map(|e|e["event_type"].as_str().unwrap()).collect::<Vec<_>>(),
-        vec!["StartAccepted","WorkflowStarted","VersionMarkerRecorded","ActivityScheduled","TimerScheduled","WorkflowFailed"]);
-    assert_eq!(events[3]["payload"]["sequence"],2);assert_eq!(events[4]["payload"]["sequence"],3);
-    assert_eq!(events[3]["payload"]["parallel_group_id"],events[4]["payload"]["parallel_group_id"]);
-    snapshot(&database,&app,&run).await;
-    runtime.close().await;database.remove().await;
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(
+        &app,
+        "failure-worker",
+        json!(["echo"]),
+        json!(["echo_activity"]),
+    )
+    .await;
+    let run = start(&app, "failure-selection-terminal-position").await;
+    let task = poll(&app, "failure-worker", "workflow").await;
+    let mut commands = selections::mixed_commands(2);
+    commands[2]["delay_seconds"] = json!(60);
+    commands.as_array_mut().unwrap().insert(2, command());
+    let accepted = finish_task(&app, &task, commands).await;
+    assert_eq!(accepted.0, StatusCode::OK, "{}", accepted.1);
+    let events = history(&app, &run).await;
+    assert_eq!(
+        events
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["event_type"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec![
+            "StartAccepted",
+            "WorkflowStarted",
+            "VersionMarkerRecorded",
+            "ActivityScheduled",
+            "TimerScheduled",
+            "WorkflowFailed"
+        ]
+    );
+    assert_eq!(events[3]["payload"]["sequence"], 2);
+    assert_eq!(events[4]["payload"]["sequence"], 3);
+    assert_eq!(
+        events[3]["payload"]["parallel_group_id"],
+        events[4]["payload"]["parallel_group_id"]
+    );
+    snapshot(&database, &app, &run).await;
+    runtime.close().await;
+    database.remove().await;
 }
 
 #[tokio::test]
