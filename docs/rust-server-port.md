@@ -474,6 +474,49 @@ Current checkpoint, October 17:
   and the task/external/timer/activity/child/update/selection classifiers.
   No schema, package, catalog, frozen tuple or shared-runner change is included.
   Hosted whole-source, installed-consumer and native browser gates remain open.
+- Condition waits now implement their [published timeout contract](contracts/timed-condition-waits.md)
+  in the existing default and named namespaces. Immediate and positive expiry
+  retain each physical wait's identity, logical occurrence metadata and authored
+  deadline. A fired condition stays open until worker application or terminal
+  history; later input cannot satisfy that expired physical wait. Applying input
+  before expiry records `SignalApplied`, `ConditionWaitSatisfied`, then matching
+  `TimerCancelled`. Reopening may retain the logical occurrence while authoring
+  a new physical wait and timer. Buffered input does not suppress condition-timer
+  creation. Projections retain one condition row and refuse inconsistent state
+  without read repair.
+  The shared timeout-cancellation path also corrects the physical history
+  relationship: worker application links `TimerCancelled` to its workflow task,
+  with no workflow-command foreign key, matching published `TimerCancellation`.
+  Prior-source contract commit `0d8f3f4d2` fails both timeout admission controls
+  and the corrected physical-SQL relationship assertion. Its earlier attempt to
+  inspect that foreign key through the public history DTO was an invalid fixture
+  and is not defect evidence.
+  Implementation `d4adf36bc`, runtime source tree
+  `1a3e30250c2b84fda95c79e374bf36a4e50b91be`, passes 80 library tests with 18
+  existing ignores. The initial full execution run has 204 passes and two old
+  expectations that a positive condition timeout is unsupported. Test-only
+  correction `76e1f8fe2` preserves those whole-batch refusal controls using an
+  invalid negative timeout; the full SQLite suite then passes all 206 tests.
+  The isolated history-budget child remains invoked by its passing parent.
+  Fourteen condition controls cover cold expiry, default/named isolation,
+  physical reopen, late and claimed input, buffered input, competing drivers,
+  fencing, cancellation, invalid batches and projection rollback. Eleven
+  applicable condition controls, twelve direct-signal controls and the shared
+  selection-cancellation control pass on each of PostgreSQL 17.11 and MySQL
+  8.0.46. Full Rust formatting and changed PHP syntax pass.
+  Published Server 2.8.6 / Workflow 2.5.22 agrees on all 75 new three-database
+  counter/current-wait snapshots, including 69 open wait members and 69
+  nonterminal liveness snapshots, with zero reference queries. Condition snapshots
+  record actual clock bounds around each read and require agreement at both;
+  the earlier seconds-only fixture failed because it could precede an immediate
+  deadline, and remains an unsuccessful fixture attempt. Existing 81 counter
+  snapshots and all seven prior classifier helpers also pass. The relevant
+  published wait/bridge/timer classes are unchanged in Workflow 2.5.32; its
+  summary-projector change only wraps summary upserts in a SQLite transaction.
+  Separately qualified PHP main `964f9e3d5` is integrated at `7a9efe0a6`,
+  retaining published Server 2.8.7 / Helm 0.1.175 metadata. This component does
+  not adopt a new native catalog, stored-job property or frozen tuple. Fresh
+  combined hosted, installed-consumer, browser and promotion gates remain open.
 
 The separate installed-SDK observation
 [checkpoint](https://github.com/durable-workflow/server/pull/478#issuecomment-6205832785)

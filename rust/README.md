@@ -256,12 +256,23 @@ Direct signal waits in the default namespace accept an optional
 and a positive integer retains a durable timer and its original deadline.
 Buffered input wins before scheduling; application cancels a pending timeout
 with the original timer/wait metadata. The [timed-signal contract](../docs/contracts/timed-signal-waits.md)
-describes resume identities and retained waits. Named-namespace admission,
-condition timeouts and installed-consumer acceptance remain separate gates.
+describes resume identities and retained waits. Direct named-namespace admission
+and installed-consumer acceptance remain separate gates.
+Condition waits accept the same optional timeout in their existing default and
+named namespaces. Each physical wait owns its timer identity and authored
+deadline. Applying a signal satisfies the condition wait before cancelling its
+pending timer; firing leaves the wait open until the worker applies the outcome.
+Buffered input does not skip condition-timer creation. The
+[condition contract](../docs/contracts/timed-condition-waits.md) records these
+differences and physical reopen behavior.
 For the focused source reference, set `DW_TEST_TIMED_SIGNAL_REFERENCE` to a
 writable JSONL path when running `cargo test --test execution timed_signal_waits::`.
 The [PHP comparator](tests/reference/timed_external_waits.php) compares those
 captured waits with an explicitly selected published Workflow installation.
+Set `DW_TEST_TIMED_CONDITION_REFERENCE` when running the corresponding
+`timed_condition_waits::` source tests. Their snapshots retain real clock bounds
+around each read; the comparator requires the published current-wait DTO and
+liveness to agree at both bounds without changing product timestamps.
 Queries admit a quiescent committed snapshot, including completed runs, through
 the published worker query protocol. An active/ready workflow task returns
 `query_snapshot_busy`; concurrent workflow/query routing remains unqualified.
