@@ -101,6 +101,9 @@ mod timed_condition_waits;
 #[path = "execution/parallel_all.rs"]
 mod parallel_all;
 
+#[path = "execution/workflow_failures.rs"]
+mod workflow_failures;
+
 #[path = "execution/query_arguments.rs"]
 mod query_arguments;
 #[path = "execution/query_authority.rs"]
