@@ -56,17 +56,17 @@ async fn observe(database: &TestDatabase, app: &Router, run: &Value) -> Value {
 }
 
 async fn reference_activities(database: &TestDatabase, run: &str) -> Value {
-    const QUERY: &str = "SELECT a.id,a.activity_type,a.status,a.current_attempt_id,CAST(a.retry_policy AS TEXT),CAST(a.schedule_deadline_at AS TEXT),CAST(a.close_deadline_at AS TEXT),CAST(a.heartbeat_deadline_at AS TEXT),CAST(a.schedule_to_close_deadline_at AS TEXT),p.attempt_number FROM activity_executions a LEFT JOIN activity_attempts p ON p.id=a.current_attempt_id AND p.activity_execution_id=a.id WHERE a.workflow_run_id=$1 ORDER BY a.sequence,a.id";
+    const QUERY: &str = "SELECT a.id,a.activity_type,a.status,a.current_attempt_id,CAST(a.retry_policy AS TEXT),CAST(a.schedule_deadline_at AS TEXT),CAST(a.close_deadline_at AS TEXT),CAST(a.heartbeat_deadline_at AS TEXT),CAST(a.schedule_to_close_deadline_at AS TEXT),CAST(p.attempt_number AS TEXT) FROM activity_executions a LEFT JOIN activity_attempts p ON p.id=a.current_attempt_id AND p.activity_execution_id=a.id WHERE a.workflow_run_id=$1 ORDER BY a.sequence,a.id";
     macro_rules! rows {
         ($pool:expr,$query:expr)=>{{
             let pool=$pool;
-            let rows:Vec<(String,String,String,Option<String>,Option<String>,Option<String>,Option<String>,Option<String>,Option<String>,Option<i64>)>
+            let rows:Vec<(String,String,String,Option<String>,Option<String>,Option<String>,Option<String>,Option<String>,Option<String>,Option<String>)>
                 =sqlx::query_as($query).bind(run).fetch_all(&pool).await.unwrap();
             pool.close().await;
             rows.into_iter().map(|(id,kind,status,attempt,policy,schedule,close,heartbeat,lifecycle,number)|
                 json!({"id":id,"activity_type":kind,"status":status,"current_attempt_id":attempt,
                 "retry_policy":policy,"schedule_deadline_at":schedule,"close_deadline_at":close,
-                "heartbeat_deadline_at":heartbeat,"schedule_to_close_deadline_at":lifecycle,"attempt_number":number})).collect::<Vec<_>>()
+                "heartbeat_deadline_at":heartbeat,"schedule_to_close_deadline_at":lifecycle,"attempt_number":number.map(|value|value.parse::<i64>().unwrap())})).collect::<Vec<_>>()
         }};
     }
     json!(match database {
@@ -91,7 +91,7 @@ async fn reference_activities(database: &TestDatabase, run: &str) -> Value {
                 .connect_with(options.as_ref().clone())
                 .await
                 .unwrap(),
-            "SELECT a.id,a.activity_type,a.status,a.current_attempt_id,CAST(a.retry_policy AS CHAR),CAST(a.schedule_deadline_at AS CHAR),CAST(a.close_deadline_at AS CHAR),CAST(a.heartbeat_deadline_at AS CHAR),CAST(a.schedule_to_close_deadline_at AS CHAR),p.attempt_number FROM activity_executions a LEFT JOIN activity_attempts p ON p.id=a.current_attempt_id AND p.activity_execution_id=a.id WHERE a.workflow_run_id=? ORDER BY a.sequence,a.id"
+            "SELECT a.id,a.activity_type,a.status,a.current_attempt_id,CAST(a.retry_policy AS CHAR),CAST(a.schedule_deadline_at AS CHAR),CAST(a.close_deadline_at AS CHAR),CAST(a.heartbeat_deadline_at AS CHAR),CAST(a.schedule_to_close_deadline_at AS CHAR),CAST(p.attempt_number AS CHAR) FROM activity_executions a LEFT JOIN activity_attempts p ON p.id=a.current_attempt_id AND p.activity_execution_id=a.id WHERE a.workflow_run_id=? ORDER BY a.sequence,a.id"
         ),
     })
 }
