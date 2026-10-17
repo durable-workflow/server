@@ -9,6 +9,21 @@ require $argv[1];
 $promote = new ReflectionMethod(App\Http\Controllers\Api\WorkerController::class, 'promoteWorkflowFailureExceptionPayload');
 $controller = (new ReflectionClass(App\Http\Controllers\Api\WorkerController::class))->newInstanceWithoutConstructor();
 $normalize = new ReflectionMethod(Workflow\V2\Support\DefaultWorkflowTaskBridge::class, 'normalizeFailWorkflowCommand');
+
+// JSON object member order is not semantic and changes under PostgreSQL JSONB.
+// Keep exact scalar types and array order, including exception property values.
+function failureValue(mixed $value): mixed
+{
+    if (! is_array($value)) {
+        return $value;
+    }
+    if (! array_is_list($value)) {
+        ksort($value, SORT_STRING);
+    }
+
+    return array_map(failureValue(...), $value);
+}
+
 $count = 0;
 foreach (file($argv[2], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
     $case = json_decode($line, true, 512, JSON_THROW_ON_ERROR);
@@ -33,7 +48,7 @@ foreach (file($argv[2], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line)
             ], $structured),
         ];
         foreach ($expected as $field => $value) {
-            if ($actual[$field] !== $value) {
+            if (failureValue($actual[$field]) !== failureValue($value)) {
                 throw new RuntimeException($case['summary']['run_id'].' differs from published failure field '.$field);
             }
         }

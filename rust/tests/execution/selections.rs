@@ -132,7 +132,7 @@ impl TestDatabase {
     }
 }
 
-fn mixed_commands(base: i64) -> Value {
+pub(super) fn mixed_commands(base: i64) -> Value {
     let mut activity = json!({"type":"schedule_activity","activity_type":"echo_activity",
         "arguments":envelope(Payload::Array(vec![Payload::Long(9007199254740993)]))});
     let mut timer = json!({"type":"start_timer","delay_seconds":1});
