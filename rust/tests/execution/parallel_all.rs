@@ -45,6 +45,7 @@ async fn observe(database: &TestDatabase, app: &Router, run: &Value) -> Value {
     snapshot["reference_clock_end"] = json!(after);
     snapshot["reference_activities"] =
         reference_activities(database, run["run_id"].as_str().unwrap()).await;
+    assert_opening_clocks(&summary,&snapshot["reference_activities"]);
     run_observation_summaries::export_reference_for(
         database,
         &snapshot,
@@ -55,18 +56,37 @@ async fn observe(database: &TestDatabase, app: &Router, run: &Value) -> Value {
     summary
 }
 
+fn clock(value:&str)->chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::parse_from_rfc3339(value).map(|value|value.with_timezone(&chrono::Utc))
+        .unwrap_or_else(|_|chrono::NaiveDateTime::parse_from_str(value,"%Y-%m-%d %H:%M:%S%.f").unwrap().and_utc())
+}
+
+fn assert_opening_clocks(summary:&Value,activities:&Value) {
+    let mut clocks=std::collections::BTreeMap::new();
+    for event in summary["history"]["events"].as_array().unwrap() {
+        if matches!(event["event_type"].as_str(),Some("ActivityScheduled"|"ActivityStarted")) {
+            clocks.insert(event["payload"]["activity_execution_id"].as_str().unwrap(),clock(event["recorded_at"].as_str().unwrap()));
+        }
+    }
+    for activity in activities.as_array().unwrap() {
+        let expected=clocks.get(activity["id"].as_str().unwrap()).unwrap();
+        assert_eq!(clock(activity["reference_opened_at"].as_str().unwrap()),*expected,
+            "retained wait must use its canonical scheduled/started history clock");
+    }
+}
+
 async fn reference_activities(database: &TestDatabase, run: &str) -> Value {
-    const QUERY: &str = "SELECT a.id,a.activity_type,a.status,a.current_attempt_id,CAST(a.retry_policy AS TEXT),CAST(a.schedule_deadline_at AS TEXT),CAST(a.close_deadline_at AS TEXT),CAST(a.heartbeat_deadline_at AS TEXT),CAST(a.schedule_to_close_deadline_at AS TEXT),CAST(p.attempt_number AS TEXT) FROM activity_executions a LEFT JOIN activity_attempts p ON p.id=a.current_attempt_id AND p.activity_execution_id=a.id WHERE a.workflow_run_id=$1 ORDER BY a.sequence,a.id";
+    const QUERY: &str = "SELECT a.id,a.activity_type,a.status,a.current_attempt_id,CAST(a.retry_policy AS TEXT),CAST(a.schedule_deadline_at AS TEXT),CAST(a.close_deadline_at AS TEXT),CAST(a.heartbeat_deadline_at AS TEXT),CAST(a.schedule_to_close_deadline_at AS TEXT),CAST(p.attempt_number AS TEXT),CAST((SELECT opened_at FROM workflow_run_waits w WHERE w.workflow_run_id=a.workflow_run_id AND w.resume_source_id=a.id AND w.kind='activity') AS TEXT) FROM activity_executions a LEFT JOIN activity_attempts p ON p.id=a.current_attempt_id AND p.activity_execution_id=a.id WHERE a.workflow_run_id=$1 ORDER BY a.sequence,a.id";
     macro_rules! rows {
         ($pool:expr,$query:expr)=>{{
             let pool=$pool;
-            let rows:Vec<(String,String,String,Option<String>,Option<String>,Option<String>,Option<String>,Option<String>,Option<String>,Option<String>)>
+            let rows:Vec<(String,String,String,Option<String>,Option<String>,Option<String>,Option<String>,Option<String>,Option<String>,Option<String>,Option<String>)>
                 =sqlx::query_as($query).bind(run).fetch_all(&pool).await.unwrap();
             pool.close().await;
-            rows.into_iter().map(|(id,kind,status,attempt,policy,schedule,close,heartbeat,lifecycle,number)|
+            rows.into_iter().map(|(id,kind,status,attempt,policy,schedule,close,heartbeat,lifecycle,number,opened)|
                 json!({"id":id,"activity_type":kind,"status":status,"current_attempt_id":attempt,
                 "retry_policy":policy,"schedule_deadline_at":schedule,"close_deadline_at":close,
-                "heartbeat_deadline_at":heartbeat,"schedule_to_close_deadline_at":lifecycle,"attempt_number":number.map(|value|value.parse::<i64>().unwrap())})).collect::<Vec<_>>()
+                "heartbeat_deadline_at":heartbeat,"schedule_to_close_deadline_at":lifecycle,"attempt_number":number.map(|value|value.parse::<i64>().unwrap()),"reference_opened_at":opened})).collect::<Vec<_>>()
         }};
     }
     json!(match database {
@@ -91,7 +111,7 @@ async fn reference_activities(database: &TestDatabase, run: &str) -> Value {
                 .connect_with(options.as_ref().clone())
                 .await
                 .unwrap(),
-            "SELECT a.id,a.activity_type,a.status,a.current_attempt_id,CAST(a.retry_policy AS CHAR),CAST(a.schedule_deadline_at AS CHAR),CAST(a.close_deadline_at AS CHAR),CAST(a.heartbeat_deadline_at AS CHAR),CAST(a.schedule_to_close_deadline_at AS CHAR),CAST(p.attempt_number AS CHAR) FROM activity_executions a LEFT JOIN activity_attempts p ON p.id=a.current_attempt_id AND p.activity_execution_id=a.id WHERE a.workflow_run_id=? ORDER BY a.sequence,a.id"
+            "SELECT a.id,a.activity_type,a.status,a.current_attempt_id,CAST(a.retry_policy AS CHAR),CAST(a.schedule_deadline_at AS CHAR),CAST(a.close_deadline_at AS CHAR),CAST(a.heartbeat_deadline_at AS CHAR),CAST(a.schedule_to_close_deadline_at AS CHAR),CAST(p.attempt_number AS CHAR),CAST((SELECT opened_at FROM workflow_run_waits w WHERE w.workflow_run_id=a.workflow_run_id AND w.resume_source_id=a.id AND w.kind='activity') AS CHAR) FROM activity_executions a LEFT JOIN activity_attempts p ON p.id=a.current_attempt_id AND p.activity_execution_id=a.id WHERE a.workflow_run_id=? ORDER BY a.sequence,a.id"
         ),
     })
 }
