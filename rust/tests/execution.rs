@@ -92,6 +92,9 @@ mod selections;
 #[path = "execution/condition_occurrences.rs"]
 mod condition_occurrences;
 
+#[path = "execution/timed_signal_waits.rs"]
+mod timed_signal_waits;
+
 #[path = "execution/query_arguments.rs"]
 mod query_arguments;
 #[path = "execution/query_authority.rs"]
