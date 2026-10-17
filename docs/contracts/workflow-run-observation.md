@@ -99,8 +99,10 @@ matching wait when the worker applies that input. A subsequent occurrence has
 its own identity even when it uses the same condition key. Resolution and terminal
 closure only update retained rows; they do not recreate a missing projection.
 This component covers the already admitted default and named-namespace commands.
-Condition timeouts and cancellation scopes remain separate qualification gates;
-their current command refusals are unchanged.
+The [condition-timeout component](timed-condition-waits.md) additionally covers
+immediate/durable timers and retained fired waits. Direct signal timeouts have
+their [separate component contract](timed-signal-waits.md). Cancellation scopes
+and installed-consumer acceptance remain separate gates.
 
 Native completion, continuation and cancellation now write a terminal summary
 after their final run and task mutations, in the same transaction. Counters
@@ -161,11 +163,13 @@ task. The first terminal member must have an immediately following
 `SelectionResolved` that binds its physical event ID, event type, durable
 operation identity and original selection metadata. A later loser cannot
 author a second winner. The bounded history reader checks these relationships
-across its sixteen-event pages. Open waits are ordered by original opening
-timestamp and wait identity in the committing transaction. Activity start can
+across its sixteen-event pages. Open waits use the published rounded-millisecond
+opening timestamp and original wait identity in the committing transaction.
+Activity waits use their actual scheduled/started history clock. Activity start can
 therefore move the activity behind an earlier timer. Missing rows stay absent.
-Broader parallel groups, nested selection and other timeout-backed wait shapes
-remain unqualified.
+Activity/timer [all-groups](parallel-all-groups.md), including nested barriers,
+retain individual waits without a selection winner. Other grouped leaf families,
+nested selection and remaining timeout-backed shapes stay unqualified.
 
 Each summary refresh checks open wait projections against complete typed
 history. A missing or inconsistent projection makes the summary unavailable

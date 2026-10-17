@@ -273,6 +273,18 @@ Set `DW_TEST_TIMED_CONDITION_REFERENCE` when running the corresponding
 `timed_condition_waits::` source tests. Their snapshots retain real clock bounds
 around each read; the comparator requires the published current-wait DTO and
 liveness to agree at both bounds without changing product timestamps.
+Activity/timer `all()/parallel()` barriers retain flat or nested group paths
+through actual member completion, retry, failure, expiry and cancellation.
+Each represented barrier must arrive complete within the existing 100-command
+batch limit. Ready workflow wakeups can coalesce; later outcomes retain a
+wakeup while an earlier snapshot is leased. All-groups do not create selection
+winners. The [barrier contract](../docs/contracts/parallel-all-groups.md)
+records sequence and clock provenance. Child/signal/condition groups and
+installed-worker acceptance remain separate gates.
+Set `DW_TEST_PARALLEL_ALL_REFERENCE` when running the `parallel_all::`
+source tests. The [published PHP comparator](tests/reference/parallel_all.php)
+checks liveness, task problems and every field of the bounded current-wait
+members using original history and their retained metadata.
 Queries admit a quiescent committed snapshot, including completed runs, through
 the published worker query protocol. An active/ready workflow task returns
 `query_snapshot_busy`; concurrent workflow/query routing remains unqualified.

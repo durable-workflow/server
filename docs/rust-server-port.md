@@ -22,6 +22,12 @@ complete parity or release readiness.
 
 Current checkpoint, October 17:
 
+- The admitted observation head `a15b87977` now has all 13 jobs passing in
+  [shared run 39072054431](https://github.com/durable-workflow/server/actions/runs/39072054431),
+  plus its exact PHP/source, Sonar and public-boundary checks. Newer prepared
+  source includes separately qualified PHP main `964f9e3d5`, timed waits and
+  activity/timer barriers. Its local component results below do not carry the
+  a15 result forward. Fresh combined hosted qualification is required.
 - Query authority is merged at `0934c46d`, whole tree `98775e68`. Its separate
   [merged-main qualification](https://github.com/durable-workflow/server/actions/runs/38738455163)
   passes. That result applies to the query tree.
@@ -517,6 +523,47 @@ Current checkpoint, October 17:
   retaining published Server 2.8.7 / Helm 0.1.175 metadata. This component does
   not adopt a new native catalog, stored-job property or frozen tuple. Fresh
   combined hosted, installed-consumer, browser and promotion gates remain open.
+
+- Activity/timer `all()/parallel()` now follows the
+  [published barrier contract](contracts/parallel-all-groups.md), including nested
+  paths, complete atomic batches through 100 leaves, original sequences and
+  member identities. Terminal outcomes can coalesce a ready workflow wakeup;
+  outcomes arriving during an older lease retain later work. All-groups emit
+  no selection winner. Retry, terminal failure, expiry, root cancellation,
+  cold nodes, invalid groups and projection rollback retain existing fences
+  and receipts. Child/signal/condition groups and installed workers remain
+  separate qualification gates.
+  Contract/source `803caebc0` fails both admission controls on the preceding
+  runtime. Published full-member comparison exposed two clock/order defects.
+  Native now uses the published rounded-millisecond opening key and original
+  wait ID, including the half-millisecond boundary. A wait's opening clock now
+  matches its actual scheduled/started history event; authored deadlines keep
+  their earlier scheduling clock. Original IDs and stored times are not
+  normalized by the comparison. Corrected ordering control `7219f99ea`
+  fails on runtime `5256f5b3`; stored-precision control `52df52bac` finds
+  37 mismatched opening clocks on runtime `7f4d8e6f`.
+  Final implementation `27e988389`, runtime tree
+  `42800bd8e61d6318424e9a62594c0714285fa0d6`, passes 80 library tests
+  with 18 existing ignores, all 216 SQLite execution tests and 16 focused
+  controls on each of PostgreSQL 17.11 and MySQL 8.0.46. The network selection
+  includes nine barrier controls and seven existing selection controls.
+  The SQLite profile child remains invoked by its passing parent.
+  Published Server 2.8.7 / Workflow 2.5.32 agrees on 61 three-database counter,
+  liveness/task-problem and complete current-wait-member snapshots, including
+  224 bounded members, with zero queries. Both actual read-clock bounds must
+  agree. Existing 25 timed-wait, 44 network-selection and 81 SQLite counter
+  snapshots plus all seven existing classifier helpers also pass.
+  Earlier fixture failures remain unsuccessful: terminal history uses
+  `output`, the 100-member audit must follow history pagination, storage faults
+  return 503, and retained attempt widths differ across network databases.
+  A seconds-only opening-clock assertion was replaced by an exact stored-time
+  comparison. A candidate run reused an older library while switching worktrees
+  sharing a Cargo target; its binary lacked the new ordering query. The final
+  checks follow package-output cleanup and a fresh build from one unchanged
+  implementation checkout. Earlier component passes do not qualify those fixes.
+  No PHP package, native catalog, frozen tuple or shared-runner change belongs
+  to this component. Fresh combined hosted and full consumer/promotion gates
+  remain separate.
 
 The separate installed-SDK observation
 [checkpoint](https://github.com/durable-workflow/server/pull/478#issuecomment-6205832785)
