@@ -140,6 +140,163 @@ fn no_selection(history: &Value) {
     );
 }
 
+async fn complete_history(app: &Router, run: &Value) -> Value {
+    let mut events = Vec::new();
+    let mut cursor = None::<String>;
+    loop {
+        let mut path = format!(
+            "/api/workflows/{}/runs/{}/history?page_size=100",
+            run["workflow_id"].as_str().unwrap(),
+            run["run_id"].as_str().unwrap()
+        );
+        if let Some(cursor) = &cursor {
+            path.push_str(&format!("&next_page_token={cursor}"));
+        }
+        let (status, page) = request(app, "GET", &path, Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        for event in page["events"].as_array().unwrap() {
+            assert_eq!(event["sequence"], events.len() + 1);
+            events.push(event.clone());
+        }
+        assert!(events.len() < 1000, "unexpected fixture history growth");
+        let Some(next) = page["next_page_token"].as_str() else {
+            return json!(events);
+        };
+        assert_ne!(cursor.as_deref(), Some(next));
+        cursor = Some(next.to_owned());
+    }
+}
+
+async fn seed_wait_clock(database: &TestDatabase, clocks: &[(i64, chrono::DateTime<chrono::Utc>)]) {
+    // Isolated source fixture: retain the same physical IDs and authored order,
+    // while controlling recorded/projected opening times down to a half-ms tie.
+    macro_rules! seed {
+        ($pool:expr,$wait:expr,$history:expr,$encode:expr) => {{
+            let pool = $pool;
+            for (sequence, at) in clocks {
+                sqlx::query($wait)
+                    .bind(($encode)(*at))
+                    .bind(*sequence)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                sqlx::query($history)
+                    .bind(($encode)(*at))
+                    .bind(*sequence + 2)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            pool.close().await;
+        }};
+    }
+    match database {
+        TestDatabase::Sqlite(dir) => seed!(
+            sqlx::SqlitePool::connect(&format!(
+                "sqlite://{}",
+                dir.path().join("runtime.sqlite").display()
+            ))
+            .await
+            .unwrap(),
+            "UPDATE workflow_run_waits SET opened_at=$1 WHERE kind='activity' AND sequence=$2",
+            "UPDATE workflow_history_events SET recorded_at=$1 WHERE event_type='ActivityScheduled' AND sequence=$2",
+            |at: chrono::DateTime<chrono::Utc>| at
+                .to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
+        ),
+        TestDatabase::Postgres { options, .. } => seed!(
+            sqlx::postgres::PgPoolOptions::new()
+                .connect_with(options.as_ref().clone())
+                .await
+                .unwrap(),
+            "UPDATE workflow_run_waits SET opened_at=$1 WHERE kind='activity' AND sequence=$2",
+            "UPDATE workflow_history_events SET recorded_at=$1 WHERE event_type='ActivityScheduled' AND sequence=$2",
+            |at: chrono::DateTime<chrono::Utc>| at.naive_utc()
+        ),
+        TestDatabase::MySql { options, .. } => seed!(
+            sqlx::mysql::MySqlPoolOptions::new()
+                .connect_with(options.as_ref().clone())
+                .await
+                .unwrap(),
+            "UPDATE workflow_run_waits SET opened_at=? WHERE kind='activity' AND sequence=?",
+            "UPDATE workflow_history_events SET recorded_at=? WHERE event_type='ActivityScheduled' AND sequence=?",
+            |at: chrono::DateTime<chrono::Utc>| at
+        ),
+    }
+}
+
+#[tokio::test]
+async fn current_wait_order_uses_published_millisecond_ties_and_original_ids() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "clock-all", json!(["echo"]), json!(["echo_activity"])).await;
+    let run = start(&app, "clock-all").await;
+    let task = poll(&app, "clock-all", "workflow").await;
+    assert_eq!(
+        finish_task(&app, &task, all_activities(4)).await.0,
+        StatusCode::OK
+    );
+    let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+    let mut members = history
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| event["event_type"] == "ActivityScheduled")
+        .map(|event| {
+            (
+                event["payload"]["activity_execution_id"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
+                event["payload"]["sequence"].as_i64().unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    members.sort();
+    let dates = [
+        "2026-01-02T03:04:05.123400Z",
+        "2026-01-02T03:04:05.123100Z",
+        "2026-01-02T03:04:05.123900Z",
+        "2026-01-02T03:04:05.123500Z",
+    ];
+    let clocks = members
+        .iter()
+        .zip(dates)
+        .map(|((_, sequence), at)| {
+            (
+                *sequence,
+                chrono::DateTime::parse_from_rfc3339(at)
+                    .unwrap()
+                    .with_timezone(&chrono::Utc),
+            )
+        })
+        .collect::<Vec<_>>();
+    seed_wait_clock(&database, &clocks).await;
+    let activity = poll(&app, "clock-all", "activity").await;
+    assert!(activity.is_object());
+    let summary = observe(&database, &app, &run).await;
+    let actual = summary["current_waits"]["waits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|wait| wait["dependency_id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actual,
+        members
+            .iter()
+            .map(|(id, _)| id.as_str())
+            .collect::<Vec<_>>()
+    );
+    let repeated = run_observation_active_summaries::observe(&app, "default", &run).await;
+    assert_eq!(
+        repeated["current_waits"]["waits"],
+        summary["current_waits"]["waits"]
+    );
+    runtime.close().await;
+    database.remove().await;
+}
+
 #[tokio::test]
 async fn activity_barrier_keeps_out_of_order_results_and_later_wakeup_across_cold_nodes() {
     let database = TestDatabase::new().await;
@@ -769,7 +926,7 @@ async fn full_batch_boundary_keeps_bounded_wait_reads_and_every_original_member(
         )
         .await;
         assert!(cancelled.0.is_success(), "{}", cancelled.1);
-        let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+        let history = complete_history(&app, &run).await;
         assert_eq!(
             history
                 .as_array()
@@ -807,7 +964,7 @@ async fn sqlite_projection_failure_rolls_back_the_entire_group_and_original_leas
     database.execute("CREATE TRIGGER all_wait_fault BEFORE INSERT ON workflow_run_waits WHEN NEW.kind='activity' AND NEW.position=1 BEGIN SELECT RAISE(ABORT,'all wait projection fault'); END").await;
     assert_eq!(
         finish_task(&app, &task, all_activities(3)).await.0,
-        StatusCode::INTERNAL_SERVER_ERROR
+        StatusCode::SERVICE_UNAVAILABLE
     );
     assert_eq!(
         run_history(&app, &run["workflow_id"], &run["run_id"]).await,
@@ -824,7 +981,7 @@ async fn sqlite_projection_failure_rolls_back_the_entire_group_and_original_leas
     database.execute("CREATE TRIGGER all_resolution_fault BEFORE UPDATE ON workflow_run_waits WHEN NEW.kind='activity' AND NEW.status='resolved' BEGIN SELECT RAISE(ABORT,'all resolution projection fault'); END").await;
     assert_eq!(
         complete_activity(&app, &member, 42).await.0,
-        StatusCode::INTERNAL_SERVER_ERROR
+        StatusCode::SERVICE_UNAVAILABLE
     );
     assert_eq!(
         run_history(&app, &run["workflow_id"], &run["run_id"]).await,
