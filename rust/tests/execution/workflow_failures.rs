@@ -14,9 +14,13 @@ async fn history(app: &Router, run: &Value) -> Value {
 }
 
 async fn snapshot(database: &TestDatabase, app: &Router, run: &Value) {
+    snapshot_command(database,app,run,command()).await;
+}
+
+async fn snapshot_command(database: &TestDatabase, app: &Router, run: &Value, command: Value) {
     let mut summary = run_observation_active_summaries::observe(app, "default", run).await;
     assert_eq!(summary["summary_state"], "observed", "{summary}");
-    summary["reference_failure_command"] = command();
+    summary["reference_failure_command"] = command;
     let history = summary["history"].clone();
     run_observation_summaries::export_reference_for(
         database,
@@ -45,6 +49,12 @@ async fn workflow_failure_is_terminal_atomic_and_retains_one_receipt_after_cold_
     assert_eq!(terminal["event_type"], "WorkflowFailed");
     assert_eq!(task_retry::rows(&database,"SELECT COUNT(*) FROM workflow_history_events h JOIN workflow_tasks t ON t.id=h.workflow_task_id WHERE h.event_type='WorkflowFailed' AND t.status='failed'").await,1);
     let payload = &terminal["payload"];
+    assert_eq!(payload["task"]["id"],task["task_id"]);
+    assert_eq!(payload["task"]["status"],"leased");
+    assert_eq!(payload["task"]["lease_owner"],task["lease_owner"]);
+    assert_eq!(payload["task"]["attempt_count"],task["workflow_task_attempt"]);
+    assert_eq!(chrono::DateTime::parse_from_rfc3339(payload["task"]["lease_expires_at"].as_str().unwrap()).unwrap(),
+        chrono::DateTime::parse_from_rfc3339(task["lease_expires_at"].as_str().unwrap()).unwrap());
     assert_eq!(payload["source_kind"], "workflow_run");
     assert_eq!(payload["source_id"], run["run_id"]);
     assert_eq!(payload["message"], "inner failure λ");
@@ -114,15 +124,21 @@ async fn workflow_failure_resolves_original_child_failure_and_one_parent_wakeup(
     let activity_failure = activity_failed.1["failure_id"].clone();
     let child = poll(&app, "failure-child", "workflow").await;
     snapshot(&database, &app, &parent).await;
-    let accepted = finish_task(&app, &child, json!([command()])).await;
+    let mut child_failure=command();
+    child_failure.as_object_mut().unwrap().remove("exception_type");
+    child_failure["exception"].as_object_mut().unwrap().remove("type");
+    let accepted = finish_task(&app, &child, json!([child_failure.clone()])).await;
     assert_eq!(accepted.0, StatusCode::OK, "{}", accepted.1);
-    snapshot(&database, &app, &child).await;
+    snapshot_command(&database, &app, &child,child_failure).await;
     let child_history = run_history(&app, &child["workflow_id"], &child["run_id"]).await;
     let failure = &child_history.as_array().unwrap().last().unwrap()["payload"];
     let parent_history = history(&app, &parent).await;
     let resolved = parent_history.as_array().unwrap().last().unwrap();
     assert_eq!(resolved["event_type"], "ChildRunFailed");
     assert_eq!(resolved["payload"]["failure_id"], failure["failure_id"]);
+    assert!(resolved["payload"].get("non_retryable").is_none());
+    assert!(resolved["payload"].get("exception_type").is_none());
+    assert_eq!(resolved["payload"]["exception"],failure["exception"]);
     assert_ne!(failure["failure_id"], activity_failure);
     assert_eq!(task_retry::rows(&database,"SELECT COUNT(*) FROM workflow_child_calls c JOIN workflow_failures f ON f.id=c.failure_reference AND f.workflow_run_id=c.resolved_child_run_id WHERE c.status='failed' AND f.propagation_kind='terminal'").await,1);
     assert_eq!(

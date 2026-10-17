@@ -25,14 +25,31 @@ function failureValue(mixed $value): mixed
 }
 
 $count = 0;
+$children = 0;
 foreach (file($argv[2], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
     $case = json_decode($line, true, 512, JSON_THROW_ON_ERROR);
     foreach ($case['raw_history'] as $event) {
+        if ($event['event_type'] === 'ChildRunFailed') {
+            $payload = json_decode($event['payload_json'], true, 512, JSON_THROW_ON_ERROR);
+            if (array_key_exists('non_retryable', $payload)) {
+                throw new RuntimeException('Published child resolution does not copy the workflow-only non_retryable field.');
+            }
+            foreach (['exception_type', 'exception', 'code'] as $field) {
+                if (array_key_exists($field, $payload) && $payload[$field] === null) {
+                    throw new RuntimeException('Published child resolution omits null '.$field.'.');
+                }
+            }
+            ++$children;
+            continue;
+        }
         if ($event['event_type'] !== 'WorkflowFailed') {
             continue;
         }
         $command = $normalize->invoke(null, $promote->invoke($controller, [$case['summary']['reference_failure_command']])[0]);
         $actual = json_decode($event['payload_json'], true, 512, JSON_THROW_ON_ERROR);
+        if (($actual['task']['status'] ?? null) !== 'leased' || ($actual['task']['type'] ?? null) !== 'workflow') {
+            throw new RuntimeException('WorkflowFailed must retain the original leased task snapshot.');
+        }
         $structured = $command['exception'] ?? [];
         $class = trim($structured['class'] ?? '') ?: ($command['exception_class'] ?? RuntimeException::class);
         $message = $command['message'];
@@ -58,5 +75,5 @@ foreach (file($argv[2], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line)
 if ($count === 0) {
     throw new RuntimeException('Expected actual terminal workflow failure evidence.');
 }
-echo json_encode(['outcome' => 'pass', 'cases' => $count, 'php' => PHP_VERSION,
+echo json_encode(['outcome' => 'pass', 'cases' => $count, 'child_payloads' => $children, 'php' => PHP_VERSION,
     'workflow' => Composer\InstalledVersions::getPrettyVersion('durable-workflow/workflow'), 'database_queries' => 0], JSON_THROW_ON_ERROR)."\n";
