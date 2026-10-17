@@ -95,6 +95,9 @@ mod condition_occurrences;
 #[path = "execution/timed_signal_waits.rs"]
 mod timed_signal_waits;
 
+#[path = "execution/timed_condition_waits.rs"]
+mod timed_condition_waits;
+
 #[path = "execution/query_arguments.rs"]
 mod query_arguments;
 #[path = "execution/query_authority.rs"]
@@ -446,6 +449,23 @@ impl TestDatabase {
                 sqlx::raw_sql(statement).execute(&pool).await.unwrap();
                 pool.close().await;
             }
+        }
+    }
+
+    async fn timer_cancellation_belongs_to(&self, task_id: &str) -> bool {
+        const QUERY: &str = "SELECT COUNT(*) FROM workflow_history_events WHERE event_type='TimerCancelled' AND workflow_task_id=$1 AND workflow_command_id IS NULL";
+        macro_rules! check {
+            ($pool:expr,$query:expr) => {{
+                let pool=$pool;
+                let count:i64=sqlx::query_scalar($query).bind(task_id).fetch_one(&pool).await.unwrap();
+                pool.close().await;
+                count == 1
+            }};
+        }
+        match self {
+            Self::Sqlite(dir) => check!(sqlx::SqlitePool::connect(&format!("sqlite://{}",dir.path().join("runtime.sqlite").display())).await.unwrap(),QUERY),
+            Self::Postgres { options,.. } => check!(sqlx::postgres::PgPoolOptions::new().connect_with(options.as_ref().clone()).await.unwrap(),QUERY),
+            Self::MySql { options,.. } => check!(sqlx::mysql::MySqlPoolOptions::new().connect_with(options.as_ref().clone()).await.unwrap(),"SELECT COUNT(*) FROM workflow_history_events WHERE event_type='TimerCancelled' AND workflow_task_id=? AND workflow_command_id IS NULL"),
         }
     }
 

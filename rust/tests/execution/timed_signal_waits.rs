@@ -257,6 +257,8 @@ async fn received_input_cancels_only_on_application_with_original_metadata() {
         .unwrap();
     assert_eq!(kinds[cancelled - 1], "MessageCursorAdvanced");
     assert_eq!(kinds[cancelled + 1], "SignalApplied");
+    assert!(database.timer_cancellation_belongs_to(task["task_id"].as_str().unwrap()).await,
+        "signal timeout cancellation belongs to its worker task without a command relationship");
     for key in [
         "timer_id",
         "sequence",
