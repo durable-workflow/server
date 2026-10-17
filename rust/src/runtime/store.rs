@@ -1761,13 +1761,15 @@ where
                     .await?;
                 let mut payload = Self::activity_payload(&activity)?;
                 payload["task"] = Self::task_snapshot(&task)?;
-                Self::append(
+                let recorded_at = now();
+                Self::append_at(
                     &mut tx,
                     &run_id,
                     "ActivityScheduled",
                     payload,
                     Some(task_id),
                     None,
+                    Some(recorded_at),
                 )
                 .await?;
                 let activity_task = Self::create_task(
@@ -1783,7 +1785,7 @@ where
                     &run_id,
                     &activity_id,
                     &activity_task,
-                    scheduled_at,
+                    recorded_at,
                 )
                 .await?;
                 Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1")

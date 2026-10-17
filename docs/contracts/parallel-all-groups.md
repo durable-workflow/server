@@ -44,6 +44,9 @@ Published wait ordering compares rounded millisecond opening timestamps
 (`Carbon::getTimestampMs`), then the original wait ID. Native microsecond ordering
 is a contract disagreement when multiple members open in the same millisecond.
 Correct the ordering key without changing any stored timestamp or identity.
+An activity wait uses the actual canonical scheduled-event clock, or its latest
+started-event clock after a claim. The earlier scheduling clock still owns its
+authored deadlines and is not substituted for the history event's opening time.
 
 Source qualification for this component covers activity/timer all-groups. Child,
 signal and condition leaves, groups inside select, named activity/timer admission,

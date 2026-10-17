@@ -45,7 +45,7 @@ async fn observe(database: &TestDatabase, app: &Router, run: &Value) -> Value {
     snapshot["reference_clock_end"] = json!(after);
     snapshot["reference_activities"] =
         reference_activities(database, run["run_id"].as_str().unwrap()).await;
-    assert_opening_clocks(database,run["run_id"].as_str().unwrap()).await;
+    assert_opening_clocks(database, run["run_id"].as_str().unwrap()).await;
     run_observation_summaries::export_reference_for(
         database,
         &snapshot,
@@ -56,23 +56,47 @@ async fn observe(database: &TestDatabase, app: &Router, run: &Value) -> Value {
     summary
 }
 
-async fn assert_opening_clocks(database:&TestDatabase,run:&str) {
+async fn assert_opening_clocks(database: &TestDatabase, run: &str) {
     // Compare original stored precision, not the observation wire's seconds dates.
     macro_rules! check {
-        ($pool:expr,$query:expr)=>{{
-            let pool=$pool;
-            let wrong:i64=sqlx::query_scalar($query).bind(run).fetch_one(&pool).await.unwrap();
+        ($pool:expr,$query:expr) => {{
+            let pool = $pool;
+            let wrong: i64 = sqlx::query_scalar($query)
+                .bind(run)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
             pool.close().await;
-            assert_eq!(wrong,0,"retained wait must use its canonical scheduled/started history clock");
+            assert_eq!(
+                wrong, 0,
+                "retained wait must use its canonical scheduled/started history clock"
+            );
         }};
     }
     match database {
-        TestDatabase::Sqlite(dir)=>check!(sqlx::SqlitePool::connect(&format!("sqlite://{}",dir.path().join("runtime.sqlite").display())).await.unwrap(),
-            "SELECT COUNT(*) FROM workflow_run_waits w WHERE w.workflow_run_id=$1 AND w.kind='activity' AND (w.opened_at IS NULL OR w.opened_at IS NOT (SELECT h.recorded_at FROM workflow_history_events h WHERE h.workflow_run_id=w.workflow_run_id AND h.event_type IN ('ActivityScheduled','ActivityStarted') AND json_extract(h.payload,'$.activity_execution_id')=w.resume_source_id ORDER BY h.sequence DESC LIMIT 1))"),
-        TestDatabase::Postgres{options,..}=>check!(sqlx::postgres::PgPoolOptions::new().connect_with(options.as_ref().clone()).await.unwrap(),
-            "SELECT COUNT(*) FROM workflow_run_waits w WHERE w.workflow_run_id=$1 AND w.kind='activity' AND (w.opened_at IS NULL OR w.opened_at IS DISTINCT FROM (SELECT h.recorded_at FROM workflow_history_events h WHERE h.workflow_run_id=w.workflow_run_id AND h.event_type IN ('ActivityScheduled','ActivityStarted') AND h.payload->>'activity_execution_id'=w.resume_source_id ORDER BY h.sequence DESC LIMIT 1))"),
-        TestDatabase::MySql{options,..}=>check!(sqlx::mysql::MySqlPoolOptions::new().connect_with(options.as_ref().clone()).await.unwrap(),
-            "SELECT COUNT(*) FROM workflow_run_waits w WHERE w.workflow_run_id=? AND w.kind='activity' AND (w.opened_at IS NULL OR NOT(w.opened_at <=> (SELECT h.recorded_at FROM workflow_history_events h WHERE h.workflow_run_id=w.workflow_run_id AND h.event_type IN ('ActivityScheduled','ActivityStarted') AND JSON_UNQUOTE(JSON_EXTRACT(h.payload,'$.activity_execution_id'))=w.resume_source_id ORDER BY h.sequence DESC LIMIT 1)))"),
+        TestDatabase::Sqlite(dir) => check!(
+            sqlx::SqlitePool::connect(&format!(
+                "sqlite://{}",
+                dir.path().join("runtime.sqlite").display()
+            ))
+            .await
+            .unwrap(),
+            "SELECT COUNT(*) FROM workflow_run_waits w WHERE w.workflow_run_id=$1 AND w.kind='activity' AND (w.opened_at IS NULL OR w.opened_at IS NOT (SELECT h.recorded_at FROM workflow_history_events h WHERE h.workflow_run_id=w.workflow_run_id AND h.event_type IN ('ActivityScheduled','ActivityStarted') AND json_extract(h.payload,'$.activity_execution_id')=w.resume_source_id ORDER BY h.sequence DESC LIMIT 1))"
+        ),
+        TestDatabase::Postgres { options, .. } => check!(
+            sqlx::postgres::PgPoolOptions::new()
+                .connect_with(options.as_ref().clone())
+                .await
+                .unwrap(),
+            "SELECT COUNT(*) FROM workflow_run_waits w WHERE w.workflow_run_id=$1 AND w.kind='activity' AND (w.opened_at IS NULL OR w.opened_at IS DISTINCT FROM (SELECT h.recorded_at FROM workflow_history_events h WHERE h.workflow_run_id=w.workflow_run_id AND h.event_type IN ('ActivityScheduled','ActivityStarted') AND h.payload->>'activity_execution_id'=w.resume_source_id ORDER BY h.sequence DESC LIMIT 1))"
+        ),
+        TestDatabase::MySql { options, .. } => check!(
+            sqlx::mysql::MySqlPoolOptions::new()
+                .connect_with(options.as_ref().clone())
+                .await
+                .unwrap(),
+            "SELECT COUNT(*) FROM workflow_run_waits w WHERE w.workflow_run_id=? AND w.kind='activity' AND (w.opened_at IS NULL OR NOT(w.opened_at <=> (SELECT h.recorded_at FROM workflow_history_events h WHERE h.workflow_run_id=w.workflow_run_id AND h.event_type IN ('ActivityScheduled','ActivityStarted') AND JSON_UNQUOTE(JSON_EXTRACT(h.payload,'$.activity_execution_id'))=w.resume_source_id ORDER BY h.sequence DESC LIMIT 1)))"
+        ),
     }
 }
 

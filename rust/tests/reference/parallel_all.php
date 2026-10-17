@@ -93,6 +93,9 @@ foreach (file($argv[2], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line)
             $attributes['history_authority'] = 'typed_history';
             $row->setRawAttributes($attributes);
             $activity = $wait['kind'] === 'activity' ? ($metadata[$wait['resume_source_id']] ?? null) : null;
+            if ($activity !== null && ! Illuminate\Support\Carbon::parse($activity->reference_opened_at)->equalTo($wait['opened_at'])) {
+                throw new RuntimeException('All-group retained opening differs from its canonical history clock.');
+            }
             $task = $run->tasks->firstWhere('id', $wait['task_id']);
             $canonical = $currentWait->invoke(null, $row, $task, $activity,
                 $activity === null ? null : ($attempts[$activity->id] ?? null), Illuminate\Support\Carbon::now());
