@@ -98,6 +98,9 @@ mod timed_signal_waits;
 #[path = "execution/timed_condition_waits.rs"]
 mod timed_condition_waits;
 
+#[path = "execution/parallel_all.rs"]
+mod parallel_all;
+
 #[path = "execution/query_arguments.rs"]
 mod query_arguments;
 #[path = "execution/query_authority.rs"]
