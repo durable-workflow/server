@@ -168,7 +168,7 @@ where
             .bind(if failure.non_retryable {"true"} else {"false"}).bind(DB::bind_time(at)).bind(DB::bind_time(at)).execute(&mut **tx).await?;
         let mut payload = json!({"failure_id":failure_id,"source_kind":"workflow_run","source_id":run_id,
             "failure_category":failure.category,"non_retryable":failure.non_retryable,"exception_type":failure.exception_type,
-            "exception_class":failure.class,"message":failure.message,"exception":failure.exception});
+            "exception_class":failure.class,"message":failure.message,"exception":failure.exception,"task":Self::task_snapshot(task)?});
         if attributed {
             payload["failed_step_sequence"] = json!(failure.activity_boundary.as_ref().unwrap().0);
             payload["failed_step_kind"] = json!("activity");

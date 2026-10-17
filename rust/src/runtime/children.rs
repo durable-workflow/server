@@ -306,8 +306,10 @@ where
                     payload[field] = failure[field].clone();
                 }
                 if matches!(resolution, ChildResolution::Failed(_)) {
-                    for field in ["non_retryable", "exception_type", "exception"] {
-                        payload[field] = failure[field].clone();
+                    for field in ["exception_type", "exception"] {
+                        if !failure[field].is_null() {
+                            payload[field] = failure[field].clone();
+                        }
                     }
                 }
             }
