@@ -127,7 +127,15 @@ async fn workflow_failure_resolves_original_child_failure_and_one_parent_wakeup(
     let activity_failed=request(&app,"POST",&format!("/api/worker/activity-tasks/{}/fail",activity["task_id"].as_str().unwrap()),
         json!({"lease_owner":activity["lease_owner"],"activity_attempt_id":activity["activity_attempt_id"],"failure":{"type":"RuntimeException","message":"earlier handled activity","non_retryable":true}})).await;
     assert_eq!(activity_failed.0, StatusCode::OK, "{}", activity_failed.1);
-    let activity_failure = activity_failed.1["failure_id"].clone();
+    let activity_history = run_history(&app, &child["workflow_id"], &child["run_id"]).await;
+    let activity_failure = activity_history
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["event_type"] == "ActivityFailed")
+        .unwrap()["payload"]["failure_id"]
+        .clone();
+    assert!(activity_failure.as_str().is_some_and(|id| !id.is_empty()));
     let child = poll(&app, "failure-child", "workflow").await;
     snapshot(&database, &app, &parent).await;
     let mut child_failure = command();
