@@ -88,7 +88,7 @@ where
     ) -> Result<()> {
         if !matches!(
             event_type,
-            "ChildWorkflowScheduled" | "ChildRunCompleted" | "ChildRunCancelled"
+            "ChildWorkflowScheduled" | "ChildRunCompleted" | "ChildRunCancelled" | "ChildRunFailed"
         ) {
             return Ok(());
         }
@@ -104,7 +104,11 @@ where
                 .execute(&mut **tx).await?;
         } else {
             let cancelled = event_type == "ChildRunCancelled";
-            let source_status = if cancelled { "cancelled" } else { "completed" };
+            let source_status = match event_type {
+                "ChildRunCancelled" => "cancelled",
+                "ChildRunFailed" => "failed",
+                _ => "completed",
+            };
             // Only scheduling creates a row. Resolution cannot repair a lost projection.
             Self::query("UPDATE workflow_run_waits SET status=$1,source_status=$2,summary=$3,resolved_at=$4,updated_at=$5 WHERE workflow_run_id=$6 AND wait_id=$7 AND kind='child' AND status='open'")
                 .bind(if cancelled { "cancelled" } else { "resolved" }).bind(source_status)
@@ -335,41 +339,7 @@ where
                 "TimerScheduled" | "TimerFired" | "TimerCancelled"
             )
         {
-            let wait_id = super::text(payload, "signal_wait_id")?;
-            let name = super::text(payload, "signal_name")?;
-            if event_type == "TimerScheduled" {
-                let fire_at = payload["fire_at"]
-                    .as_str()
-                    .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
-                    .map(|value| value.with_timezone(&Utc))
-                    .ok_or_else(|| {
-                        super::refuse(axum::http::StatusCode::CONFLICT, "invalid_stored_wait")
-                    })?;
-                let delay = payload["delay_seconds"].as_i64().unwrap_or(0);
-                Self::query("UPDATE workflow_run_waits SET deadline_at=$1,resume_source_kind='timer',resume_source_id=$2,external_only=FALSE,summary=$3,updated_at=$4 WHERE workflow_run_id=$5 AND wait_id=$6 AND kind='signal' AND status='open'")
-                    .bind(DB::bind_time(fire_at)).bind(super::text(payload,"timer_id")?)
-                    .bind(format!("Waiting for signal {name} or timeout after {}.", signal_duration(delay)))
-                    .bind(DB::bind_time(at)).bind(run_id).bind(wait_id).execute(&mut **tx).await?;
-            } else {
-                let fired = event_type == "TimerFired";
-                // A receipt has already resolved the visible wait, but its
-                // associated timer task still transitions on fire/cancellation.
-                Self::query("UPDATE workflow_run_waits SET task_backed=FALSE,task_status=$1,updated_at=$2 WHERE workflow_run_id=$3 AND wait_id=$4 AND kind='signal' AND resume_source_id=$5")
-                    .bind(if fired {"completed"} else {"cancelled"}).bind(DB::bind_time(at)).bind(run_id).bind(wait_id)
-                    .bind(super::text(payload,"timer_id")?).execute(&mut **tx).await?;
-                let summary = if fired {
-                    format!(
-                        "Signal {name} timed out after {}.",
-                        signal_duration(payload["delay_seconds"].as_i64().unwrap_or(0))
-                    )
-                } else {
-                    format!("Signal {name} timeout was cancelled.")
-                };
-                Self::query("UPDATE workflow_run_waits SET status=$1,source_status=$2,summary=$3,resolved_at=$4,task_backed=FALSE,task_status=$5,updated_at=$6 WHERE workflow_run_id=$7 AND wait_id=$8 AND kind='signal' AND status='open'")
-                    .bind(if fired {"resolved"} else {"cancelled"}).bind(if fired {"timed_out"} else {"timeout_cancelled"})
-                    .bind(summary).bind(DB::bind_time(at)).bind(if fired {"completed"} else {"cancelled"})
-                    .bind(DB::bind_time(at)).bind(run_id).bind(wait_id).execute(&mut **tx).await?;
-            }
+            Self::project_signal_timeout_event(tx, run_id, event_type, payload, at).await?;
         } else if matches!(event_type, "SignalReceived" | "SignalApplied") {
             let wait_id = super::text(payload, "signal_wait_id")?;
             let name = super::text(payload, "signal_name")?;
@@ -388,6 +358,52 @@ where
         } else {
             Self::close_external_wait(tx, run_id, event_type, "signal", "Signal", at).await?;
         }
+        Ok(())
+    }
+
+    async fn project_signal_timeout_event(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        event_type: &str,
+        payload: &Value,
+        at: DateTime<Utc>,
+    ) -> Result<()> {
+        let wait_id = super::text(payload, "signal_wait_id")?;
+        let name = super::text(payload, "signal_name")?;
+        if event_type == "TimerScheduled" {
+            let fire_at = payload["fire_at"]
+                .as_str()
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                .map(|value| value.with_timezone(&Utc))
+                .ok_or_else(|| {
+                    super::refuse(axum::http::StatusCode::CONFLICT, "invalid_stored_wait")
+                })?;
+            let delay = payload["delay_seconds"].as_i64().unwrap_or(0);
+            Self::query("UPDATE workflow_run_waits SET deadline_at=$1,resume_source_kind='timer',resume_source_id=$2,external_only=FALSE,summary=$3,updated_at=$4 WHERE workflow_run_id=$5 AND wait_id=$6 AND kind='signal' AND status='open'")
+                    .bind(DB::bind_time(fire_at)).bind(super::text(payload,"timer_id")?)
+                    .bind(format!("Waiting for signal {name} or timeout after {}.", signal_duration(delay)))
+                    .bind(DB::bind_time(at)).bind(run_id).bind(wait_id).execute(&mut **tx).await?;
+        } else {
+            let fired = event_type == "TimerFired";
+            // A receipt has already resolved the visible wait, but its
+            // associated timer task still transitions on fire/cancellation.
+            Self::query("UPDATE workflow_run_waits SET task_backed=FALSE,task_status=$1,updated_at=$2 WHERE workflow_run_id=$3 AND wait_id=$4 AND kind='signal' AND resume_source_id=$5")
+                    .bind(if fired {"completed"} else {"cancelled"}).bind(DB::bind_time(at)).bind(run_id).bind(wait_id)
+                    .bind(super::text(payload,"timer_id")?).execute(&mut **tx).await?;
+            let summary = if fired {
+                format!(
+                    "Signal {name} timed out after {}.",
+                    signal_duration(payload["delay_seconds"].as_i64().unwrap_or(0))
+                )
+            } else {
+                format!("Signal {name} timeout was cancelled.")
+            };
+            Self::query("UPDATE workflow_run_waits SET status=$1,source_status=$2,summary=$3,resolved_at=$4,task_backed=FALSE,task_status=$5,updated_at=$6 WHERE workflow_run_id=$7 AND wait_id=$8 AND kind='signal' AND status='open'")
+                    .bind(if fired {"resolved"} else {"cancelled"}).bind(if fired {"timed_out"} else {"timeout_cancelled"})
+                    .bind(summary).bind(DB::bind_time(at)).bind(if fired {"completed"} else {"cancelled"})
+                    .bind(DB::bind_time(at)).bind(run_id).bind(wait_id).execute(&mut **tx).await?;
+        }
+
         Ok(())
     }
     async fn close_external_wait(

@@ -86,38 +86,10 @@ pub(super) fn update_failure(command: &Value) -> Result<UpdateFailure<'_>> {
     let exception_type = php_string(&command["exception_type"]);
     // Unknown external class names are not PHP inheritance declarations. Keep
     // the original name while applying the published portable message rules.
-    let class = exception_class
-        .trim_start_matches('\\')
-        .to_ascii_lowercase();
-    let category = match class.as_str() {
-        "workflow\\v2\\exceptions\\structurallimitexceededexception" => "structural_limit",
-        "workflow\\v2\\exceptions\\unsupportedworkflowyieldexception"
-        | "workflow\\v2\\exceptions\\straightlineworkflowrequiredexception" => "task_failure",
-        "illuminate\\database\\queryexception"
-        | "pdoexception"
-        | "illuminate\\queue\\maxattemptsexceededexception" => "internal",
-        _ => {
-            let lower = message.to_ascii_lowercase();
-            if [
-                "timed out",
-                "timeout exceeded",
-                "execution deadline",
-                "run deadline",
-            ]
-            .iter()
-            .any(|marker| lower.contains(marker))
-            {
-                "timeout"
-            } else if message.starts_with("Structural limit exceeded:") {
-                "structural_limit"
-            } else {
-                "application"
-            }
-        }
-    };
+    let category = super::failure_commands::category(exception_class, message);
     let non_retryable = command["non_retryable"]
         .as_bool()
-        .unwrap_or(class == "workflow\\exceptions\\nonretryableexception");
+        .unwrap_or_else(|| super::failure_commands::default_non_retryable(exception_class));
     Ok(UpdateFailure {
         update_id,
         message,

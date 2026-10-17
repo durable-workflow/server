@@ -71,11 +71,13 @@ impl ChildSummaryHistory {
                 }
                 previous.started = true;
             }
-            "ChildRunCompleted" | "ChildRunCancelled" if previous.started => {
+            "ChildRunCompleted" | "ChildRunCancelled" | "ChildRunFailed" if previous.started => {
                 let status = if event == "ChildRunCompleted" {
                     "completed"
-                } else {
+                } else if event == "ChildRunCancelled" {
                     "cancelled"
+                } else {
+                    "failed"
                 };
                 if payload["child_run_number"] != 1 || payload["child_status"] != status {
                     return false;
@@ -188,7 +190,8 @@ where
         };
         let pending = rows.iter().find(|row| {
             DB::string(row, "source_status").is_ok_and(|status| {
-                status == "cancelled" || (status == "completed" && open.is_none())
+                matches!(status.as_str(), "cancelled" | "failed")
+                    || (status == "completed" && open.is_none())
             })
         });
         // PHP retains resolved-child problem evidence while the parent task is

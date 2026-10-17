@@ -212,63 +212,7 @@ where
             let Some(expected) = history.open.get(&id) else {
                 return Ok(false);
             };
-            if DB::string(row, "kind")? != expected.kind
-                || DB::optional_string(row, "target_name")?.as_deref()
-                    != Some(expected.name.as_str())
-                || DB::optional_number(row, "sequence")? != Some(expected.sequence)
-                || DB::optional_string(row, "history_authority")?.as_deref()
-                    != Some("typed_history")
-                || DB::optional_string(row, "source_status")?.as_deref()
-                    != Some(if expected.fired {
-                        if expected.kind == "condition" {
-                            "timeout_fired"
-                        } else {
-                            "timed_out"
-                        }
-                    } else {
-                        "waiting"
-                    })
-                || DB::optional_string(row, "history_unsupported_reason")?.is_some()
-            {
-                return Ok(false);
-            }
-            if let Some((timer, at)) = &expected.timer {
-                if DB::optional_string(row, "resume_source_kind")?.as_deref() != Some("timer")
-                    || DB::optional_string(row, "resume_source_id")?.as_ref() != Some(timer)
-                    || DB::optional_string(row, "signal_timer_id")?.as_ref() != Some(timer)
-                    || DB::optional_string(row, "signal_timer_status")?.as_deref()
-                        != Some(if expected.fired { "fired" } else { "pending" })
-                    || DB::optional_number(row, "signal_timer_sequence")? != Some(expected.sequence)
-                    || DB::optional_number(row, "signal_timer_delay")? != expected.timeout
-                    || DB::optional_instant(row, "signal_timer_fire_at")? != Some(*at)
-                    || DB::optional_instant(row, "deadline_at")? != Some(*at)
-                {
-                    return Ok(false);
-                }
-                if expected.timeout != Some(0) {
-                    if DB::optional_string(row, "task_id")?.is_none() {
-                        return Ok(false);
-                    }
-                    if DB::optional_string(row, "signal_task_id")?.is_some() {
-                        let payload = DB::document_row(row, "signal_task_payload")?;
-                        if DB::optional_string(row, "signal_task_type")?.as_deref() != Some("timer")
-                            || payload["timer_id"].as_str() != Some(timer)
-                            || super::wait_timeouts::wait_fields(&payload) != expected.identity
-                        {
-                            return Ok(false);
-                        }
-                    }
-                }
-            } else if DB::optional_instant(row, "deadline_at")?.is_some()
-                || DB::optional_string(row, "task_id")?.is_some()
-                || DB::optional_string(row, "resume_source_id")?.is_some()
-                || DB::optional_string(row, "resume_source_kind")?.as_deref()
-                    != Some(if expected.kind == "condition" {
-                        "external_input"
-                    } else {
-                        "signal"
-                    })
-            {
+            if !Self::external_wait_matches(row, expected)? {
                 return Ok(false);
             }
             if expected.kind == "condition" {
@@ -305,74 +249,8 @@ where
             source_id: expected.timer.as_ref().map(|(id, _)| id.clone()),
         });
         if let Some((_, at)) = &expected.timer {
-            if summary.state == "workflow_replay_blocked"
-                || (summary.state == "repair_needed" && summary.task_id.is_some())
-            {
-                return Ok(true);
-            }
-            if expected.fired {
-                if let Some(id) = summary.task_id.clone() {
-                    let task = Self::query(
-                        "SELECT * FROM workflow_tasks WHERE id=$1 AND workflow_run_id=$2",
-                    )
-                    .bind(id)
-                    .bind(run_id)
-                    .fetch_one(&mut **tx)
-                    .await?;
-                    let wait = summary.wait.take();
-                    Self::apply_summary_task(
-                        summary,
-                        &task,
-                        super::store::now(),
-                        Some(if expected.kind == "condition" {
-                            "Condition timeout"
-                        } else {
-                            "Signal timeout"
-                        }),
-                    )?;
-                    summary.wait = wait;
-                } else {
-                    summary.state = "repair_needed".into();
-                    summary.reason = format!(
-                        "{} wait {} has a fired timeout without an open workflow task.",
-                        if expected.kind == "condition" {
-                            "Condition"
-                        } else {
-                            "Signal"
-                        },
-                        DB::string(row, "wait_id")?
-                    );
-                    summary.repair_blocked = None;
-                }
-            } else if summary.task_id.is_some() {
-                summary.state = format!("waiting_for_{}", expected.kind);
-                summary.reason = if expected.kind == "condition" {
-                    format!(
-                        "Waiting for condition-changing input or timeout at {}.",
-                        at.format("%Y-%m-%dT%H:%M:%S%.6fZ")
-                    )
-                } else {
-                    format!(
-                        "Waiting for signal {} or timeout at {}.",
-                        expected.name,
-                        at.format("%Y-%m-%dT%H:%M:%S%.6fZ")
-                    )
-                };
-                summary.repair_blocked = Some("repair_not_needed");
-            } else {
-                summary.state = "repair_needed".into();
-                summary.reason = format!(
-                    "{} wait {} is open without an open timeout task.",
-                    if expected.kind == "condition" {
-                        "Condition"
-                    } else {
-                        "Signal"
-                    },
-                    DB::string(row, "wait_id")?
-                );
-                summary.repair_blocked = None;
-            }
-            return Ok(true);
+            return Self::apply_external_timeout_summary(tx, run_id, row, expected, summary, *at)
+                .await;
         }
         // Replay failures and expired leases take priority. Ordinary conditions
         // otherwise remain waiting until application, even with a claimed task.
@@ -389,5 +267,153 @@ where
             summary.repair_blocked = Some("repair_not_needed");
         }
         Ok(true)
+    }
+    fn external_wait_matches(row: &DB::Row, expected: &ExpectedWait) -> Result<bool> {
+        if DB::string(row, "kind")? != expected.kind
+            || DB::optional_string(row, "target_name")?.as_deref() != Some(expected.name.as_str())
+            || DB::optional_number(row, "sequence")? != Some(expected.sequence)
+            || DB::optional_string(row, "history_authority")?.as_deref() != Some("typed_history")
+            || DB::optional_string(row, "source_status")?.as_deref()
+                != Some(if expected.fired {
+                    if expected.kind == "condition" {
+                        "timeout_fired"
+                    } else {
+                        "timed_out"
+                    }
+                } else {
+                    "waiting"
+                })
+            || DB::optional_string(row, "history_unsupported_reason")?.is_some()
+        {
+            return Ok(false);
+        }
+        if let Some((timer, at)) = &expected.timer {
+            return Self::external_timeout_matches(row, expected, timer, *at);
+        }
+        if DB::optional_instant(row, "deadline_at")?.is_some()
+            || DB::optional_string(row, "task_id")?.is_some()
+            || DB::optional_string(row, "resume_source_id")?.is_some()
+            || DB::optional_string(row, "resume_source_kind")?.as_deref()
+                != Some(if expected.kind == "condition" {
+                    "external_input"
+                } else {
+                    "signal"
+                })
+        {
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    fn external_timeout_matches(
+        row: &DB::Row,
+        expected: &ExpectedWait,
+        timer: &str,
+        at: DateTime<Utc>,
+    ) -> Result<bool> {
+        if DB::optional_string(row, "resume_source_kind")?.as_deref() != Some("timer")
+            || DB::optional_string(row, "resume_source_id")?.as_deref() != Some(timer)
+            || DB::optional_string(row, "signal_timer_id")?.as_deref() != Some(timer)
+            || DB::optional_string(row, "signal_timer_status")?.as_deref()
+                != Some(if expected.fired { "fired" } else { "pending" })
+            || DB::optional_number(row, "signal_timer_sequence")? != Some(expected.sequence)
+            || DB::optional_number(row, "signal_timer_delay")? != expected.timeout
+            || DB::optional_instant(row, "signal_timer_fire_at")? != Some(at)
+            || DB::optional_instant(row, "deadline_at")? != Some(at)
+        {
+            return Ok(false);
+        }
+        if expected.timeout != Some(0) {
+            if DB::optional_string(row, "task_id")?.is_none() {
+                return Ok(false);
+            }
+            if DB::optional_string(row, "signal_task_id")?.is_some() {
+                let payload = DB::document_row(row, "signal_task_payload")?;
+                if DB::optional_string(row, "signal_task_type")?.as_deref() != Some("timer")
+                    || payload["timer_id"].as_str() != Some(timer)
+                    || super::wait_timeouts::wait_fields(&payload) != expected.identity
+                {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    async fn apply_external_timeout_summary(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        row: &DB::Row,
+        expected: &ExpectedWait,
+        summary: &mut ActiveSummary,
+        at: DateTime<Utc>,
+    ) -> Result<bool> {
+        if summary.state == "workflow_replay_blocked"
+            || (summary.state == "repair_needed" && summary.task_id.is_some())
+        {
+            return Ok(true);
+        }
+        if expected.fired {
+            if let Some(id) = summary.task_id.clone() {
+                let task =
+                    Self::query("SELECT * FROM workflow_tasks WHERE id=$1 AND workflow_run_id=$2")
+                        .bind(id)
+                        .bind(run_id)
+                        .fetch_one(&mut **tx)
+                        .await?;
+                let wait = summary.wait.take();
+                Self::apply_summary_task(
+                    summary,
+                    &task,
+                    super::store::now(),
+                    Some(if expected.kind == "condition" {
+                        "Condition timeout"
+                    } else {
+                        "Signal timeout"
+                    }),
+                )?;
+                summary.wait = wait;
+            } else {
+                summary.state = "repair_needed".into();
+                summary.reason = format!(
+                    "{} wait {} has a fired timeout without an open workflow task.",
+                    if expected.kind == "condition" {
+                        "Condition"
+                    } else {
+                        "Signal"
+                    },
+                    DB::string(row, "wait_id")?
+                );
+                summary.repair_blocked = None;
+            }
+        } else if summary.task_id.is_some() {
+            summary.state = format!("waiting_for_{}", expected.kind);
+            summary.reason = if expected.kind == "condition" {
+                format!(
+                    "Waiting for condition-changing input or timeout at {}.",
+                    at.format("%Y-%m-%dT%H:%M:%S%.6fZ")
+                )
+            } else {
+                format!(
+                    "Waiting for signal {} or timeout at {}.",
+                    expected.name,
+                    at.format("%Y-%m-%dT%H:%M:%S%.6fZ")
+                )
+            };
+            summary.repair_blocked = Some("repair_not_needed");
+        } else {
+            summary.state = "repair_needed".into();
+            summary.reason = format!(
+                "{} wait {} is open without an open timeout task.",
+                if expected.kind == "condition" {
+                    "Condition"
+                } else {
+                    "Signal"
+                },
+                DB::string(row, "wait_id")?
+            );
+            summary.repair_blocked = None;
+        }
+        return Ok(true);
     }
 }

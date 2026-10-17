@@ -24,6 +24,7 @@ mod external_registry;
 mod external_resolution;
 mod external_transport;
 mod external_wait_summary;
+mod failure_commands;
 mod history_budget;
 mod http;
 mod memo_json;
@@ -59,6 +60,7 @@ mod visibility;
 mod wait_projection;
 mod wait_timeouts;
 mod worker_incarnations;
+mod workflow_failures;
 
 pub use execution::Runtime;
 pub use external_config::ExternalPayloadConfig;

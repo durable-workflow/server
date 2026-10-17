@@ -1499,13 +1499,26 @@ where
             .filter(|c| !c.is_empty() && c.len() <= 100)
             .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_commands"))?;
         super::selections::validate_batch(commands)?;
+        if commands
+            .iter()
+            .filter(|command| {
+                matches!(
+                    command["type"].as_str(),
+                    Some("complete_workflow" | "fail_workflow" | "continue_as_new")
+                )
+            })
+            .count()
+            > 1
+        {
+            return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_commands"));
+        }
         // Validate the entire batch before mutation. Unknown commands and
         // options cannot be silently accepted as unsupported durable effects.
         for (index, command) in commands.iter().enumerate() {
             if self.namespace.as_ref() != "default"
                 && !matches!(
                     text(command, "type")?,
-                    "complete_workflow" | "schedule_activity" | "start_timer"
+                    "complete_workflow" | "fail_workflow" | "schedule_activity" | "start_timer"
                 )
                 && !(text(command, "type")? == "open_condition_wait" && commands.len() == 1)
             {
@@ -1515,6 +1528,9 @@ where
                 ));
             }
             match text(command, "type")? {
+                "fail_workflow" => {
+                    super::workflow_failures::validate(command)?;
+                }
                 "complete_workflow" if index + 1 == commands.len() => {
                     reject_fields(command, &["type", "result"])?;
                     if !external.contains_key(&index) {
@@ -1645,7 +1661,9 @@ where
             && commands.iter().any(|command| {
                 !matches!(
                     command["type"].as_str(),
-                    Some("schedule_activity" | "start_timer" | "complete_workflow")
+                    Some(
+                        "schedule_activity" | "start_timer" | "complete_workflow" | "fail_workflow"
+                    )
                 )
             })
         {
@@ -1686,7 +1704,11 @@ where
         let mut sequence = Self::authored_sequence(&mut tx, &run_id).await?;
         Self::apply_task_signal(&mut tx, &run_id, task_id, &task, signal_codec).await?;
         for (index, command) in commands.iter().enumerate() {
-            if matches!(
+            if command["type"] == "fail_workflow" {
+                // Published parseCommands applies every nonterminal command
+                // first, regardless of the terminal command's batch position.
+                continue;
+            } else if matches!(
                 command["type"].as_str(),
                 Some("complete_update" | "fail_update")
             ) {
@@ -1920,7 +1942,7 @@ where
                 };
                 let timers: i64 = Self::scalar("SELECT COUNT(*) FROM workflow_run_timers WHERE workflow_run_id=$1 AND status='pending'")
                     .bind(&run_id).fetch_one(&mut *tx).await?;
-                let children = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled')")
+                let children = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled','failed')")
                     .bind(&run_id).fetch_one(&mut *tx).await?;
                 if outstanding != 0 || timers != 0 || children != 0 || wait_pending {
                     return Err(refuse(StatusCode::CONFLICT, "pending_durable_operations"));
@@ -1952,7 +1974,17 @@ where
                 }
             }
         }
-        Self::query("UPDATE workflow_tasks SET status='completed' WHERE id=$1")
+        let failed = if let Some(command) = commands
+            .iter()
+            .find(|command| command["type"] == "fail_workflow")
+        {
+            Self::apply_workflow_failure(&mut tx, &run, &task, command).await?;
+            Self::cancellation_request(&run)?.is_none()
+        } else {
+            false
+        };
+        Self::query("UPDATE workflow_tasks SET status=$1 WHERE id=$2")
+            .bind(if failed { "failed" } else { "completed" })
             .bind(task_id)
             .execute(&mut *tx)
             .await?;
@@ -2338,7 +2370,12 @@ where
     }
 
     pub(super) fn duplicate_receipt(task: &DB::Row, body: &Value) -> Result<bool> {
-        if DB::string(task, "status")? != "completed" {
+        let status = DB::string(task, "status")?;
+        if status != "completed" && status != "failed" {
+            return Ok(false);
+        }
+        // Retryable task failures have no terminal completion receipt.
+        if status == "failed" && DB::optional_document_row(task, "receipt")?.is_none() {
             return Ok(false);
         }
         // A waiting acknowledgement completes the lease without a command
@@ -2873,7 +2910,7 @@ pub(super) fn reject_fields(body: &Value, allowed: &[&str]) -> Result<()> {
 }
 
 pub(crate) fn capabilities() -> Value {
-    let mut value = json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "start_child_workflow", "open_condition_wait", "open_signal_wait", "record_version_marker", "complete_workflow", "continue_as_new", "complete_update", "fail_update"],
+    let mut value = json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "start_child_workflow", "open_condition_wait", "open_signal_wait", "record_version_marker", "complete_workflow", "fail_workflow", "continue_as_new", "complete_update", "fail_update"],
         "worker_deregistration_fencing":{"schema":"durable-workflow.v2.worker-deregistration.v1","supported":true,"receipt_retention_seconds":600,"endpoint":"/worker/registrations/{workerId}/deregister"},
         "workflow_memo_updates": false, "cooperative_cancellation": true, "prepared_local_activities": false,
         "worker_sessions": false, "sticky_execution": false, "local_activities": false, "message_streams": false,

@@ -1,5 +1,5 @@
-//! Sequential child completion and direct cancellation retain the original call.
-//! Retry, other failure, parallel groups and parent-close actions remain
+//! Sequential child completion, failure and direct cancellation retain the original call.
+//! Retry, parallel groups and parent-close actions remain
 //! unqualified and are refused at admission rather than silently discarded.
 use super::transaction::Transaction;
 use super::{
@@ -18,6 +18,7 @@ use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 pub(super) enum ChildResolution<'a> {
     Completed(&'a str),
     Cancelled(&'a Value),
+    Failed(&'a Value),
 }
 
 pub(super) fn validate_child(command: &Value) -> Result<()> {
@@ -259,9 +260,17 @@ where
         let (status, event_type) = match resolution {
             ChildResolution::Completed(_) => ("completed", "ChildRunCompleted"),
             ChildResolution::Cancelled(_) => ("cancelled", "ChildRunCancelled"),
+            ChildResolution::Failed(_) => ("failed", "ChildRunFailed"),
         };
         Self::query("UPDATE workflow_child_calls SET status=$1,closed_reason=$2,closed_at=$3,updated_at=$4 WHERE id=$5")
             .bind(status).bind(status).bind(DB::bind_time(closed_at)).bind(DB::bind_time(closed_at)).bind(DB::number(call, "id")?).execute(&mut **tx).await?;
+        if let ChildResolution::Failed(failure) = resolution {
+            Self::query("UPDATE workflow_child_calls SET failure_reference=$1 WHERE id=$2")
+                .bind(text(failure, "failure_id")?)
+                .bind(DB::number(call, "id")?)
+                .execute(&mut **tx)
+                .await?;
+        }
         let parent = Self::query("SELECT r.*,i.current_run_id FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE r.id=$1").bind(&parent_run).fetch_one(&mut **tx).await?;
         if DB::string(&parent, "workflow_instance_id")?
             != DB::string(link, "parent_workflow_instance_id")?
@@ -287,7 +296,7 @@ where
                 payload["result"] = wire(output);
                 payload["payload_codec"] = json!("avro");
             }
-            ChildResolution::Cancelled(failure) => {
+            ChildResolution::Cancelled(failure) | ChildResolution::Failed(failure) => {
                 for field in [
                     "failure_id",
                     "failure_category",
@@ -295,6 +304,11 @@ where
                     "message",
                 ] {
                     payload[field] = failure[field].clone();
+                }
+                if matches!(resolution, ChildResolution::Failed(_)) {
+                    for field in ["non_retryable", "exception_type", "exception"] {
+                        payload[field] = failure[field].clone();
+                    }
                 }
             }
         }
