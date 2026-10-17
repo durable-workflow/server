@@ -456,16 +456,40 @@ impl TestDatabase {
         const QUERY: &str = "SELECT COUNT(*) FROM workflow_history_events WHERE event_type='TimerCancelled' AND workflow_task_id=$1 AND workflow_command_id IS NULL";
         macro_rules! check {
             ($pool:expr,$query:expr) => {{
-                let pool=$pool;
-                let count:i64=sqlx::query_scalar($query).bind(task_id).fetch_one(&pool).await.unwrap();
+                let pool = $pool;
+                let count: i64 = sqlx::query_scalar($query)
+                    .bind(task_id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
                 pool.close().await;
                 count == 1
             }};
         }
         match self {
-            Self::Sqlite(dir) => check!(sqlx::SqlitePool::connect(&format!("sqlite://{}",dir.path().join("runtime.sqlite").display())).await.unwrap(),QUERY),
-            Self::Postgres { options,.. } => check!(sqlx::postgres::PgPoolOptions::new().connect_with(options.as_ref().clone()).await.unwrap(),QUERY),
-            Self::MySql { options,.. } => check!(sqlx::mysql::MySqlPoolOptions::new().connect_with(options.as_ref().clone()).await.unwrap(),"SELECT COUNT(*) FROM workflow_history_events WHERE event_type='TimerCancelled' AND workflow_task_id=? AND workflow_command_id IS NULL"),
+            Self::Sqlite(dir) => check!(
+                sqlx::SqlitePool::connect(&format!(
+                    "sqlite://{}",
+                    dir.path().join("runtime.sqlite").display()
+                ))
+                .await
+                .unwrap(),
+                QUERY
+            ),
+            Self::Postgres { options, .. } => check!(
+                sqlx::postgres::PgPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap(),
+                QUERY
+            ),
+            Self::MySql { options, .. } => check!(
+                sqlx::mysql::MySqlPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap(),
+                "SELECT COUNT(*) FROM workflow_history_events WHERE event_type='TimerCancelled' AND workflow_task_id=? AND workflow_command_id IS NULL"
+            ),
         }
     }
 

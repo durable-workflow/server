@@ -249,17 +249,52 @@ where
             let key = super::text(payload, "condition_key")?;
             let sequence = wait_sequence(payload)?;
             let projection_id = projection_id(run_id, wait_id);
-            Self::query("INSERT INTO workflow_run_waits(id,workflow_run_id,workflow_instance_id,wait_id,position,kind,sequence,status,source_status,summary,opened_at,target_name,target_type,task_backed,external_only,resume_source_kind,history_authority,created_at,updated_at) SELECT $1,id,workflow_instance_id,$2,$3,'condition',$4,'open','waiting','Waiting for condition.',$5,$6,'condition',FALSE,TRUE,'external_input','typed_history',$7,$8 FROM workflow_runs WHERE id=$9")
+            let summary = payload["timeout_seconds"].as_i64().map_or_else(
+                || "Waiting for condition.".into(),
+                |seconds| {
+                    format!(
+                        "Waiting for condition or timeout after {}.",
+                        signal_duration(seconds)
+                    )
+                },
+            );
+            Self::query("INSERT INTO workflow_run_waits(id,workflow_run_id,workflow_instance_id,wait_id,position,kind,sequence,status,source_status,summary,opened_at,target_name,target_type,task_backed,external_only,resume_source_kind,history_authority,created_at,updated_at) SELECT $1,id,workflow_instance_id,$2,$3,'condition',$4,'open','waiting',$5,$6,$7,'condition',FALSE,TRUE,'external_input','typed_history',$8,$9 FROM workflow_runs WHERE id=$10")
                 .bind(projection_id).bind(wait_id).bind(sequence - 1).bind(sequence)
+                .bind(summary)
                 .bind(DB::bind_time(at)).bind(key).bind(DB::bind_time(at)).bind(DB::bind_time(at))
                 .bind(run_id).execute(&mut **tx).await?;
         } else if event_type == "ConditionWaitSatisfied" {
             // Receipt alone is not satisfaction. Only the worker's committed
             // application event resolves this occurrence, without read repair.
             let wait_id = super::text(payload, "condition_wait_id")?;
-            Self::query("UPDATE workflow_run_waits SET status='resolved',source_status='satisfied',summary='Condition satisfied.',resolved_at=$1,updated_at=$2 WHERE workflow_run_id=$3 AND wait_id=$4 AND kind='condition' AND status='open'")
+            Self::query("UPDATE workflow_run_waits SET status='resolved',source_status='satisfied',summary='Condition satisfied.',resume_source_kind='external_input',resume_source_id=NULL,resolved_at=$1,updated_at=$2 WHERE workflow_run_id=$3 AND wait_id=$4 AND kind='condition' AND status='open'")
                 .bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(run_id).bind(wait_id)
                 .execute(&mut **tx).await?;
+        } else if payload["timer_kind"] == "condition_timeout"
+            && matches!(
+                event_type,
+                "TimerScheduled" | "TimerFired" | "TimerCancelled"
+            )
+        {
+            let wait_id = super::text(payload, "condition_wait_id")?;
+            if event_type == "TimerScheduled" {
+                let fire_at = payload["fire_at"]
+                    .as_str()
+                    .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                    .map(|at| at.with_timezone(&Utc))
+                    .ok_or_else(|| {
+                        super::refuse(axum::http::StatusCode::CONFLICT, "invalid_stored_wait")
+                    })?;
+                Self::query("UPDATE workflow_run_waits SET deadline_at=$1,resume_source_kind='timer',resume_source_id=$2,updated_at=$3 WHERE workflow_run_id=$4 AND wait_id=$5 AND kind='condition' AND status='open'")
+                    .bind(DB::bind_time(fire_at)).bind(super::text(payload,"timer_id")?).bind(DB::bind_time(at)).bind(run_id).bind(wait_id).execute(&mut **tx).await?;
+            } else {
+                Self::query("UPDATE workflow_run_waits SET task_backed=FALSE,task_status=$1,updated_at=$2 WHERE workflow_run_id=$3 AND wait_id=$4 AND kind='condition'")
+                    .bind(if event_type == "TimerFired" {"completed"} else {"cancelled"}).bind(DB::bind_time(at)).bind(run_id).bind(wait_id).execute(&mut **tx).await?;
+                if event_type == "TimerFired" {
+                    Self::query("UPDATE workflow_run_waits SET source_status='timeout_fired',summary='Waiting to apply condition timeout.',updated_at=$1 WHERE workflow_run_id=$2 AND wait_id=$3 AND kind='condition' AND status='open'")
+                        .bind(DB::bind_time(at)).bind(run_id).bind(wait_id).execute(&mut **tx).await?;
+                }
+            }
         } else {
             Self::close_external_wait(tx, run_id, event_type, "condition", "Condition", at).await?;
         }

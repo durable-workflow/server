@@ -231,7 +231,10 @@ impl SummaryHistory {
             let supported = if kind == "SelectionResolved" {
                 true
             } else if matches!(kind, "TimerScheduled" | "TimerFired" | "TimerCancelled") {
-                if payload["timer_kind"] == "signal_timeout" {
+                if matches!(
+                    payload["timer_kind"].as_str(),
+                    Some("signal_timeout" | "condition_timeout")
+                ) {
                     self.external_waits.apply(kind, &payload)
                 } else {
                     self.timers.apply(kind, &payload)

@@ -260,7 +260,7 @@ describes resume identities and retained waits. Named-namespace admission,
 condition timeouts and installed-consumer acceptance remain separate gates.
 For the focused source reference, set `DW_TEST_TIMED_SIGNAL_REFERENCE` to a
 writable JSONL path when running `cargo test --test execution timed_signal_waits::`.
-The [PHP comparator](tests/reference/timed_signal_waits.php) compares those
+The [PHP comparator](tests/reference/timed_external_waits.php) compares those
 captured waits with an explicitly selected published Workflow installation.
 Queries admit a quiescent committed snapshot, including completed runs, through
 the published worker query protocol. An active/ready workflow task returns

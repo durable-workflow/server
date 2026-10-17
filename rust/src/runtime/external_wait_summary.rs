@@ -24,6 +24,7 @@ struct ExpectedWait {
     timeout: Option<i64>,
     timer: Option<(String, DateTime<Utc>)>,
     fired: bool,
+    identity: Value,
 }
 
 impl ExternalWaitHistory {
@@ -62,7 +63,7 @@ impl ExternalWaitHistory {
         } else {
             return false;
         };
-        if (wait_kind == "condition" && timeout.is_some()) || !payload["timer_id"].is_null() {
+        if !payload["timer_id"].is_null() {
             return false;
         }
         let (Some(id), Some(name), Some(sequence)) = (
@@ -84,24 +85,27 @@ impl ExternalWaitHistory {
                 timeout,
                 timer: None,
                 fired: false,
+                identity: super::wait_timeouts::wait_fields(payload),
             },
         );
         true
     }
 
     fn apply_timer(&mut self, kind: &str, payload: &Value) -> bool {
+        let (wait_kind, id_key, name_key) = match payload["timer_kind"].as_str() {
+            Some("signal_timeout") => ("signal", "signal_wait_id", "signal_name"),
+            Some("condition_timeout") => ("condition", "condition_wait_id", "condition_key"),
+            _ => return false,
+        };
         let (Some(timer_id), Some(wait_id), Some(name), Some(sequence), Some(delay)) = (
             payload["timer_id"].as_str().filter(|v| !v.is_empty()),
-            payload["signal_wait_id"].as_str().filter(|v| !v.is_empty()),
-            payload["signal_name"].as_str().filter(|v| !v.is_empty()),
+            payload[id_key].as_str().filter(|v| !v.is_empty()),
+            payload[name_key].as_str().filter(|v| !v.is_empty()),
             payload["sequence"].as_i64(),
             payload["delay_seconds"].as_i64(),
         ) else {
             return false;
         };
-        if payload["timer_kind"] != "signal_timeout" {
-            return false;
-        }
         if kind == "TimerScheduled" {
             let Some(wait) = self.open.get_mut(wait_id) else {
                 return false;
@@ -113,13 +117,14 @@ impl ExternalWaitHistory {
             else {
                 return false;
             };
-            if wait.kind != "signal"
+            if wait.kind != wait_kind
                 || wait.name != name
                 || wait.sequence != sequence
                 || wait.timeout != Some(delay)
                 || wait.timer.is_some()
                 || self.timers.len() >= 100
                 || self.timers.contains_key(timer_id)
+                || super::wait_timeouts::wait_fields(payload) != wait.identity
             {
                 return false;
             }
@@ -134,6 +139,10 @@ impl ExternalWaitHistory {
             "timer_id",
             "signal_wait_id",
             "signal_name",
+            "condition_wait_id",
+            "condition_wait_occurrence_id",
+            "condition_key",
+            "condition_definition_fingerprint",
             "sequence",
             "delay_seconds",
             "timer_kind",
@@ -166,7 +175,7 @@ impl ExternalWaitHistory {
             if let Some(wait) = self.open.get_mut(wait_id) {
                 wait.fired = true;
             }
-        } else {
+        } else if wait_kind == "signal" {
             self.open.remove(wait_id);
         }
         true
@@ -211,7 +220,11 @@ where
                     != Some("typed_history")
                 || DB::optional_string(row, "source_status")?.as_deref()
                     != Some(if expected.fired {
-                        "timed_out"
+                        if expected.kind == "condition" {
+                            "timeout_fired"
+                        } else {
+                            "timed_out"
+                        }
                     } else {
                         "waiting"
                     })
@@ -240,8 +253,7 @@ where
                         let payload = DB::document_row(row, "signal_task_payload")?;
                         if DB::optional_string(row, "signal_task_type")?.as_deref() != Some("timer")
                             || payload["timer_id"].as_str() != Some(timer)
-                            || payload["signal_wait_id"] != id
-                            || payload["signal_name"] != expected.name
+                            || super::wait_timeouts::wait_fields(&payload) != expected.identity
                         {
                             return Ok(false);
                         }
@@ -272,9 +284,12 @@ where
             kind: expected.kind,
             id: DB::string(row, "wait_id")?,
             reason: if expected.fired {
-                format!("Waiting to apply signal {} timeout", expected.name)
+                format!(
+                    "Waiting to apply {} {} timeout",
+                    expected.kind, expected.name
+                )
             } else if expected.timeout.is_some() {
-                format!("Waiting for signal {} or timeout", expected.name)
+                format!("Waiting for {} {} or timeout", expected.kind, expected.name)
             } else {
                 format!("Waiting for {} {}", expected.kind, expected.name)
             },
@@ -309,29 +324,50 @@ where
                         summary,
                         &task,
                         super::store::now(),
-                        Some("Signal timeout"),
+                        Some(if expected.kind == "condition" {
+                            "Condition timeout"
+                        } else {
+                            "Signal timeout"
+                        }),
                     )?;
                     summary.wait = wait;
                 } else {
                     summary.state = "repair_needed".into();
                     summary.reason = format!(
-                        "Signal wait {} has a fired timeout without an open workflow task.",
+                        "{} wait {} has a fired timeout without an open workflow task.",
+                        if expected.kind == "condition" {
+                            "Condition"
+                        } else {
+                            "Signal"
+                        },
                         DB::string(row, "wait_id")?
                     );
                     summary.repair_blocked = None;
                 }
             } else if summary.task_id.is_some() {
-                summary.state = "waiting_for_signal".into();
-                summary.reason = format!(
-                    "Waiting for signal {} or timeout at {}.",
-                    expected.name,
-                    at.format("%Y-%m-%dT%H:%M:%S%.6fZ")
-                );
+                summary.state = format!("waiting_for_{}", expected.kind);
+                summary.reason = if expected.kind == "condition" {
+                    format!(
+                        "Waiting for condition-changing input or timeout at {}.",
+                        at.format("%Y-%m-%dT%H:%M:%S%.6fZ")
+                    )
+                } else {
+                    format!(
+                        "Waiting for signal {} or timeout at {}.",
+                        expected.name,
+                        at.format("%Y-%m-%dT%H:%M:%S%.6fZ")
+                    )
+                };
                 summary.repair_blocked = Some("repair_not_needed");
             } else {
                 summary.state = "repair_needed".into();
                 summary.reason = format!(
-                    "Signal wait {} is open without an open timeout task.",
+                    "{} wait {} is open without an open timeout task.",
+                    if expected.kind == "condition" {
+                        "Condition"
+                    } else {
+                        "Signal"
+                    },
                     DB::string(row, "wait_id")?
                 );
                 summary.repair_blocked = None;

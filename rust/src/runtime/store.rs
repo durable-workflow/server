@@ -664,6 +664,9 @@ where
         let Some(wait) = Self::open_wait(tx, run_id).await? else {
             return Ok(());
         };
+        if Self::condition_timeout_fired(tx, run_id, &wait).await? {
+            return Ok(());
+        }
         let signals = Self::query("SELECT id,signal_name,signal_wait_id FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received' ORDER BY command_sequence,id LIMIT 100")
             .bind(run_id).fetch_all(&mut **tx).await?;
         for signal in signals {
@@ -703,6 +706,11 @@ where
         let name = DB::string(&signal, "signal_name")?;
         let wait_id = DB::string(&signal, "signal_wait_id")?;
         let direct = wait.get("signal_name").is_some();
+        let condition_timer = if direct {
+            None
+        } else {
+            Self::condition_timer(tx, run_id, &wait).await?
+        };
         if direct && (wait["signal_name"] != name || wait["signal_wait_id"] != wait_id) {
             return Err(refuse(StatusCode::CONFLICT, "signal_wait_mismatch"));
         }
@@ -743,8 +751,7 @@ where
             .await?;
         Self::append(tx, run_id, "MessageCursorAdvanced", json!({"stream_key":format!("instance:{}",DB::string(&run,"workflow_instance_id")?),"previous_position":previous,"new_position":position}), Some(task_id), None).await?;
         if direct {
-            Self::cancel_signal_timeout(tx, run_id, &wait, task_id, &command_id, applied_at)
-                .await?;
+            Self::cancel_wait_timeout(tx, run_id, &wait, task_id, applied_at).await?;
         }
         let mut applied = json!({"workflow_command_id":command_id,"signal_id":signal_id,"signal_name":name,"signal_wait_id":wait_id,"value":wire(&prepared.value)});
         if direct {
@@ -759,8 +766,11 @@ where
             Some(&command_id),
         )
         .await?;
-        if !direct {
+        if !direct && !condition_timer.as_ref().is_some_and(|(_, fired)| *fired) {
             let mut satisfied = wait;
+            if let Some((timer, _)) = &condition_timer {
+                satisfied["timer_id"] = json!(timer);
+            }
             satisfied["workflow_signal_id"] = json!(signal_id);
             satisfied["signal_name"] = json!(name);
             satisfied["signal_wait_id"] = json!(wait_id);
@@ -768,11 +778,12 @@ where
                 tx,
                 run_id,
                 "ConditionWaitSatisfied",
-                satisfied,
+                satisfied.clone(),
                 Some(task_id),
                 None,
             )
             .await?;
+            Self::cancel_wait_timeout(tx, run_id, &satisfied, task_id, applied_at).await?;
         }
         Ok(())
     }
@@ -1185,6 +1196,10 @@ where
                     "timer_kind",
                     "signal_wait_id",
                     "signal_name",
+                    "condition_wait_id",
+                    "condition_wait_occurrence_id",
+                    "condition_key",
+                    "condition_definition_fingerprint",
                 ] {
                     if let Some(value) = task_payload.get(field) {
                         claim[field] = value.clone();
@@ -1564,6 +1579,7 @@ where
                             "condition_key",
                             "condition_definition_fingerprint",
                             "condition_wait_occurrence_id",
+                            "timeout_seconds",
                         ],
                     )?;
                     if command
@@ -1573,6 +1589,7 @@ where
                         return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_request"));
                     }
                     text(command, "condition_key")?;
+                    super::wait_timeouts::timeout_for(command, "invalid_condition_timeout")?;
                     let fingerprint = text(command, "condition_definition_fingerprint")?;
                     if !fingerprint.strip_prefix("sha256:").is_some_and(|hash| {
                         hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -1586,7 +1603,7 @@ where
                 "open_signal_wait" => {
                     reject_fields(command, &["type", "signal_name", "timeout_seconds"])?;
                     text(command, "signal_name")?;
-                    super::timed_signals::timeout(command)?;
+                    super::wait_timeouts::timeout(command)?;
                 }
                 "complete_update" if commands.len() == 1 => {
                     reject_fields(command, &["type", "update_id", "result"])?;
@@ -1830,7 +1847,9 @@ where
                 || command["type"] == "open_signal_wait"
             {
                 sequence += 1;
-                if Self::open_wait(&mut tx, &run_id).await?.is_some() {
+                if let Some(wait) = Self::open_wait(&mut tx, &run_id).await?
+                    && !Self::condition_timeout_fired(&mut tx, &run_id, &wait).await?
+                {
                     return Err(refuse(StatusCode::CONFLICT, "pending_durable_operations"));
                 }
                 let direct = command["type"] == "open_signal_wait";
@@ -1881,8 +1900,8 @@ where
                     None,
                 )
                 .await?;
-                if direct && pending_wait_id.is_none() {
-                    Self::schedule_signal_timeout(&mut tx, &run, &payload, task_id).await?;
+                if !direct || pending_wait_id.is_none() {
+                    Self::schedule_wait_timeout(&mut tx, &run, &payload, task_id).await?;
                 }
                 Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1")
                     .bind(&run_id)
@@ -1891,15 +1910,17 @@ where
             } else {
                 let outstanding: i64 = Self::scalar("SELECT COUNT(*) FROM activity_executions WHERE workflow_run_id=$1 AND status NOT IN ('completed','failed')")
                     .bind(&run_id).fetch_one(&mut *tx).await?;
+                let wait = Self::open_wait(&mut tx, &run_id).await?;
+                let wait_pending = if let Some(wait) = wait {
+                    !Self::condition_timeout_fired(&mut tx, &run_id, &wait).await?
+                } else {
+                    false
+                };
                 let timers: i64 = Self::scalar("SELECT COUNT(*) FROM workflow_run_timers WHERE workflow_run_id=$1 AND status='pending'")
                     .bind(&run_id).fetch_one(&mut *tx).await?;
                 let children = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled')")
                     .bind(&run_id).fetch_one(&mut *tx).await?;
-                if outstanding != 0
-                    || timers != 0
-                    || children != 0
-                    || Self::open_wait(&mut tx, &run_id).await?.is_some()
-                {
+                if outstanding != 0 || timers != 0 || children != 0 || wait_pending {
                     return Err(refuse(StatusCode::CONFLICT, "pending_durable_operations"));
                 }
                 let output = match external.get(&index) {
@@ -2230,8 +2251,20 @@ where
                 payload["signal_wait_id"] = task_payload["signal_wait_id"].clone();
                 payload["signal_name"] = task_payload["signal_name"].clone();
             }
-            let resume = if payload["timer_kind"] == "signal_timeout" {
-                super::timed_signals::resolution(&payload)
+            if task_payload.get("condition_wait_id").is_some() {
+                payload["timer_kind"] = json!("condition_timeout");
+            }
+            payload.as_object_mut().unwrap().extend(
+                super::wait_timeouts::wait_fields(&task_payload)
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            );
+            let resume = if matches!(
+                payload["timer_kind"].as_str(),
+                Some("signal_timeout" | "condition_timeout")
+            ) {
+                super::wait_timeouts::resolution(&payload)
             } else {
                 json!({"timer_id":timer_id})
             };

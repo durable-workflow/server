@@ -126,10 +126,9 @@ where
             }
             selected_timer_task |= DB::optional_string(row, "task_id")? == summary.task_id;
         }
-        let signal_timer = summary
-            .wait
-            .as_ref()
-            .is_some_and(|wait| wait.kind == "signal" && wait.source_kind == "timer");
+        let signal_timer = summary.wait.as_ref().is_some_and(|wait| {
+            matches!(wait.kind, "signal" | "condition") && wait.source_kind == "timer"
+        });
         if summary.task_type.as_deref() == Some("timer") && !selected_timer_task && !signal_timer {
             return Ok(false);
         }

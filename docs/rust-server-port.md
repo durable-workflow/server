@@ -467,7 +467,7 @@ Current checkpoint, October 17:
   Published Server 2.8.6 / Workflow 2.5.22 agrees on nine three-database liveness
   and history-counter snapshots, and nine current-wait snapshots containing
   three open waits. Those reference checks execute zero queries. The new
-  [wait comparator](../rust/tests/reference/timed_signal_waits.php) calls the
+  [wait comparator](../rust/tests/reference/timed_external_waits.php) calls the
   published current-wait projector, preserving its seconds-formatted wire dates;
   its initial handwritten microsecond-date expectation failed and was corrected
   without a runtime change. Existing SQLite references still pass 81 counters
