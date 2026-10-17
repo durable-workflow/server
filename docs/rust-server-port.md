@@ -22,7 +22,13 @@ complete parity or release readiness.
 
 Current checkpoint, October 17:
 
-- The admitted observation head `a15b87977` now has all 13 jobs passing in
+- Admitted head `0c8eafc9` retains its original
+  [shared run 39078215426](https://github.com/durable-workflow/server/actions/runs/39078215426),
+  still running at the workflow-failure component handoff. Its exact PHP/source,
+  Sonar app/workflow and public boundary pass. The separately prepared failure
+  component below has local source qualification; it does not qualify or replace
+  this hosted original. Its reported source-finding cleanup still needs fresh analysis.
+- The preceding observation head `a15b87977` has all 13 jobs passing in
   [shared run 39072054431](https://github.com/durable-workflow/server/actions/runs/39072054431),
   plus its exact PHP/source, Sonar and public-boundary checks. Newer prepared
   source includes separately qualified PHP main `964f9e3d5`, timed waits and
@@ -565,14 +571,63 @@ Current checkpoint, October 17:
   to this component. Fresh combined hosted and full consumer/promotion gates
   remain separate.
 
+- The existing published [workflow failure command](contracts/workflow-failure-command.md)
+  now has ordinary native source implementation. It remains distinct from task
+  failure/retry. One transaction closes the run and originating task as failed,
+  clears the task lease expiry, writes a new terminal failure and retains the
+  original leased-task snapshot. Structured exception precedence, properties
+  and int64 values survive. Original completion receipts retain duplicate,
+  conflict, namespace and stale-attempt fences; no automatic task retry follows.
+  Root cooperative cancellation keeps precedence and its original deadline.
+  Nonterminal commands retain authored order before the terminal command,
+  including when that terminal is placed between selection members.
+  Uncaught activity attribution requires the exact latest ActivityFailed boundary.
+  Failed sequential children retain the original call/link and new terminal
+  failure ID, resolve one parent wakeup, and permit a caught failure followed by
+  another sequential child. Parent-notification faults roll back the full transition.
+  Child failure payloads omit workflow-only flags and absent nullable diagnostics.
+  Update-owned task closure and broader child policies remain separate limits.
+  Contract/control `ed17d8d18` fails both initial admission controls before
+  implementation. Placement control `ae9117dbe` fails before filtering terminal
+  commands from group validation. Stricter controls `387b18c2c` fail on the
+  missing task snapshot and extra child failure flag; independent published-PHP
+  checks reject both shapes too. Corrected fixture assertions use the actual
+  cancellation-cleanup field and canonical activity failure ID. The first full
+  run retained 224 passes/one wrong-field assertion; a later partial local run
+  was intentionally retired before correcting the identity fixture, with no
+  qualification claim. Earlier fixture and hosted failures remain separate.
+  Final implementation `d4fb326e0440c1b35c20b6adc3b4044b197bf916`, runtime tree
+  `df2633238cf4cb7e23db02785a919ed1573d3f2a`, passes 80 library and 226 SQLite
+  execution tests. Eighteen existing library ignores remain; the directly ignored
+  SQLite profile child is invoked by its passing parent. Each of PostgreSQL 17.11
+  and MySQL 8.0.46 passes 32 controls: nine applicable new failure controls, twelve
+  timed-signal and eleven timed-condition controls. Rustfmt, PHP syntax and diff
+  checks pass. One unchanged checkout supplies the final builds.
+  Published Server 2.8.7 / Workflow 2.5.32 agrees on fifteen workflow-failure
+  payloads, twelve child payloads and thirty history-budget snapshots with zero
+  reference queries. Twelve child liveness/task-problem snapshots and six open
+  waits agree using empty mutable child tables (72 reference queries); six task
+  snapshots agree with zero queries. JSON object member order is ignored, while
+  array order, keys, scalar types and original durable identities remain exact.
+  The selected immutable PHP image index is
+  `27c08e15c86e897703c2bab87dcf61847946b379876b15d0a3a491bc91cf30cd`.
+  Eight reported native maintainability findings receive focused source cleanup:
+  external-wait validation/timeout liveness and signal-timeout projection are
+  extracted into helpers, and six redundant static lifetime annotations are
+  removed. Existing projection, transaction and three-database timed-wait controls
+  pass. Quality settings and thresholds are unchanged; fresh analyzer disposition
+  is pending. No PHP package, schema, catalog, stored-job or frozen tuple changes
+  belong to this component. Combined CI, installed consumers and promotion remain
+  separate gates. Ephemeral compiler and database resources were retired after audit.
+
 The separate installed-SDK observation
 [checkpoint](https://github.com/durable-workflow/server/pull/478#issuecomment-6205832785)
 remains aggregate FAILURE: completed/default and completed/named originals pass
 execute/cold reads, while both failed originals are refused at `fail_workflow`.
 Their cold attempts also fail after abrupt exception persistence leaves the
 identity files incomplete. That qualification is retired and stopped. The
-update-command discovery correction above does not implement `fail_workflow`
-or change the recorded failed originals.
+ordinary source implementation above does not rerun that recipe or change the
+recorded failed originals.
 
 The preserved `c0b14c15` [shared run](https://github.com/durable-workflow/server/actions/runs/38806818394)
 is terminal with 12 passing jobs and one failure in the existing-PHP PostgreSQL

@@ -18,6 +18,8 @@ structured exception, filling only missing defaults. Failure category and defaul
 non-retryable behavior follow the portable published FailureFactory rules;
 unknown external classes do not declare PHP inheritance. An explicit boolean
 non_retryable overrides its default.
+Reference comparisons ignore JSON object member order, which PostgreSQL JSONB
+does not preserve. Array order, keys and scalar types remain exact.
 
 One transaction writes a new workflow-run failure, WorkflowFailed history, the
 run's failed/closed state, and the originating task's failed state with its lease
@@ -37,6 +39,8 @@ one ChildRunFailed event and one resume task. Parent notification failure rolls
 back the child's terminal transition. An abandoned child cannot wake a closed or
 replacement parent. Pending-update closure and broader child policies retain
 their separately stated implementation/qualification limits.
+The current native update-task guard still refuses workflow terminal commands
+on an update-owned snapshot; this component does not qualify that closure path.
 
 References: published DefaultWorkflowTaskBridge::parseCommands,
 normalizeFailWorkflowCommand, applyWorkflowFailure; Server WorkerController's

@@ -244,8 +244,9 @@ This is not qualification of throughput, CPU-heavy deadlines or multi-node HA.
 Implemented paths cover health/schema readiness, limited capability discovery,
 workflow start/describe/paginated history, worker registration/heartbeat/removal,
 workflow/activity polling, workflow lease renewal and both completion paths.
-Admitted commands are `schedule_activity`, `start_timer`, `open_condition_wait`,
-`open_signal_wait` and `complete_workflow`;
+Admitted commands include `schedule_activity`, `start_timer`, `start_child_workflow`,
+`open_condition_wait`, `open_signal_wait`, `record_version_marker`,
+`complete_workflow`, `fail_workflow`, `continue_as_new`, `complete_update` and `fail_update`;
 unsupported effects/options are refused before batch mutation. Published PHP
 workers replay the persisted activity result and complete the workflow normally.
 Discovery marks the runtime as development, advertises the admitted commands
@@ -285,6 +286,18 @@ Set `DW_TEST_PARALLEL_ALL_REFERENCE` when running the `parallel_all::`
 source tests. The [published PHP comparator](tests/reference/parallel_all.php)
 checks liveness, task problems and every field of the bounded current-wait
 members using original history and their retained metadata.
+The [workflow failure command](../docs/contracts/workflow-failure-command.md)
+closes a run and its originating task as failed with one durable terminal failure
+and a fenced completion receipt. Cooperative cancellation retains precedence.
+Failed sequential children retain their original call and propagate the terminal
+failure ID to one parent resume, including when an earlier activity failed.
+The parent can catch that outcome and start another sequential child. Existing
+update-owned task guards and broader child policies remain separate limits.
+Set `DW_TEST_WORKFLOW_FAILURE_REFERENCE` when running the `workflow_failures::`
+source controls. The [pure PHP reference](tests/reference/workflow_failure.php)
+compares failure payloads with the published bridge and FailureFactory; existing
+history-budget, child and task helpers compare their captured projections.
+These source comparisons do not qualify an installed worker or retired consumer recipe.
 Queries admit a quiescent committed snapshot, including completed runs, through
 the published worker query protocol. An active/ready workflow task returns
 `query_snapshot_busy`; concurrent workflow/query routing remains unqualified.
