@@ -23,8 +23,11 @@ where
         loop {
             // Match the published projector's open-wait order without
             // rebuilding missing rows or hydrating the complete collection.
-            let rows = Self::query("SELECT id FROM workflow_run_waits WHERE workflow_run_id=$1 AND status='open' ORDER BY CASE WHEN opened_at IS NULL THEN 1 ELSE 0 END,opened_at,wait_id LIMIT 100 OFFSET $2")
-                .bind(run).bind(position).fetch_all(&mut **tx).await?;
+            let rows = Self::query(DB::OPEN_WAIT_ORDER)
+                .bind(run)
+                .bind(position)
+                .fetch_all(&mut **tx)
+                .await?;
             if rows.is_empty() {
                 break;
             }

@@ -11,6 +11,7 @@ pub(super) trait Backend: Database {
     type EncodedOptionalTime: for<'q> Encode<'q, Self> + Type<Self> + Send + Sync + 'static;
     type EncodedDocument: for<'q> Encode<'q, Self> + Type<Self> + Send + Sync + 'static;
     const HISTORY_PAGE: &'static str;
+    const OPEN_WAIT_ORDER: &'static str = "WITH clocks AS (SELECT id,wait_id,opened_at,EXTRACT(EPOCH FROM opened_at) AS seconds FROM workflow_run_waits WHERE workflow_run_id=$1 AND status='open') SELECT id FROM clocks ORDER BY CASE WHEN opened_at IS NULL THEN 1 ELSE 0 END,ROUND((CASE WHEN seconds<0 THEN 2*FLOOR(seconds)-seconds ELSE seconds END)*1000),wait_id LIMIT 100 OFFSET $2";
     const SUMMARY_HISTORY_SQL: &str = "SELECT id,sequence,event_type,CAST(payload AS TEXT) AS payload_json FROM workflow_history_events WHERE workflow_run_id=$1 AND sequence>$2 ORDER BY sequence LIMIT 16";
     const OBSERVATION_FAILURE_EVENT: &str = "SELECT id,sequence,event_type,recorded_at FROM workflow_history_events WHERE workflow_run_id=$1 AND payload->>'failure_id'=$2 AND event_type IN ('ActivityFailed','ActivityTimedOut','ChildRunFailed','ChildRunCancelled','ChildRunTerminated','WorkflowFailed','WorkflowTimedOut','WorkflowCancelled','WorkflowTerminated','UpdateCompleted') ORDER BY sequence DESC LIMIT 1";
     const OBSERVATION_ATTRIBUTES: &str = "SELECT \"key\" AS attribute_key,type,value_string,value_keyword,value_int,value_float,CASE WHEN value_bool IS NULL THEN NULL WHEN value_bool THEN 1 ELSE 0 END AS value_bool,value_datetime,value_keyword_list FROM workflow_search_attributes WHERE workflow_run_id=$1 AND workflow_instance_id=$2 AND \"key\" IN ($3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) ORDER BY \"key\" LIMIT 20";
@@ -92,6 +93,25 @@ fn sqlite_instant(value: String) -> Result<DateTime<Utc>> {
 }
 
 impl Backend for Sqlite {
+    // Carbon's millisecond comparison rounds at half a millisecond. Parse only
+    // whole UTC seconds with SQLite's clock functions and round integer
+    // microseconds explicitly; SQLite's fractional-date rounding differs at ties.
+    // Preserve Carbon's signed U.u decimal key for pre-epoch dates as well.
+    const OPEN_WAIT_ORDER: &'static str = r#"
+WITH utc_waits AS (
+    SELECT id,wait_id,opened_at,
+        replace(replace(replace(opened_at,'T',' '),'Z',''),'+00:00','') AS utc_opened
+    FROM workflow_run_waits WHERE workflow_run_id=$1 AND status='open'
+), clocks AS (
+    SELECT *,unixepoch(substr(utc_opened,1,19))*1000000
+        +(CASE WHEN unixepoch(substr(utc_opened,1,19))<0 THEN -1 ELSE 1 END)
+        *CAST(CASE WHEN substr(utc_opened,20,1)='.'
+            THEN substr(substr(utc_opened,21)||'000000',1,6) ELSE '000000' END AS INTEGER) AS micros
+    FROM utc_waits
+)
+SELECT id FROM clocks ORDER BY CASE WHEN opened_at IS NULL THEN 1 ELSE 0 END,
+    CASE WHEN micros<0 THEN (micros-500)/1000 ELSE (micros+500)/1000 END,wait_id LIMIT 100 OFFSET $2
+"#;
     const OBSERVATION_FAILURE_EVENT: &str = "SELECT id,sequence,event_type,recorded_at FROM workflow_history_events WHERE workflow_run_id=$1 AND json_extract(payload,'$.failure_id') COLLATE BINARY=$2 AND event_type IN ('ActivityFailed','ActivityTimedOut','ChildRunFailed','ChildRunCancelled','ChildRunTerminated','WorkflowFailed','WorkflowTimedOut','WorkflowCancelled','WorkflowTerminated','UpdateCompleted') ORDER BY sequence DESC LIMIT 1";
     const ACTIVITY_RESULT_EVENT_SQL: &'static str = "SELECT sequence,event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('ActivityScheduled','ActivityStarted','ActivityHeartbeatRecorded','ActivityRetryScheduled','ActivityCompleted','ActivityFailed','ActivityTimedOut','ActivityCancelled') AND (json_extract(payload,'$.activity_execution_id') COLLATE BINARY=$2 OR json_extract(payload,'$.activity.id') COLLATE BINARY=$3) ORDER BY sequence DESC LIMIT 1";
     const QUERY_CACHE_SCAN: &'static str = "SELECT \"key\",value,expiration FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' AND json_extract(value,'$.namespace')=$1 ORDER BY \"key\" LIMIT 65";
@@ -324,6 +344,7 @@ impl Backend for Postgres {
 }
 
 impl Backend for MySql {
+    const OPEN_WAIT_ORDER: &'static str = "WITH clocks AS (SELECT id,wait_id,opened_at,TIMESTAMPDIFF(MICROSECOND,'1970-01-01 00:00:00',opened_at) AS micros FROM workflow_run_waits WHERE workflow_run_id=? AND status='open') SELECT id FROM clocks ORDER BY CASE WHEN opened_at IS NULL THEN 1 ELSE 0 END,ROUND((CASE WHEN micros<0 THEN 2*FLOOR(micros/1000000)*1000000-micros ELSE micros END)/1000),wait_id LIMIT 100 OFFSET ?";
     const SUMMARY_HISTORY_SQL: &str = "SELECT id,sequence,event_type,CAST(payload AS CHAR) AS payload_json FROM workflow_history_events WHERE workflow_run_id=$1 AND sequence>$2 ORDER BY sequence LIMIT 16";
     const OBSERVATION_FAILURE_EVENT: &str = "SELECT id,sequence,event_type,recorded_at FROM workflow_history_events WHERE workflow_run_id=? AND CAST(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.failure_id')) AS BINARY)=CAST(? AS BINARY) AND event_type IN ('ActivityFailed','ActivityTimedOut','ChildRunFailed','ChildRunCancelled','ChildRunTerminated','WorkflowFailed','WorkflowTimedOut','WorkflowCancelled','WorkflowTerminated','UpdateCompleted') ORDER BY sequence DESC LIMIT 1";
     const OBSERVATION_ATTRIBUTES: &str = "SELECT `key` AS attribute_key,type,value_string,value_keyword,value_int,value_float,CASE WHEN value_bool IS NULL THEN NULL WHEN value_bool THEN 1 ELSE 0 END AS value_bool,value_datetime,value_keyword_list FROM workflow_search_attributes WHERE workflow_run_id=$1 AND workflow_instance_id=$2 AND `key` IN ($3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) ORDER BY `key` LIMIT 20";

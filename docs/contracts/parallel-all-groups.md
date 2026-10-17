@@ -40,6 +40,11 @@ not repair projections. Group metadata and fan-out counts come from typed histor
 without creating a selection result. Projection/history failures roll back the
 whole transition.
 
+Published wait ordering compares rounded millisecond opening timestamps
+(`Carbon::getTimestampMs`), then the original wait ID. Native microsecond ordering
+is a contract disagreement when multiple members open in the same millisecond.
+Correct the ordering key without changing any stored timestamp or identity.
+
 Source qualification for this component covers activity/timer all-groups. Child,
 signal and condition leaves, groups inside select, named activity/timer admission,
 installed consumers and whole-source acceptance remain separate gates. They are
