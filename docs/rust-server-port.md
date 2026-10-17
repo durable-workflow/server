@@ -430,6 +430,27 @@ Current checkpoint, October 16:
   checks pass. The separate README-only main `384578ef` is included without
   changing the tested native tree. Full hosted/installed qualification remains
   pending, and wider parallel/timeout shapes remain separate.
+- Command discovery now lists the already admitted `complete_update` and
+  `fail_update` handlers alongside the existing command set. Registration,
+  polling and cluster discovery share that metadata. Both existing durable
+  update controls now choose their actual completion command from advertised
+  metadata before exercising the original receipt, fencing, cold-reopen,
+  int64 result, failure identity and parent continuation checks. Both fail at
+  missing discovery against prior source `e95d31eb4`, whose runtime source is
+  unchanged from `a15b87977`. Implementation `3e1b61182`, native tree
+  `82b9435281a125e1389119e5d5d46001ac69950a`, passes both controls and full Rust
+  formatting. The only runtime change adds the two command names; admission,
+  task execution, schema and package/catalog identities are unchanged. This is
+  a focused source result. Full matrices and consumer acceptance remain separate.
+
+The separate installed-SDK observation
+[checkpoint](https://github.com/durable-workflow/server/pull/478#issuecomment-6205832785)
+remains aggregate FAILURE: completed/default and completed/named originals pass
+execute/cold reads, while both failed originals are refused at `fail_workflow`.
+Their cold attempts also fail after abrupt exception persistence leaves the
+identity files incomplete. That qualification is retired and stopped. The
+update-command discovery correction above does not implement `fail_workflow`
+or change the recorded failed originals.
 
 The preserved `c0b14c15` [shared run](https://github.com/durable-workflow/server/actions/runs/38806818394)
 is terminal with 12 passing jobs and one failure in the existing-PHP PostgreSQL
