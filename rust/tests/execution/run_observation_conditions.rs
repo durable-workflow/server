@@ -128,7 +128,7 @@ async fn run_observation_conditions_follow_authored_occurrences_across_cold_node
         let task = claim(&app, namespace).await;
         let refused_history = read(&app, namespace, &run, "history").await;
         let mut timeout = open("occurrence-0");
-        timeout[0]["timeout_seconds"] = json!(1);
+        timeout[0]["timeout_seconds"] = json!(-1);
         assert_eq!(
             finish(&app, namespace, &task, timeout).await.0,
             StatusCode::UNPROCESSABLE_ENTITY
