@@ -3,6 +3,8 @@ import {readFileSync} from 'node:fs';
 import {checkPublishedSdkPackages} from './sdk-direction-contract.mjs';
 
 const artifacts = JSON.parse(readFileSync(new URL('../../../tests/Fixtures/ServerParityProfiles/published-sdk-signals/artifacts.json', import.meta.url), 'utf8'));
+const namespaceArtifacts = JSON.parse(readFileSync(new URL('../../../tests/Fixtures/ServerParityProfiles/published-sdk-namespace-signals/artifacts.json', import.meta.url), 'utf8'));
+const selectedRunArtifacts = JSON.parse(readFileSync(new URL('../../../tests/Fixtures/ServerParityProfiles/published-sdk-selected-run-signals/artifacts.json', import.meta.url), 'utf8'));
 const languages = ['php', 'python', 'rust'];
 const phases = ['original', 'signal-1', 'resumed', 'signal-2', 'replacement'];
 const checkpointLengths = [3, 4, 8, 9, 13];
@@ -16,18 +18,21 @@ const frame = value => {
 
 export function checkSdkSignalDirectionArtifacts(fixture, selected) {
   if (!fixture.sdk_signal_direction) return;
-  assert.deepEqual(selected, artifacts, 'complete reviewed published SDK signal tuple');
+  const namespaced = fixture.namespace_signal_pair || fixture.namespace_signal_run;
+  const selectedRun = fixture.selected_run_signal_pair || fixture.selected_run_signal_run;
+  assert.deepEqual(selected, selectedRun ? selectedRunArtifacts : namespaced ? namespaceArtifacts : artifacts, 'complete reviewed published SDK signal tuple');
   const spec = fixture.sdk_signal_direction;
   assert(languages.includes(spec.workflow) && languages.includes(spec.client));
+  if (selectedRun) assert(['php', 'rust'].includes(spec.client), 'published Python has no selected-run signal API');
   assert.deepEqual(spec, {workflow: spec.workflow, client: spec.client, phase_order: phases,
-    task_queue: 'server-parity-sdk-signals', signal_name: 'payload', target: 'instance-current-run',
+    task_queue: 'server-parity-sdk-signals', signal_name: 'payload', target: selectedRun ? 'selected-current-run' : 'instance-current-run',
     start_after_worker_registration: true, first_poll_after_start_receipt: true,
     start_client: 'php-observer', identical_repeated_payload: true});
-  assert.equal(fixture.id, 'signal-sdk-' + spec.workflow + '-' + spec.client);
+  assert.equal(fixture.id, (selectedRun ? 'signal-selected-run-sdk-' : namespaced ? 'signal-namespace-sdk-' : 'signal-sdk-') + spec.workflow + '-' + spec.client);
   assert.equal(fixture.workflow_type, 'parity.v1.sdk_signals');
   assert.equal(fixture.signal_count, 2);
   assert.equal(fixture.activity, false);
-  assert.equal(fixture.typed_signal_value.value.count.value, '9007199254740993');
+  assert.equal(fixture.typed_signal_value.value.count.value, fixture.namespace_signal_run === 'peer' ? '9007199254740995' : '9007199254740993');
 }
 
 export function checkSdkSignalDirectionPackages(fixture, observation, selected) {
@@ -38,7 +43,8 @@ export function checkSdkSignalDirectionPackages(fixture, observation, selected) 
 
 export function checkSdkSignalDirection(fixture, observation, workflowId) {
   if (!fixture.sdk_signal_direction) return null;
-  checkSdkSignalDirectionArtifacts(fixture, artifacts);
+  const selectedRun = Boolean(fixture.selected_run_signal_run);
+  checkSdkSignalDirectionArtifacts(fixture, selectedRun ? selectedRunArtifacts : fixture.namespace_signal_run ? namespaceArtifacts : artifacts);
   const spec = fixture.sdk_signal_direction, direction = observation.sdk_signal_direction;
   const projection = {two_distinct_identical_signals: true, exact_typed_completion: true};
   if (observation.mode === 'embedded') {
@@ -76,13 +82,17 @@ export function checkSdkSignalDirection(fixture, observation, workflowId) {
     if (sender) assert(['waiting', 'running'].includes(snapshot.status), 'accepted signal leaves original run nonterminal');
     else assert.equal(snapshot.status, index === 4 ? 'completed' : 'waiting');
     for (const request of phase.requests) if (request.method === 'POST' && request.path === '/api/workflows') starts.push({index, request});
+    if (fixture.namespace_signal_run) {
+      for (const request of phase.requests) assert.equal(request.namespace, observation.namespace, 'actual namespace header in every SDK phase');
+    }
     if (sender) {
       assert.equal(phase.sender_finished, true);
       assert.equal(phase.signal_sent, true);
       assert.equal(phase.workflow_id, workflowId);
       assert(!phase.requests.some(item => item.path.startsWith('/api/worker/')), 'normal signal client performs no worker operations');
-      const requests = phase.requests.filter(item => item.method === 'POST' && item.path === '/api/workflows/' + workflowId + '/signal/payload');
-      assert.equal(requests.length, 1, 'one actual instance-scoped signal request per client process');
+      const path = '/api/workflows/' + workflowId + (selectedRun ? '/runs/' + observation.run_id : '') + '/signal/payload';
+      const requests = phase.requests.filter(item => item.method === 'POST' && decodeURIComponent(item.path) === path);
+      assert.equal(requests.length, 1, 'one actual selected API signal request per client process');
       const request = requests[0], receipt = request.response;
       assert.equal(request.status, 202, 'normal accepted signal uses the published HTTP 202 contract');
       assert.equal(request.request.run_id, undefined, 'normal common instance API has no run selector');

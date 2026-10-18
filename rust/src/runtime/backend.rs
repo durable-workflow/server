@@ -8,18 +8,25 @@ use super::{Result, mysql, postgres, schema};
 
 pub(super) trait Backend: Database {
     type EncodedTime: for<'q> Encode<'q, Self> + Type<Self> + Send + Sync + 'static;
+    type EncodedOptionalTime: for<'q> Encode<'q, Self> + Type<Self> + Send + Sync + 'static;
     type EncodedDocument: for<'q> Encode<'q, Self> + Type<Self> + Send + Sync + 'static;
     const HISTORY_PAGE: &'static str;
+    const ACTIVITY_RESULT_EVENT_SQL: &'static str = "SELECT sequence,event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('ActivityScheduled','ActivityStarted','ActivityHeartbeatRecorded','ActivityRetryScheduled','ActivityCompleted','ActivityFailed','ActivityTimedOut','ActivityCancelled') AND (payload->>'activity_execution_id'=$2 OR payload->'activity'->>'id'=$3) ORDER BY sequence DESC LIMIT 1";
+    const EXTERNAL_PAYLOAD_BYTES: &'static str = "SELECT CAST(COALESCE(SUM(size_bytes),0) AS BIGINT) FROM runtime_external_payloads WHERE namespace=$1";
     const VISIBILITY_PAGE: &'static str = super::visibility::VISIBILITY_PAGE;
     const WORKER_REGISTRATION_SQL: &'static str = super::store::WORKER_REGISTRATION_SQL;
     const TASK_CANDIDATES_SQL: &'static str = super::store::TASK_CANDIDATES_SQL;
+    const POLL_WAKE_TASKS_SQL: &'static str = super::cross_kind_poll::TASKS_SQL;
+    const POLL_WAKE_QUERIES_SQL: &'static str = "SELECT \"key\" AS id FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' AND expiration>$1 AND CAST(value AS jsonb)->>'namespace'=$2 AND CAST(value AS jsonb)->>'task_queue'=$3 AND CAST(value AS jsonb)->>'query_deadline_at'>$4 AND (CAST(value AS jsonb)->>'status'='pending' OR (CAST(value AS jsonb)->>'status'='leased' AND CAST(value AS jsonb)->>'lease_expires_at'<=$5)) ORDER BY \"key\" LIMIT 65";
     const POLL_RECEIPT_CLEANUP_SQL: &'static str = super::store::POLL_RECEIPT_CLEANUP_SQL;
     const TIMER_TASK_SQL: &'static str;
     const SELECTION_RESOLUTION_SQL: &'static str = "SELECT id,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SelectionResolved' AND payload->>'selection_group_id'=$2 ORDER BY sequence LIMIT 1";
     // Frozen run command/task repair counters use each backend's actual width.
     const REPAIR_COUNTER_MAX: i64 = i32::MAX as i64;
-    const RANGE_REPAIR_TASK_SQL: &'static str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND namespace=$2 AND task_type='workflow' AND status='failed' AND payload->>'replay_blocked'='true' AND payload->>'failure_reason'='version_marker_incompatible_range' ORDER BY CASE WHEN available_at IS NULL THEN 1 ELSE 0 END,available_at,created_at,id LIMIT 1";
-    const QUERY_CACHE_SCAN: &'static str = "SELECT \"key\",value,expiration FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' ORDER BY \"key\" LIMIT 65";
+    const RANGE_REPAIR_TASK_SQL: &'static str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND namespace=$2 AND task_type='workflow' AND status='failed' AND payload->>'replay_blocked'='true' ORDER BY CASE WHEN available_at IS NULL THEN 1 ELSE 0 END,available_at,created_at,id LIMIT 1";
+    const ACTIVITY_OPEN_TASK_SQL: &'static str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='activity' AND status IN ('ready','leased') AND payload->>'activity_execution_id'=$2 ORDER BY id LIMIT 1";
+    const QUERY_CACHE_SCAN: &'static str = "SELECT \"key\",value,expiration FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' AND value::jsonb->>'namespace'=$1 ORDER BY \"key\" LIMIT 65";
+    const QUERY_CACHE_PENDING_FOR_RUN: &'static str = "SELECT value::jsonb->>'query_admitted_at' AS query_admitted_at,value::jsonb->>'query_deadline_at' AS query_deadline_at,value::jsonb->>'receipt_expires_at' AS receipt_expires_at FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' AND expiration>$2 AND value::jsonb->>'run_id'=$1 AND value::jsonb->>'status' IN ('pending','leased') ORDER BY \"key\" LIMIT 65";
     const QUERY_CACHE_GET: &'static str =
         "SELECT value,expiration FROM dw_query_cache WHERE \"key\"=$1";
     const QUERY_CACHE_INSERT: &'static str =
@@ -27,11 +34,18 @@ pub(super) trait Backend: Database {
     const QUERY_CACHE_UPDATE: &'static str =
         "UPDATE dw_query_cache SET value=$1,expiration=$2 WHERE \"key\"=$3";
     const QUERY_CACHE_DELETE: &'static str = "DELETE FROM dw_query_cache WHERE \"key\"=$1";
+    const MEMO_INITIAL_INSERT: &'static str = "INSERT INTO workflow_memos(workflow_run_id,workflow_instance_id,\"key\",value,upserted_at_sequence,inherited_from_parent,created_at,updated_at,portable_value,portable_value_sequence) VALUES ($1,$2,$3,$4,0,false,$5,$6,$7,0)";
+    const MEMO_INHERIT_INSERT: &'static str = "INSERT INTO workflow_memos(workflow_run_id,workflow_instance_id,\"key\",value,upserted_at_sequence,inherited_from_parent,created_at,updated_at,portable_value,portable_value_sequence) VALUES ($1,$2,$3,$4,1,true,$5,$6,$7,1)";
+    const MEMO_READ: &'static str = "SELECT \"key\",value,portable_value,portable_value_sequence,upserted_at_sequence FROM workflow_memos WHERE workflow_run_id=$1 ORDER BY \"key\",id LIMIT 101";
+    const MEMO_UPSERT: &'static str = "INSERT INTO workflow_memos(workflow_run_id,workflow_instance_id,\"key\",value,upserted_at_sequence,inherited_from_parent,created_at,updated_at,portable_value,portable_value_sequence) VALUES ($1,$2,$3,$4,$5,false,$6,$7,$8,$9) ON CONFLICT(workflow_run_id,\"key\") DO UPDATE SET value=excluded.value,upserted_at_sequence=excluded.upserted_at_sequence,inherited_from_parent=false,updated_at=excluded.updated_at,portable_value=excluded.portable_value,portable_value_sequence=excluded.portable_value_sequence";
+    const MEMO_DELETE: &'static str =
+        "DELETE FROM workflow_memos WHERE workflow_run_id=$1 AND \"key\"=$2";
     fn statement(sql: &'static str) -> Cow<'static, str> {
         Cow::Borrowed(sql)
     }
 
     fn bind_time(time: DateTime<Utc>) -> Self::EncodedTime;
+    fn optional_time(time: Option<DateTime<Utc>>) -> Self::EncodedOptionalTime;
     fn document(value: &Value) -> Self::EncodedDocument;
     fn optional_document(value: &Value) -> Option<Self::EncodedDocument> {
         (!value.is_null()).then(|| Self::document(value))
@@ -73,13 +87,37 @@ fn sqlite_instant(value: String) -> Result<DateTime<Utc>> {
 }
 
 impl Backend for Sqlite {
+    const ACTIVITY_RESULT_EVENT_SQL: &'static str = "SELECT sequence,event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('ActivityScheduled','ActivityStarted','ActivityHeartbeatRecorded','ActivityRetryScheduled','ActivityCompleted','ActivityFailed','ActivityTimedOut','ActivityCancelled') AND (json_extract(payload,'$.activity_execution_id') COLLATE BINARY=$2 OR json_extract(payload,'$.activity.id') COLLATE BINARY=$3) ORDER BY sequence DESC LIMIT 1";
+    const QUERY_CACHE_SCAN: &'static str = "SELECT \"key\",value,expiration FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' AND json_extract(value,'$.namespace')=$1 ORDER BY \"key\" LIMIT 65";
+    const QUERY_CACHE_PENDING_FOR_RUN: &'static str = "SELECT json_extract(value,'$.query_admitted_at') AS query_admitted_at,json_extract(value,'$.query_deadline_at') AS query_deadline_at,json_extract(value,'$.receipt_expires_at') AS receipt_expires_at FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' AND expiration>$2 AND json_extract(value,'$.run_id')=$1 AND json_extract(value,'$.status') IN ('pending','leased') ORDER BY \"key\" LIMIT 65";
+    const POLL_WAKE_QUERIES_SQL: &'static str = "SELECT \"key\" AS id FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' AND expiration>$1 AND json_extract(value,'$.namespace')=$2 AND json_extract(value,'$.task_queue')=$3 AND json_extract(value,'$.query_deadline_at')>$4 AND (json_extract(value,'$.status')='pending' OR (json_extract(value,'$.status')='leased' AND json_extract(value,'$.lease_expires_at')<=$5)) ORDER BY \"key\" LIMIT 65";
+    const POLL_WAKE_TASKS_SQL: &'static str = r#"
+WITH utc_tasks AS (
+    SELECT t.id,t.namespace,t.queue,t.workflow_run_id,t.status,t.available_at,
+        replace(replace(replace(t.available_at,'T',' '),'Z',''),'+00:00','') AS available_utc,
+        replace(replace(replace(t.lease_expires_at,'T',' '),'Z',''),'+00:00','') AS lease_utc
+    FROM workflow_tasks t WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type!=$3 AND t.task_type IN ('workflow','activity')
+), ordered_tasks AS (
+    SELECT *,
+        rtrim(rtrim(CASE WHEN length(available_utc)=19 THEN available_utc||'.0' ELSE available_utc END,'0'),'.') AS available_order,
+        rtrim(rtrim(CASE WHEN length(lease_utc)=19 THEN lease_utc||'.0' ELSE lease_utc END,'0'),'.') AS lease_order
+    FROM utc_tasks
+)
+SELECT t.id,t.namespace,t.queue FROM ordered_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id
+WHERE r.status IN ('pending','running','waiting')
+    AND (t.status='ready' OR (t.status='leased' AND t.lease_order<=rtrim(rtrim($4,'0'),'.')))
+    AND (t.available_at IS NULL OR t.available_order<=rtrim(rtrim($5,'0'),'.'))
+ORDER BY t.available_order,t.id LIMIT 100
+"#;
     const SELECTION_RESOLUTION_SQL: &'static str = "SELECT id,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SelectionResolved' AND json_extract(payload,'$.selection_group_id')=$2 ORDER BY sequence LIMIT 1";
     const REPAIR_COUNTER_MAX: i64 = i64::MAX;
-    const RANGE_REPAIR_TASK_SQL: &'static str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND namespace=$2 AND task_type='workflow' AND status='failed' AND json_extract(payload,'$.replay_blocked')=1 AND json_extract(payload,'$.failure_reason')='version_marker_incompatible_range' ORDER BY CASE WHEN available_at IS NULL THEN 1 ELSE 0 END,available_at,created_at,id LIMIT 1";
+    const RANGE_REPAIR_TASK_SQL: &'static str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND namespace=$2 AND task_type='workflow' AND status='failed' AND json_extract(payload,'$.replay_blocked')=1 ORDER BY CASE WHEN available_at IS NULL THEN 1 ELSE 0 END,available_at,created_at,id LIMIT 1";
+    const ACTIVITY_OPEN_TASK_SQL: &'static str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='activity' AND status IN ('ready','leased') AND json_extract(payload,'$.activity_execution_id')=$2 ORDER BY id LIMIT 1";
     const VISIBILITY_PAGE: &'static str = super::visibility::SQLITE_VISIBILITY_PAGE;
     type EncodedTime = String;
+    type EncodedOptionalTime = Option<String>;
     type EncodedDocument = String;
-    const TIMER_TASK_SQL: &'static str = "SELECT id,payload FROM workflow_tasks WHERE workflow_run_id=$1 AND namespace='default' AND task_type='timer' AND status='ready' AND json_extract(payload,'$.timer_id')=$2";
+    const TIMER_TASK_SQL: &'static str = "SELECT id,payload FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='timer' AND status='ready' AND json_extract(payload,'$.timer_id')=$2 AND namespace=$3";
     const HISTORY_PAGE: &'static str = "SELECT * FROM (SELECT *,SUM(length(CAST(payload AS BLOB))) OVER (ORDER BY sequence) AS page_bytes FROM workflow_history_events WHERE workflow_run_id=$1 AND sequence>$2 ORDER BY sequence LIMIT $3) AS page WHERE page_bytes<=8388608 ORDER BY sequence";
     // Normalize only the two supported UTC storage shapes. Removing trailing
     // fractional zeros preserves exact decimal ordering, including earlier
@@ -117,6 +155,9 @@ DELETE FROM dw_poll_receipts WHERE (namespace,worker_id,kind,request_id) IN (
 "#;
     fn bind_time(time: DateTime<Utc>) -> String {
         time.format("%Y-%m-%d %H:%M:%S%.6f").to_string()
+    }
+    fn optional_time(time: Option<DateTime<Utc>>) -> Self::EncodedOptionalTime {
+        time.map(Self::bind_time)
     }
     fn document(value: &Value) -> String {
         value.to_string()
@@ -193,11 +234,15 @@ impl Encode<'_, Postgres> for PostgresDocument {
 
 impl Backend for Postgres {
     type EncodedTime = NaiveDateTime;
+    type EncodedOptionalTime = Option<NaiveDateTime>;
     type EncodedDocument = PostgresDocument;
-    const TIMER_TASK_SQL: &'static str = "SELECT id,payload FROM workflow_tasks WHERE workflow_run_id=$1 AND namespace='default' AND task_type='timer' AND status='ready' AND payload->>'timer_id'=$2";
+    const TIMER_TASK_SQL: &'static str = "SELECT id,payload FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='timer' AND status='ready' AND payload->>'timer_id'=$2 AND namespace=$3";
     const HISTORY_PAGE: &'static str = "SELECT * FROM (SELECT *,SUM(octet_length(payload::text)) OVER (ORDER BY sequence) AS page_bytes FROM workflow_history_events WHERE workflow_run_id=$1 AND sequence>$2 ORDER BY sequence LIMIT $3) AS page WHERE page_bytes<=8388608 ORDER BY sequence";
     fn bind_time(time: DateTime<Utc>) -> NaiveDateTime {
         time.naive_utc()
+    }
+    fn optional_time(time: Option<DateTime<Utc>>) -> Self::EncodedOptionalTime {
+        time.map(Self::bind_time)
     }
     fn document(value: &Value) -> PostgresDocument {
         PostgresDocument(Json(value.clone()))
@@ -266,12 +311,24 @@ impl Backend for Postgres {
 }
 
 impl Backend for MySql {
+    const ACTIVITY_RESULT_EVENT_SQL: &'static str = "SELECT sequence,event_type,payload FROM workflow_history_events WHERE CAST(workflow_run_id AS BINARY)=CAST(? AS BINARY) AND event_type IN ('ActivityScheduled','ActivityStarted','ActivityHeartbeatRecorded','ActivityRetryScheduled','ActivityCompleted','ActivityFailed','ActivityTimedOut','ActivityCancelled') AND (CAST(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.activity_execution_id')) AS BINARY)=CAST(? AS BINARY) OR CAST(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.activity.id')) AS BINARY)=CAST(? AS BINARY)) ORDER BY sequence DESC LIMIT 1";
+    const QUERY_CACHE_SCAN: &'static str = "SELECT `key`,value,expiration FROM dw_query_cache WHERE `key` LIKE 'dw-native-query:%' AND BINARY JSON_UNQUOTE(JSON_EXTRACT(value,'$.namespace'))=BINARY ? ORDER BY `key` LIMIT 65";
+    const POLL_WAKE_QUERIES_SQL: &'static str = "SELECT `key` AS id FROM dw_query_cache WHERE `key` LIKE 'dw-native-query:%' AND expiration>? AND CAST(JSON_UNQUOTE(JSON_EXTRACT(value,'$.namespace')) AS BINARY)=CAST(? AS BINARY) AND CAST(JSON_UNQUOTE(JSON_EXTRACT(value,'$.task_queue')) AS BINARY)=CAST(? AS BINARY) AND CAST(JSON_UNQUOTE(JSON_EXTRACT(value,'$.query_deadline_at')) AS BINARY)>CAST(? AS BINARY) AND (JSON_UNQUOTE(JSON_EXTRACT(value,'$.status'))='pending' OR (JSON_UNQUOTE(JSON_EXTRACT(value,'$.status'))='leased' AND CAST(JSON_UNQUOTE(JSON_EXTRACT(value,'$.lease_expires_at')) AS BINARY)<=CAST(? AS BINARY))) ORDER BY `key` LIMIT 65";
+    const EXTERNAL_PAYLOAD_BYTES: &'static str = "SELECT CAST(COALESCE(SUM(size_bytes),0) AS SIGNED) FROM runtime_external_payloads WHERE namespace=$1";
+    const MEMO_UPSERT: &'static str = "INSERT INTO workflow_memos(workflow_run_id,workflow_instance_id,`key`,value,upserted_at_sequence,inherited_from_parent,created_at,updated_at,portable_value,portable_value_sequence) VALUES ($1,$2,$3,$4,$5,false,$6,$7,$8,$9) ON DUPLICATE KEY UPDATE value=VALUES(value),upserted_at_sequence=VALUES(upserted_at_sequence),inherited_from_parent=false,updated_at=VALUES(updated_at),portable_value=VALUES(portable_value),portable_value_sequence=VALUES(portable_value_sequence)";
+    const MEMO_DELETE: &'static str =
+        "DELETE FROM workflow_memos WHERE workflow_run_id=$1 AND `key`=$2";
+    const MEMO_INITIAL_INSERT: &'static str = "INSERT INTO workflow_memos(workflow_run_id,workflow_instance_id,`key`,value,upserted_at_sequence,inherited_from_parent,created_at,updated_at,portable_value,portable_value_sequence) VALUES ($1,$2,$3,$4,0,false,$5,$6,$7,0)";
+    const MEMO_INHERIT_INSERT: &'static str = "INSERT INTO workflow_memos(workflow_run_id,workflow_instance_id,`key`,value,upserted_at_sequence,inherited_from_parent,created_at,updated_at,portable_value,portable_value_sequence) VALUES ($1,$2,$3,$4,1,true,$5,$6,$7,1)";
+    const MEMO_READ: &'static str = "SELECT `key`,value,portable_value,portable_value_sequence,upserted_at_sequence FROM workflow_memos WHERE workflow_run_id=$1 ORDER BY `key`,id LIMIT 101";
     const SELECTION_RESOLUTION_SQL: &'static str = "SELECT id,payload FROM workflow_history_events WHERE workflow_run_id=? AND event_type='SelectionResolved' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.selection_group_id'))=? ORDER BY sequence LIMIT 1";
     const REPAIR_COUNTER_MAX: i64 = u32::MAX as i64;
-    const RANGE_REPAIR_TASK_SQL: &'static str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=? AND namespace=? AND task_type='workflow' AND status='failed' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.replay_blocked'))='true' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.failure_reason'))='version_marker_incompatible_range' ORDER BY CASE WHEN available_at IS NULL THEN 1 ELSE 0 END,available_at,created_at,id LIMIT 1";
+    const RANGE_REPAIR_TASK_SQL: &'static str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=? AND namespace=? AND task_type='workflow' AND status='failed' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.replay_blocked'))='true' ORDER BY CASE WHEN available_at IS NULL THEN 1 ELSE 0 END,available_at,created_at,id LIMIT 1";
+    const ACTIVITY_OPEN_TASK_SQL: &'static str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=? AND task_type='activity' AND status IN ('ready','leased') AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.activity_execution_id'))=? ORDER BY id LIMIT 1";
     type EncodedTime = DateTime<Utc>;
+    type EncodedOptionalTime = Option<DateTime<Utc>>;
     type EncodedDocument = Json<Value>;
-    const QUERY_CACHE_SCAN: &'static str = "SELECT `key`,value,expiration FROM dw_query_cache WHERE `key` LIKE 'dw-native-query:%' ORDER BY `key` LIMIT 65";
+    const QUERY_CACHE_PENDING_FOR_RUN: &'static str = "SELECT JSON_UNQUOTE(JSON_EXTRACT(value,'$.query_admitted_at')) AS query_admitted_at,JSON_UNQUOTE(JSON_EXTRACT(value,'$.query_deadline_at')) AS query_deadline_at,JSON_UNQUOTE(JSON_EXTRACT(value,'$.receipt_expires_at')) AS receipt_expires_at FROM dw_query_cache WHERE `key` LIKE 'dw-native-query:%' AND JSON_UNQUOTE(JSON_EXTRACT(value,'$.run_id'))=? AND expiration>? AND JSON_UNQUOTE(JSON_EXTRACT(value,'$.status')) IN ('pending','leased') ORDER BY `key` LIMIT 65";
     const QUERY_CACHE_GET: &'static str =
         "SELECT value,expiration FROM dw_query_cache WHERE `key`=$1";
     const QUERY_CACHE_INSERT: &'static str =
@@ -279,7 +336,7 @@ impl Backend for MySql {
     const QUERY_CACHE_UPDATE: &'static str =
         "UPDATE dw_query_cache SET value=$1,expiration=$2 WHERE `key`=$3";
     const QUERY_CACHE_DELETE: &'static str = "DELETE FROM dw_query_cache WHERE `key`=$1";
-    const TIMER_TASK_SQL: &'static str = "SELECT id,payload FROM workflow_tasks WHERE workflow_run_id=? AND namespace='default' AND task_type='timer' AND status='ready' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.timer_id'))=?";
+    const TIMER_TASK_SQL: &'static str = "SELECT id,payload FROM workflow_tasks WHERE workflow_run_id=? AND task_type='timer' AND status='ready' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.timer_id'))=? AND BINARY namespace=BINARY ?";
     // First use the preserved run/sequence index to materialize only IDs and
     // byte counts for this bounded page. Sorting JSON payloads in the window
     // exhausts MySQL's default sort buffer before the size rejection can run.
@@ -292,6 +349,11 @@ impl Backend for MySql {
             || sql == Self::TIMER_TASK_SQL
             || sql == Self::RANGE_REPAIR_TASK_SQL
             || sql == Self::SELECTION_RESOLUTION_SQL
+            || sql == Self::ACTIVITY_OPEN_TASK_SQL
+            || sql == Self::ACTIVITY_RESULT_EVENT_SQL
+            || sql == Self::POLL_WAKE_QUERIES_SQL
+            || sql == Self::QUERY_CACHE_PENDING_FOR_RUN
+            || sql == Self::QUERY_CACHE_SCAN
         {
             return Cow::Borrowed(sql);
         }
@@ -314,6 +376,9 @@ impl Backend for MySql {
     }
     fn bind_time(time: DateTime<Utc>) -> DateTime<Utc> {
         time
+    }
+    fn optional_time(time: Option<DateTime<Utc>>) -> Self::EncodedOptionalTime {
+        time.map(Self::bind_time)
     }
     fn document(value: &Value) -> Json<Value> {
         Json(value.clone())
@@ -388,6 +453,16 @@ mod timestamp_tests {
     use super::*;
     use chrono::SecondsFormat;
     use serde_json::json;
+
+    #[test]
+    fn mysql_pending_query_guard_keeps_json_paths_and_positional_bindings() {
+        let sql = MySql::QUERY_CACHE_PENDING_FOR_RUN;
+        assert_eq!(MySql::statement(sql), sql);
+        assert_eq!(sql.matches('?').count(), 2);
+        assert!(sql.contains("JSON_EXTRACT(value,'$.run_id')"));
+        assert!(sql.contains("JSON_EXTRACT(value,'$.status')"));
+        assert!(!sql.contains("$1") && !sql.contains("$2"));
+    }
 
     #[tokio::test]
     async fn sqlite_php_and_native_deadlines_keep_microsecond_claim_and_receipt_fences() {

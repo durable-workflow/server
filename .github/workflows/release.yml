@@ -96,6 +96,9 @@ jobs:
           fi
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
 
+      - name: Audit immutable PHP release dependencies
+        run: composer audit --working-dir=release-source --locked --no-dev --no-interaction
+
       - name: Validate release publish context and credentials
         id: release_publish
         env:
@@ -144,8 +147,8 @@ jobs:
           # On a release tag like 0.1.0, produces immutable tags:
           #   durableworkflow/server:0.1.0
           #   ghcr.io/durable-workflow/server:0.1.0
-          # workflow_dispatch checks out the existing immutable tag before it
-          # reproduces these exact image identities for recovery.
+          # Manual dispatch may publish an unpublished immutable source tag.
+          # Existing images use published-release-recovery.yml instead.
           # yamllint disable rule:line-length
           tags: |
             type=semver,pattern={{version}},value=${{ steps.release_publish.outputs.tag }},enable=${{ steps.release_publish.outputs.is_semver == 'true' }}
@@ -182,6 +185,11 @@ jobs:
           WORKFLOW_PACKAGE_REF: ${{ steps.workflow.outputs.ref }}
           WORKFLOW_PACKAGE_COMMIT: ${{ steps.workflow.outputs.commit }}
         run: node scripts/ci/resolve-release-image-cache.mjs
+
+      - name: Refuse replacement of published release images
+        env:
+          RELEASE_TAG: ${{ steps.release_publish.outputs.tag }}
+        run: sh scripts/ci/guard-unpublished-release-images.sh
 
       - name: Start exact image build timer
         id: build_started

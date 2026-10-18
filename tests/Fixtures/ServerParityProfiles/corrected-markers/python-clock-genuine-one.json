@@ -1,0 +1,28 @@
+{
+  "id": "python-clock-genuine-one", "workflow_type": "parity.v1.corrected_markers",
+  "input": {"integer": 9007199254740993, "optional": null, "unicode": "range λ"},
+  "typed_value": {"type": "map", "value": {
+    "integer": {"type": "int64", "value": "9007199254740993"},
+    "optional": {"type": "null", "value": null}, "unicode": {"type": "string", "value": "range λ"}
+  }},
+  "corrected_markers": {
+    "case": "genuine_one", "producer": "python", "retry_policy": "empty",
+    "phase_budget_seconds": 30, "overall_budget_seconds": 150,
+    "change_id": "corrected-one", "original_expected_decisions": [1,1],
+    "expected_decisions": [null,true,1,null], "original_shutdown": "SIGKILL",
+    "cancelled_original_polls": ["workflow", "activity", "query"],
+    "cancel_unsent_original_polls": true,
+    "markers": [
+      {"sequence": 1, "version": 1, "min_supported": 0, "max_supported": 1},
+      {"sequence": 2, "version": 1, "min_supported": 1, "max_supported": 1}
+    ],
+    "python_clock": {
+      "current_sdk": "2.5.13", "activity_count": 2,
+      "retire_killed_producer": true,
+      "clock_contract": "fixed_workflow_start", "contract_receipt": "https://github.com/durable-workflow/sdk-python/issues/146#issuecomment-6139915817",
+      "phase_order": ["original", "activity", "clock_wait", "second_activity", "replacement"],
+      "marker_clock_positions": [1,2,2,2], "applicable_modes": ["http"]
+    }
+  },
+  "contract": "A genuine historical Python2.5.0 differing-bound version1 producer is killed after committed pending activity. Its uniquely named task-owned registration is explicitly retired through the public API before activities resume; the unfenced-kill fixture remains separate and unchanged. Normally installed Python2.5.13 workers retain both physical marker clocks, consume aliases, cross two real activity boundaries and preserve fixed-original-start clocks and replay-stable public UUIDv7 values. No constructed producer, history edit, rebudget or extra repair is permitted. Embedded UUID side effects remain separate."
+}

@@ -1,0 +1,55 @@
+{
+  "id": "activity-deadline-active-receipts",
+  "workflow_type": "parity.v1.activity_deadline_receipts",
+  "input": {
+    "integer": 9007199254740993,
+    "optional": null,
+    "unicode": "retry receipt λ"
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "integer": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      },
+      "unicode": {
+        "type": "string",
+        "value": "retry receipt λ"
+      }
+    }
+  },
+  "activity_deadline_receipts": {
+    "start_to_close_timeout": 2,
+    "schedule_to_close_timeout": 12,
+    "max_attempts": 2,
+    "backoff_seconds": [
+      1,
+      2,
+      5,
+      10,
+      15,
+      30,
+      60,
+      120
+    ],
+    "overall_budget_seconds": 35,
+    "ordinary_lease_seconds": 300,
+    "active_receipt_control": true
+  },
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "ActivityScheduled",
+    "ActivityStarted",
+    "ActivityRetryScheduled",
+    "ActivityStarted",
+    "ActivityCompleted",
+    "WorkflowCompleted"
+  ],
+  "contract": "Hold the genuine successful retry parent while the original run remains active. Repeat the byte-identical committed activity completion before expiry and after the original twelve-second bound, then send a conflicting result. Preserve the seven-event prefix before completing the original workflow. Closed activity 409/stale_attempt with outcome=completed and recorded=false, and closed workflow 409/run_closed, are permitted by https://github.com/durable-workflow/server/issues/325#issuecomment-6155987239. Those responses do not establish content equality. A retained content-verified receipt may acknowledge its original commit without another mutation. Conflicting results must be refused. All phases retain the original 35-second budget and full retry snapshot."
+}

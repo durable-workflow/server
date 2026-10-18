@@ -1,0 +1,62 @@
+import assert from 'node:assert/strict';
+import {spawnSync} from 'node:child_process';
+import {mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import test from 'node:test';
+import {writeRecord} from '../../scripts/conformance/server-parity/record-file.mjs';
+
+test('full wire recordings serialize within a bounded heap without dropping case bytes', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'dw-parity-record-'));
+  const path = join(directory, 'record.json');
+  try {
+    const source = `import {writeRecord} from ${JSON.stringify(new URL('../../scripts/conformance/server-parity/record-file.mjs', import.meta.url).href)};
+      const wire = 'x'.repeat(2 * 1024 * 1024) + '\\u0000λ';
+      writeRecord(${JSON.stringify(path)}, {outcome: 'pass', cases: Array.from({length: 16}, (_, index) => ({
+        fixture_id: String(index), request_body: wire, typed: {int64: '9007199254740993', optional: null}}))});`;
+    const child = spawnSync(process.execPath, ['--max-old-space-size=48', '--input-type=module', '-e', source],
+      {encoding: 'utf8', timeout: 20000});
+    assert.equal(child.status, 0, child.stderr);
+    const record = JSON.parse(readFileSync(path, 'utf8'));
+    assert.equal(record.outcome, 'pass');
+    assert.equal(record.cases.length, 16);
+    for (const [index, item] of record.cases.entries()) {
+      assert.equal(item.fixture_id, String(index));
+      assert.equal(item.request_body, 'x'.repeat(2 * 1024 * 1024) + '\u0000λ');
+      assert.deepEqual(item.typed, {int64: '9007199254740993', optional: null});
+    }
+  } finally { rmSync(directory, {recursive: true}); }
+});
+
+test('recorded fixture and probe JSON preserve integer literals beyond JavaScript precision', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'dw-parity-literal-'));
+  try {
+    const fixture = join(directory, 'fixture.json');
+    const observation = join(directory, 'observation.json');
+    const output = join(directory, 'record.json');
+    writeFileSync(fixture, '{"input":{"integer":9007199254740993,"optional":null,"unicode":"λ"}}');
+    writeFileSync(observation, '{"output":{"integer":9223372036854775807,"optional":null,"unicode":"λ"}}');
+    const item = {fixture: JSON.parse(readFileSync(fixture)), observation: JSON.parse(readFileSync(observation)), outcome: 'pass'};
+    writeRecord(output, {cases: [item], outcome: 'pass'}, new Map([[item, {fixture, observation}]]));
+    const bytes = readFileSync(output, 'utf8');
+    assert.deepEqual([...bytes.matchAll(/"integer"\s*:\s*(-?\d+)/g)].map(match => match[1]),
+      ['9007199254740993', '9223372036854775807']);
+    const parsed = JSON.parse(bytes);
+    assert.equal(parsed.cases[0].fixture.input.optional, null);
+    assert.equal(parsed.cases[0].observation.output.unicode, 'λ');
+  } finally { rmSync(directory, {recursive: true}); }
+});
+
+test('optional resource metadata, empty and failed recordings preserve JSON semantics', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'dw-parity-record-'));
+  try {
+    for (const record of [{outcome: 'runner-blocked', cases: [], database_resource_limits: undefined},
+      {outcome: 'pass', cases: [{outcome: 'pass'}], database_resource_limits: undefined},
+      {outcome: 'product-fail', cases: [{outcome: 'product-fail', error: 'original expired'}], finished_at: 'unchanged'},
+      {outcome: 'pass', cases: [], database_resource_limits: null}]) {
+      const path = join(directory, 'record.json');
+      writeRecord(path, record);
+      assert.deepEqual(JSON.parse(readFileSync(path)), JSON.parse(JSON.stringify(record)));
+    }
+  } finally { rmSync(directory, {recursive: true}); }
+});

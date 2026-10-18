@@ -1,0 +1,20 @@
+{
+  "id": "rust-range-timer-pending",
+  "workflow_type": "parity.v1.range_pending_repair",
+  "input": {"message": "range retained λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {"type": "map", "value": {"message": {"type": "string", "value": "range retained λ"}, "count": {"type": "int64", "value": "9007199254740993"}, "optional": {"type": "null", "value": null}}},
+  "expected_events": ["StartAccepted", "WorkflowStarted", "VersionMarkerRecorded", "ActivityScheduled", "TimerScheduled", "TimerFired", "SelectionResolved", "RepairRequested", "ActivityStarted", "ActivityCompleted", "WorkflowCompleted"],
+  "corrected_range": {
+    "original_fixture": "tests/Fixtures/ServerParityProfiles/version-range-repair/range-selected-timer-activity-pending.json",
+    "pending_activity": true,
+    "overall_budget_seconds": 35,
+    "original_range": [1,1],
+    "incompatible_range": [2,2],
+    "change_id": "parity.range-pending-repair",
+    "original_event_count": 5,
+    "blocked_event_count": 7,
+    "activity_queue": "server-parity-range-activity",
+    "timer_delay_seconds": 3
+  },
+  "contract": "Additional published Rust authors consume the original PHP timer-winner/pending-activity range checkpoint. The cold 2..2 author must refuse the recorded version while the original activity has never started. Explicit selected-original repair and cold 1..1 restoration replay the same committed three-second timer winner and wait for that retained activity handle. A separate Rust activity then completes it once; a distinct final workflow task completes the original run without another repair. Prefixes, full policy, original deadlines, marker bounds, task/run relationships and exact int64/null/Unicode values remain unchanged. All phases share the original 35-second scenario budget; neither another original nor automatic replay readmission is permitted. Embedded executes the same original PHP semantic recipe, without claiming a Rust executor."
+}

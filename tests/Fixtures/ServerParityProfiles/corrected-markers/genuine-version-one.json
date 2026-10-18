@@ -1,0 +1,25 @@
+{
+  "id": "genuine-version-one",
+  "workflow_type": "parity.v1.corrected_markers",
+  "input": {"integer": 9007199254740993, "optional": null, "unicode": "range λ"},
+  "typed_value": {"type": "map", "value": {
+    "integer": {"type": "int64", "value": "9007199254740993"},
+    "optional": {"type": "null", "value": null},
+    "unicode": {"type": "string", "value": "range λ"}
+  }},
+  "corrected_markers": {
+    "case": "genuine_one", "producer": "python", "retry_policy": "empty",
+    "phase_budget_seconds": 30, "overall_budget_seconds": 90,
+    "change_id": "corrected-one", "original_expected_decisions": [1, 1],
+    "embedded_clock_positions": {"original": [1, 2], "replacement": [1, 2, 2, 2]},
+    "original_shutdown": "SIGKILL",
+    "retire_killed_producer": true,
+    "cancelled_original_polls": ["workflow", "activity", "query"],
+    "cancel_unsent_original_polls": true,
+    "expected_decisions": [null, true, 1, null],
+    "markers": [
+      {"sequence": 1, "version": 1, "min_supported": 0, "max_supported": 1},
+      {"sequence": 2, "version": 1, "min_supported": 1, "max_supported": 1}
+    ]
+  }
+}

@@ -30,6 +30,18 @@ pub fn router(runtime: Runtime) -> Router {
             get(list_namespaces).post(create_namespace),
         )
         .route("/api/namespaces/{namespace}", get(describe_namespace))
+        .route(
+            "/api/namespaces/{namespace}/external-storage",
+            axum::routing::put(super::external_transport::set_policy),
+        )
+        .route(
+            "/api/external-payloads/v1",
+            post(super::external_transport::upload).layer(DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/api/external-payloads/v1/{reference_id}",
+            get(super::external_transport::fetch),
+        )
         .route("/api/workflows", get(list_workflows).post(start))
         .route("/api/schedules", post(super::schedule_http::create))
         .route(
@@ -53,6 +65,7 @@ pub fn router(runtime: Runtime) -> Router {
             post(super::schedule_http::trigger),
         )
         .route("/api/workflows/{workflow_id}", get(describe_current))
+        .route("/api/workflows/{workflow_id}/runs", get(list_runs))
         .route("/api/workflows/{workflow_id}/cancel", post(cancel_current))
         .route("/api/workflows/{workflow_id}/repair", post(repair_current))
         .route(
@@ -108,6 +121,10 @@ pub fn router(runtime: Runtime) -> Router {
             "/api/workflows/{workflow_id}/runs/{run_id}/history",
             get(history),
         )
+        .route(
+            "/api/workflows/{workflow_id}/runs/{run_id}/activities/{activity_id}/result",
+            get(activity_result),
+        )
         .route("/api/worker/register", post(register))
         .route("/api/worker/heartbeat", post(worker_heartbeat))
         .route("/api/worker/registrations/{worker_id}", delete(deregister))
@@ -156,6 +173,10 @@ pub fn router(runtime: Runtime) -> Router {
         )
         .route("/api/worker/query-tasks/poll", post(poll_query))
         .route(
+            "/api/worker/query-tasks/{task_id}/status",
+            get(query_status),
+        )
+        .route(
             "/api/worker/query-tasks/{task_id}/complete",
             post(complete_query),
         )
@@ -173,6 +194,8 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         return next.run(request).await;
     }
     let worker = path == "/api/worker" || path.starts_with("/api/worker/");
+    let payload =
+        path == "/api/external-payloads/v1" || path.starts_with("/api/external-payloads/v1/");
     let authorization = request
         .headers()
         .get("authorization")
@@ -200,6 +223,18 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         })
     });
     let Some((role, legacy_full_access, legacy_credential)) = authenticated else {
+        if payload {
+            return admission_error(
+                request,
+                false,
+                StatusCode::UNAUTHORIZED,
+                super::external_transport::error_body(
+                    StatusCode::UNAUTHORIZED,
+                    "external_payload_unauthorized",
+                ),
+            )
+            .await;
+        }
         return admission_error(
             request,
             worker,
@@ -208,12 +243,22 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         )
         .await;
     };
-    let allowed_roles: &[&str] = if path == "/api/worker/register" || path == "/api/cluster/info" {
+    let allowed_roles: &[&str] = if path == "/api/external-payloads/v1"
+        && request.method() == Method::POST
+        && request
+            .headers()
+            .contains_key("x-durable-workflow-payload-completion")
+    {
+        &["worker"]
+    } else if payload || path == "/api/worker/register" || path == "/api/cluster/info" {
         &["worker", "operator", "admin"]
     } else if worker {
         &["worker"]
     } else if path.starts_with("/api/workers/")
         || path == "/api/namespaces" && request.method() == Method::POST
+        || path.starts_with("/api/namespaces/")
+            && path.ends_with("/external-storage")
+            && request.method() == Method::PUT
     {
         &["admin"]
     } else {
@@ -249,7 +294,7 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
     } else {
         requested == Some(version) || path == "/api/cluster/info" && requested.is_none()
     };
-    if !compatible {
+    if !compatible && !payload {
         let missing = requested.is_none();
         let reason = match (worker, missing) {
             (true, true) => "missing_protocol_version",
@@ -337,6 +382,12 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
 }
 
 fn named_namespace_operation(method: &str, path: &str) -> bool {
+    if path == "/api/external-payloads/v1" {
+        return method == "POST";
+    }
+    if path.starts_with("/api/external-payloads/v1/") {
+        return method == "GET";
+    }
     // Keep unimplemented families from reaching default-namespace selectors.
     // Further families require their own shared namespace fixtures.
     if path == "/api/workflows" {
@@ -344,6 +395,21 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
     }
     if let Some(path) = path.strip_prefix("/api/workflows/") {
         let parts: Vec<_> = path.split('/').collect();
+        if matches!(parts.as_slice(), [_, "runs", _, "activities", _, "result"]) {
+            return method == "GET";
+        }
+        if matches!(
+            parts.as_slice(),
+            [_, "signal", _] | [_, "runs", _, "signal", _]
+        ) {
+            return method == "POST";
+        }
+        if matches!(
+            parts.as_slice(),
+            [_, "query", _] | [_, "runs", _, "query", _]
+        ) {
+            return method == "POST";
+        }
         return matches!(
             parts.as_slice(),
             [_] | [_, "cancel"] | [_, "runs", _] | [_, "runs", _, "history" | "cancel"]
@@ -358,6 +424,7 @@ fn named_namespace_operation(method: &str, path: &str) -> bool {
                 | ["registrations", _, "deregister"]
                 | ["workflow-tasks" | "activity-tasks", "poll"]
                 | ["query-tasks", "poll"]
+                | ["query-tasks", _, "complete" | "fail" | "status"]
                 | ["workflow-tasks", _, "complete" | "history" | "heartbeat"]
                 | [
                     "activity-tasks",
@@ -443,10 +510,22 @@ async fn cluster() -> Json<Value> {
     )
 }
 
+async fn activity_result(
+    Extension(runtime): Extension<Runtime>,
+    Path((workflow_id, run_id, activity_id)): Path<(String, String, String)>,
+) -> Result<Json<Value>> {
+    Ok(Json(
+        runtime
+            .activity_result(&workflow_id, &run_id, &activity_id)
+            .await?,
+    ))
+}
+
 async fn start(
     Extension(runtime): Extension<Runtime>,
-    Json(body): Json<Value>,
+    Json(body): Json<super::memo_json::StartBody>,
 ) -> Result<(StatusCode, Json<Value>)> {
+    let body = body.0;
     let workflow_id = body["workflow_id"].as_str().unwrap_or("").to_owned();
     let result = runtime.start(body).await.map_err(|error| {
         super::control_plane::Operation::Start.refusal(error, &workflow_id, None)
@@ -479,6 +558,13 @@ async fn describe_current(
     Ok(Json(
         super::control_plane::Operation::Describe.response(body),
     ))
+}
+
+async fn list_runs(
+    Extension(runtime): Extension<Runtime>,
+    Path(workflow): Path<String>,
+) -> Result<Json<Value>> {
+    Ok(Json(runtime.list_runs(&workflow).await?))
 }
 
 async fn cancel_current(
@@ -617,9 +703,15 @@ async fn signal_current(
     Path((workflow_id, name)): Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
+    let response = runtime
+        .signal(&workflow_id, None, &name, body)
+        .await
+        .map_err(|error| {
+            super::control_plane::Operation::Signal(&name).refusal(error, &workflow_id, None)
+        })?;
     Ok((
         StatusCode::ACCEPTED,
-        Json(runtime.signal(&workflow_id, None, &name, body).await?),
+        Json(super::control_plane::Operation::Signal(&name).response(response)),
     ))
 }
 
@@ -650,13 +742,19 @@ async fn signal_run(
     Path((workflow_id, run_id, name)): Path<(String, String, String)>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
+    let response = runtime
+        .signal(&workflow_id, Some(&run_id), &name, body)
+        .await
+        .map_err(|error| {
+            super::control_plane::Operation::Signal(&name).refusal(
+                error,
+                &workflow_id,
+                Some(&run_id),
+            )
+        })?;
     Ok((
         StatusCode::ACCEPTED,
-        Json(
-            runtime
-                .signal(&workflow_id, Some(&run_id), &name, body)
-                .await?,
-        ),
+        Json(super::control_plane::Operation::Signal(&name).response(response)),
     ))
 }
 
@@ -725,8 +823,15 @@ async fn task_history(
 
 async fn register(
     Extension(runtime): Extension<Runtime>,
+    headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
+    if body["capabilities"]
+        .as_array()
+        .is_some_and(|flags| flags.iter().any(|flag| flag == "memo_upserts"))
+    {
+        memo_protocol(&headers)?;
+    }
     Ok((
         StatusCode::CREATED,
         Json(worker_response(runtime.register(body).await?)),
@@ -832,8 +937,16 @@ async fn deliver_cancellation(
 async fn complete_workflow(
     Extension(runtime): Extension<Runtime>,
     Path(task_id): Path<String>,
+    headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
+    if body["commands"].as_array().is_some_and(|commands| {
+        commands
+            .iter()
+            .any(|command| command["type"] == "upsert_memo")
+    }) {
+        memo_protocol(&headers)?;
+    }
     let attempt = body["workflow_task_attempt"].clone();
     runtime
         .complete_workflow(&task_id, body)
@@ -848,6 +961,22 @@ async fn complete_workflow(
             )
         })
         .map(Json)
+}
+
+fn memo_protocol(headers: &HeaderMap) -> Result<()> {
+    let version = request_protocol(headers)?;
+    if version
+        .strip_prefix("1.")
+        .and_then(|minor| minor.parse::<u32>().ok())
+        .is_none_or(|minor| minor < 14)
+    {
+        return Err(super::RuntimeError::Protocol {
+            status: StatusCode::CONFLICT,
+            response: json!({"reason":"workflow_metadata_capability_protocol_mismatch",
+                "worker_capability":"memo_upserts","minimum_protocol_version":"1.14","recorded":false}),
+        });
+    }
+    Ok(())
 }
 async fn fail_workflow_task(
     Extension(runtime): Extension<Runtime>,
@@ -920,9 +1049,13 @@ fn completion_refusal(
 async fn heartbeat_activity(
     Extension(runtime): Extension<Runtime>,
     Path(task_id): Path<String>,
+    headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
-    runtime.heartbeat_activity(&task_id, body).await.map(Json)
+    runtime
+        .heartbeat_activity(&task_id, body, request_protocol(&headers)?)
+        .await
+        .map(Json)
 }
 
 async fn activity_status(
@@ -975,6 +1108,42 @@ async fn complete_query(
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
     runtime.complete_query(&task_id, body).await.map(Json)
+}
+#[derive(Deserialize)]
+struct QueryStatusRequest {
+    lease_owner: String,
+    query_task_attempt: i64,
+}
+async fn query_status(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_id): Path<String>,
+    request: Request,
+) -> Result<Json<Value>> {
+    let minor = request
+        .headers()
+        .get("x-durable-workflow-protocol-version")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .and_then(|version| version.split_once('.'))
+        .and_then(|(_, minor)| minor.parse::<u8>().ok());
+    if minor.is_none_or(|minor| minor < 20) {
+        return Err(super::RuntimeError::Protocol {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            response: json!({"reason":"query_task_status_unavailable","error":"Query task observation requires worker protocol 1.20.","minimum_protocol_version":"1.20"}),
+        });
+    }
+    let Query(claim) = Query::<QueryStatusRequest>::try_from_uri(request.uri())
+        .map_err(|_| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_query_status"))?;
+    if claim.lease_owner.is_empty() || claim.query_task_attempt < 1 {
+        return Err(refuse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_query_status",
+        ));
+    }
+    runtime
+        .query_status(&task_id, &claim.lease_owner, claim.query_task_attempt)
+        .await
+        .map(Json)
 }
 async fn fail_query(
     Extension(runtime): Extension<Runtime>,

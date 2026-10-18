@@ -1,5 +1,6 @@
 # Durable Workflow Server
 
+[![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=durable-workflow_server&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=durable-workflow_server)
 [![Tests](https://github.com/durable-workflow/server/actions/workflows/phpunit-feature.yml/badge.svg?branch=main)](https://github.com/durable-workflow/server/actions/workflows/phpunit-feature.yml)
 [![Release](https://img.shields.io/github/v/release/durable-workflow/server)](https://github.com/durable-workflow/server/releases/latest)
 [![Docker Pulls](https://img.shields.io/docker/pulls/durableworkflow/server)](https://hub.docker.com/r/durableworkflow/server)
@@ -48,6 +49,8 @@ verify database write capacity. See [database storage recovery](docs/database-st
 for full disks, tablespaces and temporary storage.
 See [PHP database ownership checks](docs/php-database-ownership.md) for Rust
 schema refusal, database permissions and SQLite crash-recovery capacity.
+For terminal summaries that undercount history bytes, follow the
+[selected-run summary repair guide](docs/terminal-summary-recovery.md).
 
 Install the current CLI for server administration and workflow inspection:
 
@@ -109,6 +112,7 @@ generic "workflows per second" number cannot hide the workload being measured.
 - [Self-hosting, HTTP API, authentication, and configuration](docs/server-reference.md)
 - [Control-plane OpenAPI contract](resources/platform-protocol-specs/control-plane-api.openapi.yaml)
 - [Worker protocol OpenAPI contract](resources/platform-protocol-specs/worker-protocol-api.openapi.yaml)
+- [Worker command declarations and durable snapshots](docs/worker-command-contracts.md)
 - [Worker stream AsyncAPI contract](resources/platform-protocol-specs/worker-protocol-stream.asyncapi.yaml)
 - [Capacity definitions and benchmark suite](benchmarks/capacity/README.md)
 - [Bounded-growth policy](docs/bounded-growth.md)

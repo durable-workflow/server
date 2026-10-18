@@ -21,6 +21,10 @@ enum Storage {
     MySql(Store<MySql>),
 }
 
+#[cfg(test)]
+#[path = "query_codec_tests.rs"]
+mod query_codec_tests;
+
 #[derive(Clone)]
 pub struct Runtime {
     storage: Arc<Storage>,
@@ -28,6 +32,8 @@ pub struct Runtime {
     pub(crate) role_tokens: [Option<Arc<str>>; 3],
     scheduler: Arc<TimerScheduler>,
     signal_codec: Arc<Semaphore>,
+    pub(super) external: Arc<super::ExternalPayloadConfig>,
+    queries: Arc<super::QueryTaskConfig>,
 }
 
 struct TimerScheduler {
@@ -109,6 +115,14 @@ macro_rules! delegate {
 }
 
 impl Runtime {
+    pub fn with_external_payload_config(mut self, config: super::ExternalPayloadConfig) -> Self {
+        self.external = Arc::new(config);
+        self
+    }
+    pub fn with_query_task_config(mut self, config: super::QueryTaskConfig) -> Self {
+        self.queries = Arc::new(config);
+        self
+    }
     /// Immutable configured-token cohort. Database transitions and scheduler
     /// stay shared; configuring credentials does not mutate process state.
     pub fn with_role_tokens(
@@ -134,29 +148,48 @@ impl Runtime {
 
     pub async fn open(database: &str, token: String) -> Result<Self> {
         Self::validate_token(&token)?;
-        let store = Store::new(sqlite::open(database).await?);
-        Self::from_storage(Storage::Sqlite(store), token).await
+        let external = super::ExternalPayloadConfig::from_env()?;
+        let queries = super::QueryTaskConfig::from_env()?;
+        let limit = super::memo_limits::configured_limit()?;
+        let mut store = Store::new(sqlite::open(database).await?);
+        store.memo_size_limit = limit;
+        Self::from_storage(Storage::Sqlite(store), token, external, queries).await
     }
 
     pub async fn open_postgres(options: PgConnectOptions, token: String) -> Result<Self> {
         Self::validate_token(&token)?;
-        let store = Store::new(PostgresStorage::open(options).await?.into_pool());
-        Self::from_storage(Storage::Postgres(store), token).await
+        let external = super::ExternalPayloadConfig::from_env()?;
+        let queries = super::QueryTaskConfig::from_env()?;
+        let limit = super::memo_limits::configured_limit()?;
+        let mut store = Store::new(PostgresStorage::open(options).await?.into_pool());
+        store.memo_size_limit = limit;
+        Self::from_storage(Storage::Postgres(store), token, external, queries).await
     }
 
     pub async fn open_mysql(options: MySqlConnectOptions, token: String) -> Result<Self> {
         Self::validate_token(&token)?;
-        let store = Store::new(MySqlStorage::open(options).await?.into_pool());
-        Self::from_storage(Storage::MySql(store), token).await
+        let external = super::ExternalPayloadConfig::from_env()?;
+        let queries = super::QueryTaskConfig::from_env()?;
+        let limit = super::memo_limits::configured_limit()?;
+        let mut store = Store::new(MySqlStorage::open(options).await?.into_pool());
+        store.memo_size_limit = limit;
+        Self::from_storage(Storage::MySql(store), token, external, queries).await
     }
 
-    async fn from_storage(storage: Storage, token: String) -> Result<Self> {
+    async fn from_storage(
+        storage: Storage,
+        token: String,
+        external: super::ExternalPayloadConfig,
+        queries: super::QueryTaskConfig,
+    ) -> Result<Self> {
         let runtime = Self {
             storage: Arc::new(storage),
             token: token.into(),
             role_tokens: [None, None, None],
             scheduler: Arc::new(TimerScheduler::new()),
             signal_codec: Arc::new(Semaphore::new(1)),
+            external: Arc::new(external),
+            queries: Arc::new(queries),
         };
         runtime.verify_ready().await?;
         if let Err(error) = runtime.initialize_namespace_registry().await {
@@ -223,6 +256,15 @@ impl Runtime {
             role_tokens: self.role_tokens.clone(),
             scheduler: self.scheduler.clone(),
             signal_codec: self.signal_codec.clone(),
+            external: self.external.clone(),
+            queries: self.queries.clone(),
+        }
+    }
+    pub(super) fn namespace(&self) -> &str {
+        match &*self.storage {
+            Storage::Sqlite(store) => &store.namespace,
+            Storage::Postgres(store) => &store.namespace,
+            Storage::MySql(store) => &store.namespace,
         }
     }
     delegate!(initialize_namespace_registry() -> Result<()>);
@@ -230,8 +272,51 @@ impl Runtime {
     delegate!(list_namespaces() -> Result<Value>);
     delegate!(describe_namespace(name: &str) -> Result<Value>);
     delegate!(create_namespace(body: Value) -> Result<Value>);
+    delegate!(set_external_policy(name: &str, body: Value) -> Result<Value>);
+    delegate!(
+        upload_external_local(
+            local: crate::external_payload::LocalStorage,
+            expected: crate::external_payload::Reference,
+            snapshot: crate::external_payload::Snapshot,
+            expires: chrono::DateTime<chrono::Utc>,
+            quota: super::external_config::Quota,
+        ) -> Result<crate::external_payload::Reference>
+    );
+    delegate!(
+        external_payload_for_fetch(
+            expected: &crate::external_payload::Reference,
+        ) -> Result<super::external_registry::RegisteredPayload>
+    );
+    delegate!(
+        authorize_completion_upload(
+            context: &super::activity_completion_uploads::Context,
+            expected: &crate::external_payload::Reference,
+        ) -> Result<Option<crate::external_payload::Reference>>
+    );
+    delegate!(
+        upload_activity_completion(
+            local: crate::external_payload::LocalStorage,
+            expected: crate::external_payload::Reference,
+            snapshot: crate::external_payload::Snapshot,
+            expires: chrono::DateTime<chrono::Utc>,
+            quota: super::external_config::Quota,
+            context: super::activity_completion_uploads::Context,
+            max_bytes: u64,
+            retention: i64,
+        ) -> Result<crate::external_payload::Reference>
+    );
+    delegate!(mark_external_fetched(expected: &crate::external_payload::Reference) -> Result<()>);
     delegate!(database_live() -> bool);
-    delegate!(start(body: Value) -> Result<Value>);
+    pub(crate) async fn start(&self, body: Value) -> Result<Value> {
+        let memo =
+            super::memos::prepare_initial(self.signal_codec.clone(), body["memo"].clone()).await?;
+        let external = self.prepare_external(&body["input"]).await?;
+        match &*self.storage {
+            Storage::Sqlite(store) => store.start(body, memo, external).await,
+            Storage::Postgres(store) => store.start(body, memo, external).await,
+            Storage::MySql(store) => store.start(body, memo, external).await,
+        }
+    }
     pub(crate) async fn create_schedule(&self, body: Value, context: Value) -> Result<Value> {
         let definition = super::schedules::definition(&body, super::store::now())?;
         let arguments = super::envelope(&definition.action, "input")?;
@@ -249,6 +334,7 @@ impl Runtime {
         }
     }
     delegate!(describe_schedule(schedule: &str) -> Result<Value>);
+    delegate!(activity_result(workflow_id: &str, run_id: &str, activity_id: &str) -> Result<Value>);
     delegate!(schedule_history(schedule: &str, after: i64, limit: i64) -> Result<Value>);
     delegate!(edit_schedule(schedule: &str, operation: &str, context: Value) -> Result<Value>);
     delegate!(trigger_schedule(schedule: &str, context: Value) -> Result<Value>);
@@ -270,17 +356,38 @@ impl Runtime {
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
-                    .signal(workflow_id, run_id, name, body, prepared)
+                    .signal(
+                        workflow_id,
+                        run_id,
+                        name,
+                        body,
+                        prepared,
+                        self.signal_codec.clone(),
+                    )
                     .await
             }
             Storage::Postgres(store) => {
                 store
-                    .signal(workflow_id, run_id, name, body, prepared)
+                    .signal(
+                        workflow_id,
+                        run_id,
+                        name,
+                        body,
+                        prepared,
+                        self.signal_codec.clone(),
+                    )
                     .await
             }
             Storage::MySql(store) => {
                 store
-                    .signal(workflow_id, run_id, name, body, prepared)
+                    .signal(
+                        workflow_id,
+                        run_id,
+                        name,
+                        body,
+                        prepared,
+                        self.signal_codec.clone(),
+                    )
                     .await
             }
         }
@@ -347,6 +454,13 @@ impl Runtime {
             Storage::MySql(store) => store.describe(workflow_id, run_id).await?,
         };
         super::previews::describe(self.signal_codec.clone(), description).await
+    }
+    pub(crate) async fn list_runs(&self, workflow: &str) -> Result<Value> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.list_runs(workflow).await,
+            Storage::Postgres(store) => store.list_runs(workflow).await,
+            Storage::MySql(store) => store.list_runs(workflow).await,
+        }
     }
     pub(super) async fn list_workflows(
         &self,
@@ -431,23 +545,58 @@ impl Runtime {
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
-                    .query_workflow(workflow_id, run_id, name, arguments, values)
+                    .query_workflow(workflow_id, run_id, name, arguments, values, &self.queries)
                     .await
             }
             Storage::Postgres(store) => {
                 store
-                    .query_workflow(workflow_id, run_id, name, arguments, values)
+                    .query_workflow(workflow_id, run_id, name, arguments, values, &self.queries)
                     .await
             }
             Storage::MySql(store) => {
                 store
-                    .query_workflow(workflow_id, run_id, name, arguments, values)
+                    .query_workflow(workflow_id, run_id, name, arguments, values, &self.queries)
                     .await
             }
         }
     }
-    delegate!(poll_query(body: Value) -> Result<Value>);
+    pub(crate) async fn poll_query(&self, body: Value) -> Result<Value> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.poll_query(body, &self.queries).await,
+            Storage::Postgres(store) => store.poll_query(body, &self.queries).await,
+            Storage::MySql(store) => store.poll_query(body, &self.queries).await,
+        }
+    }
+    pub(crate) async fn query_status(&self, id: &str, owner: &str, attempt: i64) -> Result<Value> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.query_status(id, owner, attempt, &self.queries).await,
+            Storage::Postgres(store) => store.query_status(id, owner, attempt, &self.queries).await,
+            Storage::MySql(store) => store.query_status(id, owner, attempt, &self.queries).await,
+        }
+    }
     pub(crate) async fn complete_query(&self, task_id: &str, body: Value) -> Result<Value> {
+        // Check retained decisions and live authority before codec work, then
+        // repeat the same fences atomically after decoding.
+        let receipt = match &*self.storage {
+            Storage::Sqlite(store) => {
+                store
+                    .guard_query_outcome(task_id, &body, false, &self.queries)
+                    .await
+            }
+            Storage::Postgres(store) => {
+                store
+                    .guard_query_outcome(task_id, &body, false, &self.queries)
+                    .await
+            }
+            Storage::MySql(store) => {
+                store
+                    .guard_query_outcome(task_id, &body, false, &self.queries)
+                    .await
+            }
+        }?;
+        if let Some(receipt) = receipt {
+            return Ok(receipt);
+        }
         let result = super::envelope(&body, "result_envelope")?;
         if result.len() > super::queries::RESULT_BYTES {
             return Err(refuse(
@@ -464,7 +613,30 @@ impl Runtime {
         .await?;
         self.finish_query(task_id, body, false).await
     }
-    delegate!(finish_query(task_id: &str, body: Value, failed: bool) -> Result<Value>);
+    pub(crate) async fn finish_query(
+        &self,
+        task_id: &str,
+        body: Value,
+        failed: bool,
+    ) -> Result<Value> {
+        match &*self.storage {
+            Storage::Sqlite(store) => {
+                store
+                    .finish_query(task_id, body, failed, &self.queries)
+                    .await
+            }
+            Storage::Postgres(store) => {
+                store
+                    .finish_query(task_id, body, failed, &self.queries)
+                    .await
+            }
+            Storage::MySql(store) => {
+                store
+                    .finish_query(task_id, body, failed, &self.queries)
+                    .await
+            }
+        }
+    }
     delegate!(
         history(
             workflow_id: &str,
@@ -490,7 +662,25 @@ impl Runtime {
     delegate!(task_history(task_id: &str, body: Value) -> Result<Value>);
     delegate!(fail_workflow_task(task_id: &str, body: Value) -> Result<Value>);
     pub(crate) async fn complete_workflow(&self, task_id: &str, body: Value) -> Result<Value> {
+        let external = self.prepare_command_payloads(&body).await?;
         if let Some(commands) = body["commands"].as_array() {
+            for command in commands
+                .iter()
+                .filter(|command| command["type"] == "continue_as_new")
+            {
+                if command
+                    .get("arguments")
+                    .is_some_and(|value| !value.is_null())
+                {
+                    super::queries::decode(
+                        self.signal_codec.clone(),
+                        super::envelope(command, "arguments")?,
+                        true,
+                        "invalid_continue_as_new_arguments",
+                    )
+                    .await?;
+                }
+            }
             for command in commands
                 .iter()
                 .filter(|command| command["type"] == "complete_update")
@@ -520,17 +710,17 @@ impl Runtime {
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
-                    .complete_workflow(task_id, body, self.signal_codec.clone())
+                    .complete_workflow(task_id, body, self.signal_codec.clone(), external)
                     .await
             }
             Storage::Postgres(store) => {
                 store
-                    .complete_workflow(task_id, body, self.signal_codec.clone())
+                    .complete_workflow(task_id, body, self.signal_codec.clone(), external)
                     .await
             }
             Storage::MySql(store) => {
                 store
-                    .complete_workflow(task_id, body, self.signal_codec.clone())
+                    .complete_workflow(task_id, body, self.signal_codec.clone(), external)
                     .await
             }
         }
@@ -604,8 +794,15 @@ impl Runtime {
             }
         }
     }
-    delegate!(complete_activity(task_id: &str, body: Value) -> Result<Value>);
-    delegate!(heartbeat_activity(task_id: &str, body: Value) -> Result<Value>);
+    pub(crate) async fn complete_activity(&self, task_id: &str, body: Value) -> Result<Value> {
+        let external = self.prepare_external(&body["result"]).await?;
+        match &*self.storage {
+            Storage::Sqlite(store) => store.complete_activity(task_id, body, external).await,
+            Storage::Postgres(store) => store.complete_activity(task_id, body, external).await,
+            Storage::MySql(store) => store.complete_activity(task_id, body, external).await,
+        }
+    }
+    delegate!(heartbeat_activity(task_id: &str, body: Value, protocol: &str) -> Result<Value>);
     delegate!(activity_status(task_id: &str, body: Value, protocol: &str) -> Result<Value>);
     pub(crate) async fn fail_activity(&self, task_id: &str, body: Value) -> Result<Value> {
         let (failure, blob) =

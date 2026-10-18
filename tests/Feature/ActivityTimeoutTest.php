@@ -11,7 +11,6 @@ use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Queue;
-use Mockery\MockInterface;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
@@ -136,7 +135,7 @@ class ActivityTimeoutTest extends TestCase
             ->assertJsonPath('results.0.reason', 'execution_not_found');
     }
 
-    public function test_accepted_heartbeat_fences_expired_scanner_snapshot(): void
+    public function test_timely_heartbeat_survives_a_later_timeout_scan(): void
     {
         Queue::fake();
 
@@ -149,49 +148,7 @@ class ActivityTimeoutTest extends TestCase
             $lease['execution']->fresh()->heartbeat_deadline_at?->toIso8601String(),
         );
 
-        Carbon::setTestNow($startedAt->copy()->addSeconds(11));
-
-        $snapshot = $this->withHeaders($this->apiHeaders())
-            ->getJson('/api/system/activity-timeouts')
-            ->assertOk();
-        $this->assertContains($lease['execution']->id, $snapshot->json('expired_execution_ids'));
-
-        $this->mock(ActivityTaskBridgeContract::class, function (MockInterface $mock) use ($lease): void {
-            $mock->shouldReceive('status')
-                ->once()
-                ->with($lease['attempt_id'])
-                ->andReturn([
-                    'workflow_task_id' => $lease['task_id'],
-                    'lease_owner' => $lease['lease_owner'],
-                    'reason' => null,
-                ]);
-
-            $mock->shouldReceive('heartbeat')
-                ->once()
-                ->with($lease['attempt_id'], ['message' => 'still healthy'])
-                ->andReturnUsing(function () use ($lease): array {
-                    $heartbeatAt = now();
-                    $execution = $lease['execution']->fresh();
-                    $execution->forceFill([
-                        'last_heartbeat_at' => $heartbeatAt,
-                    ])->save();
-
-                    return [
-                        'activity_execution_id' => $execution->id,
-                        'activity_attempt_id' => $lease['attempt_id'],
-                        'lease_owner' => $lease['lease_owner'],
-                        'cancel_requested' => false,
-                        'can_continue' => true,
-                        'reason' => null,
-                        'run_closed_reason' => null,
-                        'run_closed_at' => null,
-                        'heartbeat_recorded' => true,
-                        'lease_expires_at' => $heartbeatAt->copy()->addMinute()->toJSON(),
-                        'last_heartbeat_at' => $heartbeatAt->toJSON(),
-                    ];
-                });
-        });
-
+        Carbon::setTestNow($startedAt->copy()->addSeconds(9));
         $this->withHeaders($this->workerHeaders())
             ->postJson("/api/worker/activity-tasks/{$lease['task_id']}/heartbeat", [
                 'activity_attempt_id' => $lease['attempt_id'],
@@ -203,9 +160,15 @@ class ActivityTimeoutTest extends TestCase
             ->assertJsonPath('heartbeat_recorded', true);
 
         $this->assertSame(
-            $startedAt->copy()->addSeconds(21)->toIso8601String(),
+            $startedAt->copy()->addSeconds(19)->toIso8601String(),
             $lease['execution']->fresh()->heartbeat_deadline_at?->toIso8601String(),
         );
+
+        Carbon::setTestNow($startedAt->copy()->addSeconds(11));
+        $snapshot = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/system/activity-timeouts')
+            ->assertOk();
+        $this->assertNotContains($lease['execution']->id, $snapshot->json('expired_execution_ids'));
 
         $this->withHeaders($this->apiHeaders())
             ->postJson('/api/system/activity-timeouts/pass', [

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-import {readFileSync, writeFileSync, readdirSync} from 'node:fs';
+import {mkdtempSync, readFileSync, readdirSync, rmSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {basename, dirname, resolve} from 'node:path';
+import {basename, dirname, join, resolve} from 'node:path';
 import {parseArgs} from 'node:util';
 import {checkObservation, compareRecords} from './server-parity/contract.mjs';
 import {checkPublishedPatchArtifacts, checkPatchPackageObservation} from './server-parity/patch-deployment-contract.mjs';
@@ -14,6 +14,11 @@ import {checkSdkChildDirectionArtifacts, checkSdkChildDirectionPackages} from '.
 import {checkSdkTimerAuthorArtifacts, checkSdkTimerAuthorPackages} from './server-parity/sdk-timer-author-contract.mjs';
 import {checkSdkSignalDirectionArtifacts, checkSdkSignalDirectionPackages} from './server-parity/sdk-signal-direction-contract.mjs';
 import {captureProbe} from './server-parity/probe-capture.mjs';
+import {writeRecord} from './server-parity/record-file.mjs';
+import {checkCorrectedMarkerArtifacts, checkCorrectedMarkerPackages} from './server-parity/corrected-marker-contract.mjs';
+import {checkCorrectedRangeArtifacts, checkCorrectedRangePackages} from './server-parity/corrected-range-contract.mjs';
+import {checkActivityDeadlinePackages} from './server-parity/activity-deadline-contract.mjs';
+import {checkActivityDeadlineReceiptPackages} from './server-parity/activity-deadline-receipts-contract.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const {values, positionals} = parseArgs({allowPositionals: true, options: {
@@ -76,59 +81,71 @@ try {
       started_at: new Date().toISOString(), outcome: 'runner-blocked', fixture_hashes: hashes, cases: [],
       database_resource_limits: parseDatabaseResourceLimits(values['database-resource-limits']),
     };
-    for (const name of fixtures) {
-      const path = byName[name];
-      const fixture = json(path);
-      checkPublishedPatchArtifacts(fixture, record.artifacts);
-      checkRangeArtifacts(fixture, record.artifacts);
-      checkSdkDirectionArtifacts(fixture, record.artifacts);
-      checkSdkChildDirectionArtifacts(fixture, record.artifacts);
-      checkSdkTimerAuthorArtifacts(fixture, record.artifacts);
-      checkSdkSignalDirectionArtifacts(fixture, record.artifacts);
-      if (fixture.patch_deployment?.legacy_marker_history) checkLegacyMarkerArtifacts(fixture, record.artifacts);
-      const workflowId = `${values.prefix}-${fixture.id}`;
-      const arguments_ = [resolve(root, 'scripts/conformance/server-parity/probe.php'), '--mode', values.mode, '--fixture', path, '--workflow-id', workflowId];
-      for (const flag of ['url', 'application-root']) {
-        if (values[flag]) arguments_.push(`--${flag}`, values[flag]);
-      }
-      const probe = captureProbe('php', arguments_, {directory: dirname(resolve(values.output)), timeout: 45000,
-        env: {...process.env, DW_PARITY_FAILURE_EVIDENCE_DIR: dirname(resolve(values.output))}});
-      const item = {fixture_id: fixture.id, fixture, outcome: 'runner-blocked'};
-      try {
-        if (probe.error || probe.status !== 0) throw new Error(probe.error?.message ?? probe.stderr.trim());
-        item.observation = JSON.parse(probe.stdout);
-        if (item.observation.mode !== values.mode) throw new Error('Observation does not use the selected recording adapter');
-        if (item.observation.sdk_php !== record.artifacts.sdk_php || values.mode === 'embedded' && item.observation.workflow_package !== record.artifacts.workflow) {
-          throw new Error('Installed SDK/Workflow packages do not match the frozen tuple');
+    const sourceDirectory = mkdtempSync(join(dirname(resolve(values.output)), '.record-sources-'));
+    const originals = new Map();
+    try {
+      for (const name of fixtures) {
+        const path = byName[name];
+        const fixture = json(path);
+        checkPublishedPatchArtifacts(fixture, record.artifacts);
+        checkRangeArtifacts(fixture, record.artifacts);
+        checkCorrectedMarkerArtifacts(fixture, record.artifacts);
+        checkCorrectedRangeArtifacts(fixture, record.artifacts);
+        checkSdkDirectionArtifacts(fixture, record.artifacts);
+        checkSdkChildDirectionArtifacts(fixture, record.artifacts);
+        checkSdkTimerAuthorArtifacts(fixture, record.artifacts);
+        checkSdkSignalDirectionArtifacts(fixture, record.artifacts);
+        if (fixture.patch_deployment?.legacy_marker_history) checkLegacyMarkerArtifacts(fixture, record.artifacts);
+        const workflowId = `${values.prefix}-${fixture.id}`;
+        const arguments_ = [resolve(root, 'scripts/conformance/server-parity/probe.php'), '--mode', values.mode, '--fixture', path, '--workflow-id', workflowId];
+        for (const flag of ['url', 'application-root']) {
+          if (values[flag]) arguments_.push(`--${flag}`, values[flag]);
         }
-        if (record.artifacts.sdk_php_source_commit && item.observation.sdk_php_source !== record.artifacts.sdk_php_source_commit) {
-          throw new Error('Installed SDK source does not match the selected source-feature tuple');
+        const probe = captureProbe('php', arguments_, {directory: dirname(resolve(values.output)), timeout: fixture.memo_replay ? fixture.memo_replay.overall_budget_seconds * 1000 + 5000 : fixture.corrected_markers ? fixture.corrected_markers.overall_budget_seconds * 1000 + 5000 : fixture.namespace_signal_pair || fixture.selected_run_signal_pair ? 75000 : 45000,
+          env: {...process.env, DW_PARITY_FAILURE_EVIDENCE_DIR: dirname(resolve(values.output))},
+          preserveStdout: join(sourceDirectory, name)});
+        const item = {fixture_id: fixture.id, fixture, outcome: 'runner-blocked'};
+        originals.set(item, {fixture: path, observation: probe.stdoutPath});
+        try {
+          if (probe.error || probe.status !== 0) throw new Error(probe.error?.message ?? probe.stderr.trim());
+          item.observation = JSON.parse(probe.stdout);
+          if (item.observation.mode !== values.mode) throw new Error('Observation does not use the selected recording adapter');
+          if (item.observation.sdk_php !== record.artifacts.sdk_php || values.mode === 'embedded' && item.observation.workflow_package !== record.artifacts.workflow) {
+            throw new Error('Installed SDK/Workflow packages do not match the frozen tuple');
+          }
+          if (record.artifacts.sdk_php_source_commit && item.observation.sdk_php_source !== record.artifacts.sdk_php_source_commit) {
+            throw new Error('Installed SDK source does not match the selected source-feature tuple');
+          }
+          if (fixture.patch_deployment?.legacy_marker_history) checkLegacyMarkerPackageObservation(fixture, item.observation, record.artifacts);
+          else checkPatchPackageObservation(fixture, item.observation, record.artifacts);
+          checkRangePackages(fixture, item.observation, record.artifacts);
+          checkCorrectedMarkerPackages(fixture, item.observation, record.artifacts);
+          checkCorrectedRangePackages(fixture, item.observation, record.artifacts);
+          checkActivityDeadlinePackages(fixture, item.observation, record.artifacts);
+          checkActivityDeadlineReceiptPackages(fixture, item.observation, record.artifacts);
+          checkSdkDirectionPackages(fixture, item.observation, record.artifacts);
+          checkSdkChildDirectionPackages(fixture, item.observation, record.artifacts);
+          checkSdkTimerAuthorPackages(fixture, item.observation, record.artifacts);
+          checkSdkSignalDirectionPackages(fixture, item.observation, record.artifacts);
+          item.outcome = 'product-fail';
+          item.projection = checkObservation(fixture, item.observation, workflowId, record.artifacts);
+          item.outcome = 'pass';
+        } catch (error) {
+          item.error = error.message;
+          record.cases.push(item);
+          record.outcome = item.outcome;
+          record.finished_at = new Date().toISOString();
+          writeRecord(values.output, record, originals);
+          throw error;
         }
-        if (fixture.patch_deployment?.legacy_marker_history) checkLegacyMarkerPackageObservation(fixture, item.observation, record.artifacts);
-        else checkPatchPackageObservation(fixture, item.observation, record.artifacts);
-        checkRangePackages(fixture, item.observation, record.artifacts);
-        checkSdkDirectionPackages(fixture, item.observation, record.artifacts);
-        checkSdkChildDirectionPackages(fixture, item.observation, record.artifacts);
-        checkSdkTimerAuthorPackages(fixture, item.observation, record.artifacts);
-        checkSdkSignalDirectionPackages(fixture, item.observation, record.artifacts);
-        item.outcome = 'product-fail';
-        item.projection = checkObservation(fixture, item.observation, workflowId);
-        item.outcome = 'pass';
-      } catch (error) {
-        item.error = error.message;
         record.cases.push(item);
-        record.outcome = item.outcome;
-        record.finished_at = new Date().toISOString();
-        writeFileSync(values.output, JSON.stringify(record, null, 2) + '\n');
-        throw error;
       }
-      record.cases.push(item);
-    }
-    if (record.cases.length === 0) throw new Error('No fixtures found');
-    record.outcome = 'pass';
-    record.finished_at = new Date().toISOString();
-    writeFileSync(values.output, JSON.stringify(record, null, 2) + '\n');
-    console.log(JSON.stringify({outcome: record.outcome, target: record.target, cases: record.cases.map(c => c.fixture_id)}));
+      if (record.cases.length === 0) throw new Error('No fixtures found');
+      record.outcome = 'pass';
+      record.finished_at = new Date().toISOString();
+      writeRecord(values.output, record, originals);
+      console.log(JSON.stringify({outcome: record.outcome, target: record.target, cases: record.cases.map(c => c.fixture_id)}));
+    } finally { rmSync(sourceDirectory, {recursive: true, force: true}); }
   } else {
     throw new Error('Expected record or compare; see --help');
   }

@@ -4,6 +4,8 @@
 
 use std::collections::BTreeMap;
 use std::io::{self, Read};
+mod ordered;
+mod validation;
 
 use apache_avro::{
     GenericSingleObjectReader, GenericSingleObjectWriter, Schema, types::Value as Datum,
@@ -78,6 +80,10 @@ impl ValueCodec {
         GenericSingleObjectWriter::new_with_capacity(&self.schema, 0)?
             .write_value_ref(&datum, &mut bytes)?;
         Ok(STANDARD.encode(bytes))
+    }
+
+    pub(crate) fn encode_ordered(&self, value: &Value) -> Result<String, CodecError> {
+        Ok(STANDARD.encode(ordered::encode(value)?))
     }
 
     pub fn decode(&self, blob: &str) -> Result<Value, CodecError> {

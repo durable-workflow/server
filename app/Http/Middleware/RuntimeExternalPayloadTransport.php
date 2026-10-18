@@ -7,6 +7,7 @@ use App\Support\RuntimeExternalPayloadAudit;
 use App\Support\RuntimeExternalPayloadException;
 use App\Support\RuntimeExternalPayloadRegistry;
 use App\Support\WorkerProtocol;
+use App\Support\WorkflowQueryTaskBroker;
 use Closure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -15,6 +16,14 @@ use Symfony\Component\HttpFoundation\Response;
 class RuntimeExternalPayloadTransport
 {
     public const ATTRIBUTE_CLAIMED = 'runtime_external_payload.claimed';
+
+    /** @var list<list<string>> */
+    private const NEXUS_HISTORY_ENVELOPES = [
+        ['request_payload'],
+        ['response_payload'],
+        ['service_call', 'result_envelope'],
+        ['response_or_failure_surface', 'result_envelope'],
+    ];
 
     /** @var array<string, list<list<string>>> */
     private const INCOMING_ENVELOPE_PATHS = [
@@ -88,6 +97,7 @@ class RuntimeExternalPayloadTransport
     private const OUTGOING_ENVELOPE_PATHS = [
         'ServiceCatalogReadController@callShow' => [['result_envelope']],
         'ActivityController@show' => [['result']],
+        'ActivityResultController@show' => [['result_envelope']],
         'ActivityTaskController@poll' => [['task', 'arguments']],
         'ScheduleController@index' => [['schedules', '*', 'action', 'input']],
         'ScheduleController@show' => [['action', 'input']],
@@ -222,7 +232,7 @@ class RuntimeExternalPayloadTransport
                     $response->getData(),
                     $namespace,
                     $this->outgoingEnvelopePaths($action),
-                    self::OUTGOING_REFERENCE_PATHS[$action] ?? [],
+                    $this->outgoingReferencePaths($action),
                 ));
             }
 
@@ -246,6 +256,33 @@ class RuntimeExternalPayloadTransport
                 ? WorkerProtocol::json($payload, $exception->status)
                 : ControlPlaneProtocol::jsonForRequest($request, $payload, $exception->status);
         }
+    }
+
+    public function queryCompletionResponse(Request $request): ?JsonResponse
+    {
+        if ($this->action($request) !== 'WorkerController@completeQueryTask') {
+            return null;
+        }
+        $validated = $request->validate([
+            'lease_owner' => ['required', 'string'],
+            'query_task_attempt' => ['required', 'integer', 'min:1'],
+        ]);
+        $guard = app(WorkflowQueryTaskBroker::class)->guardCompletion(
+            (string) $request->attributes->get('namespace'), (string) $request->route('queryTaskId'),
+            $validated['lease_owner'], (int) $validated['query_task_attempt'], self::queryCompletionFingerprint($request),
+        );
+
+        return $guard === null ? null : WorkerProtocol::json($guard, $guard['status']);
+    }
+
+    public static function queryCompletionFingerprint(Request $request): string
+    {
+        $submitted = $request->isJson()
+            ? json_decode($request->getContent(), false, 512, JSON_THROW_ON_ERROR) : (object) $request->all();
+
+        return WorkflowQueryTaskBroker::operationFingerprint('complete', [
+            'result' => $submitted->result ?? null, 'result_envelope' => $submitted->result_envelope ?? null,
+        ]);
     }
 
     public function resolveIncoming(Request $request): void
@@ -443,6 +480,12 @@ class RuntimeExternalPayloadTransport
     private function outgoingEnvelopePaths(string $action): array
     {
         $paths = self::OUTGOING_ENVELOPE_PATHS[$action] ?? [];
+        $historyPrefix = $this->historyPrefix($action);
+        if ($historyPrefix !== null) {
+            foreach (self::NEXUS_HISTORY_ENVELOPES as $slot) {
+                $paths[] = [...$historyPrefix, '*', 'payload', ...$slot];
+            }
+        }
         $historyExportPrefix = match ($action) {
             'HistoryController@export' => [],
             'WorkerController@pollQueryTasks',
@@ -457,6 +500,44 @@ class RuntimeExternalPayloadTransport
 
         foreach (self::HISTORY_EXPORT_ENVELOPE_PATHS as $path) {
             $paths[] = [...$historyExportPrefix, ...$path];
+        }
+        foreach (self::NEXUS_HISTORY_ENVELOPES as $slot) {
+            $paths[] = [...$historyExportPrefix, 'history_events', '*', 'payload', ...$slot];
+        }
+
+        return $paths;
+    }
+
+    /** @return list<string>|null */
+    private function historyPrefix(string $action): ?array
+    {
+        return match ($action) {
+            'HistoryController@show' => ['events'],
+            'HistoryController@export', 'WorkerController@workflowTaskHistory' => ['history_events'],
+            'WorkerController@pollQueryTasks',
+            'WorkerController@pollUpdateValidationTasks',
+            'WorkerController@pollWorkflowTasks' => ['task', 'history_events'],
+            default => null,
+        };
+    }
+
+    /** @return list<list<string>> */
+    private function outgoingReferencePaths(string $action): array
+    {
+        $paths = self::OUTGOING_REFERENCE_PATHS[$action] ?? [];
+        $prefixes = [];
+        if (($prefix = $this->historyPrefix($action)) !== null) {
+            $prefixes[] = $prefix;
+        }
+        if (in_array($action, ['WorkerController@pollQueryTasks', 'WorkerController@pollUpdateValidationTasks', 'WorkerController@pollWorkflowTasks'], true)) {
+            $prefixes[] = ['task', 'history_export', 'history_events'];
+        }
+        foreach ($prefixes as $prefix) {
+            foreach (['service_call', 'response_or_failure_surface'] as $surface) {
+                foreach (['input_payload_reference', 'output_payload_reference', 'failure_payload_reference'] as $field) {
+                    $paths[] = [...$prefix, '*', 'payload', $surface, $field];
+                }
+            }
         }
 
         return $paths;

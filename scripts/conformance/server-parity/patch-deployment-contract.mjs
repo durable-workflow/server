@@ -10,6 +10,46 @@ export function checkPatchPollPressureResponse(response) {
   if (Object.hasOwn(response, 'message')) assert.equal(typeof response.message, 'string', 'published diagnostic message is text');
 }
 
+function checkPhpPollPressure(item, index, phase, observation, workflowId) {
+  assert.equal(item.method, 'POST');
+  assert.equal(item.path, '/api/worker/workflow-tasks/poll', 'PHP pressure is confined to workflow polling');
+  assert.equal(item.client_cancelled ?? false, false);
+  assert.equal(item.transport_error ?? null, null);
+  const response = item.response;
+  assert.deepEqual(Object.keys(response ?? {}).sort(), ['backend', 'error', 'message', 'namespace', 'poll_status',
+    'protocol_version', 'reason', 'retry_after_seconds', 'server_capabilities', 'task', 'task_kind', 'task_queue']);
+  assert.equal(response.task, null, 'pressure acquires no task');
+  assert.equal(response.poll_status, 'backend_lock_pressure');
+  assert.equal(response.reason, 'backend_lock_pressure');
+  assert.deepEqual(response.backend, {driver: 'sqlite', lock_pressure: true});
+  for (const field of ['error', 'message']) assert.ok(typeof response[field] === 'string' && response[field].length > 0);
+  assert.equal(response.namespace, observation.namespace);
+  assert.equal(response.task_queue, observation.task_queue);
+  assert.equal(response.task_kind, 'workflow_task');
+  assert.ok(Number.isSafeInteger(response.retry_after_seconds) && response.retry_after_seconds > 0
+    && response.retry_after_seconds <= 25, 'bounded PHP response retry hint');
+  assert.equal(item.request.worker_id, `${workflowId}:${phase.phase}`);
+  assert.equal(item.request.task_queue, observation.task_queue);
+  assert.ok(typeof item.request.poll_request_id === 'string' && item.request.poll_request_id.length > 0);
+  const registration = phase.requests.slice(0, index).find(request => request.method === 'POST'
+    && request.path === '/api/worker/register' && request.status >= 200 && request.status < 300);
+  assert.ok(registration, 'pressure follows original registration');
+  assert.match(response.protocol_version ?? '', /^\d+\.\d+$/);
+  assert.ok(response.server_capabilities !== null && typeof response.server_capabilities === 'object'
+    && !Array.isArray(response.server_capabilities) && Object.keys(response.server_capabilities).length > 0);
+  assert.equal(response.protocol_version, registration.response.protocol_version);
+  assert.deepEqual(response.server_capabilities, registration.response.server_capabilities,
+    'pressure preserves original discovered capabilities');
+  assert.ok(phase.diagnostics.includes('worker.retrying'), 'actual PHP retry diagnostic');
+  const recovery = phase.requests.slice(index + 1).find(request => request.method === item.method && request.path === item.path
+    && request.status >= 200 && request.status < 300);
+  assert.ok(recovery, 'PHP poll recovers in the original phase');
+  const {poll_request_id: originalPoll, ...originalAuthority} = item.request;
+  const {poll_request_id: recoveredPoll, ...recoveredAuthority} = recovery.request;
+  assert.ok(typeof recoveredPoll === 'string' && recoveredPoll.length > 0);
+  assert.deepEqual(recoveredAuthority, originalAuthority, 'PHP recovery changes no worker, queue or options');
+}
+
 export function checkPublishedPatchArtifacts(fixture, artifacts) {
   if (fixture.patch_deployment?.embedded_clock_probe) {
     assert.match(artifacts.workflow_source_commit ?? '', /^[a-f0-9]{40}$/);
@@ -188,6 +228,12 @@ export function checkPatchDeployment(fixture, observation, workflowId) {
           'no hidden worker or shutdown failure');
       }
       for (const [index, item] of phase.requests.entries()) {
+        const phpWorkerPhase = phase === original ? !spec.legacy_marker_history
+          : spec.embedded_clock_probe && !spec.consumer;
+        if (phpWorkerPhase && item.status === 503) {
+          checkPhpPollPressure(item, index, phase, observation, workflowId);
+          continue;
+        }
         if (phase === replacement && spec.consumer && item.client_cancelled === true) {
           assert.equal(item.status, 0, 'cancelled poll received no HTTP response');
           assert.equal(item.method, 'POST');

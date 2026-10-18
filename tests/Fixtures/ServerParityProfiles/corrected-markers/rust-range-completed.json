@@ -1,0 +1,18 @@
+{
+  "id": "rust-range-completed",
+  "workflow_type": "parity.v1.range_repair",
+  "input": {"message": "range retained λ", "count": 9007199254740993, "optional": null},
+  "typed_value": {"type": "map", "value": {"message": {"type": "string", "value": "range retained λ"}, "count": {"type": "int64", "value": "9007199254740993"}, "optional": {"type": "null", "value": null}}},
+  "expected_events": ["StartAccepted", "WorkflowStarted", "VersionMarkerRecorded", "ActivityScheduled", "ActivityStarted", "ActivityCompleted", "RepairRequested", "WorkflowCompleted"],
+  "corrected_range": {
+    "original_fixture": "tests/Fixtures/ServerParityProfiles/version-range-repair/range-marked-activity-completed.json",
+    "pending_activity": false,
+    "overall_budget_seconds": 35,
+    "original_range": [1,1],
+    "incompatible_range": [2,2],
+    "change_id": "parity.range-repair",
+    "original_event_count": 4,
+    "blocked_event_count": 6
+  },
+  "contract": "Additional published Rust authors consume the existing genuine PHP completed-activity range checkpoint. Preserve the historical PHP producer and original fixture source, original version-1 marker, full retry snapshot, exact typed values and history clocks. A separate Rust activity completes once; a cold Rust range 2..2 author must block the original resume before consuming that result. An explicit selected-original repair and cold exact 1..1 restoration completes the same logical task at attempt two / repair one. This separately recorded language direction retains the complete original 35-second scenario budget and changes no frozen actors or old observations. Embedded executes the same original PHP semantic recipe, without claiming a Rust executor."
+}

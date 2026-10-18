@@ -87,6 +87,9 @@ function restartTerminalWorkflow(WorkflowContext $context, array $input): array
 
 assertRestart($argc === 4, 'Usage: restart.php prepare|finish URL RECEIPT');
 [$script, $phase, $url, $receiptPath] = $argv;
+$restartContractPath = __DIR__.'/../../../tests/Fixtures/ServerParityProfiles/current-activity-restart.json';
+$restartContract = json_decode(file_get_contents($restartContractPath), true, flags: JSON_THROW_ON_ERROR);
+$restartContractHash = hash_file('sha256', $restartContractPath);
 $client = new Client($url, namespace: 'default', token: getenv('DW_PARITY_TOKEN') ?: null);
 $value = ['message' => 'restart λ', 'count' => 9007199254740993];
 
@@ -202,7 +205,8 @@ if ($phase === 'prepare') {
         $cancelled[$cancelPhase] = ['workflow_id' => $cancelHandle->workflowId, 'run_id' => $cancelHandle->selectedRunId,
             'activity' => $cancelActivity, 'accepted' => $cancelAck, 'history' => $cancelHistory];
     }
-    $receipt = ['workflow_id' => $handle->workflowId, 'run_id' => $handle->selectedRunId, 'activity' => $activity,
+    $receipt = ['recovery_contract' => $restartContract, 'recovery_contract_sha256' => $restartContractHash,
+        'workflow_id' => $handle->workflowId, 'run_id' => $handle->selectedRunId, 'activity' => $activity,
         'cancelled' => $cancelled,
         'retry' => ['workflow_id' => $retryHandle->workflowId, 'run_id' => $retryHandle->selectedRunId,
             'first_claim' => $failedActivity, 'failure_receipt' => $failureReceipt, 'history' => $retryHistory],
@@ -229,12 +233,15 @@ if ($phase === 'prepare') {
 
 assertRestart($phase === 'finish', 'Unknown restart phase.');
 $receipt = json_decode(file_get_contents($receiptPath), true, flags: JSON_THROW_ON_ERROR);
+assertRestart(($receipt['recovery_contract'] ?? null) === $restartContract
+    && ($receipt['recovery_contract_sha256'] ?? null) === $restartContractHash,
+    'Missing or changed original restart wait allocation; prepare a separate new cohort.');
 $old = $receipt['activity'];
 // Let the real persisted lease expire. Do not edit clocks/rows or revoke the
 // old worker to imitate process-loss recovery.
 $waitUntil = max(strtotime($old['lease_expires_at']), strtotime($receipt['child']['task']['lease_expires_at']),
     strtotime($receipt['cancelled']['pending_timer']['history'][2]['payload']['fire_at'])) + 1;
-assertRestart($waitUntil - time() < 40, 'Unexpected unbounded lease wait.');
+assertRestart($waitUntil - time() < $restartContract['maximum_original_lease_wait_seconds'], 'Unexpected unbounded lease wait.');
 while (time() < $waitUntil) {
     usleep(100_000);
 }

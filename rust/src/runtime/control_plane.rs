@@ -3,7 +3,7 @@ use axum::extract::{FromRequestParts, Path, Request};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 
-pub(super) enum Operation {
+pub(super) enum Operation<'a> {
     Start,
     List,
     Describe,
@@ -12,9 +12,11 @@ pub(super) enum Operation {
     Cancel,
     Repair,
     Debug,
+    Update,
+    Signal(&'a str),
 }
 
-impl Operation {
+impl Operation<'_> {
     pub(super) fn refusal(
         self,
         error: super::RuntimeError,
@@ -32,6 +34,21 @@ impl Operation {
                     "Workflow run not found."
                 } else { "Workflow not found." },"workflow_id":workflow_id}),
                 )
+            }
+            super::RuntimeError::Refused { status, reason }
+                if matches!(self, Self::Signal(_))
+                    && reason == "historical_run_command_rejected" =>
+            {
+                (
+                    status,
+                    json!({"reason":reason,"workflow_id":workflow_id,"target_scope":"run",
+                    "message":"Commands cannot target historical runs. Use the instance-level endpoint to command the current run, or omit the run ID."}),
+                )
+            }
+            super::RuntimeError::Protocol { status, response }
+                if matches!(self, Self::Signal(_)) =>
+            {
+                (status, response)
             }
             super::RuntimeError::Protocol { status, response }
                 if matches!(self, Self::Start)
@@ -60,6 +77,16 @@ impl Operation {
             Self::Cancel => ("cancel", &["workflow_id"], &["outcome"]),
             Self::Repair => ("repair", &["workflow_id"], &["outcome"]),
             Self::Debug => ("debug", &["workflow_id"], &[]),
+            Self::Update => (
+                "update",
+                &["workflow_id", "operation_name", "operation_name_field"],
+                &["outcome"],
+            ),
+            Self::Signal(_) => (
+                "signal",
+                &["workflow_id", "operation_name", "operation_name_field"],
+                &["outcome"],
+            ),
         };
         let mut metadata = json!({"schema":"durable-workflow.v2.control-plane-response", "version":1,
             "operation":operation, "workflow_id":body.get("workflow_id"),
@@ -98,6 +125,106 @@ impl Operation {
             metadata["contract"]["rejection_fields"] =
                 json!(["workflow_id", "run_id", "reason", "message", "remediation"]);
             metadata["contract"]["rejection_reasons"] = json!(["v1_projection_read_only"]);
+        }
+        if matches!(self, Self::Update) {
+            metadata["operation_name"] = body["update_name"].clone();
+            metadata["operation_name_field"] = json!("update_name");
+            metadata["contract"]["rejection_fields"] = json!([
+                "workflow_id",
+                "run_id",
+                "update_id",
+                "update_name",
+                "update_status",
+                "outcome",
+                "reason",
+                "rejection_reason",
+                "validation_errors",
+                "retryable",
+                "message",
+                "remediation"
+            ]);
+            metadata["contract"]["rejection_reasons"] = json!([
+                "update_validator_rejected",
+                "update_validator_contract_missing",
+                "update_validation_request_id_required",
+                "update_validation_idempotency_conflict",
+                "update_validation_capability_unsupported",
+                "update_validator_worker_unavailable",
+                "update_validator_worker_incompatible",
+                "update_validator_worker_lost",
+                "update_validation_task_not_claimed",
+                "update_validation_execution_timeout",
+                "duplicate_update_validation_completion",
+                "stale_update_validation_completion",
+                "invalid_update_arguments",
+                "v1_projection_read_only"
+            ]);
+            for field in [
+                "command_id",
+                "target_scope",
+                "result",
+                "result_envelope",
+                "update_id",
+                "update_status",
+                "wait_for",
+                "wait_timed_out",
+                "wait_timeout_seconds",
+            ] {
+                metadata[field] = body[field].clone();
+            }
+        }
+        if let Self::Signal(name) = self {
+            metadata["operation_name"] = json!(name);
+            metadata["operation_name_field"] = json!("signal_name");
+            metadata["contract"]["rejection_fields"] = json!([
+                "workflow_id",
+                "run_id",
+                "signal_name",
+                "command_status",
+                "command_source",
+                "target_scope",
+                "outcome",
+                "reason",
+                "rejection_reason",
+                "rejection_category",
+                "message",
+                "command_contract_source",
+                "command_contract_backfill_needed",
+                "command_contract_backfill_available",
+                "declared_signals",
+                "signal_admission",
+                "retryable",
+                "error_id"
+            ]);
+            metadata["contract"]["rejection_reasons"] = json!([
+                "instance_not_found",
+                "historical_run_command_rejected",
+                "unknown_signal",
+                "invalid_signal_arguments",
+                "run_not_active",
+                "instance_not_started",
+                "selected_run_not_current",
+                "configured_workflow_type_invalid",
+                "v1_projection_read_only",
+                "backend_lock_pressure",
+                "control_plane_internal_error"
+            ]);
+            for field in [
+                "command_id",
+                "target_scope",
+                "resolved_run_id",
+                "requested_run_id",
+                "signal_name",
+                "command_contract_source",
+                "command_contract_backfill_needed",
+                "command_contract_backfill_available",
+                "declared_signals",
+                "signal_admission",
+            ] {
+                if let Some(value) = body.get(field) {
+                    metadata[field] = value.clone();
+                }
+            }
         }
         // Copy scalar read identities/state, never input/output/event payloads.
         for field in [

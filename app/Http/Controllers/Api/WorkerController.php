@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Contracts\AuthProvider;
 use App\Http\Middleware\Authenticate;
+use App\Http\Middleware\RuntimeExternalPayloadTransport;
 use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
 use App\Models\WorkerRegistrationIncarnation;
@@ -12,6 +13,7 @@ use App\Support\BackendLockPressure;
 use App\Support\CachedPollTaskKindConflict;
 use App\Support\CooperativeCancellationPolicy;
 use App\Support\ExternalPayloadStorageUnavailable;
+use App\Support\FencedWorkerDeregistration;
 use App\Support\HistoryRetentionEnforcer;
 use App\Support\LongPollCapacityExhaustedException;
 use App\Support\MessageStreamsContract;
@@ -19,6 +21,7 @@ use App\Support\MessageStreamService;
 use App\Support\NamespaceDurableStateQuota;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
+use App\Support\NexusCooperativeCancellationPolicy;
 use App\Support\PayloadCodecContract;
 use App\Support\PollRequestTaskKindsConflict;
 use App\Support\PreparedLocalActivityAdmissionRefused;
@@ -266,6 +269,15 @@ class WorkerController
                 'requested_version' => WorkerProtocol::requestVersion($request),
             ], 409);
         }
+        if (in_array(NexusCooperativeCancellationPolicy::CAPABILITY, $workerCapabilities, true)
+            && ! NexusCooperativeCancellationPolicy::supports($workerCapabilities, WorkerProtocol::requestVersion($request))) {
+            return WorkerProtocol::json([
+                'registered' => false, 'reason' => 'nexus_cooperative_cancellation_capability_mismatch',
+                'required_capabilities' => [CooperativeCancellationPolicy::CAPABILITY, NexusCooperativeCancellationPolicy::CAPABILITY],
+                'minimum_protocol_version' => CooperativeCancellationPolicy::MINIMUM_PROTOCOL_VERSION,
+                'requested_version' => WorkerProtocol::requestVersion($request),
+            ], 409);
+        }
         if (in_array(CooperativeCancellationPolicy::CAPABILITY, $workerCapabilities, true)
             && ! CooperativeCancellationPolicy::supports($workerCapabilities, WorkerProtocol::requestVersion($request))) {
             return WorkerProtocol::json([
@@ -510,7 +522,7 @@ class WorkerController
         return WorkerProtocol::json([
             'worker_id' => $workerId,
             'registered' => true,
-            ...(\App\Support\FencedWorkerDeregistration::available()
+            ...(FencedWorkerDeregistration::available()
                 ? ['registration_token' => $registration->registration_token] : []),
             'namespace' => $registration->namespace,
             'task_queue' => $registration->task_queue,
@@ -532,11 +544,11 @@ class WorkerController
         $normalized = [];
 
         foreach ($fingerprints as $workflowType => $fingerprint) {
-            if (! is_string($workflowType) || ! is_string($fingerprint)) {
+            if ((! is_string($workflowType) && ! is_int($workflowType)) || ! is_string($fingerprint)) {
                 continue;
             }
 
-            $workflowType = trim($workflowType);
+            $workflowType = trim((string) $workflowType);
             $fingerprint = trim($fingerprint);
 
             if ($workflowType === '' || $fingerprint === '') {
@@ -560,23 +572,56 @@ class WorkerController
         $normalized = [];
 
         foreach ($contracts as $workflowType => $contract) {
-            if (! is_string($workflowType) || ! is_array($contract)) {
+            if (! is_string($workflowType) && ! is_int($workflowType)) {
                 continue;
             }
 
-            $workflowType = trim($workflowType);
+            // Associative JSON decoding turns canonical integer names into int keys.
+            $workflowType = trim((string) $workflowType);
 
             if ($workflowType === '') {
                 continue;
             }
 
-            $commandContract = $this->workflowCommandContract($contract);
-
-            if ($commandContract === null) {
-                continue;
+            if (! is_array($contract)) {
+                throw ValidationException::withMessages([
+                    'workflow_command_contracts' => sprintf('Invalid command contract for workflow type [%s].', $workflowType),
+                ]);
             }
 
-            $normalized[$workflowType] = $commandContract;
+            // Validate each entry without treating workflow type dots as paths
+            // or letting nested validated-data filtering erase an empty entry.
+            $validator = Validator::make($contract, [
+                'queries' => ['sometimes', 'array', 'list'],
+                'queries.*' => ['required', 'string', 'max:255'],
+                'signals' => ['sometimes', 'array', 'list'],
+                'signals.*' => ['required', 'string', 'max:255'],
+                'updates' => ['sometimes', 'array', 'list'],
+                'updates.*' => ['required', 'string', 'max:255'],
+                'update_validators' => ['sometimes', 'array', 'list'],
+                'update_validators.*' => ['required', 'string', 'max:255'],
+                'query_contracts' => ['sometimes', 'array', 'list'],
+                'query_contracts.*' => ['array'],
+                'query_contracts.*.name' => ['required', 'string', 'max:255'],
+                'signal_contracts' => ['sometimes', 'array', 'list'],
+                'signal_contracts.*' => ['array'],
+                'signal_contracts.*.name' => ['required', 'string', 'max:255'],
+                'update_contracts' => ['sometimes', 'array', 'list'],
+                'update_contracts.*' => ['array'],
+                'update_contracts.*.name' => ['required', 'string', 'max:255'],
+            ]);
+
+            if ($validator->fails()) {
+                throw ValidationException::withMessages([
+                    'workflow_command_contracts' => sprintf(
+                        'Invalid command contract for workflow type [%s]: %s',
+                        $workflowType,
+                        $validator->errors()->first(),
+                    ),
+                ]);
+            }
+
+            $normalized[$workflowType] = $this->workflowCommandContract($contract);
         }
 
         ksort($normalized);
@@ -586,9 +631,9 @@ class WorkerController
 
     /**
      * @param  array<string, mixed>  $contract
-     * @return array<string, mixed>|null
+     * @return array<string, mixed>
      */
-    private function workflowCommandContract(array $contract): ?array
+    private function workflowCommandContract(array $contract): array
     {
         $normalized = [
             'queries' => $this->nonEmptyStringArray($contract['queries'] ?? []),
@@ -605,16 +650,8 @@ class WorkerController
             );
         }
 
-        if ($normalized['queries'] === []
-            && $normalized['query_contracts'] === []
-            && $normalized['signals'] === []
-            && $normalized['signal_contracts'] === []
-            && $normalized['updates'] === []
-            && $normalized['update_contracts'] === []
-        ) {
-            return null;
-        }
-
+        // A supplied valid workflow entry declares its contract even when it
+        // has no commands. Only an absent entry leaves the contract unknown.
         foreach ($normalized['query_contracts'] as $handlerContract) {
             $normalized['queries'][] = $handlerContract['name'];
         }
@@ -2659,16 +2696,23 @@ class WorkerController
                 'sticky_until' => $stickyUntil,
             ]);
 
-        WorkflowTask::query()
+        $readyTasks = WorkflowTask::query()
+            ->useWritePdo()
             ->where('workflow_run_id', $task->workflow_run_id)
             ->where('task_type', TaskType::Workflow->value)
-            ->where('status', TaskStatus::Ready->value)
-            ->update([
+            ->where('status', TaskStatus::Ready->value);
+
+        // A range UPDATE can lock another run's ready task through the shared
+        // status index. Discover without row locks, then retain every scope
+        // predicate when writing individual primary keys.
+        foreach ((clone $readyTasks)->orderBy('id')->pluck('id') as $readyTaskId) {
+            (clone $readyTasks)->whereKey($readyTaskId)->update([
                 'sticky_worker_id' => $retainAffinity ? $leaseOwner : null,
                 'sticky_until' => $stickyUntil,
                 'sticky_replay_mode' => null,
                 'sticky_claimed_at' => null,
             ]);
+        }
 
         $processMetrics = is_array($worker->process_metrics) ? $worker->process_metrics : [];
         $processMetrics['sticky_cache'] = is_array($stickyCache['metrics'] ?? null)
@@ -4351,6 +4395,34 @@ class WorkerController
         ]);
     }
 
+    public function queryTaskStatus(Request $request, string $queryTaskId): JsonResponse
+    {
+        if ($response = WorkerProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+        if (! WorkerProtocol::versionMeetsMinimum(WorkerProtocol::requestVersion($request), '1.20')) {
+            return WorkerProtocol::json(['reason' => 'query_task_status_unavailable',
+                'error' => 'Query task observation requires worker protocol 1.20.',
+                'minimum_protocol_version' => '1.20'], 422);
+        }
+        $validated = $request->validate([
+            'lease_owner' => ['required', 'string'],
+            'query_task_attempt' => ['required', 'integer', 'min:1'],
+        ]);
+        try {
+            $outcome = $this->queryTasks->status((string) $request->attributes->get('namespace'),
+                $queryTaskId, $validated['lease_owner'], (int) $validated['query_task_attempt']);
+        } catch (\Throwable $exception) {
+            if (! BackendLockPressure::is($exception)) {
+                throw $exception;
+            }
+
+            return BackendLockPressure::workerOperationResponse($request, false);
+        }
+
+        return WorkerProtocol::json($outcome, $outcome['status']);
+    }
+
     public function completeQueryTask(Request $request, string $queryTaskId): JsonResponse
     {
         if ($response = WorkerProtocol::rejectUnsupported($request)) {
@@ -4370,11 +4442,13 @@ class WorkerController
         ]);
 
         $resultEnvelope = null;
+        $operationFingerprint = RuntimeExternalPayloadTransport::queryCompletionFingerprint($request);
         $guard = $this->queryTasks->guardCompletion(
             $namespace,
             $queryTaskId,
             $validated['lease_owner'],
             (int) $validated['query_task_attempt'],
+            $operationFingerprint,
         );
 
         if ($guard !== null) {
@@ -4426,8 +4500,11 @@ class WorkerController
                     (int) $validated['query_task_attempt'],
                     $validated['result'] ?? null,
                     $resultEnvelope,
+                    $operationFingerprint,
                 ),
             );
+        } catch (QueryTaskQueueUnavailableException $exception) {
+            return $this->queryOutcomeQueueUnavailable($queryTaskId, $validated, $exception);
         } catch (\Throwable $exception) {
             if (! BackendLockPressure::is($exception)) {
                 throw $exception;
@@ -4463,6 +4540,10 @@ class WorkerController
             'failure.validation_errors.*.*' => ['string'],
         ]);
 
+        $submitted = $request->isJson()
+            ? json_decode($request->getContent(), false, 512, JSON_THROW_ON_ERROR) : (object) $validated;
+        $operationFingerprint = WorkflowQueryTaskBroker::operationFingerprint('fail', $submitted->failure);
+
         try {
             $outcome = $this->storageMutations->run(
                 fn (): array => $this->queryTasks->fail(
@@ -4471,8 +4552,11 @@ class WorkerController
                     $validated['lease_owner'],
                     (int) $validated['query_task_attempt'],
                     $validated['failure'],
+                    $operationFingerprint,
                 ),
             );
+        } catch (QueryTaskQueueUnavailableException $exception) {
+            return $this->queryOutcomeQueueUnavailable($queryTaskId, $validated, $exception);
         } catch (\Throwable $exception) {
             if (! BackendLockPressure::is($exception)) {
                 throw $exception;
@@ -4485,6 +4569,19 @@ class WorkerController
             array_filter($outcome, static fn (mixed $value): bool => $value !== null),
             (int) ($outcome['status'] ?? 200),
         );
+    }
+
+    private function queryOutcomeQueueUnavailable(string $queryTaskId, array $validated, QueryTaskQueueUnavailableException $exception): JsonResponse
+    {
+        return WorkerProtocol::json([
+            'query_task_id' => $queryTaskId,
+            'query_task_attempt' => (int) $validated['query_task_attempt'],
+            'lease_owner' => $validated['lease_owner'],
+            'outcome' => 'deferred', 'recorded' => false,
+            'reason' => 'query_task_queue_unavailable',
+            'message' => $exception->getMessage(),
+            'retryable' => true, 'retry_after_seconds' => 1,
+        ], 503)->header('Retry-After', '1');
     }
 
     public function pollUpdateValidationTasks(Request $request): JsonResponse

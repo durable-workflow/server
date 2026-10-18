@@ -51,6 +51,67 @@ for (const checkpoint of ['pending', 'completed']) {
     checkPatchPackageObservation(fixture, raw, artifacts);
     assert.equal(checkPatchDeployment(fixture, raw, 'test').marker_count, 1);
   });
+  function pressureModel(phaseName = 'replacement') {
+    const raw = model('http'), phase = raw.patch_deployment[phaseName];
+    const discovery = {protocol_version: '1.20', server_capabilities: {long_poll_timeout: 30}};
+    const request = {worker_id: `test:${phaseName}`, task_queue: raw.task_queue,
+      poll_request_id: 'original-php-poll', timeout_seconds: 0, history_page_size: 500};
+    phase.diagnostics.splice(1, 0, 'worker.retrying');
+    phase.requests.unshift({method: 'POST', path: '/api/worker/register', status: 201, response: discovery},
+      {method: 'POST', path: '/api/worker/workflow-tasks/poll', status: 503, request,
+        response: {...structuredClone(discovery), task: null, poll_status: 'backend_lock_pressure',
+          reason: 'backend_lock_pressure', error: 'Backend is locked.', message: 'Retry with backoff.',
+          namespace: raw.namespace, task_queue: raw.task_queue, task_kind: 'workflow_task',
+          retry_after_seconds: 1, backend: {driver: 'sqlite', lock_pressure: true}}},
+      {method: 'POST', path: '/api/worker/workflow-tasks/poll', status: 200,
+        request: {...request, poll_request_id: 'next-php-poll'}, response: {task: {task_id: 'original-task'}}});
+    return raw;
+  }
+  for (const phaseName of ['original', 'replacement']) test(`${checkpoint} ${phaseName}: PHP recovers declared pressure with original poll authority`, () =>
+    checkPatchDeployment(fixture, pressureModel(phaseName), 'test'));
+  for (const phaseName of ['original', 'replacement']) for (const [name, mutate] of [
+    ['other HTTP failure', phase => phase.requests[1].status = 500],
+    ['activity poll', phase => phase.requests[1].path = '/api/worker/activity-tasks/poll'],
+    ['completion failure', phase => phase.requests[1].path = '/api/worker/workflow-tasks/task/complete'],
+    ['leased task in pressure', phase => phase.requests[1].response.task = {task_id: 'hidden'}],
+    ['wrong pressure reason', phase => phase.requests[1].response.reason = 'backend_unavailable'],
+    ['generic storage failure', phase => {phase.requests[1].response.reason = 'storage_unavailable'; phase.requests[1].response.poll_status = 'storage_unavailable';}],
+    ['unknown response field', phase => phase.requests[1].response.status = 'completed'],
+    ['changed namespace', phase => phase.requests[1].response.namespace = 'other'],
+    ['changed queue', phase => phase.requests[1].response.task_queue = 'other'],
+    ['changed task kind', phase => phase.requests[1].response.task_kind = 'activity_task'],
+    ['changed backend', phase => phase.requests[1].response.backend.driver = 'mysql'],
+    ['no lock', phase => phase.requests[1].response.backend.lock_pressure = false],
+    ['zero retry hint', phase => phase.requests[1].response.retry_after_seconds = 0],
+    ['unbounded retry hint', phase => phase.requests[1].response.retry_after_seconds = 26],
+    ['changed protocol', phase => phase.requests[1].response.protocol_version = 'other'],
+    ['missing protocol', phase => {phase.requests[0].response.protocol_version = null; phase.requests[1].response.protocol_version = null;}],
+    ['changed discovery', phase => phase.requests[1].response.server_capabilities.long_poll_timeout = 31],
+    ['empty discovery', phase => {phase.requests[0].response.server_capabilities = {}; phase.requests[1].response.server_capabilities = {};}],
+    ['malformed discovery', phase => {phase.requests[0].response.server_capabilities = []; phase.requests[1].response.server_capabilities = [];}],
+    ['unrecorded registration', phase => phase.requests.shift()],
+    ['missing diagnostic', phase => phase.diagnostics = phase.diagnostics.filter(value => value !== 'worker.retrying')],
+    ['missing recovery', phase => phase.requests.splice(2, 1)],
+    ['changed recovery worker', phase => phase.requests[2].request.worker_id = 'other'],
+    ['changed recovery options', phase => phase.requests[2].request.history_page_size = 1],
+    ['missing poll identity', phase => delete phase.requests[1].request.poll_request_id],
+    ['missing recovery identity', phase => delete phase.requests[2].request.poll_request_id],
+    ['cancelled transport', phase => phase.requests[1].client_cancelled = true],
+    ['network error', phase => phase.requests[1].transport_error = 'ECONNRESET'],
+  ]) test(`${checkpoint} ${phaseName}: PHP pressure refuses ${name}`, () => {
+    const raw = pressureModel(phaseName); mutate(raw.patch_deployment[phaseName]);
+    assert.throws(() => checkPatchDeployment(fixture, raw, 'test'));
+  });
+  test(`${checkpoint}: incomplete original-phase pressure stays refused`, () => {
+    const raw = pressureModel();
+    raw.patch_deployment.original.requests.unshift(structuredClone(raw.patch_deployment.replacement.requests[1]));
+    assert.throws(() => checkPatchDeployment(fixture, raw, 'test'));
+  });
+  test(`${checkpoint}: a legacy language producer cannot use the PHP pressure contract`, () => {
+    const raw = pressureModel('original'), legacy = structuredClone(fixture);
+    legacy.patch_deployment.legacy_marker_history = {original_calls: 1};
+    assert.throws(() => checkPatchDeployment(legacy, raw, 'test'));
+  });
   for (const [name, mutate] of [
     ['missing clock snapshots', x => delete x.replacement.embedded_clock_probe],
     ['empty clock snapshots', x => x.replacement.embedded_clock_probe.clocks = []],

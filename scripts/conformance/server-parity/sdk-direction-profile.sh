@@ -8,6 +8,7 @@ prefix=sdk-directions-v1
 native_url="${2:?Set the independently isolated native URL}"
 test -n "${RESOURCE_SCOPE:?Set the owning isolated network/resource scope}"
 cohort=published-sdk-directions
+fixture_base=tests/Fixtures/ServerParityProfiles
 fixture_pattern=sdk-*.json
 reader_tests=(tests/Unit/ServerParitySdkDirectionContractTest.mjs)
 case "${3:-activity}" in
@@ -33,6 +34,20 @@ case "${3:-activity}" in
     fixture_pattern=signal-sdk-*.json
     reader_tests=(tests/Unit/ServerParitySdkSignalDirectionContractTest.mjs)
     ;;
+  namespace-signal)
+    tag=sdk-namespace-signals
+    prefix=sdk-namespace-signals-v1
+    cohort=published-sdk-namespace-signals
+    fixture_pattern=signal-namespace-sdk-*.json
+    reader_tests=(tests/Unit/ServerParitySdkNamespaceSignalContractTest.mjs tests/Unit/ServerParitySdkNamespaceControlRetentionTest.mjs)
+    ;;
+  selected-run-signal)
+    tag=sdk-selected-run-signals
+    prefix=sdk-selected-run-signals-v1
+    cohort=published-sdk-selected-run-signals
+    fixture_pattern=signal-selected-run-sdk-*.json
+    reader_tests=(tests/Unit/ServerParitySdkNamespaceSignalContractTest.mjs tests/Unit/ServerParitySdkNamespaceControlRetentionTest.mjs)
+    ;;
   query)
     tag=sdk-queries
     prefix=sdk-queries-v1
@@ -40,10 +55,24 @@ case "${3:-activity}" in
     fixture_pattern=query-sdk-*.json
     reader_tests=(tests/Unit/ServerParitySdkQueryDirectionContractTest.mjs)
     ;;
-  *) echo 'Choose activity, child, timer, signal or query SDK directions' >&2; exit 2 ;;
+  update)
+    tag=sdk-updates
+    prefix=sdk-updates-v1
+    cohort=published-sdk-updates
+    fixture_pattern=update-sdk-*.json
+    reader_tests=(tests/Unit/ServerParitySdkUpdateDirectionContractTest.mjs)
+    ;;
+  update-failure)
+    tag=sdk-update-failures
+    prefix=sdk-update-failures-v1
+    cohort=published-sdk-update-failures
+    fixture_pattern=update-failure-sdk-*.json
+    reader_tests=(tests/Unit/ServerParitySdkUpdateDirectionContractTest.mjs)
+    ;;
+  *) echo 'Choose activity, child, timer, signal, namespace-signal, selected-run-signal, query, update or update-failure SDK directions' >&2; exit 2 ;;
 esac
-profile="tests/Fixtures/ServerParityProfiles/$cohort"
-manifest="tests/Fixtures/ServerParityProfiles/$cohort/artifacts.json"
+profile="$fixture_base/$cohort"
+manifest="$profile/artifacts.json"
 image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' "$manifest")
 php_alias="parity-$tag-php"
 resource="$RESOURCE_SCOPE-$tag"
@@ -68,6 +97,10 @@ shared=(-v "$PWD:/source:ro" -v "$evidence:/evidence" -v "$state/sdk:/sdk:ro" -w
   -e PYTHONPATH=/sdk-directions/python-packages -e PYTHONDONTWRITEBYTECODE=1
   -e DW_PARITY_RUST_DIRECTION_WORKER=/sdk-directions/rust-worker
   -e DW_PARITY_DIRECTION_IDENTITY=/sdk-directions/identity.json)
+if test "$tag" = sdk-selected-run-signals; then
+  chmod 0755 sdk-direction-adapters/rust-selected-run-sender
+  shared+=(-e DW_PARITY_RUST_SELECTED_RUN_SENDER=/sdk-directions/rust-selected-run-sender)
+fi
 case "$backend" in
   mysql)
     docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint mysql "$MYSQL_IMAGE" \
@@ -109,6 +142,19 @@ if test "$backend" = sqlite; then
   php_db="/range-state/$php_db"
   embedded_db="/range-state/$embedded_db"
 fi
+php_observer=()
+native_observer=()
+if test "$tag" = sdk-selected-run-signals; then
+  # Direct PDO SELECT-only observers prove durable refusal state without a
+  # product endpoint or a PHP model writing into native storage.
+  php_observer=("${database[@]}" -e DW_PARITY_STATE_DATABASE="$php_db")
+  native_db=native_ref
+  if test "$backend" = sqlite; then
+    native_db=/native-state/rust.sqlite
+    native_observer+=(-v "$PWD/parity-state:/native-state:ro")
+  fi
+  native_observer+=("${database[@]}" -e DW_PARITY_STATE_DATABASE="$native_db")
+fi
 docker run -d --name "$resource-server" "${limits[@]}" --network "$RESOURCE_SCOPE" \
   --network-alias "$php_alias" "${database[@]}" -e DB_DATABASE="$php_db" \
   -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token "$image" \
@@ -129,16 +175,21 @@ if test "$backend" != sqlite; then
   selection+=(--database-resource-limits "$database_resource_limits")
 fi
 for fixture in "$profile"/$fixture_pattern; do selection+=(--fixture "$fixture"); done
-docker run --name "$resource-record-php" "${limits[@]}" --network "$RESOURCE_SCOPE" --entrypoint node "${shared[@]}" -e DW_PARITY_TOKEN=parity-test-token \
+docker run --name "$resource-record-php" "${limits[@]}" --network "$RESOURCE_SCOPE" --entrypoint node "${shared[@]}" "${php_observer[@]}" -e DW_PARITY_TOKEN=parity-test-token \
   "$image" scripts/conformance/server-parity.mjs record --mode http --url "http://$php_alias:8080" \
   --target php "${selection[@]}" --output /evidence/php/record.json > "$evidence/php-record.txt" 2>&1
 docker run --name "$resource-record-embedded" "${limits[@]}" --network "$RESOURCE_SCOPE" "${shared[@]}" "${database[@]}" -e DB_DATABASE="$embedded_db" \
   -e DW_MODE=embedded -e CACHE_STORE=file -e QUEUE_CONNECTION=database -w /app "$image" \
   node /source/scripts/conformance/server-parity.mjs record --mode embedded --application-root /app \
   --target embedded "${selection[@]}" --output /evidence/embedded/record.json > "$evidence/embedded-record.txt" 2>&1
-  docker run --name "$resource-record-native" "${limits[@]}" --network "$RESOURCE_SCOPE" --entrypoint node "${shared[@]}" -e DW_PARITY_TOKEN=parity-test-token \
+  docker run --name "$resource-record-native" "${limits[@]}" --network "$RESOURCE_SCOPE" --entrypoint node "${shared[@]}" "${native_observer[@]}" -e DW_PARITY_TOKEN=parity-test-token \
   "$image" scripts/conformance/server-parity.mjs record --mode http --url "$native_url" \
   --target rust "${selection[@]}" --output /evidence/rust/record.json > "$evidence/rust-record.txt" 2>&1
   recordings=(/evidence/php/record.json /evidence/embedded/record.json /evidence/rust/record.json)
+if test "$tag" = sdk-selected-run-signals; then
+  docker run --name "$resource-real-reader-tests" "${limits[@]}" --network none --entrypoint node "${shared[@]}" \
+    -e 'DW_PARITY_SELECTED_RUN_RECORDS=["/evidence/php/record.json","/evidence/embedded/record.json","/evidence/rust/record.json"]' \
+    "$image" --test tests/Conformance/ServerParitySelectedRunSignalReaderTest.mjs > "$evidence/real-reader-tests.txt" 2>&1
+fi
 docker run --name "$resource-compare" "${limits[@]}" --network none --entrypoint node "${shared[@]}" "$image" scripts/conformance/server-parity.mjs compare \
   "${recordings[@]}" "${selection[@]}" > "$evidence/comparison.json" 2>&1

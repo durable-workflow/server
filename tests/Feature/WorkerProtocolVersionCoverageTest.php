@@ -46,6 +46,7 @@ class WorkerProtocolVersionCoverageTest extends TestCase
             'workflow-tasks.complete' => ['method' => 'post', 'path' => '/api/worker/workflow-tasks/task-1/complete'],
             'workflow-tasks.fail' => ['method' => 'post', 'path' => '/api/worker/workflow-tasks/task-1/fail'],
             'query-tasks.poll' => ['method' => 'post', 'path' => '/api/worker/query-tasks/poll'],
+            'query-tasks.status' => ['method' => 'get', 'path' => '/api/worker/query-tasks/task-1/status'],
             'query-tasks.complete' => ['method' => 'post', 'path' => '/api/worker/query-tasks/task-1/complete'],
             'query-tasks.fail' => ['method' => 'post', 'path' => '/api/worker/query-tasks/task-1/fail'],
             'activity-tasks.poll' => ['method' => 'post', 'path' => '/api/worker/activity-tasks/poll'],
@@ -259,6 +260,7 @@ class WorkerProtocolVersionCoverageTest extends TestCase
     private function sendJson(string $method, string $path, array $body, array $headers): TestResponse
     {
         return match ($method) {
+            'get' => $this->getJson($path, $headers),
             'delete' => $this->deleteJson($path, $body, $headers),
             'post' => $this->postJson($path, $body, $headers),
             'put' => $this->putJson($path, $body, $headers),

@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\ActivityController;
+use App\Http\Controllers\Api\ActivityResultController;
 use App\Http\Controllers\Api\ActivityTaskController;
 use App\Http\Controllers\Api\BridgeAdapterController;
 use App\Http\Controllers\Api\CancellationScopeController;
@@ -182,6 +183,7 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
         // History
         Route::get('/{workflowId}/runs/{runId}/history', [HistoryController::class, 'show']);
         Route::get('/{workflowId}/runs/{runId}/activities', [HistoryController::class, 'activities']);
+        Route::get('/{workflowId}/runs/{runId}/activities/{activityId}/result', [ActivityResultController::class, 'show']);
         Route::get('/{workflowId}/runs/{runId}/history/export', [HistoryController::class, 'export']);
 
         // Caller-side Nexus operations: every cross-namespace service call this
@@ -258,6 +260,7 @@ Route::middleware([Authenticate::class, RuntimeExternalPayloadTransport::class])
 
         // Query tasks (ephemeral worker-routed workflow queries)
         Route::post('/query-tasks/poll', [WorkerController::class, 'pollQueryTasks']);
+        Route::get('/query-tasks/{queryTaskId}/status', [WorkerController::class, 'queryTaskStatus']);
         Route::post('/query-tasks/{queryTaskId}/complete', [WorkerController::class, 'completeQueryTask']);
         Route::post('/query-tasks/{queryTaskId}/fail', [WorkerController::class, 'failQueryTask']);
 

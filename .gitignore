@@ -30,3 +30,8 @@ yarn-error.log
 /.vscode
 /durable_workflow
 /rust/target/
+/corrected-marker-adapters/
+/parity-corrected-state/
+/parity-external-consumers-state/
+/scripts/conformance/server-parity/corrected-markers/php/vendor/
+/scripts/conformance/server-parity/corrected-markers/rust/target/

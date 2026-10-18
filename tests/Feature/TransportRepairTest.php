@@ -377,11 +377,12 @@ class TransportRepairTest extends TestCase
         $original = WorkflowTask::query()->where('workflow_run_id', $runId)->sole();
         if ($existing) {
             // Reproduce an already-created orphan from the preceding release.
+            $overdueAt = now()->subSeconds(TaskRepairPolicy::redispatchAfterSeconds() + 1);
             $original->forceFill([
                 'namespace' => null,
-                'available_at' => now()->subSecond(),
+                'available_at' => $overdueAt,
                 'last_dispatch_attempt_at' => null,
-                'last_dispatched_at' => now()->subSeconds(TaskRepairPolicy::redispatchAfterSeconds() + 1),
+                'last_dispatched_at' => $overdueAt,
             ])->save();
         } else {
             $original->delete();

@@ -1,0 +1,10 @@
+{
+  "schema": "durable-workflow.server-parity-restart/v1",
+  "ordinary_activity_lease_seconds": 300,
+  "maximum_original_lease_wait_seconds": 310,
+  "expiry_source": "original persisted activity and child leases plus pending cancellation timer",
+  "clock_or_row_edit": false,
+  "worker_revocation": false,
+  "receipt_rebudget": false,
+  "contract": "The new native revision follows the published PHP ordinary five-minute activity lease. Recovery waits for the already committed original lease, with this bound declared before preparing a new cohort. The previous sub-forty-second native recovery observations and failures remain unchanged. No current run receives a replacement lease or deadline to fit the test. This wait allocation does not claim performance or modify workflow execution budgets."
+}

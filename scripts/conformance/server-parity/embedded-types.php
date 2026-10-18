@@ -190,6 +190,31 @@ final class UpdatesWorkflow extends Workflow
     }
 }
 
+#[Type('parity.v1.sdk_updates')]
+#[Signal('payload', [['name' => 'value', 'type' => 'array']])]
+final class SdkUpdatesWorkflow extends Workflow
+{
+    private array $values = [];
+
+    public function handle(array $value, int $target): array
+    {
+        signal('payload');
+
+        return ['values' => $this->values];
+    }
+
+    #[UpdateMethod('set_payload')]
+    public function setPayload(array $value): array
+    {
+        if (($value['fail_handler'] ?? false) === true) {
+            throw new \RuntimeException('parity update handler failure λ');
+        }
+        $this->values[] = $value;
+
+        return ['value' => $value, 'applied' => count($this->values)];
+    }
+}
+
 #[Type('parity.v1.one_activity')]
 final class OneActivityWorkflow extends Workflow
 {

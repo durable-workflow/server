@@ -4,15 +4,15 @@ import http from 'node:http';
 import net from 'node:net';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
-import {mkdtempSync, readFileSync, rmSync} from 'node:fs';
+import {existsSync, mkdtempSync, readFileSync, rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {gzipSync} from 'node:zlib';
 import {setTimeout as delay} from 'node:timers/promises';
 
-async function startGateRequest(url, body) {
+async function startGateRequest(url, body, headers = {}) {
   return new Promise((resolve, reject) => {
-    const request = http.request(url, {method: 'POST', headers: {'content-type': 'application/json'}}, response => {
+    const request = http.request(url, {method: 'POST', headers: {'content-type': 'application/json', ...headers}}, response => {
       const chunks = [];
       response.on('data', bytes => chunks.push(bytes));
       response.on('end', () => resolve({status: response.statusCode, bytes: Buffer.concat(chunks)}));
@@ -280,6 +280,140 @@ test('HTTP observer forwards client cancellation to the upstream long poll', {ti
     await closed;
     upstream.closeAllConnections();
     await new Promise(resolve => upstream.close(resolve));
+    rmSync(directory, {recursive: true});
+  }
+});
+
+async function requestArrivalRows(path, count) {
+  const deadline = Date.now() + 2000;
+  while (true) {
+    let raw = '';
+    try { raw = readFileSync(path, 'utf8'); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    const complete = raw.slice(0, raw.lastIndexOf('\n') + 1).trim();
+    const rows = complete ? complete.split('\n').map(JSON.parse) : [];
+    if (rows.length >= count) return rows;
+    assert(Date.now() < deadline, 'complete request-arrival evidence did not appear');
+    await delay(10);
+  }
+}
+
+test('request arrivals precede pending responses and bind reverse-order receipts without credentials', {timeout: 10000}, async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'server-parity-update-arrival-'));
+  const journal = join(directory, 'wire.jsonl'), arrivals = join(directory, 'arrivals.jsonl');
+  const firstBody = '{"request_id":"original-update","message":"λ","count":9007199254740993}';
+  const duplicateBody = '{"request_id":"original-update","message":"duplicate must not apply"}';
+  const pending = [];
+  const upstream = http.createServer((request, response) => {
+    const chunks = [];
+    request.on('data', chunk => chunks.push(chunk));
+    request.on('end', () => pending.push({body: Buffer.concat(chunks).toString(), response,
+      authorization: request.headers.authorization}));
+  });
+  upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening');
+  const proxy = spawn(process.execPath, [new URL('../../scripts/conformance/server-parity/published-sdk-patch/observe-http.mjs', import.meta.url).pathname,
+    `http://127.0.0.1:${upstream.address().port}`, journal, '--forwarding-state'],
+    {env: {...process.env, DW_PARITY_HTTP_REQUEST_ARRIVALS: arrivals}, stdio: ['ignore', 'pipe', 'pipe']});
+  try {
+    const [ready] = await once(proxy.stdout, 'data'), url = ready.toString().trim() + '/api/workflows/original/update/set_payload';
+    const first = startGateRequest(url, firstBody, {authorization: 'Bearer disposable-arrival-only'});
+    await requestArrivalRows(arrivals, 1);
+    const duplicate = startGateRequest(url, duplicateBody);
+    const rows = await requestArrivalRows(arrivals, 2);
+    assert.deepEqual(rows.map(row => row.request_observation_id), [1, 2]);
+    assert.deepEqual(rows.map(row => row.request_body), [firstBody, duplicateBody]);
+    for (const row of rows) {
+      assert.equal(row.schema, 'durable-workflow.server-parity-http-request-arrival/v1');
+      assert.equal(row.method, 'POST');
+      assert.equal(row.path, '/api/workflows/original/update/set_payload');
+      assert.equal(row.request_body_complete, true);
+      assert.equal(row.upstream_request_started, true);
+      assert.equal(row.response_observed, false);
+      assert(!Object.hasOwn(row, 'status'), 'arrival must not fabricate a server receipt');
+      assert(!Object.hasOwn(row, 'response_body'));
+      assert(!Object.hasOwn(row, 'headers'));
+    }
+    assert.equal(existsSync(journal), false, 'response journal stays empty while both calls are pending');
+    const deadline = Date.now() + 2000;
+    while (pending.length !== 2) {assert(Date.now() < deadline); await delay(10);}
+    assert.deepEqual(pending.map(row => row.body), [firstBody, duplicateBody]);
+    assert.equal(pending[0].authorization, 'Bearer disposable-arrival-only');
+    assert(!readFileSync(arrivals, 'utf8').includes('disposable-arrival-only'));
+    pending[1].response.end('{"result":"second"}');
+    assert.equal((await duplicate).bytes.toString(), '{"result":"second"}');
+    pending[0].response.end('{"result":"first"}');
+    assert.equal((await first).bytes.toString(), '{"result":"first"}');
+    const wire = readFileSync(journal, 'utf8').trim().split('\n').map(JSON.parse);
+    assert(!readFileSync(journal, 'utf8').includes('disposable-arrival-only'));
+    assert.deepEqual(wire.map(row => row.request_observation_id), [2, 1]);
+    for (const row of wire) {
+      assert.equal(row.request_body, rows.find(arrival => arrival.request_observation_id === row.request_observation_id).request_body);
+      assert.equal(row.status, 200);
+      assert.equal(row.client_cancelled, false);
+    }
+  } finally {
+    const closed = once(proxy, 'close'); proxy.kill(); await closed;
+    upstream.closeAllConnections(); await new Promise(resolve => upstream.close(resolve));
+    rmSync(directory, {recursive: true});
+  }
+});
+
+test('cancelled forwarded request keeps arrival correlation without inventing acceptance', {timeout: 10000}, async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'server-parity-update-cancel-'));
+  const journal = join(directory, 'wire.jsonl'), arrivals = join(directory, 'arrivals.jsonl');
+  const upstream = http.createServer(request => request.resume());
+  upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening');
+  const proxy = spawn(process.execPath, [new URL('../../scripts/conformance/server-parity/published-sdk-patch/observe-http.mjs', import.meta.url).pathname,
+    `http://127.0.0.1:${upstream.address().port}`, journal, '--forwarding-state'],
+    {env: {...process.env, DW_PARITY_HTTP_REQUEST_ARRIVALS: arrivals}, stdio: ['ignore', 'pipe', 'pipe']});
+  let client;
+  try {
+    const [ready] = await once(proxy.stdout, 'data');
+    client = http.request(ready.toString().trim() + '/api/workflows/original/update/set_payload', {method: 'POST'});
+    client.on('error', () => {}); client.end('{"request_id":"cancelled-update"}');
+    const [arrival] = await requestArrivalRows(arrivals, 1);
+    client.destroy();
+    const [wire] = await requestArrivalRows(journal, 1);
+    assert.equal(wire.request_observation_id, arrival.request_observation_id);
+    assert.equal(wire.request_body, arrival.request_body);
+    assert.equal(wire.status, 0); assert.equal(wire.client_cancelled, true);
+    assert.equal(wire.request_body_complete, true); assert.equal(wire.upstream_request_started, true);
+    assert.equal(wire.response_body, ''); assert.equal(wire.response_bytes_base64, '');
+    assert.equal(arrival.response_observed, false);
+    assert(!Object.hasOwn(arrival, 'status'));
+  } finally {
+    client?.destroy();
+    const closed = once(proxy, 'close'); proxy.kill(); await closed;
+    upstream.closeAllConnections(); await new Promise(resolve => upstream.close(resolve));
+    rmSync(directory, {recursive: true});
+  }
+});
+
+test('oversized request-arrival evidence fails within its byte budget', {timeout: 10000}, async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'server-parity-update-budget-'));
+  const journal = join(directory, 'wire.jsonl'), arrivals = join(directory, 'arrivals.jsonl');
+  let upstreamRequests = 0;
+  const upstream = http.createServer(request => {upstreamRequests++; request.resume();});
+  upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening');
+  const proxy = spawn(process.execPath, [new URL('../../scripts/conformance/server-parity/published-sdk-patch/observe-http.mjs', import.meta.url).pathname,
+    `http://127.0.0.1:${upstream.address().port}`, journal, '--forwarding-state'],
+    {env: {...process.env, DW_PARITY_HTTP_REQUEST_ARRIVALS: arrivals}, stdio: ['ignore', 'pipe', 'pipe']});
+  let client, stderr = '';
+  proxy.stderr.on('data', bytes => stderr += bytes.toString());
+  try {
+    const [ready] = await once(proxy.stdout, 'data');
+    const closed = once(proxy, 'close');
+    client = http.request(ready.toString().trim() + '/api/workflows/original/update/set_payload', {method: 'POST'});
+    client.on('error', () => {}); client.end('x'.repeat(5 * 1024 * 1024));
+    const [code] = await closed;
+    assert.notEqual(code, 0);
+    assert.match(stderr, /Request-arrival journal exceeds its bounded fixture budget/);
+    assert.equal(upstreamRequests, 0, 'oversized evidence is refused before forwarding the operation');
+    assert.equal(existsSync(arrivals), false, 'oversized body cannot produce a qualifying arrival record');
+  } finally {
+    client?.destroy();
+    if (proxy.exitCode === null) {const closed = once(proxy, 'close'); proxy.kill(); await closed;}
+    upstream.closeAllConnections(); await new Promise(resolve => upstream.close(resolve));
     rmSync(directory, {recursive: true});
   }
 });

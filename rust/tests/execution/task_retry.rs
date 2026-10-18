@@ -18,7 +18,7 @@ async fn report(app: &Router, task: &Value, body: Value) -> (StatusCode, Value) 
     .await
 }
 
-async fn rows(database: &TestDatabase, sql: &'static str) -> i64 {
+pub(super) async fn rows(database: &TestDatabase, sql: &'static str) -> i64 {
     match database {
         TestDatabase::Sqlite(dir) => {
             let pool = sqlx::SqlitePool::connect(&format!(
@@ -249,6 +249,80 @@ async fn replay_failures_and_invalid_reports_leave_the_original_lease_usable() {
 }
 
 #[tokio::test]
+async fn published_rust_replay_reports_keep_absent_fields_and_require_original_task_repair() {
+    for (index, reason) in [
+        "version_marker_incompatible_range",
+        "activity_retry_policy_mismatch",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let database = TestDatabase::new().await;
+        let first = database.open().await.unwrap();
+        let app = router(first.clone());
+        register(&app, "rust-replay-worker", json!(["echo"]), json!([])).await;
+        let started = start(&app, &format!("rust-replay-{index}")).await;
+        let task = poll(&app, "rust-replay-worker", "workflow").await;
+        let prefix = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+        let body = json!({"lease_owner":task["lease_owner"],"workflow_task_attempt":task["workflow_task_attempt"],
+            "failure":{"type":"RustWorkflowTaskFailure",
+                "message":format!("non-deterministic workflow replay ({reason}) at sequence Some(1): recorded workflow command differs from current code")}});
+        let accepted = report(&app, &task, body.clone()).await;
+        assert_eq!(accepted.0, StatusCode::OK, "{}", accepted.1);
+        assert_eq!(accepted.1["next_task_id"], Value::Null);
+        assert_eq!(report(&app, &task, body).await.0, StatusCode::CONFLICT);
+        assert_eq!(
+            poll(&app, "rust-replay-worker", "workflow").await,
+            Value::Null
+        );
+        assert_eq!(
+            run_history(&app, &started["workflow_id"], &started["run_id"]).await,
+            prefix
+        );
+        drop(app);
+        first.close().await;
+
+        let second = database.open().await.unwrap();
+        let app = router(second.clone());
+        let path = format!(
+            "/api/workflows/{}/runs/{}",
+            started["workflow_id"].as_str().unwrap(),
+            started["run_id"].as_str().unwrap()
+        );
+        let debug = request(&app, "GET", &format!("{path}/debug"), Value::Null).await;
+        assert_eq!(debug.0, StatusCode::OK, "{}", debug.1);
+        let failure = &debug.1["latest_workflow_task_failure"];
+        assert_eq!(failure["type"], "RustWorkflowTaskFailure");
+        assert_eq!(failure["replay_blocked"], true);
+        assert!(failure.get("reason").is_none());
+        assert!(failure.get("sequence").is_none());
+        assert_eq!(
+            poll(&app, "rust-replay-worker", "workflow").await,
+            Value::Null
+        );
+        assert_eq!(
+            request(&app, "POST", &format!("{path}/repair"), json!({}))
+                .await
+                .0,
+            StatusCode::OK
+        );
+        let repaired = poll(&app, "rust-replay-worker", "workflow").await;
+        assert_eq!(repaired["task_id"], task["task_id"]);
+        assert_eq!(repaired["workflow_task_attempt"], 2);
+        assert_eq!(finish_task(&app, &repaired, json!([{"type":"complete_workflow","result":envelope(Payload::Long(9007199254740993))}])).await.0, StatusCode::OK);
+        let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+        assert_eq!(
+            &history.as_array().unwrap()[..2],
+            prefix.as_array().unwrap()
+        );
+        assert_eq!(history[2]["event_type"], "RepairRequested");
+        assert_eq!(history[3]["event_type"], "WorkflowCompleted");
+        second.close().await;
+        database.remove().await;
+    }
+}
+
+#[tokio::test]
 async fn worker_reported_range_failure_requires_explicit_original_task_repair_across_restarts() {
     let database = TestDatabase::new().await;
     let first = database.open().await.unwrap();
@@ -385,10 +459,25 @@ async fn worker_reported_range_failure_requires_explicit_original_task_repair_ac
         .execute("UPDATE workflow_runs SET last_command_sequence=1")
         .await;
     database.execute(exhausted_repairs).await;
-    assert_eq!(request(&app, "POST", &repair_path, json!({})).await.1["reason"], "repair_count_exhausted");
-    assert_eq!(rows(&database, "SELECT COUNT(*) FROM workflow_tasks WHERE status='failed' AND lease_expires_at IS NULL").await, 1);
-    assert_eq!(run_history(&app, &started["workflow_id"], &started["run_id"]).await, prefix);
-    database.execute("UPDATE workflow_tasks SET repair_count=0").await;
+    assert_eq!(
+        request(&app, "POST", &repair_path, json!({})).await.1["reason"],
+        "repair_count_exhausted"
+    );
+    assert_eq!(
+        rows(
+            &database,
+            "SELECT COUNT(*) FROM workflow_tasks WHERE status='failed' AND lease_expires_at IS NULL"
+        )
+        .await,
+        1
+    );
+    assert_eq!(
+        run_history(&app, &started["workflow_id"], &started["run_id"]).await,
+        prefix
+    );
+    database
+        .execute("UPDATE workflow_tasks SET repair_count=0")
+        .await;
     // Match the published SDK: JSON content type, but zero body bytes.
     let req = Request::builder()
         .method("POST")

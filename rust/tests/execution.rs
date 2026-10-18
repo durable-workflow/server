@@ -22,6 +22,12 @@ mod schedules;
 #[path = "execution/visibility.rs"]
 mod visibility;
 
+#[path = "execution/memos.rs"]
+mod memos;
+
+#[path = "execution/continuations.rs"]
+mod continuations;
+
 #[path = "execution/admission.rs"]
 mod admission;
 
@@ -30,6 +36,12 @@ mod role_tokens;
 
 #[path = "execution/namespaces.rs"]
 mod namespaces;
+
+#[path = "execution/named_timers.rs"]
+mod named_timers;
+
+#[path = "execution/selected_run_signals.rs"]
+mod selected_run_signals;
 
 #[path = "execution/worker_incarnations.rs"]
 mod worker_incarnations;
@@ -42,6 +54,12 @@ mod worker_pressure;
 
 #[path = "execution/version_markers.rs"]
 mod version_markers;
+
+#[path = "execution/activity_deadlines.rs"]
+mod activity_deadlines;
+
+#[path = "execution/activity_results.rs"]
+mod activity_results;
 
 #[path = "execution/waiting_history.rs"]
 mod waiting_history;
@@ -57,6 +75,14 @@ mod condition_occurrences;
 
 #[path = "execution/query_arguments.rs"]
 mod query_arguments;
+#[path = "execution/query_authority.rs"]
+mod query_authority;
+
+#[path = "execution/cross_kind_poll.rs"]
+mod cross_kind_poll;
+
+#[path = "execution/external_payloads.rs"]
+mod external_payloads;
 
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
@@ -230,6 +256,96 @@ impl TestDatabase {
         }
     }
 
+    async fn timer_task_states(&self, run: &Value) -> Vec<(String, String)> {
+        let query = "SELECT id,status FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='timer' ORDER BY id";
+        let run = run.as_str().unwrap();
+        match self {
+            Self::Sqlite(dir) => {
+                let pool = sqlx::SqlitePool::connect(&format!(
+                    "sqlite://{}",
+                    dir.path().join("runtime.sqlite").display()
+                ))
+                .await
+                .unwrap();
+                let rows = sqlx::query_as(query)
+                    .bind(run)
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+                rows
+            }
+            Self::Postgres { options, .. } => {
+                let pool = sqlx::postgres::PgPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
+                let rows = sqlx::query_as(query)
+                    .bind(run)
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+                rows
+            }
+            Self::MySql { options, .. } => {
+                let pool = sqlx::mysql::MySqlPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
+                let rows = sqlx::query_as("SELECT id,status FROM workflow_tasks WHERE workflow_run_id=? AND task_type='timer' ORDER BY id").bind(run).fetch_all(&pool).await.unwrap();
+                pool.close().await;
+                rows
+            }
+        }
+    }
+
+    async fn update_failure_count(&self, command: &str, failure: &str) -> i64 {
+        let query = "SELECT COUNT(*) FROM workflow_failures WHERE source_id=$1 AND id=$2 AND source_kind='workflow_command' AND propagation_kind='update' AND failure_category='application' AND non_retryable=true AND handled=false";
+        match self {
+            Self::Sqlite(dir) => {
+                let pool = sqlx::SqlitePool::connect(&format!(
+                    "sqlite://{}",
+                    dir.path().join("runtime.sqlite").display()
+                ))
+                .await
+                .unwrap();
+                let count = sqlx::query_scalar(query)
+                    .bind(command)
+                    .bind(failure)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+                count
+            }
+            Self::Postgres { options, .. } => {
+                let pool = sqlx::postgres::PgPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
+                let count = sqlx::query_scalar(query)
+                    .bind(command)
+                    .bind(failure)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+                count
+            }
+            Self::MySql { options, .. } => {
+                let pool = sqlx::mysql::MySqlPoolOptions::new()
+                    .connect_with(options.as_ref().clone())
+                    .await
+                    .unwrap();
+                let count = sqlx::query_scalar("SELECT COUNT(*) FROM workflow_failures WHERE source_id=? AND id=? AND source_kind='workflow_command' AND propagation_kind='update' AND failure_category='application' AND non_retryable=true AND handled=false")
+                    .bind(command).bind(failure).fetch_one(&pool).await.unwrap();
+                pool.close().await;
+                count
+            }
+        }
+    }
+
     async fn cancellation_failure_message(&self, failure: &str) -> String {
         let query = "SELECT message FROM workflow_failures WHERE id=$1";
         match self {
@@ -278,7 +394,7 @@ impl TestDatabase {
         }
     }
 
-    async fn execute(&self, statement: &'static str) {
+    async fn execute(&self, statement: impl sqlx::SqlSafeStr) {
         match self {
             Self::Sqlite(dir) => {
                 let pool = sqlx::SqlitePool::connect(&format!(
@@ -303,7 +419,9 @@ impl TestDatabase {
                     .connect_with(options.as_ref().clone())
                     .await
                     .unwrap();
-                sqlx::query(statement).execute(&pool).await.unwrap();
+                // MySQL excludes CREATE TRIGGER from binary prepared
+                // statements. Test setup has no bindings and uses text SQL.
+                sqlx::raw_sql(statement).execute(&pool).await.unwrap();
                 pool.close().await;
             }
         }
@@ -1391,6 +1509,14 @@ async fn updates_preserve_original_receipts_and_fence_recovered_tasks_across_poo
     let second = database.open().await.unwrap();
     let a = router(first.clone());
     let b = router(second.clone());
+    let discovery = request(&a, "GET", "/api/cluster/info", Value::Null).await;
+    assert_eq!(discovery.0, StatusCode::OK);
+    assert_eq!(
+        discovery.1["control_plane"]["request_contract"]["operations"]["update"]["fields"]["wait_for"]
+            ["canonical_values"],
+        json!(["accepted", "completed"]),
+        "ordinary published clients discover the implemented update wait stages"
+    );
     update_worker(&a, "update-a").await;
     update_worker(&b, "update-b").await;
     let started = start(&a, "durable-update").await;
@@ -1668,6 +1794,252 @@ async fn updates_preserve_original_receipts_and_fence_recovered_tasks_across_poo
 }
 
 #[tokio::test]
+async fn failed_updates_preserve_terminal_identity_and_parent_continuation_after_reopen() {
+    let database = TestDatabase::new().await;
+    let first = database.open().await.unwrap();
+    let second = database.open().await.unwrap();
+    let a = router(first.clone());
+    let b = router(second.clone());
+    update_worker(&a, "failure-author").await;
+    let started = start(&a, "failed-update-parent").await;
+    open_update_wait(&a, "failure-author").await;
+    let path = "/api/workflows/failed-update-parent/update/set";
+    let history_path = format!(
+        "/api/workflows/failed-update-parent/runs/{}/history",
+        started["run_id"].as_str().unwrap()
+    );
+    let input = json!({"input":envelope(Payload::Array(vec![Payload::Long(9007199254740993)])),
+        "request_id":"failed-original","wait_for":"accepted"});
+    let admitted = request(&a, "POST", path, input.clone()).await;
+    assert_eq!(admitted.0, StatusCode::ACCEPTED);
+    let before = request(&a, "GET", &history_path, Value::Null).await.1;
+    let mut duplicate = input.clone();
+    duplicate["input"] = envelope(Payload::Array(vec![Payload::String(
+        "changed duplicate".into(),
+    )]));
+    assert_eq!(
+        request(&b, "POST", path, duplicate.clone()).await.1["update_id"],
+        admitted.1["update_id"]
+    );
+    assert_eq!(
+        request(&b, "GET", &history_path, Value::Null).await.1,
+        before
+    );
+    let task = poll(&a, "failure-author", "workflow").await;
+    let task_path = format!(
+        "/api/worker/workflow-tasks/{}/complete",
+        task["task_id"].as_str().unwrap()
+    );
+    let failed = completion(
+        &task,
+        json!([{"type":"fail_update","update_id":admitted.1["update_id"],
+        "message":"original failure λ","exception_type":"ValueError","exception_class":"builtins.ValueError","non_retryable":true,
+        "result":"ignored by PHP failure normalization","extra":{"ignored":true}}]),
+    );
+    for (field, value) in [
+        ("message", Value::Null),
+        ("message", json!("\u{0000} \t")),
+        ("update_id", json!("foreign")),
+        ("message", json!([])),
+    ] {
+        let mut wrong = failed.clone();
+        wrong["commands"][0][field] = value;
+        assert!(!request(&b, "POST", &task_path, wrong).await.0.is_success());
+        assert_eq!(
+            request(&b, "GET", &history_path, Value::Null).await.1,
+            before
+        );
+    }
+    let mut stale = failed.clone();
+    stale["workflow_task_attempt"] = json!(99);
+    assert_eq!(
+        request(&b, "POST", &task_path, stale).await.0,
+        StatusCode::CONFLICT
+    );
+    duplicate["wait_for"] = json!("completed");
+    duplicate["wait_timeout_seconds"] = json!(5);
+    let waiting = {
+        let app = b.clone();
+        let body = duplicate.clone();
+        tokio::spawn(async move { request(&app, "POST", path, body).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    assert!(
+        !waiting.is_finished(),
+        "failed result is not invented before its original author completes"
+    );
+    let failed_ack = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        request(&a, "POST", &task_path, failed.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(failed_ack.0, StatusCode::OK, "{}", failed_ack.1);
+    let receipt = waiting.await.unwrap();
+    assert_eq!(receipt.0, StatusCode::UNPROCESSABLE_ENTITY, "{}", receipt.1);
+    assert_eq!(receipt.1["update_status"], "failed");
+    assert_eq!(receipt.1["outcome"], "update_failed");
+    assert_eq!(receipt.1["reason"], Value::Null);
+    assert_eq!(receipt.1["command_status"], "accepted");
+    assert_eq!(receipt.1["workflow_sequence"], 2);
+    assert_eq!(receipt.1["failure_message"], "original failure λ");
+    assert_eq!(receipt.1["result_envelope"], Value::Null);
+    for key in [
+        "workflow_id",
+        "run_id",
+        "command_id",
+        "command_status",
+        "update_id",
+        "update_status",
+        "outcome",
+        "reason",
+    ] {
+        assert_eq!(receipt.1["control_plane"][key], receipt.1[key]);
+    }
+    let failure_id = receipt.1["failure_id"].as_str().unwrap();
+    assert_eq!(
+        database
+            .update_failure_count(admitted.1["command_id"].as_str().unwrap(), failure_id)
+            .await,
+        1
+    );
+    let completed_history = request(&a, "GET", &history_path, Value::Null).await.1;
+    assert_eq!(
+        completed_history["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| event["event_type"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "StartAccepted",
+            "WorkflowStarted",
+            "SignalWaitOpened",
+            "UpdateAccepted",
+            "UpdateCompleted",
+            "MessageCursorAdvanced"
+        ]
+    );
+    let failure_event = &completed_history["events"][4]["payload"];
+    assert_eq!(failure_event["failure_id"], receipt.1["failure_id"]);
+    assert_eq!(failure_event["exception_class"], "builtins.ValueError");
+    assert_eq!(failure_event["exception_type"], "ValueError");
+    assert_eq!(failure_event["exception"]["message"], "original failure λ");
+    assert_eq!(completed_history["events"][5]["payload"]["new_position"], 1);
+    assert_eq!(
+        request(&a, "POST", &task_path, failed.clone()).await.1["recorded"],
+        false
+    );
+    let mut changed = failed;
+    changed["commands"][0]["message"] = json!("another failure");
+    assert_eq!(
+        request(&b, "POST", &task_path, changed).await.0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        request(&b, "GET", &history_path, Value::Null).await.1,
+        completed_history
+    );
+    first.close().await;
+    second.close().await;
+    let reopened = database.open().await.unwrap();
+    let app = router(reopened.clone());
+    let repeated = request(&app, "POST", path, duplicate.clone()).await;
+    assert_eq!(repeated.0, StatusCode::UNPROCESSABLE_ENTITY);
+    for key in [
+        "command_id",
+        "update_id",
+        "failure_id",
+        "failure_message",
+        "accepted_at",
+        "applied_at",
+        "closed_at",
+        "workflow_sequence",
+    ] {
+        assert_eq!(
+            repeated.1[key], receipt.1[key],
+            "original failed receipt {key}"
+        );
+    }
+    assert_eq!(
+        request(&app, "GET", &history_path, Value::Null).await.1,
+        completed_history
+    );
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            "/api/workflows/failed-update-parent",
+            Value::Null
+        )
+        .await
+        .1["status"],
+        "waiting"
+    );
+    update_worker(&app, "replacement-author").await;
+    let mut good = input;
+    good["request_id"] = json!("later-good-update");
+    let admitted_good = request(&app, "POST", path, good).await;
+    assert_eq!(admitted_good.0, StatusCode::ACCEPTED);
+    let good_task = poll(&app, "replacement-author", "workflow").await;
+    assert_eq!(good_task["history_events"].as_array().unwrap().len(), 7);
+    assert_eq!(
+        good_task["history_events"][4]["payload"]["failure_id"],
+        receipt.1["failure_id"]
+    );
+    let good_path = format!(
+        "/api/worker/workflow-tasks/{}/complete",
+        good_task["task_id"].as_str().unwrap()
+    );
+    assert_eq!(request(&app, "POST", &good_path, completion(&good_task, json!([{"type":"complete_update",
+        "update_id":admitted_good.1["update_id"],"result":envelope(Payload::Long(9007199254740995))}]))).await.0, StatusCode::OK);
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            "/api/workflows/failed-update-parent/signal/finish",
+            json!({"input":envelope(Payload::Array(vec![Payload::Long(1)]))})
+        )
+        .await
+        .0,
+        StatusCode::ACCEPTED
+    );
+    let final_task = poll(&app, "replacement-author", "workflow").await;
+    let final_path = format!(
+        "/api/worker/workflow-tasks/{}/complete",
+        final_task["task_id"].as_str().unwrap()
+    );
+    assert_eq!(request(&app, "POST", &final_path, completion(&final_task,
+        json!([{"type":"complete_workflow","result":envelope(Payload::Long(9007199254740995))}]))).await.0, StatusCode::OK);
+    let parent = request(
+        &app,
+        "GET",
+        "/api/workflows/failed-update-parent",
+        Value::Null,
+    )
+    .await
+    .1;
+    assert_eq!(parent["status"], "completed");
+    assert_eq!(parent["run_id"], started["run_id"]);
+    assert_eq!(
+        parent["output_envelope"],
+        envelope(Payload::Long(9007199254740995))
+    );
+    assert_eq!(
+        database
+            .update_failure_count(admitted.1["command_id"].as_str().unwrap(), failure_id)
+            .await,
+        1
+    );
+    assert_eq!(
+        request(&app, "POST", path, duplicate).await.1["failure_id"],
+        receipt.1["failure_id"]
+    );
+    reopened.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
 async fn updates_bound_durable_inventory_and_preserve_accepted_work_after_wait_timeout() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
@@ -1750,6 +2122,19 @@ async fn await_query(app: &Router, worker: &str) -> Value {
     })
     .await
     .expect("query must be admitted without holding the database pool")
+}
+
+fn assert_query_replay(first: &Value, repeated: Value) {
+    let initial =
+        chrono::DateTime::parse_from_rfc3339(first["server_time"].as_str().unwrap()).unwrap();
+    let current =
+        chrono::DateTime::parse_from_rfc3339(repeated["server_time"].as_str().unwrap()).unwrap();
+    assert!(current >= initial);
+    let mut replay = repeated;
+    // Only this observation clock is nondeterministic. Original query timing,
+    // lease, identities, values and every business-history field remain exact.
+    replay["server_time"] = first["server_time"].clone();
+    assert_eq!(replay, *first);
 }
 
 #[tokio::test]
@@ -1848,7 +2233,7 @@ async fn queries_fence_recovered_leases_across_pools_without_mutating_the_run() 
     );
     assert_eq!(projected, before["events"]);
     assert_eq!(claim["query_arguments"], input["input"]);
-    assert_eq!(poll(&a, "query-a", "query").await, claim);
+    assert_query_replay(&claim, poll(&a, "query-a", "query").await);
     assert!(poll(&b, "query-b", "query").await.is_null());
     let finish_path = format!(
         "/api/worker/query-tasks/{}/complete",
@@ -1860,7 +2245,7 @@ async fn queries_fence_recovered_leases_across_pools_without_mutating_the_run() 
     wrong["lease_owner"] = json!("query-b");
     assert_eq!(
         request(&b, "POST", &finish_path, wrong).await.1["reason"],
-        "query_task_lease_owner_mismatch"
+        "lease_owner_mismatch"
     );
     let mut invalid = completion.clone();
     invalid["result_envelope"]["blob"] = json!("not-avro");
@@ -1869,15 +2254,15 @@ async fn queries_fence_recovered_leases_across_pools_without_mutating_the_run() 
         "invalid_query_result"
     );
     match &database {
-        TestDatabase::Sqlite(_) => database.execute("UPDATE dw_query_cache SET value=json_set(value,'$.lease_until',0) WHERE value LIKE '%\"status\":\"leased\"%'").await,
-        TestDatabase::Postgres{..} => database.execute("UPDATE dw_query_cache SET value=jsonb_set(value::jsonb,'{lease_until}','0')::text WHERE value LIKE '%\"status\":\"leased\"%'").await,
-        TestDatabase::MySql{..} => database.execute("UPDATE dw_query_cache SET value=JSON_SET(value,'$.lease_until',0) WHERE value LIKE '%\"status\":\"leased\"%'").await,
+        TestDatabase::Sqlite(_) => database.execute("UPDATE dw_query_cache SET value=json_set(value,'$.lease_expires_at','2000-01-01T00:00:00.000000Z') WHERE value LIKE '%\"status\":\"leased\"%'").await,
+        TestDatabase::Postgres{..} => database.execute("UPDATE dw_query_cache SET value=jsonb_set(value::jsonb,'{lease_expires_at}','\"2000-01-01T00:00:00.000000Z\"')::text WHERE value LIKE '%\"status\":\"leased\"%'").await,
+        TestDatabase::MySql{..} => database.execute("UPDATE dw_query_cache SET value=JSON_SET(value,'$.lease_expires_at','2000-01-01T00:00:00.000000Z') WHERE value LIKE '%\"status\":\"leased\"%'").await,
     }
     assert_eq!(
         request(&a, "POST", &finish_path, completion.clone())
             .await
             .1["reason"],
-        "query_task_lease_expired"
+        "lease_expired"
     );
     let recovered = await_query(&a, "query-b").await;
     assert_eq!(recovered["query_task_id"], claim["query_task_id"]);
@@ -1887,7 +2272,7 @@ async fn queries_fence_recovered_leases_across_pools_without_mutating_the_run() 
         request(&a, "POST", &finish_path, completion.clone())
             .await
             .1["reason"],
-        "query_task_lease_owner_mismatch"
+        "lease_owner_mismatch"
     );
     let mut current = completion.clone();
     current["lease_owner"] = json!("query-b");
@@ -1903,10 +2288,9 @@ async fn queries_fence_recovered_leases_across_pools_without_mutating_the_run() 
     let outcome = waiting.await.unwrap();
     assert_eq!(outcome.0, StatusCode::OK, "{}", outcome.1);
     assert_eq!(outcome.1["result_envelope"], result);
-    assert_eq!(
-        request(&b, "POST", &finish_path, current).await.1["reason"],
-        "query_task_not_leased"
-    );
+    let duplicate = request(&b, "POST", &finish_path, current).await;
+    assert_eq!(duplicate.0, StatusCode::OK, "{}", duplicate.1);
+    assert_eq!(duplicate.1["recorded"], false);
     assert_eq!(
         request(&a, "GET", &history_path, Value::Null).await.1,
         before
@@ -2924,6 +3308,8 @@ async fn cooperative_delivery_cleanup_and_original_deadline_survive_fresh_runtim
             assert_eq!(completed.0, StatusCode::OK, "{}", completed.1);
         }
         let prefix = run_history(&app_b, &workflow, &run).await;
+        let timer_tasks = database.timer_task_states(&run).await;
+        assert_eq!(timer_tasks.len(), usize::from(phase == "pending_timer"));
         let control = format!(
             "/api/workflows/cleanup-root/runs/{}/request-cancellation",
             run.as_str().unwrap()
@@ -2962,6 +3348,14 @@ async fn cooperative_delivery_cleanup_and_original_deadline_survive_fresh_runtim
         let delivered = request_protocol(&app_a, "POST", &endpoint, delivery.clone(), "1.20").await;
         assert_eq!(delivered.0, StatusCode::OK, "{}", delivered.1);
         assert_eq!(delivered.1["delivered"], true);
+        assert_eq!(
+            database.timer_task_states(&run).await,
+            timer_tasks
+                .into_iter()
+                .map(|(id, _)| (id, "cancelled".to_owned()))
+                .collect::<Vec<_>>(),
+            "cancellation must retire the same original timer task at delivery"
+        );
         let canonical_history = run_history(&app_a, &workflow, &run).await;
         let worker_history = request_protocol(&app_a, "POST",
             &format!("/api/worker/workflow-tasks/{}/history", task["task_id"].as_str().unwrap()),
@@ -4366,7 +4760,7 @@ async fn authentication_precedes_protocol_and_namespace_checks() {
         .unwrap();
     assert_eq!(namespace.status(), StatusCode::NOT_FOUND);
     let unsupported = request(&app,"POST","/api/workflows",json!({"workflow_id":"unsupported","workflow_type":"echo",
-        "task_queue":"test","input":envelope(Payload::Null),"memo":{"ignored":"must not be accepted"}})).await;
+        "task_queue":"test","input":envelope(Payload::Null),"search_attributes":{"ignored":"must not be accepted"}})).await;
     assert_eq!(unsupported.0, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(
         request(&app, "GET", "/api/workflows/unsupported", Value::Null)

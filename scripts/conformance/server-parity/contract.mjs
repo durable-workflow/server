@@ -20,6 +20,16 @@ import {checkSdkChildDirection, checkSdkChildDirectionPackages} from './sdk-chil
 import {checkSdkTimerAuthor, checkSdkTimerAuthorPackages} from './sdk-timer-author-contract.mjs';
 import {checkSdkSignalDirection, checkSdkSignalDirectionPackages} from './sdk-signal-direction-contract.mjs';
 import {checkSdkQueryDirection, checkSdkQueryDirectionPackages} from './sdk-query-direction-contract.mjs';
+import {checkSdkUpdateDirection, checkSdkUpdateDirectionPackages} from './sdk-update-direction-contract.mjs';
+import {checkNamespaceSignalPair} from './sdk-namespace-signal-contract.mjs';
+import {checkSelectedRunSignalPair} from './sdk-selected-run-signal-contract.mjs';
+import {checkCorrectedMarkers, checkCorrectedMarkerPackages} from './corrected-marker-contract.mjs';
+import {checkCorrectedRange, checkCorrectedRangePackages} from './corrected-range-contract.mjs';
+import {checkCorrectedClock} from './corrected-clock-contract.mjs';
+import {checkActivityDeadlines,checkActivityDeadlinePackages} from './activity-deadline-contract.mjs';
+import {checkMemoRecord} from './memo-contract.mjs';
+import {checkContinueRecord} from './continue-contract.mjs';
+import {checkActivityDeadlineReceipts, checkActivityDeadlineReceiptPackages} from './activity-deadline-receipts-contract.mjs';
 
 export function instantNanoseconds(value) {
   const shape = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.(\d{1,9}))?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
@@ -33,7 +43,26 @@ export function instantNanoseconds(value) {
 
 // Only this fixture's declared semantics are projected. The full observation
 // remains in the recording, including implementation metadata and timestamps.
-export function checkObservation(fixture, observation, workflowId) {
+export function checkObservation(fixture, observation, workflowId, artifacts) {
+  if (fixture.continuation) {
+    assert.equal(observation.workflow_id, workflowId);
+    const record=observation.continuation;
+    checkContinueRecord(record,fixture,artifacts,observation.mode);
+    return {workflow_id:workflowId,workflow_type:fixture.workflow_type,namespace:'default',
+      typed_output:fixture.typed_value,typed_memo:record.phases.successor.typed_memo,
+      phases:4,activity_invocations:1,run_count:2,continuation_count:1};
+  }
+  if (fixture.memo_replay) {
+    assert.equal(observation.workflow_id, workflowId);
+    return checkMemoRecord(observation.memo_replay, fixture, artifacts, observation.mode);
+  }
+  if (fixture.activity_deadline_receipts) return checkActivityDeadlineReceipts(fixture, observation, workflowId, instantNanoseconds);
+  if (fixture.activity_deadline_authority) return checkActivityDeadlines(fixture, observation, workflowId);
+  if (fixture.corrected_range) return checkCorrectedRange(fixture, observation, workflowId, instantNanoseconds);
+  if (fixture.corrected_markers?.python_clock) return checkCorrectedClock(fixture, observation, workflowId);
+  if (fixture.corrected_markers) return checkCorrectedMarkers(fixture, observation, workflowId);
+  if (fixture.selected_run_signal_pair) return checkSelectedRunSignalPair(fixture, observation, workflowId, checkObservation);
+  if (fixture.namespace_signal_pair) return checkNamespaceSignalPair(fixture, observation, workflowId, checkObservation);
   const equal = (actual, expected, label) => assert.deepStrictEqual(actual, expected, label);
   const nonempty = (value, label) => assert.ok(typeof value === 'string' && value.length > 0, label);
   const scheduleId = fixture.schedule ? workflowId : null;
@@ -42,7 +71,7 @@ export function checkObservation(fixture, observation, workflowId) {
   nonempty(observation.run_id, 'run identity');
   equal(observation.workflow_type, fixture.workflow_type, 'registered workflow type');
   equal(observation.namespace, fixture.namespace ?? 'default', 'namespace');
-  equal(observation.task_queue, fixture.sdk_query_direction?.task_queue ?? fixture.sdk_signal_direction?.task_queue ?? fixture.sdk_timer_author?.task_queue ?? fixture.sdk_child_direction?.parent_queue ?? fixture.sdk_direction?.workflow_queue ?? 'server-parity-v1', 'task queue');
+  equal(observation.task_queue, fixture.sdk_update_direction?.task_queue ?? fixture.sdk_query_direction?.task_queue ?? fixture.sdk_signal_direction?.task_queue ?? fixture.sdk_timer_author?.task_queue ?? fixture.sdk_child_direction?.parent_queue ?? fixture.sdk_direction?.workflow_queue ?? 'server-parity-v1', 'task queue');
   const cancelled = Boolean(fixture.immediate_cancellation || fixture.cooperative_cancellation);
   equal(observation.status, cancelled ? 'cancelled' : 'completed', 'actual durable terminal state');
   equal(observation.payload_codec, 'avro', 'payload codec');
@@ -109,6 +138,7 @@ export function checkObservation(fixture, observation, workflowId) {
   const sdkTimerAuthor = checkSdkTimerAuthor(fixture, observation, workflowId);
   const sdkSignalDirection = checkSdkSignalDirection(fixture, observation, workflowId);
   const sdkQueryDirection = checkSdkQueryDirection(fixture, observation, workflowId);
+  const sdkUpdateDirection = checkSdkUpdateDirection(fixture, observation, workflowId);
   const cooperative = fixture.cooperative_cancellation
     ? checkCooperativeCancellation(fixture, observation, identities, projectedEvents, instantNanoseconds) : null;
   if (fixture.child_cancellation) {
@@ -122,11 +152,15 @@ export function checkObservation(fixture, observation, workflowId) {
     const acceptedUpdates = events.filter(event => event.event_type === 'UpdateAccepted');
     const appliedUpdates = events.filter(event => event.event_type === 'UpdateApplied');
     const completedUpdates = events.filter(event => event.event_type === 'UpdateCompleted');
+    equal(acceptedUpdates.length, fixture.update_values.length, 'exact original update admissions');
+    equal(completedUpdates.length, fixture.update_values.length, 'exact original update completions');
+    equal(appliedUpdates.length, fixture.update_values.length - (fixture.sdk_update_failure ? 1 : 0), 'only successful updates apply');
     const signalSequence = events.find(event => event.event_type === 'SignalReceived').sequence;
     for (const [index, value] of fixture.update_values.entries()) {
       const update = observation.updates[index];
       const acceptedUpdate = acceptedUpdates[index];
-      const applied = appliedUpdates[index];
+      const failed = Boolean(fixture.sdk_update_failure && index === fixture.sdk_update_failure.failed_index);
+      const applied = appliedUpdates.find(event => event.payload.update_id === acceptedUpdate.payload.update_id);
       const completed = completedUpdates[index];
       const cursor = events[completed.sequence];
       const updateId = acceptedUpdate.payload.update_id;
@@ -142,9 +176,12 @@ export function checkObservation(fixture, observation, workflowId) {
       equal(update.typed_arguments, arguments_, 'exact submitted update argument types');
       equal(update.before.id ?? update.before.run_id, observation.run_id, 'update original waiting run');
       equal(update.before.status, 'waiting', 'update occurs during a durable wait');
-      for (const receipt of [update.accepted, update.duplicate_accepted]) {
+      const completedSdkReceipts = observation.mode === 'http' && fixture.sdk_update_direction;
+      const updateReceipts = completedSdkReceipts ? (failed ? update.failed_receipts : update.completed_receipts) : [update.accepted, update.duplicate_accepted];
+      if (completedSdkReceipts) equal(updateReceipts.length, 3, 'three real completed SDK update responses');
+      for (const receipt of updateReceipts) {
         equal(receipt.command_status ?? (receipt.accepted ? 'accepted' : 'rejected'), 'accepted', 'accepted update command');
-        equal(receipt.update_status, 'accepted', 'update acknowledgment precedes execution');
+        equal(receipt.update_status, completedSdkReceipts ? (failed ? 'failed' : 'completed') : 'accepted', 'actual requested update wait stage');
         equal(receipt.command_id, commandId, 'repeat request retains its original command');
         equal(receipt.update_id, updateId, 'repeat request retains its original update');
         equal(receipt.workflow_id, workflowId, 'update acknowledgment workflow');
@@ -155,26 +192,69 @@ export function checkObservation(fixture, observation, workflowId) {
       equal(update.history_after_result, update.history_before_result, 'completed duplicate has no durable effect');
       equal(update.history_after_acceptance.at(-1).payload.update_id, updateId, 'acknowledged update is durably accepted');
       equal(update.history_before_result.filter(event => event.event_type === 'UpdateCompleted').length, index + 1, 'result observes the correct completed update prefix');
-      for (const event of [acceptedUpdate, applied, completed]) {
+      for (const event of [acceptedUpdate, ...(failed ? [] : [applied]), completed]) {
         equal(event.payload.update_id, updateId, 'original update across lifecycle');
         equal(event.payload.workflow_command_id, commandId, 'original command across update lifecycle');
         equal(event.payload.workflow_instance_id, workflowId, 'update history workflow');
         equal(event.payload.workflow_run_id, observation.run_id, 'update history run');
         equal(event.payload.update_name, fixture.update_name, 'update history declaration');
       }
-      for (const event of [acceptedUpdate, applied]) {
+      for (const event of [acceptedUpdate, ...(failed ? [] : [applied])]) {
         equal(event.decoded.arguments, [value], 'durable original update arguments');
         equal(event.typed_decoded.arguments, arguments_, 'durable exact update argument types');
       }
-      assert.ok(Number.isInteger(applied.payload.sequence) && applied.payload.sequence > 0, 'update callback authoring position');
-      equal(completed.payload.sequence, applied.payload.sequence, 'update completion retains callback position');
-      assert.ok(acceptedUpdate.sequence < applied.sequence && applied.sequence < completed.sequence && completed.sequence < signalSequence, 'update lifecycle completes before finishing signal');
-      const result = {value, applied: index + 1};
-      const typedResult = {type: 'map', value: {value: fixture.typed_update_values[index], applied: {type: 'int64', value: String(index + 1)}}};
-      equal(update.result, result, 'completed repeat returns the original stateful update result');
-      equal(update.typed_result, typedResult, 'exact returned update result types');
-      equal(completed.decoded.result, result, 'durable update result');
-      equal(completed.typed_decoded.result, typedResult, 'durable exact update result types');
+      const applicationCount = index + 1 - (fixture.sdk_update_failure ? 1 : 0);
+      let typedResult;
+      if (failed) {
+        equal(applied, undefined, 'failed handler has no successful application event');
+        equal(completed.decoded.result, undefined, 'failed handler has no successful result');
+        equal(completed.typed_decoded.result, undefined, 'failed handler has no typed successful result');
+        assert.ok(acceptedUpdate.sequence < completed.sequence && completed.sequence < signalSequence, 'failure is durable before parent resumption');
+        nonempty(completed.payload.failure_id, 'durable failure identity');
+        identities.push(completed.payload.failure_id);
+        equal(new Set(identities).size, identities.length, 'distinct failure/update/command/run identities');
+        equal(completed.payload.failure_category, 'application', 'handler failure category');
+        equal(completed.payload.non_retryable, observation.mode === 'http', 'explicit embedded versus external handler retry classification');
+        assert.ok(Number.isInteger(completed.payload.sequence) && completed.payload.sequence > 0, 'failure authoring position');
+        if (observation.mode === 'http') {
+          for (const receipt of updateReceipts) {
+            equal(receipt.outcome, 'update_failed', 'accepted handler failure outcome');
+            equal(receipt.reason, null, 'failure does not become an admission rejection');
+            equal(receipt.rejection_reason, null, 'accepted failure retains admission');
+            equal(receipt.failure_id, completed.payload.failure_id, 'duplicate keeps original durable failure');
+            equal(receipt.failure_message, completed.payload.message, 'duplicate keeps original failure message');
+            equal(receipt.result, null, 'failed receipt carries no result');
+            equal(receipt.result_envelope, null, 'failed receipt carries no result frame');
+            equal(receipt.workflow_sequence, completed.payload.sequence, 'failed receipt preserves authoring sequence');
+            equal(receipt.closed_at, updateReceipts[0].closed_at, 'failure close timestamp is immutable');
+            equal(receipt.accepted_at, updateReceipts[0].accepted_at, 'original admission timestamp is immutable');
+            equal(receipt.applied_at, updateReceipts[0].applied_at, 'original failure timestamp is immutable');
+            for (const key of ['workflow_id', 'run_id', 'command_id', 'command_status', 'update_id', 'update_status', 'outcome', 'reason']) {
+              equal(receipt.control_plane[key], receipt[key], 'canonical failure response retains ' + key);
+            }
+          }
+        } else {
+          equal(completed.payload.exception_type, null, 'embedded original exception has no external SDK type');
+          equal(completed.payload.exception_class, 'RuntimeException', 'embedded original failure class');
+          equal(completed.payload.message, fixture.sdk_update_failure.handler_message, 'embedded original handler message');
+          equal(update.failed_result, {failure_id: completed.payload.failure_id, message: completed.payload.message,
+            update_status: 'failed', outcome: 'update_failed'}, 'embedded failure receipt binds original history');
+          equal(update.duplicate_failed_result, update.failed_result, 'embedded duplicate preserves original failure');
+        }
+        equal(update.result, undefined, 'failed update has no observed successful result');
+        equal(update.typed_result, undefined, 'failed update has no observed typed successful result');
+        typedResult = {outcome: 'update_failed', failure_category: 'application'};
+      } else {
+        assert.ok(Number.isInteger(applied.payload.sequence) && applied.payload.sequence > 0, 'update callback authoring position');
+        equal(completed.payload.sequence, applied.payload.sequence, 'update completion retains callback position');
+        assert.ok(acceptedUpdate.sequence < applied.sequence && applied.sequence < completed.sequence && completed.sequence < signalSequence, 'update lifecycle completes before finishing signal');
+        const result = {value, applied: applicationCount};
+        typedResult = {type: 'map', value: {value: fixture.typed_update_values[index], applied: {type: 'int64', value: String(applicationCount)}}};
+        equal(update.result, result, 'completed repeat returns the original stateful update result');
+        equal(update.typed_result, typedResult, 'exact returned update result types');
+        equal(completed.decoded.result, result, 'durable update result');
+        equal(completed.typed_decoded.result, typedResult, 'durable exact update result types');
+      }
       equal(cursor.event_type, 'MessageCursorAdvanced', 'update advances ordered message cursor');
       equal(cursor.payload.stream_key, `instance:${workflowId}`, 'update cursor stream');
       equal(cursor.payload.previous_position, index, 'update cursor previous position');
@@ -196,7 +276,8 @@ export function checkObservation(fixture, observation, workflowId) {
         nonempty(task.lease_owner, 'actual update task lease owner');
         equal(worker.arguments, [value], 'worker decodes original accepted arguments');
         equal(worker.typed_arguments, arguments_, 'worker exact accepted argument types');
-        equal(task.history_events.filter(event => event.event_type === 'UpdateApplied').length, index, 'worker sees prior committed updates');
+        equal(task.history_events.filter(event => event.event_type === 'UpdateApplied').length,
+          index - (fixture.sdk_update_failure && index > 0 ? 1 : 0), 'worker sees prior successful applications');
       }
       projectedUpdates.push({name: update.name, request_id: update.request_id,
         arguments: arguments_, result: typedResult, message_sequence: index + 1});
@@ -302,11 +383,14 @@ export function checkObservation(fixture, observation, workflowId) {
       equal(satisfied.payload.signal_wait_id, received.payload.signal_wait_id, 'condition resolution signal wait relationship');
       nonempty(received.payload.signal_wait_id, 'signal routing wait identity');
       equal(cursor.payload.stream_key, `instance:${workflowId}`, 'message cursor stream');
-      equal(cursor.payload.previous_position, index + updateCount, 'message cursor previous position');
-      equal(cursor.payload.new_position, index + updateCount + 1, 'message cursor advances once per signal');
+      const rejectedOffset = fixture.selected_run_signal_run ? (fixture.selected_run_signal_validation.applicable ? 2 : 1) : 0;
+      const previousPosition = index === 0 ? updateCount : index + updateCount + rejectedOffset;
+      const newPosition = index + updateCount + rejectedOffset + 1;
+      equal(cursor.payload.previous_position, previousPosition, 'message cursor previous position');
+      equal(cursor.payload.new_position, newPosition, 'message cursor skips rejected positions and consumes the accepted signal');
       equal(received.payload.command.id, commandId, 'recorded signal command identity');
-      equal(received.payload.command.sequence, index + updateCount + 2, 'control command sequence is separate from authored wait sequence');
-      equal(received.payload.command.message_sequence, index + updateCount + 1, 'ordered signal message sequence');
+      equal(received.payload.command.sequence, index + updateCount + rejectedOffset + 2, 'control command sequence is separate from authored wait sequence');
+      equal(received.payload.command.message_sequence, newPosition, 'ordered signal message sequence');
       for (const key of ['workflow_command_id', 'signal_id', 'signal_name', 'signal_wait_id']) {
         equal(applied.payload[key], received.payload[key], `applied signal retains ${key}`);
       }
@@ -315,7 +399,7 @@ export function checkObservation(fixture, observation, workflowId) {
       commonEvents.push(
         {event_type: 'PayloadWaitOpened', wait_id: `@wait:${index + 1}`, command_sequence: index + 1},
         {event_type: 'SignalReceived', signal_id: `@signal:${index + 1}`, command_id: `@signal-command:${index + 1}`, signal_name: 'payload', arguments: {type: 'list', value: [fixture.typed_signal_value]}},
-        {event_type: 'MessageCursorAdvanced', previous_position: index + updateCount, new_position: index + updateCount + 1},
+        {event_type: 'MessageCursorAdvanced', previous_position: previousPosition, new_position: newPosition},
         {event_type: 'SignalApplied', signal_id: `@signal:${index + 1}`, command_id: `@signal-command:${index + 1}`, value: fixture.typed_signal_value},
         {event_type: 'PayloadWaitResolved', wait_id: `@wait:${index + 1}`, signal_id: `@signal:${index + 1}`, command_sequence: index + 1},
       );
@@ -590,6 +674,7 @@ export function checkObservation(fixture, observation, workflowId) {
     ...(sdkTimerAuthor ? {sdk_timer_author: sdkTimerAuthor} : {}),
     ...(sdkSignalDirection ? {sdk_signal_direction: sdkSignalDirection} : {}),
     ...(sdkQueryDirection ? {sdk_query_direction: sdkQueryDirection} : {}),
+    ...(sdkUpdateDirection ? {sdk_update_direction: sdkUpdateDirection} : {}),
   };
 }
 
@@ -616,16 +701,21 @@ export function compareRecords(records, expectedFixtureHashes, expectedFixtures,
       const baseline = reference.cases[index];
       assert.equal(item.fixture_id, item.fixture.id, 'case identity matches fixture');
       assert.deepStrictEqual(item.fixture, expectedFixtures[`${item.fixture_id}.json`], 'case expectations match the current reviewed source fixture');
-      if (item.fixture.signal_count || item.fixture.schedule || item.fixture.visibility || item.fixture.admission || item.fixture.patch_deployment || item.fixture.range_repair || item.fixture.sdk_direction || item.fixture.sdk_child_direction || item.fixture.sdk_timer_author) assert.equal(item.observation.mode, record.mode, 'observation uses its recording adapter');
+      if (item.fixture.signal_count || item.fixture.schedule || item.fixture.visibility || item.fixture.admission || item.fixture.patch_deployment || item.fixture.range_repair || item.fixture.sdk_direction || item.fixture.sdk_child_direction || item.fixture.sdk_timer_author || item.fixture.activity_deadline_authority || item.fixture.activity_deadline_receipts || item.fixture.memo_replay || item.fixture.continuation) assert.equal(item.observation.mode, record.mode, 'observation uses its recording adapter');
       assert.equal(item.observation.sdk_php, record.artifacts.sdk_php, 'installed SDK matches tuple');
       checkPublishedPatchArtifacts(item.fixture, record.artifacts);
       checkRangeArtifacts(item.fixture, record.artifacts);
       checkRangePackages(item.fixture, item.observation, record.artifacts);
+      checkCorrectedMarkerPackages(item.fixture, item.observation, record.artifacts);
+      checkCorrectedRangePackages(item.fixture, item.observation, record.artifacts);
+      checkActivityDeadlinePackages(item.fixture, item.observation, record.artifacts);
+      checkActivityDeadlineReceiptPackages(item.fixture, item.observation, record.artifacts);
       checkSdkDirectionPackages(item.fixture, item.observation, record.artifacts);
       checkSdkChildDirectionPackages(item.fixture, item.observation, record.artifacts);
       checkSdkTimerAuthorPackages(item.fixture, item.observation, record.artifacts);
       checkSdkSignalDirectionPackages(item.fixture, item.observation, record.artifacts);
       checkSdkQueryDirectionPackages(item.fixture, item.observation, record.artifacts);
+      checkSdkUpdateDirectionPackages(item.fixture, item.observation, record.artifacts);
       if (item.fixture.patch_deployment?.legacy_marker_history) {
         checkLegacyMarkerArtifacts(item.fixture, record.artifacts);
         checkLegacyMarkerPackageObservation(item.fixture, item.observation, record.artifacts);
@@ -633,7 +723,7 @@ export function compareRecords(records, expectedFixtureHashes, expectedFixtures,
       if (record.artifacts.sdk_php_source_commit) assert.equal(item.observation.sdk_php_source, record.artifacts.sdk_php_source_commit, 'installed exact source SDK matches tuple');
       if (record.mode === 'embedded') assert.equal(item.observation.workflow_package, record.artifacts.workflow, 'installed Workflow matches tuple');
       assert.deepStrictEqual(item.fixture, baseline.fixture, 'same fixture expectations');
-      const checked = checkObservation(item.fixture, item.observation, item.projection.workflow_id);
+      const checked = checkObservation(item.fixture, item.observation, item.projection.workflow_id, record.artifacts);
       assert.deepStrictEqual(item.projection, checked, 'projection matches raw observation');
       assert.deepStrictEqual(checked, baseline.projection, `${record.target}: ${item.fixture_id}`);
     }

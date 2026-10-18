@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.control-plane-api
-  version: "12"
+  version: "14"
   summary: Durable Workflow control-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the standalone Durable Workflow
@@ -338,6 +338,11 @@ paths:
         "404": { $ref: "#/components/responses/ControlPlaneError" }
         "409": { $ref: "#/components/responses/ControlPlaneError" }
         "422": { $ref: "#/components/responses/ControlPlaneError" }
+        "503":
+          description: The original Nexus target temporarily has no eligible live Worker. No cancellation was admitted. Retryable availability diagnostics distinguish absence from known incompatibility.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ControlPlaneError" }
   /workflows/{workflowId}/runs/{runId}/request-cancellation:
     post:
       tags: [workflows]
@@ -359,6 +364,11 @@ paths:
         "404": { $ref: "#/components/responses/ControlPlaneError" }
         "409": { $ref: "#/components/responses/ControlPlaneError" }
         "422": { $ref: "#/components/responses/ControlPlaneError" }
+        "503":
+          description: The original Nexus target temporarily has no eligible live Worker. No cancellation was admitted. Retryable availability diagnostics distinguish absence from known incompatibility.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ControlPlaneError" }
   /workflows/{workflowId}/terminate:
     post:
       tags: [workflows]
@@ -486,6 +496,61 @@ paths:
         - $ref: "#/components/parameters/PageTokenQuery"
       responses:
         "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+  /workflows/{workflowId}/runs/{runId}/activities/{activityId}/result:
+    get:
+      tags: [workflows]
+      operationId: inspectWorkflowActivityResult
+      summary: Inspect one activity's canonical result in an exact workflow run.
+      description: >
+        Requires operator access and the workflow_activity_result_inspection
+        discovery capability. Bind the listing's activity ID to the selected
+        namespace, workflow and run. Read one canonical activity snapshot and
+        fetch no unrelated payloads. Mutable rows never replace missing history.
+        Local activity inspection is explicitly unsupported until qualified.
+        Available null results carry an encoded Avro null, not a missing field.
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/WorkflowIdPath"
+        - $ref: "#/components/parameters/RunIdPath"
+        - name: activityId
+          in: path
+          required: true
+          schema: { type: string, minLength: 1 }
+      responses:
+        "200":
+          description: The retained result or an explicit unavailable state.
+          headers:
+            X-Durable-Workflow-Control-Plane-Version:
+              schema: { type: string, const: "2" }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workflow_id, run_id, activity_id, state, available, reason]
+                properties:
+                  workflow_id: { type: string }
+                  run_id: { type: string }
+                  activity_id: { type: string }
+                  history_sequence: { type: integer, minimum: 1 }
+                  state: { enum: [available, pending, failed, cancelled, pruned, unsupported, unavailable] }
+                  available: { type: boolean }
+                  reason: { type: [string, "null"] }
+                  result_envelope:
+                    type: object
+                    description: Present only for available results. Uses the existing inline or authenticated runtime-external Avro envelope.
+                    required: [codec]
+                    properties:
+                      codec: { type: string, const: avro }
+                      blob: { type: string }
+                      external_payload: { type: object }
+        "400": { $ref: "#/components/responses/JsonEnvelope" }
+        "401": { $ref: "#/components/responses/JsonEnvelope" }
+        "403": { $ref: "#/components/responses/JsonEnvelope" }
+        "404":
+          description: The selected run or activity does not belong to the authenticated scope.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JsonObject" }
   /workflows/{workflowId}/runs/{runId}/history/export:
     get:
       tags: [workflows]

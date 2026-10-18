@@ -1,7 +1,7 @@
 //! Durable updates admitted at a quiescent wait, with original request receipts.
-//! Concurrent queued control routing and validator/failure tasks are not qualified.
+//! Concurrent queued control routing and validator tasks are not qualified.
 use super::{
-    Result,
+    Result, RuntimeError,
     backend::Backend,
     envelope, refuse,
     store::{PreparedControlArguments, Store, id, now, reject_fields, validate_arguments},
@@ -14,6 +14,210 @@ use std::time::Duration;
 
 const MAX_UPDATES_PER_RUN: i64 = 64;
 const UPDATE_ROW: &str = "SELECT u.*,c.workflow_type,c.message_sequence FROM workflow_updates u JOIN workflow_commands c ON c.id=u.workflow_command_id WHERE u.id=$1";
+
+#[derive(Clone, Copy)]
+enum UpdateLookup {
+    AdmissionOwnership,
+    AdmissionRun,
+    StartContract,
+    Inventory,
+    WaitLookup,
+    HistoryAppend,
+    TaskEnqueue,
+    ReceiptRead,
+}
+
+impl UpdateLookup {
+    fn label(self) -> &'static str {
+        match self {
+            Self::AdmissionOwnership => "admission_ownership",
+            Self::AdmissionRun => "admission_run",
+            Self::StartContract => "start_contract",
+            Self::Inventory => "inventory",
+            Self::WaitLookup => "wait_lookup",
+            Self::HistoryAppend => "history_append",
+            Self::TaskEnqueue => "task_enqueue",
+            Self::ReceiptRead => "receipt_read",
+        }
+    }
+}
+
+fn update_lookup_diagnostic(error: &RuntimeError, lookup: UpdateLookup) -> Option<Value> {
+    matches!(error, RuntimeError::Database(sqlx::Error::RowNotFound))
+        .then(|| json!({"event":"runtime_update_lookup_missing","lookup":lookup.label()}))
+}
+
+fn at_update_lookup(error: RuntimeError, lookup: UpdateLookup) -> RuntimeError {
+    if let Some(diagnostic) = update_lookup_diagnostic(&error, lookup) {
+        // A closed label inventory identifies the lookup without SQL, IDs,
+        // error text or inputs. Keep the original error and HTTP behavior.
+        eprintln!("{diagnostic}");
+    }
+    error
+}
+
+// Match PHP trim(), including NUL and vertical tab, without stripping Unicode
+// whitespace from an exception's identity or message.
+fn php_string(value: &Value) -> Option<&str> {
+    value
+        .as_str()
+        .map(|value| value.trim_matches([' ', '\t', '\n', '\r', '\0', '\x0b']))
+        .filter(|value| !value.is_empty())
+}
+
+pub(super) struct UpdateFailure<'a> {
+    pub(super) update_id: &'a str,
+    message: &'a str,
+    exception_class: &'a str,
+    exception_type: Option<&'a str>,
+    non_retryable: bool,
+    category: &'static str,
+}
+
+pub(super) fn update_failure(command: &Value) -> Result<UpdateFailure<'_>> {
+    // PHP normalizes the recognized failure fields and ignores extra fields.
+    // In particular, an unrelated result cannot turn a failure into success.
+    let update_id = php_string(&command["update_id"])
+        .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_update_failure"))?;
+    let message = php_string(&command["message"])
+        .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_update_failure"))?;
+    let exception_class = php_string(&command["exception_class"]).unwrap_or("RuntimeException");
+    let exception_type = php_string(&command["exception_type"]);
+    // Unknown external class names are not PHP inheritance declarations. Keep
+    // the original name while applying the published portable message rules.
+    let class = exception_class
+        .trim_start_matches('\\')
+        .to_ascii_lowercase();
+    let category = match class.as_str() {
+        "workflow\\v2\\exceptions\\structurallimitexceededexception" => "structural_limit",
+        "workflow\\v2\\exceptions\\unsupportedworkflowyieldexception"
+        | "workflow\\v2\\exceptions\\straightlineworkflowrequiredexception" => "task_failure",
+        "illuminate\\database\\queryexception"
+        | "pdoexception"
+        | "illuminate\\queue\\maxattemptsexceededexception" => "internal",
+        _ => {
+            let lower = message.to_ascii_lowercase();
+            if [
+                "timed out",
+                "timeout exceeded",
+                "execution deadline",
+                "run deadline",
+            ]
+            .iter()
+            .any(|marker| lower.contains(marker))
+            {
+                "timeout"
+            } else if message.starts_with("Structural limit exceeded:") {
+                "structural_limit"
+            } else {
+                "application"
+            }
+        }
+    };
+    let non_retryable = command["non_retryable"]
+        .as_bool()
+        .unwrap_or(class == "workflow\\exceptions\\nonretryableexception");
+    Ok(UpdateFailure {
+        update_id,
+        message,
+        exception_class,
+        exception_type,
+        non_retryable,
+        category,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_lookup_diagnostics_have_only_closed_labels() {
+        let lookups = [
+            UpdateLookup::AdmissionOwnership,
+            UpdateLookup::AdmissionRun,
+            UpdateLookup::StartContract,
+            UpdateLookup::Inventory,
+            UpdateLookup::WaitLookup,
+            UpdateLookup::HistoryAppend,
+            UpdateLookup::TaskEnqueue,
+            UpdateLookup::ReceiptRead,
+        ];
+        let expected = [
+            "admission_ownership",
+            "admission_run",
+            "start_contract",
+            "inventory",
+            "wait_lookup",
+            "history_append",
+            "task_enqueue",
+            "receipt_read",
+        ];
+        for (lookup, label) in lookups.into_iter().zip(expected) {
+            assert_eq!(
+                update_lookup_diagnostic(&RuntimeError::Database(sqlx::Error::RowNotFound), lookup),
+                Some(json!({"event":"runtime_update_lookup_missing","lookup":label}))
+            );
+        }
+    }
+
+    #[test]
+    fn unrelated_errors_and_refusals_have_no_lookup_diagnostic() {
+        for error in [
+            RuntimeError::Database(sqlx::Error::Protocol(
+                "SYNTHETIC_PRIVATE_SQL_PAYLOAD_AUTH".into(),
+            )),
+            RuntimeError::Database(sqlx::Error::ColumnNotFound(
+                "SYNTHETIC_PRIVATE_COLUMN".into(),
+            )),
+            RuntimeError::Database(sqlx::Error::PoolTimedOut),
+            refuse(StatusCode::NOT_FOUND, "instance_not_found"),
+        ] {
+            assert!(update_lookup_diagnostic(&error, UpdateLookup::ReceiptRead).is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn lookup_annotation_preserves_the_original_http_response() {
+        use axum::response::IntoResponse;
+        let original = RuntimeError::Database(sqlx::Error::RowNotFound).into_response();
+        let annotated = at_update_lookup(
+            RuntimeError::Database(sqlx::Error::RowNotFound),
+            UpdateLookup::ReceiptRead,
+        )
+        .into_response();
+        assert_eq!(original.status(), annotated.status());
+        assert_eq!(original.headers(), annotated.headers());
+        assert_eq!(
+            axum::body::to_bytes(original.into_body(), 256)
+                .await
+                .unwrap(),
+            axum::body::to_bytes(annotated.into_body(), 256)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn failure_commands_keep_php_normalization_and_classification() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../tests/Fixtures/ServerParityNormalization/update-failure-commands.json"
+        ))
+        .unwrap();
+        for case in fixture["cases"].as_array().unwrap() {
+            let failure = update_failure(&case["command"]).unwrap();
+            assert_eq!(
+                json!({"update_id":failure.update_id,"message":failure.message,
+                "exception_class":failure.exception_class,"exception_type":failure.exception_type,
+                "non_retryable":failure.non_retryable,"category":failure.category}),
+                case["expected"]
+            );
+        }
+        for command in fixture["rejected"].as_array().unwrap() {
+            assert!(update_failure(command).is_err());
+        }
+    }
+}
 
 impl<DB: Backend> Store<DB>
 where
@@ -80,7 +284,10 @@ where
                     })
             })
             .transpose()?;
-        let mut tx = self.begin().await?;
+        let mut tx = self
+            .begin()
+            .await
+            .map_err(|error| at_update_lookup(error, UpdateLookup::AdmissionOwnership))?;
         let instance = Self::query("SELECT current_run_id,last_message_sequence FROM workflow_instances WHERE id=$1 AND namespace='default'")
             .bind(workflow_id).fetch_optional(&mut *tx).await?
             .ok_or_else(|| refuse(StatusCode::NOT_FOUND, "instance_not_found"))?;
@@ -110,9 +317,12 @@ where
             }
             DB::string(&existing, "id")?
         } else {
-            let run = Self::active_run(&mut tx, &run_id).await?;
+            let run = Self::active_run(&mut tx, &run_id)
+                .await
+                .map_err(|error| at_update_lookup(error, UpdateLookup::AdmissionRun))?;
             let started = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowStarted' ORDER BY sequence LIMIT 1")
-                .bind(&run_id).fetch_one(&mut *tx).await?;
+                .bind(&run_id).fetch_one(&mut *tx).await
+                .map_err(|error| at_update_lookup(error.into(), UpdateLookup::StartContract))?;
             let contract = DB::document_row(&started, "payload")?;
             if !contract["declared_updates"]
                 .as_array()
@@ -138,15 +348,21 @@ where
                 "invalid_update_arguments",
             )?;
             let open_tasks = Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status IN ('ready','leased')")
-                .bind(&run_id).fetch_one(&mut *tx).await?;
+                .bind(&run_id).fetch_one(&mut *tx).await
+                .map_err(|error| at_update_lookup(error.into(), UpdateLookup::Inventory))?;
             let pending_signals = Self::scalar("SELECT COUNT(*) FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received'")
-                .bind(&run_id).fetch_one(&mut *tx).await?;
+                .bind(&run_id).fetch_one(&mut *tx).await
+                .map_err(|error| at_update_lookup(error.into(), UpdateLookup::Inventory))?;
             let pending_updates = Self::scalar("SELECT COUNT(*) FROM workflow_updates WHERE workflow_run_id=$1 AND status='accepted'")
-                .bind(&run_id).fetch_one(&mut *tx).await?;
+                .bind(&run_id).fetch_one(&mut *tx).await
+                .map_err(|error| at_update_lookup(error.into(), UpdateLookup::Inventory))?;
             if open_tasks != 0
                 || pending_signals != 0
                 || pending_updates != 0
-                || Self::open_wait(&mut tx, &run_id).await?.is_none()
+                || Self::open_wait(&mut tx, &run_id)
+                    .await
+                    .map_err(|error| at_update_lookup(error, UpdateLookup::WaitLookup))?
+                    .is_none()
             {
                 return Err(refuse(StatusCode::CONFLICT, "update_snapshot_busy"));
             }
@@ -154,7 +370,8 @@ where
                 Self::scalar("SELECT COUNT(*) FROM workflow_updates WHERE workflow_run_id=$1")
                     .bind(&run_id)
                     .fetch_one(&mut *tx)
-                    .await?;
+                    .await
+                    .map_err(|error| at_update_lookup(error.into(), UpdateLookup::Inventory))?;
             if count >= MAX_UPDATES_PER_RUN {
                 return Err(refuse(
                     StatusCode::SERVICE_UNAVAILABLE,
@@ -192,9 +409,11 @@ where
                 "workflow_run_id":run_id,"update_name":name,"arguments":wire(&prepared.arguments),"ordering_state":"ready",
                 "request_id":request_id,"command":{"id":command_id,"sequence":command_sequence,"message_sequence":message_sequence,
                     "type":"update","target_scope":"instance","resolved_run_id":run_id,"status":"accepted","outcome":null}
-            }), None, Some(&command_id)).await?;
+            }), None, Some(&command_id)).await
+                .map_err(|error| at_update_lookup(error, UpdateLookup::HistoryAppend))?;
             Self::create_task(&mut tx, &run_id, &DB::string(&run, "queue")?, "workflow",
-                json!({"resume_source_kind":"workflow_update","workflow_update_id":update_id,"workflow_command_id":command_id})).await?;
+                json!({"resume_source_kind":"workflow_update","workflow_update_id":update_id,"workflow_command_id":command_id})).await
+                .map_err(|error| at_update_lookup(error, UpdateLookup::TaskEnqueue))?;
             update_id
         };
         // A completion wait owns neither the transaction nor a pool connection.
@@ -207,13 +426,20 @@ where
             let update = Self::query(UPDATE_ROW)
                 .bind(&update_id)
                 .fetch_one(&self.pool)
-                .await?;
-            let completed = DB::string(&update, "status")? == "completed";
-            let timed_out =
-                wait_for == "completed" && !completed && tokio::time::Instant::now() >= deadline;
-            if completed || wait_for == "accepted" || timed_out {
+                .await
+                .map_err(|error| at_update_lookup(error.into(), UpdateLookup::ReceiptRead))?;
+            let status = DB::string(&update, "status")?;
+            let completed = status == "completed";
+            let failed = status == "failed";
+            let timed_out = wait_for == "completed"
+                && !completed
+                && !failed
+                && tokio::time::Instant::now() >= deadline;
+            if completed || failed || wait_for == "accepted" || timed_out {
                 return Ok((
-                    if completed {
+                    if failed {
+                        StatusCode::UNPROCESSABLE_ENTITY
+                    } else if completed {
                         StatusCode::OK
                     } else {
                         StatusCode::ACCEPTED
@@ -236,10 +462,24 @@ where
         if status == "completed" && result.is_none() {
             return Err(refuse(StatusCode::CONFLICT, "invalid_stored_update_result"));
         }
+        let failure_id = DB::optional_string(update, "failure_id")?;
+        let failure_message = DB::optional_string(update, "failure_message")?;
+        if status == "failed"
+            && (failure_id.as_ref().is_none_or(|value| value.is_empty())
+                || failure_message
+                    .as_ref()
+                    .is_none_or(|value| value.is_empty())
+                || result.is_some())
+        {
+            return Err(refuse(
+                StatusCode::CONFLICT,
+                "invalid_stored_update_failure",
+            ));
+        }
         // MariaDB promotes COALESCE(unsigned BIGINT,0) to DECIMAL. Preserve
         // the physical nullable integer and its exact logical value instead.
         let sequence = DB::optional_number(update, "workflow_sequence")?;
-        Ok(json!({
+        let response = json!({
             "accepted":true,"workflow_id":DB::string(update,"workflow_instance_id")?,"run_id":DB::string(update,"workflow_run_id")?,
             "resolved_run_id":DB::string(update,"resolved_workflow_run_id")?,"requested_run_id":null,"target_scope":"instance",
             "workflow_type":DB::string(update,"workflow_type")?,"command_id":DB::string(update,"workflow_command_id")?,
@@ -247,10 +487,12 @@ where
             "update_id":DB::string(update,"id")?,"update_name":DB::string(update,"update_name")?,"update_status":status,
             "workflow_sequence":sequence,
             "outcome":DB::optional_string(update,"outcome")?,"result":null,"result_envelope":result.as_deref().map(wire),
+            "failure_id":failure_id,"failure_message":failure_message,
             "accepted_at":DB::instant(update,"accepted_at")?,"applied_at":DB::optional_instant(update,"applied_at")?,
             "closed_at":DB::optional_instant(update,"closed_at")?,"reason":null,"rejection_reason":null,"validation_errors":[],
             "wait_for":wait_for,"wait_timed_out":timed_out,"wait_timeout_seconds":timeout
-        }))
+        });
+        Ok(super::control_plane::Operation::Update.response(response))
     }
 
     pub(super) fn update_worker_supported(
@@ -282,7 +524,13 @@ where
         command: &Value,
         sequence: i64,
     ) -> Result<()> {
-        let update_id = text(command, "update_id")?;
+        let failure = (command["type"] == "fail_update")
+            .then(|| update_failure(command))
+            .transpose()?;
+        let update_id = match &failure {
+            Some(failure) => failure.update_id,
+            None => text(command, "update_id")?,
+        };
         let run_id = DB::string(run, "id")?;
         let update = Self::query(UPDATE_ROW)
             .bind(update_id)
@@ -311,45 +559,83 @@ where
                 "update_message_order_mismatch",
             ));
         }
-        let result = envelope(command, "result")?;
         let payload = json!({
             "workflow_command_id":command_id,"update_id":update_id,"workflow_instance_id":workflow_id,
             "workflow_run_id":run_id,"update_name":name,"sequence":sequence,
             "command":{"id":command_id,"sequence":DB::number(&update,"command_sequence")?,"message_sequence":message_sequence,
                 "type":"update","target_scope":"instance","resolved_run_id":run_id,"status":"accepted","outcome":null}
         });
-        let mut applied = payload.clone();
-        applied["arguments"] = wire(&DB::string(&update, "arguments")?);
-        Self::append(
-            tx,
-            &run_id,
-            "UpdateApplied",
-            applied,
-            Some(&task_id),
-            Some(&command_id),
-        )
-        .await?;
-        let mut completed = payload;
-        completed["result"] = wire(&result);
-        Self::append(
-            tx,
-            &run_id,
-            "UpdateCompleted",
-            completed,
-            Some(&task_id),
-            Some(&command_id),
-        )
-        .await?;
-        let applied_at = now();
-        Self::query("UPDATE workflow_updates SET status='completed',outcome='update_completed',workflow_sequence=$1,result=$2,applied_at=$3,closed_at=$4 WHERE id=$5")
+        if let Some(failure) = failure {
+            let failure_id = id();
+            let closed_at = now();
+            Self::query("INSERT INTO workflow_failures(id,workflow_run_id,source_kind,source_id,propagation_kind,failure_category,exception_class,message,non_retryable,handled,file,line,trace_preview,created_at,updated_at) VALUES ($1,$2,'workflow_command',$3,'update',$4,$5,$6,CASE WHEN $7='true' THEN TRUE ELSE FALSE END,FALSE,'',0,'',$8,$9)")
+                .bind(&failure_id).bind(&run_id).bind(&command_id).bind(failure.category)
+                .bind(failure.exception_class).bind(failure.message).bind(if failure.non_retryable {"true"} else {"false"})
+                .bind(DB::bind_time(closed_at)).bind(DB::bind_time(closed_at)).execute(&mut **tx).await?;
+            let mut completed = payload;
+            completed["failure_id"] = json!(failure_id);
+            completed["failure_category"] = json!(failure.category);
+            completed["non_retryable"] = json!(failure.non_retryable);
+            completed["exception_type"] = json!(failure.exception_type);
+            completed["exception_class"] = json!(failure.exception_class);
+            completed["message"] = json!(failure.message);
+            completed["code"] = json!(0);
+            completed["exception"] = json!({"class":failure.exception_class,"type":failure.exception_type,
+                "message":failure.message,"code":0,"file":"","line":0,"trace":[],"properties":[]});
+            Self::append(
+                tx,
+                &run_id,
+                "UpdateCompleted",
+                completed,
+                Some(&task_id),
+                Some(&command_id),
+            )
+            .await?;
+            Self::query("UPDATE workflow_updates SET status='failed',outcome='update_failed',workflow_sequence=$1,failure_id=$2,failure_message=$3,applied_at=$4,closed_at=$5 WHERE id=$6")
+                .bind(sequence).bind(&failure_id).bind(failure.message).bind(DB::bind_time(closed_at))
+                .bind(DB::bind_time(closed_at)).bind(update_id).execute(&mut **tx).await?;
+            Self::query(
+                "UPDATE workflow_commands SET outcome='update_failed',applied_at=$1 WHERE id=$2",
+            )
+            .bind(DB::bind_time(closed_at))
+            .bind(&command_id)
+            .execute(&mut **tx)
+            .await?;
+        } else {
+            let result = envelope(command, "result")?;
+            let mut applied = payload.clone();
+            applied["arguments"] = wire(&DB::string(&update, "arguments")?);
+            Self::append(
+                tx,
+                &run_id,
+                "UpdateApplied",
+                applied,
+                Some(&task_id),
+                Some(&command_id),
+            )
+            .await?;
+            let mut completed = payload;
+            completed["result"] = wire(&result);
+            Self::append(
+                tx,
+                &run_id,
+                "UpdateCompleted",
+                completed,
+                Some(&task_id),
+                Some(&command_id),
+            )
+            .await?;
+            let applied_at = now();
+            Self::query("UPDATE workflow_updates SET status='completed',outcome='update_completed',workflow_sequence=$1,result=$2,applied_at=$3,closed_at=$4 WHERE id=$5")
             .bind(sequence).bind(result).bind(DB::bind_time(applied_at)).bind(DB::bind_time(applied_at)).bind(update_id).execute(&mut **tx).await?;
-        Self::query(
-            "UPDATE workflow_commands SET outcome='update_completed',applied_at=$1 WHERE id=$2",
-        )
-        .bind(DB::bind_time(applied_at))
-        .bind(&command_id)
-        .execute(&mut **tx)
-        .await?;
+            Self::query(
+                "UPDATE workflow_commands SET outcome='update_completed',applied_at=$1 WHERE id=$2",
+            )
+            .bind(DB::bind_time(applied_at))
+            .bind(&command_id)
+            .execute(&mut **tx)
+            .await?;
+        }
         Self::query("UPDATE workflow_runs SET message_cursor_position=$1 WHERE id=$2")
             .bind(message_sequence)
             .bind(&run_id)

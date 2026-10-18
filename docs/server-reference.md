@@ -648,6 +648,9 @@ endpoint to load a page starting at the event. A missing reference reports
 `recent_failures_truncated` indicates that more than ten failure records exist.
 These references load event metadata without decoding the complete run history.
 
+For a terminal run whose projected history-size counter disagrees with its
+retained events, use the [selected-run summary repair procedure](terminal-summary-recovery.md).
+
 For a ready workflow task, debug findings also explain delivery eligibility.
 `workflow_build_draining` identifies the required drained build and queue.
 Resume that build and start or restart a compatible workflow worker. Resume
@@ -1622,8 +1625,8 @@ every operator-facing variable the server honors.
 | `DW_HISTORY_PAGE_SIZE_DEFAULT` | `DEFAULT_HISTORY_PAGE_SIZE` | Default page size for worker history reads. |
 | `DW_HISTORY_PAGE_SIZE_MAX` | `MAX_HISTORY_PAGE_SIZE` | Maximum page size honored for worker history reads. |
 | `DW_QUERY_TASK_TIMEOUT` | `min(max(DW_WORKER_POLL_TIMEOUT + 15, 40), 55)` | Seconds the control plane waits for a worker query response. The default covers one worker long-poll cycle plus dispatch grace, while the 55-second ceiling preserves time to return a structured failure before the standard client transport deadline. |
-| `DW_QUERY_TASK_LEASE_TIMEOUT` | `DW_WORKFLOW_TASK_TIMEOUT` | Configured lease timeout for ephemeral query tasks; when `DW_QUERY_TASK_TIMEOUT` is nonzero, effective leases are at least `DW_QUERY_TASK_TIMEOUT + 5` seconds. |
-| `DW_QUERY_TASK_TTL_SECONDS` | `180` | Configured retention floor for query-task result rows; effective retention is at least query timeout + effective lease + 60 seconds. |
+| `DW_QUERY_TASK_LEASE_TIMEOUT` | `DW_WORKFLOW_TASK_TIMEOUT` | Configured lease timeout for ephemeral query tasks, with a minimum of 1 second. Each claim expires at the earlier of claim time plus this timeout and the original query deadline. A short lease can expire before the caller deadline. |
+| `DW_QUERY_TASK_TTL_SECONDS` | `180` | Retention floor for query-task result rows. Effective retention is `max(60, DW_QUERY_TASK_TTL_SECONDS, DW_QUERY_TASK_TIMEOUT + max(1, DW_QUERY_TASK_LEASE_TIMEOUT) + 60)` seconds. Retention does not extend query execution authority. |
 | `DW_QUERY_TASK_MAX_PENDING_PER_QUEUE` | `1024` | Max pending cache-backed query tasks per namespace/task queue before new queries are rejected. |
 | `DW_QUERY_TASK_POLL_MAX_CONCURRENT` | (unset; derived for PHP CLI server) | Optional cap for concurrent held idle query-task worker long-poll waits. Pending query tasks are still claimed immediately before an idle poll waits; the default standalone image derives one query-task wait slot. |
 | `DW_WORKFLOW_TASK_TIMEOUT` | `60` | Default workflow-task lease timeout (seconds). |

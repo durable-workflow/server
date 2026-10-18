@@ -410,6 +410,7 @@ class WorkerProtocol
      *     update_validation_tasks: bool,
      *     synchronous_update_validation: array<string, mixed>,
      *     query_task_poll_request_idempotency: bool,
+     *     query_task_authority: bool,
      *     query_task_timeouts: array{control_plane_timeout_seconds: int, lease_timeout_seconds: int, lease_grace_seconds: int},
      *     activity_retry_policy: bool,
      *     activity_timeouts: bool,
@@ -504,6 +505,7 @@ class WorkerProtocol
             ],
             'query_tasks' => true,
             'query_task_poll_request_idempotency' => true,
+            'query_task_authority' => true,
             'query_task_timeouts' => self::queryTaskTimeouts(),
             'update_validation_tasks' => true,
             'synchronous_update_validation' => [
@@ -553,6 +555,8 @@ class WorkerProtocol
             'activity_retry_policy' => true,
             'activity_timeouts' => true,
             'cooperative_cancellation' => CooperativeCancellationPolicy::serverSupported(),
+            'nexus_cooperative_cancellation' => NexusCooperativeCancellationPolicy::serverSupported(),
+            'nexus_cooperative_cancellation_binding_kinds' => NexusCooperativeCancellationPolicy::serverSupported() ? ['workflow_run'] : [],
             'prepared_local_activities' => PreparedLocalActivityPolicy::serverSupported(),
             'prepared_local_activity_groups' => PreparedLocalActivityPolicy::groupsSupported(),
             'prepared_local_activity_cancellation_policies' => PreparedLocalActivityPolicy::cancellationPolicies(),
@@ -643,14 +647,11 @@ class WorkerProtocol
             'server.query_tasks.lease_timeout',
             config('server.lease.workflow_task_timeout', 60),
         ));
-        $grace = 5;
 
         return [
             'control_plane_timeout_seconds' => $controlPlaneTimeout,
-            'lease_timeout_seconds' => $controlPlaneTimeout === 0
-                ? $configuredLease
-                : max($configuredLease, $controlPlaneTimeout + $grace),
-            'lease_grace_seconds' => $grace,
+            'lease_timeout_seconds' => $configuredLease,
+            'lease_grace_seconds' => 0,
         ];
     }
 

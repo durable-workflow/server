@@ -9,6 +9,7 @@ use App\Support\CooperativeCancellationPolicy;
 use App\Support\LegacyV1Projection;
 use App\Support\LongPollSignalStore;
 use App\Support\NamespaceWorkflowScope;
+use App\Support\NexusCooperativeCancellationPolicy;
 use App\Support\WorkerPollFence;
 use App\Support\WorkerProtocol;
 use App\Support\WorkerProtocolMutationRetrier;
@@ -94,6 +95,9 @@ final class CooperativeCancellationController
             if ($run->status->isTerminal()) {
                 return ['reason' => 'run_not_active', 'run_status' => $run->status->value, 'http_status' => 409];
             }
+            if (($diagnostic = NexusCooperativeCancellationPolicy::requestUnavailable($run)) !== null) {
+                return [...$diagnostic, 'http_status' => ($diagnostic['retryable'] ?? false) ? 503 : 409];
+            }
 
             $claims = NamespaceWorkflowScope::taskQuery($namespace)
                 ->where('workflow_tasks.workflow_run_id', $run->id)
@@ -143,6 +147,8 @@ final class CooperativeCancellationController
                 'selected_run_not_current' => 'The selected run is no longer the current run.',
                 'run_not_active' => 'The workflow run is already closed.',
                 'legacy_v1_operation_not_supported' => 'Imported legacy workflows do not support cooperative cancellation.',
+                'nexus_cooperative_cancellation_not_supported' => 'The original Nexus call requires an installed cooperative runtime and a capable workflow Worker. See the call and Worker diagnostics.',
+                'nexus_cooperative_cancellation_temporarily_unavailable' => 'The original Nexus target has no eligible live workflow Worker. Retry after its Worker becomes available. No cancellation was accepted.',
                 'run_not_found' => 'Workflow run not found.',
                 default => 'Workflow not found.',
             };
@@ -167,13 +173,20 @@ final class CooperativeCancellationController
             'workflow_task_attempt' => ['required', 'integer', 'min:1'],
             'request_id' => ['required', 'string'],
             'sequence' => ['required', 'integer', 'min:1'],
-            'call_kind' => ['required', 'string', 'in:activity,local_activity,timer,condition,signal,child,parallel,selection_handle'],
+            'call_kind' => ['required', 'string', 'in:activity,local_activity,timer,condition,signal,child,parallel,selection_handle,service_operation'],
             'sequence_span' => ['nullable', 'integer', 'min:1'],
             'operation_sequence' => ['nullable', 'integer', 'min:1'],
             'operation_sequence_span' => ['nullable', 'integer', 'min:1'],
         ]);
         $namespace = (string) $request->attributes->get('namespace');
         $bridge = app(WorkflowTaskBridge::class);
+        if ($validated['call_kind'] === 'service_operation' && ! NexusCooperativeCancellationPolicy::serverSupported()) {
+            return WorkerProtocol::json([
+                'reason' => 'nexus_cooperative_cancellation_not_supported',
+                'required_capabilities' => [CooperativeCancellationPolicy::CAPABILITY, NexusCooperativeCancellationPolicy::CAPABILITY],
+                'unavailable' => ['installed_runtime_nexus_cancellation'],
+            ], 409);
+        }
         if (! $bridge instanceof CooperativeWorkflowTaskBridge) {
             return WorkerProtocol::json(['reason' => 'cooperative_cancellation_not_supported'], 409);
         }
@@ -196,6 +209,10 @@ final class CooperativeCancellationController
             if (! CooperativeCancellationPolicy::claimSupportsCancellation($task)) {
                 return ['delivered' => false, 'reason' => 'active_claim_cancellation_not_supported'];
             }
+            if ($validated['call_kind'] === 'service_operation' && ! NexusCooperativeCancellationPolicy::claimSupportsCancellation($task)) {
+                return ['delivered' => false, 'reason' => 'nexus_cooperative_cancellation_not_supported',
+                    'unavailable' => ['active_claim_nexus_cancellation']];
+            }
 
             $worker = WorkerRegistration::query()->where('namespace', $namespace)
                 ->where('worker_id', $validated['lease_owner'])->first();
@@ -213,7 +230,7 @@ final class CooperativeCancellationController
 
         return WorkerProtocol::json($result, (($result['delivered'] ?? false)
             || (($result['claim_released'] ?? null) === true && in_array($result['reason'] ?? null,
-                ['cancellation_waiting_for_child', 'cancellation_waiting_for_activity'], true))) ? 200
+                ['cancellation_waiting_for_child', 'cancellation_waiting_for_activity', 'cancellation_waiting_for_service_operation'], true))) ? 200
             : (($result['reason'] ?? null) === 'task_not_found' ? 404 : 409));
     }
 }

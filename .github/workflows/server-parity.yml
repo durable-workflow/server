@@ -8,7 +8,11 @@ on:
       - scripts/conformance/server-parity/**
       - tests/Fixtures/ServerParity/**
       - tests/Fixtures/ServerParityBaselines/**
+      - tests/Fixtures/ServerParityNormalization/**
       - tests/Unit/ServerParityRunnerTest.mjs
+      - tests/Unit/ServerParityArtifactSummaryTest.mjs
+      - tests/Unit/ServerParityQueryObserverTest.mjs
+      - tests/Unit/ServerParityCodecDeadlineLoadTest.mjs
       - tests/Unit/ServerParityCooperativeContractTest.mjs
       - tests/Unit/ServerParityChildCancellationContractTest.mjs
       - tests/Support/ServerParityChildCancellationObservation.mjs
@@ -41,7 +45,11 @@ on:
       - scripts/conformance/server-parity/**
       - tests/Fixtures/ServerParity/**
       - tests/Fixtures/ServerParityBaselines/**
+      - tests/Fixtures/ServerParityNormalization/**
       - tests/Unit/ServerParityRunnerTest.mjs
+      - tests/Unit/ServerParityArtifactSummaryTest.mjs
+      - tests/Unit/ServerParityQueryObserverTest.mjs
+      - tests/Unit/ServerParityCodecDeadlineLoadTest.mjs
       - tests/Unit/ServerParityCooperativeContractTest.mjs
       - tests/Unit/ServerParityChildCancellationContractTest.mjs
       - tests/Support/ServerParityChildCancellationObservation.mjs
@@ -71,10 +79,18 @@ on:
 permissions:
   contents: read
 
+env:
+  DW_PARITY_MEMO_FIXTURE_ID: memo-activity-replay
+  DW_PARITY_MEMO_PYTHON: '1'
+  DW_PARITY_MEMO_RUST: '1'
+  DW_PARITY_CONTINUE_MEMO_UPSERTS: '1'
+
 jobs:
   published-sdk-adapters:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      RESOURCE_SCOPE: dw-codec-build-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Build the locked published SDK adapter once
@@ -112,45 +128,181 @@ jobs:
         run: bash scripts/conformance/server-parity/legacy-marker-adapters.sh
       - name: Build fresh published SDK direction adapters with the existing cache
         run: bash scripts/conformance/server-parity/sdk-direction-adapters.sh
+      - name: Build the separate corrected cohort with the existing SDK cache
+        env:
+          DW_PARITY_CORRECTED_ARTIFACTS: tests/Fixtures/ServerParityProfiles/corrected-markers/artifacts-workflow-2.5.16.json
+          DW_PARITY_CORRECTED_CARGO: sdk-cargo
+          DW_PARITY_CORRECTED_TARGET: sdk-target
+        run: bash scripts/conformance/server-parity/corrected-marker-adapters.sh
+      - name: Build the separate current query consumers once
+        run: bash scripts/conformance/server-parity/query-authority-adapters.sh
+      - name: Share current query consumers without compiler caches
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: query-authority-adapters
+          path: query-authority-adapters
+          retention-days: 1
+          if-no-files-found: error
+      - name: Share the corrected cohort without compiler caches or target trees
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: corrected-marker-adapters
+          path: corrected-marker-adapters
+          retention-days: 1
+          if-no-files-found: error
+      - name: Build one bounded optimized native artifact for deadline health
+        run: bash scripts/conformance/server-parity/codec-operations-build.sh codec-native-build
+      - name: Share the optimized binary without compiler caches
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: codec-native-build
+          path: |
+            codec-native-build/server
+            codec-native-build/build.json
+            codec-native-build/SHA256SUMS
+          retention-days: 1
+          if-no-files-found: error
+      - name: Retire the owned optimized build container
+        if: always()
+        run: |
+          build_container="$RESOURCE_SCOPE-build"
+          docker rm -f "$build_container" >/dev/null 2>&1 || true
       - name: Share thin published SDK direction adapters
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: sdk-direction-adapters
           path: sdk-direction-adapters
-          retention-days: 90
+          retention-days: 1
           if-no-files-found: error
       - name: Share genuine legacy-marker adapters without build trees or caches
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: legacy-marker-adapters
           path: legacy-marker-adapters
-          retention-days: 90
+          retention-days: 1
           if-no-files-found: error
       - name: Share thin adapters without build trees or caches
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: published-sdk-patch-adapters
           path: published-sdk-adapters
-          retention-days: 90
+          retention-days: 1
           if-no-files-found: error
+
+      - name: Keep small failed SDK setup diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: failed-sdk-setup-diagnostics
+          path: |
+            published-sdk-adapters/*-build.txt
+            published-sdk-adapters/*-install.txt
+            legacy-marker-adapters/*-build.txt
+            legacy-marker-adapters/*-install.txt
+            sdk-direction-adapters/*-build.txt
+            sdk-direction-adapters/*-install.txt
+            corrected-marker-adapters/*-build.txt
+            corrected-marker-adapters/*-install.txt
+            codec-native-build/build.txt
+            query-authority-adapters/*-build.txt
+            query-authority-adapters/*-install.txt
+          retention-days: 1
+          if-no-files-found: ignore
+
+  codec-deadline-health:
+    needs: published-sdk-adapters
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [sqlite, postgres-16, postgres-17, mysql-8.0, mysql-8.4, mariadb-10.11]
+    env:
+      RESOURCE_SCOPE: dw-codec-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ matrix.database }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Fetch this run's optimized native binary
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: codec-native-build
+          path: codec-native-build
+          digest-mismatch: error
+      - name: Fetch this run's normally installed corrected PHP SDK
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: corrected-marker-adapters
+          path: corrected-marker-adapters
+          digest-mismatch: error
+      - name: Check exact binary provenance and execute one fresh original per family
+        run: |
+          set -euo pipefail
+          (cd codec-native-build; sha256sum -c SHA256SUMS)
+          chmod +x codec-native-build/server
+          bash scripts/conformance/server-parity/codec-operations-cell.sh \
+            '${{ matrix.database }}' cpu-cell codec-native-build corrected-marker-adapters/php codec-evidence
+      - name: Retire this cell's exact owned resources
+        if: always()
+        run: |
+          scope="$RESOURCE_SCOPE"
+          native_server="$scope-native"
+          db="$scope-db"
+          probe="$scope-ready"
+          observer="$RESOURCE_SCOPE-native-codec-observer"
+          docker rm -f "$observer" "$probe" "$native_server" >/dev/null 2>&1 || true
+          docker stop --time 10 "$db" >/dev/null 2>&1 || true
+          docker rm "$db" >/dev/null 2>&1 || true
+          docker network rm "$scope" >/dev/null 2>&1 || true
+          if test -d codec-evidence/state; then rm -r -- codec-evidence/state; fi
+      - name: Publish the bounded outcome
+        if: always()
+        run: |
+          if test -f codec-evidence/database-audit.json; then
+            printf 'Database: %s\n\n' '${{ matrix.database }}' >> "$GITHUB_STEP_SUMMARY"
+            cat codec-evidence/database-audit.json >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf 'CPU/deadline original did not qualify. See this job diagnostics.\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Keep small outcomes and failure diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: codec-deadline-health-${{ matrix.database }}
+          path: |
+            codec-evidence/build.json
+            codec-evidence/database*.json
+            codec-evidence/database-version.txt
+            codec-evidence/codec-*-contract.txt
+            codec-evidence/codec-*-controls.txt
+            codec-evidence/limits.json
+            codec-evidence/*state.json
+            codec-evidence/server-log.txt
+            codec-evidence/server-ready-errors.txt
+            codec-evidence/profile.txt
+            codec-evidence/failed.json
+          retention-days: 1
+          if-no-files-found: warn
 
   mysql-execution:
     needs: published-sdk-adapters
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Corrected marker/range/clock coverage expands the job; scenario budgets stay fixed.
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
         include:
           - label: mysql-8.0
             image: mirror.gcr.io/library/mysql@sha256:62fb722c78b24245ddff1796a0fcee4a49cc5b87e0aaaf20c92d1da9e0a2497b
-            memory: 1g
+            # The expanded original was OOM-killed at 1 GiB during native pressure.
+            memory: 2g
           - label: existing-php-mysql-matrix
             image: mirror.gcr.io/library/mysql@sha256:679e7e924f38a3cbb62a3d7df32924b83f7321a602d3f9f967c01b3df18495d6
-            memory: 1g
+            # The expanded shared database was OOM-killed at 1 GiB before TLS checks.
+            memory: 2g
           - label: mariadb-10.11
             image: mirror.gcr.io/library/mariadb@sha256:7db29378d4fdab73f8123bbc2b48905c90d1a4b00cf848b028f1e81e623257f2
-            memory: 512m
+            # Both expanded originals exhausted the 512 MiB DB fixture ceiling.
+            memory: 1g
     env:
       RESOURCE_SCOPE: dw-mysql-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ matrix.label }}
       MYSQL_IMAGE: ${{ matrix.image }}
@@ -163,6 +315,12 @@ jobs:
           name: published-sdk-patch-adapters
           path: published-sdk-adapters
           digest-mismatch: error
+      - name: Fetch this run's current query consumers
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: query-authority-adapters
+          path: query-authority-adapters
+          digest-mismatch: error
       - name: Fetch this run's genuine legacy-marker adapters
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -174,6 +332,12 @@ jobs:
         with:
           name: sdk-direction-adapters
           path: sdk-direction-adapters
+          digest-mismatch: error
+      - name: Fetch this run's corrected cohort adapters
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: corrected-marker-adapters
+          path: corrected-marker-adapters
           digest-mismatch: error
       - name: Create TLS fixture certificates
         run: |
@@ -239,7 +403,7 @@ jobs:
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" \
             -v "$PWD/parity-evidence:/evidence" -w /source/rust --entrypoint bash \
             mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0 -c \
-            'cargo test --locked --lib runtime::mysql::tests::qualification_ -- --ignored --nocapture --test-threads=2 > /evidence/mysql-tests.txt && cargo test --locked --test execution -- --nocapture --test-threads=2 > /evidence/mysql-execution-tests.txt && cargo build --locked'
+            'cargo test --locked --lib runtime::mysql:: -- --ignored --skip runtime::mysql::tests::bootstrap_child --nocapture --test-threads=2 > /evidence/mysql-tests.txt && cargo test --locked --test execution -- --nocapture --test-threads=2 > /evidence/mysql-execution-tests.txt && cargo build --locked'
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
             -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=native_ref \
             -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \
@@ -257,6 +421,7 @@ jobs:
             -v "$PWD:/source:ro" -w /source "$image" \
             scripts/conformance/server-parity/mysql-schema.php compare php_ref native_ref > parity-evidence/catalog-comparison.json
       - name: Compare three runtimes, recover killed native nodes and refuse published PHP takeover
+        id: prepare_runtime_comparison
         run: |
           set -euo pipefail
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
@@ -379,15 +544,41 @@ jobs:
           docker stop --time 30 "$RESOURCE_SCOPE-sdk-child-directions-server"
           bash scripts/conformance/server-parity/sdk-direction-profile.sh mysql http://parity-native-a:8080 timer
           docker stop --time 30 "$RESOURCE_SCOPE-sdk-timers-server"
-          # Separate queues/evidence; await both profiles and preserve either failure.
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh mysql http://parity-native-a:8080 signal > parity-evidence/sdk-signals-profile.log 2>&1 &
-          query_status=0
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh mysql http://parity-native-a:8080 query || query_status=$?
-          signal_status=0
-          wait %1 || signal_status=$?
-          cat parity-evidence/sdk-signals-profile.log
+          # Separate queues/databases/evidence; preserve statuses even after children exit.
+          (
+            signal_status=0
+            bash scripts/conformance/server-parity/sdk-direction-profile.sh mysql http://parity-native-a:8080 signal > parity-evidence/sdk-signals-profile.log 2>&1 || signal_status=$?
+            printf '%s\n' "$signal_status" > parity-evidence/sdk-signals-profile.status
+          ) &
+          (
+            query_status=0
+            bash scripts/conformance/server-parity/sdk-direction-profile.sh mysql http://parity-native-a:8080 query > parity-evidence/sdk-queries-profile.log 2>&1 || query_status=$?
+            printf '%s\n' "$query_status" > parity-evidence/sdk-queries-profile.status
+          ) &
+          update_status=0
+          bash scripts/conformance/server-parity/sdk-direction-profile.sh mysql http://parity-native-a:8080 update || update_status=$?
+          docker stop --time 30 "$RESOURCE_SCOPE-sdk-updates-server" || true
+          failure_status=0
+          bash scripts/conformance/server-parity/sdk-direction-profile.sh mysql http://parity-native-a:8080 update-failure || failure_status=$?
+          wait
+          signal_status=$(cat parity-evidence/sdk-signals-profile.status)
+          query_status=$(cat parity-evidence/sdk-queries-profile.status)
+          cat parity-evidence/sdk-signals-profile.log parity-evidence/sdk-queries-profile.log
+          for completed_profile in sdk-signals sdk-queries sdk-update-failures; do
+            docker stop --time 30 "$RESOURCE_SCOPE-$completed_profile-server" || true
+          done
+          namespace_signal_status=0
+          bash scripts/conformance/server-parity/sdk-direction-profile.sh mysql http://parity-native-a:8080 namespace-signal || namespace_signal_status=$?
           test "$signal_status" -eq 0
           test "$query_status" -eq 0
+          test "$update_status" -eq 0
+          test "$failure_status" -eq 0
+          test "$namespace_signal_status" -eq 0
+          docker stop --time 30 "$RESOURCE_SCOPE-sdk-namespace-signals-server" || true
+          selected_run_signal_status=0
+          bash scripts/conformance/server-parity/sdk-direction-profile.sh mysql http://parity-native-a:8080 selected-run-signal || selected_run_signal_status=$?
+          docker stop --time 30 "$RESOURCE_SCOPE-sdk-selected-run-signals-server" || true
+          test "$selected_run_signal_status" -eq 0
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint sh \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" -ec '
@@ -455,6 +646,29 @@ jobs:
           cmp parity-evidence/catalog-before.json parity-evidence/catalog-after.json
       - name: Compare separate configured role-token cohort
         run: bash scripts/conformance/server-parity/role-profile.sh mysql
+      - name: Compare corrected markers, ranges, clocks and activity expiry
+        if: ${{ !cancelled() && steps.prepare_runtime_comparison.outcome == 'success' }}
+        # The preceding process-loss case deliberately kills native-a.
+        run: bash scripts/conformance/server-parity/corrected-marker-shared-profile.sh mysql http://parity-native-b:8080
+      - name: Retire corrected cohort resources
+        if: always()
+        run: bash scripts/conformance/server-parity/corrected-marker-cleanup.sh mysql
+      - name: Compare installed local external payload consumers
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: bash scripts/conformance/server-parity/external-consumer-profile.sh mysql
+      - name: Retire local external consumer resources
+        if: always()
+        timeout-minutes: 5
+        run: bash scripts/conformance/server-parity/external-consumer-cleanup.sh mysql
+      - name: Compare published query deadlines and installed Worker authority
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: bash scripts/conformance/server-parity/query-authority-cohort.sh mysql
+      - name: Retire query authority resources
+        if: always()
+        timeout-minutes: 5
+        run: bash scripts/conformance/server-parity/query-authority-cleanup.sh mysql
       - name: Compare pinned PHP, embedded and native worker-fencing source cohort
         if: ${{ !cancelled() }}
         run: bash scripts/conformance/server-parity/worker-fencing-profile.sh mysql
@@ -502,6 +716,10 @@ jobs:
           docker logs "$RESOURCE_SCOPE-php-maintenance" > parity-evidence/php-maintenance.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-native-a" > parity-evidence/native-a.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-native-b" > parity-evidence/native-b.log 2>&1 || true
+          docker inspect --format '{{json .State}}' "$RESOURCE_SCOPE-native-a" > parity-evidence/native-a-state.json 2>&1 || true
+          docker inspect --format '{{json .State}}' "$RESOURCE_SCOPE-native-b" > parity-evidence/native-b-state.json 2>&1 || true
+          docker inspect --format '{"memory":{{json .HostConfig.Memory}},"memory_swap":{{json .HostConfig.MemorySwap}},"nano_cpus":{{json .HostConfig.NanoCpus}}}' "$RESOURCE_SCOPE-native-a" > parity-evidence/native-a-limits.json 2>&1 || true
+          docker inspect --format '{"memory":{{json .HostConfig.Memory}},"memory_swap":{{json .HostConfig.MemorySwap}},"nano_cpus":{{json .HostConfig.NanoCpus}}}' "$RESOURCE_SCOPE-native-b" > parity-evidence/native-b-limits.json 2>&1 || true
           docker logs "$RESOURCE_SCOPE-recovered" > parity-evidence/native-recovered.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-db" > parity-evidence/database.log 2>&1 || true
           bash scripts/conformance/server-parity/range-repair-cleanup.sh mysql
@@ -510,7 +728,12 @@ jobs:
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh mysql child
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh mysql timer
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh mysql signal
+          bash scripts/conformance/server-parity/sdk-direction-cleanup.sh mysql namespace-signal
+          bash scripts/conformance/server-parity/sdk-direction-cleanup.sh mysql selected-run-signal
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh mysql query
+          bash scripts/conformance/server-parity/sdk-direction-cleanup.sh mysql update
+          bash scripts/conformance/server-parity/sdk-direction-cleanup.sh mysql update-failure
+          bash scripts/conformance/server-parity/corrected-marker-cleanup.sh mysql
           docker inspect --format '{{json .State}}' "$RESOURCE_SCOPE-db" > parity-evidence/database-state.json 2>&1 || true
           docker inspect --format '{{json .HostConfig.Memory}}' "$RESOURCE_SCOPE-db" > parity-evidence/database-memory-limit.json 2>&1 || true
           for profile in fence pressure; do
@@ -525,18 +748,31 @@ jobs:
           done
           docker rm -f "$RESOURCE_SCOPE-php" "$RESOURCE_SCOPE-php-maintenance" "$RESOURCE_SCOPE-native-a" "$RESOURCE_SCOPE-native-b" "$RESOURCE_SCOPE-recovered" "$RESOURCE_SCOPE-db" || true
           docker network rm "$RESOURCE_SCOPE" || true
-      - name: Retain MySQL execution evidence
+      - name: Summarize MySQL execution evidence
+        if: always()
+        env:
+          PARITY_JOB_OUTCOME: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          mkdir -p parity-evidence parity-summary
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
+          docker run --rm --user="$(id -u):$(id -g)" --network=none --cpus=1 --memory=256m --memory-swap=256m \
+            --entrypoint node -e PARITY_JOB_OUTCOME -e GITHUB_SHA \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence:ro" -v "$PWD/parity-summary:/summary" \
+            "$image" /source/scripts/conformance/server-parity/artifact-summary.mjs /evidence /summary
+      - name: Retain MySQL execution summary
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: mysql-execution-${{ matrix.label }}
-          path: parity-evidence
-          retention-days: 90
+          path: parity-summary
+          retention-days: 1
 
   postgres-storage:
     needs: published-sdk-adapters
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Corrected marker/range/clock coverage expands the job; scenario budgets stay fixed.
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
@@ -556,6 +792,12 @@ jobs:
           name: published-sdk-patch-adapters
           path: published-sdk-adapters
           digest-mismatch: error
+      - name: Fetch this run's current query consumers
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: query-authority-adapters
+          path: query-authority-adapters
+          digest-mismatch: error
       - name: Fetch this run's genuine legacy-marker adapters
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -567,6 +809,12 @@ jobs:
         with:
           name: sdk-direction-adapters
           path: sdk-direction-adapters
+          digest-mismatch: error
+      - name: Fetch this run's corrected cohort adapters
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: corrected-marker-adapters
+          path: corrected-marker-adapters
           digest-mismatch: error
       - name: Bootstrap independent published PHP and native PostgreSQL databases
         env:
@@ -625,6 +873,7 @@ jobs:
             -v "$PWD:/source:ro" -w /source "$image" \
             scripts/conformance/server-parity/postgres-schema.php compare php_ref native_ref > parity-evidence/catalog-comparison.json
       - name: Compare three runtimes, recover killed native nodes and refuse published PHP takeover
+        id: prepare_runtime_comparison
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
         run: |
@@ -748,15 +997,41 @@ jobs:
           docker stop --time 30 "$RESOURCE_SCOPE-sdk-child-directions-server"
           bash scripts/conformance/server-parity/sdk-direction-profile.sh pgsql http://parity-native-a:8080 timer
           docker stop --time 30 "$RESOURCE_SCOPE-sdk-timers-server"
-          # Separate queues/evidence; await both profiles and preserve either failure.
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh pgsql http://parity-native-a:8080 signal > parity-evidence/sdk-signals-profile.log 2>&1 &
-          query_status=0
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh pgsql http://parity-native-a:8080 query || query_status=$?
-          signal_status=0
-          wait %1 || signal_status=$?
-          cat parity-evidence/sdk-signals-profile.log
+          # Separate queues/databases/evidence; preserve statuses even after children exit.
+          (
+            signal_status=0
+            bash scripts/conformance/server-parity/sdk-direction-profile.sh pgsql http://parity-native-a:8080 signal > parity-evidence/sdk-signals-profile.log 2>&1 || signal_status=$?
+            printf '%s\n' "$signal_status" > parity-evidence/sdk-signals-profile.status
+          ) &
+          (
+            query_status=0
+            bash scripts/conformance/server-parity/sdk-direction-profile.sh pgsql http://parity-native-a:8080 query > parity-evidence/sdk-queries-profile.log 2>&1 || query_status=$?
+            printf '%s\n' "$query_status" > parity-evidence/sdk-queries-profile.status
+          ) &
+          update_status=0
+          bash scripts/conformance/server-parity/sdk-direction-profile.sh pgsql http://parity-native-a:8080 update || update_status=$?
+          docker stop --time 30 "$RESOURCE_SCOPE-sdk-updates-server" || true
+          failure_status=0
+          bash scripts/conformance/server-parity/sdk-direction-profile.sh pgsql http://parity-native-a:8080 update-failure || failure_status=$?
+          wait
+          signal_status=$(cat parity-evidence/sdk-signals-profile.status)
+          query_status=$(cat parity-evidence/sdk-queries-profile.status)
+          cat parity-evidence/sdk-signals-profile.log parity-evidence/sdk-queries-profile.log
+          for completed_profile in sdk-signals sdk-queries sdk-update-failures; do
+            docker stop --time 30 "$RESOURCE_SCOPE-$completed_profile-server" || true
+          done
+          namespace_signal_status=0
+          bash scripts/conformance/server-parity/sdk-direction-profile.sh pgsql http://parity-native-a:8080 namespace-signal || namespace_signal_status=$?
           test "$signal_status" -eq 0
           test "$query_status" -eq 0
+          test "$update_status" -eq 0
+          test "$failure_status" -eq 0
+          test "$namespace_signal_status" -eq 0
+          docker stop --time 30 "$RESOURCE_SCOPE-sdk-namespace-signals-server" || true
+          selected_run_signal_status=0
+          bash scripts/conformance/server-parity/sdk-direction-profile.sh pgsql http://parity-native-a:8080 selected-run-signal || selected_run_signal_status=$?
+          docker stop --time 30 "$RESOURCE_SCOPE-sdk-selected-run-signals-server" || true
+          test "$selected_run_signal_status" -eq 0
           docker run --rm --user=1000:1000 --network "$RESOURCE_SCOPE" --entrypoint sh \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" -ec '
@@ -826,6 +1101,41 @@ jobs:
         env:
           POSTGRES_IMAGE: ${{ matrix.image }}
         run: bash scripts/conformance/server-parity/role-profile.sh pgsql
+      - name: Compare corrected markers, ranges, clocks and activity expiry
+        if: ${{ !cancelled() && steps.prepare_runtime_comparison.outcome == 'success' }}
+        env:
+          POSTGRES_IMAGE: ${{ matrix.image }}
+        # The preceding process-loss case deliberately kills native-a.
+        run: bash scripts/conformance/server-parity/corrected-marker-shared-profile.sh pgsql http://parity-native-b:8080
+      - name: Retire corrected cohort resources
+        if: always()
+        env:
+          POSTGRES_IMAGE: ${{ matrix.image }}
+        run: bash scripts/conformance/server-parity/corrected-marker-cleanup.sh pgsql
+      - name: Compare installed local external payload consumers
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        env:
+          POSTGRES_IMAGE: ${{ matrix.image }}
+        run: bash scripts/conformance/server-parity/external-consumer-profile.sh pgsql
+      - name: Retire local external consumer resources
+        if: always()
+        timeout-minutes: 5
+        env:
+          POSTGRES_IMAGE: ${{ matrix.image }}
+        run: bash scripts/conformance/server-parity/external-consumer-cleanup.sh pgsql
+      - name: Compare published query deadlines and installed Worker authority
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        env:
+          POSTGRES_IMAGE: ${{ matrix.image }}
+        run: bash scripts/conformance/server-parity/query-authority-cohort.sh pgsql
+      - name: Retire query authority resources
+        if: always()
+        timeout-minutes: 5
+        env:
+          POSTGRES_IMAGE: ${{ matrix.image }}
+        run: bash scripts/conformance/server-parity/query-authority-cleanup.sh pgsql
       - name: Compare pinned PHP, embedded and native worker-fencing source cohort
         if: ${{ !cancelled() }}
         env:
@@ -903,6 +1213,10 @@ jobs:
           docker logs "$RESOURCE_SCOPE-php-maintenance" > parity-evidence/php-maintenance.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-native-a" > parity-evidence/native-a.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-native-b" > parity-evidence/native-b.log 2>&1 || true
+          docker inspect --format '{{json .State}}' "$RESOURCE_SCOPE-native-a" > parity-evidence/native-a-state.json 2>&1 || true
+          docker inspect --format '{{json .State}}' "$RESOURCE_SCOPE-native-b" > parity-evidence/native-b-state.json 2>&1 || true
+          docker inspect --format '{"memory":{{json .HostConfig.Memory}},"memory_swap":{{json .HostConfig.MemorySwap}},"nano_cpus":{{json .HostConfig.NanoCpus}}}' "$RESOURCE_SCOPE-native-a" > parity-evidence/native-a-limits.json 2>&1 || true
+          docker inspect --format '{"memory":{{json .HostConfig.Memory}},"memory_swap":{{json .HostConfig.MemorySwap}},"nano_cpus":{{json .HostConfig.NanoCpus}}}' "$RESOURCE_SCOPE-native-b" > parity-evidence/native-b-limits.json 2>&1 || true
           docker logs "$RESOURCE_SCOPE-recovered" > parity-evidence/native-recovered.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-db" > parity-evidence/postgres.log 2>&1 || true
           bash scripts/conformance/server-parity/range-repair-cleanup.sh pgsql
@@ -911,7 +1225,12 @@ jobs:
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh pgsql child
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh pgsql timer
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh pgsql signal
+          bash scripts/conformance/server-parity/sdk-direction-cleanup.sh pgsql namespace-signal
+          bash scripts/conformance/server-parity/sdk-direction-cleanup.sh pgsql selected-run-signal
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh pgsql query
+          bash scripts/conformance/server-parity/sdk-direction-cleanup.sh pgsql update
+          bash scripts/conformance/server-parity/sdk-direction-cleanup.sh pgsql update-failure
+          bash scripts/conformance/server-parity/corrected-marker-cleanup.sh pgsql
           docker inspect --format '{{json .State}}' "$RESOURCE_SCOPE-db" > parity-evidence/database-state.json 2>&1 || true
           docker inspect --format '{{json .HostConfig.Memory}}' "$RESOURCE_SCOPE-db" > parity-evidence/database-memory-limit.json 2>&1 || true
           for profile in fence pressure; do
@@ -926,18 +1245,31 @@ jobs:
           done
           docker rm -f "$RESOURCE_SCOPE-php" "$RESOURCE_SCOPE-php-maintenance" "$RESOURCE_SCOPE-native-a" "$RESOURCE_SCOPE-native-b" "$RESOURCE_SCOPE-recovered" "$RESOURCE_SCOPE-db" || true
           docker network rm "$RESOURCE_SCOPE" || true
-      - name: Retain PostgreSQL storage evidence
+      - name: Summarize PostgreSQL storage evidence
+        if: always()
+        env:
+          PARITY_JOB_OUTCOME: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          mkdir -p parity-evidence parity-summary
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
+          docker run --rm --user="$(id -u):$(id -g)" --network=none --cpus=1 --memory=256m --memory-swap=256m \
+            --entrypoint node -e PARITY_JOB_OUTCOME -e GITHUB_SHA \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence:ro" -v "$PWD/parity-summary:/summary" \
+            "$image" /source/scripts/conformance/server-parity/artifact-summary.mjs /evidence /summary
+      - name: Retain PostgreSQL storage summary
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: postgres-storage-${{ matrix.label }}
-          path: parity-evidence
-          retention-days: 90
+          path: parity-summary
+          retention-days: 1
 
   execution-and-codec:
     needs: published-sdk-adapters
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Corrected marker/range/clock coverage expands the job; scenario budgets stay fixed.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Fetch this run's published SDK adapters
@@ -945,6 +1277,12 @@ jobs:
         with:
           name: published-sdk-patch-adapters
           path: published-sdk-adapters
+          digest-mismatch: error
+      - name: Fetch this run's current query consumers
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: query-authority-adapters
+          path: query-authority-adapters
           digest-mismatch: error
       - name: Fetch this run's genuine legacy-marker adapters
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -957,6 +1295,12 @@ jobs:
         with:
           name: sdk-direction-adapters
           path: sdk-direction-adapters
+          digest-mismatch: error
+      - name: Fetch this run's corrected cohort adapters
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: corrected-marker-adapters
+          path: corrected-marker-adapters
           digest-mismatch: error
       - name: Execute official Rust codec and cross-decode with published PHP
         run: |
@@ -981,6 +1325,7 @@ jobs:
             cargo run --locked --offline --example codec-fixtures -- \
             ../tests/Fixtures/ServerParity/Codec/v1.json /evidence/php-codec.json > parity-evidence/cross-decode.json
       - name: Execute and compare Rust, published PHP and embedded fixtures
+        id: prepare_runtime_comparison
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: |
@@ -994,7 +1339,13 @@ jobs:
             -e COMPOSER_HOME=/tmp/composer -v "$PWD:/source" -w /source "$image" \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
           docker run --rm --user=1000:1000 --entrypoint node -v "$PWD:/source:ro" -w /source \
-            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityTaskRetryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs > parity-evidence/comparator-tests.txt
+            "$image" --test tests/Unit/ServerParityRunnerTest.mjs tests/Unit/ServerParityCooperativeContractTest.mjs tests/Unit/ServerParityChildCancellationContractTest.mjs tests/Unit/ServerParityScheduleContractTest.mjs tests/Unit/ServerParityVisibilityContractTest.mjs tests/Unit/ServerParityAdmissionContractTest.mjs tests/Unit/ServerParityRoleTokenContractTest.mjs tests/Unit/ServerParityWorkerDeregistrationContractTest.mjs tests/Unit/ServerParityPatchDeploymentContractTest.mjs tests/Unit/ServerParityWaitingHistoryContractTest.mjs tests/Unit/ServerParityTaskRetryContractTest.mjs tests/Unit/ServerParityPublishedPatchContractTest.mjs tests/Unit/ServerParityPublishedPatchTransportTest.mjs tests/Unit/ServerParityRecordFileTest.mjs > parity-evidence/comparator-tests.txt
+          docker run --rm --user=1000:1000 --cpus=1 --memory=256m --memory-swap=256m \
+            --network=none --entrypoint node -v "$PWD:/source:ro" -w /source \
+            "$image" --test tests/Unit/ServerParityCodecDeadlineLoadTest.mjs > parity-evidence/codec-load-tests.txt
+          docker run --rm --user=1000:1000 --cpus=1 --memory=256m --memory-swap=256m \
+            --network=none --entrypoint node -v "$PWD:/source:ro" -w /source \
+            "$image" --test tests/Unit/ServerParityArtifactSummaryTest.mjs tests/Unit/ServerParityQueryObserverTest.mjs > parity-evidence/artifact-summary-tests.txt
           docker network create "$RESOURCE_SCOPE"
           docker run -d --name "$RESOURCE_SCOPE-rust" --network "$RESOURCE_SCOPE" --network-alias=parity-rust \
             --user="$(id -u):$(id -g)" --cpus=1 --memory=256m --memory-swap=256m \
@@ -1090,15 +1441,41 @@ jobs:
           docker stop --time 30 "$RESOURCE_SCOPE-sdk-child-directions-server"
           bash scripts/conformance/server-parity/sdk-direction-profile.sh sqlite http://parity-rust:8080 timer
           docker stop --time 30 "$RESOURCE_SCOPE-sdk-timers-server"
-          # Separate queues/evidence; await both profiles and preserve either failure.
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh sqlite http://parity-rust:8080 signal > parity-evidence/sdk-signals-profile.log 2>&1 &
-          query_status=0
-          bash scripts/conformance/server-parity/sdk-direction-profile.sh sqlite http://parity-rust:8080 query || query_status=$?
-          signal_status=0
-          wait %1 || signal_status=$?
-          cat parity-evidence/sdk-signals-profile.log
+          # Separate queues/databases/evidence; preserve statuses even after children exit.
+          (
+            signal_status=0
+            bash scripts/conformance/server-parity/sdk-direction-profile.sh sqlite http://parity-rust:8080 signal > parity-evidence/sdk-signals-profile.log 2>&1 || signal_status=$?
+            printf '%s\n' "$signal_status" > parity-evidence/sdk-signals-profile.status
+          ) &
+          (
+            query_status=0
+            bash scripts/conformance/server-parity/sdk-direction-profile.sh sqlite http://parity-rust:8080 query > parity-evidence/sdk-queries-profile.log 2>&1 || query_status=$?
+            printf '%s\n' "$query_status" > parity-evidence/sdk-queries-profile.status
+          ) &
+          update_status=0
+          bash scripts/conformance/server-parity/sdk-direction-profile.sh sqlite http://parity-rust:8080 update || update_status=$?
+          docker stop --time 30 "$RESOURCE_SCOPE-sdk-updates-server" || true
+          failure_status=0
+          bash scripts/conformance/server-parity/sdk-direction-profile.sh sqlite http://parity-rust:8080 update-failure || failure_status=$?
+          wait
+          signal_status=$(cat parity-evidence/sdk-signals-profile.status)
+          query_status=$(cat parity-evidence/sdk-queries-profile.status)
+          cat parity-evidence/sdk-signals-profile.log parity-evidence/sdk-queries-profile.log
+          for completed_profile in sdk-signals sdk-queries sdk-update-failures; do
+            docker stop --time 30 "$RESOURCE_SCOPE-$completed_profile-server" || true
+          done
+          namespace_signal_status=0
+          bash scripts/conformance/server-parity/sdk-direction-profile.sh sqlite http://parity-rust:8080 namespace-signal || namespace_signal_status=$?
           test "$signal_status" -eq 0
           test "$query_status" -eq 0
+          test "$update_status" -eq 0
+          test "$failure_status" -eq 0
+          test "$namespace_signal_status" -eq 0
+          docker stop --time 30 "$RESOURCE_SCOPE-sdk-namespace-signals-server" || true
+          selected_run_signal_status=0
+          bash scripts/conformance/server-parity/sdk-direction-profile.sh sqlite http://parity-rust:8080 selected-run-signal || selected_run_signal_status=$?
+          docker stop --time 30 "$RESOURCE_SCOPE-sdk-selected-run-signals-server" || true
+          test "$selected_run_signal_status" -eq 0
           docker run --rm --user=1000:1000 --entrypoint php --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DW_PARITY_TOKEN=parity-test-token "$image" scripts/conformance/server-parity/restart.php \
@@ -1167,6 +1544,40 @@ jobs:
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: bash scripts/conformance/server-parity/role-profile.sh sqlite
+      - name: Compare corrected markers, ranges, clocks and activity expiry
+        if: ${{ !cancelled() && steps.prepare_runtime_comparison.outcome == 'success' }}
+        env:
+          RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: bash scripts/conformance/server-parity/corrected-marker-shared-profile.sh sqlite http://parity-recovered:8080
+      - name: Retire corrected cohort resources
+        if: always()
+        env:
+          RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: bash scripts/conformance/server-parity/corrected-marker-cleanup.sh sqlite
+      - name: Compare installed local external payload consumers
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        env:
+          RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: bash scripts/conformance/server-parity/external-consumer-profile.sh sqlite
+      - name: Retire local external consumer resources
+        if: always()
+        timeout-minutes: 5
+        env:
+          RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: bash scripts/conformance/server-parity/external-consumer-cleanup.sh sqlite
+      - name: Compare published query deadlines and installed Worker authority
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        env:
+          RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: bash scripts/conformance/server-parity/query-authority-cohort.sh sqlite
+      - name: Retire query authority resources
+        if: always()
+        timeout-minutes: 5
+        env:
+          RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: bash scripts/conformance/server-parity/query-authority-cleanup.sh sqlite
       - name: Compare pinned PHP, embedded and native worker-fencing source cohort
         if: ${{ !cancelled() }}
         env:
@@ -1186,13 +1597,22 @@ jobs:
           docker logs "$RESOURCE_SCOPE-php-maintenance" > parity-evidence/php-maintenance.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-rust" > parity-evidence/rust.log 2>&1 || true
           docker logs "$RESOURCE_SCOPE-recovered" > parity-evidence/rust-recovered.log 2>&1 || true
+          docker inspect --format '{{json .State}}' "$RESOURCE_SCOPE-rust" > parity-evidence/rust-state.json 2>&1 || true
+          docker inspect --format '{{json .State}}' "$RESOURCE_SCOPE-recovered" > parity-evidence/rust-recovered-state.json 2>&1 || true
+          docker inspect --format '{"memory":{{json .HostConfig.Memory}},"memory_swap":{{json .HostConfig.MemorySwap}},"nano_cpus":{{json .HostConfig.NanoCpus}}}' "$RESOURCE_SCOPE-rust" > parity-evidence/rust-limits.json 2>&1 || true
+          docker inspect --format '{"memory":{{json .HostConfig.Memory}},"memory_swap":{{json .HostConfig.MemorySwap}},"nano_cpus":{{json .HostConfig.NanoCpus}}}' "$RESOURCE_SCOPE-recovered" > parity-evidence/rust-recovered-limits.json 2>&1 || true
           bash scripts/conformance/server-parity/range-repair-cleanup.sh sqlite
           bash scripts/conformance/server-parity/range-repair-cleanup.sh sqlite pending-native
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh sqlite
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh sqlite child
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh sqlite timer
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh sqlite signal
+          bash scripts/conformance/server-parity/sdk-direction-cleanup.sh sqlite namespace-signal
+          bash scripts/conformance/server-parity/sdk-direction-cleanup.sh sqlite selected-run-signal
           bash scripts/conformance/server-parity/sdk-direction-cleanup.sh sqlite query
+          bash scripts/conformance/server-parity/sdk-direction-cleanup.sh sqlite update
+          bash scripts/conformance/server-parity/sdk-direction-cleanup.sh sqlite update-failure
+          bash scripts/conformance/server-parity/corrected-marker-cleanup.sh sqlite
           for profile in fence pressure; do
             for target in php native; do
               docker logs "$RESOURCE_SCOPE-$profile-$target" > "parity-evidence/$profile-$target.log" 2>&1 || true
@@ -1208,11 +1628,23 @@ jobs:
           docker rm -f "$RESOURCE_SCOPE-rust" || true
           docker rm -f "$RESOURCE_SCOPE-recovered" || true
           docker network rm "$RESOURCE_SCOPE" || true
-      - name: Retain fixture evidence
+      - name: Summarize fixture evidence
+        if: always()
+        env:
+          PARITY_JOB_OUTCOME: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          mkdir -p parity-evidence parity-summary
+          image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.5.14.json)
+          docker run --rm --user="$(id -u):$(id -g)" --network=none --cpus=1 --memory=256m --memory-swap=256m \
+            --entrypoint node -e PARITY_JOB_OUTCOME -e GITHUB_SHA \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence:ro" -v "$PWD/parity-summary:/summary" \
+            "$image" /source/scripts/conformance/server-parity/artifact-summary.mjs /evidence /summary
+      - name: Retain fixture summary
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: shared-server-fixtures
-          path: parity-evidence
-          retention-days: 90
+          path: parity-summary
+          retention-days: 1
           if-no-files-found: error

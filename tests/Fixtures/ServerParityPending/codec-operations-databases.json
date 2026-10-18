@@ -1,0 +1,12 @@
+{
+  "schema": "durable-workflow.server-port-codec-databases/v1",
+  "contract": "Use a fresh native-owned database per CPU/deadline original. Database resources are separate from the unchanged one-CPU/512-MiB/no-swap service and installed observer. Never connect PHP to native state. These are the existing six qualified database images, not alternate engines selected after a failure. Actual source, image, resource, workload and database identities accompany each result. This does not qualify TLS, performance, upgrade or all database behavior by itself.",
+  "databases": [
+    {"id":"sqlite", "connection":"sqlite", "image":null, "cpu_limit":null, "memory_bytes":null},
+    {"id":"postgres-16", "connection":"pgsql", "image":"mirror.gcr.io/library/postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94", "cpu_limit":1, "memory_bytes":1073741824},
+    {"id":"postgres-17", "connection":"pgsql", "image":"mirror.gcr.io/library/postgres@sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826", "cpu_limit":1, "memory_bytes":1073741824},
+    {"id":"mysql-8.0", "connection":"mysql", "image":"mirror.gcr.io/library/mysql@sha256:62fb722c78b24245ddff1796a0fcee4a49cc5b87e0aaaf20c92d1da9e0a2497b", "cpu_limit":1, "memory_bytes":2147483648},
+    {"id":"mysql-8.4", "connection":"mysql", "image":"mirror.gcr.io/library/mysql@sha256:679e7e924f38a3cbb62a3d7df32924b83f7321a602d3f9f967c01b3df18495d6", "cpu_limit":1, "memory_bytes":2147483648},
+    {"id":"mariadb-10.11", "connection":"mariadb", "image":"mirror.gcr.io/library/mariadb@sha256:7db29378d4fdab73f8123bbc2b48905c90d1a4b00cf848b028f1e81e623257f2", "cpu_limit":1, "memory_bytes":1073741824}
+  ]
+}

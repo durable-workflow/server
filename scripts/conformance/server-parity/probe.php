@@ -25,6 +25,7 @@ use ServerParity\SdkQueriesWorkflow;
 use ServerParity\SdkSignalsWorkflow;
 use ServerParity\QueriesWorkflow;
 use ServerParity\UpdatesWorkflow;
+use ServerParity\SdkUpdatesWorkflow;
 use ServerParity\TwoChildrenWorkflow;
 use ServerParity\OneChildWorkflow;
 use ServerParity\ChildEchoWorkflow;
@@ -53,7 +54,7 @@ $mode = $options['mode'] ?? '';
 $fixture = json_decode(file_get_contents($options['fixture']), true, flags: JSON_THROW_ON_ERROR);
 $workflowId = $options['workflow-id'];
 $namespace = 'default';
-$queue = $fixture['sdk_query_direction']['task_queue'] ?? $fixture['sdk_signal_direction']['task_queue'] ?? $fixture['sdk_timer_author']['task_queue'] ?? $fixture['sdk_child_direction']['parent_queue'] ?? $fixture['sdk_direction']['workflow_queue'] ?? 'server-parity-v1';
+$queue = $fixture['sdk_update_direction']['task_queue'] ?? $fixture['sdk_query_direction']['task_queue'] ?? $fixture['sdk_signal_direction']['task_queue'] ?? $fixture['sdk_timer_author']['task_queue'] ?? $fixture['sdk_child_direction']['parent_queue'] ?? $fixture['sdk_direction']['workflow_queue'] ?? 'server-parity-v1';
 $sdkAutoload = getenv('DW_PARITY_SDK_AUTOLOAD') ?: __DIR__.'/vendor/autoload.php';
 if (! is_file($sdkAutoload)) {
     fwrite(STDERR, "Install the locked parity SDK adapter first.\n");
@@ -553,6 +554,7 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
             'parity.v1.sdk_queries' => SdkQueriesWorkflow::class,
             'parity.v1.queries' => QueriesWorkflow::class,
             'parity.v1.updates' => UpdatesWorkflow::class,
+            'parity.v1.sdk_updates' => SdkUpdatesWorkflow::class,
             'parity.v1.two_children' => TwoChildrenWorkflow::class,
             'parity.v1.one_child' => OneChildWorkflow::class,
             'parity.v1.echo_child' => ChildEchoWorkflow::class,
@@ -585,6 +587,9 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
     }
     if (isset($fixture['sdk_query_direction'])) {
         $class = SdkQueriesWorkflow::class;
+    }
+    if (isset($fixture['sdk_update_direction'])) {
+        $class = SdkUpdatesWorkflow::class;
     }
     if (isset($fixture['retry_policy'])) {
         $class = ActivityRetryWorkflow::class;
@@ -636,14 +641,25 @@ function embeddedObservation(array $fixture, string $workflowId, string $namespa
         if (isset($fixture['update_values'])) {
             if ($pendingUpdate !== null) {
                 $completed = $stub->inspectUpdate($pendingUpdate['accepted']['update_id']);
-                if (! $completed->completed()) {
+                $expectsFailure = isset($fixture['sdk_update_failure']) && count($updates) === 0;
+                if ($expectsFailure ? ! $completed->failed() : ! $completed->completed()) {
                     throw new RuntimeException('Embedded update did not complete through its real queue job.');
                 }
                 $historyBefore = $history();
                 $duplicate = $stub->withCommandContext(CommandContext::phpApi()->with(['request' => ['request_id' => $pendingUpdate['request_id']]]))
                     ->submitUpdateWithArguments($fixture['update_name'], [$fixture['duplicate_update_value']]);
-                $result = $stub->inspectUpdate($duplicate->updateId())->result();
-                $updates[] = [...$pendingUpdate, 'result' => $result, 'typed_result' => typedValue($result),
+                $inspected = $stub->inspectUpdate($duplicate->updateId());
+                if ($expectsFailure ? ! $inspected->failed() : ! $inspected->completed()) {
+                    throw new RuntimeException('Embedded completed duplicate changed the original update outcome.');
+                }
+                $result = $inspected->result();
+                $outcome = $expectsFailure ? ['failed_result' => [
+                    'failure_id' => $completed->failureId(), 'message' => $completed->failureMessage(),
+                    'update_status' => $completed->updateStatus(), 'outcome' => $completed->outcome()],
+                    'duplicate_failed_result' => ['failure_id' => $inspected->failureId(),
+                        'message' => $inspected->failureMessage(), 'update_status' => $inspected->updateStatus(),
+                        'outcome' => $inspected->outcome()]] : ['result' => $result, 'typed_result' => typedValue($result)];
+                $updates[] = [...$pendingUpdate, ...$outcome,
                     'history_before_result' => $historyBefore, 'history_after_result' => $history()];
                 $pendingUpdate = null;
             }
@@ -796,7 +812,32 @@ try {
     require __DIR__.'/child-cancellation-probe.php';
     require __DIR__.'/cancellation-probe.php';
     require __DIR__.'/cooperative-probe.php';
-    if (isset($fixture['sdk_query_direction'])) {
+    if (isset($fixture['selected_run_signal_pair'])) {
+        require __DIR__.'/sdk-direction-probe.php';
+        require __DIR__.'/sdk-namespace-signal-probe.php';
+        require __DIR__.'/sdk-selected-run-signal-probe.php';
+        $observation = $mode === 'http'
+            ? selectedRunSignalHttpObservation($fixture, $options)
+            : selectedRunSignalEmbeddedObservation($fixture, $workflowId, $options['application-root']);
+    } elseif (isset($fixture['namespace_signal_pair'])) {
+        require __DIR__.'/sdk-direction-probe.php';
+        require __DIR__.'/sdk-namespace-signal-probe.php';
+        $observation = $mode === 'http'
+            ? namespaceSignalHttpObservation($fixture, $options)
+            : namespaceSignalEmbeddedObservation($fixture, $workflowId, $options['application-root']);
+    } elseif (isset($fixture['sdk_update_direction'])) {
+        require __DIR__.'/sdk-direction-probe.php';
+        require __DIR__.'/sdk-query-direction-probe.php';
+        require __DIR__.'/sdk-update-direction-probe.php';
+        if ($mode === 'http') {
+            $observation = sdkUpdateDirectionHttpObservation($fixture, $options);
+        } elseif ($mode === 'embedded') {
+            $observation = embeddedObservation($fixture, $workflowId, $namespace, $queue, $options['application-root']);
+            $observation['sdk_update_direction'] = ['applicable' => false, 'reason' => 'embedded_executes_php_author_definitions'];
+        } else {
+            throw new InvalidArgumentException('Mode must be http or embedded.');
+        }
+    } elseif (isset($fixture['sdk_query_direction'])) {
         require __DIR__.'/sdk-direction-probe.php';
         require __DIR__.'/sdk-query-direction-probe.php';
         if ($mode === 'http') {
@@ -818,6 +859,44 @@ try {
         } else {
             throw new InvalidArgumentException('Mode must be http or embedded.');
         }
+    } elseif (isset($fixture['activity_deadline_receipts'])) {
+        require __DIR__.'/activity-deadline-receipts-probe.php';
+        if ($mode === 'embedded') {
+            require __DIR__.'/activity-deadline-receipts-embedded.php';
+            $observation = activityDeadlineReceiptsEmbeddedObservation($fixture, $options);
+        } elseif ($mode === 'http') {
+            $observation = activityDeadlineReceiptsHttpObservation($fixture, $options);
+        } else throw new InvalidArgumentException('Mode must be http or embedded.');
+    } elseif (isset($fixture['continuation'])) {
+        require __DIR__.'/continue-probe.php';
+        $observation = continueObservation($fixture, $options);
+    } elseif (isset($fixture['memo_replay'])) {
+        require __DIR__.'/memo-probe.php';
+        $observation = memoObservation($fixture, $options);
+    } elseif (isset($fixture['activity_deadline_authority'])) {
+        require __DIR__.'/activity-deadline-probe.php';
+        if ($mode === 'embedded') {
+            require __DIR__.'/activity-deadline-embedded.php';
+            $observation = activityDeadlineEmbeddedObservation($fixture, $options);
+        } elseif ($mode === 'http') {
+            $observation = activityDeadlineHttpObservation($fixture, $options);
+        } else {
+            throw new InvalidArgumentException('Mode must be http or embedded.');
+        }
+    } elseif (isset($fixture['corrected_range'])) {
+        require __DIR__.'/corrected-range-probe.php';
+        $observation = match ($mode) {
+            'http' => correctedRangeHttpObservation($fixture, $options),
+            'embedded' => correctedRangeEmbeddedObservation($fixture, $options),
+            default => throw new InvalidArgumentException('Mode must be http or embedded.'),
+        };
+    } elseif (isset($fixture['corrected_markers'])) {
+        require __DIR__.'/corrected-marker-probe.php';
+        $observation = match ($mode) {
+            'http' => correctedMarkerHttpObservation($fixture, $options),
+            'embedded' => correctedMarkerEmbeddedObservation($fixture, $options),
+            default => throw new InvalidArgumentException('Mode must be http or embedded.'),
+        };
     } elseif (isset($fixture['range_repair'])) {
         require __DIR__.'/range-repair-probe.php';
         RangeRepairState::$changeId = $fixture['range_repair']['change_id'];
@@ -871,15 +950,40 @@ try {
     }
     $observation['sdk_php'] = ltrim(InstalledVersions::getPrettyVersion('durable-workflow/sdk'), 'v');
     $observation['sdk_php_source'] = InstalledVersions::getReference('durable-workflow/sdk');
+    if (isset($fixture['activity_deadline_receipts'])) {
+        $observation['sdk_composer_lock_sha256'] = hash_file('sha256', dirname($sdkAutoload, 2).'/composer.lock');
+        $observation['sdk_loaded_sources'] = [];
+        foreach ([Client::class => 'src/Client.php', Worker::class => 'src/Worker.php', WorkflowContext::class => 'src/Worker/WorkflowContext.php'] as $class => $path) {
+            $observation['sdk_loaded_sources'][$path] = hash_file('sha256', (new ReflectionClass($class))->getFileName());
+        }
+    }
     if (isset($fixture['range_repair'])) {
         $observation['sdk_composer_lock_sha256'] = hash_file('sha256', dirname($sdkAutoload, 2).'/composer.lock');
+    }
+    if (isset($fixture['corrected_markers']) || isset($fixture['corrected_range'])) {
+        $observation['sdk_composer_lock_sha256'] = hash_file('sha256', dirname($sdkAutoload, 2).'/composer.lock');
+        $observation['rust_consumer_cargo_lock_sha256'] = hash_file('sha256', getenv('DW_PARITY_CORRECTED_RUST_LOCK') ?: '/sdk-adapters/Cargo.lock');
+        $observation['sdk_loaded_sources'] = [];
+        foreach ([Client::class => 'src/Client.php', Worker::class => 'src/Worker.php', WorkflowContext::class => 'src/Worker/WorkflowContext.php'] as $class => $path) {
+            $observation['sdk_loaded_sources'][$path] = hash_file('sha256', (new ReflectionClass($class))->getFileName());
+        }
     }
     $observation['php_version'] = PHP_VERSION;
     if ($mode === 'embedded' && ! isset($observation['workflow_package'])) {
         $observation['workflow_package'] = ltrim(InstalledVersions::getPrettyVersion('durable-workflow/workflow'), 'v');
     }
-    if (isset($fixture['sdk_query_direction']) || isset($fixture['sdk_direction']) || isset($fixture['sdk_child_direction']) || isset($fixture['sdk_timer_author']) || isset($fixture['sdk_signal_direction'])) {
+    if (isset($fixture['sdk_update_direction']) || isset($fixture['sdk_query_direction']) || isset($fixture['sdk_direction']) || isset($fixture['sdk_child_direction']) || isset($fixture['sdk_timer_author']) || isset($fixture['sdk_signal_direction'])) {
         sdkDirectionPackageObservation($observation, $sdkAutoload, $mode === 'embedded' ? $options['application-root'] : null);
+    }
+    if (isset($fixture['namespace_signal_pair']) || isset($fixture['selected_run_signal_pair'])) {
+        $pairKey = isset($fixture['selected_run_signal_pair']) ? 'selected_run_signal_pair' : 'namespace_signal_pair';
+        $peer = &$observation[$pairKey]['peer'];
+        $peer['mode'] = $mode;
+        foreach (['sdk_php', 'sdk_php_source', 'php_version', 'workflow_package'] as $field) {
+            if (array_key_exists($field, $observation)) { $peer[$field] = $observation[$field]; }
+        }
+        sdkDirectionPackageObservation($peer, $sdkAutoload, $mode === 'embedded' ? $options['application-root'] : null);
+        unset($peer);
     }
     if ($mode === 'embedded' && isset($fixture['patch_deployment']['embedded_clock_probe']) && ! isset($observation['workflow_source'])) {
         $observation['workflow_source'] = InstalledVersions::getReference('durable-workflow/workflow');
