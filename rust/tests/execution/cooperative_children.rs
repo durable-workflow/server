@@ -277,7 +277,7 @@ async fn worker_terminal(fail: bool, rollback: bool) {
             "history_fan_out",
             "exception_count",
         ] {
-            assert!(!before[field].is_null(), "missing summary field {field}");
+            assert!(before.get(field).is_some(), "missing summary field {field}");
             assert_eq!(after[field], before[field], "{field}");
         }
         database
