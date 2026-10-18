@@ -18,5 +18,8 @@ ready and leased parent resumes, cold reads, duplicate outcomes, a missing wait
 and a forced association-write failure. The published PHP projector qualifies
 the stored-field decisions separately. Ordinary non-cancelling parent task
 conflicts, incoming child cancellation and wider propagation remain separate.
+An update-only task is not labelled as a root resume; its association stays
+unavailable, and the original cancellation deadline still closes the run and
+accepted update. Update admission and root replay scheduling are unchanged.
 No installed-observation, shared-runner, SDK, release or promotion pass follows
 from these source controls.

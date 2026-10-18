@@ -21,6 +21,12 @@ pub(super) enum ChildResolution<'a> {
     Failed(&'a Value),
 }
 
+enum ChildParentResume {
+    New,
+    Existing { id: String, status: String },
+    UpdateOnly,
+}
+
 pub(super) fn validate_child(command: &Value) -> Result<()> {
     reject_fields(
         command,
@@ -64,6 +70,40 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
+    async fn child_parent_resume(
+        tx: &mut Transaction<'_, DB>,
+        parent: &DB::Row,
+    ) -> Result<ChildParentResume> {
+        let tasks = Self::query("SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status IN ('ready','leased') ORDER BY id LIMIT 1001")
+            .bind(DB::string(parent,"id")?).fetch_all(&mut **tx).await?;
+        if tasks.is_empty() {
+            return Ok(ChildParentResume::New);
+        }
+        if Self::cancellation_request(parent)?.is_none() {
+            return Err(refuse(StatusCode::CONFLICT, "child_parent_task_conflict"));
+        }
+        if tasks.len() > 1000 {
+            return Err(refuse(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "cancellation_inventory_exceeds_budget",
+            ));
+        }
+        for task in tasks {
+            if DB::document_row(&task, "payload")?["workflow_update_id"]
+                .as_str()
+                .is_none()
+            {
+                return Ok(ChildParentResume::Existing {
+                    id: DB::string(&task, "id")?,
+                    status: DB::string(&task, "status")?,
+                });
+            }
+        }
+        // An update claim does not replay the root workflow. Preserve the
+        // unavailable association instead of presenting it as a root resume.
+        Ok(ChildParentResume::UpdateOnly)
+    }
+
     pub(super) async fn abandoned_child_link(
         tx: &mut Transaction<'_, DB>,
         link: &DB::Row,
@@ -317,10 +357,7 @@ where
             // Never enqueue a task for a closed or replacement parent run.
             return Ok(());
         }
-        let parent_task_exists = Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status IN ('ready','leased')").bind(&parent_run).fetch_one(&mut **tx).await? != 0;
-        if parent_task_exists && Self::cancellation_request(&parent)?.is_none() {
-            return Err(refuse(StatusCode::CONFLICT, "child_parent_task_conflict"));
-        }
+        let parent_resume = Self::child_parent_resume(tx, &parent).await?;
         let mut payload = json!({"sequence":sequence,"workflow_link_id":call_id,"child_call_id":call_id,"child_workflow_instance_id":DB::string(child,"workflow_instance_id")?,"child_workflow_run_id":child_run,"child_workflow_class":DB::string(child,"workflow_class")?,"child_workflow_type":DB::string(child,"workflow_type")?,"child_run_number":DB::number(child,"run_number")?,"child_status":status,"closed_reason":status,"closed_at":closed_at});
         match resolution {
             ChildResolution::Completed(output) => {
@@ -347,14 +384,16 @@ where
             }
         }
         Self::append(tx, &parent_run, event_type, payload, None, None).await?;
-        if parent_task_exists {
-            // The original cancellation resume already owns the parent claim.
-            // Record the child result without rewriting or duplicating that task.
-            return Ok(());
-        }
-        let task_id = Self::create_task(tx, &parent_run, &DB::string(&parent,"queue")?, "workflow", json!({"workflow_wait_kind":"child","child_call_id":call_id,"child_workflow_run_id":child_run,"resume_source_kind":"child_workflow_run","resume_source_id":child_run,"workflow_sequence":sequence,"workflow_event_type":event_type,"open_wait_id":format!("child:{call_id}")})).await?;
-        Self::query("UPDATE workflow_run_waits SET task_backed=TRUE,task_id=$1,task_type='workflow',task_status='ready' WHERE workflow_run_id=$2 AND wait_id=$3 AND kind='child' AND status IN ('resolved','cancelled')")
-            .bind(task_id).bind(&parent_run).bind(format!("child:{call_id}")).execute(&mut **tx).await?;
+        let (task_id, task_status) = match parent_resume {
+            ChildParentResume::UpdateOnly => return Ok(()),
+            ChildParentResume::Existing { id, status } => (id, status),
+            ChildParentResume::New => {
+                let task = Self::create_task(tx, &parent_run, &DB::string(&parent,"queue")?, "workflow", json!({"workflow_wait_kind":"child","child_call_id":call_id,"child_workflow_run_id":child_run,"resume_source_kind":"child_workflow_run","resume_source_id":child_run,"workflow_sequence":sequence,"workflow_event_type":event_type,"open_wait_id":format!("child:{call_id}")})).await?;
+                (task, "ready".into())
+            }
+        };
+        Self::query("UPDATE workflow_run_waits SET task_backed=TRUE,task_id=$1,task_type='workflow',task_status=$2 WHERE workflow_run_id=$3 AND wait_id=$4 AND kind='child' AND status IN ('resolved','cancelled')")
+            .bind(task_id).bind(task_status).bind(&parent_run).bind(format!("child:{call_id}")).execute(&mut **tx).await?;
         Ok(())
     }
 }

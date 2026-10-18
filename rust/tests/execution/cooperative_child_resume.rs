@@ -12,9 +12,29 @@ async fn parent_task(database: &TestDatabase, run: &Value) -> Value {
         }};
     }
     match database {
-        TestDatabase::Sqlite(dir) => task!(sqlx::SqlitePool::connect(&format!("sqlite://{}",dir.path().join("runtime.sqlite").display())).await.unwrap(), query),
-        TestDatabase::Postgres { options, .. } => task!(sqlx::postgres::PgPoolOptions::new().connect_with(options.as_ref().clone()).await.unwrap(), query),
-        TestDatabase::MySql { options, .. } => task!(sqlx::mysql::MySqlPoolOptions::new().connect_with(options.as_ref().clone()).await.unwrap(), "SELECT id FROM workflow_tasks WHERE workflow_run_id=? AND task_type='workflow' AND status IN ('ready','leased') ORDER BY id"),
+        TestDatabase::Sqlite(dir) => task!(
+            sqlx::SqlitePool::connect(&format!(
+                "sqlite://{}",
+                dir.path().join("runtime.sqlite").display()
+            ))
+            .await
+            .unwrap(),
+            query
+        ),
+        TestDatabase::Postgres { options, .. } => task!(
+            sqlx::postgres::PgPoolOptions::new()
+                .connect_with(options.as_ref().clone())
+                .await
+                .unwrap(),
+            query
+        ),
+        TestDatabase::MySql { options, .. } => task!(
+            sqlx::mysql::MySqlPoolOptions::new()
+                .connect_with(options.as_ref().clone())
+                .await
+                .unwrap(),
+            "SELECT id FROM workflow_tasks WHERE workflow_run_id=? AND task_type='workflow' AND status IN ('ready','leased') ORDER BY id"
+        ),
     }
 }
 
@@ -29,15 +49,45 @@ async fn wait(database: &TestDatabase, run: &Value) -> Value {
         }};
     }
     match database {
-        TestDatabase::Sqlite(dir) => row!(sqlx::SqlitePool::connect(&format!("sqlite://{}",dir.path().join("runtime.sqlite").display())).await.unwrap(), query),
-        TestDatabase::Postgres { options, .. } => row!(sqlx::postgres::PgPoolOptions::new().connect_with(options.as_ref().clone()).await.unwrap(), query),
-        TestDatabase::MySql { options, .. } => row!(sqlx::mysql::MySqlPoolOptions::new().connect_with(options.as_ref().clone()).await.unwrap(), "SELECT wait_id,status,source_status,CAST(CASE WHEN task_backed THEN 1 ELSE 0 END AS SIGNED),task_id,task_type,task_status,history_authority,history_unsupported_reason FROM workflow_run_waits WHERE workflow_run_id=? AND kind='child'"),
+        TestDatabase::Sqlite(dir) => row!(
+            sqlx::SqlitePool::connect(&format!(
+                "sqlite://{}",
+                dir.path().join("runtime.sqlite").display()
+            ))
+            .await
+            .unwrap(),
+            query
+        ),
+        TestDatabase::Postgres { options, .. } => row!(
+            sqlx::postgres::PgPoolOptions::new()
+                .connect_with(options.as_ref().clone())
+                .await
+                .unwrap(),
+            query
+        ),
+        TestDatabase::MySql { options, .. } => row!(
+            sqlx::mysql::MySqlPoolOptions::new()
+                .connect_with(options.as_ref().clone())
+                .await
+                .unwrap(),
+            "SELECT wait_id,status,source_status,CAST(CASE WHEN task_backed THEN 1 ELSE 0 END AS SIGNED),task_id,task_type,task_status,history_authority,history_unsupported_reason FROM workflow_run_waits WHERE workflow_run_id=? AND kind='child'"
+        ),
     }
 }
 
 async fn child_outcome(app: &Router, child: &Value, outcome: &str) -> (StatusCode, Value) {
     if outcome == "cancelled" {
-        request(app, "POST", &format!("/api/workflows/{}/runs/{}/cancel",child["workflow_id"].as_str().unwrap(),child["run_id"].as_str().unwrap()), json!({"reason":"independent child cancellation λ"})).await
+        request(
+            app,
+            "POST",
+            &format!(
+                "/api/workflows/{}/runs/{}/cancel",
+                child["workflow_id"].as_str().unwrap(),
+                child["run_id"].as_str().unwrap()
+            ),
+            json!({"reason":"independent child cancellation λ"}),
+        )
+        .await
     } else {
         let commands = if outcome == "failed" {
             json!([{"type":"fail_workflow","message":"independent child failure λ"}])
@@ -48,38 +98,78 @@ async fn child_outcome(app: &Router, child: &Value, outcome: &str) -> (StatusCod
     }
 }
 
-async fn export(database: &TestDatabase, app: &Router, run: &Value, task: &Value, status: &str, projected: &Value) {
+async fn export(
+    database: &TestDatabase,
+    app: &Router,
+    run: &Value,
+    task: &Value,
+    status: &str,
+    projected: &Value,
+) {
     let events = run_history(app, &run["workflow_id"], &run["run_id"]).await;
-    run_observation_summaries::export_reference_for(database,
+    run_observation_summaries::export_reference_for(
+        database,
         &json!({"run_id":run["run_id"],"workflow_id":run["workflow_id"],"task_id":task["task_id"],
-            "task_status":status,"wait":projected}), &json!({"events":events}), "DW_TEST_CHILD_RESUME_REFERENCE").await;
+            "task_status":status,"wait":projected}),
+        &json!({"events":events}),
+        "DW_TEST_CHILD_RESUME_REFERENCE",
+    )
+    .await;
 }
 
 async fn resolution(leased: bool, outcome: &str, missing: bool, rollback: bool) {
-    let database = if rollback { TestDatabase::Sqlite(tempfile::tempdir().unwrap()) } else { TestDatabase::new().await };
+    let database = if rollback {
+        TestDatabase::Sqlite(tempfile::tempdir().unwrap())
+    } else {
+        TestDatabase::new().await
+    };
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
     let (parent, child) = setup(&app).await;
     let pending = root_request(&app, 30).await;
-    let root = if leased { cooperative_poll(&app, "workflow").await } else { parent_task(&database, &parent).await };
+    let root = if leased {
+        cooperative_poll(&app, "workflow").await
+    } else {
+        parent_task(&database, &parent).await
+    };
     let original = child_claim(&database, &root).await;
     let child_original = child_claim(&database, &child).await;
     let parent_prefix = run_history(&app, &parent["workflow_id"], &parent["run_id"]).await;
     let child_prefix = run_history(&app, &child["workflow_id"], &child["run_id"]).await;
-    if missing { database.execute("DELETE FROM workflow_run_waits WHERE kind='child'").await; }
+    if missing {
+        database
+            .execute("DELETE FROM workflow_run_waits WHERE kind='child'")
+            .await;
+    }
     let before = wait(&database, &parent).await;
     if rollback {
         database.execute("CREATE TRIGGER reject_child_resume_link BEFORE UPDATE ON workflow_run_waits WHEN NEW.kind='child' AND NEW.task_backed=1 BEGIN SELECT RAISE(ABORT, 'child resume association rejected'); END").await;
         let rejected = child_outcome(&app, &child, outcome).await;
-        assert_eq!(rejected.0, StatusCode::SERVICE_UNAVAILABLE, "{}", rejected.1);
-        assert_eq!(run_history(&app, &parent["workflow_id"], &parent["run_id"]).await, parent_prefix);
-        assert_eq!(run_history(&app, &child["workflow_id"], &child["run_id"]).await, child_prefix);
+        assert_eq!(
+            rejected.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{}",
+            rejected.1
+        );
+        assert_eq!(
+            run_history(&app, &parent["workflow_id"], &parent["run_id"]).await,
+            parent_prefix
+        );
+        assert_eq!(
+            run_history(&app, &child["workflow_id"], &child["run_id"]).await,
+            child_prefix
+        );
         assert_eq!(child_claim(&database, &root).await, original);
         assert_eq!(child_claim(&database, &child).await, child_original);
         assert_eq!(wait(&database, &parent).await, before);
-        assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_failures").await, 0);
+        assert_eq!(
+            task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_failures").await,
+            0
+        );
         assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_child_calls WHERE status='started' AND closed_at IS NULL").await, 1);
-        database.execute("DROP TRIGGER reject_child_resume_link").await;
+        database
+            .execute("DROP TRIGGER reject_child_resume_link")
+            .await;
     }
     let result = child_outcome(&app, &child, outcome).await;
     assert_eq!(result.0, StatusCode::OK, "{}", result.1);
@@ -91,25 +181,53 @@ async fn resolution(leased: bool, outcome: &str, missing: bool, rollback: bool) 
         assert_eq!(projected["task_backed"], true, "{projected}");
         assert_eq!(projected["task_id"], root["task_id"]);
         assert_eq!(projected["task_type"], "workflow");
-        assert_eq!(projected["task_status"], if leased {"leased"} else {"ready"});
+        assert_eq!(
+            projected["task_status"],
+            if leased { "leased" } else { "ready" }
+        );
         assert_eq!(projected["source_status"], outcome);
-        assert_eq!(projected["status"], if outcome == "cancelled" {"cancelled"} else {"resolved"});
+        assert_eq!(
+            projected["status"],
+            if outcome == "cancelled" {
+                "cancelled"
+            } else {
+                "resolved"
+            }
+        );
         assert_eq!(projected["history_authority"], "typed_history");
         assert!(projected["history_unsupported_reason"].is_null());
     }
-    assert_eq!(parent_task(&database, &parent).await["task_id"], root["task_id"]);
-    export(&database, &app, &parent, &root, if leased {"leased"} else {"ready"}, &projected).await;
+    assert_eq!(
+        parent_task(&database, &parent).await["task_id"],
+        root["task_id"]
+    );
+    export(
+        &database,
+        &app,
+        &parent,
+        &root,
+        if leased { "leased" } else { "ready" },
+        &projected,
+    )
+    .await;
     let parent_events = run_history(&app, &parent["workflow_id"], &parent["run_id"]).await;
     let duplicate = child_outcome(&app, &child, outcome).await;
     assert_eq!(duplicate.0, StatusCode::OK, "{}", duplicate.1);
-    assert_eq!(run_history(&app, &parent["workflow_id"], &parent["run_id"]).await, parent_events);
+    assert_eq!(
+        run_history(&app, &parent["workflow_id"], &parent["run_id"]).await,
+        parent_events
+    );
     assert_eq!(wait(&database, &parent).await, projected);
     runtime.close().await;
     let cold = database.open().await.unwrap();
     let app = router(cold.clone());
     assert_eq!(wait(&database, &parent).await, projected);
     assert_eq!(child_claim(&database, &root).await, original);
-    let root = if leased {root} else {cooperative_poll(&app, "workflow").await};
+    let root = if leased {
+        root
+    } else {
+        cooperative_poll(&app, "workflow").await
+    };
     if !leased {
         let claimed = wait(&database, &parent).await;
         if !missing {
@@ -120,7 +238,12 @@ async fn resolution(leased: bool, outcome: &str, missing: bool, rollback: bool) 
     }
     let delivered = deliver(&app, &root, &pending, 1, "child").await;
     assert_eq!(delivered.0, StatusCode::OK, "{}", delivered.1);
-    let terminal = finish_task(&app, &root, json!([{"type":"complete_workflow","result":envelope(Payload::Null)}])).await;
+    let terminal = finish_task(
+        &app,
+        &root,
+        json!([{"type":"complete_workflow","result":envelope(Payload::Null)}]),
+    )
+    .await;
     assert_eq!(terminal.0, StatusCode::OK, "{}", terminal.1);
     closed(&app, &parent, &pending, "completed", 1).await;
     assert!(cooperative_poll(&app, "workflow").await.is_null());
@@ -129,18 +252,118 @@ async fn resolution(leased: bool, outcome: &str, missing: bool, rollback: bool) 
 }
 
 #[tokio::test]
-async fn cooperative_child_resume_completion_ready() { resolution(false, "completed", false, false).await; }
+async fn cooperative_child_resume_completion_ready() {
+    resolution(false, "completed", false, false).await;
+}
 #[tokio::test]
-async fn cooperative_child_resume_completion_leased() { resolution(true, "completed", false, false).await; }
+async fn cooperative_child_resume_completion_leased() {
+    resolution(true, "completed", false, false).await;
+}
 #[tokio::test]
-async fn cooperative_child_resume_failure_ready() { resolution(false, "failed", false, false).await; }
+async fn cooperative_child_resume_failure_ready() {
+    resolution(false, "failed", false, false).await;
+}
 #[tokio::test]
-async fn cooperative_child_resume_failure_leased() { resolution(true, "failed", false, false).await; }
+async fn cooperative_child_resume_failure_leased() {
+    resolution(true, "failed", false, false).await;
+}
 #[tokio::test]
-async fn cooperative_child_resume_cancellation_ready() { resolution(false, "cancelled", false, false).await; }
+async fn cooperative_child_resume_cancellation_ready() {
+    resolution(false, "cancelled", false, false).await;
+}
 #[tokio::test]
-async fn cooperative_child_resume_cancellation_leased() { resolution(true, "cancelled", false, false).await; }
+async fn cooperative_child_resume_cancellation_leased() {
+    resolution(true, "cancelled", false, false).await;
+}
 #[tokio::test]
-async fn cooperative_child_resume_missing_wait_stays_missing() { resolution(true, "completed", true, false).await; }
+async fn cooperative_child_resume_missing_wait_stays_missing() {
+    resolution(true, "completed", true, false).await;
+}
 #[tokio::test]
-async fn cooperative_child_resume_sqlite_write_failure_rolls_back_resolution_and_claim() { resolution(true, "failed", false, true).await; }
+async fn cooperative_child_resume_sqlite_write_failure_rolls_back_resolution_and_claim() {
+    resolution(true, "failed", false, true).await;
+}
+
+#[tokio::test]
+async fn cooperative_child_resume_update_only_task_is_not_a_root_resume() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let registration = request_protocol(&app, "POST", "/api/worker/register", json!({
+        "worker_id":"cleanup-worker","task_queue":"test","runtime":"php",
+        "supported_workflow_types":["echo"],"supported_activity_types":[],
+        "capabilities":["cooperative_cancellation","workflow_updates"],
+        "workflow_command_contracts":{"echo":{"signals":[],"updates":["set"],"update_validators":[],
+            "update_contracts":[{"name":"set","parameters":[{"name":"value","type":"int","required":true,
+                "variadic":false,"default_available":false,"allows_null":false}]}]}}}), "1.20").await;
+    assert_eq!(registration.0, StatusCode::CREATED, "{}", registration.1);
+    register(&app, "abandoned-worker", json!(["child"]), json!([])).await;
+    let parent = start(&app, "abandon-parent").await;
+    let first = cooperative_poll(&app, "workflow").await;
+    assert_eq!(
+        finish_task(&app, &first, json!([child_command(7)])).await.0,
+        StatusCode::OK
+    );
+    let child = poll(&app, "abandoned-worker", "workflow").await;
+    let update = request(
+        &app,
+        "POST",
+        "/api/workflows/abandon-parent/update/set",
+        terminal_updates::input("original"),
+    )
+    .await;
+    assert_eq!(update.0, StatusCode::ACCEPTED, "{}", update.1);
+    let update_task = parent_task(&database, &parent).await;
+    let original = child_claim(&database, &update_task).await;
+    let payload: Value = serde_json::from_str(original["payload"].as_str().unwrap()).unwrap();
+    assert_eq!(payload["workflow_update_id"], update.1["update_id"]);
+    let pending = root_request(&app, 2).await;
+    let finished = child_outcome(&app, &child, "completed").await;
+    assert_eq!(finished.0, StatusCode::OK, "{}", finished.1);
+    assert_eq!(child_claim(&database, &update_task).await, original);
+    let projected = wait(&database, &parent).await;
+    assert_eq!(projected["status"], "resolved");
+    assert_eq!(projected["task_backed"], false);
+    assert!(projected["task_id"].is_null());
+    assert_eq!(
+        parent_task(&database, &parent).await["task_id"],
+        update_task["task_id"]
+    );
+    let limit = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let described = request(&app, "GET", "/api/workflows/abandon-parent", Value::Null).await;
+        assert_eq!(described.0, StatusCode::OK);
+        if described.1["status"] == "cancelled" {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < limit,
+            "original cleanup deadline must close the root"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    terminal_updates::closed_receipt(&app, &parent, &update.1, "cancelled").await;
+    let events = run_history(&app, &parent["workflow_id"], &parent["run_id"]).await;
+    let terminal = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["event_type"] == "WorkflowCancelled")
+        .unwrap();
+    assert_eq!(
+        terminal["payload"]["cancellation_cleanup"]["request_id"],
+        pending["request_id"]
+    );
+    assert_eq!(
+        terminal["payload"]["cancellation_cleanup"]["cleanup_deadline_at"],
+        pending["cleanup_deadline_at"]
+    );
+    assert_eq!(
+        terminal["payload"]["cancellation_cleanup"]["outcome"],
+        "deadline_expired"
+    );
+    assert!(terminal["payload"]["cancellation_cleanup"]["delivery_sequence"].is_null());
+    assert!(cooperative_poll(&app, "workflow").await.is_null());
+    runtime.close().await;
+    database.remove().await;
+}
