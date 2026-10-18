@@ -1,5 +1,44 @@
 use super::*;
 
+async fn child_claim(database: &TestDatabase, child: &Value) -> Value {
+    let query = "SELECT status,lease_owner,CAST(lease_expires_at AS TEXT),attempt_count,CAST(payload AS TEXT) FROM workflow_tasks WHERE id=$1";
+    macro_rules! snapshot {
+        ($pool:expr, $query:expr) => {{
+            let pool = $pool;
+            let row: (String, Option<String>, Option<String>, i64, Option<String>) =
+                sqlx::query_as($query).bind(child["task_id"].as_str().unwrap())
+                    .fetch_one(&pool).await.unwrap();
+            pool.close().await;
+            json!({"status":row.0,"lease_owner":row.1,"lease_expires_at":row.2,"attempt":row.3,"payload":row.4})
+        }};
+    }
+    match database {
+        TestDatabase::Sqlite(dir) => snapshot!(
+            sqlx::SqlitePool::connect(&format!(
+                "sqlite://{}",
+                dir.path().join("runtime.sqlite").display()
+            ))
+            .await
+            .unwrap(),
+            query
+        ),
+        TestDatabase::Postgres { options, .. } => snapshot!(
+            sqlx::postgres::PgPoolOptions::new()
+                .connect_with(options.as_ref().clone())
+                .await
+                .unwrap(),
+            query
+        ),
+        TestDatabase::MySql { options, .. } => snapshot!(
+            sqlx::mysql::MySqlPoolOptions::new()
+                .connect_with(options.as_ref().clone())
+                .await
+                .unwrap(),
+            "SELECT status,lease_owner,CAST(lease_expires_at AS CHAR),attempt_count,CAST(payload AS CHAR) FROM workflow_tasks WHERE id=?"
+        ),
+    }
+}
+
 async fn setup(app: &Router) -> (Value, Value) {
     let registered = request_protocol(
         app,
@@ -181,9 +220,20 @@ async fn worker_terminal(fail: bool, rollback: bool) {
     let app = router(runtime.clone());
     let (parent, child) = setup(&app).await;
     let child_prefix = run_history(&app, &child["workflow_id"], &child["run_id"]).await;
+    let original_claim = child_claim(&database, &child).await;
     let pending = root_request(&app, 30).await;
     let root = cooperative_poll(&app, "workflow").await;
     reference(&database, &app, &parent, &pending, 1, "child", None).await;
+    reference(
+        &database,
+        &app,
+        &parent,
+        &pending,
+        1,
+        "timer",
+        Some("cancellation_delivery_shape_mismatch"),
+    )
+    .await;
     let wrong = deliver(&app, &root, &pending, 1, "timer").await;
     assert_eq!(wrong.0, StatusCode::CONFLICT, "{}", wrong.1);
     assert_eq!(wrong.1["reason"], "cancellation_delivery_shape_mismatch");
@@ -216,6 +266,7 @@ async fn worker_terminal(fail: bool, rollback: bool) {
         );
         assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_child_calls WHERE status='started' AND closed_at IS NULL").await, 1);
         assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_tasks WHERE status='leased' AND lease_expires_at IS NOT NULL").await, 2);
+        assert_eq!(child_claim(&database, &child).await, original_claim);
         let after = run_observation_active_summaries::observe(&app, "default", &parent).await;
         for field in [
             "status",
@@ -236,6 +287,7 @@ async fn worker_terminal(fail: bool, rollback: bool) {
     let finished = finish_task(&app, &root, commands.clone()).await;
     assert_eq!(finished.0, StatusCode::OK, "{}", finished.1);
     let history = closed(&app, &parent, &pending, "completed", 1).await;
+    assert_eq!(child_claim(&database, &child).await, original_claim);
     assert_eq!(
         run_history(&app, &child["workflow_id"], &child["run_id"]).await,
         child_prefix
@@ -279,6 +331,7 @@ async fn cooperative_children_original_deadline_survives_cold_reopen() {
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
     let (parent, child) = setup(&app).await;
+    let original_claim = child_claim(&database, &child).await;
     let pending = root_request(&app, 2).await;
     let root = cooperative_poll(&app, "workflow").await;
     reference(&database, &app, &parent, &pending, 1, "child", None).await;
@@ -309,6 +362,7 @@ async fn cooperative_children_original_deadline_survives_cold_reopen() {
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
     let history = closed(&app, &parent, &pending, "deadline_expired", 1).await;
+    assert_eq!(child_claim(&database, &child).await, original_claim);
     let stale = finish_task(
         &app,
         &root,
@@ -387,4 +441,78 @@ async fn cooperative_children_post_request_resolution_reuses_parent_cleanup_clai
 #[tokio::test]
 async fn cooperative_children_pre_request_resolution_rejects_old_boundary() {
     resolution_race(true).await;
+}
+
+#[tokio::test]
+async fn cooperative_children_unsupported_stored_policy_refuses_without_request_mutation() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let (parent, child) = setup(&app).await;
+    let prefix = run_history(&app, &parent["workflow_id"], &parent["run_id"]).await;
+    let original_claim = child_claim(&database, &child).await;
+    database
+        .execute("UPDATE workflow_child_calls SET parent_close_policy='terminate'")
+        .await;
+    let response = request(
+        &app,
+        "POST",
+        "/api/workflows/abandon-parent/request-cancellation",
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        response.0,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        response.1
+    );
+    assert_eq!(
+        response.1["reason"],
+        "cooperative_cancellation_propagation_not_available"
+    );
+    assert_eq!(
+        task_retry::rows(
+            &database,
+            "SELECT COUNT(*) FROM workflow_commands WHERE command_type='request_cancellation'"
+        )
+        .await,
+        0
+    );
+    assert_eq!(
+        run_history(&app, &parent["workflow_id"], &parent["run_id"]).await,
+        prefix
+    );
+    assert_eq!(child_claim(&database, &child).await, original_claim);
+    database
+        .execute("UPDATE workflow_child_calls SET parent_close_policy='abandon'")
+        .await;
+    finish_child(&app, &child).await;
+    let root = cooperative_poll(&app, "workflow").await;
+    let ordinary = finish_task(
+        &app,
+        &root,
+        json!([{"type":"complete_workflow","result":envelope(Payload::Long(42))}]),
+    )
+    .await;
+    assert_eq!(ordinary.0, StatusCode::OK, "{}", ordinary.1);
+    let history = run_history(&app, &parent["workflow_id"], &parent["run_id"]).await;
+    assert_eq!(
+        history
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["event_type"] == "WorkflowCompleted")
+            .count(),
+        1
+    );
+    assert!(
+        !history
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["event_type"] == "WorkflowCancelled")
+    );
+    runtime.close().await;
+    database.remove().await;
 }
