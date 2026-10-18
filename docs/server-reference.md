@@ -1301,12 +1301,14 @@ built-in token or signature credentials are not required for readiness.
 
 ### Docker
 
-The PHP image build excludes local `.env` files and variants, plus `.secrets`,
-`.aws` and `.ssh` directories. Public `.env.example` templates remain available.
-Supply deployment credentials through runtime environment variables or secrets.
+The PHP image uses a BuildKit-specific source allowlist. It excludes local
+environment files, credentials, cached configuration, databases and storage
+data. Public `.env.example` templates and directory scaffolding remain available;
+the build creates a fresh empty SQLite file. Supply deployment credentials
+through runtime environment variables or secrets.
 
 ```bash
-docker build -t durable-workflow-server .
+DOCKER_BUILDKIT=1 docker build -t durable-workflow-server .
 export DW_AUTH_TOKEN=dev-token
 docker volume create durable-workflow-sqlite
 

@@ -8,7 +8,7 @@ import {fileURLToPath} from 'node:url';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 
-test('the PHP image context excludes local credentials and preserves application inputs', {timeout: 120_000}, async () => {
+test('the PHP image context excludes private state and preserves application inputs', {timeout: 120_000}, async t => {
   const temporary = await mkdtemp(join(tmpdir(), 'server-php-image-context-'));
   try {
     const context = join(temporary, 'context');
@@ -24,7 +24,8 @@ test('the PHP image context excludes local credentials and preserves application
       'app/Http/Controller.php', 'config/server.php', 'routes/api.php', 'public/index.php',
       'docker/bootstrap.sh', 'resources/release/source-release.json', 'static/openapi.yaml',
       'bootstrap/cache/.gitignore', 'storage/app/.gitignore', 'storage/framework/sessions/.gitignore',
-      'storage/framework/views/.gitignore', 'database/migrations/source.php', 'database/schema/mysql-schema.sql'];
+      'storage/framework/views/.gitignore', 'database/migrations/source.php', 'database/schema/mysql-schema.sql',
+      'LICENSE', 'README.md', 'scripts/conformance/published.sh', 'rust/Cargo.toml', 'bin/server'];
     const excluded = ['.env', '.env.production', '.env.local', 'app/.env.staging',
       '.secrets/service-key', '.secrets/.env.example', '.aws/credentials', '.ssh/id_ed25519',
       'config/.secrets/key', 'config/.aws/.env.example', '.git/config', '.phpunit.result.cache',
@@ -36,7 +37,8 @@ test('the PHP image context excludes local credentials and preserves application
       'database/runtime.sqlite3-shm', 'database/caller.db', 'database/caller.db-journal',
       'storage/app/private/backup.sql', 'storage/app/public/upload.txt', 'storage/oauth-private.key',
       'storage/framework/cache/data/secret', 'storage/app/.env.example', 'public/storage/upload.txt',
-      'public/hot', '.tmp/database.sql', 'artifacts/run.json'];
+      'public/hot', '.tmp/database.sql', 'artifacts/run.json', 'private-notes.json', 'backup.sql',
+      'local-artifacts/payload.json', 'rust/target/server', 'benchmarks/capacity/v1/bindings/python/.deps/token'];
     for (const path of [...required, ...excluded]) {
       await mkdir(dirname(join(context, path)), {recursive: true});
       await writeFile(join(context, path), 'synthetic build-context canary\n');
@@ -53,6 +55,7 @@ test('the PHP image context excludes local credentials and preserves application
     for (const path of required) assert.ok(members.has(`app/${path}`), `Required build input omitted: ${path}`);
     const leaked = excluded.filter(path => members.has(`app/${path}`));
     assert.deepEqual(leaked, [], `Local/private build inputs were copied: ${leaked.join(', ')}`);
+    t.diagnostic(`${required.length} required inputs and ${excluded.length} excluded paths checked through Docker.`);
   } finally {
     await rm(temporary, {recursive: true, force: true});
   }

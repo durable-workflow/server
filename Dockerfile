@@ -87,6 +87,7 @@ COPY . .
 RUN cp /tmp/release-composer.json composer.json \
     && cp /tmp/release-composer.lock composer.lock \
     && rm -f /tmp/release-composer.json /tmp/release-composer.lock \
+    && install -m 0664 /dev/null database/database.sqlite \
     && composer dump-autoload --optimize \
     && cmp /workflow/.package-provenance vendor/durable-workflow/workflow/.package-provenance \
     && cp vendor/durable-workflow/workflow/.package-provenance /app/.package-provenance
