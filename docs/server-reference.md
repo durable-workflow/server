@@ -1303,7 +1303,7 @@ built-in token or signature credentials are not required for readiness.
 
 The PHP image uses a BuildKit-specific source allowlist. It excludes local
 environment files, credentials, cached configuration, databases and storage
-data. Public `.env.example` templates and directory scaffolding remain available;
+data. The root `.env.example` template and directory scaffolding remain available;
 the build creates a fresh empty SQLite file. Supply deployment credentials
 through runtime environment variables or secrets.
 

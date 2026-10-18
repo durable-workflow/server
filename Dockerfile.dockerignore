@@ -40,10 +40,10 @@
 !static/**
 !storage/**
 
-# Templates are public; runtime credentials stay outside the image.
+# The declared root template is public; runtime credentials stay outside the image.
 **/.env
 **/.env.*
-!**/.env.example
+!.env.example
 **/.secrets
 **/.secrets/**
 **/.aws
