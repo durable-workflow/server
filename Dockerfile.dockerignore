@@ -57,6 +57,8 @@
 **/.netrc
 **/.pypirc
 **/.tmp
+**/.git
+**/.git/**
 
 # Keep directory scaffolding, not local configuration, data, keys or uploads.
 bootstrap/cache/**

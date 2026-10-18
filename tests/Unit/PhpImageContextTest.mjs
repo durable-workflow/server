@@ -25,7 +25,8 @@ test('the PHP image context excludes private state and preserves application inp
       'docker/bootstrap.sh', 'resources/release/source-release.json', 'static/openapi.yaml',
       'bootstrap/cache/.gitignore', 'storage/app/.gitignore', 'storage/framework/sessions/.gitignore',
       'storage/framework/views/.gitignore', 'database/migrations/source.php', 'database/schema/mysql-schema.sql',
-      'LICENSE', 'README.md', 'scripts/conformance/published.sh', 'rust/Cargo.toml', 'bin/server'];
+      'LICENSE', 'README.md', 'scripts/conformance/published.sh', 'rust/Cargo.toml', 'bin/server',
+      '.gitignore', 'app/.gitignore'];
     const excluded = ['.env', '.env.production', '.env.local', 'app/.env.staging',
       '.secrets/service-key', '.secrets/.env.example', '.aws/credentials', '.aws/.env.example',
       '.ssh/id_ed25519', '.ssh/.env.example', '.docker/.env.example',
@@ -41,7 +42,8 @@ test('the PHP image context excludes private state and preserves application inp
       'public/hot', '.tmp/database.sql', 'artifacts/run.json', 'private-notes.json', 'backup.sql',
       'local-artifacts/payload.json', 'rust/target/server', 'benchmarks/capacity/v1/bindings/python/.deps/token',
       '.tmp/.env.example', 'private-notes/.env.example', 'examples/.env.example',
-      'node_modules/.env.example', 'rust/target/.env.example'];
+      'node_modules/.env.example', 'rust/target/.env.example', 'app/.git/config',
+      'scripts/local-checkout/.git', 'rust/.git/config'];
     for (const path of [...required, ...excluded]) {
       await mkdir(dirname(join(context, path)), {recursive: true});
       await writeFile(join(context, path), 'synthetic build-context canary\n');
