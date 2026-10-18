@@ -1,6 +1,6 @@
 use super::*;
 
-async fn child_claim(database: &TestDatabase, child: &Value) -> Value {
+pub(super) async fn child_claim(database: &TestDatabase, child: &Value) -> Value {
     let query = "SELECT status,lease_owner,CAST(lease_expires_at AS TEXT),CAST(attempt_count AS BIGINT),CAST(payload AS TEXT) FROM workflow_tasks WHERE id=$1";
     macro_rules! snapshot {
         ($pool:expr, $query:expr) => {{
@@ -39,7 +39,7 @@ async fn child_claim(database: &TestDatabase, child: &Value) -> Value {
     }
 }
 
-async fn setup(app: &Router) -> (Value, Value) {
+pub(super) async fn setup(app: &Router) -> (Value, Value) {
     let registered = request_protocol(
         app,
         "POST",
@@ -88,7 +88,7 @@ async fn setup(app: &Router) -> (Value, Value) {
     (parent, child)
 }
 
-async fn root_request(app: &Router, budget: i64) -> Value {
+pub(super) async fn root_request(app: &Router, budget: i64) -> Value {
     let response = request(
         app,
         "POST",
@@ -101,7 +101,7 @@ async fn root_request(app: &Router, budget: i64) -> Value {
     response.1["cancellation_request"].clone()
 }
 
-async fn deliver(
+pub(super) async fn deliver(
     app: &Router,
     task: &Value,
     pending: &Value,
@@ -133,7 +133,7 @@ async fn reference(
     .await;
 }
 
-async fn closed(
+pub(super) async fn closed(
     app: &Router,
     parent: &Value,
     pending: &Value,
