@@ -15,6 +15,7 @@ $rows = Workflow\V2\Models\WorkflowServiceCall::query()
     ->map(static fn ($call): array => [
         'id' => $call->getKey(), 'caller_workflow_run_id' => $call->caller_workflow_run_id,
         'caller_namespace' => $call->caller_namespace, 'target_namespace' => $call->target_namespace,
+        'caller_principal_roles' => $call->caller_principal_roles,
         'outcome' => $call->outcome?->value,
         'accepted_at' => $call->accepted_at, 'started_at' => $call->started_at,
         'linked_workflow_instance_id' => $call->linked_workflow_instance_id,

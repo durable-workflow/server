@@ -18,7 +18,7 @@ if (($argv[2] ?? null) === 'worker') {
         'installed_sdk_version' => Composer\InstalledVersions::getPrettyVersion('durable-workflow/sdk'),
         'namespace' => $namespace,
     ], JSON_THROW_ON_ERROR));
-    $client = new Client('http://server:8080', namespace: $namespace, workerToken: $input['token']);
+    $client = new Client('http://server:8080', namespace: $namespace, workerToken: $input['worker_token'] ?? $input['token']);
     $worker = ($input['scenario'] ?? null) === 'caller_cancelled'
         ? new Worker($client, 'nexus-php-caller', enableCooperativeCancellation: true)
         : Worker::create($client, 'nexus-php-caller');
@@ -106,6 +106,17 @@ foreach (['shared', 'tenant-a'] as $namespace) {
             'installed_sdk_version' => Composer\InstalledVersions::getPrettyVersion('durable-workflow/sdk'),
             'public_method' => 'WorkflowContext.serviceOperation',
         ];
+        if (($input['scenario'] ?? null) === 'permission_denied') {
+            $row['admin_namespace_name'] = 'nexus-worker-denied-'.getmypid().'-'.$namespace;
+            $workerOnly = new Client('http://server:8080', namespace: $namespace, controlToken: $input['worker_token']);
+            try {
+                $workerOnly->createNamespace($row['admin_namespace_name']);
+                $row['admin_refusal_status'] = 200;
+            } catch (DurableWorkflow\Exception\ServerException $refused) {
+                $row['admin_refusal_status'] = $refused->status;
+                $row['admin_refusal_type'] = $refused::class;
+            }
+        }
         try {
             if (in_array($input['scenario'] ?? null, ['cancelled', 'caller_cancelled'], true)) {
                 $readyUntil = microtime(true) + 20;

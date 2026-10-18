@@ -125,6 +125,8 @@ function assertAuthorization(row, caller, endpoint, audit) {
     assert.equal(row.budget_seconds, 30);
     assert.ok(row.elapsed_seconds > 0 && row.elapsed_seconds < 30);
     assert.ok(row.process_id > 0 && row.installed_sdk_version);
+    assert.equal(row.admin_refusal_status, 403);
+    assert.equal(row.admin_namespace_after.status, 404);
     if (caller === 'php') assert.equal(row.worker_exit_code, 0);
     else assert.equal(row.worker_stopped, true);
     assert.equal(row.result.failure_class, caller === 'php'
@@ -152,6 +154,7 @@ function assertAuthorization(row, caller, endpoint, audit) {
     assert.equal(rows[0].id, row.result.service_call_id);
     assert.equal(rows[0].caller_namespace, row.caller_namespace);
     assert.equal(rows[0].target_namespace, 'shared');
+    assert.deepEqual(rows[0].caller_principal_roles, ['worker']);
     for (const field of ['accepted_at', 'started_at', 'linked_workflow_instance_id', 'linked_workflow_run_id']) {
         assert.equal(rows[0][field], null, 'A refusal cannot create dispatch or acceptance authority');
     }
@@ -160,10 +163,12 @@ function assertAuthorization(row, caller, endpoint, audit) {
 
 function authorizationFixture() {
     const call = {id: 'call', caller_workflow_run_id: 'run', caller_namespace: 'tenant-a', target_namespace: 'shared',
+        caller_principal_roles: ['worker'],
         accepted_at: null, started_at: null, linked_workflow_run_id: null, linked_workflow_instance_id: null,
         outcome: 'rejected_forbidden'};
     return {scenario: 'permission_denied', authorization_qualified: true, budget_seconds: 30, elapsed_seconds: 1,
         process_id: 1, installed_sdk_version: '2.5.0', worker_exit_code: 0,
+        admin_refusal_status: 403, admin_namespace_after: {status: 404},
         workflow_id: 'caller', run_id: 'run', caller_namespace: 'tenant-a',
         result: {service_call_id: 'call', failure_class: 'DurableWorkflow\\Exception\\ServiceOperationFailed'},
         history: {events: [{event_type: 'ServiceCallFailed', payload: {service_call_id: 'call',
@@ -184,6 +189,9 @@ test('authorization reader rejects admission, dispatch, wrong original, generic 
         row => { row.audit.rows[0].linked_workflow_run_id = 'dispatched'; },
         row => { row.audit.rows[0].outcome = 'accepted'; },
         row => { row.audit.rows = []; },
+        row => { row.audit.rows[0].caller_principal_roles = ['admin', 'worker']; },
+        row => { row.admin_refusal_status = 200; },
+        row => { row.admin_namespace_after.status = 200; },
     ]) {
         const row = authorizationFixture(); mutate(row); assert.throws(() => verify(row));
     }

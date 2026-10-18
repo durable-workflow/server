@@ -72,7 +72,7 @@ async def execute(input_data, namespace):
             rejected.set()
 
     async with Client("http://server:8080", namespace=namespace,
-                      token=input_data["token"], worker_token=input_data["token"]) as client:
+                      token=input_data["token"], worker_token=input_data.get("worker_token", input_data["token"])) as client:
         client._http.event_hooks["response"] = [observe]
         client._http.event_hooks["request"] = [submitting]
         worker = Worker(client, task_queue="nexus-python-workflow",
@@ -97,6 +97,15 @@ async def execute(input_data, namespace):
                 "workflow_definition_fingerprint": worker.workflow_definition_fingerprints["nexus.fixture.python.caller"],
                 "public_method": "WorkflowContext.call_nexus_service",
             }
+            if input_data.get("scenario") == "permission_denied":
+                observation["admin_namespace_name"] = f"nexus-worker-denied-{os.getpid()}-{namespace}"
+                async with Client("http://server:8080", namespace=namespace, token=input_data["worker_token"]) as worker_only:
+                    try:
+                        await worker_only.create_namespace(observation["admin_namespace_name"])
+                        observation["admin_refusal_status"] = 200
+                    except Exception as refused:
+                        observation.update(admin_refusal_status=getattr(refused, "status", None),
+                                           admin_refusal_type=type(refused).__name__)
             if input_data.get("scenario") in ("cancelled", "caller_cancelled"):
                 async with Client("http://server:8080", namespace="shared", token=input_data["token"]) as service_client:
                     async def cancel_waiting_service():

@@ -762,6 +762,12 @@ function composeYaml(image, port, token, observer = null) {
   const escapedToken = JSON.stringify(token);
   const payloadMount = env('DW_NEXUS_EXTERNAL_PAYLOAD_PROBES') === '1'
     ? '    volumes:\n      - payload_data:/app/storage/app\n' : '';
+  const principalEnvironment = payloadMount
+    ? `      DW_AUTH_BACKWARD_COMPATIBLE: "false"\n      DW_PRINCIPAL_TOKENS: ${JSON.stringify(JSON.stringify([
+      {token, subject: 'nexus-fixture-admin', roles: ['admin', 'operator', 'worker']},
+      {token: `${token}-worker`, subject: 'nexus-fixture-worker', roles: ['worker']},
+    ]))}`
+    : '      DW_AUTH_BACKWARD_COMPATIBLE: "true"';
   return `
 services:
   bootstrap:
@@ -781,7 +787,7 @@ ${payloadMount}    command: ["server-bootstrap"]
       CACHE_STORE: redis
       DW_AUTH_DRIVER: token
       DW_AUTH_TOKEN: ${escapedToken}
-      DW_AUTH_BACKWARD_COMPATIBLE: "true"
+${principalEnvironment}
     depends_on:
       mysql:
         condition: service_healthy
@@ -2957,7 +2963,8 @@ async function probePublishedAuthoredAuthorization(baseUrl, token, compose, phpS
     }
     const inputName = `nexus-${caller}-${service}-authorization-input.json`;
     fs.writeFileSync(path.join(compose.runRoot, inputName), JSON.stringify({token, endpoint,
-      service: serviceName, operation: 'greet', service_language: service, scenario: 'permission_denied'}));
+      worker_token: `${token}-worker`, service: serviceName, operation: 'greet',
+      service_language: service, scenario: 'permission_denied'}));
     const command = caller === 'php' ? `php /work/nexus-php-workflow-probe.php /work/${inputName}`
       : `. /tmp/dw-python/bin/activate && python /work/nexus-python-workflow-probe.py /work/${inputName}`;
     const observation = dockerExecJson(caller === 'php' ? phpService.containerName : pythonService.containerName,
@@ -2965,6 +2972,8 @@ async function probePublishedAuthoredAuthorization(baseUrl, token, compose, phpS
     const report = {caller, service, endpoint, observation};
     reports.push(report);
     for (const row of observation.body?.observations || []) {
+      if (row.admin_namespace_name) row.admin_namespace_after = responseSummary(await apiRequest(baseUrl, token,
+        row.caller_namespace, 'GET', `/namespaces/${encodeURIComponent(row.admin_namespace_name)}`));
       const callId = row.result?.service_call_id;
       if (callId) row.durable_service_call = responseSummary(await apiRequest(baseUrl, token, 'shared', 'GET',
         `/service-endpoints/${endpoint}/services/${serviceName}/operations/greet/service-calls/${encodeURIComponent(callId)}`));
