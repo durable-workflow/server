@@ -66,8 +66,12 @@ The original update and command identities, failure receipt and forward-only
 message cursor survive cold retries. Previously completed updates remain intact,
 and old update leases cannot apply after closure. Cooperative cleanup preserves
 its original root identity and deadline. It closes accepted updates only when
-that run closes, including maintenance expiry. Children, active activities and
-open waits retain their request guards. This does not widen update admission,
+that run closes, including maintenance expiry. Validated sequential children
+with `abandon` operation and parent-close policies can receive their own
+[independent cancellation request](../docs/contracts/child-independent-cancellation.md).
+They retain their own root identity and resolve their parent atomically at
+closure. Other child policies, active activities and open waits retain their
+request guards. This does not widen update admission,
 wider cooperative propagation or continuation transfer. For source controls,
 set `DW_TEST_TERMINAL_UPDATES_REFERENCE` when running `terminal_updates::` or
 `cooperative_updates::`.

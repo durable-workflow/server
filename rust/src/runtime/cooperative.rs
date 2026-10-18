@@ -553,12 +553,28 @@ where
             .bind(DB::bind_time(at)).bind(DB::bind_time(at)).execute(&mut **tx).await?;
         Self::query("UPDATE workflow_runs SET status='cancelled',closed_reason='cancelled',output=NULL,closed_at=$1,last_progress_at=$2 WHERE id=$3")
             .bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(&run_id).execute(&mut **tx).await?;
-        Self::append(tx,&run_id,"WorkflowCancelled",json!({"workflow_command_id":request_id,
+        let terminal = json!({"workflow_command_id":request_id,
             "workflow_instance_id":DB::string(run,"workflow_instance_id")?,"workflow_run_id":run_id,"failure_id":failure_id,
             "failure_category":"cancelled","closed_reason":"cancelled","exception_class":EXCEPTION,"message":message,"reason":reason,
             "cancellation_cleanup":{"request_id":request_id,"outcome":outcome,"cleanup_deadline_at":timestamp(deadline),
-                "delivery_history_event_id":delivery_id,"delivery_sequence":delivery_sequence,"finished_at":at}}),task_id,Some(&request_id)).await?;
-        Self::close_pending_updates(tx, &run_id, task).await
+                "delivery_history_event_id":delivery_id,"delivery_sequence":delivery_sequence,"finished_at":at}});
+        Self::append(
+            tx,
+            &run_id,
+            "WorkflowCancelled",
+            terminal.clone(),
+            task_id,
+            Some(&request_id),
+        )
+        .await?;
+        Self::close_pending_updates(tx, &run_id, task).await?;
+        Self::resolve_child(
+            tx,
+            run,
+            super::children::ChildResolution::Cancelled(&terminal),
+            at,
+        )
+        .await
     }
 
     pub(super) async fn expire_cooperative_deadlines(&self) -> Result<()> {
@@ -687,8 +703,8 @@ where
         }
         let mut unsupported_child = false;
         for child in children {
-            if DB::string(&child, "parent_workflow_run_id")? != run_id
-                || DB::string(&child, "child_workflow_run_id")? == run_id
+            if DB::string(&child, "parent_workflow_run_id")?
+                == DB::string(&child, "child_workflow_run_id")?
                 || !Self::abandoned_child_link(&mut tx, &child).await?
             {
                 unsupported_child = true;

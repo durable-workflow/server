@@ -64,24 +64,6 @@ pub(super) async fn setup(app: &Router) -> (Value, Value) {
         .iter()
         .find(|event| event["event_type"] == "ChildRunStarted")
         .unwrap();
-    // Incoming child cancellation remains outside the supported root slice.
-    let refused = request(
-        app,
-        "POST",
-        &format!(
-            "/api/workflows/{}/request-cancellation",
-            started["payload"]["child_workflow_instance_id"]
-                .as_str()
-                .unwrap()
-        ),
-        json!({}),
-    )
-    .await;
-    assert_eq!(refused.0, StatusCode::UNPROCESSABLE_ENTITY, "{}", refused.1);
-    assert_eq!(
-        refused.1["reason"],
-        "cooperative_cancellation_propagation_not_available"
-    );
     let child = poll(app, "abandoned-worker", "workflow").await;
     assert_eq!(child["run_id"], started["payload"]["child_workflow_run_id"]);
     assert!(child["lease_expires_at"].is_string(), "{child}");

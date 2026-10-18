@@ -5,7 +5,9 @@ sequential `abandon` cancellation and parent-close policies in the default
 namespace. It does not cancel
 the child, change its lease or require its worker to support cooperative cleanup.
 The child can finish independently after its parent closes without resuming it.
-Other policies and incoming child cancellation remain explicitly unavailable.
+Other policies remain explicitly unavailable. The separate
+[independent child request](child-independent-cancellation.md) contract admits
+the child's own root cancellation without inheriting the parent's authority.
 
 The canonical delivery kind is `child`. An existing boundary must match its
 typed scheduled and started history, child call and link identities. A child
