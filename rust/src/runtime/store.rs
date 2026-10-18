@@ -1921,29 +1921,29 @@ where
                     .execute(&mut *tx)
                     .await?;
             } else {
-                let outstanding: i64 = Self::scalar("SELECT COUNT(*) FROM activity_executions WHERE workflow_run_id=$1 AND status NOT IN ('completed','failed')")
-                    .bind(&run_id).fetch_one(&mut *tx).await?;
-                let wait = Self::open_wait(&mut tx, &run_id).await?;
-                let wait_pending = if let Some(wait) = wait {
-                    !Self::condition_timeout_fired(&mut tx, &run_id, &wait).await?
-                } else {
-                    false
-                };
-                let timers: i64 = Self::scalar("SELECT COUNT(*) FROM workflow_run_timers WHERE workflow_run_id=$1 AND status='pending'")
-                    .bind(&run_id).fetch_one(&mut *tx).await?;
-                let children = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled','failed')")
-                    .bind(&run_id).fetch_one(&mut *tx).await?;
-                if outstanding != 0 || timers != 0 || children != 0 || wait_pending {
-                    return Err(refuse(StatusCode::CONFLICT, "pending_durable_operations"));
-                }
-                let output = match external.get(&index) {
-                    Some(prepared) => prepared.stored(),
-                    None => envelope(command, "result")?,
-                };
-                let closed_at = now();
                 if Self::cancellation_request(&run)?.is_some() {
                     Self::finish_root_cancellation(&mut tx, &run, Some(&task)).await?;
                 } else {
+                    let outstanding: i64 = Self::scalar("SELECT COUNT(*) FROM activity_executions WHERE workflow_run_id=$1 AND status NOT IN ('completed','failed')")
+                    .bind(&run_id).fetch_one(&mut *tx).await?;
+                    let wait = Self::open_wait(&mut tx, &run_id).await?;
+                    let wait_pending = if let Some(wait) = wait {
+                        !Self::condition_timeout_fired(&mut tx, &run_id, &wait).await?
+                    } else {
+                        false
+                    };
+                    let timers: i64 = Self::scalar("SELECT COUNT(*) FROM workflow_run_timers WHERE workflow_run_id=$1 AND status='pending'")
+                    .bind(&run_id).fetch_one(&mut *tx).await?;
+                    let children = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled','failed')")
+                    .bind(&run_id).fetch_one(&mut *tx).await?;
+                    if outstanding != 0 || timers != 0 || children != 0 || wait_pending {
+                        return Err(refuse(StatusCode::CONFLICT, "pending_durable_operations"));
+                    }
+                    let output = match external.get(&index) {
+                        Some(prepared) => prepared.stored(),
+                        None => envelope(command, "result")?,
+                    };
+                    let closed_at = now();
                     if let Some(prepared) = external.get(&index) {
                         self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri)
                             .await?;

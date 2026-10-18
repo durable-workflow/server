@@ -64,6 +64,37 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
+    pub(super) async fn abandoned_child_link(
+        tx: &mut Transaction<'_, DB>,
+        link: &DB::Row,
+    ) -> Result<bool> {
+        if DB::string(link, "link_type")? != "child_workflow"
+            || DB::optional_string(link, "parent_close_policy")?.as_deref() != Some("abandon")
+        {
+            return Ok(false);
+        }
+        let calls = Self::query("SELECT * FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND sequence=$2 LIMIT 2")
+            .bind(DB::string(link,"parent_workflow_run_id")?).bind(DB::number(link,"sequence")?)
+            .fetch_all(&mut **tx).await?;
+        let Some(call) = calls.first().filter(|_| calls.len() == 1) else {
+            return Ok(false);
+        };
+        let metadata = DB::document_row(call, "metadata")?;
+        Ok(DB::string(call, "parent_workflow_instance_id")?
+            == DB::string(link, "parent_workflow_instance_id")?
+            && DB::optional_string(call, "resolved_child_instance_id")?
+                == Some(DB::string(link, "child_workflow_instance_id")?)
+            && DB::optional_string(call, "resolved_child_run_id")?
+                == Some(DB::string(link, "child_workflow_run_id")?)
+            && DB::optional_string(call, "parent_close_policy")?.as_deref() == Some("abandon")
+            && metadata["child_call_id"] == DB::string(link, "id")?
+            && metadata["cancellation_policy"] == "abandon"
+            && matches!(
+                DB::string(call, "status")?.as_str(),
+                "started" | "completed" | "failed" | "cancelled"
+            ))
+    }
+
     pub(super) async fn attach_workflow_contract(
         tx: &mut Transaction<'_, DB>,
         queue: &str,
@@ -286,7 +317,8 @@ where
             // Never enqueue a task for a closed or replacement parent run.
             return Ok(());
         }
-        if Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status IN ('ready','leased')").bind(&parent_run).fetch_one(&mut **tx).await? != 0 {
+        let parent_task_exists = Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status IN ('ready','leased')").bind(&parent_run).fetch_one(&mut **tx).await? != 0;
+        if parent_task_exists && Self::cancellation_request(&parent)?.is_none() {
             return Err(refuse(StatusCode::CONFLICT, "child_parent_task_conflict"));
         }
         let mut payload = json!({"sequence":sequence,"workflow_link_id":call_id,"child_call_id":call_id,"child_workflow_instance_id":DB::string(child,"workflow_instance_id")?,"child_workflow_run_id":child_run,"child_workflow_class":DB::string(child,"workflow_class")?,"child_workflow_type":DB::string(child,"workflow_type")?,"child_run_number":DB::number(child,"run_number")?,"child_status":status,"closed_reason":status,"closed_at":closed_at});
@@ -315,6 +347,11 @@ where
             }
         }
         Self::append(tx, &parent_run, event_type, payload, None, None).await?;
+        if parent_task_exists {
+            // The original cancellation resume already owns the parent claim.
+            // Record the child result without rewriting or duplicating that task.
+            return Ok(());
+        }
         let task_id = Self::create_task(tx, &parent_run, &DB::string(&parent,"queue")?, "workflow", json!({"workflow_wait_kind":"child","child_call_id":call_id,"child_workflow_run_id":child_run,"resume_source_kind":"child_workflow_run","resume_source_id":child_run,"workflow_sequence":sequence,"workflow_event_type":event_type,"open_wait_id":format!("child:{call_id}")})).await?;
         Self::query("UPDATE workflow_run_waits SET task_backed=TRUE,task_id=$1,task_type='workflow',task_status='ready' WHERE workflow_run_id=$2 AND wait_id=$3 AND kind='child' AND status IN ('resolved','cancelled')")
             .bind(task_id).bind(&parent_run).bind(format!("child:{call_id}")).execute(&mut **tx).await?;
