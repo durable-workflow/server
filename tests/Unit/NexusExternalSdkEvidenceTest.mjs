@@ -10,7 +10,7 @@ const expected = service => ({language: service, name_bytes: Buffer.byteLength(n
     greeting_bytes: Buffer.byteLength(`hello, ${name}`), greeting_sha256: digest(`hello, ${name}`),
     bigint: '9223372036854775807', bigint_type: 'int', nullable: null, nullable_present: true, unicode: '雪☃'});
 
-function assertExternal(row, service) {
+function assertExternal(row, service, caller = 'php') {
     assert.equal(row.scenario, 'external_payload');
     assert.equal(row.budget_seconds, 30);
     assert.ok(row.elapsed_seconds > 0 && row.elapsed_seconds < row.budget_seconds);
@@ -21,6 +21,11 @@ function assertExternal(row, service) {
     assert.equal(row.killed_worker.running, false);
     assert.equal(row.killed_worker.termsig, 9);
     assert.equal(row.replacement_worker_exit_code, 0);
+    if (caller === 'php') {
+        assert.equal(row.observer_memory_limit, '128M');
+        assert.ok(Number.isInteger(row.observer_peak_bytes) && row.observer_peak_bytes > 0
+            && row.observer_peak_bytes <= 128 * 1024 * 1024);
+    }
     assert.equal(row.result.status, 'completed');
     assert.equal(row.result.service_call_id, row.original_service_call_id);
     assert.deepEqual(row.result.external_result, expected(service));
@@ -74,6 +79,7 @@ function fixture() {
         original_service_call_id: 'call', original_service_call: {...call},
         worker_process_id: 1, replacement_worker_process_id: 2,
         killed_worker: {pid: 1, running: false, termsig: 9}, replacement_worker_exit_code: 0,
+        observer_memory_limit: '128M', observer_peak_bytes: 64 * 1024 * 1024,
         result: {status: 'completed', service_call_id: 'call', external_result: expected('php')},
         before_kill_history: {events: [start]}, before_replacement_history: {events: [start, completion]},
         history: {events: [start, completion]}, durable_service_call: {body: call},
@@ -99,6 +105,8 @@ test('external delivery reader accepts one cold original and rejects identity, p
         row => { row.history.events.push(row.history.events[0]); },
         row => { row.replacement_worker_process_id = row.worker_process_id; },
         row => { row.replacement_worker_exit_code = 137; },
+        row => { row.observer_memory_limit = '256M'; },
+        row => { row.observer_peak_bytes = 129 * 1024 * 1024; },
         row => { row.durable_service_call.body.linked_workflow_run_id = 'new-run'; },
         row => { row.durable_service_call.body.call_deadline_at = '2026-10-19T00:00:00Z'; },
         row => { row.retained_references = row.retained_references.slice(0, 1); },
@@ -122,7 +130,7 @@ if (process.env.NEXUS_EXTERNAL_SDK_PROBES) {
             assert.equal(observation.ok, true, JSON.stringify(observation.body));
             assert.deepEqual(observation.body.observations.map(row => row.caller_namespace),
                 ['shared', caller === 'php' ? 'tenant-a' : 'tenant-b']);
-            for (const row of observation.body.observations) assertExternal(row, service);
+            for (const row of observation.body.observations) assertExternal(row, service, caller);
         }
     });
 }

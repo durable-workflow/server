@@ -109,12 +109,15 @@ jobs:
             const report = JSON.parse(fs.readFileSync(path.join(root, name), 'utf8'));
             summary[kind] = report.reports.map(pair => ({caller: pair.caller, service: pair.service,
               process_ok: pair.observation?.ok, audit_exit_code: pair.audit_exit_code,
+              process_error: pair.observation?.body?.error,
+              process_stderr: pair.observation?.body?.stderr?.slice(-1500),
               observations: (pair.observation?.body?.observations || []).map(row => ({
                 namespace: row.caller_namespace, workflow_id: row.workflow_id, run_id: row.run_id,
                 call_id: row.original_service_call_id || row.result?.service_call_id,
                 recovered: row.recovery_qualified, authorization: row.authorization_qualified,
                 failure: row.failure, status: row.result?.status, value: row.result?.external_result,
                 elapsed: row.elapsed_seconds, replacement_exit: row.replacement_worker_exit_code,
+                observer_memory_limit: row.observer_memory_limit, observer_peak_bytes: row.observer_peak_bytes,
                 admin_refusal_status: row.admin_refusal_status,
                 history_status: row.raw_caller_history?.status,
                 history_reason: row.raw_caller_history?.body?.reason,
