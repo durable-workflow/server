@@ -26,7 +26,8 @@ Current checkpoint, October 18:
   [shared run 39078215426](https://github.com/durable-workflow/server/actions/runs/39078215426),
   still running at the terminal-update component handoff. Its exact PHP/source,
   Sonar app/workflow and public boundary pass. The separately prepared failure
-  and terminal-update components below have local source qualification; they do not qualify or replace
+  and terminal-update components below have local source qualification; they do
+  not qualify or replace
   this hosted original. Its reported source-finding cleanup still needs fresh analysis.
 - The preceding observation head `a15b87977` has all 13 jobs passing in
   [shared run 39072054431](https://github.com/durable-workflow/server/actions/runs/39072054431),
@@ -628,14 +629,14 @@ Current checkpoint, October 18:
   stays absent because no update step was applied. The run, task, update, failure,
   history and cursor changes share one transaction. Old leased update attempts
   cannot replace the outcome after closure. An unrelated active run stays intact.
-  Ordering retains non-null command sequences before absent sequences, then
-  accepted time and update ID. Missing-command fixture rows use the update itself
+  Ordering uses command sequence (non-null first), accepted time and update ID.
+  Missing-command fixture rows use the update itself
   as the failure source without inventing a command or cursor event. This does
   not qualify legacy database takeover or widen normal update admission.
   Tests-first `cbbd6dc59` rejects both ready/leased cancellation controls at the
   existing 422 propagation guard. Initial expanded controls also retain their
-  unsuccessful outcomes: a zero-time condition had already resumed before update
-  admission, a zero-time poll assumed a scheduler tick, and a legacy fixture
+  unsuccessful outcomes: a zero-time condition reached the busy update-snapshot
+  guard, a zero-time poll observed no resume, and a legacy fixture
   omitted the schema's required command-link value. Corrected controls use the
   original future deadline, ordinary long polling and explicit missing-command IDs.
   A strict published-PHP comparison then exposed an actual missing task snapshot
