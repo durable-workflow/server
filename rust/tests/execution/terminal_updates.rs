@@ -48,7 +48,9 @@ async fn closed_receipt(app: &Router, run: &Value, original: &Value, reason: &st
     assert!(!history.as_array().unwrap().iter().any(|e|e["event_type"]=="UpdateApplied"));
     let cursor:Vec<_>=history.as_array().unwrap().iter().filter(|e|e["event_type"]=="MessageCursorAdvanced").collect();
     assert_eq!(cursor.len(),1);
-    assert_eq!(cursor[0]["payload"],json!({"stream_key":format!("instance:{}",run["workflow_id"].as_str().unwrap()),"previous_position":0,"new_position":1}));
+    let mut cursor_payload=cursor[0]["payload"].clone();
+    cursor_payload.as_object_mut().unwrap().remove("task");
+    assert_eq!(cursor_payload,json!({"stream_key":format!("instance:{}",run["workflow_id"].as_str().unwrap()),"previous_position":0,"new_position":1}));
     result.1
 }
 
@@ -86,5 +88,80 @@ async fn direct_cancel(leased: bool) {
     assert_eq!(run_history(&app,&run["workflow_id"],&run["run_id"]).await,history);
     assert!(poll(&app,"terminal-update-worker","workflow").await.is_null());
     cold.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn terminal_updates_workflow_failure_closes_original_update_with_terminal_task_snapshot() {
+    worker_terminal(true).await;
+}
+
+#[tokio::test]
+async fn terminal_updates_workflow_completion_closes_original_update_with_terminal_task_snapshot() {
+    worker_terminal(false).await;
+}
+
+async fn worker_terminal(failed: bool) {
+    let database=TestDatabase::new().await;
+    let runtime=database.open().await.unwrap();
+    let app=router(runtime.clone());
+    update_worker(&app,"update-owner").await;
+    update_worker(&app,"terminal-owner").await;
+    let run=start(&app,"timed-terminal-update").await;
+    let initial=poll(&app,"update-owner","workflow").await;
+    let opened=finish_task(&app,&initial,json!([{"type":"open_condition_wait","condition_key":"finish",
+        "condition_definition_fingerprint":format!("sha256:{}","a".repeat(64)),
+        "condition_wait_occurrence_id":"terminal-condition","timeout_seconds":0}])).await;
+    assert_eq!(opened.0,StatusCode::OK,"{}",opened.1);
+    let update=request(&app,"POST","/api/workflows/timed-terminal-update/update/set",input("original")).await;
+    assert_eq!(update.0,StatusCode::ACCEPTED,"{}",update.1);
+    let owned=poll(&app,"update-owner","workflow").await;
+    assert_eq!(owned["workflow_update_id"],update.1["update_id"]);
+    let terminal=poll(&app,"terminal-owner","workflow").await;
+    assert!(terminal["task_id"].is_string(),"{terminal}");
+    assert!(terminal["workflow_update_id"].is_null(),"{terminal}");
+    let commands=if failed {json!([{"type":"fail_workflow","message":"ordinary terminal failure"}])}
+        else {json!([{"type":"complete_workflow","result":envelope(Payload::Null)}])};
+    let done=finish_task(&app,&terminal,commands.clone()).await;
+    assert_eq!(done.0,StatusCode::OK,"{}",done.1);
+    let reason=if failed {"failed"}else{"completed"};
+    assert_eq!(done.1["run_status"],reason);
+    let receipt=closed_receipt(&app,&run,&update.1,reason).await;
+    let history=run_history(&app,&run["workflow_id"],&run["run_id"]).await;
+    let event=history.as_array().unwrap().iter().find(|event|event["event_type"]=="UpdateCompleted").unwrap();
+    assert_eq!(event["payload"]["task"]["id"],terminal["task_id"]);
+    assert_eq!(event["payload"]["task"]["status"],"leased");
+    assert_eq!(event["payload"]["task"]["lease_owner"],terminal["lease_owner"]);
+    assert_eq!(finish_task(&app,&terminal,commands).await.1["recorded"],false);
+    assert_eq!(finish_task(&app,&owned,json!([{"type":"complete_update","update_id":update.1["update_id"],"result":envelope(Payload::Long(42))}])).await.0,StatusCode::CONFLICT);
+    assert_eq!(run_history(&app,&run["workflow_id"],&run["run_id"]).await,history);
+    runtime.close().await;
+    let cold=database.open().await.unwrap();
+    assert_eq!(closed_receipt(&router(cold.clone()),&run,&update.1,reason).await,receipt);
+    cold.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn terminal_updates_sqlite_failure_rolls_back_run_tasks_history_and_original_update() {
+    let database=TestDatabase::Sqlite(tempfile::tempdir().unwrap());
+    let runtime=database.open().await.unwrap();
+    let app=router(runtime.clone());
+    let (run,update)=accepted(&app,"atomic-terminal-update").await;
+    let task=poll(&app,"terminal-update-worker","workflow").await;
+    let original=run_history(&app,&run["workflow_id"],&run["run_id"]).await;
+    database.execute("CREATE TRIGGER reject_terminal_update BEFORE INSERT ON workflow_history_events WHEN NEW.event_type='UpdateCompleted' BEGIN SELECT RAISE(ABORT, 'terminal update rejected'); END").await;
+    let cancelled=request(&app,"POST","/api/workflows/atomic-terminal-update/cancel",json!({})).await;
+    assert_eq!(cancelled.0,StatusCode::SERVICE_UNAVAILABLE,"{}",cancelled.1);
+    assert_eq!(run_history(&app,&run["workflow_id"],&run["run_id"]).await,original);
+    assert_eq!(task_retry::rows(&database,"SELECT COUNT(*) FROM workflow_failures").await,0);
+    assert_eq!(task_retry::rows(&database,"SELECT COUNT(*) FROM workflow_updates WHERE status='accepted' AND closed_at IS NULL").await,1);
+    assert_eq!(task_retry::rows(&database,"SELECT COUNT(*) FROM workflow_tasks WHERE status='leased' AND lease_expires_at IS NOT NULL").await,1);
+    assert_eq!(task_retry::rows(&database,"SELECT COUNT(*) FROM workflow_runs WHERE message_cursor_position=0 AND status='waiting'").await,1);
+    database.execute("DROP TRIGGER reject_terminal_update").await;
+    assert_eq!(request(&app,"POST","/api/workflows/atomic-terminal-update/cancel",json!({})).await.0,StatusCode::OK);
+    closed_receipt(&app,&run,&update,"cancelled").await;
+    assert_eq!(finish_task(&app,&task,json!([{"type":"fail_update","update_id":update["update_id"],"message":"too late"}])).await.0,StatusCode::CONFLICT);
+    runtime.close().await;
     database.remove().await;
 }

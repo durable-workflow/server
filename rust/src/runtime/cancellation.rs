@@ -1,5 +1,5 @@
 //! Immediate cancellation of root or direct child runs. Propagation trees and
-//! update dependencies remain refused until their separate fixtures qualify.
+//! broader propagation dependencies remain refused until their fixtures qualify.
 use super::transaction::Transaction;
 use super::{
     Result, RuntimeError,
@@ -195,8 +195,6 @@ where
                     .await?;
             let pending_children = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled','failed')")
                 .bind(&run_id).fetch_one(&mut *tx).await?;
-            let updates = Self::scalar("SELECT COUNT(*) FROM workflow_updates WHERE workflow_run_id=$1 AND status='accepted'")
-                .bind(&run_id).fetch_one(&mut *tx).await?;
             let pending_queries =
                 self.query_entries(&mut tx)
                     .await?
@@ -205,7 +203,7 @@ where
                         task["run_id"] == run_id
                             && matches!(task["status"].as_str(), Some("pending" | "leased"))
                     });
-            if unsupported_links != 0 || pending_children != 0 || updates != 0 || pending_queries {
+            if unsupported_links != 0 || pending_children != 0 || pending_queries {
                 return Err(refuse(
                     StatusCode::UNPROCESSABLE_ENTITY,
                     "cancellation_propagation_not_available",
@@ -319,6 +317,7 @@ where
             Some(&command_id),
         )
         .await?;
+        Self::close_pending_updates(&mut tx, &run_id, None).await?;
         Self::resolve_child(&mut tx, &run, ChildResolution::Cancelled(&terminal), at).await?;
         tx.summary_changed(&run_id);
         tx.commit().await?;

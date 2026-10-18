@@ -72,8 +72,14 @@ where
             let status = if failed { "failed" } else { "completed" };
             // Resolution updates only the admitted row. Missing historical
             // projections never reappear as a side effect of observation.
-            Self::query("UPDATE workflow_run_waits SET sequence=$1,status='resolved',source_status=$2,summary=$3,resolved_at=$4,task_backed=FALSE,task_id=NULL,task_type=NULL,task_status=NULL,command_outcome=$5,updated_at=$6 WHERE workflow_run_id=$7 AND wait_id=$8 AND kind='update' AND status='open'")
-                .bind(wait_sequence(payload)?).bind(status).bind(format!("Update {name} {status}."))
+            let sequence = if payload["sequence"].is_null() && payload["terminal_reason"].is_string() {
+                // Terminal closure never applied an authored update step.
+                0
+            } else {
+                wait_sequence(payload)?
+            };
+            Self::query("UPDATE workflow_run_waits SET sequence=NULLIF($1,0),status='resolved',source_status=$2,summary=$3,resolved_at=$4,task_backed=FALSE,task_id=NULL,task_type=NULL,task_status=NULL,command_outcome=$5,updated_at=$6 WHERE workflow_run_id=$7 AND wait_id=$8 AND kind='update' AND status='open'")
+                .bind(sequence).bind(status).bind(format!("Update {name} {status}."))
                 .bind(DB::bind_time(at)).bind(format!("update_{status}")).bind(DB::bind_time(at)).bind(run).bind(wait).execute(&mut **tx).await?;
         }
         Ok(())

@@ -1957,6 +1957,7 @@ where
                     .await?;
                     Self::query("UPDATE workflow_runs SET status='completed',closed_reason='completed',output=$1,closed_at=$2 WHERE id=$3")
                     .bind(&output).bind(DB::bind_time(closed_at)).bind(&run_id).execute(&mut *tx).await?;
+                    Self::close_pending_updates(&mut tx, &run_id, Some(&task)).await?;
                     Self::complete_child(&mut tx, &run, &output, closed_at).await?;
                 }
             }
