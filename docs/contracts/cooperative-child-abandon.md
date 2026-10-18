@@ -1,7 +1,8 @@
 # Cooperative cancellation with an abandoned child
 
 The native source component admits parent root cancellation for the existing
-sequential `abandon` cancellation and parent-close policies. It does not cancel
+sequential `abandon` cancellation and parent-close policies in the default
+namespace. It does not cancel
 the child, change its lease or require its worker to support cooperative cleanup.
 The child can finish independently after its parent closes without resuming it.
 Other policies and incoming child cancellation remain explicitly unavailable.

@@ -22,6 +22,42 @@ complete parity or release readiness.
 
 Current checkpoint, October 18:
 
+- Separately prepared [cooperative child abandonment](contracts/cooperative-child-abandon.md)
+  is tested at `3f87a8524`, runtime `9cd7e90357caf9ea30d0a7cb0756c6935e85d732`
+  and tests `694ba3b8d5f0163802ca97ef6dc52dfa96f71d80`. The existing
+  default-namespace sequential child stays independent when its parent finishes
+  cooperative cancellation. Its original worker, attempt, lease expiry, claim
+  payload and typed result survive parent completion, failure and deadline
+  cleanup. The canonical `child` delivery rejects a resolution recorded before
+  the original root request, permits a later resolution, and reuses the existing
+  parent cleanup task. Incoming child cancellation and other policies remain
+  refused. Ordinary completion still guards pending durable operations.
+  Tests-first `71eee90e6` retains six actual failures at the old link refusal.
+  Implementation `3f87a8524` passes seven focused controls, 80 library tests with
+  18 existing ignores, 252 SQLite execution tests with the isolated profile entry exercised
+  by its passing parent, and fifteen applicable cooperative controls each on
+  PostgreSQL 17.11 and MySQL 8.0.46. The network selections exclude two separate
+  SQLite-only write-failure controls. Published PHP 8.3.35 / Workflow 2.5.32
+  independently matches all 26 final canonical delivery/policy captures with
+  zero database queries, using the committed history-only model reference.
+  Its validator, child policy and models match published source `78075b6f`.
+  Review follow-up `da16ffbc9`, tests `1e9426a379743e07d331c7548e1d6282e5ef47d4`,
+  replaces two absent-field comparisons with seven named summary fields and
+  explicit presence checks. All seven focused controls pass again. Production
+  runtime and published-PHP model bytes remain identical to `3f87a8524`.
+  The first network selections each retain eleven passes and four failures in
+  the new snapshot fixture's integer decoder. Explicit test-query casts correct
+  that fixture; runtime logic is unchanged. The first PHP invocation stopped
+  before comparison because public history omits event IDs; the reference now
+  reads captured stored IDs. Review `304d2e099` retains six passes and one failed
+  assumption that a present summary timestamp could not be null. The follow-up
+  preserves nullable values while checking actual field presence. These unsuccessful selections remain separate from
+  the final results. Both final network databases have no test databases before
+  clean SIGTERM, exit0 and no OOM. Formatting and diff checks pass.
+  This source is separate from admitted `3d68a5fe3`; combined hosted/analyzer,
+  installed SDK, wider propagation, review and release gates remain open. No
+  package, schema, frozen tuple, runner/profile, budget or observation recipe
+  changes.
 - Separate cooperative-update implementation `cff0fd253`, runtime tree
   `e5c31381ba0eefa83bb8bbc90102fdbbea48ecc4` and tests
   `8b17933aadff7893d92ba0e9139f9fb39de6d1c6`, closes accepted updates when an
@@ -29,8 +65,9 @@ Current checkpoint, October 18:
   closer runs after WorkflowCancelled in that same transaction. Completion and
   failure retain root cancellation precedence and the actual terminal task
   snapshot. Maintenance uses the original deadline without inventing a task.
-  Children, active activities, open-wait request guards and update admission
-  remain unchanged. The tests-first `a5860b284` retains four actual failures at
+  That update-only component leaves children, active activities, open-wait
+  request guards and update admission unchanged. The tests-first `a5860b284`
+  retains four actual failures at
   the preceding accepted-update refusal. Final source passes all four focused
   controls, 80 library tests with 18 existing ignores, and 245 SQLite execution
   tests with the isolated profile entry exercised through its passing parent.
@@ -3320,7 +3357,7 @@ does not establish full parity, current-head qualification or release readiness.
 | Control plane, namespaces, authorization, errors, visibility | `resources/platform-protocol-specs/control-plane-api.openapi.yaml`, `docs/contracts/auth-composition.md`, `routes/api.php`, Feature control-plane/auth/namespace tests; namespace and principal-attribution published runners | Bounded listing/CLI metadata, named workflow/activity/timer routes, role-token admission and namespace fences exist. PR478 adds [selected/current run observation](contracts/workflow-run-observation.md) and transactional summaries. Broader visibility, namespace and principal-authorization parity remains open. |
 | Worker registration, sessions, leases, fencing, retries, timeouts, heartbeats, routing, affinity, backpressure, versioning | Worker OpenAPI and stream AsyncAPI in `resources/platform-protocol-specs/`; Feature worker/activity/prepared-local/cancellation tests; activity, heartbeat and worker-versioning published runners | Registration incarnations, exact-attempt leases, recovery, retry/heartbeat/deadline controls and fenced shutdown have source and scoped consumer evidence. Full fleet, session, routing, affinity, backpressure and policy compatibility remains open. |
 | Avro values, external task inputs/results, payload storage and reclamation | `docs/contracts/external-task-{input,result}.md`, `external-payload-storage.md`, external payload OpenAPI; `regression-corpus-policy.json`, `tests/Fixtures/CodecRegression/`, payload Feature tests | Official Avro encoding/decoding, opaque task envelopes, versioned external transport, retained inputs/results and completion uploads exist. Codec, authority, external-value and targeted activity-result controls have separate evidence. Complete ingress, provider, reclamation and installed-consumer parity remains open. |
-| Workflow lifecycle, duplicate commands, typed history, continuation, child workflows, cancellation, cleanup replay | Workflow lifecycle, migration, child-workflow and replay runners; Feature cooperative cancellation, history, migration and repeated-signal tests | Bounded completion, failure, sequential child outcomes, duplicate receipts, direct cancellation and cooperative root cleanup exist. [Terminal update closure](contracts/terminal-update-closure.md) has a separate prepared cooperative component. Child retry/parallel/close-policy families, wider cancellation propagation, cleanup replay and continuation transfer remain open. |
+| Workflow lifecycle, duplicate commands, typed history, continuation, child workflows, cancellation, cleanup replay | Workflow lifecycle, migration, child-workflow and replay runners; Feature cooperative cancellation, history, migration and repeated-signal tests | Bounded completion, failure, sequential child outcomes, duplicate receipts, direct cancellation and cooperative root cleanup exist. [Terminal update closure](contracts/terminal-update-closure.md) has a separate prepared cooperative component. [Cooperative child abandonment](contracts/cooperative-child-abandon.md) is a separate prepared default-namespace component. Child retry/parallel/other close-policy families, wider cancellation propagation, cleanup replay and continuation transfer remain open. |
 | Timers, schedules, signals, queries, updates, search attributes, memo, sagas | Corresponding runners in `scripts/conformance/`, manifests in `static/platform-conformance/`; Sample App polyglot experiments | Source covers durable timers, bounded schedules, typed signals/queries/updates, memo limits and bounded mixed selections. PR478 adds timed signal/condition waits, named signal waits and flat/nested activity/timer all barriers. Wider grouped leaves and selection shapes, queued control routing, policies, search and saga families remain open. |
 | Local activities, cancellation scopes, worker sessions, streams, service catalog/Nexus, bridge adapters, standalone activities, debugging and repair | `routes/api.php`, `docs/contracts/`, worker/control-plane specifications, corresponding Feature tests and Nexus runner | Scoped native repair and diagnostics exist. Local-activity execution, cancellation scopes, sessions, streams, Nexus/catalog, bridge and standalone-activity compatibility remain required work. No unpublished package telemetry or stored-job contract is adopted by these slices. |
 | Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | Published cohorts cover workflow/activity (#401), parent/child (#408), timer authors (#411), signals (#415), queries (#422), successful/failed updates (#424/#427), named namespaces (#429), selected-run signals (#434) and subsequent corrected marker/range and authority slices. Each retains its exact source/tuple and failures. CLI reads have bounded coverage. Remaining SDK families, broader CLI, native Waterline/Sample App and browser acceptance remain open; published PHP consumers do not qualify native. |
