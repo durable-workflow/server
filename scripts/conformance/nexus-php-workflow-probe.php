@@ -31,6 +31,10 @@ if (($argv[2] ?? null) === 'worker') {
             string $name,
             ?string $targetNamespace,
         ): array {
+            $external = $name === 'external';
+            if ($external) {
+                $name = 'nexus-external:'.str_repeat('x', 4 * 1024 * 1024).'☃';
+            }
             $options = ['wait_timeout_seconds' => 5];
             if ($targetNamespace !== null) {
                 $options['namespace'] = $targetNamespace;
@@ -47,6 +51,18 @@ if (($argv[2] ?? null) === 'worker') {
                     'cancelled' => $failure->cancelled,
                     'service_call' => $failure->failure,
                 ];
+            }
+
+            if ($external) {
+                $value = $result->responsePayload;
+
+                return ['service_call_id' => $result->serviceCallId, 'status' => $result->status,
+                    'external_result' => [
+                        'language' => $value['language'],
+                        'name_bytes' => strlen($value['name']), 'name_sha256' => hash('sha256', $value['name']),
+                        'greeting_bytes' => strlen($value['greeting']), 'greeting_sha256' => hash('sha256', $value['greeting']),
+                        'bigint' => (string) $value['bigint'], 'nullable' => $value['nullable'], 'unicode' => $value['unicode'],
+                    ]];
             }
 
             return [

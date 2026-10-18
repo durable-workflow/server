@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.util
 import json
 import os
@@ -53,11 +54,14 @@ async def run_worker(input_data, namespace):
 
 
 async def execute(input_data, namespace):
+    external = input_data.get("scenario") == "external_payload"
     log_path = Path(f"/tmp/nexus-python-recovery-{namespace}-{os.getpid()}.log")
     row = {"caller_namespace": namespace, "target_namespace": "shared", "scenario": "caller_recovery",
-           "installed_sdk_version": version("durable-workflow"), "budget_seconds": 60,
+           "installed_sdk_version": version("durable-workflow"), "budget_seconds": 30 if external else 60,
            "recovery_qualified": False}
     deadline = time.monotonic() + row["budget_seconds"]
+    if external:
+        row["scenario"] = "external_payload"
     with log_path.open("ab", buffering=0) as log:
         def start_worker():
             return subprocess.Popen([sys.executable, __file__, sys.argv[1], "worker", namespace],
@@ -74,7 +78,7 @@ async def execute(input_data, namespace):
                     workflow_type="nexus.fixture.python.caller", task_queue="nexus-python-workflow",
                     workflow_id=f"nexus-python-recovery-{namespace}-{uuid.uuid4().hex[:12]}",
                     input=[input_data["endpoint"], input_data["service"], input_data["operation"],
-                           "recover", None if namespace == "shared" else "shared"],
+                           "external" if external else "recover", None if namespace == "shared" else "shared"],
                 )
                 row.update(workflow_id=handle.workflow_id, run_id=handle.run_id)
                 ready_until = min(deadline, time.monotonic() + 20)
@@ -154,6 +158,16 @@ async def main():
         await run_worker(input_data, sys.argv[3])
         return
     observations = [await execute(input_data, namespace) for namespace in ["shared", "tenant-b"]]
+    def compact(value):
+        if isinstance(value, str) and len(value.encode()) > 2048:
+            return {"omitted_bytes": len(value.encode()), "sha256": hashlib.sha256(value.encode()).hexdigest()}
+        if isinstance(value, dict):
+            return {key: compact(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [compact(item) for item in value]
+        return value
+    if input_data.get("scenario") == "external_payload":
+        observations = compact(observations)
     print(json.dumps({"scope": "actual_python_caller_sigkill_recovery", "observations": observations,
                       "outcome": "pass" if all(row["recovery_qualified"] for row in observations) else "fail"}))
 

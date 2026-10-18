@@ -14,6 +14,7 @@ on:
       - scripts/conformance/nexus-python-caller-recovery.py
       - scripts/conformance/nexus-python-service-worker.py
       - tests/Unit/NexusSdkCallerEvidenceTest.mjs
+      - tests/Unit/NexusExternalSdkEvidenceTest.mjs
   push:
     branches: [main]
     paths:
@@ -28,6 +29,7 @@ on:
       - scripts/conformance/nexus-python-caller-recovery.py
       - scripts/conformance/nexus-python-service-worker.py
       - tests/Unit/NexusSdkCallerEvidenceTest.mjs
+      - tests/Unit/NexusExternalSdkEvidenceTest.mjs
   workflow_dispatch:
 
 permissions:
@@ -43,21 +45,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
-      DW_SERVER_IMAGE: durableworkflow/server@sha256:ef043e5c582761e486a64a2ab4226476e17ae4f71682ef59d6b9ddd784d246b6
-      DW_SERVER_VERSION: 2.6.1
-      DW_WORKFLOW_PHP_VERSION: 2.5.12
-      DW_PHP_SDK_VERSION: 2.3.3
-      DW_PYTHON_SDK_VERSION: 2.6.0rc2
-      DW_CLI_VERSION: 2.2.3
-      DW_WATERLINE_VERSION: 2.9.1
+      DW_SERVER_IMAGE: durableworkflow/server@sha256:5091e4803422e0ae6c30740c788f23c3c0391aecdd4f6a323ccea946621c0089
+      DW_SERVER_VERSION: 2.9.0
+      DW_WORKFLOW_PHP_VERSION: 2.6.0
+      DW_PHP_SDK_VERSION: 2.5.0
+      DW_PYTHON_SDK_VERSION: 2.6.0
+      DW_CLI_VERSION: 2.3.0
+      DW_WATERLINE_VERSION: 2.11.2
+      DW_NEXUS_EXTERNAL_PAYLOAD_PROBES: '1'
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       - name: Reject false execution evidence
-        run: node --test tests/Unit/NexusSdkCallerEvidenceTest.mjs
-      - name: Execute the frozen published client and service pairs
+        run: node --test tests/Unit/NexusSdkCallerEvidenceTest.mjs tests/Unit/NexusExternalSdkEvidenceTest.mjs
+      - name: Execute the published client and service pairs
         shell: bash
         env:
           DW_NEXUS_RESULT_DIR: ${{ runner.temp }}/nexus-proof
@@ -85,6 +88,8 @@ jobs:
             NEXUS_BACKEND_INTERRUPTION_PROBES="$DW_NEXUS_RESULT_DIR/nexus-backend-interruption-probes.json" \
             NEXUS_DEADLINE_PROBE="$DW_NEXUS_RESULT_DIR/nexus-deadline-probe.json" \
             node --test tests/Unit/NexusSdkCallerEvidenceTest.mjs
+          NEXUS_EXTERNAL_SDK_PROBES="$DW_NEXUS_RESULT_DIR/nexus-external-sdk-probes.json" \
+            node --test tests/Unit/NexusExternalSdkEvidenceTest.mjs
       - name: Retain actual requests and durable observations
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -92,4 +97,4 @@ jobs:
           name: nexus-sdk-callers-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/nexus-proof
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 1

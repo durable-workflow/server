@@ -34,6 +34,9 @@ Environment overrides:
                                     Skip the published workflow-php/sdk-python
                                     service-call evidence shard.
   DW_NEXUS_KEEP_RUN_ROOT=1          Keep the probe scratch directory.
+  DW_NEXUS_EXTERNAL_PAYLOAD_PROBES=1
+                                    Exercise large arguments/results and cold SDK
+                                    delivery using namespace-managed transport.
   DW_NEXUS_SERVER_PORT              Host port for the published server probe.
   DW_NEXUS_SKIP_DOCKER_PULL=1       Reuse a local server image for the probe.
   DW_SERVER_IMAGE                   Exact published server image/tag/digest.
@@ -757,11 +760,13 @@ function freePort(options = {}) {
 function composeYaml(image, port, token, observer = null) {
   const escapedImage = JSON.stringify(image);
   const escapedToken = JSON.stringify(token);
+  const payloadMount = env('DW_NEXUS_EXTERNAL_PAYLOAD_PROBES') === '1'
+    ? '    volumes:\n      - payload_data:/app/storage/app\n' : '';
   return `
 services:
   bootstrap:
     image: ${escapedImage}
-    command: ["server-bootstrap"]
+${payloadMount}    command: ["server-bootstrap"]
     environment: &server_environment
       APP_ENV: local
       APP_DEBUG: "false"
@@ -784,7 +789,7 @@ services:
         condition: service_healthy
   server:
     image: ${escapedImage}
-    ports:
+${payloadMount}    ports:
       - "127.0.0.1:${port}:8080"
     environment:
       <<: *server_environment
@@ -804,7 +809,7 @@ services:
       retries: 24
   worker:
     image: ${escapedImage}
-    command: php artisan queue:work --sleep=1 --tries=3 --max-time=3600
+${payloadMount}    command: php artisan queue:work --sleep=1 --tries=3 --max-time=3600
     environment:
       <<: *server_environment
       DW_SERVER_TOPOLOGY_SHAPE: standalone_server
@@ -859,6 +864,7 @@ ${observer === null ? '' : [['waterline-owner', 'shared', observer.ownerPort], [
 volumes:
   mysql_data:
   redis_data:
+${payloadMount ? '  payload_data:' : ''}
 `;
 }
 
@@ -2843,6 +2849,92 @@ async function probePublishedCallerRecovery(baseUrl, token, compose, phpService,
   }
 }
 
+function boundedPayloadEvidence(value) {
+  if (typeof value === 'string' && Buffer.byteLength(value) > 2048) {
+    return {omitted_bytes: Buffer.byteLength(value), sha256: crypto.createHash('sha256').update(value).digest('hex')};
+  }
+  if (Array.isArray(value)) return value.map(boundedPayloadEvidence);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, boundedPayloadEvidence(item)]));
+  }
+  return value;
+}
+
+function runtimeReferences(value, found = new Map()) {
+  if (!value || typeof value !== 'object') return [...found.values()];
+  if (value.schema === 'durable-workflow.v2.runtime-external-payload-reference.v1') {
+    found.set(value.reference_id, value);
+  }
+  for (const item of Object.values(value)) runtimeReferences(item, found);
+  return [...found.values()];
+}
+
+async function inspectRuntimeReference(baseUrl, token, namespace, reference) {
+  const response = await fetch(`${baseUrl}/api/external-payloads/v1/${encodeURIComponent(reference.reference_id)}`, {
+    headers: {Authorization: `Bearer ${token}`, 'X-Namespace': namespace,
+      'X-Durable-Workflow-Payload-Codec': reference.codec,
+      'X-Durable-Workflow-Payload-Size': String(reference.size_bytes),
+      'X-Durable-Workflow-Payload-SHA256': reference.sha256, Connection: 'close'},
+    signal: AbortSignal.timeout(30000),
+  });
+  const bytes = Buffer.from(await response.arrayBuffer());
+  return {status: response.status, bytes: bytes.length,
+    sha256: crypto.createHash('sha256').update(bytes).digest('hex')};
+}
+
+async function setupExternalPayloadPolicies(baseUrl, token) {
+  const policies = [];
+  for (const namespace of ['shared', 'tenant-a', 'tenant-b']) {
+    const policy = await apiRequest(baseUrl, token, namespace, 'PUT', `/namespaces/${namespace}/external-storage`,
+      {driver: 'local', enabled: true, threshold_bytes: 2097152});
+    policies.push({namespace, response: responseSummary(policy)});
+    if (!policy.ok) throw new Error(`External payload policy refused for ${namespace}: HTTP ${policy.status}`);
+  }
+  fs.writeFileSync(path.join(resultDir, 'nexus-external-policies.json'), JSON.stringify(policies, null, 2) + '\n');
+}
+
+async function probePublishedExternalPayloads(baseUrl, token, compose, phpService, pythonService) {
+  const policies = JSON.parse(fs.readFileSync(path.join(resultDir, 'nexus-external-policies.json'), 'utf8'));
+  const reports = [];
+  const reportPath = path.join(resultDir, 'nexus-external-sdk-probes.json');
+  const write = () => fs.writeFileSync(reportPath, JSON.stringify(boundedPayloadEvidence({policies, reports}), null, 2) + '\n');
+  write();
+  for (const [caller, service] of [['php', 'php'], ['php', 'python'], ['python', 'php'], ['python', 'python']]) {
+    const inputName = `nexus-${caller}-${service}-external-input.json`;
+    const input = {token, endpoint: `published-${service}-workflow-service`,
+      service: service === 'php' ? 'PublishedWorkflowGreeter' : 'PublishedPythonWorkflowGreeter',
+      operation: 'greet', scenario: 'external_payload'};
+    fs.writeFileSync(path.join(compose.runRoot, inputName), JSON.stringify(input));
+    const command = caller === 'php' ? `php /work/nexus-php-caller-recovery.php /work/${inputName}`
+      : `. /tmp/dw-python/bin/activate && python /work/nexus-python-caller-recovery.py /work/${inputName}`;
+    const observation = dockerExecJson(caller === 'php' ? phpService.containerName : pythonService.containerName,
+      command, path.join(resultDir, `nexus-${caller}-${service}-external.log`));
+    const report = {caller, service, observation};
+    reports.push(report);
+    write();
+    for (const row of observation.body?.observations || []) {
+      if (!row.original_service_call_id) continue;
+      row.durable_service_call = responseSummary(await apiRequest(baseUrl, token, 'shared', 'GET',
+        `/service-endpoints/${input.endpoint}/services/${input.service}/operations/greet/service-calls/${encodeURIComponent(row.original_service_call_id)}`));
+      row.raw_caller_history = responseSummary(await apiRequest(baseUrl, token, row.caller_namespace, 'GET',
+        `/workflows/${encodeURIComponent(row.workflow_id)}/runs/${encodeURIComponent(row.run_id)}/history`));
+      const call = row.original_service_call;
+      row.raw_service_history = responseSummary(await apiRequest(baseUrl, token, 'shared', 'GET',
+        `/workflows/${encodeURIComponent(call.linked_workflow_instance_id)}/runs/${encodeURIComponent(call.linked_workflow_run_id)}/history`));
+      const references = runtimeReferences([row.raw_caller_history.body, row.raw_service_history.body]);
+      row.retained_references = [];
+      for (const reference of references) {
+        // The service's shared namespace owns its argument/result objects. The
+        // unrelated tenant must not gain access from knowing the reference ID.
+        row.retained_references.push({reference,
+          owner: await inspectRuntimeReference(baseUrl, token, 'shared', reference),
+          foreign: await inspectRuntimeReference(baseUrl, token, 'tenant-c', reference)});
+      }
+      write();
+    }
+  }
+}
+
 async function interruptPublishedBackend(baseUrl, compose, checkpoint) {
   const deadline = Date.now() + checkpoint.remaining_seconds * 1000;
   const proof = {checkpoint, restored: false};
@@ -3600,6 +3692,16 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
       fs.writeFileSync(path.join(resultDir, 'nexus-waiting-caller-cancellation-probes-error.json'), JSON.stringify({
         runner_blocked: true, failure_reason: String(error),
       }, null, 2) + '\n');
+    }
+
+    if (env('DW_NEXUS_EXTERNAL_PAYLOAD_PROBES') === '1') {
+      try {
+        await probePublishedExternalPayloads(baseUrl, token, compose, phpService, pythonService);
+      } catch (error) {
+        fs.writeFileSync(path.join(resultDir, 'nexus-external-sdk-probes-error.json'), JSON.stringify({
+          runner_blocked: true, failure_reason: String(error),
+        }, null, 2) + '\n');
+      }
     }
 
     const phpPublicSurface = reflectedPublicServiceCallSurface(runtimeEvidence.php);
@@ -5159,6 +5261,9 @@ async function main() {
     try {
       for (const namespace of ['tenant-a', 'tenant-b', 'tenant-c', 'shared']) {
         namespaceResponses.push(await ensureNamespace(baseUrl, token, namespace));
+      }
+      if (env('DW_NEXUS_EXTERNAL_PAYLOAD_PROBES') === '1') {
+        await setupExternalPayloadPolicies(baseUrl, token);
       }
       registration = await setupSharedService(baseUrl, token);
       scenarioResults = [
