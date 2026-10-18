@@ -251,11 +251,40 @@ async fn independent(parent_state: &str, terminal: &str, missing: bool, rollback
         .await,
         1
     );
+    if parent_request.is_null() {
+        assert!(
+            !parent_history
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|event| { event["event_type"] == "CooperativeCancellationRequested" })
+        );
+    } else {
+        let receipt = request(
+            &app,
+            "POST",
+            "/api/workflows/abandon-parent/request-cancellation",
+            json!({"reason":"must not replace the parent root","cleanup_timeout_seconds":3600}),
+        )
+        .await;
+        assert_eq!(receipt.0, StatusCode::OK, "{}", receipt.1);
+        assert_eq!(receipt.1["duplicate"], true);
+        for field in ["request_id", "requested_at", "cleanup_deadline_at"] {
+            assert_eq!(
+                receipt.1["cancellation_request"][field],
+                parent_request[field]
+            );
+        }
+    }
     let duplicate = request_child(&app, &child, 3600).await;
     assert_eq!(duplicate.0, StatusCode::OK, "{}", duplicate.1);
     assert_eq!(duplicate.1["duplicate"], true);
     for field in ["request_id", "requested_at", "cleanup_deadline_at"] {
         assert_eq!(duplicate.1["cancellation_request"][field], pending[field]);
+    }
+    if terminal != "deadline" {
+        let duplicate = finish(&app, &child, terminal == "failure").await;
+        assert_eq!(duplicate.0, StatusCode::OK, "{}", duplicate.1);
     }
     assert_eq!(
         run_history(&app, &child["workflow_id"], &child["run_id"]).await,
