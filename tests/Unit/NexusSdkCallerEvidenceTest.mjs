@@ -95,7 +95,7 @@ function assertTypedServiceFailure(row, caller) {
     assert.equal(call.service_error_type, failureType);
 }
 
-function assertUncaughtServiceFailure(row, caller) {
+function assertUncaughtServiceFailure(row, caller, service) {
     assert.equal(row.scenario, 'uncaught_failed');
     assert.equal(row.budget_seconds, 30);
     assert.ok(Number.isFinite(row.elapsed_seconds) && row.elapsed_seconds > 0 && row.elapsed_seconds < 30);
@@ -139,21 +139,35 @@ function assertUncaughtServiceFailure(row, caller) {
     assert.ok(typeof original.accepted_at === 'string' && original.accepted_at.length > 0);
     assert.ok(typeof original.linked_workflow_instance_id === 'string' && original.linked_workflow_instance_id.length > 0);
     assert.equal(call.resolved_binding_kind, 'workflow_run');
+    assert.equal(call.endpoint_name, `published-${service}-workflow-service`);
+    assert.equal(call.service_name, service === 'php' ? 'PublishedWorkflowGreeter' : 'PublishedPythonWorkflowGreeter');
+    assert.equal(call.operation_name, 'greet');
+    assert.equal(call.caller_namespace, row.caller_namespace);
+    assert.equal(call.target_namespace, 'shared');
     assert.ok(call.failed_at);
     assert.equal(call.service_error_type, remoteType);
+    assert.equal(terminal.payload.service_call.service_call_id || terminal.payload.service_call.id, row.original_service_call_id);
     assert.equal(terminal.payload.service_call.service_error_type, remoteType);
     assert.equal(terminal.payload.service_call.typed_error_message, serviceFailure.payload.message);
-    for (const field of ['accepted_at', 'call_deadline_at', 'linked_workflow_instance_id', 'linked_workflow_run_id']) {
+    for (const field of ['accepted_at', 'call_deadline_at', 'linked_workflow_instance_id', 'linked_workflow_run_id',
+        'endpoint_name', 'service_name', 'operation_name', 'caller_namespace', 'target_namespace']) {
         assert.ok(Object.hasOwn(original, field), `Original call omitted ${field}`);
         assert.equal(call[field], original[field]);
+        assert.equal(terminal.payload.service_call[field], original[field]);
     }
 }
 
-function uncaughtFailureFixture(caller = 'php') {
+function uncaughtFailureFixture(caller = 'php', service = 'python', namespace = caller === 'php' ? 'tenant-a' : 'tenant-b') {
     const remoteType = 'NexusFixtureFailure';
     const wrapper = caller === 'php' ? 'DurableWorkflow\\Exception\\ServiceOperationFailed' : 'NexusOperationFailed';
-    const original = {id: 'call', caller_workflow_instance_id: 'caller', caller_workflow_run_id: 'run',
-        linked_workflow_instance_id: 'target', linked_workflow_run_id: 'target-run',
+    const identity = `${caller}-${service}-${namespace}`;
+    const ids = {workflow: `caller-${identity}`, run: `run-${identity}`, call: `call-${identity}`,
+        target: `target-${identity}`, targetRun: `target-run-${identity}`};
+    const original = {id: ids.call, caller_workflow_instance_id: ids.workflow, caller_workflow_run_id: ids.run,
+        caller_namespace: namespace, target_namespace: 'shared',
+        endpoint_name: `published-${service}-workflow-service`,
+        service_name: service === 'php' ? 'PublishedWorkflowGreeter' : 'PublishedPythonWorkflowGreeter', operation_name: 'greet',
+        linked_workflow_instance_id: ids.target, linked_workflow_run_id: ids.targetRun,
         accepted_at: '2026-10-18T08:00:00.123456Z', call_deadline_at: '2026-10-18T08:00:20.123456Z'};
     const call = {...original, status: 'failed', resolved_binding_kind: 'workflow_run',
         failed_at: '2026-10-18T08:00:01.123456Z', service_error_type: remoteType,
@@ -161,15 +175,16 @@ function uncaughtFailureFixture(caller = 'php') {
     return {scenario: 'uncaught_failed', budget_seconds: 30, elapsed_seconds: 2, uncaught_failure_qualified: true,
         request_qualified: true, process_id: 1, worker_process_id: 2, installed_sdk_version: 'published',
         worker_exit_code: 0, worker_signal_handlers_available: true, worker_stopped: true,
-        workflow_id: 'caller', run_id: 'run', linked_service_run_id: 'target-run',
-        original_service_call_id: 'call', caller_status: 'Failed',
+        workflow_id: ids.workflow, run_id: ids.run, linked_service_run_id: ids.targetRun,
+        caller_namespace: original.caller_namespace,
+        original_service_call_id: ids.call, caller_status: 'Failed',
         failure: {type: caller === 'php' ? 'DurableWorkflow\\Exception\\WorkflowFailed' : 'WorkflowFailed'},
         durable_service_call: {ok: true, body: call},
         history: {events: [{event_type: 'WorkflowStarted', sequence: 0},
             {event_type: 'ServiceCallStarted', sequence: 1,
-                payload: {service_call_id: 'call', sequence: 0, caller_sdk_language: `sdk-${caller}`, service_call: original}},
+                payload: {service_call_id: ids.call, sequence: 0, caller_sdk_language: `sdk-${caller}`, service_call: original}},
             {event_type: 'ServiceCallFailed', sequence: 2,
-                payload: {service_call_id: 'call', sequence: 0, service_call: {...call}}},
+                payload: {service_call_id: ids.call, sequence: 0, service_call: {...call}}},
             {event_type: 'WorkflowFailed', sequence: 3,
                 payload: {exception_type: wrapper, message: 'fixture service failure'}}]},
         linked_service_history: {events: [{event_type: 'WorkflowFailed',
@@ -177,7 +192,15 @@ function uncaughtFailureFixture(caller = 'php') {
 }
 
 test('uncaught failure reader requires the original terminal failure rather than a caught result or transport error', () => {
-    for (const caller of ['php', 'python']) assertUncaughtServiceFailure(uncaughtFailureFixture(caller), caller);
+    for (const caller of ['php', 'python']) {
+        const service = caller === 'php' ? 'python' : 'php';
+        assertUncaughtServiceFailure(uncaughtFailureFixture(caller, service), caller, service);
+    }
+    const noCallDeadline = uncaughtFailureFixture();
+    noCallDeadline.history.events[1].payload.service_call.call_deadline_at = null;
+    noCallDeadline.history.events[2].payload.service_call.call_deadline_at = null;
+    noCallDeadline.durable_service_call.body.call_deadline_at = null;
+    assertUncaughtServiceFailure(noCallDeadline, 'php', 'python');
     for (const mutate of [
         row => { row.result = {status: 'failed', service_call_id: 'call'}; },
         row => { row.history.events.at(-1).event_type = 'WorkflowCompleted'; },
@@ -192,13 +215,54 @@ test('uncaught failure reader requires the original terminal failure rather than
         row => { row.durable_service_call.body.service_error_type = 'ServiceOperationFailed'; },
         row => { row.history.events[1].payload.service_call.id = 'other'; },
         row => { row.original_service_call_id = ''; },
+        row => { row.durable_service_call.body.endpoint_name = 'another-service'; },
+        row => { row.durable_service_call.body.target_namespace = 'other'; },
+        row => { row.durable_service_call.body.operation_name = 'other'; },
+        row => { delete row.history.events[1].payload.service_call.call_deadline_at; },
+        row => { row.history.events[2].payload.service_call.call_deadline_at = '2026-10-18T08:01:00Z'; },
         row => { row.history.events.at(-1).sequence = 1; },
         row => { row.worker_exit_code = 137; },
         row => { row.elapsed_seconds = 30.01; },
         row => { row.process_id = 0; },
     ]) {
-        const row = uncaughtFailureFixture(); mutate(row); assert.throws(() => assertUncaughtServiceFailure(row, 'php'));
+        const row = uncaughtFailureFixture(); mutate(row); assert.throws(() => assertUncaughtServiceFailure(row, 'php', 'python'));
     }
+});
+
+function assertUncaughtFailureReports(proof) {
+    assert.equal(proof.scope, 'actual_uncaught_workflow_failure');
+    assert.deepEqual(proof.reports.map(row => [row.caller, row.service]), [
+        ['php', 'python'], ['python', 'php'], ['php', 'php'], ['python', 'python'],
+    ]);
+    for (const {caller, service, observation} of proof.reports) {
+        assert.equal(observation.ok, true, JSON.stringify(observation.body));
+        assert.equal(observation.body.outcome, 'pass');
+        assert.deepEqual(observation.body.observations.map(row => row.caller_namespace),
+            ['shared', caller === 'php' ? 'tenant-a' : 'tenant-b']);
+        for (const row of observation.body.observations) assertUncaughtServiceFailure(row, caller, service);
+    }
+    const originals = proof.reports.flatMap(report => report.observation.body.observations);
+    for (const field of ['run_id', 'original_service_call_id']) {
+        assert.equal(new Set(originals.map(row => row[field])).size, 8, `Each case needs its own original ${field}`);
+    }
+}
+
+test('uncaught failure report needs every direction and namespace with distinct original runs and calls', () => {
+    const proof = {scope: 'actual_uncaught_workflow_failure', reports: [
+        ['php', 'python'], ['python', 'php'], ['php', 'php'], ['python', 'python'],
+    ].map(([caller, service]) => ({caller, service, observation: {ok: true, body: {outcome: 'pass',
+        observations: ['shared', caller === 'php' ? 'tenant-a' : 'tenant-b']
+            .map(namespace => uncaughtFailureFixture(caller, service, namespace))}}}))};
+    assertUncaughtFailureReports(proof);
+    const missing = structuredClone(proof); missing.reports.pop();
+    assert.throws(() => assertUncaughtFailureReports(missing));
+    const reused = structuredClone(proof);
+    const [first, second] = reused.reports[0].observation.body.observations;
+    second.run_id = first.run_id;
+    second.durable_service_call.body.caller_workflow_run_id = first.run_id;
+    second.history.events[1].payload.service_call.caller_workflow_run_id = first.run_id;
+    second.history.events[2].payload.service_call.caller_workflow_run_id = first.run_id;
+    assert.throws(() => assertUncaughtFailureReports(reused));
 });
 
 function assertCallerRecovery(row, service, caller = 'php') {
@@ -647,17 +711,7 @@ test('a caller language label without SDK process execution cannot qualify a cel
 if (process.env.NEXUS_UNCAUGHT_FAILURE_PROBES) {
     test('actual published uncaught service exceptions fail the original caller workflow once', () => {
         const proof = JSON.parse(fs.readFileSync(process.env.NEXUS_UNCAUGHT_FAILURE_PROBES, 'utf8'));
-        assert.equal(proof.scope, 'actual_uncaught_workflow_failure');
-        assert.deepEqual(proof.reports.map(row => [row.caller, row.service]), [
-            ['php', 'python'], ['python', 'php'], ['php', 'php'], ['python', 'python'],
-        ]);
-        for (const {caller, observation} of proof.reports) {
-            assert.equal(observation.ok, true, JSON.stringify(observation.body));
-            assert.equal(observation.body.outcome, 'pass');
-            assert.deepEqual(observation.body.observations.map(row => row.caller_namespace),
-                ['shared', caller === 'php' ? 'tenant-a' : 'tenant-b']);
-            for (const row of observation.body.observations) assertUncaughtServiceFailure(row, caller);
-        }
+        assertUncaughtFailureReports(proof);
     });
 }
 
