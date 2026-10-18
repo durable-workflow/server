@@ -263,14 +263,13 @@ workers replay the persisted activity result and complete the workflow normally.
 Discovery marks the runtime as development, advertises the admitted commands
 and sets the major unimplemented worker capabilities to false. Accepted protocol
 headers identify transport shapes, not a full protocol conformance claim.
-Direct signal waits in the default namespace accept an optional
+Direct signal waits in default and named namespaces accept an optional
 `timeout_seconds`: null/absence waits indefinitely, zero resolves immediately,
 and a positive integer retains a durable timer and its original deadline.
 Buffered input wins before scheduling; application cancels a pending timeout
 with the original timer/wait metadata. The [timed-signal contract](../docs/contracts/timed-signal-waits.md)
-describes resume identities and retained waits. Named namespaces additionally
-accept a single ordinary `open_signal_wait` command with an absent or null
-timeout. Named signal timeouts and command batches retain their existing
+describes resume identities and retained waits. Named namespaces admit one
+`open_signal_wait` command per completion; command batches retain their existing
 refusal. Installed-consumer acceptance remains a separate gate.
 Condition waits accept the same optional timeout in their existing default and
 named namespaces. Each physical wait owns its timer identity and authored

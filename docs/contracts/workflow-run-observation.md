@@ -86,9 +86,10 @@ compatibility is still unimplemented and remains a migration gate.
 ## Qualification
 
 The draft produces activity and ordinary timer waits, plus ordinary signal
-waits in default and named namespaces. Named namespaces accept only a single
-`open_signal_wait` command with an absent or null timeout. Non-null signal
-timeouts and command batches retain `development_namespace_command_unqualified`.
+waits in default and named namespaces. Named namespaces accept a single
+`open_signal_wait` command, including its optional timeout under the
+[timed-signal contract](timed-signal-waits.md). Named command batches retain
+`development_namespace_command_unqualified`.
 Signal receipt and application are distinct transitions. A buffered receipt
 can precede the opening event; applying it later resolves that wait. These
 projection writes do not qualify signal timeouts or the remaining wait families.

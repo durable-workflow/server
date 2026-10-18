@@ -1509,9 +1509,7 @@ where
                     "complete_workflow" | "fail_workflow" | "schedule_activity" | "start_timer"
                 )
                 && !(commands.len() == 1
-                    && (command_type == "open_condition_wait"
-                        || (command_type == "open_signal_wait"
-                            && command["timeout_seconds"].is_null())))
+                    && matches!(command_type, "open_condition_wait" | "open_signal_wait"))
             {
                 return Err(refuse(
                     StatusCode::UNPROCESSABLE_ENTITY,
