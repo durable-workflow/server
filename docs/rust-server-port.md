@@ -32,6 +32,27 @@ Current checkpoint, October 18:
   `2ec0d0e9c98dfb2e0e22fdc1b15b9d849f9c4397`. The component results below
   apply to that source. Fresh combined hosted qualification and analyzer
   disposition are pending. The preceding 0c8 pass does not qualify this head.
+- The prepared named-signal component admits a single ordinary
+  `open_signal_wait` command with an absent or null timeout in named namespaces.
+  Non-null signal timeouts and command batches retain their existing refusal.
+  Tests-first `63f55fd50` fails both new positive controls with the original 422
+  admission refusal while preserving the batch-refusal control. Final tested
+  `9dc90d50e`, runtime tree `4179c82b858f00f2a249b42a7d110cacba7b5313`,
+  passes 80 library tests with 18 existing ignores and all 236 SQLite execution
+  tests. The isolated profile child retains its direct-entry ignore and runs
+  through its passing parent. PostgreSQL 17.11 and MySQL 8.0.46 each pass seven
+  applicable controls, excluding the separate SQLite-only projection trigger.
+  Buffered and later signal delivery preserve their original wait, signal,
+  command and history identities across cold pools. Typed int64, Unicode, null
+  and false survive application. Another namespace cannot signal, complete,
+  observe or poll the original work. Duplicate completions add no history.
+  Published PHP 2.8.7 / Workflow 2.5.32 independently matches eleven counter
+  snapshots, six liveness classifications and four open-wait views per database,
+  with zero reference queries. Formatting and diff checks pass. The component
+  also removes the valid redundant `PHP_CONNECTION` trait lifetime reported on
+  `b025c8c30`; fresh analyzer disposition remains pending. Combined hosted
+  qualification, installed native/browser acceptance and release gates stay
+  separate. No package, schema, catalog or frozen fixture changes are included.
 - The preceding observation head `a15b87977` has all 13 jobs passing in
   [shared run 39072054431](https://github.com/durable-workflow/server/actions/runs/39072054431),
   plus its exact PHP/source, Sonar and public-boundary checks. Newer prepared
