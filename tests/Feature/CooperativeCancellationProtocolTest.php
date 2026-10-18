@@ -72,6 +72,21 @@ class CooperativeCancellationProtocolTest extends TestCase
         $this->assertSame($before, WorkflowHistoryEvent::query()->count());
     }
 
+    public function test_nexus_discovery_matches_the_installed_bridge_and_protocol_floor(): void
+    {
+        $this->assertTrue(NexusCooperativeCancellationPolicy::serverSupported());
+        $before = [WorkflowHistoryEvent::query()->count(), WorkerRegistration::query()->count()];
+
+        foreach (['1.19' => false, '1.20' => true, '2.0' => false, 'malformed' => false] as $version => $supported) {
+            config(['server.worker_protocol.version' => $version]);
+            $this->withHeaders($this->controlHeaders())->getJson('/api/cluster/info')->assertOk()
+                ->assertJsonPath('worker_protocol.server_capabilities.nexus_cooperative_cancellation', $supported)
+                ->assertJsonPath('worker_protocol.server_capabilities.nexus_cooperative_cancellation_binding_kinds', $supported ? ['workflow_run'] : []);
+        }
+
+        $this->assertSame($before, [WorkflowHistoryEvent::query()->count(), WorkerRegistration::query()->count()]);
+    }
+
     public function test_nexus_discovery_refuses_an_installed_bridge_without_cooperative_delivery(): void
     {
         $this->app->instance(WorkflowTaskBridge::class, \Mockery::mock(WorkflowTaskBridge::class));
