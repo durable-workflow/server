@@ -110,6 +110,9 @@ mod workflow_failures;
 #[path = "execution/terminal_updates.rs"]
 mod terminal_updates;
 
+#[path = "execution/cooperative_updates.rs"]
+mod cooperative_updates;
+
 #[path = "execution/query_arguments.rs"]
 mod query_arguments;
 #[path = "execution/query_authority.rs"]

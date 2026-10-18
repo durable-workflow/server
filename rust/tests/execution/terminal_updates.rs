@@ -1,6 +1,6 @@
 use super::*;
 
-fn input(request: &str) -> Value {
+pub(super) fn input(request: &str) -> Value {
     json!({"input":envelope(Payload::Array(vec![Payload::Long(9007199254740993)])),
         "request_id":request,"wait_for":"accepted"})
 }
@@ -20,7 +20,7 @@ async fn accepted(app: &Router, name: &str) -> (Value, Value) {
     (run, update.1)
 }
 
-async fn reference_before(
+pub(super) async fn reference_before(
     database: &TestDatabase,
     app: &Router,
     run: &Value,
@@ -87,7 +87,7 @@ async fn reference_before(
     )
 }
 
-async fn reference_after(
+pub(super) async fn reference_after(
     database: &TestDatabase,
     app: &Router,
     run: &Value,
@@ -108,7 +108,7 @@ async fn reference_after(
     }
 }
 
-async fn closed_receipt(app: &Router, run: &Value, original: &Value, reason: &str) -> Value {
+pub(super) async fn closed_receipt(app: &Router, run: &Value, original: &Value, reason: &str) -> Value {
     let path = format!(
         "/api/workflows/{}/update/set",
         run["workflow_id"].as_str().unwrap()
