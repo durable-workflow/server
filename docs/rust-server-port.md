@@ -22,16 +22,35 @@ complete parity or release readiness.
 
 Current checkpoint, October 18:
 
+- PR478 now incorporates the prepared named-signal source `d449fca29`, retaining
+  runtime tree `33a92133f1926b0f0e11163af082e5f7c0a6c23c` and tests
+  `c3cdccc984a1447956e1d5346596b00786a82bec`. The separately recorded local
+  component controls below cover that code. This is a new functional combined
+  candidate with named ordinary/timed signal waits and the lifetime correction.
+  Fresh combined hosted/source/analyzer qualification is pending under the same
+  profiles, budgets and expectations. No result from an earlier head qualifies it.
+- The preceding `b025c8c30` original
+  [shared run 39082779792](https://github.com/durable-workflow/server/actions/runs/39082779792)
+  is terminal FAILURE: twelve jobs pass and one MariaDB job fails. Metadata
+  identifies its failed step as `Compare published query deadlines and installed
+  Worker authority`. The failing assertion, implementation/client and cause are
+  unknown. Its TLS verification is skipped, not passed. Native bootstrap/source,
+  the ordinary three-runtime/recovery comparison and the other listed comparison
+  steps pass in that job's metadata. Those narrower results do not override the
+  failed qualification. PHP/source, Sonar and boundary checks pass only at b025.
+  The [failure receipt](https://github.com/durable-workflow/server/pull/478#issuecomment-6244205805)
+  and original remain retained. Neither a source fix nor recovery of that failure
+  is claimed by the later namespace component.
 - Preceding observation head `0c8eafc9` retains its original
   [shared run 39078215426](https://github.com/durable-workflow/server/actions/runs/39078215426),
   now terminal with all thirteen jobs passing. Its exact PHP/source, Sonar
   app/workflow and public boundary also pass. This is a job/check metadata
   readback, without remote log or artifact retrieval.
-- PR478 integrates the separately prepared failure and terminal-update source
-  from `1540bd0c4`, retaining runtime tree
-  `2ec0d0e9c98dfb2e0e22fdc1b15b9d849f9c4397`. The component results below
-  apply to that source. Fresh combined hosted qualification and analyzer
-  disposition are pending. The preceding 0c8 pass does not qualify this head.
+- The b025 candidate integrated separately prepared failure and terminal-update
+  source from `1540bd0c4`, runtime tree
+  `2ec0d0e9c98dfb2e0e22fdc1b15b9d849f9c4397`. Its component results below
+  remain scoped to that source; the failed combined qualification above remains
+  separate from local controls and the earlier 0c8 pass.
 - The prepared named-signal component admits a single ordinary
   `open_signal_wait` command with an absent or null timeout in named namespaces.
   Non-null signal timeouts and completions combining a named signal wait with
