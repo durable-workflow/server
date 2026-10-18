@@ -22,6 +22,38 @@ complete parity or release readiness.
 
 Current checkpoint, October 18:
 
+- The separate [child cancellation resume association](contracts/child-cancellation-resume-link.md)
+  is tested at `8e8a9b8fb`, runtime `bfb7361d37e2027a978a398d9a59189b21dff6c0`
+  and tests `c52c26e70169ccdf741ff328828a02326824abc2`. A completed, failed or
+  directly cancelled child retains its original wait and associates it with
+  the actual existing ready or leased root cancellation resume. The task ID,
+  payload, owner, attempt and expiry remain unchanged. A cold claim updates the
+  associated status; missing waits stay missing. An update-only claim remains
+  unavailable as a root resume, with the original deadline and accepted-update
+  closure preserved. Ordinary parent conflicts and update admission are unchanged.
+  Nine focused controls, 80 library tests, 261 SQLite execution tests and
+  23 applicable cooperative controls on each of PostgreSQL 17.11 and MySQL
+  8.0.46 pass. The library retains 18 existing ignores, and the isolated SQLite
+  profile entry runs through its passing parent. Network selections exclude
+  three separate SQLite-only write faults. The new forced association-write
+  failure rolls back both histories, child call/outcome/failure and the original
+  parent claim. Published PHP 8.3.35 / Workflow 2.5.32 independently matches
+  31 final wait snapshots using 31 actual projector updates in a separate
+  migrated in-memory database. Projector and wait-model hashes match `78075b6f`;
+  the reference script is committed. Earlier focused captures overlap these
+  final states and are not additional distinct qualification.
+  Tests-first `dd8b8bda6` retains seven actual failures and the passing missing-row
+  control. Candidate `d502287fa` retains six passes and three fixture failures:
+  a new cancel command on a closed child correctly refuses `run_not_active`,
+  and an update requested while a child is open correctly refuses
+  `update_snapshot_busy`. The corrected control accepts its update at the
+  supported signal wait before starting the child from that wait's real timer
+  resume. Runtime bytes are unchanged by those fixture corrections. Both final
+  network databases have zero test databases before clean SIGTERM/exit0/noOOM.
+  This remains source/model preparation, separate from failed admitted `3d68`.
+  No PHP/Composer/schema, shared runner/profile, frozen actor, budget, catalog,
+  stopped recipe or held-major adoption occurs. General's separate PHP Nexus
+  preview window awaits its own exact qualified handoff before combination.
 - Separately prepared [cooperative child abandonment](contracts/cooperative-child-abandon.md)
   is tested at `3f87a8524`, runtime `9cd7e90357caf9ea30d0a7cb0756c6935e85d732`
   and tests `694ba3b8d5f0163802ca97ef6dc52dfa96f71d80`. The existing
