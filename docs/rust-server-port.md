@@ -22,6 +22,40 @@ complete parity or release readiness.
 
 Current checkpoint, October 18:
 
+- Separately prepared [independent child cancellation](contracts/child-independent-cancellation.md)
+  is tested at `54bb8c61d`, runtime `024620b570757ae3d2142b01cbad74c674ea2911`
+  and tests `37403b5d13c3fe9fa70c70670fd4e2b07e4551df`. An existing sequential
+  child with both `abandon` policies can receive its own operator root request
+  in the default namespace. Its root, lineage and original deadline are separate
+  from its parent's request. Child completion, failure and maintenance expiry
+  resolve the original parent atomically with the child's canonical cancellation.
+  Actual ready/leased parent root tasks and their claims remain unchanged. Closed
+  parents are not resumed, missing waits stay missing, and a forced parent-write
+  failure rolls back both histories, the child failure and its original claim.
+  Parent and child duplicate receipts retain their own identities and deadlines;
+  duplicate child completions append no history and expired attempts stay fenced.
+  Eleven focused controls, 80 library tests, all 272 SQLite execution tests and
+  ten applicable controls on each of PostgreSQL 17.11 and MySQL 8.0.46 pass.
+  The library retains 18 existing ignores; the isolated SQLite profile entry runs
+  through its passing parent. The network selections exclude the separate
+  SQLite-only forced parent-write control. The final SQLite, PostgreSQL and
+  MySQL durations are 263.37, 16.95 and 31.77 seconds, respectively, without a
+  performance claim. One identical test binary serves all three selections.
+  Published PHP 8.3.35 / Workflow 2.5.32 matches 36 final captured wait states
+  using 36 real projector updates: 20 SQLite, eight PostgreSQL and eight MySQL.
+  The projector/model hashes match `78075b6f`; earlier focused captures overlap.
+  First tests `b7213de21` have six harness compile errors, corrected before the
+  runtime counterfactual. Tests-first `9bec16f64` then retains ten actual failures
+  at the old incoming-link refusal and the passing unsupported-policy control.
+  Initial implementation `c26b87d40` passes eleven focused and 272 SQLite tests.
+  The assertion-only follow-up adds explicit parent receipts and duplicate child
+  completions, then passes the final checks above with identical runtime bytes.
+  Both network databases have zero test databases before clean SIGTERM/exit0
+  without OOM. Formatting and diff checks pass. This source is not yet PR478's
+  admitted head and does not explain its failed predecessors. No PHP/Composer,
+  schema, shared profile, budget, frozen actor, preview or catalog adoption occurs.
+  Combined hosted/analyzer, installed consumer, wider propagation and release
+  gates remain separate; all stopped scopes stay stopped.
 - PR478 now combines the accepted-update cancellation closure, sequential child
   abandonment and existing child-resume association components through `8dd8e899b`.
   Runtime `bfb7361d37e2027a978a398d9a59189b21dff6c0` and tests
@@ -29,9 +63,16 @@ Current checkpoint, October 18:
   implementation `8e8a9b8fb`. The final local selection passes 80 library,
   261 SQLite execution and 23 applicable cooperative controls on each of
   PostgreSQL 17.11 and MySQL 8.0.46, with the exclusions below. This integration
-  checkpoint changes only this log. Fresh combined PHP/source, analyzer and
-  six-database shared qualification are required; component checks do not
-  establish that result, installed acceptance, independent review or promotion.
+  checkpoint changes only this log. Admitted head `543ed0485` has exact
+  [PHP/source39092117015](https://github.com/durable-workflow/server/actions/runs/39092117015),
+  [Sonar39092117005](https://github.com/durable-workflow/server/actions/runs/39092117005)
+  and [boundary39092116998](https://github.com/durable-workflow/server/actions/runs/39092116998)
+  PASS. Its Sonar app reports 1.2% new duplication under the unchanged 3% limit,
+  with zero OPEN/CONFIRMED findings. The
+  [shared39092116973](https://github.com/durable-workflow/server/actions/runs/39092116973)
+  original remains pending at 03:26 UTC, with seven jobs SUCCESS and six live.
+  Component checks do not establish its result, installed acceptance,
+  independent review or promotion.
   Qualified stable main `964f9e3d5` and Workflow 2.5.32 remain the PHP source.
   General's preview #486 is separate and unmerged. No RC references, PHP or
   Composer changes, frozen tuples, profiles, budgets or expectations are adopted.
@@ -3413,7 +3454,7 @@ does not establish full parity, current-head qualification or release readiness.
 | Control plane, namespaces, authorization, errors, visibility | `resources/platform-protocol-specs/control-plane-api.openapi.yaml`, `docs/contracts/auth-composition.md`, `routes/api.php`, Feature control-plane/auth/namespace tests; namespace and principal-attribution published runners | Bounded listing/CLI metadata, named workflow/activity/timer routes, role-token admission and namespace fences exist. PR478 adds [selected/current run observation](contracts/workflow-run-observation.md) and transactional summaries. Broader visibility, namespace and principal-authorization parity remains open. |
 | Worker registration, sessions, leases, fencing, retries, timeouts, heartbeats, routing, affinity, backpressure, versioning | Worker OpenAPI and stream AsyncAPI in `resources/platform-protocol-specs/`; Feature worker/activity/prepared-local/cancellation tests; activity, heartbeat and worker-versioning published runners | Registration incarnations, exact-attempt leases, recovery, retry/heartbeat/deadline controls and fenced shutdown have source and scoped consumer evidence. Full fleet, session, routing, affinity, backpressure and policy compatibility remains open. |
 | Avro values, external task inputs/results, payload storage and reclamation | `docs/contracts/external-task-{input,result}.md`, `external-payload-storage.md`, external payload OpenAPI; `regression-corpus-policy.json`, `tests/Fixtures/CodecRegression/`, payload Feature tests | Official Avro encoding/decoding, opaque task envelopes, versioned external transport, retained inputs/results and completion uploads exist. Codec, authority, external-value and targeted activity-result controls have separate evidence. Complete ingress, provider, reclamation and installed-consumer parity remains open. |
-| Workflow lifecycle, duplicate commands, typed history, continuation, child workflows, cancellation, cleanup replay | Workflow lifecycle, migration, child-workflow and replay runners; Feature cooperative cancellation, history, migration and repeated-signal tests | Bounded completion, failure, sequential child outcomes, duplicate receipts, direct cancellation and cooperative root cleanup exist. [Terminal update closure](contracts/terminal-update-closure.md) has a separate prepared cooperative component. [Cooperative child abandonment](contracts/cooperative-child-abandon.md) is a separate prepared default-namespace component. Child retry/parallel/other close-policy families, wider cancellation propagation, cleanup replay and continuation transfer remain open. |
+| Workflow lifecycle, duplicate commands, typed history, continuation, child workflows, cancellation, cleanup replay | Workflow lifecycle, migration, child-workflow and replay runners; Feature cooperative cancellation, history, migration and repeated-signal tests | Bounded completion, failure, sequential child outcomes, duplicate receipts, direct cancellation and cooperative root cleanup exist. PR478 includes [terminal update closure](contracts/terminal-update-closure.md), [cooperative child abandonment](contracts/cooperative-child-abandon.md) and actual resume associations. [Independent child root cancellation](contracts/child-independent-cancellation.md) is separately prepared. Child retry/parallel/other close-policy families, wider cancellation propagation, cleanup replay and continuation transfer remain open. |
 | Timers, schedules, signals, queries, updates, search attributes, memo, sagas | Corresponding runners in `scripts/conformance/`, manifests in `static/platform-conformance/`; Sample App polyglot experiments | Source covers durable timers, bounded schedules, typed signals/queries/updates, memo limits and bounded mixed selections. PR478 adds timed signal/condition waits, named signal waits and flat/nested activity/timer all barriers. Wider grouped leaves and selection shapes, queued control routing, policies, search and saga families remain open. |
 | Local activities, cancellation scopes, worker sessions, streams, service catalog/Nexus, bridge adapters, standalone activities, debugging and repair | `routes/api.php`, `docs/contracts/`, worker/control-plane specifications, corresponding Feature tests and Nexus runner | Scoped native repair and diagnostics exist. Local-activity execution, cancellation scopes, sessions, streams, Nexus/catalog, bridge and standalone-activity compatibility remain required work. No unpublished package telemetry or stored-job contract is adopted by these slices. |
 | Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | Published cohorts cover workflow/activity (#401), parent/child (#408), timer authors (#411), signals (#415), queries (#422), successful/failed updates (#424/#427), named namespaces (#429), selected-run signals (#434) and subsequent corrected marker/range and authority slices. Each retains its exact source/tuple and failures. CLI reads have bounded coverage. Remaining SDK families, broader CLI, native Waterline/Sample App and browser acceptance remain open; published PHP consumers do not qualify native. |
