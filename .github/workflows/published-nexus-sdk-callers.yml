@@ -93,11 +93,66 @@ jobs:
           NEXUS_EXTERNAL_SDK_PROBES="$DW_NEXUS_RESULT_DIR/nexus-external-sdk-probes.json" \
             NEXUS_AUTHORED_AUTHORIZATION_PROBES="$DW_NEXUS_RESULT_DIR/nexus-authored-authorization-probes.json" \
             node --test tests/Unit/NexusExternalSdkEvidenceTest.mjs
-      - name: Retain actual requests and durable observations
+      - name: Summarize actual outcomes and bound retained diagnostics
+        if: always()
+        env:
+          REPORT_ROOT: ${{ runner.temp }}/nexus-proof
+        run: |
+          node <<'JS'
+          const fs = require('node:fs'), path = require('node:path');
+          const root = process.env.REPORT_ROOT, retained = path.join(root, 'retained');
+          fs.mkdirSync(retained, {recursive: true});
+          const summary = {};
+          for (const [kind, name] of [['external', 'nexus-external-sdk-probes.json'],
+            ['authorization', 'nexus-authored-authorization-probes.json']]) {
+            if (!fs.existsSync(path.join(root, name))) { summary[kind] = {missing: true}; continue; }
+            const report = JSON.parse(fs.readFileSync(path.join(root, name), 'utf8'));
+            summary[kind] = report.reports.map(pair => ({caller: pair.caller, service: pair.service,
+              process_ok: pair.observation?.ok, audit_exit_code: pair.audit_exit_code,
+              observations: (pair.observation?.body?.observations || []).map(row => ({
+                namespace: row.caller_namespace, workflow_id: row.workflow_id, run_id: row.run_id,
+                call_id: row.original_service_call_id || row.result?.service_call_id,
+                recovered: row.recovery_qualified, authorization: row.authorization_qualified,
+                failure: row.failure, status: row.result?.status, value: row.result?.external_result,
+                elapsed: row.elapsed_seconds, replacement_exit: row.replacement_worker_exit_code,
+                admin_refusal_status: row.admin_refusal_status,
+                history_status: row.raw_caller_history?.status,
+                history_reason: row.raw_caller_history?.body?.reason,
+                reference_checks: (row.retained_references || []).map(item => ({namespace: item.namespace,
+                  reference_id: item.reference.reference_id, size: item.reference.size_bytes,
+                  owner_status: item.owner.status, foreign_status: item.foreign.status,
+                  exact_bytes: item.owner.bytes === item.reference.size_bytes,
+                  exact_hash: item.owner.sha256 === item.reference.sha256})),
+              }))}));
+            for (const pair of summary[kind]) {
+              const message = JSON.stringify({kind, ...pair}).replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A');
+              console.log(`::notice title=Nexus SDK outcomes::${message}`);
+            }
+          }
+          let retainedBytes = 0;
+          const omittedReports = [];
+          for (const name of ['nexus-external-sdk-probes.json', 'nexus-external-sdk-probes-error.json',
+            'nexus-authored-authorization-probes.json', 'nexus-authored-authorization-probes-error.json',
+            'complete-suite-exit-code.txt', 'pins.json']) {
+            const file = path.join(root, name);
+            if (!fs.existsSync(file)) continue;
+            const bytes = fs.statSync(file).size;
+            if (retainedBytes + bytes > 2 * 1024 * 1024) { omittedReports.push({name, bytes}); continue; }
+            fs.copyFileSync(file, path.join(retained, name)); retainedBytes += bytes;
+          }
+          for (const name of fs.readdirSync(root).filter(name => /-(external|authorization)\.log$/.test(name))) {
+            const bytes = fs.readFileSync(path.join(root, name));
+            fs.writeFileSync(path.join(retained, name), Buffer.concat([bytes.subarray(0, 1200),
+              Buffer.from('\n[bounded diagnostic tail]\n'), bytes.subarray(Math.max(1200, bytes.length - 4000))]));
+          }
+          summary.retention = {payload_bytes: retainedBytes, limit_bytes: 2 * 1024 * 1024, omitted_reports: omittedReports};
+          fs.writeFileSync(path.join(retained, 'outcomes.json'), JSON.stringify(summary, null, 2));
+          JS
+      - name: Retain bounded actual observations
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: nexus-sdk-callers-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/nexus-proof
+          path: ${{ runner.temp }}/nexus-proof/retained
           if-no-files-found: error
           retention-days: 1

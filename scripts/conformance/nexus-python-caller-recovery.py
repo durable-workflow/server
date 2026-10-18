@@ -149,6 +149,10 @@ async def execute(input_data, namespace):
                     worker.kill()
                     row["replacement_worker_exit_code"] = await asyncio.to_thread(worker.wait, timeout=2)
             row["worker_log"] = log_path.read_text()
+            if external:
+                content = row["worker_log"]
+                row["worker_log"] = {"bytes": len(content.encode()), "sha256": hashlib.sha256(content.encode()).hexdigest(),
+                                     "head": content[:900], "tail": content[-900:]}
     return row
 
 

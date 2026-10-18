@@ -132,6 +132,11 @@ foreach (['shared', 'tenant-a'] as $namespace) {
             $row['replacement_worker_exit_code'] = proc_close($worker);
         }
         $row['worker_log'] = file_get_contents($logPath);
+        if ($external) {
+            $log = $row['worker_log'];
+            $row['worker_log'] = ['bytes' => strlen($log), 'sha256' => hash('sha256', $log),
+                'head' => substr($log, 0, 900), 'tail' => substr($log, -900)];
+        }
         $observations[] = $row;
     }
 }
