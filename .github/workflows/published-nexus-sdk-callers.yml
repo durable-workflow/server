@@ -126,7 +126,7 @@ jobs:
               }))}));
             for (const pair of summary[kind]) {
               const message = JSON.stringify({kind, ...pair}).replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A');
-              console.log(`::notice title=Nexus SDK outcomes::${message}`);
+              console.log('::notice title=Nexus SDK outcomes::' + message);
             }
           }
           let retainedBytes = 0;
