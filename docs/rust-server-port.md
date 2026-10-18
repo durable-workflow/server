@@ -22,13 +22,16 @@ complete parity or release readiness.
 
 Current checkpoint, October 18:
 
-- Admitted head `0c8eafc9` retains its original
+- Preceding observation head `0c8eafc9` retains its original
   [shared run 39078215426](https://github.com/durable-workflow/server/actions/runs/39078215426),
-  still running at the terminal-update component handoff. Its exact PHP/source,
-  Sonar app/workflow and public boundary pass. The separately prepared failure
-  and terminal-update components below have local source qualification; they do
-  not qualify or replace
-  this hosted original. Its reported source-finding cleanup still needs fresh analysis.
+  now terminal with all thirteen jobs passing. Its exact PHP/source, Sonar
+  app/workflow and public boundary also pass. This is a job/check metadata
+  readback, without remote log or artifact retrieval.
+- PR478 integrates the separately prepared failure and terminal-update source
+  from `1540bd0c4`, retaining runtime tree
+  `2ec0d0e9c98dfb2e0e22fdc1b15b9d849f9c4397`. The component results below
+  apply to that source. Fresh combined hosted qualification and analyzer
+  disposition are pending. The preceding 0c8 pass does not qualify this head.
 - The preceding observation head `a15b87977` has all 13 jobs passing in
   [shared run 39072054431](https://github.com/durable-workflow/server/actions/runs/39072054431),
   plus its exact PHP/source, Sonar and public-boundary checks. Newer prepared
