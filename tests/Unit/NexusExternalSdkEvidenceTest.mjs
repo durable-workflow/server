@@ -48,6 +48,9 @@ function assertExternal(row, service) {
     const references = row.retained_references;
     assert.ok(new Set(references.map(item => item.reference.reference_id)).size >= 2,
         'Actual persisted argument and result must use separate runtime references');
+    const owners = new Set(references.map(item => item.namespace));
+    assert.ok(owners.has('shared'), 'The service must retain its external payloads');
+    assert.ok(owners.has(row.caller_namespace), 'The caller must read an actual reference in its own namespace');
     for (const {reference, owner, foreign} of references) {
         assert.equal(reference.schema, 'durable-workflow.v2.runtime-external-payload-reference.v1');
         assert.equal(reference.codec, 'avro');
@@ -67,14 +70,16 @@ function fixture() {
     const start = {event_type: 'ServiceCallStarted', payload: {service_call_id: 'call', sequence: 0}};
     const completion = {event_type: 'ServiceCallCompleted', payload: {service_call_id: 'call', sequence: 0}};
     return {scenario: 'external_payload', budget_seconds: 30, elapsed_seconds: 3, recovery_qualified: true,
-        workflow_id: 'caller', run_id: 'run', original_service_call_id: 'call', original_service_call: {...call},
+        workflow_id: 'caller', run_id: 'run', caller_namespace: 'tenant-a',
+        original_service_call_id: 'call', original_service_call: {...call},
         worker_process_id: 1, replacement_worker_process_id: 2,
         killed_worker: {pid: 1, running: false, termsig: 9}, replacement_worker_exit_code: 0,
         result: {status: 'completed', service_call_id: 'call', external_result: expected('php')},
         before_kill_history: {events: [start]}, before_replacement_history: {events: [start, completion]},
         history: {events: [start, completion]}, durable_service_call: {body: call},
         raw_caller_history: {ok: true}, raw_service_history: {ok: true},
-        retained_references: ['argument', 'result'].map(reference_id => ({reference: {
+        retained_references: ['argument', 'service-result', 'caller-result'].map(reference_id => ({
+            namespace: reference_id === 'caller-result' ? 'tenant-a' : 'shared', reference: {
             schema: 'durable-workflow.v2.runtime-external-payload-reference.v1', reference_id, codec: 'avro',
             size_bytes: 4194500, sha256: digest(reference_id)},
             owner: {status: 200, bytes: 4194500, sha256: digest(reference_id)}, foreign: {status: 404}}))};
@@ -96,7 +101,8 @@ test('external delivery reader accepts one cold original and rejects identity, p
         row => { row.replacement_worker_exit_code = 137; },
         row => { row.durable_service_call.body.linked_workflow_run_id = 'new-run'; },
         row => { row.durable_service_call.body.call_deadline_at = '2026-10-19T00:00:00Z'; },
-        row => { row.retained_references.pop(); },
+        row => { row.retained_references = row.retained_references.slice(0, 1); },
+        row => { row.retained_references.forEach(item => { item.namespace = 'shared'; }); },
         row => { row.retained_references[0].owner.sha256 = digest('wrong'); },
         row => { row.retained_references[0].owner.status = 404; },
         row => { row.retained_references[0].foreign.status = 200; },
