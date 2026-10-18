@@ -1942,7 +1942,7 @@ where
                 };
                 let closed_at = now();
                 if Self::cancellation_request(&run)?.is_some() {
-                    Self::finish_root_cancellation(&mut tx, &run, Some(task_id)).await?;
+                    Self::finish_root_cancellation(&mut tx, &run, Some(&task)).await?;
                 } else {
                     if let Some(prepared) = external.get(&index) {
                         self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri)

@@ -36,6 +36,19 @@ terminal receipts cannot create another failure or cursor event. A separate
 active run and previously resolved updates are unaffected.
 
 Native source controls cover direct cancellation, normal completion and workflow
-failure. Direct cancellation can now close its accepted updates atomically.
-Existing update admission, cooperative-cancellation propagation and continuation
-transfer restrictions remain explicit and retain their separate gates.
+failure. Cooperative root cancellation uses that same closer after recording
+WorkflowCancelled. An authored completion or failure retains cancellation
+precedence and supplies the original terminal task snapshot. Maintenance expiry
+uses the original cleanup deadline and does not invent a task snapshot.
+
+Accepted updates remain pending during cleanup and close only with their
+original run. The root request, delivery identity and deadline cannot be replaced
+by a duplicate request. Failure to record an update outcome rolls back the root
+closure, update, leases, failures, history, cursor and summary together. After a
+successful close, cold retries retain the first failed outcome and stale update
+attempts cannot apply.
+
+Existing update admission, child/activity/open-wait cooperative request guards,
+wider propagation and continuation transfer retain their separate gates. The
+published PHP closer/model comparison qualifies the update transformation, not
+an installed native SDK or complete cooperative-cancellation execution path.

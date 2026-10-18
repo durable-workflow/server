@@ -142,7 +142,7 @@ where
     ) -> Result<()> {
         let task_id = DB::string(task, "id")?;
         if Self::cancellation_request(run)?.is_some() {
-            return Self::finish_root_cancellation(tx, run, Some(&task_id)).await;
+            return Self::finish_root_cancellation(tx, run, Some(task)).await;
         }
         let failure = validate(command)?;
         let run_id = DB::string(run, "id")?;

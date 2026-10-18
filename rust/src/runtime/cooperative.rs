@@ -381,9 +381,11 @@ where
     pub(super) async fn finish_root_cancellation(
         tx: &mut Transaction<'_, DB>,
         run: &DB::Row,
-        task_id: Option<&str>,
+        task: Option<&DB::Row>,
     ) -> Result<()> {
         let run_id = DB::string(run, "id")?;
+        let task_id = task.map(|task| DB::string(task, "id")).transpose()?;
+        let task_id = task_id.as_deref();
         let request_id = DB::optional_string(run, "cancellation_request_command_id")?
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "cancellation_request_missing"))?;
         let deadline = DB::optional_instant(run, "cancellation_deadline_at")?
@@ -453,7 +455,8 @@ where
             "workflow_instance_id":DB::string(run,"workflow_instance_id")?,"workflow_run_id":run_id,"failure_id":failure_id,
             "failure_category":"cancelled","closed_reason":"cancelled","exception_class":EXCEPTION,"message":message,"reason":reason,
             "cancellation_cleanup":{"request_id":request_id,"outcome":outcome,"cleanup_deadline_at":timestamp(deadline),
-                "delivery_history_event_id":delivery_id,"delivery_sequence":delivery_sequence,"finished_at":at}}),task_id,Some(&request_id)).await
+                "delivery_history_event_id":delivery_id,"delivery_sequence":delivery_sequence,"finished_at":at}}),task_id,Some(&request_id)).await?;
+        Self::close_pending_updates(tx, &run_id, task).await
     }
 
     pub(super) async fn expire_cooperative_deadlines(&self) -> Result<()> {
@@ -576,17 +579,7 @@ where
             .bind(run_id).bind(run_id).fetch_one(&mut *tx).await?;
         let activities = Self::scalar("SELECT COUNT(*) FROM activity_executions WHERE workflow_run_id=$1 AND status IN ('pending','running')")
             .bind(run_id).fetch_one(&mut *tx).await?;
-        let updates = Self::scalar(
-            "SELECT COUNT(*) FROM workflow_updates WHERE workflow_run_id=$1 AND status='accepted'",
-        )
-        .bind(run_id)
-        .fetch_one(&mut *tx)
-        .await?;
-        if children != 0
-            || activities != 0
-            || updates != 0
-            || Self::open_wait(&mut tx, run_id).await?.is_some()
-        {
+        if children != 0 || activities != 0 || Self::open_wait(&mut tx, run_id).await?.is_some() {
             return Err(refuse(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "cooperative_cancellation_propagation_not_available",
