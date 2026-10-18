@@ -25,12 +25,17 @@ terminal task snapshot when one exists. Closure shares the terminal transition's
 transaction: a failure while recording any update must roll back the terminal
 run, update, failure, history, cursor and task changes together.
 
+Published task snapshots include the model's storage connection name. The
+standard native backends retain `sqlite`, `pgsql` and `mysql`, independently of
+the task row's nullable queue connection. Timestamp comparisons preserve the
+same instant and precision while allowing equivalent fractional-digit spelling.
+
 Cold request retries return the same failed update and failure ID. Old leased
 update attempts cannot apply or replace that outcome after closure. Duplicate
 terminal receipts cannot create another failure or cursor event. A separate
 active run and previously resolved updates are unaffected.
 
-Native source controls cover existing direct cancellation, cooperative closure,
-normal completion and workflow failure paths where an accepted update is
-reachable. Existing update admission and continuation transfer restrictions
-remain explicit, with no newly advertised acceptance for those paths.
+Native source controls cover direct cancellation, normal completion and workflow
+failure. Direct cancellation can now close its accepted updates atomically.
+Existing update admission, cooperative-cancellation propagation and continuation
+transfer restrictions remain explicit and retain their separate gates.

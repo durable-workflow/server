@@ -7,6 +7,7 @@ use std::borrow::Cow;
 use super::{Result, mysql, postgres, schema};
 
 pub(super) trait Backend: Database {
+    const PHP_CONNECTION: &'static str;
     type EncodedTime: for<'q> Encode<'q, Self> + Type<Self> + Send + Sync + 'static;
     type EncodedOptionalTime: for<'q> Encode<'q, Self> + Type<Self> + Send + Sync + 'static;
     type EncodedDocument: for<'q> Encode<'q, Self> + Type<Self> + Send + Sync + 'static;
@@ -93,6 +94,7 @@ fn sqlite_instant(value: String) -> Result<DateTime<Utc>> {
 }
 
 impl Backend for Sqlite {
+    const PHP_CONNECTION: &str = "sqlite";
     // Carbon's millisecond comparison rounds at half a millisecond. Parse only
     // whole UTC seconds with SQLite's clock functions and round integer
     // microseconds explicitly; SQLite's fractional-date rounding differs at ties.
@@ -263,6 +265,7 @@ impl Encode<'_, Postgres> for PostgresDocument {
 }
 
 impl Backend for Postgres {
+    const PHP_CONNECTION: &str = "pgsql";
     fn optional_float(row: &Self::Row, field: &str) -> Result<Option<f64>> {
         Ok(row.try_get(field)?)
     }
@@ -344,6 +347,7 @@ impl Backend for Postgres {
 }
 
 impl Backend for MySql {
+    const PHP_CONNECTION: &str = "mysql";
     const OPEN_WAIT_ORDER: &str = "WITH clocks AS (SELECT id,wait_id,opened_at,TIMESTAMPDIFF(MICROSECOND,'1970-01-01 00:00:00',opened_at) AS micros FROM workflow_run_waits WHERE workflow_run_id=? AND status='open') SELECT id FROM clocks ORDER BY CASE WHEN opened_at IS NULL THEN 1 ELSE 0 END,ROUND((CASE WHEN micros<0 THEN 2*FLOOR(micros/1000000)*1000000-micros ELSE micros END)/1000),wait_id LIMIT 100 OFFSET ?";
     const SUMMARY_HISTORY_SQL: &str = "SELECT id,sequence,event_type,CAST(payload AS CHAR) AS payload_json FROM workflow_history_events WHERE workflow_run_id=$1 AND sequence>$2 ORDER BY sequence LIMIT 16";
     const OBSERVATION_FAILURE_EVENT: &str = "SELECT id,sequence,event_type,recorded_at FROM workflow_history_events WHERE workflow_run_id=? AND CAST(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.failure_id')) AS BINARY)=CAST(? AS BINARY) AND event_type IN ('ActivityFailed','ActivityTimedOut','ChildRunFailed','ChildRunCancelled','ChildRunTerminated','WorkflowFailed','WorkflowTimedOut','WorkflowCancelled','WorkflowTerminated','UpdateCompleted') ORDER BY sequence DESC LIMIT 1";
