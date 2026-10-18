@@ -140,7 +140,7 @@ function assertUncaughtServiceFailure(row, caller, service) {
     assert.ok(typeof original.linked_workflow_instance_id === 'string' && original.linked_workflow_instance_id.length > 0);
     assert.equal(call.resolved_binding_kind, 'workflow_run');
     assert.equal(call.endpoint_name, `published-${service}-workflow-service`);
-    assert.equal(call.service_name, service === 'php' ? 'PublishedWorkflowGreeter' : 'PublishedPythonWorkflowGreeter');
+    assert.equal(call.service_name, service === 'php' ? 'publishedworkflowgreeter' : 'publishedpythonworkflowgreeter');
     assert.equal(call.operation_name, 'greet');
     assert.equal(call.caller_namespace, row.caller_namespace);
     assert.equal(call.target_namespace, 'shared');
@@ -166,7 +166,7 @@ function uncaughtFailureFixture(caller = 'php', service = 'python', namespace = 
     const original = {id: ids.call, caller_workflow_instance_id: ids.workflow, caller_workflow_run_id: ids.run,
         caller_namespace: namespace, target_namespace: 'shared',
         endpoint_name: `published-${service}-workflow-service`,
-        service_name: service === 'php' ? 'PublishedWorkflowGreeter' : 'PublishedPythonWorkflowGreeter', operation_name: 'greet',
+        service_name: service === 'php' ? 'publishedworkflowgreeter' : 'publishedpythonworkflowgreeter', operation_name: 'greet',
         linked_workflow_instance_id: ids.target, linked_workflow_run_id: ids.targetRun,
         accepted_at: '2026-10-18T08:00:00.123456Z', call_deadline_at: '2026-10-18T08:00:20.123456Z'};
     const call = {...original, status: 'failed', resolved_binding_kind: 'workflow_run',
@@ -218,6 +218,7 @@ test('uncaught failure reader requires the original terminal failure rather than
         row => { row.durable_service_call.body.endpoint_name = 'another-service'; },
         row => { row.durable_service_call.body.target_namespace = 'other'; },
         row => { row.durable_service_call.body.operation_name = 'other'; },
+        row => { row.durable_service_call.body.service_name = 'PublishedPythonWorkflowGreeter'; },
         row => { delete row.history.events[1].payload.service_call.call_deadline_at; },
         row => { row.history.events[2].payload.service_call.call_deadline_at = '2026-10-18T08:01:00Z'; },
         row => { row.history.events.at(-1).sequence = 1; },

@@ -108,6 +108,10 @@ jobs:
             const payload = history?.events?.find(event => event.event_type === 'WorkflowFailed')?.payload;
             return payload ? {type: payload.exception_type || payload.exception_class, message: payload.message} : null;
           };
+          const emitOutcome = value => {
+            const message = JSON.stringify(value).replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A');
+            console.log('::notice title=Nexus SDK outcomes::' + message);
+          };
           for (const [kind, name] of [['external', 'nexus-external-sdk-probes.json'],
             ['authorization', 'nexus-authored-authorization-probes.json'],
             ['uncaught', 'nexus-uncaught-failure-probes.json']]) {
@@ -135,10 +139,8 @@ jobs:
                   exact_bytes: item.owner.bytes === item.reference.size_bytes,
                   exact_hash: item.owner.sha256 === item.reference.sha256})),
               }))}));
-            for (const pair of summary[kind]) {
-              const message = JSON.stringify({kind, ...pair}).replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A');
-              console.log('::notice title=Nexus SDK outcomes::' + message);
-            }
+            if (kind === 'uncaught') emitOutcome({kind, reports: summary[kind]});
+            else for (const pair of summary[kind]) emitOutcome({kind, ...pair});
           }
           let retainedBytes = 0;
           const omittedReports = [];
