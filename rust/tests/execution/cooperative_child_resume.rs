@@ -212,7 +212,12 @@ async fn resolution(leased: bool, outcome: &str, missing: bool, rollback: bool) 
     .await;
     let parent_events = run_history(&app, &parent["workflow_id"], &parent["run_id"]).await;
     let duplicate = child_outcome(&app, &child, outcome).await;
-    assert_eq!(duplicate.0, StatusCode::OK, "{}", duplicate.1);
+    if outcome == "cancelled" {
+        assert_eq!(duplicate.0, StatusCode::CONFLICT, "{}", duplicate.1);
+        assert_eq!(duplicate.1["reason"], "run_not_active");
+    } else {
+        assert_eq!(duplicate.0, StatusCode::OK, "{}", duplicate.1);
+    }
     assert_eq!(
         run_history(&app, &parent["workflow_id"], &parent["run_id"]).await,
         parent_events
@@ -289,35 +294,25 @@ async fn cooperative_child_resume_update_only_task_is_not_a_root_resume() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
-    let registration = request_protocol(&app, "POST", "/api/worker/register", json!({
-        "worker_id":"cleanup-worker","task_queue":"test","runtime":"php",
-        "supported_workflow_types":["echo"],"supported_activity_types":[],
-        "capabilities":["cooperative_cancellation","workflow_updates"],
-        "workflow_command_contracts":{"echo":{"signals":[],"updates":["set"],"update_validators":[],
-            "update_contracts":[{"name":"set","parameters":[{"name":"value","type":"int","required":true,
-                "variadic":false,"default_available":false,"allows_null":false}]}]}}}), "1.20").await;
-    assert_eq!(registration.0, StatusCode::CREATED, "{}", registration.1);
     register(&app, "abandoned-worker", json!(["child"]), json!([])).await;
-    let parent = start(&app, "abandon-parent").await;
-    let first = cooperative_poll(&app, "workflow").await;
-    assert_eq!(
-        finish_task(&app, &first, json!([child_command(7)])).await.0,
-        StatusCode::OK
-    );
+    // Accept the update at a supported signal wait, then start the child from
+    // that wait's real timer resume while the original update claim is leased.
+    let (parent, update, update_task, root) = cooperative_updates::pending(&database, &app).await;
+    let started = finish_task(&app, &root, json!([child_command(7)])).await;
+    assert_eq!(started.0, StatusCode::OK, "{}", started.1);
     let child = poll(&app, "abandoned-worker", "workflow").await;
-    let update = request(
-        &app,
-        "POST",
-        "/api/workflows/abandon-parent/update/set",
-        terminal_updates::input("original"),
-    )
-    .await;
-    assert_eq!(update.0, StatusCode::ACCEPTED, "{}", update.1);
-    let update_task = parent_task(&database, &parent).await;
     let original = child_claim(&database, &update_task).await;
     let payload: Value = serde_json::from_str(original["payload"].as_str().unwrap()).unwrap();
-    assert_eq!(payload["workflow_update_id"], update.1["update_id"]);
-    let pending = root_request(&app, 2).await;
+    assert_eq!(payload["workflow_update_id"], update["update_id"]);
+    let response = request(
+        &app,
+        "POST",
+        "/api/workflows/cooperative-update/request-cancellation",
+        json!({"reason":"original parent λ","cleanup_timeout_seconds":2}),
+    )
+    .await;
+    assert_eq!(response.0, StatusCode::ACCEPTED, "{}", response.1);
+    let pending = response.1["cancellation_request"].clone();
     let finished = child_outcome(&app, &child, "completed").await;
     assert_eq!(finished.0, StatusCode::OK, "{}", finished.1);
     assert_eq!(child_claim(&database, &update_task).await, original);
@@ -331,7 +326,13 @@ async fn cooperative_child_resume_update_only_task_is_not_a_root_resume() {
     );
     let limit = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
-        let described = request(&app, "GET", "/api/workflows/abandon-parent", Value::Null).await;
+        let described = request(
+            &app,
+            "GET",
+            "/api/workflows/cooperative-update",
+            Value::Null,
+        )
+        .await;
         assert_eq!(described.0, StatusCode::OK);
         if described.1["status"] == "cancelled" {
             break;
@@ -342,7 +343,7 @@ async fn cooperative_child_resume_update_only_task_is_not_a_root_resume() {
         );
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
-    terminal_updates::closed_receipt(&app, &parent, &update.1, "cancelled").await;
+    terminal_updates::closed_receipt(&app, &parent, &update, "cancelled").await;
     let events = run_history(&app, &parent["workflow_id"], &parent["run_id"]).await;
     let terminal = events
         .as_array()
@@ -363,7 +364,19 @@ async fn cooperative_child_resume_update_only_task_is_not_a_root_resume() {
         "deadline_expired"
     );
     assert!(terminal["payload"]["cancellation_cleanup"]["delivery_sequence"].is_null());
-    assert!(cooperative_poll(&app, "workflow").await.is_null());
+    let stale = finish_task(&app, &update_task, json!([{"type":"complete_update","update_id":update["update_id"],"result":envelope(Payload::Long(7))}])).await;
+    assert_eq!(stale.0, StatusCode::CONFLICT, "{}", stale.1);
+    let empty = request_protocol(
+        &app,
+        "POST",
+        "/api/worker/workflow-tasks/poll",
+        json!({
+        "worker_id":"cooperative-update-worker","task_queue":"test","timeout_seconds":0}),
+        "1.20",
+    )
+    .await;
+    assert_eq!(empty.0, StatusCode::OK);
+    assert!(empty.1["task"].is_null());
     runtime.close().await;
     database.remove().await;
 }

@@ -7,7 +7,7 @@ async fn claim(app: &Router, timeout: i64) -> Value {
     response.1["task"].clone()
 }
 
-async fn pending(database: &TestDatabase, app: &Router) -> (Value, Value, Value, Value) {
+pub(super) async fn pending(database: &TestDatabase, app: &Router) -> (Value, Value, Value, Value) {
     let registered = request_protocol(app, "POST", "/api/worker/register",
         json!({"worker_id":"cooperative-update-worker","task_queue":"test","runtime":"php",
             "supported_workflow_types":["echo"],"supported_activity_types":[],
