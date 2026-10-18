@@ -241,6 +241,45 @@ jobs:
                 durable-workflow-server-corpus-validator \
                 -lc 'set -eu; tar --no-same-owner -xf - -C /app; cp -a /app/workflow-package /workflow; php scripts/ci/prepare-release-workflow-composer-metadata.php; composer update durable-workflow/workflow --with-dependencies --minimal-changes --no-install --no-scripts --no-autoloader --no-interaction --no-progress --prefer-dist; composer install --no-interaction --no-progress --prefer-dist; git --version; vendor/bin/phpunit --version; git rev-parse --verify "$CORPUS_BASE_REF^{commit}"; php scripts/ci/check-worker-openapi-evolution.php "$CORPUS_BASE_REF"; vendor/bin/phpunit tests/Feature tests/Unit/NexusContractTest.php tests/Unit/CodecRegressionCorpusTest.php tests/Unit/PhpunitFeatureWorkflowContractTest.php tests/Unit/OpenApiDocumentEvolutionTest.php tests/Unit/NamespaceConformanceRunnerContractTest.php tests/Unit/NamespaceRuntimeContractTest.php tests/Unit/SchedulesConformanceRunnerContractTest.php tests/Unit/SchedulesRuntimeContractTest.php tests/Unit/ServerParitySdkDirectionResponseSummaryTest.php tests/Unit/ServerParitySdkQueryTransportTest.php tests/Unit/ServerParitySdkUpdateTransportTest.php --no-progress --colors=never; vendor/bin/phpunit tests/Unit/ReleaseImageImmutabilityGuardTest.php --no-progress --colors=never; vendor/bin/phpunit tests/Unit/ReleaseImagePublishWorkflowContractTest.php --filter test_php_security_audits_fail_before_release_publication --no-progress --colors=never; python3 scripts/ci/validate-regression-corpus.py --base-ref "$CORPUS_BASE_REF" --verify-counterfactual'
 
+      - name: Select production image qualification for changed build inputs
+        id: image_inputs
+        run: |
+          if git diff --quiet '${{ github.event.pull_request.base.sha || github.event.before || inputs.corpus_base_ref }}' HEAD -- Dockerfile Dockerfile.dockerignore .dockerignore composer.json composer.lock ':(glob)docker/**'; then
+            echo 'required=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'required=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build the candidate PHP production image
+        if: ${{ steps.image_inputs.outputs.required == 'true' }}
+        env:
+          DOCKER_BUILDKIT: "1"
+          WORKFLOW_PACKAGE_SOURCE: ${{ steps.workflow.outputs.source }}
+          WORKFLOW_PACKAGE_REF: ${{ steps.workflow.outputs.ref }}
+          WORKFLOW_PACKAGE_COMMIT: ${{ steps.workflow.outputs.commit }}
+        run: |
+          docker build --target production --tag durable-workflow-server-context-candidate \
+            --build-arg WORKFLOW_PACKAGE_SOURCE \
+            --build-arg WORKFLOW_PACKAGE_REF \
+            --build-arg WORKFLOW_PACKAGE_COMMIT .
+
+      - name: Verify candidate PHP image first-run readiness
+        if: ${{ always() && success() && steps.image_inputs.outputs.required == 'true' }}
+        env:
+          DW_SERVER_IMAGE: durable-workflow-server-context-candidate
+          DW_FIRST_RUN_SCOPE: source-context-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          DW_FIRST_RUN_SKIP_PULL: "1"
+        run: scripts/smoke-published-first-run.sh
+
+      - name: Clean up candidate image readiness resources
+        if: always()
+        env:
+          DW_FIRST_RUN_SCOPE: source-context-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: |
+          docker rm -f "${DW_FIRST_RUN_SCOPE}-server" "${DW_FIRST_RUN_SCOPE}-bootstrap" >/dev/null 2>&1 || true
+          docker volume rm -f "${DW_FIRST_RUN_SCOPE}-database" >/dev/null 2>&1 || true
+          docker image rm durable-workflow-server-context-candidate >/dev/null 2>&1 || true
+
       - name: Clean up test services
         if: always()
         run: |

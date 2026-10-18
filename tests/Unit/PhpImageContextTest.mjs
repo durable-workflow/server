@@ -27,7 +27,8 @@ test('the PHP image context excludes private state and preserves application inp
       'storage/framework/views/.gitignore', 'database/migrations/source.php', 'database/schema/mysql-schema.sql',
       'LICENSE', 'README.md', 'scripts/conformance/published.sh', 'rust/Cargo.toml', 'bin/server'];
     const excluded = ['.env', '.env.production', '.env.local', 'app/.env.staging',
-      '.secrets/service-key', '.secrets/.env.example', '.aws/credentials', '.ssh/id_ed25519',
+      '.secrets/service-key', '.secrets/.env.example', '.aws/credentials', '.aws/.env.example',
+      '.ssh/id_ed25519', '.ssh/.env.example', '.docker/.env.example',
       'config/.secrets/key', 'config/.aws/.env.example', '.git/config', '.phpunit.result.cache',
       'vendor/autoload.php', 'node_modules/package/index.js',
       'tests/private-fixture', 'storage/logs/laravel.log', 'storage/framework/testing/database.sqlite',

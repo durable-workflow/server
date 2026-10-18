@@ -45,9 +45,13 @@
 **/.env.*
 !**/.env.example
 **/.secrets
+**/.secrets/**
 **/.aws
+**/.aws/**
 **/.ssh
+**/.ssh/**
 **/.docker
+**/.docker/**
 **/auth.json
 **/.npmrc
 **/.netrc
