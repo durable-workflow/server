@@ -24,8 +24,9 @@ test('the PHP image context excludes local credentials and preserves application
       'app/Http/Controller.php', 'config/server.php', 'routes/api.php', 'public/index.php',
       'docker/bootstrap.sh', 'resources/release/source-release.json', 'static/openapi.yaml'];
     const excluded = ['.env', '.env.production', '.env.local', 'app/.env.staging',
-      '.secrets/service-key', '.aws/credentials', '.ssh/id_ed25519', 'config/.secrets/key',
-      '.git/config', 'vendor/autoload.php', 'node_modules/package/index.js',
+      '.secrets/service-key', '.secrets/.env.example', '.aws/credentials', '.ssh/id_ed25519',
+      'config/.secrets/key', 'config/.aws/.env.example', '.git/config', '.phpunit.result.cache',
+      'vendor/autoload.php', 'node_modules/package/index.js',
       'tests/private-fixture', 'storage/logs/laravel.log', 'storage/framework/testing/database.sqlite'];
     for (const path of [...required, ...excluded]) {
       await mkdir(dirname(join(context, path)), {recursive: true});

@@ -1,0 +1,14 @@
+# PHP image policy; other Dockerfiles keep the shared root policy.
+**/.env
+**/.env.*
+!**/.env.example
+**/.secrets
+**/.aws
+**/.ssh
+.git
+.phpunit.result.cache
+node_modules
+storage/framework/testing
+storage/logs
+tests
+vendor

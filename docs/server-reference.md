@@ -1301,6 +1301,10 @@ built-in token or signature credentials are not required for readiness.
 
 ### Docker
 
+The PHP image build excludes local `.env` files and variants, plus `.secrets`,
+`.aws` and `.ssh` directories. Public `.env.example` templates remain available.
+Supply deployment credentials through runtime environment variables or secrets.
+
 ```bash
 docker build -t durable-workflow-server .
 export DW_AUTH_TOKEN=dev-token
