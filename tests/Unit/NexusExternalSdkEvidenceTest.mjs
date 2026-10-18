@@ -8,7 +8,7 @@ const digest = value => crypto.createHash('sha256').update(value).digest('hex');
 const events = (history, kind) => history.events.filter(event => event.event_type === kind);
 const expected = service => ({language: service, name_bytes: Buffer.byteLength(name), name_sha256: digest(name),
     greeting_bytes: Buffer.byteLength(`hello, ${name}`), greeting_sha256: digest(`hello, ${name}`),
-    bigint: '9223372036854775807', nullable: null, unicode: '雪☃'});
+    bigint: '9223372036854775807', bigint_type: 'int', nullable: null, nullable_present: true, unicode: '雪☃'});
 
 function assertExternal(row, service) {
     assert.equal(row.scenario, 'external_payload');
@@ -85,6 +85,8 @@ test('external delivery reader accepts one cold original and rejects identity, p
     const mutations = [
         row => { row.budget_seconds = 60; }, row => { row.elapsed_seconds = 31; },
         row => { row.result.external_result.bigint = '9223372036854775808'; },
+        row => { row.result.external_result.bigint_type = 'str'; },
+        row => { row.result.external_result.nullable_present = false; },
         row => { row.result.external_result.nullable = false; },
         row => { row.result.external_result.name_sha256 = digest('wrong'); },
         row => { row.result.external_result.unicode = 'wrong'; },

@@ -61,7 +61,9 @@ if (($argv[2] ?? null) === 'worker') {
                         'language' => $value['language'],
                         'name_bytes' => strlen($value['name']), 'name_sha256' => hash('sha256', $value['name']),
                         'greeting_bytes' => strlen($value['greeting']), 'greeting_sha256' => hash('sha256', $value['greeting']),
-                        'bigint' => (string) $value['bigint'], 'nullable' => $value['nullable'], 'unicode' => $value['unicode'],
+                        'bigint' => (string) $value['bigint'], 'bigint_type' => get_debug_type($value['bigint']),
+                        'nullable' => $value['nullable'], 'nullable_present' => array_key_exists('nullable', $value),
+                        'unicode' => $value['unicode'],
                     ]];
             }
 

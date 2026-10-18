@@ -30,6 +30,7 @@ class PythonNexusCaller:
                         "language": value["language"],
                         "name_bytes": len(value["name"].encode()), "name_sha256": hashlib.sha256(value["name"].encode()).hexdigest(),
                         "greeting_bytes": len(value["greeting"].encode()), "greeting_sha256": hashlib.sha256(value["greeting"].encode()).hexdigest(),
-                        "bigint": str(value["bigint"]), "nullable": value["nullable"], "unicode": value["unicode"],
+                        "bigint": str(value["bigint"]), "bigint_type": type(value["bigint"]).__name__,
+                        "nullable": value["nullable"], "nullable_present": "nullable" in value, "unicode": value["unicode"],
                     }}
         return result.to_recorded_payload()
