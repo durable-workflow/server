@@ -2911,7 +2911,7 @@ async function probePublishedExternalPayloads(baseUrl, token, compose, phpServic
       service: service === 'php' ? 'PublishedWorkflowGreeter' : 'PublishedPythonWorkflowGreeter',
       operation: 'greet', scenario: 'external_payload'};
     fs.writeFileSync(path.join(compose.runRoot, inputName), JSON.stringify(input));
-    const command = caller === 'php' ? `php /work/nexus-php-caller-recovery.php /work/${inputName}`
+    const command = caller === 'php' ? `php -d memory_limit=128M /work/nexus-php-caller-recovery.php /work/${inputName}`
       : `. /tmp/dw-python/bin/activate && python /work/nexus-python-caller-recovery.py /work/${inputName}`;
     const observation = dockerExecJson(caller === 'php' ? phpService.containerName : pythonService.containerName,
       command, path.join(resultDir, `nexus-${caller}-${service}-external.log`));
