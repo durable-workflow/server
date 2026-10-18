@@ -148,7 +148,19 @@ async fn verify_closed(
     .await;
     assert_eq!(duplicate.0, StatusCode::OK, "{}", duplicate.1);
     assert_eq!(duplicate.1["duplicate"], true);
-    assert_eq!(duplicate.1["cancellation_request"], *pending);
+    for field in [
+        "request_id",
+        "requested_at",
+        "cleanup_deadline_at",
+        "history_refresh_page_token",
+    ] {
+        assert_eq!(
+            duplicate.1["cancellation_request"][field], pending[field],
+            "{field}"
+        );
+    }
+    assert_eq!(duplicate.1["cancellation_request"]["delivery_sequence"], 2);
+    assert!(duplicate.1["cancellation_request"]["delivered_at"].is_string());
     assert_eq!(
         run_history(app, &run["workflow_id"], &run["run_id"]).await,
         history
@@ -186,6 +198,8 @@ async fn worker_terminal(failed: bool, rollback: bool) {
     };
     let prefix = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
     if rollback {
+        let original_summary =
+            run_observation_active_summaries::observe(&app, "default", &run).await;
         database.execute("CREATE TRIGGER reject_cooperative_update BEFORE INSERT ON workflow_history_events WHEN NEW.event_type='UpdateCompleted' BEGIN SELECT RAISE(ABORT, 'cooperative update rejected'); END").await;
         let failed = finish_task(&app, &root, commands.clone()).await;
         assert_eq!(failed.0, StatusCode::SERVICE_UNAVAILABLE, "{}", failed.1);
@@ -200,6 +214,18 @@ async fn worker_terminal(failed: bool, rollback: bool) {
         assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_updates WHERE status='accepted' AND closed_at IS NULL").await, 1);
         assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_tasks WHERE status='leased' AND lease_expires_at IS NOT NULL").await, 2);
         assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_runs WHERE closed_at IS NULL AND message_cursor_position=0").await, 1);
+        let unchanged = run_observation_active_summaries::observe(&app, "default", &run).await;
+        for field in [
+            "status",
+            "closed_reason",
+            "history_event_count",
+            "history_size_bytes",
+            "exception_count",
+            "wait_kind",
+            "liveness_state",
+        ] {
+            assert_eq!(unchanged[field], original_summary[field], "{field}");
+        }
         database
             .execute("DROP TRIGGER reject_cooperative_update")
             .await;
@@ -280,6 +306,27 @@ async fn cooperative_updates_original_deadline_closes_update_after_cold_reopen()
     tokio::time::sleep(remaining + std::time::Duration::from_millis(25)).await;
     let cold = database.open().await.unwrap();
     let app = router(cold.clone());
+    // Maintenance runs independently of poll and enforces the stored deadline.
+    // Waiting for that transition does not grant a new cleanup budget.
+    let maintenance_limit = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let described = request(
+            &app,
+            "GET",
+            "/api/workflows/cooperative-update",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(described.0, StatusCode::OK, "{}", described.1);
+        if described.1["status"] == "cancelled" {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < maintenance_limit,
+            "original root deadline must close the run"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
     assert!(claim(&app, 0).await.is_null());
     let receipt = verify_closed(&app, &run, &update, &pending, "deadline_expired").await;
     reference_after(&database, &app, &run, before).await;
