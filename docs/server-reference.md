@@ -1301,9 +1301,9 @@ built-in token or signature credentials are not required for readiness.
 
 ### Docker
 
-The PHP image uses a BuildKit-specific source allowlist. It excludes local
-environment files, credentials, cached configuration, databases and storage
-data. The root `.env.example` template and directory scaffolding remain available;
+The PHP image uses a source allowlist for BuildKit. It excludes local environment
+files, credentials, Git metadata, cached configuration, databases and storage data.
+The root `.env.example` template and directory scaffolding remain available;
 the build creates a fresh empty SQLite file. Supply deployment credentials
 through runtime environment variables or secrets.
 
