@@ -108,7 +108,12 @@ pub(super) async fn reference_after(
     }
 }
 
-pub(super) async fn closed_receipt(app: &Router, run: &Value, original: &Value, reason: &str) -> Value {
+pub(super) async fn closed_receipt(
+    app: &Router,
+    run: &Value,
+    original: &Value,
+    reason: &str,
+) -> Value {
     let path = format!(
         "/api/workflows/{}/update/set",
         run["workflow_id"].as_str().unwrap()
