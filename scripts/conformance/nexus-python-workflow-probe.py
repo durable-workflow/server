@@ -82,12 +82,15 @@ async def execute(input_data, namespace):
                            if input_data.get("scenario") == "caller_cancelled" else {}))
         polling = asyncio.create_task(worker.run())
         try:
+            workflow_arguments = [input_data["endpoint"], input_data["service"], input_data["operation"],
+                                  input_data.get("name", "world"), "shared" if namespace != "shared" else None]
+            if input_data.get("scenario") == "uncaught_failed":
+                workflow_arguments.append(False)
             handle = await client.start_workflow(
                 workflow_type="nexus.fixture.python.caller",
                 task_queue="nexus-python-workflow",
                 workflow_id=f"nexus-python-caller-{namespace}-{input_data.get('scenario', 'completed')}-{os.getpid()}",
-                input=[input_data["endpoint"], input_data["service"],
-                       input_data["operation"], input_data.get("name", "world"), "shared" if namespace != "shared" else None],
+                input=workflow_arguments,
             )
             observation = {
                 "caller_namespace": namespace, "target_namespace": "shared",
@@ -177,6 +180,8 @@ async def execute(input_data, namespace):
             events = observation["history"].get("events", [])
             admissions = [event["payload"] for event in events
                           if event.get("event_type", event.get("type")) == "ServiceCallStarted"]
+            if input_data.get("scenario") == "uncaught_failed" and len(admissions) == 1:
+                observation["original_service_call_id"] = admissions[0].get("service_call_id")
             observation["request_qualified"] = any(
                 command.get("endpoint_name") == input_data["endpoint"]
                 and command.get("service_name") == input_data["service"]
@@ -232,8 +237,16 @@ async def execute(input_data, namespace):
                 and len([event for event in events if event.get("event_type") == "ServiceCallFailed"
                          and event.get("payload", {}).get("outcome") == "rejected_forbidden"]) == 1
             )
-            if input_data.get("scenario") == "caller_cancelled":
+            if input_data.get("scenario") in ("caller_cancelled", "uncaught_failed"):
                 observation["caller_status"] = (await client.describe_workflow_run(handle.workflow_id, handle.run_id)).status
+            if input_data.get("scenario") == "uncaught_failed":
+                observation["uncaught_failure_qualified"] = (
+                    observation.get("failure", {}).get("type") == "WorkflowFailed"
+                    and observation["caller_status"].lower() == "failed"
+                    and sum(event.get("event_type") == "WorkflowFailed" for event in events) == 1
+                    and not any(event.get("event_type") == "WorkflowCompleted" for event in events)
+                )
+            if input_data.get("scenario") == "caller_cancelled":
                 observation["caller_cancellation_qualified"] = (
                     observation["caller_status"].lower() == "cancelled"
                     and sum(event.get("event_type") == "WorkflowCancelled"
@@ -262,7 +275,7 @@ async def execute(input_data, namespace):
             polling.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await polling
-            if input_data.get("scenario") == "permission_denied" and observation is not None:
+            if input_data.get("scenario") in ("permission_denied", "uncaught_failed") and observation is not None:
                 observation.update(budget_seconds=30, elapsed_seconds=time.monotonic() - started_at,
                                    worker_stopped=True)
 
@@ -279,7 +292,8 @@ async def main():
         "scope": f"python_caller_{input_data.get('service_language', 'php')}_workflow_service",
         "outcome": "pass" if all(row[{"failed": "typed_failure_qualified", "cancelled": "cancellation_qualified", "deadline": "deadline_qualified",
                                      "caller_cancelled": "caller_cancellation_qualified",
-                                     "permission_denied": "authorization_qualified"}
+                                     "permission_denied": "authorization_qualified",
+                                     "uncaught_failed": "uncaught_failure_qualified"}
                                      .get(input_data.get("scenario"), "completed")] for row in observations) else "fail",
         "observations": observations,
         "recovery_qualified": False,

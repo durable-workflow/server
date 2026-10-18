@@ -6,7 +6,7 @@ import hashlib
 
 @workflow.defn(name="nexus.fixture.python.caller")
 class PythonNexusCaller:
-    def run(self, context, endpoint, service, operation, name, target_namespace):
+    def run(self, context, endpoint, service, operation, name, target_namespace, handle_failure=True):
         external = name == "external"
         if external:
             name = "nexus-external:" + "x" * (4 * 1024 * 1024) + "☃"
@@ -16,6 +16,8 @@ class PythonNexusCaller:
                 target_namespace=target_namespace,
             )
         except NexusOperationFailed as failure:
+            if not handle_failure:
+                raise
             return {
                 "service_call_id": failure.service_call_id, "status": failure.status,
                 "failure_type": failure.service_error_type,

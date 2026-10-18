@@ -644,6 +644,23 @@ test('a caller language label without SDK process execution cannot qualify a cel
     assert.notEqual(result.status, 'pass');
 });
 
+if (process.env.NEXUS_UNCAUGHT_FAILURE_PROBES) {
+    test('actual published uncaught service exceptions fail the original caller workflow once', () => {
+        const proof = JSON.parse(fs.readFileSync(process.env.NEXUS_UNCAUGHT_FAILURE_PROBES, 'utf8'));
+        assert.equal(proof.scope, 'actual_uncaught_workflow_failure');
+        assert.deepEqual(proof.reports.map(row => [row.caller, row.service]), [
+            ['php', 'python'], ['python', 'php'], ['php', 'php'], ['python', 'python'],
+        ]);
+        for (const {caller, observation} of proof.reports) {
+            assert.equal(observation.ok, true, JSON.stringify(observation.body));
+            assert.equal(observation.body.outcome, 'pass');
+            assert.deepEqual(observation.body.observations.map(row => row.caller_namespace),
+                ['shared', caller === 'php' ? 'tenant-a' : 'tenant-b']);
+            for (const row of observation.body.observations) assertUncaughtServiceFailure(row, caller);
+        }
+    });
+}
+
 if (process.env.NEXUS_SDK_CLIENT_MATRIX) {
     test('published client admissions preserve their limited qualification scope', () => {
         const matrix = JSON.parse(fs.readFileSync(process.env.NEXUS_SDK_CLIENT_MATRIX, 'utf8'));
