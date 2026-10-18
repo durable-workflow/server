@@ -4,8 +4,17 @@ declare(strict_types=1);
 
 // Run the exact published closer in its own migrated, in-memory PHP database.
 // Native source snapshots provide original identities and pre-closure inputs.
+if (getenv('DB_CONNECTION') !== 'sqlite' || getenv('DB_DATABASE') !== ':memory:') {
+    throw new InvalidArgumentException('Reference requires DB_CONNECTION=sqlite and DB_DATABASE=:memory:.');
+}
 require $argv[1];
 $app = require dirname($argv[1], 2).'/bootstrap/app.php';
+$app->booting(static function ($app): void {
+    $config = $app->make('config');
+    if ($config->get('database.default') !== 'sqlite' || $config->get('database.connections.sqlite.database') !== ':memory:') {
+        throw new RuntimeException('Reference configuration must select an isolated in-memory SQLite database.');
+    }
+});
 $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
 
 use Illuminate\Support\Carbon;

@@ -68,6 +68,8 @@ admission, cooperative propagation or continuation transfer. For source controls
 set `DW_TEST_TERMINAL_UPDATES_REFERENCE` when running `terminal_updates::`.
 The [PHP comparator](tests/reference/terminal_updates.php) executes the published
 closer in its own migrated in-memory database using captured original inputs.
+It requires `DB_CONNECTION=sqlite` and `DB_DATABASE=:memory:` and checks the
+resolved application configuration before providers boot.
 The development schema is version 4, with separate registration-incarnation
 authority and shutdown receipts. Fenced shutdown repairs original workflow tasks
 and commits their accepted repair history with the receipt. Re-registering the
