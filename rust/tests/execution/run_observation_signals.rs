@@ -123,11 +123,22 @@ async fn stored_wait_count(database: &TestDatabase) -> i64 {
 
 #[tokio::test]
 async fn run_observation_signals_preserve_receipt_and_application_across_cold_nodes() {
+    signals_across_cold_nodes("default").await;
+}
+
+#[tokio::test]
+async fn run_observation_signals_named_namespace_recovers_original_waits() {
+    signals_across_cold_nodes("signal-observation").await;
+}
+
+async fn signals_across_cold_nodes(namespace: &str) {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
     let mut originals = Vec::new();
-    let namespace = "default";
+    if namespace != "default" {
+        namespaces::create(&app, namespace).await;
+    }
     register_signal_worker(&app, namespace).await;
     for buffered in [false, true] {
         let run =
@@ -137,9 +148,13 @@ async fn run_observation_signals_preserve_receipt_and_application_across_cold_no
         if buffered {
             assert_eq!(signal(&app, namespace, &run).await.0, StatusCode::ACCEPTED);
         }
-        let opened = finish(&app, namespace, &task, open_commands()).await;
+        let mut commands = open_commands();
+        if buffered {
+            commands[0]["timeout_seconds"] = Value::Null;
+        }
+        let opened = finish(&app, namespace, &task, commands.clone()).await;
         assert_eq!(opened.0, StatusCode::OK, "{}", opened.1);
-        let duplicate = finish(&app, namespace, &task, open_commands()).await;
+        let duplicate = finish(&app, namespace, &task, commands).await;
         assert_eq!(duplicate.0, StatusCode::OK);
         assert_eq!(duplicate.1["recorded"], false);
         let history = read(&app, namespace, &run, "history").await;
@@ -246,7 +261,7 @@ async fn run_observation_signals_preserve_receipt_and_application_across_cold_no
 }
 
 #[tokio::test]
-async fn run_observation_signals_named_namespace_retains_its_admission_gate() {
+async fn run_observation_signals_named_namespace_retains_batched_admission_gate() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
@@ -255,7 +270,10 @@ async fn run_observation_signals_named_namespace_retains_its_admission_gate() {
     let run = namespaces::start_scoped(&app, "signal-observation", "signal-named-refusal").await;
     let task = claim(&app, "signal-observation").await;
     let before = read(&app, "signal-observation", &run, "history").await;
-    let refused = finish(&app, "signal-observation", &task, open_commands()).await;
+    let refused = finish(&app, "signal-observation", &task, json!([
+        {"type":"open_signal_wait","signal_name":"payload"},
+        {"type":"open_signal_wait","signal_name":"payload"}
+    ])).await;
     assert_eq!(refused.0, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(
         refused.1["reason"],
@@ -266,6 +284,40 @@ async fn run_observation_signals_named_namespace_retains_its_admission_gate() {
         before
     );
     assert_eq!(stored_wait_count(&database).await, 0);
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn run_observation_signals_named_namespace_cannot_consume_another_namespace() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    for namespace in ["signal-owner", "signal-other"] {
+        namespaces::create(&app, namespace).await;
+        register_signal_worker(&app, namespace).await;
+    }
+    let run = namespaces::start_scoped(&app, "signal-owner", "isolated-signal-wait").await;
+    let task = claim(&app, "signal-owner").await;
+    assert_eq!(finish(&app, "signal-owner", &task, open_commands()).await.0, StatusCode::OK);
+    let history = read(&app, "signal-owner", &run, "history").await;
+    let wait = read(&app, "signal-owner", &run, "observation").await["current_waits"]["waits"][0].clone();
+
+    assert_eq!(signal(&app, "signal-other", &run).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(finish(&app, "signal-other", &task, open_commands()).await.0, StatusCode::NOT_FOUND);
+    let wrong_read = namespaces::scoped(&app, "signal-other", "GET", &format!(
+        "/api/workflows/{}/runs/{}/observation", run["workflow_id"].as_str().unwrap(),run["run_id"].as_str().unwrap()
+    ), Value::Null).await;
+    assert_eq!(wrong_read.0, StatusCode::NOT_FOUND);
+    assert!(claim(&app, "signal-other").await.is_null());
+    assert_eq!(read(&app, "signal-owner", &run, "history").await, history);
+    assert_eq!(read(&app, "signal-owner", &run, "observation").await["current_waits"]["waits"][0], wait);
+
+    assert_eq!(signal(&app, "signal-owner", &run).await.0, StatusCode::ACCEPTED);
+    let resumed = claim(&app, "signal-owner").await;
+    assert_eq!(resumed["run_id"], run["run_id"]);
+    assert_eq!(finish(&app, "signal-owner", &resumed, close_commands()).await.0, StatusCode::OK);
+    run_observation_summaries::check_completed(&database, &app, "signal-owner", &run, 0, 0).await;
     runtime.close().await;
     database.remove().await;
 }
