@@ -30,6 +30,7 @@ if (($argv[2] ?? null) === 'worker') {
             string $operation,
             string $name,
             ?string $targetNamespace,
+            bool $handleFailure = true,
         ): array {
             $external = $name === 'external';
             if ($external) {
@@ -42,6 +43,9 @@ if (($argv[2] ?? null) === 'worker') {
             try {
                 $result = $context->serviceOperation($endpoint, $service, $operation, [$name], $options);
             } catch (ServiceOperationFailed $failure) {
+                if (!$handleFailure) {
+                    throw $failure;
+                }
                 return [
                     'service_call_id' => $failure->serviceCallId,
                     'status' => $failure->cancelled ? 'cancelled' : 'failed',
@@ -94,11 +98,14 @@ foreach (['shared', 'tenant-a'] as $namespace) {
     $row = null;
     try {
         $client = new Client('http://server:8080', namespace: $namespace, controlToken: $input['token']);
+        $workflowArguments = [$input['endpoint'], $input['service'], $input['operation'], $input['name'] ?? 'world',
+            $namespace === 'shared' ? null : 'shared'];
+        if (($input['scenario'] ?? null) === 'uncaught_failed') {
+            $workflowArguments[] = false;
+        }
         $handle = $client->startWorkflow('nexus.fixture.php.caller',
-            'nexus-php-caller-'.$namespace.'-'.($input['scenario'] ?? 'completed').'-'.getmypid(), 'nexus-php-caller', [
-                $input['endpoint'], $input['service'], $input['operation'], $input['name'] ?? 'world',
-                $namespace === 'shared' ? null : 'shared',
-            ]);
+            'nexus-php-caller-'.$namespace.'-'.($input['scenario'] ?? 'completed').'-'.getmypid(),
+            'nexus-php-caller', $workflowArguments);
         $row = [
             'caller_namespace' => $namespace, 'target_namespace' => 'shared',
             'scenario' => $input['scenario'] ?? 'completed',
@@ -167,6 +174,9 @@ foreach (['shared', 'tenant-a'] as $namespace) {
             && ($admissions[0]['payload']['caller_workflow_instance_id'] ?? null) === $handle->workflowId
             && ($admissions[0]['payload']['caller_workflow_run_id'] ?? null) === $handle->selectedRunId
             && ($admissions[0]['payload']['caller_sdk_language'] ?? null) === 'sdk-php';
+        if (($input['scenario'] ?? null) === 'uncaught_failed' && count($admissions) === 1) {
+            $row['original_service_call_id'] = $admissions[0]['payload']['service_call_id'] ?? null;
+        }
         $surface = $row['result']['service_call'] ?? $admissions[0]['payload']['service_call'] ?? [];
         $linkedId = $surface['linked_workflow_instance_id'] ?? null;
         $linkedRun = $surface['linked_workflow_run_id'] ?? null;
@@ -197,6 +207,13 @@ foreach (['shared', 'tenant-a'] as $namespace) {
             && ($row['result']['failure_class'] ?? null) === ServiceOperationFailed::class
             && ($row['result']['failure_message'] ?? null) === 'fixture service failure'
             && ($row['result']['cancelled'] ?? null) === false;
+        $row['uncaught_failure_qualified'] = ($input['scenario'] ?? null) === 'uncaught_failed'
+            && ($row['failure']['type'] ?? null) === DurableWorkflow\Exception\WorkflowFailed::class
+            && strtolower($row['caller_status'] ?? '') === 'failed'
+            && count(array_filter($row['history']['events'] ?? [],
+                static fn (array $event): bool => ($event['event_type'] ?? null) === 'WorkflowFailed')) === 1
+            && count(array_filter($row['history']['events'] ?? [],
+                static fn (array $event): bool => ($event['event_type'] ?? null) === 'WorkflowCompleted')) === 0;
         $row['cancellation_qualified'] = ($row['result']['status'] ?? null) === 'cancelled'
             && ($row['result']['failure_class'] ?? null) === ServiceOperationFailed::class
             && ($row['result']['cancelled'] ?? null) === true;
@@ -215,7 +232,7 @@ foreach (['shared', 'tenant-a'] as $namespace) {
         $exitCode = proc_close($worker);
         if ($row !== null) {
             $row['worker_exit_code'] = $exitCode;
-            if (($input['scenario'] ?? null) === 'permission_denied') {
+            if (in_array($input['scenario'] ?? null, ['permission_denied', 'uncaught_failed'], true)) {
                 $row['budget_seconds'] = 30;
                 $row['elapsed_seconds'] = microtime(true) - $startedAt;
             }
@@ -230,6 +247,7 @@ echo json_encode([
         $row[match ($input['scenario'] ?? 'completed') {
             'failed' => 'typed_failure_qualified', 'cancelled' => 'cancellation_qualified',
             'caller_cancelled' => 'caller_cancellation_qualified',
+            'uncaught_failed' => 'uncaught_failure_qualified',
             'permission_denied' => 'authorization_qualified', default => 'completed',
         }])) === 2 ? 'pass' : 'fail',
     'observations' => $observations,
