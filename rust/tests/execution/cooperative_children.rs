@@ -270,11 +270,14 @@ async fn worker_terminal(fail: bool, rollback: bool) {
         let after = run_observation_active_summaries::observe(&app, "default", &parent).await;
         for field in [
             "status",
+            "summary_state",
+            "summary_observed_at",
             "history_event_count",
             "history_size_bytes",
-            "active_workflow_task_count",
-            "pending_child_count",
+            "history_fan_out",
+            "exception_count",
         ] {
+            assert!(!before[field].is_null(), "missing summary field {field}");
             assert_eq!(after[field], before[field], "{field}");
         }
         database
