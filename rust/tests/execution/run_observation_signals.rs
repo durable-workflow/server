@@ -256,15 +256,27 @@ async fn signals_across_cold_nodes(namespace: &str) {
             1
         );
         let events = history["events"].as_array().unwrap();
-        let received = &events.iter().find(|event| event["event_type"] == "SignalReceived").unwrap()["payload"];
-        let applied = &events.iter().find(|event| event["event_type"] == "SignalApplied").unwrap()["payload"];
+        let received = &events
+            .iter()
+            .find(|event| event["event_type"] == "SignalReceived")
+            .unwrap()["payload"];
+        let applied = &events
+            .iter()
+            .find(|event| event["event_type"] == "SignalApplied")
+            .unwrap()["payload"];
         for payload in [received, applied] {
             assert_eq!(payload["signal_wait_id"], wait["id"]);
         }
         for field in ["signal_id", "workflow_command_id"] {
             assert_eq!(applied[field], received[field]);
         }
-        assert_eq!(ValueCodec::new().unwrap().decode(applied["value"]["blob"].as_str().unwrap()).unwrap(), signal_value());
+        assert_eq!(
+            ValueCodec::new()
+                .unwrap()
+                .decode(applied["value"]["blob"].as_str().unwrap())
+                .unwrap(),
+            signal_value()
+        );
         assert_eq!(
             read(&app_b, namespace, &run, "observation").await["current_waits"]["returned_count"],
             0
@@ -287,10 +299,16 @@ async fn run_observation_signals_named_namespace_retains_batched_admission_gate(
     let run = namespaces::start_scoped(&app, "signal-observation", "signal-named-refusal").await;
     let task = claim(&app, "signal-observation").await;
     let before = read(&app, "signal-observation", &run, "history").await;
-    let refused = finish(&app, "signal-observation", &task, json!([
-        {"type":"open_signal_wait","signal_name":"payload"},
-        {"type":"open_signal_wait","signal_name":"payload"}
-    ])).await;
+    let refused = finish(
+        &app,
+        "signal-observation",
+        &task,
+        json!([
+            {"type":"open_signal_wait","signal_name":"payload"},
+            {"type":"open_signal_wait","signal_name":"payload"}
+        ]),
+    )
+    .await;
     assert_eq!(refused.0, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(
         refused.1["reason"],
@@ -316,24 +334,54 @@ async fn run_observation_signals_named_namespace_cannot_consume_another_namespac
     }
     let run = namespaces::start_scoped(&app, "signal-owner", "isolated-signal-wait").await;
     let task = claim(&app, "signal-owner").await;
-    assert_eq!(finish(&app, "signal-owner", &task, open_commands()).await.0, StatusCode::OK);
+    assert_eq!(
+        finish(&app, "signal-owner", &task, open_commands()).await.0,
+        StatusCode::OK
+    );
     let history = read(&app, "signal-owner", &run, "history").await;
-    let wait = read(&app, "signal-owner", &run, "observation").await["current_waits"]["waits"][0].clone();
+    let wait =
+        read(&app, "signal-owner", &run, "observation").await["current_waits"]["waits"][0].clone();
 
-    assert_eq!(signal(&app, "signal-other", &run).await.0, StatusCode::NOT_FOUND);
-    assert_eq!(finish(&app, "signal-other", &task, open_commands()).await.0, StatusCode::NOT_FOUND);
-    let wrong_read = namespaces::scoped(&app, "signal-other", "GET", &format!(
-        "/api/workflows/{}/runs/{}/observation", run["workflow_id"].as_str().unwrap(),run["run_id"].as_str().unwrap()
-    ), Value::Null).await;
+    assert_eq!(
+        signal(&app, "signal-other", &run).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        finish(&app, "signal-other", &task, open_commands()).await.0,
+        StatusCode::NOT_FOUND
+    );
+    let wrong_read = namespaces::scoped(
+        &app,
+        "signal-other",
+        "GET",
+        &format!(
+            "/api/workflows/{}/runs/{}/observation",
+            run["workflow_id"].as_str().unwrap(),
+            run["run_id"].as_str().unwrap()
+        ),
+        Value::Null,
+    )
+    .await;
     assert_eq!(wrong_read.0, StatusCode::NOT_FOUND);
     assert!(claim(&app, "signal-other").await.is_null());
     assert_eq!(read(&app, "signal-owner", &run, "history").await, history);
-    assert_eq!(read(&app, "signal-owner", &run, "observation").await["current_waits"]["waits"][0], wait);
+    assert_eq!(
+        read(&app, "signal-owner", &run, "observation").await["current_waits"]["waits"][0],
+        wait
+    );
 
-    assert_eq!(signal(&app, "signal-owner", &run).await.0, StatusCode::ACCEPTED);
+    assert_eq!(
+        signal(&app, "signal-owner", &run).await.0,
+        StatusCode::ACCEPTED
+    );
     let resumed = claim(&app, "signal-owner").await;
     assert_eq!(resumed["run_id"], run["run_id"]);
-    assert_eq!(finish(&app, "signal-owner", &resumed, close_commands()).await.0, StatusCode::OK);
+    assert_eq!(
+        finish(&app, "signal-owner", &resumed, close_commands())
+            .await
+            .0,
+        StatusCode::OK
+    );
     run_observation_summaries::check_completed(&database, &app, "signal-owner", &run, 0, 0).await;
     runtime.close().await;
     database.remove().await;
