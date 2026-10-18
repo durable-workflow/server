@@ -139,7 +139,12 @@ jobs:
                   exact_bytes: item.owner.bytes === item.reference.size_bytes,
                   exact_hash: item.owner.sha256 === item.reference.sha256})),
               }))}));
-            if (kind === 'uncaught') emitOutcome({kind, reports: summary[kind]});
+            if (kind === 'uncaught') emitOutcome({kind, reports: summary[kind].map(pair => ({
+              caller: pair.caller, service: pair.service, process_ok: pair.process_ok,
+              observations: pair.observations.map(row => ({namespace: row.namespace, run_id: row.run_id,
+                call_id: row.call_id, status: row.status, uncaught_failure: row.uncaught_failure,
+                elapsed: row.elapsed})),
+            }))});
             else for (const pair of summary[kind]) emitOutcome({kind, ...pair});
           }
           let retainedBytes = 0;
