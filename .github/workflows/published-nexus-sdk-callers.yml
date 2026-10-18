@@ -13,6 +13,7 @@ on:
       - scripts/conformance/nexus-php-caller-recovery.php
       - scripts/conformance/nexus-python-caller-recovery.py
       - scripts/conformance/nexus-python-service-worker.py
+      - scripts/conformance/nexus-service-call-audit.php
       - tests/Unit/NexusSdkCallerEvidenceTest.mjs
       - tests/Unit/NexusExternalSdkEvidenceTest.mjs
   push:
@@ -28,6 +29,7 @@ on:
       - scripts/conformance/nexus-php-caller-recovery.php
       - scripts/conformance/nexus-python-caller-recovery.py
       - scripts/conformance/nexus-python-service-worker.py
+      - scripts/conformance/nexus-service-call-audit.php
       - tests/Unit/NexusSdkCallerEvidenceTest.mjs
       - tests/Unit/NexusExternalSdkEvidenceTest.mjs
   workflow_dispatch:
@@ -89,6 +91,7 @@ jobs:
             NEXUS_DEADLINE_PROBE="$DW_NEXUS_RESULT_DIR/nexus-deadline-probe.json" \
             node --test tests/Unit/NexusSdkCallerEvidenceTest.mjs
           NEXUS_EXTERNAL_SDK_PROBES="$DW_NEXUS_RESULT_DIR/nexus-external-sdk-probes.json" \
+            NEXUS_AUTHORED_AUTHORIZATION_PROBES="$DW_NEXUS_RESULT_DIR/nexus-authored-authorization-probes.json" \
             node --test tests/Unit/NexusExternalSdkEvidenceTest.mjs
       - name: Retain actual requests and durable observations
         if: always()

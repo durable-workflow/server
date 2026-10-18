@@ -118,3 +118,90 @@ if (process.env.NEXUS_EXTERNAL_SDK_PROBES) {
         }
     });
 }
+
+function assertAuthorization(row, caller, endpoint, audit) {
+    assert.equal(row.scenario, 'permission_denied');
+    assert.equal(row.authorization_qualified, true);
+    assert.equal(row.budget_seconds, 30);
+    assert.ok(row.elapsed_seconds > 0 && row.elapsed_seconds < 30);
+    assert.ok(row.process_id > 0 && row.installed_sdk_version);
+    if (caller === 'php') assert.equal(row.worker_exit_code, 0);
+    else assert.equal(row.worker_stopped, true);
+    assert.equal(row.result.failure_class, caller === 'php'
+        ? 'DurableWorkflow\\Exception\\ServiceOperationFailed' : 'NexusOperationFailed');
+    assert.equal(events(row.history, 'ServiceCallStarted').length, 0);
+    const failures = events(row.history, 'ServiceCallFailed');
+    assert.equal(failures.length, 1);
+    assert.equal(events(row.history, 'WorkflowCompleted').length, 1);
+    const payload = failures[0].payload;
+    assert.equal(payload.endpoint_name, endpoint);
+    assert.equal(payload.caller_sdk_language, `sdk-${caller}`);
+    assert.equal(payload.caller_workflow_instance_id, row.workflow_id);
+    assert.equal(payload.caller_workflow_run_id, row.run_id);
+    assert.equal(payload.outcome, 'rejected_forbidden');
+    assert.equal(payload.service_call_id, row.result.service_call_id);
+    assert.equal(row.durable_service_call.ok, true);
+    const call = row.durable_service_call.body.service_call || row.durable_service_call.body;
+    assert.equal(call.outcome, 'rejected_forbidden');
+    assert.equal(call.linked_workflow_run_id, null);
+    assert.equal(call.linked_workflow_instance_id, null);
+    assert.equal(call.accepted_at, null);
+    assert.equal(call.started_at, null);
+    const rows = audit.rows.filter(item => item.caller_workflow_run_id === row.run_id);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].id, row.result.service_call_id);
+    assert.equal(rows[0].caller_namespace, row.caller_namespace);
+    assert.equal(rows[0].target_namespace, 'shared');
+    for (const field of ['accepted_at', 'started_at', 'linked_workflow_instance_id', 'linked_workflow_run_id']) {
+        assert.equal(rows[0][field], null, 'A refusal cannot create dispatch or acceptance authority');
+    }
+    assert.equal(rows[0].outcome, 'rejected_forbidden');
+}
+
+function authorizationFixture() {
+    const call = {id: 'call', caller_workflow_run_id: 'run', caller_namespace: 'tenant-a', target_namespace: 'shared',
+        accepted_at: null, started_at: null, linked_workflow_run_id: null, linked_workflow_instance_id: null,
+        outcome: 'rejected_forbidden'};
+    return {scenario: 'permission_denied', authorization_qualified: true, budget_seconds: 30, elapsed_seconds: 1,
+        process_id: 1, installed_sdk_version: '2.5.0', worker_exit_code: 0,
+        workflow_id: 'caller', run_id: 'run', caller_namespace: 'tenant-a',
+        result: {service_call_id: 'call', failure_class: 'DurableWorkflow\\Exception\\ServiceOperationFailed'},
+        history: {events: [{event_type: 'ServiceCallFailed', payload: {service_call_id: 'call',
+            endpoint_name: 'denied-php-workflow-service', caller_sdk_language: 'sdk-php',
+            caller_workflow_instance_id: 'caller', caller_workflow_run_id: 'run', outcome: 'rejected_forbidden'}},
+        {event_type: 'WorkflowCompleted'}]},
+        durable_service_call: {ok: true, body: call}, audit: {rows: [{...call}]}};
+}
+
+test('authorization reader rejects admission, dispatch, wrong original, generic errors and missing audit evidence', () => {
+    const verify = row => assertAuthorization(row, 'php', 'denied-php-workflow-service', row.audit);
+    verify(authorizationFixture());
+    for (const mutate of [
+        row => { row.history.events.push({event_type: 'ServiceCallStarted'}); },
+        row => { row.result.failure_class = 'TimeoutError'; },
+        row => { row.history.events[0].payload.caller_workflow_run_id = 'other'; },
+        row => { row.durable_service_call.body.accepted_at = '2026-10-18T00:00:00Z'; },
+        row => { row.audit.rows[0].linked_workflow_run_id = 'dispatched'; },
+        row => { row.audit.rows[0].outcome = 'accepted'; },
+        row => { row.audit.rows = []; },
+    ]) {
+        const row = authorizationFixture(); mutate(row); assert.throws(() => verify(row));
+    }
+});
+
+if (process.env.NEXUS_AUTHORED_AUTHORIZATION_PROBES) {
+    test('actual published PHP/Python authored callers receive policy refusal before target dispatch', () => {
+        const evidence = JSON.parse(fs.readFileSync(process.env.NEXUS_AUTHORED_AUTHORIZATION_PROBES, 'utf8'));
+        assert.deepEqual(evidence.reports.map(row => [row.caller, row.service]),
+            [['php', 'php'], ['php', 'python'], ['python', 'php'], ['python', 'python']]);
+        for (const {caller, endpoint, observation, audit_exit_code, audit} of evidence.reports) {
+            assert.equal(observation.ok, true);
+            assert.equal(observation.body.outcome, 'pass', JSON.stringify(observation.body));
+            assert.equal(audit_exit_code, 0);
+            assert.equal(audit.rows.length, 2);
+            assert.deepEqual(observation.body.observations.map(row => row.caller_namespace),
+                ['shared', caller === 'php' ? 'tenant-a' : 'tenant-b']);
+            for (const row of observation.body.observations) assertAuthorization(row, caller, endpoint, audit);
+        }
+    });
+}

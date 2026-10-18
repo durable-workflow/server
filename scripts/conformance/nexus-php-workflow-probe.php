@@ -79,6 +79,7 @@ if (($argv[2] ?? null) === 'worker') {
 
 $observations = [];
 foreach (['shared', 'tenant-a'] as $namespace) {
+    $startedAt = microtime(true);
     $logPath = '/tmp/nexus-php-caller-'.$namespace.'.log';
     $worker = proc_open([PHP_BINARY, __FILE__, $argv[1], 'worker', $namespace], [
         0 => ['file', '/dev/null', 'r'],
@@ -190,11 +191,21 @@ foreach (['shared', 'tenant-a'] as $namespace) {
             && strtolower($row['caller_status'] ?? '') === 'cancelled'
             && count(array_filter($row['linked_service_history']['events'] ?? [],
                 static fn (array $event): bool => ($event['event_type'] ?? null) === 'WorkflowCancelled')) === 1;
+        $refused = array_values(array_filter($row['history']['events'] ?? [],
+            static fn (array $event): bool => ($event['event_type'] ?? null) === 'ServiceCallFailed'
+                && ($event['payload']['outcome'] ?? null) === 'rejected_forbidden'));
+        $row['authorization_qualified'] = ($input['scenario'] ?? null) === 'permission_denied'
+            && count($refused) === 1 && $admissions === []
+            && ($row['result']['failure_class'] ?? null) === ServiceOperationFailed::class;
     } finally {
         proc_terminate($worker, 15);
         $exitCode = proc_close($worker);
         if ($row !== null) {
             $row['worker_exit_code'] = $exitCode;
+            if (($input['scenario'] ?? null) === 'permission_denied') {
+                $row['budget_seconds'] = 30;
+                $row['elapsed_seconds'] = microtime(true) - $startedAt;
+            }
             $row['worker_log'] = file_get_contents($logPath);
             $observations[] = $row;
         }
@@ -205,7 +216,8 @@ echo json_encode([
     'outcome' => count(array_filter($observations, static fn (array $row): bool =>
         $row[match ($input['scenario'] ?? 'completed') {
             'failed' => 'typed_failure_qualified', 'cancelled' => 'cancellation_qualified',
-            'caller_cancelled' => 'caller_cancellation_qualified', default => 'completed',
+            'caller_cancelled' => 'caller_cancellation_qualified',
+            'permission_denied' => 'authorization_qualified', default => 'completed',
         }])) === 2 ? 'pass' : 'fail',
     'observations' => $observations,
     'recovery_qualified' => false, 'cancellation_qualified' => false,

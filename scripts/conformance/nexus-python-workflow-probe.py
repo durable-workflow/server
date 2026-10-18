@@ -16,6 +16,8 @@ from nexus_python_caller_workflow import PythonNexusCaller
 
 
 async def execute(input_data, namespace):
+    started_at = time.monotonic()
+    observation = None
     receipts = []
     worker_requests = []
     request_rows = {}
@@ -214,6 +216,13 @@ async def execute(input_data, namespace):
                 recorded.get("status") == "cancelled"
                 and recorded.get("failure_class") == "NexusOperationFailed"
             )
+            observation["authorization_qualified"] = (
+                input_data.get("scenario") == "permission_denied"
+                and not admissions
+                and recorded.get("failure_class") == "NexusOperationFailed"
+                and len([event for event in events if event.get("event_type") == "ServiceCallFailed"
+                         and event.get("payload", {}).get("outcome") == "rejected_forbidden"]) == 1
+            )
             if input_data.get("scenario") == "caller_cancelled":
                 observation["caller_status"] = (await client.describe_workflow_run(handle.workflow_id, handle.run_id)).status
                 observation["caller_cancellation_qualified"] = (
@@ -244,6 +253,9 @@ async def execute(input_data, namespace):
             polling.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await polling
+            if input_data.get("scenario") == "permission_denied" and observation is not None:
+                observation.update(budget_seconds=30, elapsed_seconds=time.monotonic() - started_at,
+                                   worker_stopped=True)
 
 
 async def main():
@@ -257,7 +269,8 @@ async def main():
     print(json.dumps({
         "scope": f"python_caller_{input_data.get('service_language', 'php')}_workflow_service",
         "outcome": "pass" if all(row[{"failed": "typed_failure_qualified", "cancelled": "cancellation_qualified", "deadline": "deadline_qualified",
-                                     "caller_cancelled": "caller_cancellation_qualified"}
+                                     "caller_cancelled": "caller_cancellation_qualified",
+                                     "permission_denied": "authorization_qualified"}
                                      .get(input_data.get("scenario"), "completed")] for row in observations) else "fail",
         "observations": observations,
         "recovery_qualified": False,
