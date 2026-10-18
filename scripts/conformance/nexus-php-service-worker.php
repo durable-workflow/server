@@ -28,6 +28,12 @@ error_log(json_encode([
 $client = new Client('http://server:8080', namespace: 'shared', token: $input['token'], workerProtocolVersion: '1.20');
 (new Worker($client, 'nexus-php-workflow', enableCooperativeCancellation: true))
     ->registerWorkflow('nexus.fixture.php.greeter', static function (WorkflowContext $context, string $name): array {
+        if (str_starts_with($name, 'nexus-external:')) {
+            $context->sleep(2);
+
+            return ['language' => 'php', 'name' => $name, 'greeting' => "hello, {$name}",
+                'bigint' => PHP_INT_MAX, 'nullable' => null, 'unicode' => '雪☃'];
+        }
         if ($name === 'fail') {
             throw new NexusFixtureFailure('fixture service failure');
         }

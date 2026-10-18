@@ -34,6 +34,9 @@ Environment overrides:
                                     Skip the published workflow-php/sdk-python
                                     service-call evidence shard.
   DW_NEXUS_KEEP_RUN_ROOT=1          Keep the probe scratch directory.
+  DW_NEXUS_EXTERNAL_PAYLOAD_PROBES=1
+                                    Exercise large arguments/results and cold SDK
+                                    delivery using namespace-managed transport.
   DW_NEXUS_SERVER_PORT              Host port for the published server probe.
   DW_NEXUS_SKIP_DOCKER_PULL=1       Reuse a local server image for the probe.
   DW_SERVER_IMAGE                   Exact published server image/tag/digest.
@@ -757,11 +760,19 @@ function freePort(options = {}) {
 function composeYaml(image, port, token, observer = null) {
   const escapedImage = JSON.stringify(image);
   const escapedToken = JSON.stringify(token);
+  const payloadMount = env('DW_NEXUS_EXTERNAL_PAYLOAD_PROBES') === '1'
+    ? '    volumes:\n      - payload_data:/app/storage/app\n' : '';
+  const principalEnvironment = payloadMount
+    ? `      DW_AUTH_BACKWARD_COMPATIBLE: "false"\n      DW_PRINCIPAL_TOKENS: ${JSON.stringify(JSON.stringify([
+      {token, subject: 'nexus-fixture-admin', roles: ['admin', 'operator', 'worker']},
+      {token: `${token}-worker`, subject: 'nexus-fixture-worker', roles: ['worker']},
+    ]))}`
+    : '      DW_AUTH_BACKWARD_COMPATIBLE: "true"';
   return `
 services:
   bootstrap:
     image: ${escapedImage}
-    command: ["server-bootstrap"]
+${payloadMount}    command: ["server-bootstrap"]
     environment: &server_environment
       APP_ENV: local
       APP_DEBUG: "false"
@@ -776,7 +787,7 @@ services:
       CACHE_STORE: redis
       DW_AUTH_DRIVER: token
       DW_AUTH_TOKEN: ${escapedToken}
-      DW_AUTH_BACKWARD_COMPATIBLE: "true"
+${principalEnvironment}
     depends_on:
       mysql:
         condition: service_healthy
@@ -784,7 +795,7 @@ services:
         condition: service_healthy
   server:
     image: ${escapedImage}
-    ports:
+${payloadMount}    ports:
       - "127.0.0.1:${port}:8080"
     environment:
       <<: *server_environment
@@ -804,7 +815,7 @@ services:
       retries: 24
   worker:
     image: ${escapedImage}
-    command: php artisan queue:work --sleep=1 --tries=3 --max-time=3600
+${payloadMount}    command: php artisan queue:work --sleep=1 --tries=3 --max-time=3600
     environment:
       <<: *server_environment
       DW_SERVER_TOPOLOGY_SHAPE: standalone_server
@@ -859,6 +870,7 @@ ${observer === null ? '' : [['waterline-owner', 'shared', observer.ownerPort], [
 volumes:
   mysql_data:
   redis_data:
+${payloadMount ? '  payload_data:' : ''}
 `;
 }
 
@@ -2763,6 +2775,56 @@ async function probePublishedTypedOutcomes(baseUrl, token, compose, phpService, 
   }
 }
 
+async function probePublishedWaitingCallerCancellation(baseUrl, token, compose, phpService, pythonService) {
+  const reports = [];
+  const operations = new Map();
+  for (const [caller, service] of [['php', 'python'], ['python', 'php'], ['php', 'php'], ['python', 'python']]) {
+    const endpoint = `published-${service}-workflow-service`;
+    const serviceName = service === 'php' ? 'PublishedWorkflowGreeter' : 'PublishedPythonWorkflowGreeter';
+    let setup = operations.get(service);
+    if (setup === undefined) {
+      setup = await apiRequest(baseUrl, token, 'shared', 'POST',
+      `/service-endpoints/${endpoint}/services/${serviceName}/operations`, {
+        operation_name: 'greet-caller-cancel', operation_mode: 'sync', handler_binding_kind: 'start_workflow',
+        handler_target_reference: `nexus.fixture.${service}.greeter`,
+        handler_binding: {workflow_type: `nexus.fixture.${service}.greeter`,
+          queue: service === 'php' ? 'nexus-php-workflow' : 'nexus-python-service'},
+        deadline_policy: {timeout_seconds: 120},
+        cancellation_policy: {allow_cancel: true, propagate_to_linked_workflow: true},
+        boundary_policy: {authorization: {caller_namespaces: {allow: ['shared', 'tenant-a', 'tenant-b']}}},
+      });
+      if (!setup.ok) throw new Error(`Could not register the cancellation-propagating ${service} operation`);
+      operations.set(service, setup);
+    }
+    const inputName = `nexus-${caller}-${service}-caller-cancellation-input.json`;
+    fs.writeFileSync(path.join(compose.runRoot, inputName), JSON.stringify({
+      token, endpoint, service: serviceName, operation: 'greet-caller-cancel',
+      service_language: service, scenario: 'caller_cancelled', name: 'cancel',
+    }));
+    const container = caller === 'php' ? phpService.containerName : pythonService.containerName;
+    const command = caller === 'php'
+      ? `php /work/nexus-php-workflow-probe.php /work/${inputName}`
+      : `. /tmp/dw-python/bin/activate && python /work/nexus-python-workflow-probe.py /work/${inputName}`;
+    const observation = dockerExecJson(container, command,
+      path.join(resultDir, `nexus-${caller}-${service}-caller-cancellation-probe.log`));
+    const serviceContainer = service === 'php' ? phpService.containerName : pythonService.containerName;
+    const serviceLog = spawnSync('docker', ['exec', serviceContainer, 'cat', `/tmp/nexus-${service}-service-worker.log`],
+      {encoding: 'utf8', maxBuffer: 8 * 1024 * 1024});
+    observation.service_worker_log = (serviceLog.stdout || '') + (serviceLog.stderr || '');
+    for (const row of observation.body?.observations || []) {
+      const callId = row.service_call_before_cancellation?.service_call_id
+        || row.history?.events?.find(event => event.event_type === 'ServiceCallStarted')?.payload?.service_call_id;
+      if (!callId) continue;
+      row.durable_service_call = responseSummary(await apiRequest(baseUrl, token, 'shared', 'GET',
+        `/service-endpoints/${endpoint}/services/${serviceName}/operations/greet-caller-cancel/service-calls/${encodeURIComponent(callId)}`));
+    }
+    reports.push({caller, service, setup: responseSummary(setup), observation});
+    fs.writeFileSync(path.join(resultDir, 'nexus-waiting-caller-cancellation-probes.json'), JSON.stringify({
+      scope: 'actual_waiting_caller_cooperative_cancellation', reports,
+    }, null, 2) + '\n');
+  }
+}
+
 async function probePublishedCallerRecovery(baseUrl, token, compose, phpService, pythonService) {
   const fixtureDir = path.dirname(process.argv[5]);
   fs.copyFileSync(path.join(fixtureDir, 'nexus-php-caller-recovery.php'), path.join(compose.runRoot, 'nexus-php-caller-recovery.php'));
@@ -2790,6 +2852,142 @@ async function probePublishedCallerRecovery(baseUrl, token, compose, phpService,
     fs.writeFileSync(path.join(resultDir, 'nexus-caller-recovery-probes.json'), JSON.stringify({
       scope: 'actual_php_python_caller_sigkill_recovery', reports,
     }, null, 2) + '\n');
+  }
+}
+
+function boundedPayloadEvidence(value) {
+  if (typeof value === 'string' && Buffer.byteLength(value) > 2048) {
+    return {omitted_bytes: Buffer.byteLength(value), sha256: crypto.createHash('sha256').update(value).digest('hex')};
+  }
+  if (Array.isArray(value)) return value.map(boundedPayloadEvidence);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, boundedPayloadEvidence(item)]));
+  }
+  return value;
+}
+
+function runtimeReferences(value, found = new Map()) {
+  if (!value || typeof value !== 'object') return [...found.values()];
+  if (value.schema === 'durable-workflow.v2.runtime-external-payload-reference.v1') {
+    found.set(value.reference_id, value);
+  }
+  for (const item of Object.values(value)) runtimeReferences(item, found);
+  return [...found.values()];
+}
+
+async function inspectRuntimeReference(baseUrl, token, namespace, reference) {
+  const response = await fetch(`${baseUrl}/api/external-payloads/v1/${encodeURIComponent(reference.reference_id)}`, {
+    headers: {Authorization: `Bearer ${token}`, 'X-Namespace': namespace,
+      'X-Durable-Workflow-Payload-Codec': reference.codec,
+      'X-Durable-Workflow-Payload-Size': String(reference.size_bytes),
+      'X-Durable-Workflow-Payload-SHA256': reference.sha256, Connection: 'close'},
+    signal: AbortSignal.timeout(30000),
+  });
+  const bytes = Buffer.from(await response.arrayBuffer());
+  return {status: response.status, bytes: bytes.length,
+    sha256: crypto.createHash('sha256').update(bytes).digest('hex')};
+}
+
+async function setupExternalPayloadPolicies(baseUrl, token) {
+  const policies = [];
+  for (const namespace of ['shared', 'tenant-a', 'tenant-b']) {
+    const policy = await apiRequest(baseUrl, token, namespace, 'PUT', `/namespaces/${namespace}/external-storage`,
+      {driver: 'local', enabled: true, threshold_bytes: 2097152});
+    policies.push({namespace, response: responseSummary(policy)});
+    if (!policy.ok) throw new Error(`External payload policy refused for ${namespace}: HTTP ${policy.status}`);
+  }
+  fs.writeFileSync(path.join(resultDir, 'nexus-external-policies.json'), JSON.stringify(policies, null, 2) + '\n');
+}
+
+async function probePublishedExternalPayloads(baseUrl, token, compose, phpService, pythonService) {
+  const policies = JSON.parse(fs.readFileSync(path.join(resultDir, 'nexus-external-policies.json'), 'utf8'));
+  const reports = [];
+  const reportPath = path.join(resultDir, 'nexus-external-sdk-probes.json');
+  const write = () => fs.writeFileSync(reportPath, JSON.stringify(boundedPayloadEvidence({policies, reports}), null, 2) + '\n');
+  write();
+  for (const [caller, service] of [['php', 'php'], ['php', 'python'], ['python', 'php'], ['python', 'python']]) {
+    const inputName = `nexus-${caller}-${service}-external-input.json`;
+    const input = {token, endpoint: `published-${service}-workflow-service`,
+      service: service === 'php' ? 'PublishedWorkflowGreeter' : 'PublishedPythonWorkflowGreeter',
+      operation: 'greet', scenario: 'external_payload'};
+    fs.writeFileSync(path.join(compose.runRoot, inputName), JSON.stringify(input));
+    const command = caller === 'php' ? `php /work/nexus-php-caller-recovery.php /work/${inputName}`
+      : `. /tmp/dw-python/bin/activate && python /work/nexus-python-caller-recovery.py /work/${inputName}`;
+    const observation = dockerExecJson(caller === 'php' ? phpService.containerName : pythonService.containerName,
+      command, path.join(resultDir, `nexus-${caller}-${service}-external.log`));
+    const report = {caller, service, observation};
+    reports.push(report);
+    write();
+    for (const row of observation.body?.observations || []) {
+      if (!row.original_service_call_id) continue;
+      row.durable_service_call = responseSummary(await apiRequest(baseUrl, token, 'shared', 'GET',
+        `/service-endpoints/${input.endpoint}/services/${input.service}/operations/greet/service-calls/${encodeURIComponent(row.original_service_call_id)}`));
+      row.raw_caller_history = responseSummary(await apiRequest(baseUrl, token, row.caller_namespace, 'GET',
+        `/workflows/${encodeURIComponent(row.workflow_id)}/runs/${encodeURIComponent(row.run_id)}/history`));
+      const call = row.original_service_call;
+      row.raw_service_history = responseSummary(await apiRequest(baseUrl, token, 'shared', 'GET',
+        `/workflows/${encodeURIComponent(call.linked_workflow_instance_id)}/runs/${encodeURIComponent(call.linked_workflow_run_id)}/history`));
+      row.retained_references = [];
+      for (const [namespace, history] of [[row.caller_namespace, row.raw_caller_history], ['shared', row.raw_service_history]]) {
+        for (const reference of runtimeReferences(history.body)) {
+          row.retained_references.push({namespace, reference,
+            owner: await inspectRuntimeReference(baseUrl, token, namespace, reference),
+            foreign: await inspectRuntimeReference(baseUrl, token, 'tenant-c', reference)});
+        }
+      }
+      write();
+    }
+  }
+}
+
+async function probePublishedAuthoredAuthorization(baseUrl, token, compose, phpService, pythonService) {
+  const reports = [];
+  const write = () => fs.writeFileSync(path.join(resultDir, 'nexus-authored-authorization-probes.json'),
+    JSON.stringify({reports}, null, 2) + '\n');
+  for (const [caller, service] of [['php', 'php'], ['php', 'python'], ['python', 'php'], ['python', 'python']]) {
+    const endpoint = `denied-${service}-workflow-service`;
+    const serviceName = 'DeniedGreeter';
+    if (!reports.some(report => report.service === service)) {
+      const setup = [
+        await apiRequest(baseUrl, token, 'shared', 'POST', '/service-endpoints', {endpoint_name: endpoint}),
+        await apiRequest(baseUrl, token, 'shared', 'POST', `/service-endpoints/${endpoint}/services`, {service_name: serviceName}),
+        await apiRequest(baseUrl, token, 'shared', 'POST', `/service-endpoints/${endpoint}/services/${serviceName}/operations`, {
+          operation_name: 'greet', operation_mode: 'sync', handler_binding_kind: 'start_workflow',
+          handler_target_reference: `nexus.fixture.${service}.greeter`,
+          handler_binding: {workflow_type: `nexus.fixture.${service}.greeter`,
+            queue: service === 'php' ? 'nexus-php-workflow' : 'nexus-python-service'},
+          boundary_policy: {authorization: {caller_namespaces: {allow: ['tenant-c']}}},
+        }),
+      ];
+      if (setup.some(response => !response.ok)) throw new Error(`Could not register the denied ${service} operation`);
+    }
+    const inputName = `nexus-${caller}-${service}-authorization-input.json`;
+    fs.writeFileSync(path.join(compose.runRoot, inputName), JSON.stringify({token, endpoint,
+      worker_token: `${token}-worker`, service: serviceName, operation: 'greet',
+      service_language: service, scenario: 'permission_denied'}));
+    const command = caller === 'php' ? `php /work/nexus-php-workflow-probe.php /work/${inputName}`
+      : `. /tmp/dw-python/bin/activate && python /work/nexus-python-workflow-probe.py /work/${inputName}`;
+    const observation = dockerExecJson(caller === 'php' ? phpService.containerName : pythonService.containerName,
+      command, path.join(resultDir, `nexus-${caller}-${service}-authorization.log`));
+    const report = {caller, service, endpoint, observation};
+    reports.push(report);
+    for (const row of observation.body?.observations || []) {
+      if (row.admin_namespace_name) row.admin_namespace_after = responseSummary(await apiRequest(baseUrl, token,
+        row.caller_namespace, 'GET', `/namespaces/${encodeURIComponent(row.admin_namespace_name)}`));
+      const callId = row.result?.service_call_id;
+      if (callId) row.durable_service_call = responseSummary(await apiRequest(baseUrl, token, 'shared', 'GET',
+        `/service-endpoints/${endpoint}/services/${serviceName}/operations/greet/service-calls/${encodeURIComponent(callId)}`));
+    }
+    const ids = observation.body?.observations?.map(row => row.run_id) || [];
+    if (ids.length === 2) {
+      const audit = spawnSync('docker', ['compose', '-p', compose.project, '-f', compose.composePath,
+        'exec', '-T', 'server', 'php', '/dev/stdin', Buffer.from(JSON.stringify(ids)).toString('base64')],
+      {input: fs.readFileSync(path.join(path.dirname(process.argv[5]), 'nexus-service-call-audit.php')),
+        encoding: 'utf8', maxBuffer: 1024 * 1024});
+      report.audit_exit_code = audit.status;
+      report.audit = audit.status === 0 ? JSON.parse(audit.stdout) : {error: (audit.stderr || '').slice(-2048)};
+    }
+    write();
   }
 }
 
@@ -3542,6 +3740,31 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
       fs.writeFileSync(path.join(resultDir, 'nexus-deadline-probes-error.json'), JSON.stringify({
         runner_blocked: true, failure_reason: String(error),
       }, null, 2) + '\n');
+    }
+
+    try {
+      await probePublishedWaitingCallerCancellation(baseUrl, token, compose, phpService, pythonService);
+    } catch (error) {
+      fs.writeFileSync(path.join(resultDir, 'nexus-waiting-caller-cancellation-probes-error.json'), JSON.stringify({
+        runner_blocked: true, failure_reason: String(error),
+      }, null, 2) + '\n');
+    }
+
+    if (env('DW_NEXUS_EXTERNAL_PAYLOAD_PROBES') === '1') {
+      try {
+        await probePublishedExternalPayloads(baseUrl, token, compose, phpService, pythonService);
+      } catch (error) {
+        fs.writeFileSync(path.join(resultDir, 'nexus-external-sdk-probes-error.json'), JSON.stringify({
+          runner_blocked: true, failure_reason: String(error),
+        }, null, 2) + '\n');
+      }
+      try {
+        await probePublishedAuthoredAuthorization(baseUrl, token, compose, phpService, pythonService);
+      } catch (error) {
+        fs.writeFileSync(path.join(resultDir, 'nexus-authored-authorization-probes-error.json'), JSON.stringify({
+          runner_blocked: true, failure_reason: String(error),
+        }, null, 2) + '\n');
+      }
     }
 
     const phpPublicSurface = reflectedPublicServiceCallSurface(runtimeEvidence.php);
@@ -5101,6 +5324,9 @@ async function main() {
     try {
       for (const namespace of ['tenant-a', 'tenant-b', 'tenant-c', 'shared']) {
         namespaceResponses.push(await ensureNamespace(baseUrl, token, namespace));
+      }
+      if (env('DW_NEXUS_EXTERNAL_PAYLOAD_PROBES') === '1') {
+        await setupExternalPayloadPolicies(baseUrl, token);
       }
       registration = await setupSharedService(baseUrl, token);
       scenarioResults = [
