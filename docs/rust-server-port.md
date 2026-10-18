@@ -53,6 +53,29 @@ Current checkpoint, October 18:
   `b025c8c30`; fresh analyzer disposition remains pending. Combined hosted
   qualification, installed native/browser acceptance and release gates stay
   separate. No package, schema, catalog or frozen fixture changes are included.
+- The next prepared namespace component extends the same single signal wait to
+  its existing zero/positive timeout contract. Named command batches retain their
+  refusal. Timer maintenance already uses the run's stored namespace; only the
+  admission guard changes. Tests-first `ce1ffe993` retains five actual failures
+  at the old named-command refusal. Tested `56f19d543`, runtime tree
+  `33a92133f1926b0f0e11163af082e5f7c0a6c23c`, passes 80 library tests with
+  18 existing ignores and all 241 SQLite execution tests, with the isolated
+  profile entry exercised through its passing parent. Fourteen actual network
+  controls pass on each of PostgreSQL 17.11 and MySQL 8.0.46; both separate
+  SQLite-only forced-write controls are excluded from those totals.
+  Immediate/durable firing retains the original timer, wait, resume identity and
+  planned deadline across cold pools. Buffered input creates no timeout, while
+  later signal application cancels the original timer and preserves typed values.
+  Foreign namespaces cannot claim or complete the resume. Invalid timeouts and
+  failed projection writes leave the original attempt usable. Duplicate
+  completions add no history. Independent published PHP 2.8.7 / Workflow 2.5.32
+  agrees on counters and wait projections across 60 captured snapshots, including
+  37 active classifications and 20 open-wait views, with zero reference queries.
+  Twelve of those active cases also pass the separate external-wait classifier.
+  Formatting and diff checks pass. This source includes the earlier untimed and
+  lifetime corrections without carrying their earlier qualification forward.
+  Combined hosted, installed native/browser, broader command batches and release
+  gates remain separate; no package, schema, catalog or frozen tuple is adopted.
 - The preceding observation head `a15b87977` has all 13 jobs passing in
   [shared run 39072054431](https://github.com/durable-workflow/server/actions/runs/39072054431),
   plus its exact PHP/source, Sonar and public-boundary checks. Newer prepared
