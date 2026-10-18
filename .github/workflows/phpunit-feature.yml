@@ -68,6 +68,9 @@ jobs:
           node scripts/ci/sync-source-release.mjs --check
           node --test scripts/ci/test-source-release.mjs
 
+      - name: Require safe PHP image build context
+        run: node --test tests/Unit/PhpImageContextTest.mjs
+
       - name: Validate embedded Workflow package authority
         run: php scripts/ci/test-workflow-package-authority.php
 
