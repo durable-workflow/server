@@ -22,7 +22,31 @@ complete parity or release readiness.
 
 Current checkpoint, October 18:
 
-- The separate [child cancellation resume association](contracts/child-cancellation-resume-link.md)
+- PR478 now combines the accepted-update cancellation closure, sequential child
+  abandonment and existing child-resume association components through `8dd8e899b`.
+  Runtime `bfb7361d37e2027a978a398d9a59189b21dff6c0` and tests
+  `c52c26e70169ccdf741ff328828a02326824abc2` are byte-identical to tested
+  implementation `8e8a9b8fb`. The final local selection passes 80 library,
+  261 SQLite execution and 23 applicable cooperative controls on each of
+  PostgreSQL 17.11 and MySQL 8.0.46, with the exclusions below. This integration
+  checkpoint changes only this log. Fresh combined PHP/source, analyzer and
+  six-database shared qualification are required; component checks do not
+  establish that result, installed acceptance, independent review or promotion.
+  Qualified stable main `964f9e3d5` and Workflow 2.5.32 remain the PHP source.
+  General's preview #486 is separate and unmerged. No RC references, PHP or
+  Composer changes, frozen tuples, profiles, budgets or expectations are adopted.
+- Preceding head `3d68a5fe3` retains its terminal failed
+  [shared run 39086884181](https://github.com/durable-workflow/server/actions/runs/39086884181):
+  twelve jobs succeed and `execution-and-codec` job117557316718 fails at
+  `Compare published query deadlines and installed Worker authority`. All
+  thirteen originals are terminal. The assertion, target implementation/client
+  and cause remain unknown. Its exact PHP/source, Sonar and boundary checks
+  pass only at that head. The
+  [terminal receipt](https://github.com/durable-workflow/server/pull/478#issuecomment-6244885792)
+  preserves the failure. The later cancellation components neither explain it
+  nor establish a fix. Remote native logs and artifacts remain unretrieved;
+  the stopped inspector and installed observation recipe remain stopped.
+- The [child cancellation resume association](contracts/child-cancellation-resume-link.md)
   is tested at `8e8a9b8fb`, runtime `bfb7361d37e2027a978a398d9a59189b21dff6c0`
   and tests `c52c26e70169ccdf741ff328828a02326824abc2`. A completed, failed or
   directly cancelled child retains its original wait and associates it with
@@ -50,11 +74,12 @@ Current checkpoint, October 18:
   supported signal wait before starting the child from that wait's real timer
   resume. Runtime bytes are unchanged by those fixture corrections. Both final
   network databases have zero test databases before clean SIGTERM/exit0/noOOM.
-  This remains source/model preparation, separate from failed admitted `3d68`.
+  This is scoped source/model validation, separate from failed admitted `3d68`
+  and the new combined hosted qualification.
   No PHP/Composer/schema, shared runner/profile, frozen actor, budget, catalog,
   stopped recipe or held-major adoption occurs. General's separate PHP Nexus
   preview window awaits its own exact qualified handoff before combination.
-- Separately prepared [cooperative child abandonment](contracts/cooperative-child-abandon.md)
+- The [cooperative child abandonment](contracts/cooperative-child-abandon.md) component
   is tested at `3f87a8524`, runtime `9cd7e90357caf9ea30d0a7cb0756c6935e85d732`
   and tests `694ba3b8d5f0163802ca97ef6dc52dfa96f71d80`. The existing
   default-namespace sequential child stays independent when its parent finishes
@@ -86,11 +111,11 @@ Current checkpoint, October 18:
   preserves nullable values while checking actual field presence. These unsuccessful selections remain separate from
   the final results. Both final network databases have no test databases before
   clean SIGTERM, exit0 and no OOM. Formatting and diff checks pass.
-  This source is separate from admitted `3d68a5fe3`; combined hosted/analyzer,
+  This component result is separate from admitted `3d68a5fe3`; combined hosted/analyzer,
   installed SDK, wider propagation, review and release gates remain open. No
   package, schema, frozen tuple, runner/profile, budget or observation recipe
   changes.
-- Separate cooperative-update implementation `cff0fd253`, runtime tree
+- Cooperative-update implementation `cff0fd253`, runtime tree
   `e5c31381ba0eefa83bb8bbc90102fdbbea48ecc4` and tests
   `8b17933aadff7893d92ba0e9139f9fb39de6d1c6`, closes accepted updates when an
   otherwise supported cooperative root cancellation finishes. Its existing
@@ -121,16 +146,15 @@ Current checkpoint, October 18:
   binary, deadlines and assertions; it does not rescue that failed original or
   explain the unrelated hosted MariaDB failure. The two final databases contain
   no test databases before clean SIGTERM and exit0 without OOM. This remains
-  separate source preparation while the admitted namespace original runs.
+  a component result rather than later whole-head qualification.
   Combined hosted/analyzer, installed SDK, wider propagation and release gates
   stay open. No schema, package, frozen tuple, shared profile or budget changes.
-- PR478 now incorporates the prepared named-signal source `d449fca29`, retaining
+- The preceding `3d68a5fe3` integrated named-signal source `d449fca29`, retaining
   runtime tree `33a92133f1926b0f0e11163af082e5f7c0a6c23c` and tests
   `c3cdccc984a1447956e1d5346596b00786a82bec`. The separately recorded local
-  component controls below cover that code. This is a new functional combined
-  candidate with named ordinary/timed signal waits and the lifetime correction.
-  Fresh combined hosted/source/analyzer qualification is pending under the same
-  profiles, budgets and expectations. No result from an earlier head qualifies it.
+  component controls below cover that code. Named ordinary/timed signal waits
+  and the lifetime correction remain in the new candidate. The terminal combined
+  result above retains its failure under unchanged profiles and budgets.
 - The preceding `b025c8c30` original
   [shared run 39082779792](https://github.com/durable-workflow/server/actions/runs/39082779792)
   is terminal FAILURE: twelve jobs pass and one MariaDB job fails. Metadata
