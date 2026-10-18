@@ -1,7 +1,7 @@
 use super::*;
 
 async fn child_claim(database: &TestDatabase, child: &Value) -> Value {
-    let query = "SELECT status,lease_owner,CAST(lease_expires_at AS TEXT),attempt_count,CAST(payload AS TEXT) FROM workflow_tasks WHERE id=$1";
+    let query = "SELECT status,lease_owner,CAST(lease_expires_at AS TEXT),CAST(attempt_count AS BIGINT),CAST(payload AS TEXT) FROM workflow_tasks WHERE id=$1";
     macro_rules! snapshot {
         ($pool:expr, $query:expr) => {{
             let pool = $pool;
@@ -34,7 +34,7 @@ async fn child_claim(database: &TestDatabase, child: &Value) -> Value {
                 .connect_with(options.as_ref().clone())
                 .await
                 .unwrap(),
-            "SELECT status,lease_owner,CAST(lease_expires_at AS CHAR),attempt_count,CAST(payload AS CHAR) FROM workflow_tasks WHERE id=?"
+            "SELECT status,lease_owner,CAST(lease_expires_at AS CHAR),CAST(attempt_count AS SIGNED),CAST(payload AS CHAR) FROM workflow_tasks WHERE id=?"
         ),
     }
 }
