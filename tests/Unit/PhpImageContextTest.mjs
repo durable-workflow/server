@@ -20,7 +20,7 @@ test('the PHP image context excludes private state and preserves application inp
       if (error.code !== 'ENOENT') throw error;
     }
     await writeFile(join(context, 'Dockerfile'), 'FROM scratch\nCOPY . /app/\n');
-    const required = ['.env.example', 'examples/.env.example', 'artisan', 'composer.json', 'composer.lock',
+    const required = ['.env.example', 'docs/evidence/stack.env.example', 'artisan', 'composer.json', 'composer.lock',
       'app/Http/Controller.php', 'config/server.php', 'routes/api.php', 'public/index.php',
       'docker/bootstrap.sh', 'resources/release/source-release.json', 'static/openapi.yaml',
       'bootstrap/cache/.gitignore', 'storage/app/.gitignore', 'storage/framework/sessions/.gitignore',
@@ -39,7 +39,9 @@ test('the PHP image context excludes private state and preserves application inp
       'storage/app/private/backup.sql', 'storage/app/public/upload.txt', 'storage/oauth-private.key',
       'storage/framework/cache/data/secret', 'storage/app/.env.example', 'public/storage/upload.txt',
       'public/hot', '.tmp/database.sql', 'artifacts/run.json', 'private-notes.json', 'backup.sql',
-      'local-artifacts/payload.json', 'rust/target/server', 'benchmarks/capacity/v1/bindings/python/.deps/token'];
+      'local-artifacts/payload.json', 'rust/target/server', 'benchmarks/capacity/v1/bindings/python/.deps/token',
+      '.tmp/.env.example', 'private-notes/.env.example', 'examples/.env.example',
+      'node_modules/.env.example', 'rust/target/.env.example'];
     for (const path of [...required, ...excluded]) {
       await mkdir(dirname(join(context, path)), {recursive: true});
       await writeFile(join(context, path), 'synthetic build-context canary\n');
