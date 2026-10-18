@@ -268,9 +268,9 @@ Direct signal waits in default and named namespaces accept an optional
 and a positive integer retains a durable timer and its original deadline.
 Buffered input wins before scheduling; application cancels a pending timeout
 with the original timer/wait metadata. The [timed-signal contract](../docs/contracts/timed-signal-waits.md)
-describes resume identities and retained waits. Named namespaces admit one
-`open_signal_wait` command per completion; command batches retain their existing
-refusal. Installed-consumer acceptance remains a separate gate.
+describes resume identities and retained waits. Named namespaces admit
+`open_signal_wait` only as the sole command in a completion. Installed-consumer
+acceptance remains a separate gate.
 Condition waits accept the same optional timeout in their existing default and
 named namespaces. Each physical wait owns its timer identity and authored
 deadline. Applying a signal satisfies the condition wait before cancelling its

@@ -88,11 +88,13 @@ compatibility is still unimplemented and remains a migration gate.
 The draft produces activity and ordinary timer waits, plus ordinary signal
 waits in default and named namespaces. Named namespaces accept a single
 `open_signal_wait` command, including its optional timeout under the
-[timed-signal contract](timed-signal-waits.md). Named command batches retain
+[timed-signal contract](timed-signal-waits.md). A named completion containing
+a signal wait and another command retains
 `development_namespace_command_unqualified`.
 Signal receipt and application are distinct transitions. A buffered receipt
 can precede the opening event; applying it later resolves that wait. These
-projection writes do not qualify signal timeouts or the remaining wait families.
+ordinary-wait projection checks alone do not qualify timeouts or the remaining
+wait families; their separate evidence is recorded in the port log.
 
 Ordinary condition waits use the existing authored `ConditionWaitOpened` identity
 and condition key. Unlike a direct signal wait, receipt of external input leaves

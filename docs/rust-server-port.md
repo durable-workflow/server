@@ -34,7 +34,8 @@ Current checkpoint, October 18:
   disposition are pending. The preceding 0c8 pass does not qualify this head.
 - The prepared named-signal component admits a single ordinary
   `open_signal_wait` command with an absent or null timeout in named namespaces.
-  Non-null signal timeouts and command batches retain their existing refusal.
+  Non-null signal timeouts and completions combining a named signal wait with
+  another command retain their existing refusal.
   Tests-first `63f55fd50` fails both new positive controls with the original 422
   admission refusal while preserving the batch-refusal control. Final tested
   `9dc90d50e`, runtime tree `4179c82b858f00f2a249b42a7d110cacba7b5313`,
@@ -54,8 +55,9 @@ Current checkpoint, October 18:
   qualification, installed native/browser acceptance and release gates stay
   separate. No package, schema, catalog or frozen fixture changes are included.
 - The next prepared namespace component extends the same single signal wait to
-  its existing zero/positive timeout contract. Named command batches retain their
-  refusal. Timer maintenance already uses the run's stored namespace; only the
+  its existing zero/positive timeout contract. A named signal wait must remain
+  the sole command in its completion. Timer maintenance already uses the run's
+  stored namespace; only the
   admission guard changes. Tests-first `ce1ffe993` retains five actual failures
   at the old named-command refusal. Tested `56f19d543`, runtime tree
   `33a92133f1926b0f0e11163af082e5f7c0a6c23c`, passes 80 library tests with
@@ -74,8 +76,9 @@ Current checkpoint, October 18:
   Twelve of those active cases also pass the separate external-wait classifier.
   Formatting and diff checks pass. This source includes the earlier untimed and
   lifetime corrections without carrying their earlier qualification forward.
-  Combined hosted, installed native/browser, broader command batches and release
-  gates remain separate; no package, schema, catalog or frozen tuple is adopted.
+  Combined hosted, installed native/browser, broader named signal-wait batches
+  and release gates remain separate; no package, schema, catalog or frozen tuple
+  is adopted.
 - The preceding observation head `a15b87977` has all 13 jobs passing in
   [shared run 39072054431](https://github.com/durable-workflow/server/actions/runs/39072054431),
   plus its exact PHP/source, Sonar and public-boundary checks. Newer prepared
