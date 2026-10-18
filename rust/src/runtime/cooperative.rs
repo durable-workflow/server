@@ -1,5 +1,6 @@
 //! Root cancellation keeps one durable request, budget and claim-time proof.
 //! Unsupported propagation remains explicit while the wider corpus is pending.
+use super::transaction::Transaction;
 use super::{
     Result, RuntimeError,
     backend::Backend,
@@ -10,7 +11,7 @@ use super::{
 use axum::http::StatusCode;
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde_json::{Value, json};
-use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Transaction, Type};
+use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::Semaphore;
 
@@ -365,8 +366,16 @@ where
             .execute(&mut **tx)
             .await?;
         }
-        Self::append(tx,&run_id,"TimerCancelled",json!({"timer_id":timer_id,"sequence":DB::number(timer,"sequence")?,
-            "delay_seconds":DB::number(timer,"delay_seconds")?,"fire_at":DB::instant(timer,"fire_at")?,"cancelled_at":at}),task_id,Some(request_id)).await
+        let payload = Self::timer_cancellation_payload(tx, &run_id, timer, at).await?;
+        Self::append(
+            tx,
+            &run_id,
+            "TimerCancelled",
+            payload,
+            task_id,
+            Some(request_id),
+        )
+        .await
     }
 
     pub(super) async fn finish_root_cancellation(
@@ -467,6 +476,7 @@ where
                 .is_some_and(|deadline| deadline <= now())
             {
                 Self::finish_root_cancellation(&mut tx, &run, None).await?;
+                tx.summary_changed(&DB::string(&run, "id")?);
             }
         }
         tx.commit().await?;

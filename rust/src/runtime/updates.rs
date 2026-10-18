@@ -1,5 +1,6 @@
 //! Durable updates admitted at a quiescent wait, with original request receipts.
 //! Concurrent queued control routing and validator tasks are not qualified.
+use super::transaction::Transaction;
 use super::{
     Result, RuntimeError,
     backend::Backend,
@@ -9,7 +10,7 @@ use super::{
 };
 use axum::http::StatusCode;
 use serde_json::{Value, json};
-use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Transaction, Type};
+use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 use std::time::Duration;
 
 const MAX_UPDATES_PER_RUN: i64 = 64;
@@ -85,38 +86,10 @@ pub(super) fn update_failure(command: &Value) -> Result<UpdateFailure<'_>> {
     let exception_type = php_string(&command["exception_type"]);
     // Unknown external class names are not PHP inheritance declarations. Keep
     // the original name while applying the published portable message rules.
-    let class = exception_class
-        .trim_start_matches('\\')
-        .to_ascii_lowercase();
-    let category = match class.as_str() {
-        "workflow\\v2\\exceptions\\structurallimitexceededexception" => "structural_limit",
-        "workflow\\v2\\exceptions\\unsupportedworkflowyieldexception"
-        | "workflow\\v2\\exceptions\\straightlineworkflowrequiredexception" => "task_failure",
-        "illuminate\\database\\queryexception"
-        | "pdoexception"
-        | "illuminate\\queue\\maxattemptsexceededexception" => "internal",
-        _ => {
-            let lower = message.to_ascii_lowercase();
-            if [
-                "timed out",
-                "timeout exceeded",
-                "execution deadline",
-                "run deadline",
-            ]
-            .iter()
-            .any(|marker| lower.contains(marker))
-            {
-                "timeout"
-            } else if message.starts_with("Structural limit exceeded:") {
-                "structural_limit"
-            } else {
-                "application"
-            }
-        }
-    };
+    let category = super::failure_commands::category(exception_class, message);
     let non_retryable = command["non_retryable"]
         .as_bool()
-        .unwrap_or(class == "workflow\\exceptions\\nonretryableexception");
+        .unwrap_or_else(|| super::failure_commands::default_non_retryable(exception_class));
     Ok(UpdateFailure {
         update_id,
         message,
@@ -411,9 +384,11 @@ where
                     "type":"update","target_scope":"instance","resolved_run_id":run_id,"status":"accepted","outcome":null}
             }), None, Some(&command_id)).await
                 .map_err(|error| at_update_lookup(error, UpdateLookup::HistoryAppend))?;
-            Self::create_task(&mut tx, &run_id, &DB::string(&run, "queue")?, "workflow",
+            let task_id = Self::create_task(&mut tx, &run_id, &DB::string(&run, "queue")?, "workflow",
                 json!({"resume_source_kind":"workflow_update","workflow_update_id":update_id,"workflow_command_id":command_id})).await
                 .map_err(|error| at_update_lookup(error, UpdateLookup::TaskEnqueue))?;
+            Self::query("UPDATE workflow_run_waits SET task_id=$1,task_type='workflow',task_status='ready',task_backed=TRUE WHERE workflow_run_id=$2 AND wait_id=$3 AND kind='update' AND status='open'")
+                .bind(task_id).bind(&run_id).bind(format!("update:{update_id}")).execute(&mut *tx).await?;
             update_id
         };
         // A completion wait owns neither the transaction nor a pool connection.

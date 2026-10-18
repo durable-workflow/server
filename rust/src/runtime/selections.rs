@@ -1,8 +1,9 @@
 //! Bounded mixed activity/timer selection, with a durable first committed winner.
+use super::transaction::Transaction;
 use super::{Result, backend::Backend, refuse, store::Store};
 use axum::http::StatusCode;
 use serde_json::{Value, json};
-use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Transaction, Type};
+use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 
 const FIELDS: [&str; 11] = [
     "parallel_group_id",
@@ -30,9 +31,16 @@ fn present(value: &Value) -> bool {
         || FIELDS.iter().any(|field| value.get(*field).is_some())
 }
 
+pub(super) fn is_selection(value: &Value) -> bool {
+    value["parallel_group_mode"] == "select"
+}
+
 pub(super) fn metadata(value: &Value, kind: &str) -> Result<Value> {
     if !present(value) {
         return Ok(json!({}));
+    }
+    if !is_selection(value) {
+        return super::all_groups::metadata(value, kind);
     }
     let base = value["parallel_group_base_sequence"]
         .as_i64()
@@ -86,9 +94,19 @@ pub(super) fn fields(command: &Value, ordinary: &[&str]) -> Result<()> {
 /// A complete group must arrive in one atomic authored batch. Other shapes
 /// remain refused rather than treating parallel metadata as ignorable options.
 pub(super) fn validate_batch(commands: &[Value]) -> Result<()> {
+    super::all_groups::validate_batch(commands)?;
     let mut members = Vec::new();
     for (offset, command) in commands.iter().enumerate() {
         if !present(command) {
+            continue;
+        }
+        if !is_selection(command) {
+            let kind = match command["type"].as_str() {
+                Some("schedule_activity") => "activity",
+                Some("start_timer") => "timer",
+                _ => return Err(unqualified()),
+            };
+            metadata(command, kind)?;
             continue;
         }
         let kind = match command["type"].as_str() {
@@ -125,6 +143,21 @@ pub(super) fn validate_batch(commands: &[Value]) -> Result<()> {
 }
 
 pub(super) fn check_sequence(metadata: &Value, sequence: i64) -> Result<()> {
+    if metadata.get("parallel_group_id").is_some() && !is_selection(metadata) {
+        return if metadata["parallel_group_path"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|entry| {
+                entry["parallel_group_base_sequence"].as_i64().unwrap()
+                    + entry["parallel_group_index"].as_i64().unwrap()
+                    == sequence
+            }) {
+            Ok(())
+        } else {
+            Err(refuse(StatusCode::CONFLICT, "parallel_sequence_mismatch"))
+        };
+    }
     if metadata.get("parallel_group_id").is_some()
         && metadata["selection_member_base_sequence"] != sequence
     {
@@ -146,8 +179,8 @@ pub(super) fn activity_metadata(path: Option<Value>) -> Result<Value> {
     };
     let leaf = path
         .as_array()
-        .filter(|path| path.len() == 1)
-        .and_then(|path| path.first())
+        .filter(|path| !path.is_empty())
+        .and_then(|path| path.last())
         .ok_or_else(unqualified)?;
     let mut value = leaf.clone();
     value["parallel_group_path"] = path.clone();
@@ -174,6 +207,9 @@ where
         identity: &str,
         event_type: &str,
     ) -> Result<()> {
+        if !is_selection(metadata) {
+            return Ok(());
+        }
         let Some(group_id) = metadata["parallel_group_id"].as_str() else {
             return Ok(());
         };

@@ -250,7 +250,11 @@ where
             return Err(refuse(StatusCode::CONFLICT, "stale_attempt"));
         }
         super::activity_deadlines::fence::<DB>(&activity)?;
-        if DB::optional_document_row(&activity, "parallel_group_path")?.is_some() {
+        let metadata = super::selections::activity_metadata(DB::optional_document_row(
+            &activity,
+            "parallel_group_path",
+        )?)?;
+        if super::selections::is_selection(&metadata) {
             // The bounded selection contract covers successful member
             // resolution. Failed/retrying members need a separate fixture;
             // preserve this attempt rather than recording a false winner.
@@ -333,12 +337,12 @@ where
             )
             .await?;
             let run = Self::active_run(&mut tx, &run_id).await?;
-            let next = Self::create_task(
+            let next = Self::selection_resume(
                 &mut tx,
                 &run_id,
                 &DB::string(&run, "queue")?,
-                "workflow",
                 json!({"activity_execution_id":activity_id}),
+                &metadata,
             )
             .await?;
             tx.commit().await?;

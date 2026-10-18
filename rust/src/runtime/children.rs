@@ -1,6 +1,7 @@
-//! Sequential child completion and direct cancellation retain the original call.
-//! Retry, other failure, parallel groups and parent-close actions remain
+//! Sequential child completion, failure and direct cancellation retain the original call.
+//! Retry, parallel groups and parent-close actions remain
 //! unqualified and are refused at admission rather than silently discarded.
+use super::transaction::Transaction;
 use super::{
     Result,
     backend::Backend,
@@ -11,12 +12,13 @@ use super::{
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
-use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Transaction, Type};
+use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 
 #[derive(Clone, Copy)]
 pub(super) enum ChildResolution<'a> {
     Completed(&'a str),
     Cancelled(&'a Value),
+    Failed(&'a Value),
 }
 
 pub(super) fn validate_child(command: &Value) -> Result<()> {
@@ -112,7 +114,7 @@ where
         // This first slice permits one outstanding authored child. A replayed
         // completion is handled by the enclosing immutable task receipt.
         for sql in [
-            "SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled')",
+            "SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled','failed')",
             "SELECT COUNT(*) FROM activity_executions WHERE workflow_run_id=$1 AND status!='completed'",
             "SELECT COUNT(*) FROM workflow_run_timers WHERE workflow_run_id=$1 AND status='pending'",
         ] {
@@ -258,9 +260,17 @@ where
         let (status, event_type) = match resolution {
             ChildResolution::Completed(_) => ("completed", "ChildRunCompleted"),
             ChildResolution::Cancelled(_) => ("cancelled", "ChildRunCancelled"),
+            ChildResolution::Failed(_) => ("failed", "ChildRunFailed"),
         };
         Self::query("UPDATE workflow_child_calls SET status=$1,closed_reason=$2,closed_at=$3,updated_at=$4 WHERE id=$5")
             .bind(status).bind(status).bind(DB::bind_time(closed_at)).bind(DB::bind_time(closed_at)).bind(DB::number(call, "id")?).execute(&mut **tx).await?;
+        if let ChildResolution::Failed(failure) = resolution {
+            Self::query("UPDATE workflow_child_calls SET failure_reference=$1 WHERE id=$2")
+                .bind(text(failure, "failure_id")?)
+                .bind(DB::number(call, "id")?)
+                .execute(&mut **tx)
+                .await?;
+        }
         let parent = Self::query("SELECT r.*,i.current_run_id FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE r.id=$1").bind(&parent_run).fetch_one(&mut **tx).await?;
         if DB::string(&parent, "workflow_instance_id")?
             != DB::string(link, "parent_workflow_instance_id")?
@@ -286,7 +296,7 @@ where
                 payload["result"] = wire(output);
                 payload["payload_codec"] = json!("avro");
             }
-            ChildResolution::Cancelled(failure) => {
+            ChildResolution::Cancelled(failure) | ChildResolution::Failed(failure) => {
                 for field in [
                     "failure_id",
                     "failure_category",
@@ -295,10 +305,19 @@ where
                 ] {
                     payload[field] = failure[field].clone();
                 }
+                if matches!(resolution, ChildResolution::Failed(_)) {
+                    for field in ["exception_type", "exception"] {
+                        if !failure[field].is_null() {
+                            payload[field] = failure[field].clone();
+                        }
+                    }
+                }
             }
         }
         Self::append(tx, &parent_run, event_type, payload, None, None).await?;
-        Self::create_task(tx, &parent_run, &DB::string(&parent,"queue")?, "workflow", json!({"workflow_wait_kind":"child","child_call_id":call_id,"child_workflow_run_id":child_run,"resume_source_kind":"child_workflow_run","resume_source_id":child_run,"workflow_sequence":sequence,"workflow_event_type":event_type,"open_wait_id":format!("child:{call_id}")})).await?;
+        let task_id = Self::create_task(tx, &parent_run, &DB::string(&parent,"queue")?, "workflow", json!({"workflow_wait_kind":"child","child_call_id":call_id,"child_workflow_run_id":child_run,"resume_source_kind":"child_workflow_run","resume_source_id":child_run,"workflow_sequence":sequence,"workflow_event_type":event_type,"open_wait_id":format!("child:{call_id}")})).await?;
+        Self::query("UPDATE workflow_run_waits SET task_backed=TRUE,task_id=$1,task_type='workflow',task_status='ready' WHERE workflow_run_id=$2 AND wait_id=$3 AND kind='child' AND status IN ('resolved','cancelled')")
+            .bind(task_id).bind(&parent_run).bind(format!("child:{call_id}")).execute(&mut **tx).await?;
         Ok(())
     }
 }
