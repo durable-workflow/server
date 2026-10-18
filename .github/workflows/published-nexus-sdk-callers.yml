@@ -47,9 +47,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
-      DW_SERVER_IMAGE: durableworkflow/server@sha256:5091e4803422e0ae6c30740c788f23c3c0391aecdd4f6a323ccea946621c0089
-      DW_SERVER_VERSION: 2.9.0
-      DW_WORKFLOW_PHP_VERSION: 2.6.0
+      DW_SERVER_IMAGE: durableworkflow/server@sha256:1631181c266cc74d70713e16b0688ea08b579cf2ed0e28f0ef5a3f3d786bc3d6
+      DW_SERVER_VERSION: 2.9.1
+      DW_WORKFLOW_PHP_VERSION: 2.6.1
       DW_PHP_SDK_VERSION: 2.5.0
       DW_PYTHON_SDK_VERSION: 2.6.0
       DW_CLI_VERSION: 2.3.0
