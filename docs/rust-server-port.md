@@ -22,6 +22,39 @@ complete parity or release readiness.
 
 Current checkpoint, October 18:
 
+- Separate cooperative-update implementation `cff0fd253`, runtime tree
+  `e5c31381ba0eefa83bb8bbc90102fdbbea48ecc4` and tests
+  `8b17933aadff7893d92ba0e9139f9fb39de6d1c6`, closes accepted updates when an
+  otherwise supported cooperative root cancellation finishes. Its existing
+  closer runs after WorkflowCancelled in that same transaction. Completion and
+  failure retain root cancellation precedence and the actual terminal task
+  snapshot. Maintenance uses the original deadline without inventing a task.
+  Children, active activities, open-wait request guards and update admission
+  remain unchanged. The tests-first `a5860b284` retains four actual failures at
+  the preceding accepted-update refusal. Final source passes all four focused
+  controls, 80 library tests with 18 existing ignores, and 245 SQLite execution
+  tests with the isolated profile entry exercised through its passing parent.
+  PostgreSQL 17.11 and fresh MySQL 8.0.46 each pass sixteen actual controls,
+  excluding both separate SQLite-only write-failure controls. Root identity and
+  deadline, original update/command/message identities, cold receipts, stale
+  attempts, terminal order and forced-write rollback of both outcomes and summary
+  are checked. Published PHP 8.3.35 / Workflow 2.5.32 independently matches 26
+  captured closer outcomes, including focused/full selection overlap, using
+  390 reference queries. The closer, executor and history model match exact
+  published source `78075b6f`. Formatting and diff checks pass.
+  An earlier candidate retained incorrect expectations that delivery fields
+  stayed null and that the first post-reopen read waited for maintenance. Those
+  fixture corrections leave the runtime unchanged. A separate incomplete build
+  lacked its sibling fixture bind. Neither is a passing original. The first
+  512 MiB MySQL database passed nine cooperative controls, then Docker recorded
+  OOM/exit137 and the terminal group failed with two passes and five connection
+  errors. The fresh sixteen-case result uses a 768 MiB database with unchanged
+  binary, deadlines and assertions; it does not rescue that failed original or
+  explain the unrelated hosted MariaDB failure. The two final databases contain
+  no test databases before clean SIGTERM and exit0 without OOM. This remains
+  separate source preparation while the admitted namespace original runs.
+  Combined hosted/analyzer, installed SDK, wider propagation and release gates
+  stay open. No schema, package, frozen tuple, shared profile or budget changes.
 - PR478 now incorporates the prepared named-signal source `d449fca29`, retaining
   runtime tree `33a92133f1926b0f0e11163af082e5f7c0a6c23c` and tests
   `c3cdccc984a1447956e1d5346596b00786a82bec`. The separately recorded local

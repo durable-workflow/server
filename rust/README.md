@@ -59,13 +59,18 @@ result and cannot change arguments or append history. Validators, failed update
 tasks, concurrent queued routing and complete update compatibility remain
 unqualified; shared database qualification for the representative update slice
 is recorded in the port log.
-Direct cancellation, ordinary workflow completion and workflow failure now
+Direct cancellation, ordinary workflow completion, workflow failure and supported
+cooperative root cancellation now
 [fail their still-accepted updates atomically](../docs/contracts/terminal-update-closure.md).
 The original update and command identities, failure receipt and forward-only
 message cursor survive cold retries. Previously completed updates remain intact,
-and old update leases cannot apply after closure. This does not widen update
-admission, cooperative propagation or continuation transfer. For source controls,
-set `DW_TEST_TERMINAL_UPDATES_REFERENCE` when running `terminal_updates::`.
+and old update leases cannot apply after closure. Cooperative cleanup preserves
+its original root identity and deadline. It closes accepted updates only when
+that run closes, including maintenance expiry. Children, active activities and
+open waits retain their request guards. This does not widen update admission,
+wider cooperative propagation or continuation transfer. For source controls,
+set `DW_TEST_TERMINAL_UPDATES_REFERENCE` when running `terminal_updates::` or
+`cooperative_updates::`.
 The [PHP comparator](tests/reference/terminal_updates.php) executes the published
 closer in its own migrated in-memory database using captured original inputs.
 It requires `DB_CONNECTION=sqlite` and `DB_DATABASE=:memory:` and checks the
