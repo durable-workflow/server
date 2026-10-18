@@ -1502,19 +1502,23 @@ where
         // Validate the entire batch before mutation. Unknown commands and
         // options cannot be silently accepted as unsupported durable effects.
         for (index, command) in commands.iter().enumerate() {
+            let command_type = text(command, "type")?;
             if self.namespace.as_ref() != "default"
                 && !matches!(
-                    text(command, "type")?,
+                    command_type,
                     "complete_workflow" | "fail_workflow" | "schedule_activity" | "start_timer"
                 )
-                && !(text(command, "type")? == "open_condition_wait" && commands.len() == 1)
+                && !(commands.len() == 1
+                    && (command_type == "open_condition_wait"
+                        || (command_type == "open_signal_wait"
+                            && command["timeout_seconds"].is_null())))
             {
                 return Err(refuse(
                     StatusCode::UNPROCESSABLE_ENTITY,
                     "development_namespace_command_unqualified",
                 ));
             }
-            match text(command, "type")? {
+            match command_type {
                 "fail_workflow" => {
                     super::workflow_failures::validate(command)?;
                 }

@@ -7,7 +7,7 @@ use std::borrow::Cow;
 use super::{Result, mysql, postgres, schema};
 
 pub(super) trait Backend: Database {
-    const PHP_CONNECTION: &'static str;
+    const PHP_CONNECTION: &str;
     type EncodedTime: for<'q> Encode<'q, Self> + Type<Self> + Send + Sync + 'static;
     type EncodedOptionalTime: for<'q> Encode<'q, Self> + Type<Self> + Send + Sync + 'static;
     type EncodedDocument: for<'q> Encode<'q, Self> + Type<Self> + Send + Sync + 'static;

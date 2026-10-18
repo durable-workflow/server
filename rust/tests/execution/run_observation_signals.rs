@@ -70,12 +70,18 @@ async fn signal(app: &Router, namespace: &str, run: &Value) -> (StatusCode, Valu
             run["workflow_id"].as_str().unwrap(),
             run["run_id"].as_str().unwrap()
         ),
-        json!({"input":envelope(Payload::Array(vec![Payload::Map(std::collections::BTreeMap::from([
-            ("count".into(), Payload::Long(9007199254740993)),
-            ("message".into(), Payload::String("signal 日本語 λ".into()))
-        ]))]))}),
+        json!({"input":envelope(Payload::Array(vec![signal_value()]))}),
     )
     .await
+}
+
+fn signal_value() -> Payload {
+    Payload::Map(std::collections::BTreeMap::from([
+        ("count".into(), Payload::Long(9007199254740993)),
+        ("message".into(), Payload::String("signal 日本語 λ".into())),
+        ("empty".into(), Payload::Null),
+        ("enabled".into(), Payload::Boolean(false)),
+    ]))
 }
 
 fn open_commands() -> Value {
@@ -249,11 +255,22 @@ async fn signals_across_cold_nodes(namespace: &str) {
                 .count(),
             1
         );
+        let events = history["events"].as_array().unwrap();
+        let received = &events.iter().find(|event| event["event_type"] == "SignalReceived").unwrap()["payload"];
+        let applied = &events.iter().find(|event| event["event_type"] == "SignalApplied").unwrap()["payload"];
+        for payload in [received, applied] {
+            assert_eq!(payload["signal_wait_id"], wait["id"]);
+        }
+        for field in ["signal_id", "workflow_command_id"] {
+            assert_eq!(applied[field], received[field]);
+        }
+        assert_eq!(ValueCodec::new().unwrap().decode(applied["value"]["blob"].as_str().unwrap()).unwrap(), signal_value());
         assert_eq!(
             read(&app_b, namespace, &run, "observation").await["current_waits"]["returned_count"],
             0
         );
         assert_eq!(read(&app_b, namespace, &run, "history").await, history);
+        run_observation_summaries::check_completed(&database, &app_b, namespace, &run, 0, 0).await;
     }
     a.close().await;
     b.close().await;
