@@ -1,4 +1,4 @@
-//! Sequential child completion, failure and direct cancellation retain the original call.
+//! Sequential child outcomes and abandoned-parent cleanup retain the original call.
 //! Retry, parallel groups and parent-close actions remain
 //! unqualified and are refused at admission rather than silently discarded.
 use super::transaction::Transaction;
