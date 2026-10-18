@@ -37,8 +37,8 @@ A failed sequential child resolves its original child call using the new termina
 failure ID, never an earlier handled activity failure. The original parent receives
 one ChildRunFailed event and one resume task. Parent notification failure rolls
 back the child's terminal transition. An abandoned child cannot wake a closed or
-replacement parent. Pending-update closure and broader child policies retain
-their separately stated implementation/qualification limits.
+replacement parent. [Accepted updates close with the terminal run](terminal-update-closure.md).
+Broader child policies retain their separately stated qualification limits.
 The current native update-task guard still refuses workflow terminal commands
 on an update-owned snapshot; this component does not qualify that closure path.
 

@@ -20,13 +20,13 @@ complete parity or release readiness.
 
 ## Work order and current status
 
-Current checkpoint, October 17:
+Current checkpoint, October 18:
 
 - Admitted head `0c8eafc9` retains its original
   [shared run 39078215426](https://github.com/durable-workflow/server/actions/runs/39078215426),
-  still running at the workflow-failure component handoff. Its exact PHP/source,
+  still running at the terminal-update component handoff. Its exact PHP/source,
   Sonar app/workflow and public boundary pass. The separately prepared failure
-  component below has local source qualification; it does not qualify or replace
+  and terminal-update components below have local source qualification; they do not qualify or replace
   this hosted original. Its reported source-finding cleanup still needs fresh analysis.
 - The preceding observation head `a15b87977` has all 13 jobs passing in
   [shared run 39072054431](https://github.com/durable-workflow/server/actions/runs/39072054431),
@@ -619,6 +619,57 @@ Current checkpoint, October 17:
   is pending. No PHP package, schema, catalog, stored-job or frozen tuple changes
   belong to this component. Combined CI, installed consumers and promotion remain
   separate gates. Ephemeral compiler and database resources were retired after audit.
+
+- [Accepted updates now close with their original run](contracts/terminal-update-closure.md)
+  on direct cancellation, ordinary workflow completion and workflow failure.
+  Original update/command/request identities and completed receipts survive.
+  Each still-accepted update gets one application-category, non-retryable failure,
+  UpdateCompleted event and forward-only cursor advancement. Its workflow sequence
+  stays absent because no update step was applied. The run, task, update, failure,
+  history and cursor changes share one transaction. Old leased update attempts
+  cannot replace the outcome after closure. An unrelated active run stays intact.
+  Ordering retains non-null command sequences before absent sequences, then
+  accepted time and update ID. Missing-command fixture rows use the update itself
+  as the failure source without inventing a command or cursor event. This does
+  not qualify legacy database takeover or widen normal update admission.
+  Tests-first `cbbd6dc59` rejects both ready/leased cancellation controls at the
+  existing 422 propagation guard. Initial expanded controls also retain their
+  unsuccessful outcomes: a zero-time condition had already resumed before update
+  admission, a zero-time poll assumed a scheduler tick, and a legacy fixture
+  omitted the schema's required command-link value. Corrected controls use the
+  original future deadline, ordinary long polling and explicit missing-command IDs.
+  A strict published-PHP comparison then exposed an actual missing task snapshot
+  field. The history model reads Eloquent's protected storage connection property.
+  Native snapshots now retain the standard `sqlite`, `pgsql` or `mysql` label.
+  This is existing diagnostic metadata, not queue-routing authority. PHP source
+  inspection and a real method invocation independently confirm that decision.
+  Implementation `58fcc366576673ec5f7e475e18a73da1e0e8223e`, runtime tree
+  `2ec0d0e9c98dfb2e0e22fdc1b15b9d849f9c4397`, passes 80 library and 234 SQLite
+  execution tests. Eighteen library ignores remain, and the directly ignored
+  SQLite profile child is exercised by its passing parent. PostgreSQL 17.11 and
+  MySQL 8.0.46 each pass sixteen controls: seven applicable new terminal-update
+  controls and nine workflow-failure regressions. Rustfmt, PHP syntax and diff
+  checks pass. All final builds use one unchanged source checkout.
+  The exact published Server 2.8.7 / Workflow 2.5.32 closer runs in its own
+  migrated in-memory PHP database, seeded from pre-closure source inputs.
+  Twelve captured closures across the three native database families agree on
+  payloads, command/task snapshots, failure relationships, update state and cursor
+  history (180 reference queries). Only the newly generated failure ID is mapped
+  between independent databases. Timestamp spelling preserves the same instant,
+  and JSON object order is ignored while types and list order remain exact.
+  Ten workflow-failure and eight child payloads also agree. History-budget checks
+  pass for twelve update and twenty failure snapshots with zero queries. Eight
+  child-classifier snapshots/four open waits agree using empty mutable child tables
+  (48 reference queries), and four task snapshots agree with zero queries.
+  Set `DW_TEST_TERMINAL_UPDATES_REFERENCE` when running `terminal_updates::` and
+  use the [published-PHP comparator](../rust/tests/reference/terminal_updates.php).
+  The PHP image index remains `27c08e15c86e897703c2bab87dcf61847946b379876b15d0a3a491bc91cf30cd`.
+  Cooperative-cancellation propagation, continuation transfer and update-owned
+  terminal commands keep their existing refusals and separate gates. No PHP
+  package/schema/catalog/frozen tuple or shared-runner change belongs to this
+  component. Fresh combined checks/analysis and installed-consumer acceptance
+  remain separate. Task compiler/database resources and the new PHP reference
+  image were retired after the checks.
 
 The separate installed-SDK observation
 [checkpoint](https://github.com/durable-workflow/server/pull/478#issuecomment-6205832785)
