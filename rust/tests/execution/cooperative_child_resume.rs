@@ -1,6 +1,6 @@
 use super::{cooperative_children::*, *};
 
-async fn parent_task(database: &TestDatabase, run: &Value) -> Value {
+pub(super) async fn parent_task(database: &TestDatabase, run: &Value) -> Value {
     let query = "SELECT id FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status IN ('ready','leased') ORDER BY id";
     macro_rules! task {
         ($pool:expr, $query:expr) => {{
@@ -38,7 +38,7 @@ async fn parent_task(database: &TestDatabase, run: &Value) -> Value {
     }
 }
 
-async fn wait(database: &TestDatabase, run: &Value) -> Value {
+pub(super) async fn wait(database: &TestDatabase, run: &Value) -> Value {
     let query = "SELECT wait_id,status,source_status,CAST(CASE WHEN task_backed THEN 1 ELSE 0 END AS BIGINT),task_id,task_type,task_status,history_authority,history_unsupported_reason FROM workflow_run_waits WHERE workflow_run_id=$1 AND kind='child'";
     macro_rules! row {
         ($pool:expr, $query:expr) => {{
@@ -98,7 +98,7 @@ async fn child_outcome(app: &Router, child: &Value, outcome: &str) -> (StatusCod
     }
 }
 
-async fn export(
+pub(super) async fn export(
     database: &TestDatabase,
     app: &Router,
     run: &Value,

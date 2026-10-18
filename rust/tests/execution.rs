@@ -119,6 +119,9 @@ mod cooperative_children;
 #[path = "execution/cooperative_child_resume.rs"]
 mod cooperative_child_resume;
 
+#[path = "execution/cooperative_child_independent.rs"]
+mod cooperative_child_independent;
+
 #[path = "execution/query_arguments.rs"]
 mod query_arguments;
 #[path = "execution/query_authority.rs"]
