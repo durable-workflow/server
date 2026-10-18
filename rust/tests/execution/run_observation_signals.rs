@@ -1,6 +1,6 @@
 use super::*;
 
-async fn register_signal_worker(app: &Router, namespace: &str) {
+pub(super) async fn register_signal_worker(app: &Router, namespace: &str) {
     let result = namespaces::scoped(app, namespace, "POST", "/api/worker/register", json!({
         "worker_id":"signal-observer","task_queue":"test","runtime":"php",
         "supported_workflow_types":["echo"],"supported_activity_types":[],
@@ -11,20 +11,24 @@ async fn register_signal_worker(app: &Router, namespace: &str) {
     assert_eq!(result.0, StatusCode::CREATED, "{}", result.1);
 }
 
-async fn claim(app: &Router, namespace: &str) -> Value {
+pub(super) async fn claim(app: &Router, namespace: &str) -> Value {
+    claim_with_timeout(app, namespace, 0).await
+}
+
+pub(super) async fn claim_with_timeout(app: &Router, namespace: &str, timeout: i64) -> Value {
     let result = namespaces::scoped(
         app,
         namespace,
         "POST",
         "/api/worker/workflow-tasks/poll",
-        json!({"worker_id":"signal-observer","task_queue":"test","timeout_seconds":0}),
+        json!({"worker_id":"signal-observer","task_queue":"test","timeout_seconds":timeout}),
     )
     .await;
     assert_eq!(result.0, StatusCode::OK, "{}", result.1);
     result.1["task"].clone()
 }
 
-async fn finish(
+pub(super) async fn finish(
     app: &Router,
     namespace: &str,
     task: &Value,
@@ -43,7 +47,7 @@ async fn finish(
     .await
 }
 
-async fn read(app: &Router, namespace: &str, run: &Value, suffix: &str) -> Value {
+pub(super) async fn read(app: &Router, namespace: &str, run: &Value, suffix: &str) -> Value {
     let result = namespaces::scoped(
         app,
         namespace,
@@ -60,7 +64,7 @@ async fn read(app: &Router, namespace: &str, run: &Value, suffix: &str) -> Value
     result.1
 }
 
-async fn signal(app: &Router, namespace: &str, run: &Value) -> (StatusCode, Value) {
+pub(super) async fn signal(app: &Router, namespace: &str, run: &Value) -> (StatusCode, Value) {
     namespaces::scoped(
         app,
         namespace,
@@ -75,7 +79,7 @@ async fn signal(app: &Router, namespace: &str, run: &Value) -> (StatusCode, Valu
     .await
 }
 
-fn signal_value() -> Payload {
+pub(super) fn signal_value() -> Payload {
     Payload::Map(std::collections::BTreeMap::from([
         ("count".into(), Payload::Long(9007199254740993)),
         ("message".into(), Payload::String("signal 日本語 λ".into())),

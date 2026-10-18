@@ -823,7 +823,7 @@ async fn missing_or_changed_wait_projection_cannot_gain_summary_authority() {
 }
 
 #[tokio::test]
-async fn named_timeout_wait_keeps_its_existing_admission_gate() {
+async fn named_batched_timeout_wait_keeps_its_existing_admission_gate() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
@@ -847,7 +847,10 @@ async fn named_timeout_wait_keeps_its_existing_admission_gate() {
     );
     let command = completion(
         &task,
-        json!([{"type":"open_signal_wait","signal_name":"payload","timeout_seconds":0}]),
+        json!([
+            {"type":"open_signal_wait","signal_name":"payload","timeout_seconds":0},
+            {"type":"open_signal_wait","signal_name":"payload","timeout_seconds":1}
+        ]),
     );
     let refused = namespaces::scoped(&app, "timed-signals", "POST", &path, command).await;
     assert_eq!(refused.0, StatusCode::UNPROCESSABLE_ENTITY);
