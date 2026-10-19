@@ -134,15 +134,16 @@ class ExternalWorkflowUpdateRequestIdTest extends TestCase
             'worker_id' => 'retained-default', 'task_queue' => 'retained-default',
         ], $this->workerHeaders())->assertOk()->assertJsonPath('task.run_id', $runId);
         $value = ['count' => 17, 'nil' => null, 'label' => 'café'];
+        $resultEnvelope = ['codec' => 'avro', 'blob' => Serializer::serializeWithCodec('avro', $value)];
         $closing = $transition === 'continue_as_new'
-            ? ['type' => $transition, 'arguments' => Serializer::serializeWithCodec('avro', [])]
-            : ['type' => $transition, 'result' => Serializer::serializeWithCodec('avro', $value)];
+            ? ['type' => $transition, 'arguments' => ['codec' => 'avro', 'blob' => Serializer::serializeWithCodec('avro', [])]]
+            : ['type' => $transition, 'result' => $resultEnvelope];
         $this->postJson('/api/worker/workflow-tasks/'.$poll->json('task.task_id').'/complete', [
             'lease_owner' => $poll->json('task.lease_owner'),
             'workflow_task_attempt' => $poll->json('task.workflow_task_attempt'),
             'commands' => [
                 ['type' => 'complete_update', 'update_id' => $original->json('update_id'),
-                    'result' => Serializer::serializeWithCodec('avro', $value)],
+                    'result' => $resultEnvelope],
                 $closing,
             ],
         ], $this->workerHeaders())->assertOk()->assertJsonPath('recorded', true)->assertJsonPath('run_status', 'completed');
