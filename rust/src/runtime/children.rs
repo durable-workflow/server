@@ -1,6 +1,7 @@
-//! Sequential child completion and direct cancellation retain the original call.
-//! Retry, other failure, parallel groups and parent-close actions remain
+//! Sequential child outcomes and abandoned-parent cleanup retain the original call.
+//! Retry, parallel groups and parent-close actions remain
 //! unqualified and are refused at admission rather than silently discarded.
+use super::transaction::Transaction;
 use super::{
     Result,
     backend::Backend,
@@ -11,12 +12,19 @@ use super::{
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
-use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Transaction, Type};
+use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 
 #[derive(Clone, Copy)]
 pub(super) enum ChildResolution<'a> {
     Completed(&'a str),
     Cancelled(&'a Value),
+    Failed(&'a Value),
+}
+
+enum ChildParentResume {
+    New,
+    Existing { id: String, status: String },
+    UpdateOnly,
 }
 
 pub(super) fn validate_child(command: &Value) -> Result<()> {
@@ -62,6 +70,71 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
+    async fn child_parent_resume(
+        tx: &mut Transaction<'_, DB>,
+        parent: &DB::Row,
+    ) -> Result<ChildParentResume> {
+        let tasks = Self::query("SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status IN ('ready','leased') ORDER BY id LIMIT 1001")
+            .bind(DB::string(parent,"id")?).fetch_all(&mut **tx).await?;
+        if tasks.is_empty() {
+            return Ok(ChildParentResume::New);
+        }
+        if Self::cancellation_request(parent)?.is_none() {
+            return Err(refuse(StatusCode::CONFLICT, "child_parent_task_conflict"));
+        }
+        if tasks.len() > 1000 {
+            return Err(refuse(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "cancellation_inventory_exceeds_budget",
+            ));
+        }
+        for task in tasks {
+            if DB::document_row(&task, "payload")?["workflow_update_id"]
+                .as_str()
+                .is_none()
+            {
+                return Ok(ChildParentResume::Existing {
+                    id: DB::string(&task, "id")?,
+                    status: DB::string(&task, "status")?,
+                });
+            }
+        }
+        // An update claim does not replay the root workflow. Preserve the
+        // unavailable association instead of presenting it as a root resume.
+        Ok(ChildParentResume::UpdateOnly)
+    }
+
+    pub(super) async fn abandoned_child_link(
+        tx: &mut Transaction<'_, DB>,
+        link: &DB::Row,
+    ) -> Result<bool> {
+        if DB::string(link, "link_type")? != "child_workflow"
+            || DB::optional_string(link, "parent_close_policy")?.as_deref() != Some("abandon")
+        {
+            return Ok(false);
+        }
+        let calls = Self::query("SELECT * FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND sequence=$2 LIMIT 2")
+            .bind(DB::string(link,"parent_workflow_run_id")?).bind(DB::number(link,"sequence")?)
+            .fetch_all(&mut **tx).await?;
+        let Some(call) = calls.first().filter(|_| calls.len() == 1) else {
+            return Ok(false);
+        };
+        let metadata = DB::document_row(call, "metadata")?;
+        Ok(DB::string(call, "parent_workflow_instance_id")?
+            == DB::string(link, "parent_workflow_instance_id")?
+            && DB::optional_string(call, "resolved_child_instance_id")?
+                == Some(DB::string(link, "child_workflow_instance_id")?)
+            && DB::optional_string(call, "resolved_child_run_id")?
+                == Some(DB::string(link, "child_workflow_run_id")?)
+            && DB::optional_string(call, "parent_close_policy")?.as_deref() == Some("abandon")
+            && metadata["child_call_id"] == DB::string(link, "id")?
+            && metadata["cancellation_policy"] == "abandon"
+            && matches!(
+                DB::string(call, "status")?.as_str(),
+                "started" | "completed" | "failed" | "cancelled"
+            ))
+    }
+
     pub(super) async fn attach_workflow_contract(
         tx: &mut Transaction<'_, DB>,
         queue: &str,
@@ -112,7 +185,7 @@ where
         // This first slice permits one outstanding authored child. A replayed
         // completion is handled by the enclosing immutable task receipt.
         for sql in [
-            "SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled')",
+            "SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled','failed')",
             "SELECT COUNT(*) FROM activity_executions WHERE workflow_run_id=$1 AND status!='completed'",
             "SELECT COUNT(*) FROM workflow_run_timers WHERE workflow_run_id=$1 AND status='pending'",
         ] {
@@ -258,9 +331,17 @@ where
         let (status, event_type) = match resolution {
             ChildResolution::Completed(_) => ("completed", "ChildRunCompleted"),
             ChildResolution::Cancelled(_) => ("cancelled", "ChildRunCancelled"),
+            ChildResolution::Failed(_) => ("failed", "ChildRunFailed"),
         };
         Self::query("UPDATE workflow_child_calls SET status=$1,closed_reason=$2,closed_at=$3,updated_at=$4 WHERE id=$5")
             .bind(status).bind(status).bind(DB::bind_time(closed_at)).bind(DB::bind_time(closed_at)).bind(DB::number(call, "id")?).execute(&mut **tx).await?;
+        if let ChildResolution::Failed(failure) = resolution {
+            Self::query("UPDATE workflow_child_calls SET failure_reference=$1 WHERE id=$2")
+                .bind(text(failure, "failure_id")?)
+                .bind(DB::number(call, "id")?)
+                .execute(&mut **tx)
+                .await?;
+        }
         let parent = Self::query("SELECT r.*,i.current_run_id FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE r.id=$1").bind(&parent_run).fetch_one(&mut **tx).await?;
         if DB::string(&parent, "workflow_instance_id")?
             != DB::string(link, "parent_workflow_instance_id")?
@@ -276,9 +357,7 @@ where
             // Never enqueue a task for a closed or replacement parent run.
             return Ok(());
         }
-        if Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status IN ('ready','leased')").bind(&parent_run).fetch_one(&mut **tx).await? != 0 {
-            return Err(refuse(StatusCode::CONFLICT, "child_parent_task_conflict"));
-        }
+        let parent_resume = Self::child_parent_resume(tx, &parent).await?;
         let mut payload = json!({"sequence":sequence,"workflow_link_id":call_id,"child_call_id":call_id,"child_workflow_instance_id":DB::string(child,"workflow_instance_id")?,"child_workflow_run_id":child_run,"child_workflow_class":DB::string(child,"workflow_class")?,"child_workflow_type":DB::string(child,"workflow_type")?,"child_run_number":DB::number(child,"run_number")?,"child_status":status,"closed_reason":status,"closed_at":closed_at});
         match resolution {
             ChildResolution::Completed(output) => {
@@ -286,7 +365,7 @@ where
                 payload["result"] = wire(output);
                 payload["payload_codec"] = json!("avro");
             }
-            ChildResolution::Cancelled(failure) => {
+            ChildResolution::Cancelled(failure) | ChildResolution::Failed(failure) => {
                 for field in [
                     "failure_id",
                     "failure_category",
@@ -295,10 +374,26 @@ where
                 ] {
                     payload[field] = failure[field].clone();
                 }
+                if matches!(resolution, ChildResolution::Failed(_)) {
+                    for field in ["exception_type", "exception"] {
+                        if !failure[field].is_null() {
+                            payload[field] = failure[field].clone();
+                        }
+                    }
+                }
             }
         }
         Self::append(tx, &parent_run, event_type, payload, None, None).await?;
-        Self::create_task(tx, &parent_run, &DB::string(&parent,"queue")?, "workflow", json!({"workflow_wait_kind":"child","child_call_id":call_id,"child_workflow_run_id":child_run,"resume_source_kind":"child_workflow_run","resume_source_id":child_run,"workflow_sequence":sequence,"workflow_event_type":event_type,"open_wait_id":format!("child:{call_id}")})).await?;
+        let (task_id, task_status) = match parent_resume {
+            ChildParentResume::UpdateOnly => return Ok(()),
+            ChildParentResume::Existing { id, status } => (id, status),
+            ChildParentResume::New => {
+                let task = Self::create_task(tx, &parent_run, &DB::string(&parent,"queue")?, "workflow", json!({"workflow_wait_kind":"child","child_call_id":call_id,"child_workflow_run_id":child_run,"resume_source_kind":"child_workflow_run","resume_source_id":child_run,"workflow_sequence":sequence,"workflow_event_type":event_type,"open_wait_id":format!("child:{call_id}")})).await?;
+                (task, "ready".into())
+            }
+        };
+        Self::query("UPDATE workflow_run_waits SET task_backed=TRUE,task_id=$1,task_type='workflow',task_status=$2 WHERE workflow_run_id=$3 AND wait_id=$4 AND kind='child' AND status IN ('resolved','cancelled')")
+            .bind(task_id).bind(task_status).bind(&parent_run).bind(format!("child:{call_id}")).execute(&mut **tx).await?;
         Ok(())
     }
 }

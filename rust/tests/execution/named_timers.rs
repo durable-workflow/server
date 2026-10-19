@@ -54,10 +54,12 @@ async fn finish(
 
 #[tokio::test]
 async fn named_timers_keep_original_namespaces_across_cold_two_node_recovery() {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(35);
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
+    // Schema creation precedes the original execution budget. Cold recovery
+    // remains inside it, with no deadline reset between nodes or namespaces.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(35);
     let mut originals = Vec::new();
     for namespace in ["alpha", "beta", "default"] {
         if namespace != "default" {
@@ -172,10 +174,10 @@ async fn named_timers_keep_original_namespaces_across_cold_two_node_recovery() {
 
 #[tokio::test]
 async fn named_timer_invalid_batch_is_atomic_and_zero_delay_keeps_its_identity() {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     create(&app, "alpha").await;
     register_timer_worker(&app, "alpha").await;
     let run = start_scoped(&app, "alpha", "named-timer-atomic").await;

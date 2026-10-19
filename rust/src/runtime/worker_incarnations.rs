@@ -1,4 +1,5 @@
 //! Registration authority, original-task recovery and immutable shutdown receipts.
+use super::transaction::Transaction;
 use super::{
     Result, RuntimeError,
     backend::Backend,
@@ -8,7 +9,7 @@ use super::{
 };
 use axum::http::StatusCode;
 use serde_json::{Value, json};
-use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Transaction, Type};
+use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
@@ -326,9 +327,12 @@ where
     }
 
     pub(super) fn task_snapshot(task: &DB::Row) -> Result<Value> {
+        // PHP's sibling Eloquent history model reads its protected storage
+        // connection property, independently of the nullable queue column.
         let mut snapshot = json!({"id":DB::string(task,"id")?,"type":DB::string(task,"task_type")?,
             "status":DB::string(task,"status")?,"attempt_count":DB::number(task,"attempt_count")?,
-            "repair_count":DB::number(task,"repair_count")?,"queue":DB::string(task,"queue")?});
+            "repair_count":DB::number(task,"repair_count")?,"queue":DB::string(task,"queue")?,
+            "connection":DB::PHP_CONNECTION});
         for field in [
             "available_at",
             "leased_at",

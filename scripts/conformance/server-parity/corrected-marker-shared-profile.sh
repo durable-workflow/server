@@ -35,7 +35,8 @@ database=()
 case "$backend" in
   mysql) database=(-e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=corrected_php_ref -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password) ;;
   pgsql) database=(-e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=corrected_php_ref -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password) ;;
-  sqlite) database=(-e DB_CONNECTION=sqlite -e DB_DATABASE=/state/php.sqlite -v "$PWD/$state:/state") ;;
+  # The PHP server and its CPU-limited maintenance loop share this SQLite file.
+  sqlite) database=(-e DB_CONNECTION=sqlite -e DB_DATABASE=/state/php.sqlite -e DB_SQLITE_BUSY_TIMEOUT=30000 -v "$PWD/$state:/state") ;;
   *) exit 2 ;;
 esac
 test -n "$native_url"

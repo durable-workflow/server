@@ -1,5 +1,6 @@
 //! Immediate cancellation of root or direct child runs. Propagation trees and
-//! update dependencies remain refused until their separate fixtures qualify.
+//! broader propagation dependencies remain refused until their fixtures qualify.
+use super::transaction::Transaction;
 use super::{
     Result, RuntimeError,
     backend::Backend,
@@ -192,9 +193,7 @@ where
                     .bind(&run_id)
                     .fetch_one(&mut *tx)
                     .await?;
-            let pending_children = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled')")
-                .bind(&run_id).fetch_one(&mut *tx).await?;
-            let updates = Self::scalar("SELECT COUNT(*) FROM workflow_updates WHERE workflow_run_id=$1 AND status='accepted'")
+            let pending_children = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled','failed')")
                 .bind(&run_id).fetch_one(&mut *tx).await?;
             let pending_queries =
                 self.query_entries(&mut tx)
@@ -204,7 +203,7 @@ where
                         task["run_id"] == run_id
                             && matches!(task["status"].as_str(), Some("pending" | "leased"))
                     });
-            if unsupported_links != 0 || pending_children != 0 || updates != 0 || pending_queries {
+            if unsupported_links != 0 || pending_children != 0 || pending_queries {
                 return Err(refuse(
                     StatusCode::UNPROCESSABLE_ENTITY,
                     "cancellation_propagation_not_available",
@@ -273,8 +272,7 @@ where
                 .bind(&timer_id)
                 .execute(&mut *tx)
                 .await?;
-            let payload = json!({"timer_id":timer_id,"sequence":DB::number(&timer,"sequence")?,
-                "delay_seconds":DB::number(&timer,"delay_seconds")?,"fire_at":DB::instant(&timer,"fire_at")?,"cancelled_at":at});
+            let payload = Self::timer_cancellation_payload(&mut tx, &run_id, &timer, at).await?;
             Self::append(
                 &mut tx,
                 &run_id,
@@ -319,14 +317,63 @@ where
             Some(&command_id),
         )
         .await?;
+        Self::close_pending_updates(&mut tx, &run_id, None).await?;
         Self::resolve_child(&mut tx, &run, ChildResolution::Cancelled(&terminal), at).await?;
+        tx.summary_changed(&run_id);
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok((StatusCode::OK, response))
     }
 
+    pub(super) async fn timer_cancellation_payload(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        timer: &DB::Row,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Value> {
+        let timer_id = DB::string(timer, "id")?;
+        let scheduled = Self::query(DB::TIMER_SCHEDULE_SQL)
+            .bind(run_id)
+            .bind(&timer_id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .map(|row| DB::document_row(&row, "payload"))
+            .transpose()?
+            .unwrap_or(Value::Null);
+        let mut payload = json!({"timer_id":timer_id,"sequence":DB::number(timer,"sequence")?,
+            "delay_seconds":DB::number(timer,"delay_seconds")?,"fire_at":DB::instant(timer,"fire_at")?,"cancelled_at":at});
+        for key in ["sequence", "delay_seconds"] {
+            if let Some(value) = scheduled[key]
+                .as_i64()
+                .or_else(|| scheduled[key].as_str()?.parse().ok())
+            {
+                payload[key] = json!(value);
+            }
+        }
+        for key in [
+            "fire_at",
+            "timer_kind",
+            "condition_wait_id",
+            "condition_wait_occurrence_id",
+            "condition_key",
+            "condition_definition_fingerprint",
+            "signal_wait_id",
+            "signal_name",
+        ] {
+            if scheduled[key]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+            {
+                payload[key] = scheduled[key].clone();
+            }
+        }
+        let metadata = super::selections::metadata(&scheduled, "timer")?;
+        super::selections::merge(&mut payload, &metadata);
+        Ok(payload)
+    }
+
     pub(super) async fn cancel_open_activities(
-        tx: &mut sqlx::Transaction<'_, DB>,
+        tx: &mut Transaction<'_, DB>,
         run_id: &str,
         command_id: &str,
         activities: Vec<DB::Row>,
@@ -374,7 +421,7 @@ where
     }
 
     pub(super) async fn cancelled_activity_outcome(
-        tx: &mut sqlx::Transaction<'_, DB>,
+        tx: &mut Transaction<'_, DB>,
         task: &DB::Row,
         body: &Value,
     ) -> Result<()> {

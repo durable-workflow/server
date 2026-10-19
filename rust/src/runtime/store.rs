@@ -1,9 +1,10 @@
 //! One durable execution state machine for typed database adapters.
+use super::transaction::Transaction;
 use super::{Result, backend::Backend, envelope, refuse, text, wire};
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
-use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Pool, Transaction, Type};
+use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Pool, Type};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::{Notify, Semaphore};
 use ulid::Ulid;
@@ -23,6 +24,7 @@ pub(super) struct Store<DB: Backend> {
     pub(super) namespace: Arc<str>,
     pub(super) memo_codec: Arc<Semaphore>,
     pub(super) memo_size_limit: Option<usize>,
+    pub(super) history_budget: super::history_budget::Config,
 }
 pub(super) fn id() -> String {
     Ulid::new().to_string()
@@ -63,6 +65,7 @@ where
             namespace: "default".into(),
             memo_codec: Arc::new(Semaphore::new(1)),
             memo_size_limit: Some(262_144),
+            history_budget: super::history_budget::Config::default(),
         }
     }
     pub(super) fn in_namespace(&self, namespace: &str) -> Self {
@@ -72,6 +75,7 @@ where
             namespace: namespace.into(),
             memo_codec: self.memo_codec.clone(),
             memo_size_limit: self.memo_size_limit,
+            history_budget: self.history_budget,
         }
     }
     pub(super) async fn database_live(&self) -> bool {
@@ -113,7 +117,9 @@ where
         self.pool.close().await;
     }
     pub(super) async fn begin(&self) -> Result<Transaction<'static, DB>> {
-        DB::begin(&self.pool).await
+        DB::begin(&self.pool)
+            .await
+            .map(|inner| Transaction::new(inner, self.history_budget))
     }
     pub(crate) async fn start(
         &self,
@@ -628,7 +634,11 @@ where
             .bind(run_id).bind(resolution).bind(DB::number(&row, "sequence")?).fetch_optional(&mut **tx).await?.is_some() {
             return Ok(None);
         }
-        Ok(Some(DB::document_row(&row, "payload")?))
+        let payload = DB::document_row(&row, "payload")?;
+        if Self::signal_timeout_finished(tx, run_id, &payload).await? {
+            return Ok(None);
+        }
+        Ok(Some(payload))
     }
 
     async fn enqueue_pending_signal(
@@ -654,6 +664,9 @@ where
         let Some(wait) = Self::open_wait(tx, run_id).await? else {
             return Ok(());
         };
+        if Self::condition_timeout_fired(tx, run_id, &wait).await? {
+            return Ok(());
+        }
         let signals = Self::query("SELECT id,signal_name,signal_wait_id FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received' ORDER BY command_sequence,id LIMIT 100")
             .bind(run_id).fetch_all(&mut **tx).await?;
         for signal in signals {
@@ -693,6 +706,11 @@ where
         let name = DB::string(&signal, "signal_name")?;
         let wait_id = DB::string(&signal, "signal_wait_id")?;
         let direct = wait.get("signal_name").is_some();
+        let condition_timer = if direct {
+            None
+        } else {
+            Self::condition_timer(tx, run_id, &wait).await?
+        };
         if direct && (wait["signal_name"] != name || wait["signal_wait_id"] != wait_id) {
             return Err(refuse(StatusCode::CONFLICT, "signal_wait_mismatch"));
         }
@@ -732,6 +750,9 @@ where
             .execute(&mut **tx)
             .await?;
         Self::append(tx, run_id, "MessageCursorAdvanced", json!({"stream_key":format!("instance:{}",DB::string(&run,"workflow_instance_id")?),"previous_position":previous,"new_position":position}), Some(task_id), None).await?;
+        if direct {
+            Self::cancel_wait_timeout(tx, run_id, &wait, task_id, applied_at).await?;
+        }
         let mut applied = json!({"workflow_command_id":command_id,"signal_id":signal_id,"signal_name":name,"signal_wait_id":wait_id,"value":wire(&prepared.value)});
         if direct {
             applied["sequence"] = wait["sequence"].clone();
@@ -745,8 +766,11 @@ where
             Some(&command_id),
         )
         .await?;
-        if !direct {
+        if !direct && !condition_timer.as_ref().is_some_and(|(_, fired)| *fired) {
             let mut satisfied = wait;
+            if let Some((timer, _)) = &condition_timer {
+                satisfied["timer_id"] = json!(timer);
+            }
             satisfied["workflow_signal_id"] = json!(signal_id);
             satisfied["signal_name"] = json!(name);
             satisfied["signal_wait_id"] = json!(wait_id);
@@ -754,11 +778,12 @@ where
                 tx,
                 run_id,
                 "ConditionWaitSatisfied",
-                satisfied,
+                satisfied.clone(),
                 Some(task_id),
                 None,
             )
             .await?;
+            Self::cancel_wait_timeout(tx, run_id, &satisfied, task_id, applied_at).await?;
         }
         Ok(())
     }
@@ -1090,6 +1115,11 @@ where
                 .bind(worker_id).bind(DB::bind_time(expires)).bind(attempt).bind(DB::bind_time(leased_at))
                 .bind(DB::document(&task_payload)).bind(&task_id).execute(&mut *tx).await?;
             // A lease is worker authority, not an authored lifecycle commit.
+            if kind == "workflow" {
+                Self::query("UPDATE workflow_run_waits SET task_status='leased',updated_at=$1 WHERE workflow_run_id=$2 AND task_id=$3 AND ((kind='child' AND status IN ('resolved','cancelled')) OR (kind='update' AND status='open'))")
+                    .bind(DB::bind_time(leased_at)).bind(&run_id).bind(&task_id).execute(&mut *tx).await?;
+            }
+            tx.summary_changed(&run_id);
             // Published PHP keeps the admitted run pending until commands
             // change its state; the poll and description must agree.
             let mut claim = json!({"task_id": task_id, "workflow_id": DB::string(&run,"workflow_instance_id")?,
@@ -1162,6 +1192,14 @@ where
                     "workflow_sequence",
                     "workflow_event_type",
                     "open_wait_id",
+                    "timer_id",
+                    "timer_kind",
+                    "signal_wait_id",
+                    "signal_name",
+                    "condition_wait_id",
+                    "condition_wait_occurrence_id",
+                    "condition_key",
+                    "condition_definition_fingerprint",
                 ] {
                     if let Some(value) = task_payload.get(field) {
                         claim[field] = value.clone();
@@ -1170,7 +1208,13 @@ where
                 let page_size = body["history_page_size"].as_i64().unwrap_or(100);
                 let (events, next) =
                     Self::history_page_connection(&mut tx, &run_id, 0, page_size).await?;
-                claim["total_history_events"] = json!(DB::number(&run, "last_history_sequence")?);
+                let budget = Self::workflow_history_budget(
+                    &mut tx,
+                    &run_id,
+                    DB::number(&run, "last_history_sequence")?,
+                )
+                .await?;
+                budget.write_task(&mut claim);
                 claim["history_events"] = json!(events);
                 claim["next_history_page_token"] = json!(next);
             }
@@ -1194,6 +1238,7 @@ where
         }
         let run = Self::active_run(&mut tx, &DB::string(&task, "workflow_run_id")?).await?;
         let expires = Self::cancellation_lease_expiry(&run)?;
+        tx.summary_changed(&DB::string(&run, "id")?);
         Self::query("UPDATE workflow_tasks SET lease_expires_at=$1 WHERE id=$2")
             .bind(DB::bind_time(expires))
             .bind(task_id)
@@ -1218,10 +1263,16 @@ where
         Self::fence(&task, &body)?;
         let run_id = DB::string(&task, "workflow_run_id")?;
         let (events, next) = Self::history_page_connection(&mut tx, &run_id, after, 100).await?;
+        let run = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
+            .bind(&run_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let last = DB::number(&run, "last_history_sequence")?;
+        let budget = Self::workflow_history_budget(&mut tx, &run_id, last).await?;
+        let mut response = json!({"task_id":task_id,"workflow_task_attempt":body["workflow_task_attempt"],"history_events":events,"next_history_page_token":next});
+        budget.write_task(&mut response);
         tx.commit().await?;
-        Ok(
-            json!({"task_id":task_id,"workflow_task_attempt":body["workflow_task_attempt"],"history_events":events,"next_history_page_token":next}),
-        )
+        Ok(response)
     }
 
     pub(crate) async fn fail_workflow_task(&self, task_id: &str, body: Value) -> Result<Value> {
@@ -1335,6 +1386,7 @@ where
             ));
         }
         if !waiting {
+            tx.summary_changed(&run_id);
             // Do not append history or create a new run. A failed lease and
             // its optional fresh retry commit together under the backend lock.
             for (field, target) in [("type", "failure_type"), ("reason", "failure_reason")] {
@@ -1415,6 +1467,7 @@ where
             );
         }
         payload["waiting_for_history_acknowledged"] = json!(true);
+        tx.summary_changed(&run_id);
         payload["waiting_for_history_message"] = json!(message);
         if !kind.is_empty() {
             payload["waiting_for_history_failure_type"] = json!(kind);
@@ -1445,23 +1498,28 @@ where
             .as_array()
             .filter(|c| !c.is_empty() && c.len() <= 100)
             .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_commands"))?;
-        super::selections::validate_batch(commands)?;
+        super::workflow_failures::validate_batch(commands)?;
         // Validate the entire batch before mutation. Unknown commands and
         // options cannot be silently accepted as unsupported durable effects.
         for (index, command) in commands.iter().enumerate() {
+            let command_type = text(command, "type")?;
             if self.namespace.as_ref() != "default"
                 && !matches!(
-                    text(command, "type")?,
-                    "complete_workflow" | "schedule_activity" | "start_timer"
+                    command_type,
+                    "complete_workflow" | "fail_workflow" | "schedule_activity" | "start_timer"
                 )
-                && !(text(command, "type")? == "open_condition_wait" && commands.len() == 1)
+                && !(commands.len() == 1
+                    && matches!(command_type, "open_condition_wait" | "open_signal_wait"))
             {
                 return Err(refuse(
                     StatusCode::UNPROCESSABLE_ENTITY,
                     "development_namespace_command_unqualified",
                 ));
             }
-            match text(command, "type")? {
+            match command_type {
+                "fail_workflow" => {
+                    super::workflow_failures::validate(command)?;
+                }
                 "complete_workflow" if index + 1 == commands.len() => {
                     reject_fields(command, &["type", "result"])?;
                     if !external.contains_key(&index) {
@@ -1526,6 +1584,7 @@ where
                             "condition_key",
                             "condition_definition_fingerprint",
                             "condition_wait_occurrence_id",
+                            "timeout_seconds",
                         ],
                     )?;
                     if command
@@ -1535,6 +1594,7 @@ where
                         return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_request"));
                     }
                     text(command, "condition_key")?;
+                    super::wait_timeouts::timeout_for(command, "invalid_condition_timeout")?;
                     let fingerprint = text(command, "condition_definition_fingerprint")?;
                     if !fingerprint.strip_prefix("sha256:").is_some_and(|hash| {
                         hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -1546,8 +1606,9 @@ where
                     }
                 }
                 "open_signal_wait" => {
-                    reject_fields(command, &["type", "signal_name"])?;
+                    reject_fields(command, &["type", "signal_name", "timeout_seconds"])?;
                     text(command, "signal_name")?;
+                    super::wait_timeouts::timeout(command)?;
                 }
                 "complete_update" if commands.len() == 1 => {
                     reject_fields(command, &["type", "update_id", "result"])?;
@@ -1589,7 +1650,9 @@ where
             && commands.iter().any(|command| {
                 !matches!(
                     command["type"].as_str(),
-                    Some("schedule_activity" | "start_timer" | "complete_workflow")
+                    Some(
+                        "schedule_activity" | "start_timer" | "complete_workflow" | "fail_workflow"
+                    )
                 )
             })
         {
@@ -1630,7 +1693,11 @@ where
         let mut sequence = Self::authored_sequence(&mut tx, &run_id).await?;
         Self::apply_task_signal(&mut tx, &run_id, task_id, &task, signal_codec).await?;
         for (index, command) in commands.iter().enumerate() {
-            if matches!(
+            if command["type"] == "fail_workflow" {
+                // Published parseCommands applies every nonterminal command
+                // first, regardless of the terminal command's batch position.
+                continue;
+            } else if matches!(
                 command["type"].as_str(),
                 Some("complete_update" | "fail_update")
             ) {
@@ -1705,21 +1772,31 @@ where
                     .await?;
                 let mut payload = Self::activity_payload(&activity)?;
                 payload["task"] = Self::task_snapshot(&task)?;
-                Self::append(
+                let recorded_at = now();
+                Self::append_at(
                     &mut tx,
                     &run_id,
                     "ActivityScheduled",
                     payload,
                     Some(task_id),
                     None,
+                    Some(recorded_at),
                 )
                 .await?;
-                Self::create_task(
+                let activity_task = Self::create_task(
                     &mut tx,
                     &run_id,
                     &queue,
                     "activity",
                     json!({"activity_execution_id": activity_id}),
+                )
+                .await?;
+                Self::create_activity_wait(
+                    &mut tx,
+                    &run_id,
+                    &activity_id,
+                    &activity_task,
+                    recorded_at,
                 )
                 .await?;
                 Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1")
@@ -1733,19 +1810,21 @@ where
                 let timer_id = id();
                 let delay = command["delay_seconds"].as_i64().unwrap();
                 let fire_at = timer_deadline(command)?;
+                let scheduled_at = now();
                 Self::query("INSERT INTO workflow_run_timers(id,workflow_run_id,sequence,status,delay_seconds,fire_at) VALUES ($1,$2,$3,'pending',$4,$5)")
                     .bind(&timer_id).bind(&run_id).bind(sequence).bind(delay).bind(DB::bind_time(fire_at)).execute(&mut *tx).await?;
                 let mut timer_payload = json!({"timer_id":timer_id,"sequence":sequence,"delay_seconds":delay,"fire_at":fire_at,
                     "task":{"id":task_id,"type":"workflow","status":"leased","lease_owner":DB::optional_string(&task,"lease_owner")?,
                         "lease_expires_at":DB::optional_instant(&task,"lease_expires_at")?,"attempt_count":DB::number(&task,"attempt_count")?}});
                 super::selections::merge(&mut timer_payload, &metadata);
-                Self::append(
+                Self::append_at(
                     &mut tx,
                     &run_id,
                     "TimerScheduled",
                     timer_payload,
                     Some(task_id),
                     None,
+                    Some(scheduled_at),
                 )
                 .await?;
                 let mut timer_task_payload = json!({"timer_id":timer_id});
@@ -1760,9 +1839,19 @@ where
                 .await?;
                 Self::query("UPDATE workflow_tasks SET available_at=$1 WHERE id=$2")
                     .bind(DB::bind_time(fire_at))
-                    .bind(timer_task)
+                    .bind(&timer_task)
                     .execute(&mut *tx)
                     .await?;
+                Self::create_timer_wait(
+                    &mut tx,
+                    &run_id,
+                    &timer_id,
+                    &timer_task,
+                    sequence,
+                    scheduled_at,
+                    fire_at,
+                )
+                .await?;
                 Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1")
                     .bind(&run_id)
                     .execute(&mut *tx)
@@ -1771,7 +1860,9 @@ where
                 || command["type"] == "open_signal_wait"
             {
                 sequence += 1;
-                if Self::open_wait(&mut tx, &run_id).await?.is_some() {
+                if let Some(wait) = Self::open_wait(&mut tx, &run_id).await?
+                    && !Self::condition_timeout_fired(&mut tx, &run_id, &wait).await?
+                {
                     return Err(refuse(StatusCode::CONFLICT, "pending_durable_operations"));
                 }
                 let direct = command["type"] == "open_signal_wait";
@@ -1789,17 +1880,20 @@ where
                         .unwrap()
                         .remove("condition_wait_occurrence_id");
                 }
-                let wait_id = if direct {
+                let pending_wait_id = if direct {
                     let pending = Self::query("SELECT signal_wait_id FROM workflow_signal_records WHERE workflow_run_id=$1 AND signal_name=$2 AND status='received' ORDER BY command_sequence,id LIMIT 1")
                         .bind(&run_id).bind(text(command, "signal_name")?).fetch_optional(&mut *tx).await?;
                     pending
                         .as_ref()
                         .map(|row| DB::string(row, "signal_wait_id"))
                         .transpose()?
-                        .unwrap_or_else(id)
                 } else {
-                    id()
+                    None
                 };
+                let wait_id = pending_wait_id.clone().unwrap_or_else(id);
+                if payload["timeout_seconds"].is_null() {
+                    payload.as_object_mut().unwrap().remove("timeout_seconds");
+                }
                 payload[if direct {
                     "signal_wait_id"
                 } else {
@@ -1814,37 +1908,42 @@ where
                     } else {
                         "ConditionWaitOpened"
                     },
-                    payload,
+                    payload.clone(),
                     Some(task_id),
                     None,
                 )
                 .await?;
+                if !direct || pending_wait_id.is_none() {
+                    Self::schedule_wait_timeout(&mut tx, &run, &payload, task_id).await?;
+                }
                 Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1")
                     .bind(&run_id)
                     .execute(&mut *tx)
                     .await?;
             } else {
-                let outstanding: i64 = Self::scalar("SELECT COUNT(*) FROM activity_executions WHERE workflow_run_id=$1 AND status NOT IN ('completed','failed')")
-                    .bind(&run_id).fetch_one(&mut *tx).await?;
-                let timers: i64 = Self::scalar("SELECT COUNT(*) FROM workflow_run_timers WHERE workflow_run_id=$1 AND status='pending'")
-                    .bind(&run_id).fetch_one(&mut *tx).await?;
-                let children = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled')")
-                    .bind(&run_id).fetch_one(&mut *tx).await?;
-                if outstanding != 0
-                    || timers != 0
-                    || children != 0
-                    || Self::open_wait(&mut tx, &run_id).await?.is_some()
-                {
-                    return Err(refuse(StatusCode::CONFLICT, "pending_durable_operations"));
-                }
-                let output = match external.get(&index) {
-                    Some(prepared) => prepared.stored(),
-                    None => envelope(command, "result")?,
-                };
-                let closed_at = now();
                 if Self::cancellation_request(&run)?.is_some() {
-                    Self::finish_root_cancellation(&mut tx, &run, Some(task_id)).await?;
+                    Self::finish_root_cancellation(&mut tx, &run, Some(&task)).await?;
                 } else {
+                    let outstanding: i64 = Self::scalar("SELECT COUNT(*) FROM activity_executions WHERE workflow_run_id=$1 AND status NOT IN ('completed','failed')")
+                    .bind(&run_id).fetch_one(&mut *tx).await?;
+                    let wait = Self::open_wait(&mut tx, &run_id).await?;
+                    let wait_pending = if let Some(wait) = wait {
+                        !Self::condition_timeout_fired(&mut tx, &run_id, &wait).await?
+                    } else {
+                        false
+                    };
+                    let timers: i64 = Self::scalar("SELECT COUNT(*) FROM workflow_run_timers WHERE workflow_run_id=$1 AND status='pending'")
+                    .bind(&run_id).fetch_one(&mut *tx).await?;
+                    let children = Self::scalar("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND status NOT IN ('completed','cancelled','failed')")
+                    .bind(&run_id).fetch_one(&mut *tx).await?;
+                    if outstanding != 0 || timers != 0 || children != 0 || wait_pending {
+                        return Err(refuse(StatusCode::CONFLICT, "pending_durable_operations"));
+                    }
+                    let output = match external.get(&index) {
+                        Some(prepared) => prepared.stored(),
+                        None => envelope(command, "result")?,
+                    };
+                    let closed_at = now();
                     if let Some(prepared) = external.get(&index) {
                         self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri)
                             .await?;
@@ -1860,11 +1959,22 @@ where
                     .await?;
                     Self::query("UPDATE workflow_runs SET status='completed',closed_reason='completed',output=$1,closed_at=$2 WHERE id=$3")
                     .bind(&output).bind(DB::bind_time(closed_at)).bind(&run_id).execute(&mut *tx).await?;
+                    Self::close_pending_updates(&mut tx, &run_id, Some(&task)).await?;
                     Self::complete_child(&mut tx, &run, &output, closed_at).await?;
                 }
             }
         }
-        Self::query("UPDATE workflow_tasks SET status='completed' WHERE id=$1")
+        let failed = if let Some(command) = commands
+            .iter()
+            .find(|command| command["type"] == "fail_workflow")
+        {
+            Self::apply_workflow_failure(&mut tx, &run, &task, command).await?;
+            Self::cancellation_request(&run)?.is_none()
+        } else {
+            false
+        };
+        Self::query("UPDATE workflow_tasks SET status=$1 WHERE id=$2")
+            .bind(if failed { "failed" } else { "completed" })
             .bind(task_id)
             .execute(&mut *tx)
             .await?;
@@ -1877,6 +1987,7 @@ where
             .fetch_one(&mut *tx)
             .await?;
         let run_status = DB::string(&current, "status")?;
+        tx.summary_changed(&run_id);
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok(
@@ -2156,9 +2267,31 @@ where
                 .fetch_one(&mut *tx)
                 .await?;
             let task_id = DB::string(&task, "id")?;
-            let metadata =
-                super::selections::metadata(&DB::document_row(&task, "payload")?, "timer")?;
+            let task_payload = DB::document_row(&task, "payload")?;
+            let metadata = super::selections::metadata(&task_payload, "timer")?;
             let mut payload = json!({"timer_id":timer_id,"sequence":DB::number(&timer,"sequence")?,"delay_seconds":DB::number(&timer,"delay_seconds")?,"fire_at":fire_at,"fired_at":fired_at});
+            if task_payload.get("signal_wait_id").is_some() {
+                payload["timer_kind"] = json!("signal_timeout");
+                payload["signal_wait_id"] = task_payload["signal_wait_id"].clone();
+                payload["signal_name"] = task_payload["signal_name"].clone();
+            }
+            if task_payload.get("condition_wait_id").is_some() {
+                payload["timer_kind"] = json!("condition_timeout");
+            }
+            payload.as_object_mut().unwrap().extend(
+                super::wait_timeouts::wait_fields(&task_payload)
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            );
+            let resume = if matches!(
+                payload["timer_kind"].as_str(),
+                Some("signal_timeout" | "condition_timeout")
+            ) {
+                super::wait_timeouts::resolution(&payload)
+            } else {
+                json!({"timer_id":timer_id})
+            };
             super::selections::merge(&mut payload, &metadata);
             Self::append(
                 &mut tx,
@@ -2191,7 +2324,7 @@ where
                 &mut tx,
                 &run_id,
                 &DB::string(&timer, "queue")?,
-                json!({"timer_id":timer_id}),
+                resume,
                 &metadata,
             )
             .await?;
@@ -2227,7 +2360,12 @@ where
     }
 
     pub(super) fn duplicate_receipt(task: &DB::Row, body: &Value) -> Result<bool> {
-        if DB::string(task, "status")? != "completed" {
+        let status = DB::string(task, "status")?;
+        if status != "completed" && status != "failed" {
+            return Ok(false);
+        }
+        // Retryable task failures have no terminal completion receipt.
+        if status == "failed" && DB::optional_document_row(task, "receipt")?.is_none() {
             return Ok(false);
         }
         // A waiting acknowledgement completes the lease without a command
@@ -2299,6 +2437,7 @@ where
         kind: &str,
         payload: Value,
     ) -> Result<String> {
+        tx.summary_changed(run_id);
         let task_id = id();
         let run = Self::query("SELECT namespace FROM workflow_runs WHERE id=$1")
             .bind(run_id)
@@ -2344,8 +2483,16 @@ where
             .bind(run_id)
             .execute(&mut **tx)
             .await?;
+        let recorded_at = recorded_at.unwrap_or_else(now);
         Self::query("INSERT INTO workflow_history_events(id,workflow_run_id,sequence,event_type,payload,workflow_task_id,workflow_command_id,recorded_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
-        .bind(id()).bind(run_id).bind(sequence).bind(event_type).bind(DB::document(&payload)).bind(task_id).bind(command_id).bind(DB::bind_time(recorded_at.unwrap_or_else(now))).execute(&mut **tx).await?;
+        .bind(id()).bind(run_id).bind(sequence).bind(event_type).bind(DB::document(&payload)).bind(task_id).bind(command_id).bind(DB::bind_time(recorded_at)).execute(&mut **tx).await?;
+        Self::project_activity_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
+        Self::project_timer_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
+        Self::project_signal_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
+        Self::project_condition_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
+        Self::project_child_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
+        Self::project_update_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
+        tx.summary_changed(run_id);
         Ok(())
     }
 
@@ -2760,7 +2907,7 @@ pub(super) fn reject_fields(body: &Value, allowed: &[&str]) -> Result<()> {
 }
 
 pub(crate) fn capabilities() -> Value {
-    let mut value = json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "start_child_workflow", "open_condition_wait", "open_signal_wait", "record_version_marker", "complete_workflow", "continue_as_new"],
+    let mut value = json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "start_child_workflow", "open_condition_wait", "open_signal_wait", "record_version_marker", "complete_workflow", "fail_workflow", "continue_as_new", "complete_update", "fail_update"],
         "worker_deregistration_fencing":{"schema":"durable-workflow.v2.worker-deregistration.v1","supported":true,"receipt_retention_seconds":600,"endpoint":"/worker/registrations/{workerId}/deregister"},
         "workflow_memo_updates": false, "cooperative_cancellation": true, "prepared_local_activities": false,
         "worker_sessions": false, "sticky_execution": false, "local_activities": false, "message_streams": false,

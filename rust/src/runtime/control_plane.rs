@@ -8,6 +8,7 @@ pub(super) enum Operation<'a> {
     List,
     Describe,
     DescribeRun,
+    Observe,
     History,
     Cancel,
     Repair,
@@ -73,6 +74,20 @@ impl Operation<'_> {
             Self::List => ("list", &[], &[]),
             Self::Describe => ("describe", &["workflow_id"], &[]),
             Self::DescribeRun => ("describe_run", &["workflow_id"], &["run_id"]),
+            Self::Observe => (
+                "observe_workflow",
+                &["workflow_id"],
+                &[
+                    "run_id",
+                    "read_mode",
+                    "observed_at",
+                    "current_waits",
+                    "parents",
+                    "children",
+                    "recent_failures",
+                    "history",
+                ],
+            ),
             Self::History => ("history", &["workflow_id", "run_id"], &["next_page_token"]),
             Self::Cancel => ("cancel", &["workflow_id"], &["outcome"]),
             Self::Repair => ("repair", &["workflow_id"], &["outcome"]),
@@ -277,6 +292,8 @@ pub(super) async fn admission_response(request: Request, mut body: Value) -> Val
         ("GET", ["api", "workflows", _]) => Operation::Describe,
         ("GET", ["api", "workflows", _, "runs", _]) => Operation::DescribeRun,
         ("GET", ["api", "workflows", _, "runs", _, "history"]) => Operation::History,
+        ("GET", ["api", "workflows", _, "observation"])
+        | ("GET", ["api", "workflows", _, "runs", _, "observation"]) => Operation::Observe,
         ("POST", ["api", "workflows", _, "cancel"])
         | ("POST", ["api", "workflows", _, "runs", _, "cancel"]) => Operation::Cancel,
         ("POST", ["api", "workflows", _, "repair"])
