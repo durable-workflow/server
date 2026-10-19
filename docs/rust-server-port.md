@@ -35,6 +35,12 @@ Updated October 19, 2026.
   the projection corpus has a released-projector case for the pending row.
   Remaining listing gaps are the 413 read budget for long-heartbeat or wide
   runs, six-digit activity timestamps and NULL-row tolerance.
+- **#460 source.** Read-only inspection of an existing PHP database now refuses
+  PostgreSQL triggers and rules like other unknown catalog objects, measures
+  every SQLite queue text value before transfer and refuses values over 4 KiB,
+  bounds MySQL and MariaDB lock waits and statement time on the server, and
+  reports the published payload tables it does not scan yet. It still grants no
+  takeover, backup or quiescence claim.
 - **Diagnosed failure.** Shared run [39092116973](https://github.com/durable-workflow/server/actions/runs/39092116973)
   failed `execution-and-codec` step 9 with exit code 255. The same step
   reproduced locally at `543ed0485` with the exact published image and failed the

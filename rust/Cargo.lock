@@ -421,6 +421,8 @@ dependencies = [
  "futures-util",
  "getrandom 0.3.4",
  "hmac",
+ "libc",
+ "phpserz",
  "regex-lite",
  "serde",
  "serde_json",
@@ -479,6 +481,12 @@ dependencies = [
  "parking",
  "pin-project-lite",
 ]
+
+[[package]]
+name = "fast-float2"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6e8948ce679d00a02a94739ea185595dca7118ed04feb991127e443bd3d761f"
 
 [[package]]
 name = "fastrand"
@@ -1136,6 +1144,15 @@ name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
+
+[[package]]
+name = "phpserz"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e8e1c56e7b9593a3dd62215f3e97db051885f282a947d8a7714b593cc5ace8d1"
+dependencies = [
+ "fast-float2",
+]
 
 [[package]]
 name = "pin-project-lite"

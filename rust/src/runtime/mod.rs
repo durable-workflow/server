@@ -59,6 +59,7 @@ mod timer_summary;
 mod transaction;
 mod update_summary;
 mod updates;
+pub mod upgrade;
 mod visibility;
 mod wait_projection;
 mod wait_timeouts;

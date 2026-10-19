@@ -39,8 +39,8 @@ async fn catalog(connection: &mut SqliteConnection) -> Result<Catalog> {
         .fetch_all(connection).await?)
 }
 
-async fn verify_catalog(connection: &mut SqliteConnection) -> Result<()> {
-    let expected = EXPECTED
+async fn expected_catalog() -> Result<&'static Catalog> {
+    EXPECTED
         .get_or_try_init(|| async {
             // SQLite itself interprets the frozen DDL; do not invent a SQL parser.
             // This isolated in-memory catalog is built once per process on SQLx's
@@ -53,7 +53,11 @@ async fn verify_catalog(connection: &mut SqliteConnection) -> Result<()> {
             reference.close().await?;
             Ok::<_, super::RuntimeError>(rows)
         })
-        .await?;
+        .await
+}
+
+async fn verify_catalog(connection: &mut SqliteConnection) -> Result<()> {
+    let expected = expected_catalog().await?;
     if &catalog(connection).await? != expected {
         return Err(refuse(
             StatusCode::CONFLICT,
@@ -61,6 +65,40 @@ async fn verify_catalog(connection: &mut SqliteConnection) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+pub(super) async fn php_source_catalog(connection: &mut SqliteConnection) -> Result<Catalog> {
+    let owned: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='dw_server_schema' COLLATE NOCASE)",
+    )
+    .fetch_one(&mut *connection)
+    .await?;
+    if owned {
+        return Err(refuse(StatusCode::CONFLICT, "upgrade_source_already_owned"));
+    }
+    let expected: Catalog = expected_catalog()
+        .await?
+        .iter()
+        .filter(|(_, name, table, _)| {
+            !super::upgrade::native_relation(table) && name != "dw_workflow_tasks_poll"
+        })
+        .cloned()
+        .collect();
+    let actual = catalog(connection).await?;
+    if actual != expected {
+        let mut current = super::upgrade::source_catalog_variant(
+            &expected,
+            include_str!("../../upgrade/php-2.8.0/sqlite.json"),
+        )?;
+        current.sort_by(|left, right| (&left.0, &left.1).cmp(&(&right.0, &right.1)));
+        if actual != current {
+            return Err(refuse(
+                StatusCode::CONFLICT,
+                "upgrade_source_catalog_unqualified",
+            ));
+        }
+    }
+    Ok(actual)
 }
 
 pub(super) async fn verify(connection: &mut SqliteConnection) -> Result<()> {

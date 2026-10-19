@@ -1,0 +1,54 @@
+{
+  "remove": [
+    [
+      "table",
+      "workflow_service_calls",
+      "workflow_service_calls",
+      "CREATE TABLE \"workflow_service_calls\" (\"id\" varchar not null, \"workflow_service_endpoint_id\" varchar, \"workflow_service_id\" varchar, \"workflow_service_operation_id\" varchar, \"namespace\" varchar, \"endpoint_name\" varchar not null, \"service_name\" varchar not null, \"operation_name\" varchar not null, \"caller_namespace\" varchar, \"caller_workflow_instance_id\" varchar, \"caller_workflow_run_id\" varchar, \"target_namespace\" varchar, \"linked_workflow_instance_id\" varchar, \"linked_workflow_run_id\" varchar, \"linked_workflow_update_id\" varchar, \"status\" varchar not null, \"outcome\" varchar, \"operation_mode\" varchar not null, \"resolved_binding_kind\" varchar, \"resolved_target_reference\" varchar, \"payload_codec\" varchar, \"input_payload_reference\" varchar, \"output_payload_reference\" varchar, \"failure_payload_reference\" varchar, \"failure_message\" text, \"idempotency_key\" varchar, \"deadline_policy\" text, \"idempotency_policy\" text, \"cancellation_policy\" text, \"retry_policy\" text, \"boundary_policy\" text, \"metadata\" text, \"outcome_category\" varchar, \"outcome_reason\" varchar, \"outcome_message\" text, \"outcome_metadata\" text, \"policy_name\" varchar, \"retry_after_seconds\" integer, \"caller_principal_subject\" varchar, \"caller_principal_method\" varchar, \"caller_principal_roles\" text, \"caller_principal_tenant\" varchar, \"caller_principal_claims\" text, \"accepted_at\" datetime, \"started_at\" datetime, \"completed_at\" datetime, \"failed_at\" datetime, \"cancelled_at\" datetime, \"created_at\" datetime, \"updated_at\" datetime, primary key (\"id\"))"
+    ],
+    [
+      "table",
+      "workflow_worker_registrations",
+      "workflow_worker_registrations",
+      "CREATE TABLE \"workflow_worker_registrations\" (\"id\" integer primary key autoincrement not null, \"worker_id\" varchar not null, \"namespace\" varchar not null, \"task_queue\" varchar not null, \"runtime\" varchar not null, \"sdk_version\" varchar, \"build_id\" varchar, \"supported_workflow_types\" text, \"workflow_definition_fingerprints\" text, \"supported_activity_types\" text, \"max_concurrent_workflow_tasks\" integer not null default '100', \"max_concurrent_activity_tasks\" integer not null default '100', \"last_heartbeat_at\" datetime, \"status\" varchar not null default 'active', \"created_at\" datetime, \"updated_at\" datetime, \"capabilities\" text, \"max_concurrent_worker_sessions\" integer not null default '10', \"available_workflow_slots\" integer, \"available_activity_slots\" integer, \"available_session_slots\" integer, \"process_metrics\" text, \"heartbeat_interval_seconds\" integer, \"workflow_command_contracts\" text, \"capability_manifest\" text)"
+    ]
+  ],
+  "add": [
+    [
+      "index",
+      "dw_worker_incarnation_scope_idx",
+      "workflow_worker_registration_incarnations",
+      "CREATE INDEX \"dw_worker_incarnation_scope_idx\" on \"workflow_worker_registration_incarnations\" (\"namespace\", \"worker_id\")"
+    ],
+    [
+      "index",
+      "wf_service_calls_deadline_idx",
+      "workflow_service_calls",
+      "CREATE INDEX \"wf_service_calls_deadline_idx\" on \"workflow_service_calls\" (\"status\", \"call_deadline_at\")"
+    ],
+    [
+      "index",
+      "workflow_worker_registration_incarnations_finished_at_index",
+      "workflow_worker_registration_incarnations",
+      "CREATE INDEX \"workflow_worker_registration_incarnations_finished_at_index\" on \"workflow_worker_registration_incarnations\" (\"finished_at\")"
+    ],
+    [
+      "table",
+      "workflow_service_calls",
+      "workflow_service_calls",
+      "CREATE TABLE \"workflow_service_calls\" (\"id\" varchar not null, \"workflow_service_endpoint_id\" varchar, \"workflow_service_id\" varchar, \"workflow_service_operation_id\" varchar, \"namespace\" varchar, \"endpoint_name\" varchar not null, \"service_name\" varchar not null, \"operation_name\" varchar not null, \"caller_namespace\" varchar, \"caller_workflow_instance_id\" varchar, \"caller_workflow_run_id\" varchar, \"target_namespace\" varchar, \"linked_workflow_instance_id\" varchar, \"linked_workflow_run_id\" varchar, \"linked_workflow_update_id\" varchar, \"status\" varchar not null, \"outcome\" varchar, \"operation_mode\" varchar not null, \"resolved_binding_kind\" varchar, \"resolved_target_reference\" varchar, \"payload_codec\" varchar, \"input_payload_reference\" varchar, \"output_payload_reference\" varchar, \"failure_payload_reference\" varchar, \"failure_message\" text, \"idempotency_key\" varchar, \"deadline_policy\" text, \"idempotency_policy\" text, \"cancellation_policy\" text, \"retry_policy\" text, \"boundary_policy\" text, \"metadata\" text, \"outcome_category\" varchar, \"outcome_reason\" varchar, \"outcome_message\" text, \"outcome_metadata\" text, \"policy_name\" varchar, \"retry_after_seconds\" integer, \"caller_principal_subject\" varchar, \"caller_principal_method\" varchar, \"caller_principal_roles\" text, \"caller_principal_tenant\" varchar, \"caller_principal_claims\" text, \"accepted_at\" datetime, \"started_at\" datetime, \"completed_at\" datetime, \"failed_at\" datetime, \"cancelled_at\" datetime, \"created_at\" datetime, \"updated_at\" datetime, \"call_deadline_at\" datetime, primary key (\"id\"))"
+    ],
+    [
+      "table",
+      "workflow_worker_registration_incarnations",
+      "workflow_worker_registration_incarnations",
+      "CREATE TABLE \"workflow_worker_registration_incarnations\" (\"token\" varchar not null, \"namespace\" varchar not null, \"worker_id\" varchar not null, \"status\" varchar not null, \"recovered_workflow_task_count\" integer not null default '0', \"finished_at\" datetime, \"created_at\" datetime, \"updated_at\" datetime, primary key (\"token\"))"
+    ],
+    [
+      "table",
+      "workflow_worker_registrations",
+      "workflow_worker_registrations",
+      "CREATE TABLE \"workflow_worker_registrations\" (\"id\" integer primary key autoincrement not null, \"worker_id\" varchar not null, \"namespace\" varchar not null, \"task_queue\" varchar not null, \"runtime\" varchar not null, \"sdk_version\" varchar, \"build_id\" varchar, \"supported_workflow_types\" text, \"workflow_definition_fingerprints\" text, \"supported_activity_types\" text, \"max_concurrent_workflow_tasks\" integer not null default '100', \"max_concurrent_activity_tasks\" integer not null default '100', \"last_heartbeat_at\" datetime, \"status\" varchar not null default 'active', \"created_at\" datetime, \"updated_at\" datetime, \"capabilities\" text, \"max_concurrent_worker_sessions\" integer not null default '10', \"available_workflow_slots\" integer, \"available_activity_slots\" integer, \"available_session_slots\" integer, \"process_metrics\" text, \"heartbeat_interval_seconds\" integer, \"workflow_command_contracts\" text, \"capability_manifest\" text, \"registration_token\" varchar)"
+    ]
+  ]
+}

@@ -125,11 +125,117 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     if let Some(command) = env::args().nth(1) {
         if env::args().count() != 2
-            || !matches!(command.as_str(), "schema-bootstrap" | "schema-check")
+            || !matches!(
+                command.as_str(),
+                "schema-bootstrap"
+                    | "schema-check"
+                    | "upgrade-inspect"
+                    | "upgrade-queue-inspect"
+                    | "upgrade-payload-inspect"
+            )
         {
             return Err("unknown development command".into());
         }
         let backend = env::var("DB_CONNECTION").unwrap_or_default();
+        if matches!(
+            command.as_str(),
+            "upgrade-inspect" | "upgrade-queue-inspect" | "upgrade-payload-inspect"
+        ) {
+            use durable_workflow_server::runtime::upgrade::{
+                self, queue_binding::QueueSourceConfig,
+            };
+            // Apache's allocation setting is process-global and write-once.
+            // This standalone command sets its small ceiling before any Avro
+            // decoder is constructed; the HTTP runtime keeps its own policy.
+            if command == "upgrade-payload-inspect"
+                && apache_avro::util::max_allocation_bytes(65536) != 65536
+            {
+                return Err("upgrade_inline_codec_budget_unavailable".into());
+            }
+            // These describe the original Laravel queue transport, not SDK
+            // task queues or a newly selected native execution destination.
+            let queue_options = if command == "upgrade-queue-inspect" {
+                Some((
+                    env::var("DW_RUST_UPGRADE_QUEUE_CONNECTION")
+                        .map_err(|_| "original queue connection is required")?,
+                    env::var("DW_RUST_UPGRADE_QUEUE_DEFAULT_CONNECTION")
+                        .map_err(|_| "original default queue connection is required")?,
+                    env::var("DW_RUST_UPGRADE_QUEUE_DEFAULT_QUEUE")
+                        .map_err(|_| "original default transport queue is required")?,
+                ))
+            } else {
+                None
+            };
+            let queues =
+                queue_options
+                    .as_ref()
+                    .map(
+                        |(connection, default_connection, default_queue)| QueueSourceConfig {
+                            connection,
+                            default_connection,
+                            default_queue,
+                        },
+                    );
+            let result = match backend.as_str() {
+                "sqlite" => {
+                    let path = env::var("DB_DATABASE").map_err(|_| "DB_DATABASE is required")?;
+                    upgrade::inspect_sqlite_cli(
+                        &path,
+                        queues.as_ref(),
+                        command == "upgrade-payload-inspect",
+                    )
+                    .await
+                }
+                "mysql" | "mariadb" => {
+                    if command == "upgrade-payload-inspect" {
+                        upgrade::inspect_mysql_payloads(mysql_options()?).await
+                    } else {
+                        match queues.as_ref() {
+                            Some(config) => {
+                                upgrade::inspect_mysql_queues(mysql_options()?, config).await
+                            }
+                            None => upgrade::inspect_mysql(mysql_options()?).await,
+                        }
+                    }
+                }
+                "pgsql" => {
+                    if command == "upgrade-payload-inspect" {
+                        upgrade::inspect_postgres_payloads(postgres_options()?).await
+                    } else {
+                        match queues.as_ref() {
+                            Some(config) => {
+                                upgrade::inspect_postgres_queues(postgres_options()?, config).await
+                            }
+                            None => upgrade::inspect_postgres(postgres_options()?).await,
+                        }
+                    }
+                }
+                _ => {
+                    return Err(
+                        "upgrade inspection requires DB_CONNECTION=sqlite, pgsql, mysql or mariadb"
+                            .into(),
+                    );
+                }
+            };
+            match result {
+                Ok(report) => {
+                    println!("{report}");
+                    if report["status"] == "unqualified" {
+                        eprintln!("upgrade_source_payload_metadata_unqualified");
+                        return Err("upgrade source inspection refused".into());
+                    }
+                }
+                Err(error) => {
+                    let reason = match error {
+                        RuntimeError::Refused { reason, .. } => reason,
+                        _ => "upgrade_inspection_unavailable",
+                    };
+                    eprintln!("{reason}");
+                    return Err("upgrade source inspection refused".into());
+                }
+            }
+            return Ok(());
+        }
         let result = match backend.as_str() {
             "pgsql" => {
                 let options = postgres_options()?;
