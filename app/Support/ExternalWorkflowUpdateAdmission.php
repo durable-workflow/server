@@ -3,8 +3,8 @@
 namespace App\Support;
 
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\LazyCollection;
 use Throwable;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\CommandContext;
@@ -224,7 +224,7 @@ class ExternalWorkflowUpdateAdmission
 
         // Request IDs identify retained commands across this instance's runs
         // and update names, matching the command ledger's unique scope.
-        /** @var LazyCollection<int, WorkflowCommand> $commands */
+        /** @var Collection<int, WorkflowCommand> $commands */
         $commands = WorkflowCommand::query()
             ->where('workflow_instance_id', $run->workflow_instance_id)
             ->where('command_type', CommandType::Update->value)
@@ -233,7 +233,7 @@ class ExternalWorkflowUpdateAdmission
             })
             ->orderByDesc('command_sequence')
             ->orderByDesc('created_at')
-            ->cursor();
+            ->get();
 
         foreach ($commands as $command) {
             if ($this->requestIdFromStoredContext($command->context) !== $requestId) {
