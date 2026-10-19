@@ -218,6 +218,9 @@ where
         "references_metadata_supported":references_supported,
         "diagnostics":diagnostics, "diagnostics_omitted":omitted,
         "inline_values_verified":inline_supported, "nested_payloads_verified":false,
+        // Published migrations also give these tables codec-tagged payloads.
+        "other_root_payload_columns_verified":false,
+        "unscanned_payload_codec_tables":["workflow_commands","workflow_signal_records","workflow_updates"],
         "inline_validation_limits":{"encoded_frame_bytes":65536,"traversal_depth":64,
             "traversal_visits":16384,"scalar_allocation_bytes":apache_avro::util::max_allocation_bytes(apache_avro::util::DEFAULT_MAX_ALLOCATION_BYTES)},
         "provider_bytes_verified":false, "registry_binding_verified":false,

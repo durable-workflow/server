@@ -392,9 +392,15 @@ async fn inspect_mysql_inner(
         } else {
             "mysql"
         };
-        sqlx::query("SET sql_quote_show_create=1")
-            .execute(&mut connection)
-            .await?;
+        // The client deadline drops the socket, but the server would keep a running
+        // statement, its metadata locks and its snapshot. Bound them server-side.
+        sqlx::query(if backend == "mariadb" {
+            "SET sql_quote_show_create=1,lock_wait_timeout=5,innodb_lock_wait_timeout=5,max_statement_time=30"
+        } else {
+            "SET sql_quote_show_create=1,lock_wait_timeout=5,innodb_lock_wait_timeout=5,max_execution_time=30000"
+        })
+        .execute(&mut connection)
+        .await?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
             .execute(&mut connection)
             .await?;

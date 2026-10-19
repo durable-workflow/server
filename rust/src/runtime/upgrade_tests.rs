@@ -183,6 +183,20 @@ async fn queue_scan_cannot_skip_nonpositive_ids_or_transfer_oversized_payloads()
             "UPDATE jobs SET payload=CAST(zeroblob(131073) AS TEXT)",
             "upgrade_source_queue_representation_unqualified",
         ),
+        // SQLite keeps oversized varchar values that the frozen catalog cannot
+        // reject, so every transferred text column is measured first.
+        (
+            "UPDATE jobs SET queue=printf('%.5000c','q')",
+            "upgrade_source_queue_representation_unqualified",
+        ),
+        (
+            "UPDATE workflow_tasks SET lease_owner=printf('%.5000c','o')",
+            "upgrade_source_queue_representation_unqualified",
+        ),
+        (
+            "UPDATE workflow_runs SET workflow_class=printf('%.5000c','c')",
+            "upgrade_source_queue_representation_unqualified",
+        ),
     ] {
         let (_directory, path) = queued_layout(1).await;
         mutate(&path, statement).await;
@@ -389,6 +403,11 @@ async fn payload_scan_validates_inline_pages_and_reports_late_bad_values_without
     let report = inspect_sqlite_payloads(&path).await.unwrap();
     assert_eq!(report["status"], "inspected");
     assert_eq!(report["payload_inspection"]["inline_values_verified"], true);
+    assert_eq!(report["payload_inspection"]["other_root_payload_columns_verified"], false);
+    assert_eq!(
+        report["payload_inspection"]["unscanned_payload_codec_tables"],
+        json!(["workflow_commands", "workflow_signal_records", "workflow_updates"])
+    );
     assert_eq!(report["payload_inspection"]["diagnostics"], json!([]));
     for (table, column, count) in [
         ("workflow_runs", "arguments", 33),
@@ -508,6 +527,7 @@ async fn payload_scan_checks_all_four_columns_and_every_page_without_mutation_or
     for flag in [
         "inline_values_verified",
         "nested_payloads_verified",
+        "other_root_payload_columns_verified",
         "provider_bytes_verified",
         "registry_binding_verified",
         "source_mutated",

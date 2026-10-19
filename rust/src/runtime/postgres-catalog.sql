@@ -51,6 +51,21 @@ SELECT kind, name, definition FROM (
     LEFT JOIN pg_attribute a ON a.attrelid=dep.refobjid AND a.attnum=dep.refobjsubid
     WHERE n.nspname='public'
     UNION ALL
+    -- Internal triggers implement foreign keys and are covered by constraints.
+    SELECT 'trigger', c.relname || '.' || t.tgname,
+        jsonb_build_object('definition', pg_get_triggerdef(t.oid, false),
+            'enabled', t.tgenabled::text)
+    FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
+    JOIN pg_namespace n ON n.oid=c.relnamespace
+    WHERE n.nspname='public' AND NOT t.tgisinternal
+    UNION ALL
+    -- A view's _RETURN rule is its definition, already recorded above.
+    SELECT 'rule', c.relname || '.' || r.rulename,
+        jsonb_build_object('definition', pg_get_ruledef(r.oid, false))
+    FROM pg_rewrite r JOIN pg_class c ON c.oid=r.ev_class
+    JOIN pg_namespace n ON n.oid=c.relnamespace
+    WHERE n.nspname='public' AND NOT (r.rulename='_RETURN' AND c.relkind IN ('v','m'))
+    UNION ALL
     SELECT 'routine', p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')',
         jsonb_build_object('kind', p.prokind)
     FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public'

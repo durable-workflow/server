@@ -86,7 +86,9 @@ before transfer to the client.
 
 The report distinguishes validated inline counts from unsupported values and
 external-reference metadata. `inline_values_verified` applies only to these
-enumerated root columns; nested history, provider bytes, registry ownership and
+enumerated root columns. `other_root_payload_columns_verified` stays false and
+`unscanned_payload_codec_tables` names the tables whose codec-tagged payloads
+are not scanned yet. Nested history, provider bytes, registry ownership and
 complete representation remain unverified. Refusal prints the bounded report
 and exits nonzero, preserving source data. Known valid frames retain exact
 int64, null, Unicode and byte-string semantics; PHP-looking text in a byte

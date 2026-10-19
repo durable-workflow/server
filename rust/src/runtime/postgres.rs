@@ -554,6 +554,15 @@ mod tests {
                 "CREATE FUNCTION unexpected() RETURNS integer LANGUAGE sql AS 'SELECT 1'",
                 "native_schema_catalog_mismatch",
             ),
+            // Neither needs a public function, so only trigger/rule catalog rows see them.
+            (
+                "CREATE TRIGGER unexpected BEFORE UPDATE ON jobs FOR EACH ROW EXECUTE FUNCTION suppress_redundant_updates_trigger()",
+                "native_schema_catalog_mismatch",
+            ),
+            (
+                "CREATE RULE unexpected AS ON DELETE TO jobs DO INSTEAD NOTHING",
+                "native_schema_catalog_mismatch",
+            ),
         ] {
             let db = Database::new().await;
             let storage = PostgresStorage::open(db.options.clone()).await.unwrap();

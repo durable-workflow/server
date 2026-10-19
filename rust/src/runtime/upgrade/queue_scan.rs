@@ -39,7 +39,7 @@ where
     // most 32 * 128KiB payload bytes. The enclosing observation deadline caps
     // total work; the primary-key cursor never changes source row order.
     let page_sql = if DB::NAME == "SQLite" {
-        "SELECT id,queue,CASE WHEN length(CAST(payload AS BLOB))<=131072 THEN payload ELSE NULL END AS payload,attempts,reserved_at,available_at,created_at FROM jobs WHERE id>$1 ORDER BY id LIMIT 32"
+        "SELECT id,CASE WHEN length(CAST(queue AS BLOB))<=4096 THEN queue ELSE NULL END AS queue,CASE WHEN length(CAST(payload AS BLOB))<=131072 THEN payload ELSE NULL END AS payload,attempts,reserved_at,available_at,created_at FROM jobs WHERE id>$1 ORDER BY id LIMIT 32"
     } else {
         "SELECT id,queue,CASE WHEN octet_length(payload)<=131072 THEN payload ELSE NULL END AS payload,attempts,reserved_at,available_at,created_at FROM jobs WHERE id>$1 ORDER BY id LIMIT 32"
     };
@@ -55,7 +55,8 @@ where
         for row in page {
             let job = SourceQueueJob {
                 id: DB::number(&row, "id")?,
-                queue: DB::string(&row, "queue")?,
+                queue: DB::optional_string(&row, "queue")?
+                    .ok_or_else(|| refused("upgrade_source_queue_representation_unqualified"))?,
                 payload: DB::optional_string(&row, "payload")?
                     .ok_or_else(|| refused("upgrade_source_queue_representation_unqualified"))?,
                 attempts: DB::number(&row, "attempts")?,
@@ -65,6 +66,7 @@ where
             };
             let task_id = referenced_task_id(&job)
                 .map_err(|_| refused("upgrade_source_queue_representation_unqualified"))?;
+            oversized::<DB>(connection, TASK_TEXT_BYTES, task_id.as_str()).await?;
             let task = query::<DB>("SELECT id,workflow_run_id,namespace,task_type,status,connection,queue,available_at,lease_owner,lease_expires_at,attempt_count FROM workflow_tasks WHERE id=$1")
                 .bind(task_id.as_str()).fetch_optional(&mut *connection).await?
                 .ok_or_else(|| refused("upgrade_source_queue_task_missing"))?;
@@ -81,6 +83,7 @@ where
                 lease_expires_at: original_time::<DB>(&task, "lease_expires_at")?,
                 attempt_count: DB::number(&task, "attempt_count")?,
             };
+            oversized::<DB>(connection, RUN_TEXT_BYTES, task.workflow_run_id.as_str()).await?;
             let run = query::<DB>("SELECT id,workflow_instance_id,workflow_class,workflow_type,namespace,queue,status FROM workflow_runs WHERE id=$1")
                 .bind(task.workflow_run_id.as_str()).fetch_optional(&mut *connection).await?
                 .ok_or_else(|| refused("upgrade_source_queue_run_missing"))?;
@@ -124,4 +127,32 @@ fn original_time<DB: Backend>(row: &DB::Row, field: &str) -> Result<Option<Strin
     }
     Ok(DB::optional_instant(row, field)?
         .map(|time| time.format("%Y-%m-%d %H:%M:%S%.6f").to_string()))
+}
+
+// SQLite does not enforce varchar lengths, so a matching-catalog file can hold
+// arbitrarily large text. Measure every selected value before transferring it.
+// PostgreSQL and MySQL enforce the frozen catalog's lengths themselves.
+const TASK_TEXT_BYTES: &str = "SELECT max(coalesce(length(CAST(id AS BLOB)),0),coalesce(length(CAST(workflow_run_id AS BLOB)),0),coalesce(length(CAST(namespace AS BLOB)),0),coalesce(length(CAST(task_type AS BLOB)),0),coalesce(length(CAST(status AS BLOB)),0),coalesce(length(CAST(connection AS BLOB)),0),coalesce(length(CAST(queue AS BLOB)),0),coalesce(length(CAST(available_at AS BLOB)),0),coalesce(length(CAST(lease_owner AS BLOB)),0),coalesce(length(CAST(lease_expires_at AS BLOB)),0)) AS bytes FROM workflow_tasks WHERE id=$1";
+const RUN_TEXT_BYTES: &str = "SELECT max(coalesce(length(CAST(id AS BLOB)),0),coalesce(length(CAST(workflow_instance_id AS BLOB)),0),coalesce(length(CAST(workflow_class AS BLOB)),0),coalesce(length(CAST(workflow_type AS BLOB)),0),coalesce(length(CAST(namespace AS BLOB)),0),coalesce(length(CAST(queue AS BLOB)),0),coalesce(length(CAST(status AS BLOB)),0)) AS bytes FROM workflow_runs WHERE id=$1";
+const MAX_TEXT_BYTES: i64 = 4096;
+
+async fn oversized<DB: Backend>(
+    connection: &mut DB::Connection,
+    sql: &'static str,
+    id: &str,
+) -> Result<()>
+where
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    DB::Arguments: IntoArguments<DB>,
+    for<'q> &'q str: Encode<'q, DB> + Type<DB>,
+{
+    if DB::NAME != "SQLite" {
+        return Ok(());
+    }
+    if let Some(row) = query::<DB>(sql).bind(id).fetch_optional(&mut *connection).await?
+        && DB::number(&row, "bytes")? > MAX_TEXT_BYTES
+    {
+        return Err(refused("upgrade_source_queue_representation_unqualified"));
+    }
+    Ok(())
 }
