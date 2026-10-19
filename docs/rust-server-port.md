@@ -14,63 +14,34 @@ qualify a later tree.
 
 ## Current state
 
-Updated October 19, 2026.
+Updated October 19, 2026, after merging #460.
 
-- **Open native PRs.** [#478](https://github.com/durable-workflow/server/pull/478)
-  (run observation and cooperative cancellation), [#476](https://github.com/durable-workflow/server/pull/476)
-  (run activity metadata listing) and [#460](https://github.com/durable-workflow/server/pull/460)
-  (read-only inspection of an existing PHP database). All three are drafts.
-  The latest merged native slice is [#470](https://github.com/durable-workflow/server/pull/470).
-- **#478 source.** The branch now combines the October 18 head `543ed0485`, the
-  separately prepared [independent child cancellation](contracts/child-independent-cancellation.md)
-  component `15e14fb50`, current main `1682e1de` and a harness correction.
-  Main brings PHP Server 2.9.4 and Workflow 2.6.2. It changes no native,
-  shared harness or fixture path, and the shared matrix keeps its frozen
-  published PHP 2.5.14, embedded and SDK actors.
-- **#476 source.** The activity metadata listing now reads history, executions
-  and attempts from one consistent read-only snapshot on every database family,
-  takes the codec permit only after its reads, and gives a synthetic attempt no
-  stop reason when its execution row is pending, as released `RunActivityView`
-  does. Controls cover SQLite, PostgreSQL 17, MySQL 8.0 and MariaDB 10.11, and
-  the projection corpus has a released-projector case for the pending row.
-  Remaining listing gaps are the 413 read budget for long-heartbeat or wide
-  runs, six-digit activity timestamps and NULL-row tolerance.
-- **#460 source.** Read-only inspection of an existing PHP database now refuses
-  PostgreSQL triggers and rules like other unknown catalog objects, measures
-  every SQLite queue text value before transfer and refuses values over 4 KiB,
-  bounds MySQL and MariaDB lock waits and statement time on the server, and
-  reports the published payload tables it does not scan yet. It still grants no
-  takeover, backup or quiescence claim.
-- **Diagnosed failure.** Shared run [39092116973](https://github.com/durable-workflow/server/actions/runs/39092116973)
-  failed `execution-and-codec` step 9 with exit code 255. The same step
-  reproduced locally at `543ed0485` with the exact published image and failed the
-  same way. `restart.php prepare` against the published PHP reference received
-  the documented worker-poll refusal (HTTP 503, `backend_lock_pressure`,
-  `task: null`, retry after one second) while that reference shared its SQLite
-  file with the maintenance loop. The harness treated the refusal as fatal.
-  Native preparation had passed. The harness now honors only that documented
-  refusal, with bounded retries reported in the restart output.
-- **Not yet diagnosed.** Earlier failed originals on this branch include six
-  `Compare published query deadlines and installed Worker authority` jobs
-  across MariaDB, MySQL, PostgreSQL and SQLite, three
-  `Compare corrected markers, ranges, clocks and activity expiry` jobs and one
-  MySQL three-runtime recovery job. The MySQL recovery job also runs
-  `restart.php` against PHP, so it may share this cause. The others are
-  timing-sensitive cohorts and need local reproduction before any change.
-- **Combined checks so far.** 80 library tests (18 existing ignores) and 272
-  SQLite execution tests pass. The new lock-pressure decision test passes.
-  The full local step 9 run and the hosted six-database matrix for the
-  combined head are recorded on #478.
-- **Next action.** Qualify and merge #478. Then bring #476 forward with its
-  review findings fixed (codec permit taken before reads, PostgreSQL
-  statement snapshots, read budget, timestamp precision), followed by #460.
-  Reproduce the timing-sensitive cohort failures locally or on disposable
-  hosts until each has a diagnosed cause.
+- **Merged native slices.** [#478](https://github.com/durable-workflow/server/pull/478)
+  (run observation, timed waits, `all` barriers, terminal update closure and
+  cooperative cancellation with abandoned and independently cancelled
+  children), [#476](https://github.com/durable-workflow/server/pull/476)
+  (run activity metadata listing), [#494](https://github.com/durable-workflow/server/pull/494)
+  (CPU deadline-health observer timing) and [#460](https://github.com/durable-workflow/server/pull/460)
+  (read-only inspection of an existing PHP database). No native PR is open.
+- **Shared-suite reliability.** Each 13-job run still tends to show one
+  intermittent failure in a step its change does not touch, and qualification
+  records classify each one. Diagnosed and corrected: published PHP SQLite
+  reference lock pressure, and CPU observer client timing. Diagnosed, decision
+  pending: the query-authority deadline-boundary replay (see known gaps).
+  Not yet diagnosed: one native-test failure in `execution-and-codec` step 8 on
+  main's post-#478 run, which four local repetitions under the CI limits did
+  not reproduce.
+- **Next action.** Decide the query deadline-boundary replay contract and add
+  its fixture. Then correct native timer dispatch under CPU load with a
+  deadline-health control. Then continue the remaining parity families, the
+  backup-first in-place takeover and the performance baseline on disposable
+  hosts.
 
 ## Known gaps found in review
 
-These are confirmed differences from the published PHP reference. Each one
-needs a contract fixture before its correction.
+These are confirmed differences from the published PHP reference and open
+contract decisions found while qualifying native slices. Each one needs a
+contract fixture before its correction.
 
 - **Child completion while the parent has an open workflow task.** Published
   Workflow records the child resolution and reuses the parent's existing ready
@@ -103,6 +74,16 @@ needs a contract fixture before its correction.
   and native then correctly fences the attempt. A heartbeat timeout comfortably
   above the request timeout, still inside the 9-second load wave, needs its own
   reviewed profile change.
+- **Query replay at the deadline boundary.** Both implementations replay a live
+  query lease to its owner on a fresh poll without a request id. The installed
+  Rust query client cancels a late handler at its view of the query deadline and
+  polls again. Native can answer that poll a fraction of a millisecond before
+  the stored microsecond expiry and replay the task, so the client records a
+  second claim. Published PHP's request overhead keeps it past the deadline in
+  practice. One of six local SQLite cohort runs failed this way. Decide whether
+  native stops replaying a lease with less than a minimum delivery budget left,
+  or whether the fixture counts a boundary replay as the same claim, then add the
+  fixture before changing either side.
 
 ## Contract and verification inventory
 
@@ -170,6 +151,59 @@ support is not evidence of multi-node safety.
 
 Newest checkpoints first. Each entry is exact to the source, tree and runs it
 names, including unsuccessful observations.
+
+October 19, before #478, #476, #494 and #460 merged:
+
+- **Open native PRs.** [#478](https://github.com/durable-workflow/server/pull/478)
+  (run observation and cooperative cancellation), [#476](https://github.com/durable-workflow/server/pull/476)
+  (run activity metadata listing) and [#460](https://github.com/durable-workflow/server/pull/460)
+  (read-only inspection of an existing PHP database). All three are drafts.
+  The latest merged native slice is [#470](https://github.com/durable-workflow/server/pull/470).
+- **#478 source.** The branch now combines the October 18 head `543ed0485`, the
+  separately prepared [independent child cancellation](contracts/child-independent-cancellation.md)
+  component `15e14fb50`, current main `1682e1de` and a harness correction.
+  Main brings PHP Server 2.9.4 and Workflow 2.6.2. It changes no native,
+  shared harness or fixture path, and the shared matrix keeps its frozen
+  published PHP 2.5.14, embedded and SDK actors.
+- **#476 source.** The activity metadata listing now reads history, executions
+  and attempts from one consistent read-only snapshot on every database family,
+  takes the codec permit only after its reads, and gives a synthetic attempt no
+  stop reason when its execution row is pending, as released `RunActivityView`
+  does. Controls cover SQLite, PostgreSQL 17, MySQL 8.0 and MariaDB 10.11, and
+  the projection corpus has a released-projector case for the pending row.
+  Remaining listing gaps are the 413 read budget for long-heartbeat or wide
+  runs, six-digit activity timestamps and NULL-row tolerance.
+- **#460 source.** Read-only inspection of an existing PHP database now refuses
+  PostgreSQL triggers and rules like other unknown catalog objects, measures
+  every SQLite queue text value before transfer and refuses values over 4 KiB,
+  bounds MySQL and MariaDB lock waits and statement time on the server, and
+  reports the published payload tables it does not scan yet. It still grants no
+  takeover, backup or quiescence claim.
+- **Diagnosed failure.** Shared run [39092116973](https://github.com/durable-workflow/server/actions/runs/39092116973)
+  failed `execution-and-codec` step 9 with exit code 255. The same step
+  reproduced locally at `543ed0485` with the exact published image and failed the
+  same way. `restart.php prepare` against the published PHP reference received
+  the documented worker-poll refusal (HTTP 503, `backend_lock_pressure`,
+  `task: null`, retry after one second) while that reference shared its SQLite
+  file with the maintenance loop. The harness treated the refusal as fatal.
+  Native preparation had passed. The harness now honors only that documented
+  refusal, with bounded retries reported in the restart output.
+- **Not yet diagnosed.** Earlier failed originals on this branch include six
+  `Compare published query deadlines and installed Worker authority` jobs
+  across MariaDB, MySQL, PostgreSQL and SQLite, three
+  `Compare corrected markers, ranges, clocks and activity expiry` jobs and one
+  MySQL three-runtime recovery job. The MySQL recovery job also runs
+  `restart.php` against PHP, so it may share this cause. The others are
+  timing-sensitive cohorts and need local reproduction before any change.
+- **Combined checks so far.** 80 library tests (18 existing ignores) and 272
+  SQLite execution tests pass. The new lock-pressure decision test passes.
+  The full local step 9 run and the hosted six-database matrix for the
+  combined head are recorded on #478.
+- **Next action.** Qualify and merge #478. Then bring #476 forward with its
+  review findings fixed (codec permit taken before reads, PostgreSQL
+  statement snapshots, read budget, timestamp precision), followed by #460.
+  Reproduce the timing-sensitive cohort failures locally or on disposable
+  hosts until each has a diagnosed cause.
 
 Current checkpoint, October 18:
 
