@@ -62,6 +62,32 @@ class ExternalWorkflowUpdateRequestIdTest extends TestCase
         $this->assertSame($before, $this->durableRows());
     }
 
+    public static function legacyRequestNames(): iterable
+    {
+        yield 'same name' => ['add'];
+        yield 'different name' => ['other'];
+    }
+
+    #[DataProvider('legacyRequestNames')]
+    public function test_legacy_context_key_is_retained_without_populating_missing_column(string $name): void
+    {
+        $this->startRemote('legacy-key');
+        $original = $this->postJson('/api/workflows/legacy-key/update/add', [
+            'input' => [17], 'request_id' => 'retained-key',
+        ], $this->apiHeaders())->assertAccepted();
+        DB::table('workflow_commands')->where('id', $original->json('command_id'))->update(['request_id' => null]);
+        $before = $this->durableRows();
+
+        $this->postJson('/api/workflows/legacy-key/update/'.$name, [
+            'input' => [99], 'request_id' => 'retained-key',
+        ], $this->apiHeaders())->assertAccepted()
+            ->assertJsonPath('update_id', $original->json('update_id'))
+            ->assertJsonPath('update_name', 'add');
+
+        $this->assertSame($before, $this->durableRows());
+        $this->assertNull(DB::table('workflow_commands')->where('id', $original->json('command_id'))->value('request_id'));
+    }
+
     public function test_a_new_key_admits_the_other_update(): void
     {
         $this->startRemote('new-key');
