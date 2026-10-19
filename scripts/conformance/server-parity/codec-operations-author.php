@@ -84,17 +84,19 @@ try {
         $state['before'] = namespaceHttpRun($client, $id, $handle->selectedRunId);
         $status = static fn (): array => $client->activityTaskStatus($activity['task_id'], $activity['activity_attempt_id'], $activity['lease_owner']);
         $state['status_before'] = $submit('status_before', $status);
+        // Each loaded request may take its full request timeout, which equals the
+        // heartbeat timeout. Read status at the start of each window and keep run
+        // reads out of the windows, so every heartbeat and the completion are sent
+        // on schedule. The exact final history proves status reads added no events.
         foreach (['first','second'] as $name) {
+            $state['status_'.$name] = $submit('status_'.$name, $status);
             $wait = $claimed + $policy[$name.'_heartbeat_delay_seconds'] - microtime(true);
             if ($wait>0) usleep((int) ceil($wait*1000000));
-            $state['status_'.$name] = $submit('status_'.$name, $status);
             $state['heartbeat_'.$name] = $submit('heartbeat_'.$name, static fn (): array => $client->heartbeatActivityTask(
                 $activity['task_id'], $activity['activity_attempt_id'], $activity['lease_owner'], ['message'=>$name.' CPU renewal λ']));
-            $state['after_'.$name] = namespaceHttpRun($client, $id, $handle->selectedRunId);
             $checkpoint();
         }
         $state['status_after'] = $submit('status_after', $status);
-        $state['after_status'] = namespaceHttpRun($client, $id, $handle->selectedRunId);
         $state['activity_completion'] = $submit('complete_activity', static fn (): array => $client->completeActivityTask(
             $activity['task_id'], $activity['activity_attempt_id'], $activity['lease_owner'], $spec['row']));
         $parent = $poll();

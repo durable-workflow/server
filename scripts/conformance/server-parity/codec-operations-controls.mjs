@@ -34,7 +34,7 @@ const changes=[
   ['cleanup renewal crosses root deadline',r=>{r.operations.cancellation.renewal.lease_expires_at='2100-01-01T00:00:00.000000Z';}],
   ['changed cleanup outcome',r=>{r.operations.cancellation.after.events[8].payload.cancellation_cleanup.outcome='completed';}],
   ['changed cleanup timer cancellation',r=>{r.operations.cancellation.after.events[7].payload.timer_id='different';}],
-  ['late observed cleanup',r=>{r.operations.cancellation.closure_observed_at+=2;}],
+  ['late observed cleanup',r=>{r.operations.cancellation.closure_observed_at+=4;}],
   ['no busy CPU during timed operations',(_r,c)=>{for(const sample of c.samples)sample.cpu_percent=0;}],
 ];
 for(const[name,change]of changes){const r=structuredClone(record),c=structuredClone(cpu);change(r,c);
