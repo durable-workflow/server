@@ -18,6 +18,10 @@ class NexusFixtureFailure(RuntimeError):
 @workflow.defn(name="nexus.fixture.python.greeter")
 class PythonGreeter:
     def run(self, context, name):
+        if name.startswith("nexus-external:"):
+            yield context.sleep(2)
+            return {"language": "python", "name": name, "greeting": f"hello, {name}",
+                    "bigint": 9223372036854775807, "nullable": None, "unicode": "雪☃"}
         if name == "fail":
             raise NexusFixtureFailure("fixture service failure")
         if name == "recover":

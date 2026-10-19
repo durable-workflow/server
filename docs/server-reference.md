@@ -1301,8 +1301,14 @@ built-in token or signature credentials are not required for readiness.
 
 ### Docker
 
+The PHP image uses a source allowlist for BuildKit. It excludes local environment
+files, credentials, Git metadata, cached configuration, databases and storage data.
+The root `.env.example` template and directory scaffolding remain available;
+the build creates a fresh empty SQLite file. Supply deployment credentials
+through runtime environment variables or secrets.
+
 ```bash
-docker build -t durable-workflow-server .
+DOCKER_BUILDKIT=1 docker build -t durable-workflow-server .
 export DW_AUTH_TOKEN=dev-token
 docker volume create durable-workflow-sqlite
 
